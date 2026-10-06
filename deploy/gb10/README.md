@@ -1,14 +1,16 @@
 This integration reproduces the GB10 Flash Next deployment from repository
 source. It includes the native SSD reader, multi-image/video and copy-draft
 changes, xgrammar 0.2.8, and the Harness `/v1/tokenize` endpoint. The native
-deployment remains 262,144 prompt-plus-output tokens with four request slots.
+baseline is 262,144 prompt-plus-output tokens with four request slots.
 `provenance.json` records the upstream commits, integrated patch hashes, model
 revision, and the original container stack. The new build uses NGC CUDA 13.4.1
 and upstream ARM64 PyTorch nightly 2.16.0.dev20261006, matching TorchVision
 0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d. `nightly-pins.json` records the
 base digest, official wheel URLs/hashes, and the date of the latest-available
-selection. The default context and serving settings stay native until YaRN is
-explicitly enabled.
+selection. The current Compose profile enables YaRN factor 2 with 524,288
+prompt-plus-reply tokens and four request slots. Caches grow on demand within
+the global memory gate; four simultaneously full-size contexts are not assumed
+to fit the GB10.
 
 Build from the repository root:
 
@@ -71,7 +73,8 @@ name and port are the existing production service's. Rendering the
 configuration is read-only; applying it is a service replacement and belongs to
 the deployment step after validation.
 
-The Compose project is named `tensorfold-gb10-fork`. After the initial controlled
+The current Compose project is named `tensorfold-gb10-yarn2`, separating the
+retained native fork container from the new managed service. After a controlled
 cutover, manage it from this repository with
 `docker compose -f deploy/gb10/compose.yaml up -d`, or restart the existing
 container with `docker restart qwen38-flash-next-tf`. Preserve the previous
