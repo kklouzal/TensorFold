@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from ..host_table import open_table, shard_keys
+from ..rope import RopeParameters
 from .bf16 import b16_from_rows, quantize4, stack_b16
 from tensorfold.cuda import experts as grouped
 
@@ -30,7 +31,8 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
-         draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None) -> Weights:
+         draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
+         rope: RopeParameters | None = None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -40,8 +42,9 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
     model_dir = Path(model_dir)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
-        return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads)
-    full = Config.read(model_dir)
+        return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope)
+    full = Config.read(model_dir, rope=rope)
+    inv = full.rope.inverse_frequencies(torch)
     rank, world = tp if tp is not None else (0, 1)
     cfg = full if world == 1 else replace(full, heads=full.heads // world, kv_heads=full.kv_heads // world,
                                           nk=full.nk // world, nv=full.nv // world,
@@ -426,10 +429,9 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                 draft_head = quantize4(weight_bf16("lm_head", ids))
             else:
                 draft_head = make_q4(*_rows_at(triple("lm_head"), ids))
-        inv = torch.tensor(cfg.rope_theta, dtype=torch.float64) ** (
-            -torch.arange(0, cfg.rotary_dim // 2, dtype=torch.float64) / (cfg.rotary_dim // 2))
-        w = Weights(cfg, embed, loaded, mixer, head, inv.to(torch.float32).to(device), around_one=around_one)
+        w = Weights(cfg, embed, loaded, mixer, head, inv.to(device), around_one=around_one)
         w.meta.update(rank=rank, world=world, vocab_offset=rank * vl, full=full)
+        w.meta["rope"] = cfg.rope.metadata()
         w.draft_head, w.draft_ids = draft_head, draft_ids
         if mtp and rd.has(prefix + "mtp.fc_embedding.weight"):
             fc = b16 if cfg.quant == "modelopt" else q4

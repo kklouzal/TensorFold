@@ -27,7 +27,7 @@ def _ptr(TABLE, s, T: tl.constexpr):
 def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.constexpr, NQ: tl.constexpr,
                 NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
                 BITS: tl.constexpr, KT: tl.constexpr, VISION: tl.constexpr,
-                S1: tl.constexpr = 11, S2: tl.constexpr = 10):
+                S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0):
     r = tl.program_id(0)
     s = tl.load(SID + r)
     rope, delta, length = CP, CP, 0
@@ -37,12 +37,14 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
     glue._prep_row(P, tl.load(POSR + r), r, tl.program_id(1), QW, KW, IW, INV, Q, _ptr(CP, s, KT),
                    _ptr(CP + N, s, KT), _ptr(CP + 2 * N, s, tl.float16), _ptr(CP + 3 * N, s, tl.float16), IQ,
                    _ptr(CP + 4 * N, s, tl.bfloat16), eps, PW, NQ, NKV, HD, NI, IHD, HALF, BITS,
-                   ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2)
+                   ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2,
+                   ROPE_SCALE=ROPE_SCALE)
 
 
 @triton.jit
 def _pool_multi(CP, VP, P0, RS, W, INV, eps, N, DI: tl.constexpr, HALF: tl.constexpr, RATIO: tl.constexpr,
-                VISION: tl.constexpr, S1: tl.constexpr = 11, S2: tl.constexpr = 10):
+                VISION: tl.constexpr, S1: tl.constexpr = 11, S2: tl.constexpr = 10,
+                ROPE_SCALE: tl.constexpr = 1.0):
     s = tl.program_id(0)
     rope, delta, length = CP, CP, 0
     if VISION:
@@ -50,7 +52,8 @@ def _pool_multi(CP, VP, P0, RS, W, INV, eps, N, DI: tl.constexpr, HALF: tl.const
         length = tl.load(VP + 2 * N + s).to(tl.int32)
     _pool_block(_ptr(CP + 4 * N, s, tl.bfloat16), _ptr(CP + 5 * N, s, tl.bfloat16), tl.load(P0 + s),
                 tl.program_id(1), W, INV, eps, tl.load(RS + s), DI, HALF, RATIO,
-                ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2)
+                ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2,
+                ROPE_SCALE=ROPE_SCALE)
 
 
 @triton.jit
@@ -136,6 +139,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                b.q, b.iq, c.eps, n, PW=b.pa.shape[1], NQ=c.heads, NKV=c.kv_heads, HD=c.head_dim,
                                NI=c.index_heads, IHD=c.index_dim, HALF=w.inv_freq.numel(), BITS=bits, KT=kt,
                                VISION=step.vision, S1=sections[1], S2=sections[2],
+                               ROPE_SCALE=c.rope_attention_factor,
                                num_warps=2)
     top = sc.budget // sc.ratio
     if sc.qsa:
@@ -143,6 +147,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                                     a.ik_scale, w.inv_freq, c.eps, n,
                                                     DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
                                                     VISION=step.vision, S1=sections[1], S2=sections[2],
+                                                    ROPE_SCALE=c.rope_attention_factor,
                                                     num_warps=1)
         for (st, a0, a1), end in zip(step.segs, step.ends):
             if end // sc.ratio > top:                # this stream has sparse rows: its own select

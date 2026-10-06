@@ -36,7 +36,11 @@ class FlashNextEngine:
                  draft_vocab: str | int | None = "default", max_len: int | None = None,
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "", port: int = 29551,
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
-                 kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False) -> None:
+                 kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
+                 yarn_factor: float | None = None) -> None:
+        from .. import rope_parameters
+
+        self.rope = rope_parameters(model_dir, yarn_factor)
         import torch
 
         from .exl3_pack import admission, extra_files, is_exl3
@@ -57,7 +61,11 @@ class FlashNextEngine:
         from .kvcache import BITS_OF, check as check_kv
         from .weights import draft_token_ids, load
         from tensorfold.cuda.capacity import admit, config, gather_ints
-        from tensorfold.cuda.geometry import PREFILL_ROWS, gdn_geometry, indexed_stream_geometry, indexed_weights
+        from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
+                                              indexed_stream_geometry, indexed_weights)
+
+        # TENSORFOLD_PREFILL_ROWS: prompt pieces of that many rows, admitted with the window (not the idle plan)
+        chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
 
         if tp not in (1, 2) or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Flash Next runs on one GPU or two")
@@ -84,21 +92,30 @@ class FlashNextEngine:
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None
         each, mtp, bits = self.depth + 1, self.depth > 0, BITS_OF[self.kv_dtype]
         # one admission for one stream or many (every slot, the shared rows and kept snapshots), before any load
-        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, kv_bits=bits))
+        rows0 = chunk or PREFILL_ROWS
+        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, kv_bits=bits,
+                                                          prefill_rows=rows0))
                     if streams > 1 else
                     (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_bits=bits,
-                                               kept=KEEP_SERIAL + 1)))
+                                               kept=KEEP_SERIAL + 1, prefill_rows=rows0)))
         if exl3:
             geometry = admission(geometry)
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
 
         workspace = vision_workspace() if vision else 0
+        rope_capacity = ({"context_limit": self.rope.context_limit, "original_context": self.rope.native_context}
+                         if self.rope.rope_type != "default" else {})
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank),
                                    rank=rank, world=tp,
-                                   gather=gather, extra_files=extra_files(model_dir) if exl3 else ())
-        self.prefill_rows, prompt_workspace = (PREFILL_ROWS, 0) if exl3 else prompt_plan(
+                                   gather=gather, extra_files=extra_files(model_dir) if exl3 else (), **rope_capacity)
+        self.capacity_plan["rope"] = self.rope.metadata()
+        if self.rope.rope_type != "default":
+            print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
+                  f"{self.rope.attention_factor:.8g}, original context {self.rope.native_context}; "
+                  "short-context quality may change", flush=True)
+        self.prefill_rows, prompt_workspace = (PREFILL_ROWS, 0) if exl3 else (chunk, 0) if chunk else prompt_plan(
             self.capacity_plan, config(model_dir), torch.cuda.get_device_capability(), world=tp, vision=vision,
             fp8=prompt_precision.fp8())
         if prompt_workspace:
@@ -116,7 +133,7 @@ class FlashNextEngine:
         try:
             w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
                      draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
-                     table_reads=reads if prefetch and not ple_on_ssd else None)
+                     table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope)
         except BaseException:
             wait(reads)                               # a failed load leaves no table read behind it
             raise
@@ -140,7 +157,7 @@ class FlashNextEngine:
             self.vision = QwenCudaVision(model_dir, torch.device("cuda", 0),
                                          allow_urls=vision_urls)
             torch.cuda.empty_cache()
-            print(f"[tensorfold] vision: image input, a "
+            print(f"[tensorfold] vision: image{' and video' if self.vision.videos else ''} input, a "
                   f"{self.vision.weight_bytes / 2**30:.2f} GiB tower with {vision_workspace() / 2**30:.2f} GiB of "
                   f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
         # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
@@ -211,18 +228,21 @@ class FlashNextEngine:
         """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
 
         from .kvcache import BITS_OF
+        import hashlib
 
         total = int(ids.sum()) if ids is not None else -1
+        rope_digest = int.from_bytes(hashlib.sha256(json.dumps(self.rope.metadata(), sort_keys=True).encode()).digest()[:8],
+                                     "big") & (2**63 - 1)
         mine = torch.tensor([self.depth, round(self.confidence * 1e6), self.max_len,
                              len(ids) if ids is not None else -1, total, BITS_OF[self.kv_dtype],
-                             int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
+                             rope_digest, int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
         both = torch.empty((2 * mine.numel(),), dtype=torch.int64, device="cuda")
         self.comm.all_gather(mine, both)
         both = both.view(2, -1).cpu()
         prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
         if not torch.equal(both[0], both[1]):
             raise RuntimeError(f"the two ranks were started with different settings (drafts, confidence, context, "
-                               f"draft vocabulary, KV cache): rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}")
+                               f"draft vocabulary, KV cache, RoPE): rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}")
 
     def _key(self, n: int) -> str:
         return f"tensorfold/flashnext/request/{n}"

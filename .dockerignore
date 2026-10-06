@@ -1,0 +1,9 @@
+.git
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+task-state.json
+task-artifacts
+*.egg-info
+build
+dist

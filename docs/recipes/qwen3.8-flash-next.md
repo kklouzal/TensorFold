@@ -73,6 +73,42 @@ format ([prompt precision](cuda.md#prompt-precision)):
 TensorFold finds Mia-AiLab's export by its `model_type` (`qwen3_8_flash_next`) and serves it like
 local-inference-lab's.
 
+### Static YaRN text context extension
+
+This fork implements static YaRN for Flash Next on CUDA. For a checkpoint with a 262,144-token native
+window, factor 2 permits a 524,288-token total prompt plus reply window:
+
+```bash
+tensorfold serve /path/to/checkpoint --backend cuda --yarn-factor 2 --context 524288
+```
+
+The CLI flag overrides the checkpoint's factor without editing its files. A checkpoint can instead
+set `text_config.rope_parameters.rope_type` to `yarn`, `factor` to `2.0`, and
+`original_max_position_embeddings` to `262144`, retaining its existing `rope_theta`,
+`partial_rotary_factor`, `mrope_interleaved`, and `mrope_section`. The original native window is reported
+separately from the effective RoPE limit. An omitted `--context`, or `--context 0`, admits the largest
+window memory allows up to that limit; an explicit window that cannot fit fails before loading weights.
+The same memory reserve, KV precision, MTP cache, vision workspace and concurrent-stream accounting apply.
+
+YaRN frequencies and rotary amplitudes apply to text attention queries and keys, sparse indexer queries
+and pooled keys, and MTP. Image prompts retain interleaved text M-RoPE with the scaled frequencies; the
+vision tower retains axial RoPE. The native policy keeps its original frequency arithmetic and compiles
+without amplitude multiplications. Unsupported text RoPE modes and YaRN on MLX are refused.
+YaRN constructs inverse frequencies and rotary amplitudes in float32, with normalized/rotated tensors
+stored as bf16. Parameters must fit that representation; an invalid correction range, nonfinite amplitude,
+or nonpositive/nonfinite inverse frequency fails before checkpoint tensor loading. Position indices and
+the effective context limit fit signed 32-bit integers. These checks do not relax KV precision or other
+model arithmetic.
+
+[Qwen's model guidance](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices) recommends factor 2
+for 524,288 tokens and warns that static YaRN can affect shorter-context quality. The frequency and
+amplitude implementation follows
+[Transformers' YaRN initializer](https://github.com/huggingface/transformers/blob/main/src/transformers/modeling_rope_utils.py).
+The implementation alone does not establish long-context model quality or four-stream capacity on a
+particular host. Validate retrieval/quality, short prompts, MTP against serial decoding, image prompts,
+memory and throughput before enabling the extension in a deployed service. Caches belong to one loaded
+RoPE policy and must not be reused across policy changes.
+
 ### NVFP4 checkpoints
 
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:

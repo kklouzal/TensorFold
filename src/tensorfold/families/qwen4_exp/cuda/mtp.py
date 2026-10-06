@@ -34,9 +34,10 @@ def mtp_stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[in
     return segs
 
 
-def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = True,
-                context: int | None = None) -> torch.Tensor:
-    """The MTP head's GPU work (capturable); ``last_only``: the draft head's logits of each stream's last row."""
+def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = True, logits: bool = True,
+                context: int | None = None) -> torch.Tensor | None:
+    """The MTP head's GPU work (capturable); ``last_only``: the draft head's logits of each stream's last row.
+    ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection."""
 
     c = w.cfg
     m = w.mtp
@@ -49,6 +50,8 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     glue.add_streams(b.mtp_eo[:n], b.mtp_hs[:n * c.streams], b.h[:n], c.streams)
     pending = layer_forward(m.layer, w, segs, b, n, None, mtp=True, context=context)
     finish(w, m.mixer, b, n, pending, logits=False)
+    if not logits:
+        return None
     if not last_only:
         return _mm(b.mixed[:n], w.head, b.xs_mixed[:n], b.logits[:n], b)
     head = w.head if w.draft_head is None else w.draft_head
@@ -68,7 +71,7 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
 
 @torch.no_grad()
 def mtp_forward(w: Weights, st: State, b: Buffers, next_tokens: Sequence[int], streams: torch.Tensor,
-                *, last_only: bool = True) -> torch.Tensor:
-    """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``."""
+                *, last_only: bool = True, logits: bool = True) -> torch.Tensor | None:
+    """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``. ``logits=False`` skips the unused draft-vocabulary projection."""
 
-    return mtp_compute(w, mtp_stage(w, b, [(st, next_tokens, streams)]), b, last_only=last_only)
+    return mtp_compute(w, mtp_stage(w, b, [(st, next_tokens, streams)]), b, last_only=last_only, logits=logits)

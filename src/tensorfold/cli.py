@@ -253,6 +253,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["mtp_confidence"] = float(args.mtp_confidence)
     if getattr(args, "decode_share", None) is not None:
         options["decode_share"] = float(args.decode_share)
+    if getattr(args, "yarn_factor", None) is not None:
+        options["yarn_factor"] = args.yarn_factor
     options["context"] = context if context is not None else args.context
     options["context_explicit"] = args.context is not None
     streams = 1 if str(args.parallel).strip().lower() == "auto" else _parallel(args.parallel)
@@ -347,11 +349,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
     _note_untested(family, args.model)
     required_files = getattr(family.package, "REQUIRED_FILES", {}).get(args.model, ())
     native_context = _model_context(config_dir)
-    context = native_context if args.context is None else int(args.context)
+    context_limit = native_context
+    rope_hook = getattr(family.package, "rope_parameters", None)
+    if rope_hook is not None:
+        rope = rope_hook(config_dir, getattr(args, "yarn_factor", None))
+        if rope.rope_type != "default" and backend != "cuda":
+            raise ValueError("Flash Next YaRN text RoPE is supported on CUDA only")
+        context_limit = rope.context_limit
+    context = context_limit if args.context is None else int(args.context)
     if context < 0:
         raise ValueError("--context must be 0 or a positive token count")
-    if native_context and context > native_context:
-        raise ValueError(f"--context {context} exceeds this model's {native_context}-token window")
+    if context_limit and context > context_limit:
+        raise ValueError(f"--context {context} exceeds this model's {context_limit}-token window")
     check = getattr(family.package, "check", None)
     if check is not None:
         check(config_dir)                        # refuse an unsupported checkpoint before downloading its weights

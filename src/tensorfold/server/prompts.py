@@ -1,7 +1,7 @@
 """Prepare bounded text or image prompts before queueing GPU work."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import threading
 from typing import Any
 
@@ -19,13 +19,16 @@ class RenderedPrompt:
 
 def has_images(messages):
     return any(isinstance(m, dict) and isinstance(m.get('content'), list)
-               and any(isinstance(p, dict) and p.get('type') == 'image_url' for p in m['content'])
+               and any(isinstance(p, dict) and p.get('type') in ('image_url', 'video_url') for p in m['content'])
                for m in messages or [])
 
 
 IMAGE_SLOTS = threading.BoundedSemaphore(16)      # requests decoding and processing images at once (host memory)
 IMAGE_WAITERS = threading.BoundedSemaphore(128)   # requests waiting for a slot; past that, refused at once
 IMAGE_WAIT_S = 60.0
+# with a vision frontend's own ``image_limits`` (many images sharing a larger token budget), a request with more
+# than one image decodes and processes them alone: one such request's host memory at a time
+MANY_IMAGES = threading.BoundedSemaphore(1)
 
 
 def image_slot():
@@ -41,22 +44,40 @@ def image_slot():
 
 
 def prepare_images(frontend, messages, render, *, context_limit=None, limits: ImageLimits = DEFAULT_LIMITS):
-    from tensorfold.vision.images import ImageInputError, load_images, split_images
+    from tensorfold.vision.images import ImageInputError, ImageSource, load_images, split_images
 
     if frontend is None:
         raise RequestError('image input requires a supported vision checkpoint served with --vision')
     allow_urls = bool(getattr(frontend, 'allow_urls', False))
+    videos = bool(getattr(frontend, 'videos', False))       # a frontend that encodes video frames too
+    # a frontend's own byte and pixel totals for many images; --vision-max-images still sets the count
+    own = getattr(frontend, 'image_limits', None)
+    if own is not None:
+        limits = replace(own, max_images=limits.max_images if limits is not DEFAULT_LIMITS else own.max_images)
     try:
-        template, sources = split_images(messages, limits=limits, allow_urls=allow_urls)
+        template, sources = split_images(messages, limits=limits, allow_urls=allow_urls, allow_videos=videos)
     except (ImageInputError, ValueError) as exc:
         raise RequestError(str(exc)) from exc
+    many = own is not None and sum(isinstance(s, ImageSource) for s in sources) > 1
     slot = image_slot()
+    if many and not MANY_IMAGES.acquire(timeout=IMAGE_WAIT_S):
+        slot.release()
+        raise CapacityError('image processing capacity is busy; retry shortly')
     try:
-        images = load_images(sources, limits=limits, allow_urls=allow_urls)
-        prepared = frontend.prepare(render(template), images, max_prompt_tokens=context_limit)
+        images = load_images([s for s in sources if isinstance(s, ImageSource)], limits=limits, allow_urls=allow_urls)
+        clips = [s for s in sources if not isinstance(s, ImageSource)]
+        if clips:
+            from tensorfold.vision.videos import load_videos
+
+            clips = load_videos(clips, frontend.video_size, allow_urls=allow_urls)
+            prepared = frontend.prepare(render(template), images, videos=clips, max_prompt_tokens=context_limit)
+        else:
+            prepared = frontend.prepare(render(template), images, max_prompt_tokens=context_limit)
     except (ImageInputError, ValueError, ImportError) as exc:
         raise RequestError(str(exc)) from exc
     finally:
+        if many:
+            MANY_IMAGES.release()
         slot.release()
     return RenderedPrompt(list(prepared.token_ids), vision=prepared)
 

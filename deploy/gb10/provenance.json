@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-10-06T15:26:38.673625+00:00",
+  "upstream_sources": [
+    {
+      "name": "upstream",
+      "url": "https://github.com/ashhart/TensorFold",
+      "commit": "17c73e189f5e6a5304cda7ea37f086f9c49b4788"
+    },
+    {
+      "name": "flash_next_recipe",
+      "url": "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold",
+      "commit": "4c0dea8ebe93a1d445d6a716b5a38995ff6e9362"
+    }
+  ],
+  "integrated_inputs": {
+    "flash_next_patch": {
+      "file": "0002-flash-next-v061.patch",
+      "sha256": "797af1d9df4dbee6e85f59fa2e5989cf9b1b645cdc6b739d17c0ccc064d058d8"
+    },
+    "native_ssd_patch": {
+      "file": "0003-native-ssd-v061.patch",
+      "sha256": "415f34e72e319e5592ac3ebb9712d8d093182f4fbefab835341084cc6b88e3fc"
+    },
+    "harness_launcher": {
+      "file": "tensorfold_harness.py",
+      "sha256": "a9069f3b03ec78701e857c2b4428b602e45cf1fc223cb289402bb046b66d89a7"
+    }
+  },
+  "source_audit": {
+    "result": "Pristine upstream 17c73e1 plus 0002 plus 0003 matches all 419 installed non-bytecode files. Three packaged README omissions only.",
+    "reviewer": "independentinventoryagent"
+  },
+  "model": {
+    "repository": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "revision": "2b170fa6309d5d1ee380b35636075fac7945f286"
+  },
+  "runtime_base_digest": "ghcr.io/miaai-lab/qwen3.8-flash-next-single-dgx-spark-tensorfold@sha256:667693ccd7eea95d365ee5a17eed97067e13deb131a6e61fbbbbe6f69d0ebc69",
+  "deployed_image_id": "sha256:67d8a210ff82ffdd1263e6d0a63577ec37d189ee145ff7bd5e3aff53588b19e1",
+  "dependency_pins": {
+    "tensorfold": "0.6.1",
+    "xgrammar": "0.2.8",
+    "torch": "2.13.0a0+9186a08b2c.nv26.7.59513937",
+    "triton": "3.7.1+gitf797708c.nv26.7",
+    "transformers": "5.17.0",
+    "numpy": "2.1.0",
+    "apache-tvm-ffi": "0.1.12"
+  },
+  "deployment_file": "deploy/gb10/compose.yaml",
+  "yarn_primary_reference": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices"
+}

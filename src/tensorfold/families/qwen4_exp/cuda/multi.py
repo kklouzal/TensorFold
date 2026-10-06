@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -19,7 +20,7 @@ from tensorfold.engine.grammar import GrammarError
 
 from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
 from . import attn_multi, gdn_multi, image_rows, prefixes
-from .forward import Cut, commit, compute, compute_mixed, converges, cut_snapshot, stage
+from .forward import Cut, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import pass_limit
 from .state import ENDS, Buffers, State
@@ -29,6 +30,7 @@ FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's cach
 GIB = 1024**3
 SHARE = 0.0                      # --decode-share: a round alone takes this share of its pass's time (0: whole passes)
 PASS_MIN = 128                   # the fewest prompt rows a round's pass takes
+COPY_MATCH = 8                   # copy drafts: the context's last this many tokens seen before, and as many after them
 FILL_GUARD = 8                   # a prompt passed over this many passes takes the next one (no starvation), as on Macs
 
 
@@ -53,6 +55,7 @@ class MultiDecoder:
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
         self.points = points                         # a prompt's message starts to keep states at, or None
         self.vision = vision
+        self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1"
         self.eos = tuple(w.cfg.eos) if stop_eos else ()
         rows = slots * (depth + 1)
         # a round's window and a prompt pass share each layer's expert launch: the pass's buffers hold both
@@ -205,7 +208,10 @@ class MultiDecoder:
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
+            image = s.vision is not None
             image_rows.begin(e, s, self.vision)
+            if image:
+                torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
         except Exception:
             self._drop_kept(st)
             self.free.append(st)
@@ -214,6 +220,10 @@ class MultiDecoder:
             if s.draft and st.image_positions is None and self.points is not None else []
         s.sid, s.st = self.next_id, st
         self.next_id += 1
+        if self.copy and s.draft:
+            from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
+
+            s.copies = CopyIndex(COPY_MATCH)
         s.prefill_s = time.perf_counter() - t0
         same = resume is not None and self._keep_at(s) == begin         # the same prompt again: its own point
         self.fills[s.sid] = [e, mtp, begin, (resume["state"], resume["tail"]) if same else None]
@@ -275,6 +285,7 @@ class MultiDecoder:
         self._note_passed(pieces)
         t0 = time.perf_counter()
         try:
+            self._read_ahead(pieces)
             segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
             ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
             logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
@@ -283,6 +294,17 @@ class MultiDecoder:
         except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
             return self._failed(pieces, exc)
         return self._joined(pieces, heads, lasts, (time.perf_counter() - t0) / len(pieces))
+
+    def _read_ahead(self, pieces) -> None:
+        """Overlap the next piece's n-gram reads with this pass."""
+
+        ngram = self.w.cfg.ngram_size - 1
+        for s, a, n in pieces:
+            if a + n >= len(s.prompt) or s.st.ple_history is None:
+                continue
+            hist = np.concatenate([np.asarray(s.st.ple_history, dtype=np.int64),
+                                   np.asarray(s.prompt[a:a + n], dtype=np.int64)])[-ngram:]
+            read_ahead(self.w, hist, s.prompt[a + n:a + n + self.prefill_rows])
 
     def _note_passed(self, pieces) -> None:
         """Count a pass against every filling prompt it left out; one it took starts over."""
@@ -337,7 +359,7 @@ class MultiDecoder:
                   for (s, a, n), (_, a0, _) in zip(pieces, segs) if self.fills[s.sid][1] and a + 1 < len(s.prompt)]
         if absorb:                   # the MTP head absorbs each prompt's rows (its cache in position order)
             absorb = [(st, nxt, streams[:len(nxt)]) for st, nxt, streams in absorb]
-            mtp_compute(self.w, mtp_stage(self.w, self.pbuf, absorb), self.pbuf)
+            mtp_compute(self.w, mtp_stage(self.w, self.pbuf, absorb), self.pbuf, logits=False)
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
@@ -382,11 +404,13 @@ class MultiDecoder:
             head += 1
             image_rows.finish(st)
             s.context = list(s.prompt)
-            s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
-                             self.confidence) if mtp and s.count > 1 else []
+            s.drafts = []
             s.started = time.perf_counter()
             self.streams[s.sid] = s
-            s.take([first], self._ends(s))
+            s.take([first], self._ends(s))               # the first token goes out before the next draft
+            if mtp and not s.done and s.count > 1:
+                s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
+                                 self.confidence)
             if s.done:
                 joined.append(s)
         return joined
@@ -431,6 +455,7 @@ class MultiDecoder:
         if pieces:
             self._note_passed(pieces)
             try:
+                self._read_ahead(pieces)
                 psegs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
                 cuts = self._cuts(pieces, psegs)
             except Exception as exc:                     # noqa: BLE001  (the pass's requests fail, the round goes on)
@@ -476,7 +501,8 @@ class MultiDecoder:
                     s.error = exc
             last = s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last])
+        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
+                        {s.sid: fresh for s, _, _, fresh, last in kept if getattr(s, "copies", None) is not None and not last})
         for s, _, _, new, _ in kept:
             if s.error is not None:
                 s.done = True
@@ -491,8 +517,9 @@ class MultiDecoder:
             self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list) -> None:
-        """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth."""
+    def _draft_all(self, streams: list, new: dict | None = None) -> None:
+        """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
+        A stream whose context repeats earlier text drafts that continuation instead of an MTP row."""
 
         for s, _, _ in streams:
             s.drafts = []
@@ -511,6 +538,18 @@ class MultiDecoder:
         for (s, _, keep), (st, a0, a1) in zip(todo, segs):
             st.set_mtp_len(st.mtp_len + len(keep))
         active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
+        if new:
+            for s, _ in active:
+                if s.sid in new and getattr(s, "copies", None) is not None:
+                    s.context.extend(new[s.sid])
+                    s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
+                    del s.context[len(s.context) - len(new[s.sid]):]
+            keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
+            if len(keep_rows) != len(active):
+                logits = logits[keep_rows]
+            active = [active[i] for i in keep_rows]
+            if not active:
+                return
         for j in range(self.depth):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active])
             nxt = []

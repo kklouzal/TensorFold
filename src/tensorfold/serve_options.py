@@ -10,6 +10,10 @@ from typing import Any
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    if getattr(args, "yarn_factor", None) is not None:
+        if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
+            raise ValueError("--yarn-factor is supported by Flash Next on CUDA only")
+        family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")
     images = getattr(args, "vision_max_images", None)

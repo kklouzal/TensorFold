@@ -107,6 +107,8 @@ def test_two_ranks_with_different_caches_refuse_to_start(fake_runtime, peer):  #
 
     def rank(kv_dtype, comm):
         obj = FlashNextEngine.__new__(FlashNextEngine)
+        from tensorfold.families.qwen4_exp.rope import RopeParameters
+        obj.rope = RopeParameters.from_config(small_config())
         obj.depth, obj.confidence, obj.max_len, obj.kv_dtype, obj.comm = 6, 0.3, 8192, kv_dtype, comm
         return obj
 
@@ -130,6 +132,8 @@ def test_two_ranks_with_different_prompt_precision_refuse_to_start(fake_runtime)
 
     def rank(comm):
         obj = FlashNextEngine.__new__(FlashNextEngine)
+        from tensorfold.families.qwen4_exp.rope import RopeParameters
+        obj.rope = RopeParameters.from_config(small_config())
         obj.depth, obj.confidence, obj.max_len, obj.kv_dtype, obj.comm = 6, 0.3, 8192, "bf16", comm
         return obj
 

@@ -241,20 +241,22 @@ def make_plan(native: int, requested: int | None, explicit: bool, budget: int,
     return Plan(native, requested, bool(explicit), fitting, int(budget), weights, geometry, keeps, largest, resident)
 
 
-def choose(plan: Plan, peers: list[list[int]] | None = None) -> int:
+def choose(plan: Plan, peers: list[list[int]] | None = None, *, window_kind: str = "native") -> int:
     """Choose one window for every rank; an explicit nonfit request refuses on every rank."""
 
     rows = peers if peers is not None else [plan.settings + [plan.fitting]]
     if any(row[:3] != plan.settings for row in rows):
-        raise ValueError("CUDA ranks have different native windows or context flags; start both with the same flags")
+        raise ValueError(f"CUDA ranks have different {window_kind} windows or context flags; "
+                         "start both with the same flags")
     fitting = min(row[3] for row in rows)
     target = plan.requested if plan.requested else plan.native
     if plan.explicit and plan.requested and plan.native > 0 and plan.requested > plan.native:
-        raise ValueError(f"requested --context {plan.requested} exceeds the checkpoint's {plan.native}-token native window; "
+        raise ValueError(f"requested --context {plan.requested} exceeds the checkpoint's {plan.native}-token "
+                         f"{window_kind} window; "
                          f"estimated fitting prompt-plus-reply capacity is {fitting} tokens; reduce --context and "
                          "the prompt/reply reserve, or free memory/use smaller weights")
     if fitting <= 0 or (plan.explicit and plan.requested and target > fitting):
-        kind = "native" if target == plan.native else "default"
+        kind = window_kind if target == plan.native else "default"
         wanted = (f"requested context {target}" if plan.explicit and plan.requested
                   else f"the {target}-token {kind} window or any smaller one")
         raise ValueError(f"CUDA startup memory budget cannot fit {wanted}; estimated largest fitting "
@@ -279,7 +281,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           draft_geometry: Geometry | Callable | None = None, startup_copies: int = 0,
           extra_files: tuple[Path, ...] = (), files: list[Path] | None = None,
           draft_transform: Callable | None = None,
-          draft_weights: Callable[[Path], Weights] | None = None) -> dict:
+          draft_weights: Callable[[Path], Weights] | None = None,
+          context_limit: int | None = None, original_context: int | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating; the draft model by ``draft_weights`` or a transform."""
 
     from tensorfold.cuda import build
@@ -317,7 +320,14 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 raise ValueError(f"host staging needs an estimated {host_staging / GIB:.2f} GiB, "
                                  f"but only {host_free / GIB:.2f} GiB is available after its reserve; "
                                  "free host memory or use a checkpoint with smaller loading buffers")
-        plan = make_plan(int(text.get("max_position_embeddings") or 0), requested,
+        native = int(text.get("max_position_embeddings") or 0)
+        if context_limit is not None:
+            if isinstance(context_limit, bool) or not isinstance(context_limit, int) or context_limit <= 0:
+                raise ValueError("effective RoPE context limit must be a positive integer")
+            if original_context is None or isinstance(original_context, bool) or not isinstance(original_context, int) \
+                    or original_context <= 0 or original_context > context_limit:
+                raise ValueError("original context must be positive and no greater than the effective RoPE limit")
+        plan = make_plan(native if context_limit is None else context_limit, requested,
                          requested is not None if explicit is None else explicit,
                          available_bytes(torch), weights, geometry, room=page_room(torch))
     except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
@@ -327,10 +337,16 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     if any(row[0] for row in both):
         raise ValueError("CUDA startup memory geometry could not be established on every rank: " +
                          (error or "another rank could not read its checkpoint; check both folders/configs"))
-    window = choose(plan, [row[1:] for row in both])
+    window = choose(plan, [row[1:] for row in both],
+                    window_kind="native" if context_limit is None else "RoPE")
     receipt = {**plan.receipt(window), "largest_window": min(row[5] for row in both)}
+    if context_limit is not None:
+        receipt.update(native_window=original_context, rope_context_limit=context_limit)
+    native_note = str(receipt["native_window"])
+    if context_limit is not None:
+        native_note += f", RoPE limit {context_limit}"
     print(f"[tensorfold] CUDA rank {rank} startup estimate {receipt['total_bytes_estimate'] / GIB:.2f} GiB "
-          f"within {plan.budget / GIB:.2f} GiB; native {plan.native}, allocated prompt/reply window {window}, "
+          f"within {plan.budget / GIB:.2f} GiB; native {native_note}, allocated prompt/reply window {window}, "
           f"cache slots {receipt['cache_slots']}", flush=True)
     note = tables_note(plan)
     if note:

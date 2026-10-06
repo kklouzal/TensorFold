@@ -45,7 +45,7 @@ def test_a_post_to_an_unknown_route_leaves_the_connection_usable(port):
 def test_an_oversized_body_is_refused_and_the_connection_closed_as_the_reply_says(port, path):
     with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
         client.sendall(f"POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
-                       "Content-Length: 40000000\r\n\r\n".encode())
+                       "Content-Length: 100663297\r\n\r\n".encode())  # one over the CUDA 96 MiB limit
         reply = b""
         while chunk := client.recv(65536):      # the server closes once it has answered
             reply += chunk

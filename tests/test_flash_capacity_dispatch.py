@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.test_cuda_geometry import Allocation, allocations
+from tests.test_cuda_geometry import Allocation, allocations  # noqa: F401 (pytest fixture)
 
 
 def _kv(cache, bits):
@@ -27,14 +27,15 @@ class Kernel:
 @pytest.mark.parametrize("slots", [8192, 262151])
 @pytest.mark.parametrize("bucket", [True, False])
 @pytest.mark.parametrize("bits", [16, 8, 4])
-def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, allocations, slots, bucket, bits):
+def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, allocations, slots, bucket, bits):  # noqa: F811
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.forward")
     attention = mod.attn_mod
     kernels = {name: Kernel() for name in ("_pool", "_scores", "_select", "_chunks", "_merge")}
     for name, kernel in kernels.items():
         monkeypatch.setattr(attention, name, kernel)
     tensor = Allocation((8, 8, 64), "bf16", "cpu")
-    cfg = SimpleNamespace(heads=8, kv_heads=2, head_dim=64, index_heads=4, index_dim=128, eps=1e-6)
+    cfg = SimpleNamespace(heads=8, kv_heads=2, head_dim=64, index_heads=4, index_dim=128, eps=1e-6,
+                          rope_attention_factor=1.0)
     weights = SimpleNamespace(cfg=cfg, inv_freq=SimpleNamespace(numel=lambda: 16))
     layer = SimpleNamespace(index=0, attn=SimpleNamespace(proj=None, q_scale=None, k_scale=None, iq_scale=None,
                                                          ik_scale=None, o=None))
@@ -67,7 +68,7 @@ def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, al
 @pytest.mark.torch
 @pytest.mark.parametrize("mtp", [False, True])
 @pytest.mark.parametrize("rows", [1, 8])
-def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypatch, allocations, mtp, rows):
+def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypatch, allocations, mtp, rows):  # noqa: F811
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.graphs")
     captures, computes = [], []
     monkeypatch.setattr(mod, "stage", lambda w, b, windows: [(windows[0][0], 0, len(windows[0][1]))])
@@ -98,7 +99,7 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
 
 @pytest.mark.torch
 @pytest.mark.parametrize("bits", [16, 8, 4])
-def test_prompt_blocks_bound_their_launches_by_their_own_rows(monkeypatch, allocations, bits):
+def test_prompt_blocks_bound_their_launches_by_their_own_rows(monkeypatch, allocations, bits):  # noqa: F811
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.forward")
     attention = mod.attn_mod
     kernels = {name: Kernel() for name in ("_pool", "_scores", "_select", "_chunks", "_merge")}
@@ -106,7 +107,8 @@ def test_prompt_blocks_bound_their_launches_by_their_own_rows(monkeypatch, alloc
         monkeypatch.setattr(attention, name, kernel)
     slots, rows = 262151, 2 * mod.ATT_ROWS
     tensor = Allocation((rows, 8, 64), "bf16", "cpu")
-    cfg = SimpleNamespace(heads=8, kv_heads=2, head_dim=64, index_heads=4, index_dim=128, eps=1e-6)
+    cfg = SimpleNamespace(heads=8, kv_heads=2, head_dim=64, index_heads=4, index_dim=128, eps=1e-6,
+                          rope_attention_factor=1.0)
     weights = SimpleNamespace(cfg=cfg, inv_freq=SimpleNamespace(numel=lambda: 16))
     layer = SimpleNamespace(index=0, attn=SimpleNamespace(proj=None, q_scale=None, k_scale=None, iq_scale=None,
                                                          ik_scale=None, o=None))

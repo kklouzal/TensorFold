@@ -326,7 +326,7 @@ def open_table(model_dir: Path, shards: list[tuple[str, str]], scale, *, ssd: bo
         return NVFP4Table(files, scale("weight_scale_2"))
     if used[0] == "fp8":
         return FP8Table(files, scale("weight_scale"))
-    table = BF16Table(files) if used[0] == "bf16" else SSDTable(files) if ssd else HostTable(files)
+    table = BF16Table(files) if used[0] == "bf16" else _ssd_table(files) if ssd else HostTable(files)
     table.weight_scale = float(scale("weight_scale"))
     return table
 
@@ -458,4 +458,17 @@ def from_checkpoint(model_dir: Path, name: str, count: int, *, ssd: bool = False
             raise ValueError(f"{key}: expected its weight, scales and biases together in one checkpoint file")
         path, h = found[0]
         files.append((path, *(h[f"{key}.{part}"] for part in _PARTS)))
-    return SSDTable(files) if ssd else HostTable(files)
+    return _ssd_table(files, read_ahead=False) if ssd else HostTable(files)
+
+
+def _ssd_table(files, *, read_ahead=True):
+    """Opt-in native executor; pin worker selection at startup and fail closed."""
+    workers = os.environ.get("TENSORFOLD_SSD_NATIVE_THREADS", "")
+    if not workers:
+        table = SSDTable(files)
+        return ReadAhead(table) if read_ahead else table
+    if workers not in ("16", "32", "64"):
+        raise ValueError("TENSORFOLD_SSD_NATIVE_THREADS must be 16, 32 or 64")
+    from tensorfold.families.qwen4_exp.native_ssd import NativeSSDTable, NativeReadAhead
+    table = NativeSSDTable(files, workers=int(workers))
+    return NativeReadAhead(table) if read_ahead else table

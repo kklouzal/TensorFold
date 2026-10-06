@@ -276,19 +276,19 @@ def rmsnorm(x: torch.Tensor, w: torch.Tensor, eps: float, group: int | None = No
 def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA, length, eps,
                PW: tl.constexpr, NQ: tl.constexpr, NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr,
                IHD: tl.constexpr, HALF: tl.constexpr, BITS: tl.constexpr, MODE: tl.constexpr = 0,
-               S1: tl.constexpr = 11, S2: tl.constexpr = 10):
+               S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0):
     """Normalize stacked q/k/indexer heads in fp32, round to bf16, apply rotate-half RoPE and round again; store keys, values and raw indexer keys at POS0 + r; BITS 8 or 4 quantize keys and values and rotate q alike (q . Hk = Hq . k)."""
 
     r = tl.program_id(0)
     _prep_row(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW, NQ,
-              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2)
+              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE)
 
 
 @triton.jit
 def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW: tl.constexpr, NQ: tl.constexpr,
               NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
               BITS: tl.constexpr, ROPE=None, DELTA=None, length=0, MODE: tl.constexpr = 0,
-              S1: tl.constexpr = 11, S2: tl.constexpr = 10):
+              S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0):
     """``_attn_prep``'s head ``head`` of row r at position ``pos``, into the caches given."""
 
     d = tl.arange(0, HD)
@@ -324,6 +324,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         ang = axis.to(tl.float32) * tl.load(INV + i)
         cos = tl.cos(ang)
         sin = tl.sin(ang)
+        if ROPE_SCALE != 1.0:
+            cos, sin = cos * ROPE_SCALE, sin * ROPE_SCALE
         rot = tl.where(d < HALF, xn * cos - xpn * sin, tl.where(d < 2 * HALF, xpn * sin + xn * cos, xn))
         out = rot.to(tl.bfloat16)
         if head < NQ:
@@ -370,7 +372,7 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
               eps: float, *, q_heads: int, kv_heads: int, head_dim: int, index_heads: int, index_dim: int,
               ks: torch.Tensor | None = None, vs: torch.Tensor | None = None, bits: int = 0,
               rope: torch.Tensor | None = None, delta: torch.Tensor | None = None, length: int = 0,
-              sections: tuple[int, int, int] = (11, 11, 10)) -> None:
+              sections: tuple[int, int, int] = (11, 11, 10), rope_scale: float = 1.0) -> None:
     """Write normalized queries and cache rows using text positions or the full image prompt's rotary positions."""
 
     rows, pw = p.shape
@@ -383,7 +385,7 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
         p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, ks, vs, iq, ikc,
         rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
         NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), BITS=bits, MODE=mode,
-        S1=sections[1], S2=sections[2], num_warps=2)
+        S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, num_warps=2)
 
 
 @triton.jit

@@ -36,7 +36,9 @@ def _file(path, tensors):
 def _checkpoint(path, main=4096, mapped=1600):
     (path / "config.json").write_text(json.dumps({
         "model_type": "qwen4_exp", "quantization": {"bits": 4, "group_size": 32},
-        "max_position_embeddings": 262144,
+        "max_position_embeddings": 262144, "head_dim": 256,
+        "rope_parameters": {"type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25,
+                            "mrope_interleaved": True, "mrope_section": [11, 11, 10]},
     }))
     total = 0
     for shard in range(2):

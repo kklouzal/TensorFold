@@ -1,0 +1,86 @@
+services:
+  tensorfold:
+    image: ${TENSORFOLD_IMAGE:-tensorfold-gb10-fork:local}
+    container_name: qwen38-flash-next-tf
+    entrypoint: [/opt/nvidia/nvidia_entrypoint.sh, python3, /opt/harness/tensorfold_harness.py]
+    command:
+      - serve
+      - /root/.cache/huggingface/hub/models--TensorFold--Qwen3.8-Flash-Next-MLX-4bit-MTP/snapshots/2b170fa6309d5d1ee380b35636075fac7945f286
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8888'
+      - --name
+      - Qwen3.8-Flash-Next
+      - --parallel
+      - '4'
+      - --context
+      - '262144'
+      - --kv-dtype
+      - int8
+      - --mtp-drafts
+      - '4'
+      - --mtp-confidence
+      - '0.50'
+      - --temperature
+      - '1.0'
+      - --top-p
+      - '0.95'
+      - --top-k
+      - '20'
+      - --max-tokens
+      - '32768'
+      - --decode-share
+      - '0.5'
+      - --ple-on-ssd
+      - --vision
+      - --vision-max-images
+      - '50'
+      - --thinking
+      - --backend
+      - cuda
+      - --thinking-budget
+      - '0'
+    environment:
+      HF_HUB_OFFLINE: '1'
+      CUDA_CACHE_PATH: /cache/cuda
+      TORCHINDUCTOR_CACHE_DIR: /cache/torchinductor
+      XDG_CACHE_HOME: /cache/xdg
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      TENSORFOLD_SSD_NATIVE_THREADS: '32'
+      TENSORFOLD_MTP_COPY: '1'
+      TENSORFOLD_PREFILL_ROWS: '512'
+      TENSORFOLD_MEMORY_RESERVE_GIB: '6'
+      TENSORFOLD_VISION_WORKSPACE_MIB: '0'
+      TENSORFOLD_IMAGE_TOKENS: '16384'
+      TENSORFOLD_VIDEO_TOKENS: '16384'
+    volumes:
+      - type: bind
+        source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
+        target: /root/.cache/huggingface
+      - type: bind
+        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache}
+        target: /cache
+    network_mode: host
+    ipc: host
+    gpus: all
+    mem_limit: 114g
+    memswap_limit: 114g
+    pids_limit: 256
+    cpuset: 5-9,15-19
+    restart: unless-stopped
+    ulimits:
+      memlock: -1
+      stack: 67108864
+      nofile: 1048576
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3

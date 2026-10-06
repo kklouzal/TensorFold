@@ -223,6 +223,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     a = layer.attn
     _mm(b.mixed[:R], a.proj, b.xs_mixed[:R], b.pa[:R], b)
     scale = c.head_dim ** -0.5
+    rope_scale = c.rope_attention_factor
     sections = getattr(c, "mrope_section", (11, 11, 10))
     step = None if b.prefill else getattr(b, "attn_step", None)     # a concurrent step: every stream at once
     if step is not None:
@@ -239,11 +240,11 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
                        b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs, bits=bits,
-                       rope=rope, delta=delta, length=length, sections=sections)
+                       rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
         if b.prefill:
             if b.attn.qsa:
                 attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
-                                  delta=delta, length=length, sections=sections)
+                                  delta=delta, length=length, sections=sections, rope_scale=rope_scale)
             for r0 in range(a0, a1, ATT_ROWS):
                 n = min(ATT_ROWS, a1 - r0)
                 b.pos_blk.fill_(host_pos + r0 - a0)
@@ -255,7 +256,8 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
             continue
         if b.attn.qsa:
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
-                                context=keys, rope=rope, delta=delta, length=length, sections=sections)
+                                context=keys, rope=rope, delta=delta, length=length, sections=sections,
+                                rope_scale=rope_scale)
         o = attn_mod.attention(b.q[a0:a1], cache.k, cache.v, pos, b.attn, a1 - a0, scale, context=keys,
                                ks=cache.ks, vs=cache.vs, bits=bits)
         if len(segs) > 1:                       # the scratch output is the next stream's too
@@ -469,6 +471,19 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
                     stage_ple_rows(p, b, ids, at=a0 * (ids.size // len(toks)))       # ids [rows, heads]
     b.staged.record()
     return segs
+
+
+def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
+    """Start reading n-gram rows a later stage of ``tokens`` after ``history`` will look up."""
+
+    if not len(tokens):
+        return
+    toks = np.asarray(tokens, dtype=np.int64)
+    for layer in w.layers:
+        ple = layer.ple
+        start = getattr(getattr(ple, "table", None), "read_ahead", None) if ple is not None and getattr(w, "x3", None) is None else None
+        if start is not None:
+            start(ple.ngram.ids(history, toks))
 
 
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,

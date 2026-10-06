@@ -15,7 +15,7 @@ from tensorfold.cuda.sampling import comm_gather, nucleus_rows, sample_rows
 from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows
 
 from . import CONFIDENCE, DEPTH
-from .forward import Cut, commit, cut_snapshot, forward
+from .forward import Cut, commit, cut_snapshot, forward, read_ahead
 from . import image_rows
 from .state import CAND, Buffers, State
 from .mtp import mtp_forward
@@ -275,7 +275,7 @@ def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume:
     if not 0 < st.pos < len(prompt):
         raise ValueError("a resumed prompt must extend the cached tokens")
     if _absorbs(e, mtp) and resume.get("tail") is not None:
-        mtp_forward(e.w, st, e.pbuf, [prompt[st.pos]], resume["tail"])
+        mtp_forward(e.w, st, e.pbuf, [prompt[st.pos]], resume["tail"], logits=False)
         st.set_mtp_len(st.mtp_len + 1)
     return st.pos
 
@@ -290,6 +290,10 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
     chunk = list(prompt[start:end])
     R = len(chunk)
     final = end == len(prompt)
+    if not final and st.ple_history is not None:
+        hist = np.concatenate([np.asarray(st.ple_history, dtype=np.int64),
+                               np.asarray(chunk, dtype=np.int64)])[-(w.cfg.ngram_size - 1):]
+        read_ahead(w, hist, prompt[end:end + e.prefill_rows])
     point = keep_at - start if keep_at is not None and start < keep_at <= end else 0     # the kept point's row
     cut = Cut(point) if 0 < point < R else None           # inside the chunk, not at its end
     # only the prompt's last row is sampled: the head runs on the final chunk alone
@@ -303,7 +307,7 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
         snap = cut_snapshot(w, st, pb, cut, mtp_len) if cut is not None else None
     nxt = list(prompt[start + 1:end + 1])
     if use_mtp and nxt:
-        mtp_forward(w, st, pb, nxt, pb.streams[:len(nxt)])
+        mtp_forward(w, st, pb, nxt, pb.streams[:len(nxt)], logits=False)
         st.set_mtp_len(st.mtp_len + len(nxt))
     commit(w, st, pb, R, R)
     if point:                                            # as a fresh prefill of prompt[:keep_at] leaves it

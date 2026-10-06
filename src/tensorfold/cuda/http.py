@@ -108,9 +108,9 @@ def make_handler(app: App):
                 return self._json(404, {"error": "not found"})
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                if not 0 <= length <= 32 * 1024**2:
+                if not 0 <= length <= 96 * 1024**2:
                     self.close_connection = True             # the unread body must not reach the next request
-                    return self._json(400, {"error": {"message": "request body exceeds the 32 MiB limit",
+                    return self._json(400, {"error": {"message": "request body exceeds the 96 MiB limit",
                                                       "type": "invalid_request_error"}})
                 body = json.loads(self.rfile.read(length) or b"{}")
             except (json.JSONDecodeError, UnicodeDecodeError):

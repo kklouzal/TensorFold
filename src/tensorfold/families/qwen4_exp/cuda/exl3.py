@@ -13,6 +13,7 @@ from tensorfold.cuda.exl3 import format as fmt
 
 from .exl3_mm import Scratch, f16, stack, x3
 from .exl3_pack import _DT, NgramTable, Pack, is_exl3
+from ..rope import RopeParameters
 
 PREFILL_ROWS = 2048       # the prompt buffers' rows (``decode.PREFILL_ROWS``): the n-gram staging holds as many
 
@@ -122,7 +123,8 @@ def requant_rows(head, ids: torch.Tensor, device) -> tuple[torch.Tensor, torch.T
 
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
-         draft_vocab: int | str | None = None, table_reads: list | None = None):
+         draft_vocab: int | str | None = None, table_reads: list | None = None,
+         rope: RopeParameters | None = None):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 
@@ -131,7 +133,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     if tp is not None and tp[1] > 1:
         raise ValueError("EXL3 packs of Flash Next run on one GPU; two ranks read the MLX checkpoint")
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir)
+    cfg = Config.read(model_dir, rope=rope)
+    inv = cfg.rope.inverse_frequencies(torch)
     pk = Pack(model_dir)
     sc = Scratch(cfg.top_k + 1)
     T = "model.language_model."
@@ -206,10 +209,9 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             torch.cuda.empty_cache()
     mixer = hc(T + "hyper_connection_mixer", False)
     head = x3(sc, pk, "lm_head", device, head=True)
-    inv = torch.tensor(cfg.rope_theta, dtype=torch.float64) ** (
-        -torch.arange(0, cfg.rotary_dim // 2, dtype=torch.float64) / (cfg.rotary_dim // 2))
-    w = Weights(cfg, (embed.contiguous(),), loaded, mixer, head, inv.to(torch.float32).to(device), around_one=True)
+    w = Weights(cfg, (embed.contiguous(),), loaded, mixer, head, inv.to(device), around_one=True)
     w.meta.update(rank=0, world=1, vocab_offset=0, full=cfg, centred_offset=offset)
+    w.meta["rope"] = cfg.rope.metadata()
     if mtp and pk.has("mtp.fc_embedding.trellis"):
         w.mtp = MTPW(centred("mtp.pre_fc_norm_embedding.weight"), centred("mtp.pre_fc_norm_hidden.weight"),
                      x3(sc, pk, "mtp.fc_embedding", device), x3(sc, pk, "mtp.fc_hidden", device),

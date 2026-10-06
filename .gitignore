@@ -11,3 +11,5 @@ venv/
 .DS_Store
 *.swp
 *.log
+task-state.json
+task-artifacts/

@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import os
 from pathlib import Path
 from typing import Any
 
-MAX_PATCHES = 16384
+import numpy as np
+
+MAX_PATCHES = 16384                  # an image request's patches, and a video's per tower call
+MAX_VIDEO_PATCHES = 16 * 16384       # a request's video patches (~65k tokens), encoded MAX_PATCHES at a time
 WORKSPACE_BYTES = 4 * 1024**3
+# Flash Next's image requests (a chat's images, every turn's): up to 50 images (--vision-max-images sets the count)
+# sharing TENSORFOLD_IMAGE_TOKENS tokens, each at most TOKENS_PER_IMAGE (one image as before); the tower encodes runs
+# of whole images of at most MAX_PATCHES patches, so its scratch stays what one 4,096-token image measured
+MAX_IMAGES, IMAGE_TOKENS, TOKENS_PER_IMAGE = 50, 16384, 4096
+
+
+def image_setting(name: str, default: int, low: int, high: int) -> int:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    if not value.isdecimal() or not low <= int(value) <= high:
+        raise ValueError(f"{name}: {low:,} to {high:,}, not {value!r}")
+    return int(value)
 
 
 def rotary_frequencies(rotary: Any, config: dict, device: Any) -> None:
@@ -154,6 +170,18 @@ class QwenCudaVision:
         self.frontend = QwenImageProcessor.from_directory(model_dir)
         raw = json.loads((Path(model_dir) / "config.json").read_text())
         self.image_token = int(raw["image_token_id"])
+        # videos: Flash Next's frontend (the frame groups ride the image path; tested on that checkpoint)
+        self.videos = raw.get("model_type") == "qwen4_exp" and "video_token_id" in raw
+        self.media_tokens = frozenset({self.image_token} | ({int(raw["video_token_id"])} if self.videos else set()))
+        # Flash Next: many images a request (the shared limits otherwise: 4 images, 4,096 tokens in all)
+        self.image_limits, self.image_tokens = None, 4096
+        if self.videos:
+            from .images import DEFAULT_LIMITS
+
+            self.image_limits = replace(DEFAULT_LIMITS, max_images=MAX_IMAGES,
+                                        max_total_encoded_bytes=64 * 1024 * 1024,
+                                        max_total_pixels=128 * 1024 * 1024)
+            self.image_tokens = image_setting("TENSORFOLD_IMAGE_TOKENS", IMAGE_TOKENS, TOKENS_PER_IMAGE, IMAGE_TOKENS)
         self.device = device
         config = Qwen3_5VisionConfig(**{k: v for k, v in self.config.items()
                                       if k not in ("model_type", "deepstack_visual_indexes")})
@@ -189,7 +217,18 @@ class QwenCudaVision:
         torch.cuda.synchronize()
 
     def prepare(self, *args, **kwargs):
-        return self.frontend.prepare(*args, **kwargs)
+        if not self.videos:
+            return self.frontend.prepare(*args, **kwargs)
+        import torch
+
+        kwargs.setdefault("max_visual_tokens", self.image_tokens)
+        kwargs.setdefault("max_image_tokens", TOKENS_PER_IMAGE)
+        prepared = self.frontend.prepare(*args, **kwargs)
+        # the patches wait for their turn as the bf16 the tower reads (the same cast), half the host memory
+        return replace(prepared, pixel_values=torch.tensor(prepared.pixel_values, dtype=torch.bfloat16))
+
+    def video_size(self, frames: int, height: int, width: int) -> tuple[int, int]:
+        return self.frontend.video_size(frames, height, width)
 
     def encode(self, prepared, prompt) -> EncodedVision:
         import torch
@@ -198,41 +237,98 @@ class QwenCudaVision:
         if tuple(prompt) != tuple(prepared.token_ids):
             raise ValueError("vision preparation belongs to different prompt tokens")
         grid = prepared.image_grid_thw
+        videos = getattr(prepared, "video_grid_thw", None)
+        if videos is not None and not self.videos:
+            raise ValueError("this server's vision frontend encodes images only")
         if len(grid.shape) != 2 or grid.shape[1] != 3 or any(int(t) != 1 for t in grid[:, 0]):
             raise ValueError("CUDA vision accepts images with one temporal grid, not video")
         merge = self.config["spatial_merge_size"]
-        if any(int(value) != value or value <= 0 for row in grid for value in row) or any(
-                int(h) % merge or int(w) % merge for _, h, w in grid):
+        every = list(grid) + ([] if videos is None else list(videos))
+        if any(int(value) != value or value <= 0 for row in every for value in row) or any(
+                int(h) % merge or int(w) % merge for _, h, w in every):
             raise ValueError("image grids must contain positive merge-aligned dimensions")
         patches = sum(int(t) * int(h) * int(w) for t, h, w in grid)
-        if patches <= 0 or patches > MAX_PATCHES:
-            raise ValueError(f"image request exceeds the CUDA vision budget of {MAX_PATCHES} patches")
+        clips = 0 if videos is None else sum(int(t) * int(h) * int(w) for t, h, w in videos)
+        budget = self.image_tokens * merge**2 if self.videos else MAX_PATCHES
+        if patches > budget or (patches <= 0 and clips <= 0):
+            raise ValueError(f"image request exceeds the CUDA vision budget of {budget} patches")
+        if clips > MAX_VIDEO_PATCHES:
+            raise ValueError(f"video request exceeds the CUDA vision budget of {MAX_VIDEO_PATCHES} patches")
         patch_width = (self.config["in_channels"] * self.config["temporal_patch_size"] * self.config["patch_size"]**2)
-        if tuple(prepared.pixel_values.shape) != (patches, patch_width):
+        if tuple(prepared.pixel_values.shape) != (patches, patch_width) or (
+                videos is not None and tuple(prepared.video_pixel_values.shape) != (clips, patch_width)):
             raise ValueError("image patch tensor has an invalid shape")
         if tuple(prepared.position_ids.shape) != (3, 1, len(prompt)):
             raise ValueError("image positions must have shape (3, 1, prompt tokens)")
-        rows = tuple(i for start, end in prepared.image_spans for i in range(start, end))
+        frames = tuple(getattr(prepared, "video_spans", ()))
+        spans = sorted(tuple(prepared.image_spans) + frames)
+        rows = tuple(i for start, end in spans for i in range(start, end))
         positions = prepared.position_ids[:, 0, :].tolist()
-        validate_encoded(rows, positions, prepared.rope_delta, prompt, self.image_token,
-                         (patches // self.config["spatial_merge_size"]**2, self.config["out_hidden_size"]),
+        validate_encoded(rows, positions, prepared.rope_delta, prompt, self.media_tokens,
+                         ((patches + clips) // merge**2, self.config["out_hidden_size"]),
                          self.config["out_hidden_size"])
         with torch.inference_mode(), sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
-            # a copy: the prepared arrays are read-only, and a tensor may not share them
-            pixels = torch.tensor(prepared.pixel_values, dtype=torch.bfloat16, device=self.device)
-            grids = torch.tensor(grid, dtype=torch.int64, device=self.device)
-            features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
-            features = features.to(dtype=torch.bfloat16).contiguous()
+            blocks = {}                                  # span start -> its features, in the tower's order
+            if patches and not torch.is_tensor(prepared.pixel_values):
+                # a copy: the prepared arrays are read-only, and a tensor may not share them
+                pixels = torch.tensor(prepared.pixel_values, dtype=torch.bfloat16, device=self.device)
+                grids = torch.tensor(grid, dtype=torch.int64, device=self.device)
+                features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
+                features = features.to(dtype=torch.bfloat16)
+                for (start, end), part in zip(prepared.image_spans, features.split([e - s for s, e in
+                                                                                    prepared.image_spans])):
+                    blocks[start] = part
+            elif patches:
+                # Flash Next: images never attend to one another; runs of whole images, MAX_PATCHES a tower call
+                runs, done, spans_left = [[]], 0, iter(prepared.image_spans)
+                for row in grid:
+                    size = int(row[0]) * int(row[1]) * int(row[2])
+                    if runs[-1] and sum(int(t) * int(h) * int(w) for t, h, w in runs[-1]) + size > MAX_PATCHES:
+                        runs.append([])
+                    runs[-1].append(row)
+                for run in runs:
+                    size = sum(int(t) * int(h) * int(w) for t, h, w in run)
+                    pixels = prepared.pixel_values[done:done + size].to(self.device)
+                    grids = torch.tensor(np.asarray(run), dtype=torch.int64, device=self.device)
+                    features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
+                    for row, part in zip(run, features.to(dtype=torch.bfloat16).split(
+                            [int(t) * int(h) * int(w) // merge**2 for t, h, w in run])):
+                        start, end = next(spans_left)
+                        if end - start != part.shape[0]:
+                            raise ValueError("image features do not match their placeholders")
+                        blocks[start] = part
+                    done += size
+            if clips:
+                # frame groups never attend to one another: a video encodes a bounded run of them at a time
+                done, spans_left = 0, iter(frames)
+                for t, h, w in videos:
+                    t, h, w = int(t), int(h), int(w)
+                    step = max(1, MAX_PATCHES // (h * w))
+                    for g in range(0, t, step):
+                        n = min(step, t - g)
+                        pixels = torch.tensor(prepared.video_pixel_values[done:done + n * h * w],
+                                              dtype=torch.bfloat16, device=self.device)
+                        grids = torch.tensor([[n, h, w]], dtype=torch.int64, device=self.device)
+                        features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
+                        for part in features.to(dtype=torch.bfloat16).split(h * w // merge**2):
+                            start, end = next(spans_left)
+                            if end - start != part.shape[0]:
+                                raise ValueError("video frame features do not match their placeholders")
+                            blocks[start] = part
+                        done += n * h * w
+            features = torch.cat([blocks[start] for start, _ in spans]).contiguous()
         if tuple(features.shape) != (len(rows), self.config["out_hidden_size"]):
             raise ValueError("vision tower returned a different number of image features")
         return EncodedVision(rows, features, torch.tensor(positions, dtype=torch.int32, device=self.device),
                              prepared.rope_delta)
 
 
-def validate_encoded(rows, positions, delta: int, prompt, image_token: int, feature_shape, hidden: int) -> None:
-    """Reject a payload that could overwrite text rows or misalign the language cache."""
+def validate_encoded(rows, positions, delta: int, prompt, image_token, feature_shape, hidden: int) -> None:
+    """Reject a payload that could overwrite text rows or misalign the language cache; ``image_token``: the
+    placeholder id, or the set of them (images and videos)."""
     n = len(prompt)
-    if list(rows) != [i for i, token in enumerate(prompt) if token == image_token]:
+    media = image_token if isinstance(image_token, (set, frozenset, tuple)) else {image_token}
+    if list(rows) != [i for i, token in enumerate(prompt) if token in media]:
         raise ValueError("vision feature rows must match every image placeholder exactly")
     if not rows or tuple(feature_shape) != (len(rows), hidden):
         raise ValueError("vision feature count or width differs from the image placeholders")

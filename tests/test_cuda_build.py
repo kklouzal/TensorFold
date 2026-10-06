@@ -23,10 +23,14 @@ def _gpu(monkeypatch, capability, name="GPU"):
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: name)
 
 
-def test_every_extension_builds_through_the_helper():
+def test_every_cuda_extension_builds_through_the_helper():
     src = Path(__file__).resolve().parents[1] / "src" / "tensorfold"
+    # This CPU-only pread reader has no GPU architecture or capability policy.
+    cpu_reader = src / "families" / "qwen4_exp" / "native_ssd.py"
+    assert "with_cuda=False" in cpu_reader.read_text()
     direct = [p.relative_to(src) for p in src.rglob("*.py")
-              if p.name != "build.py" and "from torch.utils.cpp_extension import load" in p.read_text()]
+              if p.name != "build.py" and p != cpu_reader
+              and "from torch.utils.cpp_extension import load" in p.read_text()]
     assert direct == []
 
 

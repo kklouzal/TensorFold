@@ -20,6 +20,15 @@ KERNEL_VERSION = "v1"
 MLX_ENV = {"MLX_MAX_OPS_PER_BUFFER": "200", "MLX_MAX_MB_PER_BUFFER": "100000"}
 
 
+def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
+    """Resolve text RoPE without accelerator imports or modifying the checkpoint."""
+
+    from tensorfold.families import read_config
+    from .rope import RopeParameters
+
+    return RopeParameters.from_config(read_config(Path(model_dir)), yarn_factor)
+
+
 def has_mtp(model_dir: Path) -> bool:
     """Whether the checkpoint kept the MTP head's weights (``mtp.*``)."""
 
@@ -128,6 +137,8 @@ def weight_bytes(model_dir: Path, ple_on_ssd: bool = False) -> int:
 
 def load(model_dir: Path, *, mtp_drafts: int | None = None, ple_on_ssd: bool = False,
          ssd_experts: float | None = None, **_: Any) -> tuple[Any, Any]:
+    if rope_parameters(model_dir).rope_type != "default":
+        raise ValueError("Flash Next YaRN text RoPE is supported on CUDA only")
     from tensorfold.families.qwen4_exp.runtime import load as load_runtime
 
     drafts = mtp_drafts if has_mtp(Path(model_dir)) else 0
@@ -166,7 +177,8 @@ CUDA_PREFILL_FP8 = True            # --prefill-fp8: an NVFP4 checkpoint's MXFP8 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
                 master_port: int = 29551, no_drafts: bool = False, mtp_drafts: int | None = None,
                 mtp_confidence: float | None = None, context: int | None = None, ple_on_ssd: bool = False,
-                kv_dtype: str = "bf16", decode_share: float | None = None, **options: Any):
+                kv_dtype: str = "bf16", decode_share: float | None = None, yarn_factor: float | None = None,
+                **options: Any):
     """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with bf16, int8 or int4 KV storage."""
 
     from tensorfold.cuda.exl3.format import is_exl3
@@ -193,4 +205,4 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                            ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype,
                            share=0.0 if decode_share is None else float(decode_share),
                            vision=bool(options.get("vision", False)),
-                           vision_urls=bool(options.get("vision_urls", False)))
+                           vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor)

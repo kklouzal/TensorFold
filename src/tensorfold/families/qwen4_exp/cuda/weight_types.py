@@ -14,6 +14,7 @@ from tensorfold.cuda import experts as grouped
 
 from ..host_table import BF16Table, HostTable
 from ..ssd_table import SSDTable
+from ..rope import RopeParameters
 from .ngram import NGram
 from .qmm import Q4
 
@@ -76,14 +77,14 @@ class Config:
     quant: str = "mlx"                 # "mlx" (affine 4-bit everywhere) or "modelopt" (NVFP4 routed experts)
     mrope_section: tuple[int, int, int] = (11, 11, 10)   # interleaved t/h/w rotary pairs
     nvfp4_group: int = 16              # the NVFP4 block size (the checkpoint's config_groups weights.group_size)
+    rope: RopeParameters | None = None  # immutable startup policy; tiny synthetic fixtures default to native RoPE
 
     @classmethod
-    def read(cls, model_dir: str | Path) -> "Config":
+    def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None) -> "Config":
         raw = json.loads((Path(model_dir) / "config.json").read_text())
+        policy = rope if rope is not None else RopeParameters.from_config(raw)
         t = dict(raw.get("text_config") or raw)
-        rope = dict(t.get("rope_parameters") or {})
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
-        partial = float(rope.get("partial_rotary_factor", t.get("partial_rotary_factor", 0.25)))
         teos = t.get("eos_token_id")
         eos = stop_ids(raw.get("eos_token_id", teos), Path(model_dir) / "generation_config.json")
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
@@ -95,7 +96,7 @@ class Config:
             layer_types=["linear" if k == "linear_attention" else "attention" for k in t["layer_types"]],
             vocab=int(t["vocab_size"]), eps=float(t["rms_norm_eps"]), heads=int(t["num_attention_heads"]),
             kv_heads=int(t["num_key_value_heads"]), head_dim=head_dim,
-            rope_theta=float(rope.get("rope_theta", 10_000_000)), rotary_dim=int(head_dim * partial),
+            rope_theta=policy.theta, rotary_dim=policy.rotary_dim,
             nk=int(t["linear_num_key_heads"]), nv=int(t["linear_num_value_heads"]),
             dk=int(t["linear_key_head_dim"]), dv=int(t["linear_value_head_dim"]),
             conv_kernel=int(t["linear_conv_kernel_dim"]), experts=int(t["num_experts"]),
@@ -114,8 +115,13 @@ class Config:
             ple_eos=int(teos[0] if isinstance(teos, list) else teos) if teos is not None else 0,
             eos=eos, group_size=int(quant.get("group_size", 32)), bits=int(quant.get("bits", 4)),
             quant=method, nvfp4_group=group,
-            mrope_section=tuple(int(x) for x in rope.get("mrope_section", (11, 11, 10))),
+            mrope_section=policy.mrope_section,
+            rope=policy,
         )
+
+    @property
+    def rope_attention_factor(self) -> float:
+        return 1.0 if self.rope is None else self.rope.attention_factor
 
     @property
     def conv_dim(self) -> int:
