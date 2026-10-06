@@ -51,6 +51,14 @@ name and port are the existing production service's. Rendering the
 configuration is read-only; applying it is a service replacement and belongs to
 the deployment step after validation.
 
+The Compose project is named `tensorfold-gb10-fork`. After the initial controlled
+cutover, manage it from this repository with
+`docker compose -f deploy/gb10/compose.yaml up -d`, or restart the existing
+container with `docker restart qwen38-flash-next-tf`. Preserve the previous
+container stopped under a distinct rollback name during deployment validation.
+The earlier recipe and Harness launch scripts manage their captured images;
+use this fork's Compose configuration for the new deployment.
+
 The Harness endpoint counts the native rendered prompt and image expansion
 without generation. It permits counting a history beyond the served context,
 while retaining generation admission and independent image safety checks.

@@ -1,3 +1,5 @@
+name: tensorfold-gb10-fork
+
 services:
   tensorfold:
     image: ${TENSORFOLD_IMAGE:-tensorfold-gb10-fork:local}
@@ -42,6 +44,7 @@ services:
       - --thinking-budget
       - '0'
     environment:
+      HF_HOME: /root/.cache/huggingface
       HF_HUB_OFFLINE: '1'
       TENSORFOLD_NO_UPDATE_CHECK: '1'
       TENSORFOLD_SSD_NATIVE_THREADS: '32'
