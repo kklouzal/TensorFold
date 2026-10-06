@@ -55,6 +55,15 @@ but its process environment loses the probe result.
 Full model startup, memory, long-context quality and performance require their
 own deployment validation.
 
+The pinned image was deployed on this GB10 on 2026-10-06 at native 262,144
+tokens/four slots. Full-model startup, 17 API checks before and after a real
+same-container restart, four simultaneous requests, 20 repeated requests, tool
+result round trips, two-image input and MP4 video recognition passed. The final
+library/launcher fix passed 111 CUDA regressions and eight launcher boundary
+tests. The previous container and image were retained stopped for rollback.
+These are bounded functional checks; 512k YaRN quality/capacity and sustained
+memory/performance validation remain separate.
+
 `compose.yaml` preserves the current serving arguments, model/cache mounts,
 request slots, memory/swap settings, CPU set, health checks, and restart policy.
 Cache paths come from the runtime image's ABI-specific defaults. Its container
