@@ -66,7 +66,14 @@ tests. The previous container and image were retained stopped for rollback.
 These are bounded functional checks; 512k YaRN quality/capacity and sustained
 memory/performance validation remain separate.
 
-`compose.yaml` preserves the current serving arguments, model/cache mounts,
+The factor-2 profile also passed startup, 17 short API checks and four concurrent
+requests. One 523,882-token prompt plus 18 reply tokens retrieved the exact
+synthetic passphrase at 60% depth without truncation. The trial took 442 seconds
+and included three simultaneous short requests, all correct in about 2.3 seconds
+while the large prompt was prefilling. This single retrieval is a bounded
+capacity/quality check; it does not establish uniform long-context accuracy.
+
+`compose.yaml` preserves the current sampler, MTP, vision and model/cache mounts,
 request slots, memory/swap settings, CPU set, health checks, and restart policy.
 Cache paths come from the runtime image's ABI-specific defaults. Its container
 name and port are the existing production service's. Rendering the
@@ -93,8 +100,11 @@ YaRN is an optional CUDA text-RoPE policy for Flash Next. The CLI option
 `--yarn-factor 2 --context 524288` requests a 2× window without modifying the
 shared model snapshot. Native operation omits that option. A full 512k validation
 must measure memory and long-context quality; four full 512k streams are not
-assumed to fit. Start a candidate with fewer slots while retaining vision's
-minimum of two slots. The normal startup and runtime memory gates remain active.
+assumed to fit. Four slots are retained for mixed workloads. Startup logged
+29.8 GiB of cache room and 8.94 GiB for one full window; four full windows need
+about 35.8 GiB before transient copies. Runtime growth/eviction/admission and
+resource failure handling remain active. The singleton growth path can exceed
+the soft memory gate, so reserves are not an unconditional headroom floor.
 
 Qwen's [official model guidance](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices)
 documents factor 2 for 524,288 tokens and factor 4 for approximately one million
