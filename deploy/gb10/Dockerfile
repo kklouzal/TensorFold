@@ -36,8 +36,12 @@ RUN python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/fork-wh
     && python3 -m pip check \
     && python3 -c "from pathlib import Path; import tensorfold, xgrammar; import tensorfold.families.qwen4_exp.native_ssd as reader; assert Path(reader.__file__).with_name('ssd_read.cpp').is_file()"
 COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py
+COPY deploy/gb10/cuda_entrypoint.py /opt/harness/cuda_entrypoint.py
+COPY deploy/gb10/configure_cudnn.py /opt/harness/configure_cudnn.py
+RUN python3 /opt/harness/configure_cudnn.py --output /opt/tensorfold-cudnn
 # Torch, CUDA and Triton upgrades get their own ABI-specific persistent cache.
 ENV CUDA_HOME=/usr/local/cuda \
+    LD_LIBRARY_PATH=/opt/tensorfold-cudnn:${LD_LIBRARY_PATH} \
     CPATH=/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cudnn/include \
     TORCH_CUDA_ARCH_LIST=12.1 \
     MAX_JOBS=1 \
@@ -47,7 +51,7 @@ ENV CUDA_HOME=/usr/local/cuda \
     TORCHINDUCTOR_CACHE_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/inductor \
     XDG_CACHE_HOME=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/xdg
 RUN python3 -c "import os; from pathlib import Path; paths=[Path(p) for p in os.environ['CPATH'].split(':')]; assert all(any((p / h).is_file() for p in paths) for h in ('cusparse.h', 'cublas_v2.h', 'cusolverDn.h', 'cudnn.h'))"
-ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh", "python3", "/opt/harness/tensorfold_harness.py"]
+ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "/opt/harness/tensorfold_harness.py"]
 CMD ["serve", "--help"]
 
 # Verification adds pinned test tools only to this separate target.

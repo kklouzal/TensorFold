@@ -31,6 +31,13 @@ client, xgrammar and core model-input dependencies retain their deployed pins
 where compatible. The native reader's C++ source is included in the fork wheel.
 The verification target adds its own pinned pytest tools and contains no weights.
 
+cuDNN uses the complete hash-pinned wheel provider. Build-time aliases in
+`/opt/tensorfold-cudnn` cover its major, minor and full-version SONAME lookups;
+that directory leads the library search path. The NGC inference base has a
+reduced cuDNN library set, so ordinary wheel-directory precedence can mix
+providers and omit the precompiled Conv3d engine needed by the vision tower.
+Neither dependency tree is modified.
+
 Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/`,
 separate from the serving container's older Torch/CUDA caches. Compiler jobs are
 bounded to one to limit startup memory peaks. New Torch versions use OS advisory
@@ -41,6 +48,10 @@ FileBaton implementation.
 The current GB10 host driver is 580.178.04. A fresh container check demonstrated
 NGC's enabled CUDA forward compatibility with user-mode driver 615.71.09 and
 the nightly's CUDA tensor operations on SM 12.1. No host driver change was made.
+The project CUDA launcher reruns NVIDIA's shipped compatibility probe on each
+startup and refuses probe failure before executing the original NGC entrypoint.
+This preserves its validation across restarts, when NGC's cached marker survives
+but its process environment loses the probe result.
 Full model startup, memory, long-context quality and performance require their
 own deployment validation.
 
@@ -104,10 +115,11 @@ compatibility setup as the runtime image. It allocates no full model weights:
 docker run --rm --network none --gpus all --memory 4g --memory-swap 4g \
   --pids-limit 256 --cpus 2 -e MAX_JOBS=1 -e OMP_NUM_THREADS=1 \
   -e OPENBLAS_NUM_THREADS=1 \
-  --entrypoint /opt/nvidia/nvidia_entrypoint.sh \
-  tensorfold-gb10-fork:verification python3 -m pytest \
+  --entrypoint python3 \
+  tensorfold-gb10-fork:verification /opt/harness/cuda_entrypoint.py python3 -m pytest \
   tests/cuda/test_flashnext_yarn.py tests/cuda/test_flashnext_vision.py \
-  tests/cuda/test_flashnext_forward.py tests/cuda/test_grammar_mask.py -q
+  tests/cuda/test_flashnext_forward.py tests/cuda/test_grammar_mask.py \
+  tests/cuda/test_vision_patch_conv.py -q
 ```
 
 These tests cover native byte equality, large-position YaRN, INT8/INT4 KV,

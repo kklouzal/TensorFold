@@ -4,7 +4,7 @@ services:
   tensorfold:
     image: ${TENSORFOLD_IMAGE:-tensorfold-gb10-fork:local}
     container_name: qwen38-flash-next-tf
-    entrypoint: [/opt/nvidia/nvidia_entrypoint.sh, python3, /opt/harness/tensorfold_harness.py]
+    entrypoint: [python3, /opt/harness/cuda_entrypoint.py, python3, /opt/harness/tensorfold_harness.py]
     command:
       - serve
       - /root/.cache/huggingface/hub/models--TensorFold--Qwen3.8-Flash-Next-MLX-4bit-MTP/snapshots/2b170fa6309d5d1ee380b35636075fac7945f286
