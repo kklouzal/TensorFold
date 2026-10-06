@@ -3,7 +3,12 @@ source. It includes the native SSD reader, multi-image/video and copy-draft
 changes, xgrammar 0.2.8, and the Harness `/v1/tokenize` endpoint. The native
 deployment remains 262,144 prompt-plus-output tokens with four request slots.
 `provenance.json` records the upstream commits, integrated patch hashes, model
-revision, and container stack.
+revision, and the original container stack. The new build uses NGC CUDA 13.4.1
+and upstream ARM64 PyTorch nightly 2.16.0.dev20261006, matching TorchVision
+0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d. `nightly-pins.json` records the
+base digest, official wheel URLs/hashes, and the date of the latest-available
+selection. The default context and serving settings stay native until YaRN is
+explicitly enabled.
 
 Build from the repository root:
 
@@ -14,15 +19,35 @@ docker buildx build --load --target runtime \
 docker compose -f deploy/gb10/compose.yaml config --quiet
 ```
 
-The Dockerfile builds and installs a wheel from this fork. It pins the existing
-registry base by digest and installs xgrammar without dependency resolution,
-preserving Torch, Triton, Transformers, and the CUDA stack. The native reader's
-C++ source is included in the wheel. The verification image is a separate build
-target with pinned pytest tools; it has no model weights or GPU access by default.
+The Dockerfile uses NVIDIA's NGC CUDA DL inference development base, pinned by
+ARM64 manifest digest. That supplies NVCC, CUDA headers and forward-compatibility
+libraries. Python 3.12 and upstream nightly packages live in an isolated venv;
+NGC's tightly coupled PyTorch plugins are not part of this image. All Python
+runtime dependencies are pinned to wheel URLs and SHA256 hashes, including the
+nightly's required CUDA libraries and Triton. The inference base's sparse/solver
+development headers are supplied by those wheels; `CPATH` makes their audited
+include directories available to NVCC and C++. Transformers, tokenizers, the Hub
+client, xgrammar and core model-input dependencies retain their deployed pins
+where compatible. The native reader's C++ source is included in the fork wheel.
+The verification target adds its own pinned pytest tools and contains no weights.
+
+Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/`,
+separate from the serving container's older Torch/CUDA caches. Compiler jobs are
+bounded to one to limit startup memory peaks. New Torch versions use OS advisory
+locks: a persistent unlocked `lock` file is normal and must not be deleted as a
+recovery step. TensorFold emits old stale-file guidance only for the audited
+FileBaton implementation.
+
+The current GB10 host driver is 580.178.04. A fresh container check demonstrated
+NGC's enabled CUDA forward compatibility with user-mode driver 615.71.09 and
+the nightly's CUDA tensor operations on SM 12.1. No host driver change was made.
+Full model startup, memory, long-context quality and performance require their
+own deployment validation.
 
 `compose.yaml` preserves the current serving arguments, model/cache mounts,
 request slots, memory/swap settings, CPU set, health checks, and restart policy.
-Its container name and port are the existing production service's. Rendering the
+Cache paths come from the runtime image's ABI-specific defaults. Its container
+name and port are the existing production service's. Rendering the
 configuration is read-only; applying it is a service replacement and belongs to
 the deployment step after validation.
 
@@ -62,5 +87,43 @@ The native SSD tests use synthetic, isolated files and an independent byte
 oracle. Harness tests use the native request preparation with a small tokenizer,
 including oversized counts, image expansion, validation, framing, and bounded
 preparation. YaRN tests compare frequencies against the pinned Transformers
-reference and test context/memory admission. GPU and full-model checks require
-explicit GPU access and their documented fixtures.
+reference and test context/memory admission.
+
+Synthetic CUDA verification uses the NGC entrypoint to enable the same driver
+compatibility setup as the runtime image. It allocates no full model weights:
+
+```bash
+docker run --rm --network none --gpus all --memory 4g --memory-swap 4g \
+  --pids-limit 256 --cpus 2 -e MAX_JOBS=1 -e OMP_NUM_THREADS=1 \
+  -e OPENBLAS_NUM_THREADS=1 \
+  --entrypoint /opt/nvidia/nvidia_entrypoint.sh \
+  tensorfold-gb10-fork:verification python3 -m pytest \
+  tests/cuda/test_flashnext_yarn.py tests/cuda/test_flashnext_vision.py \
+  tests/cuda/test_flashnext_forward.py tests/cuda/test_grammar_mask.py -q
+```
+
+These tests cover native byte equality, large-position YaRN, INT8/INT4 KV,
+vision/MRoPE, concurrent forward paths, MTP and CUDA graphs. Full-model checks
+require the checkpoint and an isolated validation slot or maintenance window.
+
+On 2026-10-06, the pinned nightly image passed 1,543 CPU checks with 21
+platform/fixture skips and all 88 synthetic CUDA checks on the GB10. Five
+generation-free cases using the actual checkpoint tokenizer matched the running
+service's prompts, token arrays and counts exactly, including tools and thinking.
+An additional 19 CUDA grammar cases passed against an independent CPU matcher
+oracle across FP32, BF16 and FP16 logits. These checks establish component
+behavior; full-model startup and expanded
+context quality, memory and performance are still deployment gates.
+
+The nightly Triton bindings emitted nanobind reference warnings at interpreter
+shutdown after the CUDA suite, which exited successfully. Small isolated compiler
+and GPU probes did not reproduce them. Sustained full-model memory behavior still
+needs validation; the warnings are retained rather than suppressed.
+
+To refresh dependency locks, resolve the updated pins in the ARM64 Python 3.12
+foundation environment with `pip install --dry-run --report REPORT.json`, then
+run `python3 deploy/gb10/lock_dependencies.py --report REPORT.json`. Include the
+three exact wheel pins and verification packages in that resolution. The
+generator rejects changed nightly hashes or a different Python/architecture.
+Update the image/cache identifiers with the pins and rerun CPU, GPU and model
+gates. Do not hand-edit generated requirement locks.

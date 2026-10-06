@@ -89,6 +89,9 @@ def ext(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cpp_extension, "_get_build_directory", directory)
     monkeypatch.setattr(cpp_extension, "load", lambda *a, **k: calls.append((a, k)) or "module")
+    # These fixtures describe the audited FileBaton runtime independently of
+    # the installed Torch. The real protocol is exercised separately below.
+    monkeypatch.setattr(cpp_extension, "_jit_compile", lambda: cpp_extension.FileBaton)
     monkeypatch.setattr(build, "_say", said.append)
     monkeypatch.setattr(build, "_toolkit", lambda: [])               # the pip toolkit has tests of its own
     return SimpleNamespace(build=build, torch=cpp_extension, dir=Path(directory("tf_test", False)), sources=sources,
@@ -222,6 +225,10 @@ def test_without_torchs_directory_lookup_the_build_goes_ahead_quietly(ext, monke
 def test_the_lock_named_is_the_one_torch_waits_on(tmp_path, monkeypatch):
     """Real torch, nothing compiled: ``load`` waits on the lock the line names until it is deleted."""
 
+    import torch.utils.cpp_extension as cpp_extension
+
+    if not build._uses_file_baton(cpp_extension):
+        pytest.skip("real FileBaton lock test requires the audited FileBaton Torch runtime")
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
     lock = tmp_path / "extensions" / "tf_lock_probe" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
@@ -246,6 +253,144 @@ def test_the_lock_named_is_the_one_torch_waits_on(tmp_path, monkeypatch):
     lock.unlink()
     thread.join(10)
     assert not thread.is_alive() and len(ended) == 1
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("built", [False, True])
+def test_advisory_lock_file_is_never_probed_for_wait_or_stale_advice(ext, monkeypatch, active, built):
+    """A real advisory lock file persists after release; its inode proves no ownership."""
+
+    FileLock = pytest.importorskip("filelock").FileLock
+    monkeypatch.setattr(ext.torch, "_jit_compile", lambda: ext.torch.FileLock)
+    lock = ext.dir / "lock"
+    owner = FileLock(str(lock))
+    owner.acquire(timeout=1)
+    if not active:
+        owner.release()
+    if built:
+        _built(ext)
+    identity = os.stat(lock)
+    contents = lock.read_bytes()
+    real_stat = os.stat
+
+    def no_lock_probe(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == str(lock):
+            pytest.fail("diagnostics must not infer advisory lock ownership from the file")
+        return real_stat(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(build.os, "stat", no_lock_probe)
+            assert ext.build._announce(ext.torch, "tf_test", ext.sources, None) is None
+        after = os.stat(lock)
+        assert (after.st_ino, after.st_mtime_ns) == (identity.st_ino, identity.st_mtime_ns)
+        assert lock.read_bytes() == contents
+        assert all("wait" not in line and "delete" not in line and HINT not in line for line in ext.said)
+        assert ext.said == ([] if built else [
+            "building CUDA extension tf_test (first start after an install or update; later starts reuse it)"
+        ])
+    finally:
+        owner.release()
+
+
+@pytest.mark.torch
+def test_active_advisory_build_waits_in_backend_without_obsolete_hint_or_timer(ext, monkeypatch):
+    """The backend owns the OS lock; TensorFold neither probes it nor advises unlinking it."""
+
+    FileLock = pytest.importorskip("filelock").FileLock
+    monkeypatch.setattr(ext.torch, "_jit_compile", lambda: ext.torch.FileLock)
+    _built(ext)
+    lock = ext.dir / "lock"
+    owner = FileLock(str(lock))
+    entered, completed = threading.Event(), threading.Event()
+    failures = []
+
+    def no_timer(*args, **kwargs):
+        pytest.fail("advisory lock files must not start the FileBaton stale-lock timer")
+
+    def load_backend(**kwargs):
+        ext.calls.append(((), kwargs))
+        entered.set()
+        with FileLock(str(lock)):
+            return "module"
+
+    def start():
+        try:
+            assert ext.build.load(name="tf_test", sources=ext.sources, verbose=False) == "module"
+            completed.set()
+        except BaseException as error:
+            failures.append(error)
+
+    monkeypatch.setattr(build.threading, "Timer", no_timer)
+    monkeypatch.setattr(ext.torch, "load", load_backend)
+    owner.acquire(timeout=1)
+    thread = threading.Thread(target=start)
+    try:
+        thread.start()
+        assert entered.wait(2)
+        assert thread.is_alive() and not completed.is_set()
+        assert ext.said == []
+    finally:
+        owner.release()
+        thread.join(timeout=2)
+    assert not thread.is_alive() and completed.is_set() and not failures
+    assert lock.exists()
+    assert ext.calls[0][1]["extra_cuda_cflags"] == [SM121]
+    assert ext.said == []
+
+
+@pytest.mark.torch
+def test_unknown_jit_lock_protocol_omits_file_baton_advice(ext, monkeypatch):
+    monkeypatch.setattr(ext.torch, "_jit_compile", lambda: None)
+    _built(ext)
+    (ext.dir / "lock").write_text("")
+    assert ext.build.load(name="tf_test", sources=ext.sources, verbose=False) == "module"
+    assert ext.said == [] and len(ext.calls) == 1
+
+
+@pytest.mark.torch
+def test_real_advisory_torch_build_waits_without_file_baton_advice(tmp_path, monkeypatch):
+    """Exercise the nightly's own lock without compiling an extension or loading CUDA."""
+
+    import torch.utils.cpp_extension as cpp_extension
+
+    names = getattr(getattr(cpp_extension._jit_compile, "__code__", None), "co_names", ())
+    if "FileLock" not in names or "FileBaton" in names:
+        pytest.skip("real advisory lock test requires the advisory-lock Torch runtime")
+    _gpu(monkeypatch, (12, 1))
+    monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
+    lock = tmp_path / "extensions" / "tf_advisory_probe" / "lock"
+    lock.parent.mkdir(parents=True)
+    source = tmp_path / "tf_advisory_probe.cpp"
+    source.write_text("int tf_advisory_probe() { return 0; }\n")
+    compiled, finished = threading.Event(), threading.Event()
+    said, failures = [], []
+    monkeypatch.setattr(build, "_say", said.append)
+    monkeypatch.setattr(build, "_toolkit", lambda: [])
+    monkeypatch.setattr(cpp_extension, "_write_ninja_file_and_build_library", lambda **kwargs: compiled.set())
+    monkeypatch.setattr(cpp_extension, "_import_module_from_library", lambda *args: "module")
+    owner = cpp_extension.FileLock(str(lock))
+
+    def start():
+        try:
+            assert build.load(name="tf_advisory_probe", sources=[str(source)], verbose=False) == "module"
+            finished.set()
+        except BaseException as error:
+            failures.append(error)
+
+    owner.acquire(timeout=1)
+    thread = threading.Thread(target=start)
+    try:
+        thread.start()
+        thread.join(0.1)
+        assert thread.is_alive() and not compiled.is_set()
+        assert all("wait" not in line and "delete" not in line and HINT not in line for line in said)
+    finally:
+        owner.release()
+        thread.join(timeout=5)
+    assert not thread.is_alive() and compiled.is_set() and finished.is_set() and not failures
+    assert lock.exists()
 
 
 def _pip_site(tmp_path, nvcc=True):

@@ -43,9 +43,6 @@ services:
       - '0'
     environment:
       HF_HUB_OFFLINE: '1'
-      CUDA_CACHE_PATH: /cache/cuda
-      TORCHINDUCTOR_CACHE_DIR: /cache/torchinductor
-      XDG_CACHE_HOME: /cache/xdg
       TENSORFOLD_NO_UPDATE_CHECK: '1'
       TENSORFOLD_SSD_NATIVE_THREADS: '32'
       TENSORFOLD_MTP_COPY: '1'

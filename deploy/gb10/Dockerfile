@@ -1,28 +1,64 @@
-# The digest pins the deployed Torch/CUDA/vision stack. The fork replaces the
-# TensorFold package with a wheel built from this repository's owned source.
-ARG BASE_IMAGE=ghcr.io/miaai-lab/qwen3.8-flash-next-single-dgx-spark-tensorfold@sha256:667693ccd7eea95d365ee5a17eed97067e13deb131a6e61fbbbbe6f69d0ebc69
-FROM ${BASE_IMAGE} AS runtime
+# syntax=docker/dockerfile:1.7
+# ARM64 GB10. NGC provides the CUDA 13.4.1 compiler, development libraries and
+# compatibility driver; the isolated venv installs genuine upstream nightlies.
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:b2d6023181b13e4ca5bc770cbad5e2585d199cf01cb757d58896345b457f7e68
+FROM ${BASE_IMAGE} AS foundation
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv ca-certificates ninja-build \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3.12 -m venv /opt/tensorfold-venv
+ENV PATH=/opt/tensorfold-venv/bin:${PATH} \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+FROM foundation AS dependencies
+COPY deploy/gb10/requirements-runtime.lock /opt/tensorfold-pins/requirements-runtime.lock
+RUN --mount=type=cache,id=tensorfold-cu134-nightly-pip,target=/root/.cache/pip \
+    python3 -m pip install --require-hashes -r /opt/tensorfold-pins/requirements-runtime.lock \
+    && python3 -m pip check
+
+FROM dependencies AS application
 ARG SOURCE_REVISION=uncommitted
 LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
       org.opencontainers.image.source="https://github.com/kklouzal/TensorFold" \
       deployment.upstream="https://github.com/ashhart/TensorFold" \
       deployment.source_tree="/opt/TensorFold" \
-      deployment.integration="gb10-flash-next-harness"
+      deployment.integration="gb10-flash-next-harness" \
+      deployment.cuda="13.4.1" \
+      deployment.torch="2.16.0.dev20261006+cu134" \
+      deployment.triton="3.9.0+gitaad2a60d"
 COPY pyproject.toml README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/TensorFold/
 COPY LICENSES /opt/TensorFold/LICENSES
 COPY src /opt/TensorFold/src
+COPY deploy/gb10/nightly-pins.json /opt/tensorfold-pins/nightly-pins.json
 RUN python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/fork-wheel /opt/TensorFold \
-    && python3 -m pip install --no-deps --force-reinstall /opt/fork-wheel/*.whl \
-    && python3 -m pip install --no-deps --no-cache-dir xgrammar==0.2.8 \
+    && python3 -m pip install --no-deps /opt/fork-wheel/*.whl \
+    && python3 -m pip check \
     && python3 -c "from pathlib import Path; import tensorfold, xgrammar; import tensorfold.families.qwen4_exp.native_ssd as reader; assert Path(reader.__file__).with_name('ssd_read.cpp').is_file()"
 COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py
+# Torch, CUDA and Triton upgrades get their own ABI-specific persistent cache.
+ENV CUDA_HOME=/usr/local/cuda \
+    CPATH=/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cudnn/include \
+    TORCH_CUDA_ARCH_LIST=12.1 \
+    MAX_JOBS=1 \
+    TORCH_EXTENSIONS_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/torch_extensions \
+    TRITON_CACHE_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/triton \
+    CUDA_CACHE_PATH=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/cuda \
+    TORCHINDUCTOR_CACHE_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/inductor \
+    XDG_CACHE_HOME=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/xdg
+RUN python3 -c "import os; from pathlib import Path; paths=[Path(p) for p in os.environ['CPATH'].split(':')]; assert all(any((p / h).is_file() for p in paths) for h in ('cusparse.h', 'cublas_v2.h', 'cusolverDn.h', 'cudnn.h'))"
 ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh", "python3", "/opt/harness/tensorfold_harness.py"]
 CMD ["serve", "--help"]
 
-# CPU verification has its own image target; it adds no dependencies to runtime.
-FROM runtime AS verification
-RUN python3 -m pip install --no-deps --no-cache-dir pytest==8.4.2 pluggy==1.6.0 iniconfig==2.1.0
+# Verification adds pinned test tools only to this separate target.
+FROM application AS verification
+COPY deploy/gb10/requirements-test.lock /opt/tensorfold-pins/requirements-test.lock
+RUN --mount=type=cache,id=tensorfold-cu134-nightly-pip,target=/root/.cache/pip \
+    python3 -m pip install --require-hashes -r /opt/tensorfold-pins/requirements-test.lock
 COPY tests /opt/TensorFold/tests
 COPY deploy /opt/TensorFold/deploy
 WORKDIR /opt/TensorFold
 ENTRYPOINT ["python3", "-m", "pytest"]
+
+# A plain docker build produces the serving image; tests require --target verification.
+FROM application AS runtime

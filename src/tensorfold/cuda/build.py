@@ -77,17 +77,32 @@ def _announce(cpp_extension: Any, name: str, sources: str | list[str],
         directory = directory or cpp_extension._get_build_directory(name, verbose=False)   # private in torch
     except Exception:  # noqa: BLE001 - no lookup in this torch: build without the lines
         return None
-    lock = os.path.join(directory, "lock")          # torch's FileBaton for this extension
-    try:
-        seen = os.stat(lock)
-    except OSError:
-        seen = None
-    if seen is not None:
-        _say(f"CUDA extension {name} waits on the build lock {lock}; {HINT}")
-        return lock, (seen.st_ino, seen.st_mtime_ns)
+    if _uses_file_baton(cpp_extension):
+        lock = os.path.join(directory, "lock")
+        try:
+            seen = os.stat(lock)
+        except OSError:
+            seen = None
+        if seen is not None:
+            _say(f"CUDA extension {name} waits on the build lock {lock}; {HINT}")
+            return lock, (seen.st_ino, seen.st_mtime_ns)
     if _needs_build(os.path.join(directory, name + getattr(cpp_extension, "LIB_EXT", ".so")), sources):
         _say(f"building CUDA extension {name} (first start after an install or update; later starts reuse it)")
     return None
+
+
+def _uses_file_baton(cpp_extension: Any) -> bool:
+    """Only the audited FileBaton JIT protocol treats file existence as ownership.
+
+    Newer Torch uses an OS advisory FileLock whose file persists while unlocked;
+    observing or unlinking that file cannot establish or recover lock ownership.
+    Resolve the active private implementation at the build boundary. Unknown or
+    mixed protocols omit the FileBaton-specific diagnostic.
+    """
+
+    compile_code = getattr(getattr(cpp_extension, "_jit_compile", None), "__code__", None)
+    names = getattr(compile_code, "co_names", ())
+    return "FileBaton" in names and "FileLock" not in names
 
 
 def _needs_build(module: str, sources: str | list[str]) -> bool:
