@@ -115,3 +115,11 @@ cache work and memory receipts; the policy comparison includes an all-hit
 warm-cache region. Use the pinned verification image and NVIDIA launcher
 described in the [container recipe](../../deploy/gb10/README.md) on GB10. These
 checks complement measurements with a real checkpoint on the intended machine.
+
+The pinned NGC/nightly build passed 1,666 applicable Linux CPU checks
+(six platform/fixture skips) and 194 affected CUDA checks. The built verification
+image also passed all 28 feature checks with bytewise tensor comparisons.
+Complete synthetic startup and cache-policy replays matched native packed
+weights, generated tokens, logits and residuals. Recorded conditions, numerical
+oracles, paired timings and limits are in
+[the validation receipt](ram-experts-validation.json).
