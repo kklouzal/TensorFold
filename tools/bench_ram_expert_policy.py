@@ -202,6 +202,7 @@ def main() -> int:
         parser.error("--max-extra-gpu-gib must be finite and positive")
     vector, candidate_sources = _candidate(args.candidate, args.candidate_class)
     scalar = ScalarPolicy
+    source_root = Path(__file__).resolve().parents[1]
     selected_source = Path(expert_cache.__file__).resolve() if args.candidate is None else args.candidate.resolve()
     output = {"torch": torch.__version__, "cuda": torch.version.cuda, "gpu": torch.cuda.get_device_name(),
               "cpu_threads": torch.get_num_threads(), "repeats": args.repeats,
@@ -212,7 +213,7 @@ def main() -> int:
                         "seed": 19, "extra_layer_seed": 29, "hidden": fixture.D, "expert_width": fixture.W},
               "candidate_sha256": hashlib.sha256(selected_source.read_bytes()).hexdigest(),
               "candidate_source_sha256": candidate_sources,
-              "source_sha256": {str(path.relative_to(Path(__file__).resolve().parents[1])):
+              "source_sha256": {str(path.relative_to(source_root) if path.is_relative_to(source_root) else path):
                                   hashlib.sha256(path.read_bytes()).hexdigest()
                                   for path in (Path(__file__).resolve(), Path(expert_cache.__file__),
                                                Path(grouped.__file__), Path(fwd.__file__), Path(fixture.__file__),
