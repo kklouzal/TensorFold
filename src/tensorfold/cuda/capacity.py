@@ -182,6 +182,51 @@ def host_stream_bytes() -> int | None:
     return max(0, memory["MemAvailable"] - reserve)
 
 
+def host_cgroup_bytes() -> int | None:
+    """Smallest remaining cgroup-v2 hard allowance along this process's visible ancestry.
+
+    A private container cgroup namespace reports ``/``; ordinary host processes
+    can belong to a nested systemd/job cgroup. Ancestors account for all their
+    descendants, so another child can consume the limiting ancestor's room.
+    No exposed memory controller returns None; an exposed limit must be readable.
+    """
+
+    root = Path("/sys/fs/cgroup")
+    try:
+        memberships = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError:
+        return None
+    paths = [row[3:] for row in memberships if row.startswith("0::")]
+    if not paths:
+        return None
+    if len(paths) != 1:
+        raise ValueError("invalid cgroup-v2 process membership")
+    relative = Path(paths[0])
+    if not relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("invalid cgroup-v2 process membership")
+    current = root.joinpath(*relative.parts[1:])
+    allowance = None
+    while True:
+        try:
+            limit = (current / "memory.max").read_text().strip()
+        except FileNotFoundError:
+            limit = "max"                      # no memory controller here (including the real hierarchy root)
+        except OSError as exc:
+            raise ValueError(f"cannot read cgroup-v2 memory limit at {current}: {exc}") from exc
+        if limit != "max":
+            try:
+                used = (current / "memory.current").read_text().strip()
+            except OSError as exc:
+                raise ValueError(f"cannot read cgroup-v2 memory usage at {current}: {exc}") from exc
+            if not limit.isdecimal() or not used.isdecimal():
+                raise ValueError(f"invalid cgroup-v2 memory allowance at {current}")
+            remaining = max(0, int(limit) - int(used))
+            allowance = remaining if allowance is None else min(allowance, remaining)
+        if current == root:
+            return allowance
+        current = current.parent
+
+
 def available_bytes(torch) -> int:
     """The original unified-memory budget, or a discrete GPU's own budget; host staging is checked separately."""
 
@@ -282,7 +327,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           extra_files: tuple[Path, ...] = (), files: list[Path] | None = None,
           draft_transform: Callable | None = None,
           draft_weights: Callable[[Path], Weights] | None = None,
-          context_limit: int | None = None, original_context: int | None = None) -> dict:
+          context_limit: int | None = None, original_context: int | None = None,
+          host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0) -> dict:
     """One refusal or capacity on both ranks before allocating; the draft model by ``draft_weights`` or a transform."""
 
     from tensorfold.cuda import build
@@ -295,6 +341,13 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         geometry = geometry(text) if callable(geometry) else geometry
         weights = estimate_weights(model_dir, transform, rank=rank, files=files)
         host_staging = weights.staging
+        if any(isinstance(n, bool) or not isinstance(n, int) or n < 0
+               for n in (host_resident, host_extra_staging, resident_extra)):
+            raise ValueError("additional resident and host staging byte estimates must be nonnegative integers")
+        weights = Weights(weights.resident + resident_extra, weights.staging, weights.mapped)
+        if unified(torch):
+            weights = Weights(weights.resident + host_resident,
+                              weights.staging + host_extra_staging, weights.mapped)
         if extra_files:                      # files outside the index, same layout (Nemotron's MTP head, EXL3 tables)
             more = estimate_weights(model_dir, transform, files=list(extra_files))
             host_staging = max(host_staging, more.staging)
@@ -314,10 +367,18 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 main = geometry
                 geometry = Geometry(lambda slots: main.bytes_at(slots) + draft_geometry.bytes_at(slots),
                                     main.reserve, main.minimum_slots)
+        if host_resident or host_extra_staging:
+            host_needed = host_resident + host_staging + host_extra_staging
+            allowance = host_cgroup_bytes()
+            if allowance is not None and host_needed > allowance:
+                raise ValueError(f"host expert weights/staging need {host_needed / GIB:.2f} GiB, "
+                                 f"but the container/cgroup has only {allowance / GIB:.2f} GiB remaining")
         if not unified(torch):
             host_free = host_stream_bytes()
-            if host_free is not None and host_staging > host_free:
-                raise ValueError(f"host staging needs an estimated {host_staging / GIB:.2f} GiB, "
+            host_needed = host_resident + host_staging + host_extra_staging
+            if host_free is not None and host_needed > host_free:
+                label = "host weights/staging" if host_resident or host_extra_staging else "host staging"
+                raise ValueError(f"{label} needs an estimated {host_needed / GIB:.2f} GiB, "
                                  f"but only {host_free / GIB:.2f} GiB is available after its reserve; "
                                  "free host memory or use a checkpoint with smaller loading buffers")
         native = int(text.get("max_position_embeddings") or 0)

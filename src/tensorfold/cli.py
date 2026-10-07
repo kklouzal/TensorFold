@@ -249,6 +249,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["mtp_drafts"] = int(args.mtp_drafts)
     if args.ple_on_ssd:
         options["ple_on_ssd"] = True
+    if getattr(args, "ram_experts", None) is not None:
+        options["ram_experts"] = args.ram_experts
     if getattr(args, "mtp_confidence", None) is not None:
         options["mtp_confidence"] = float(args.mtp_confidence)
     if getattr(args, "decode_share", None) is not None:

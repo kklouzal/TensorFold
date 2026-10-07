@@ -32,7 +32,7 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
-         rope: RopeParameters | None = None) -> Weights:
+         rope: RopeParameters | None = None, ram_experts: float | None = None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -41,6 +41,12 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     from . import exl3
 
     model_dir = Path(model_dir)
+    ram_layout = None
+    if ram_experts is not None:
+        from ..ram_experts import check, layout
+
+        check(model_dir, ram_experts, tp=tp[1] if tp is not None else 1)
+        ram_layout = layout(model_dir, ram_experts, mtp=mtp)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope)
     full = Config.read(model_dir, rope=rope)
@@ -49,12 +55,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     cfg = full if world == 1 else replace(full, heads=full.heads // world, kv_heads=full.kv_heads // world,
                                           nk=full.nk // world, nv=full.nv // world,
                                           moe_width=full.moe_width // world, shared_width=full.shared_width // world)
+    expert_cache = None
+    next_expert_layer = 0
     rd = _Reader(model_dir, device)
     prefix = "language_model." if rd.has("language_model.model.embed_tokens.weight") else ""
     # NVFP4 names the language model ``model.language_model.*``; its lm_head and mtp sit at the top level
     mbase = "model.language_model." if rd.has("model.language_model.embed_tokens.weight") else "model."
     chosen = list(range(cfg.layers))
-    around_one = norms_around_one(rd, prefix + mbase, chosen)
 
     def raw(name: str) -> torch.Tensor:
         return rd.get(prefix + name)
@@ -226,10 +233,19 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         return b16_from_rows(t.to(torch.bfloat16).contiguous())
 
     def moe(name: str) -> MoEW:
+        nonlocal next_expert_layer
         gate_rows = raw(name + ".gate.weight").to(torch.bfloat16)
         sw, ss, sb = triple(name + ".shared_expert_gate")
         shared_gate = dequantize(sw, ss, sb).to(torch.bfloat16)
         router = torch.cat([gate_rows, shared_gate]).contiguous()
+        if expert_cache is not None:
+            from tensorfold.cuda.expert_cache import CachedExperts
+            from tensorfold.cuda.host_experts import load_host_experts
+
+            host = load_host_experts(rd, prefix + name)
+            layer_id = next_expert_layer
+            next_expert_layer += 1
+            return MoEW(router, CachedExperts(host, expert_cache, layer_id))
         w_, sw_ = full.moe_width, full.shared_width
         # a rank takes its half of every expert's intermediate width: gate/up rows, down input groups
         gu = lambda t, width: _rows(t, rank * width // world, (rank + 1) * width // world)          # noqa: E731
@@ -383,14 +399,23 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         return entry
 
     t0 = time.time()
-    if cfg.quant not in ("mlx", "modelopt"):
-        raise ValueError(f"Flash Next's CUDA engine reads MLX 4-bit (groups of 32) or NVFP4 (experts-only) "
-                         f"checkpoints, not {cfg.quant}")
     try:                                              # a failed load cancels the reads queued ahead
+        if cfg.quant not in ("mlx", "modelopt"):
+            raise ValueError(f"Flash Next's CUDA engine reads MLX 4-bit (groups of 32) or NVFP4 (experts-only) "
+                             f"checkpoints, not {cfg.quant}")
+        around_one = norms_around_one(rd, prefix + mbase, chosen)
+        if ram_layout is not None:
+            from tensorfold.cuda.expert_cache import HostExpertCache
+
+            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device)
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"
                  else triple("model.embed_tokens"))
         loaded = []
         ahead = rd.layer_names(prefix, mbase, chosen, mtp)   # read ahead of the layer that takes them
+        if expert_cache is not None:
+            from ..ram_experts import expert_tensor
+
+            ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
         layer_events: list = []                           # each layer's event, recorded once its work is queued
         for k, i in enumerate(chosen):
             if len(layer_events) >= 2:                    # at most two layers queued ahead of the GPU
@@ -432,6 +457,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         w = Weights(cfg, embed, loaded, mixer, head, inv.to(device), around_one=around_one)
         w.meta.update(rank=rank, world=world, vocab_offset=rank * vl, full=full)
         w.meta["rope"] = cfg.rope.metadata()
+        if expert_cache is not None:
+            w.meta["expert_cache"] = expert_cache
         w.draft_head, w.draft_ids = draft_head, draft_ids
         if mtp and rd.has(prefix + "mtp.fc_embedding.weight"):
             fc = b16 if cfg.quant == "modelopt" else q4
@@ -439,11 +466,19 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                          fc("mtp.fc_embedding"), fc("mtp.fc_hidden"),
                          layer(-1, "mtp.layers.0", "attention", False),
                          (hc_nvfp4 if cfg.quant == "modelopt" else hc)("mtp.hyper_connection_mixer", False))
-    except BaseException:
         rd.close()
+        rd.release()
+        torch.cuda.empty_cache()
+        w.meta["load_seconds"] = time.time() - t0
+        return w
+    except BaseException as primary:
+        try:
+            rd.close()
+        except BaseException as cleanup:
+            primary.add_note(f"checkpoint reader cleanup also failed: {cleanup!r}")
+        if expert_cache is not None:
+            try:
+                expert_cache.close()
+            except BaseException as cleanup:
+                primary.add_note(f"expert cache cleanup also failed: {cleanup!r}")
         raise
-    rd.close()
-    rd.release()
-    torch.cuda.empty_cache()
-    w.meta["load_seconds"] = time.time() - t0
-    return w

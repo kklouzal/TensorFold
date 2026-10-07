@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import copy
 from typing import Sequence
 
 import numpy as np
@@ -11,6 +12,8 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda import moe as moe_mod
+from tensorfold.cuda import experts as grouped
+from tensorfold.cuda.expert_cache import CachedExperts
 from tensorfold.cuda.kernels import gdn as shared_gdn
 
 from . import attention as attn_mod
@@ -326,12 +329,92 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         nvfp4_moe.moe(b.mixed[:R], b.xs_mixed[:R], m.router, m.experts, buf, _MoECfg(w.cfg))
     elif w.x3 is not None:                              # an EXL3 pack: each expert at its own width, one GPU
         return _exl3_moe(m, w, b, R)
+    elif isinstance(m.experts, CachedExperts):
+        buf = _cached_moe(b.mixed[:R], m, b.moe, w.cfg.top_k, w.cfg.experts)
     else:
         buf = moe_mod.moe(b.mixed[:R], m.router, m.experts, b.moe, w.cfg.top_k, w.cfg.experts)
     if w.comm is None:
         return 2, buf.y[:R], buf.wts[:R]
     glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
     return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
+
+
+class _ExpertWindow:
+    """One MoE buffer's bounded plan snapshot and reusable item-window uploads.
+
+    The original plan owns members and pair order. A window changes only item
+    expert IDs and the valid item count; its consumers keep the original tile
+    arithmetic. Copy completion protects pinned host data before it is reused.
+    Like the owning MoE buffers, this scratch serves one CUDA stream at a time.
+    """
+
+    def __init__(self, source: grouped.Plan) -> None:
+        self.plan = copy(source)
+        # These copy destinations outlive the caller's inference/ordinary mode.
+        with torch.inference_mode(False):
+            self.plan.items = torch.empty_like(source.items)
+            self.plan.counts = torch.empty_like(source.counts)
+            self.report = torch.empty((source.items.numel() + 2,), dtype=torch.int32, device=source.items.device)
+            self.host = torch.empty(self.report.shape, dtype=torch.int32, device="cpu", pin_memory=True)
+        self.ready = torch.cuda.Event()
+        self.uploaded = torch.cuda.Event()
+        self.pending = False
+
+    def read(self, source: grouped.Plan) -> torch.Tensor:
+        # One bounded D2H transfer obtains both the valid count and item IDs.
+        self.report[:2].copy_(source.counts)
+        self.report[2:].copy_(source.items.reshape(-1))
+        self.host.copy_(self.report, non_blocking=True)
+        self.ready.record(torch.cuda.current_stream(source.items.device))
+        self.ready.synchronize()
+        count = int(self.host[0])
+        if not 0 <= count <= source.items.shape[0]:
+            raise RuntimeError(f"expert plan has {count} valid items outside its bounded scratch")
+        self.plan.tile = source.tile
+        return self.host[2:].view(-1, 3)[:count]
+
+    def stage(self, items: torch.Tensor, mapping: dict[int, int], capacity: int) -> grouped.Plan:
+        if self.pending:
+            self.uploaded.synchronize()
+        ids = items[:, 0].numpy()
+        ids[:] = [mapping[int(expert)] for expert in ids]
+        self.host[0], self.host[1] = items.shape[0], len(mapping)
+        self.plan.experts = capacity
+        self.plan.items[:items.shape[0]].copy_(items, non_blocking=True)
+        self.plan.counts.copy_(self.host[:2], non_blocking=True)
+        self.uploaded.record(torch.cuda.current_stream(self.plan.items.device))
+        self.pending = True
+        return self.plan
+
+
+def _cached_moe(x: torch.Tensor, m, buf, top_k: int, experts: int):
+    """Run every logical pair with its native kernel, in bounded resident item windows."""
+
+    rows = x.shape[0]
+    moe_mod.router(x, m.router, buf.logits[:rows])
+    moe_mod.select(buf.logits[:rows], buf, top_k, experts)
+    scratch = getattr(buf, "expert_window", None)
+    if scratch is None:
+        scratch = buf.expert_window = _ExpertWindow(buf.plan)
+    items = scratch.read(buf.plan)
+    cached = m.experts
+    at = 0
+    while at < items.shape[0]:
+        end, ids, seen = at, [], set()
+        while end < items.shape[0]:
+            expert = int(items[end, 0])
+            if expert not in seen:
+                if len(ids) == cached.capacity:
+                    break
+                ids.append(expert)
+                seen.add(expert)
+            end += 1
+        with cached.lease(ids) as (hot, mapping):
+            window = scratch.stage(items[at:end], mapping, cached.capacity)
+            grouped.gate_up(x, hot, window, buf.act.view(-1, hot.width), rows)
+            grouped.down(buf.act.view(-1, hot.width), hot, window, buf.y.view(-1, hot.dims), rows)
+        at = end
+    return buf
 
 
 def _exl3_moe(m, w: Weights, b: Buffers, R: int) -> tuple:

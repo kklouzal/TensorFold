@@ -174,10 +174,17 @@ CUDA_KV_DTYPES = ("bf16", "int8", "int4")
 CUDA_DECODE_SHARE = True           # --parallel rounds size their prompt pass by --decode-share (0: whole passes)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: an NVFP4 checkpoint's MXFP8 linears have an FP8 prompt kernel
 
+
+def check_ram_experts(model_dir: str | Path, gib: float, *, tp: int = 1) -> None:
+    from .ram_experts import check
+
+    check(model_dir, gib, tp=tp)
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
                 master_port: int = 29551, no_drafts: bool = False, mtp_drafts: int | None = None,
                 mtp_confidence: float | None = None, context: int | None = None, ple_on_ssd: bool = False,
                 kv_dtype: str = "bf16", decode_share: float | None = None, yarn_factor: float | None = None,
+                ram_experts: float | None = None,
                 **options: Any):
     """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with bf16, int8 or int4 KV storage."""
 
@@ -205,4 +212,5 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                            ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype,
                            share=0.0 if decode_share is None else float(decode_share),
                            vision=bool(options.get("vision", False)),
-                           vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor)
+                           vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor,
+                           ram_experts=ram_experts)

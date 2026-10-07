@@ -108,6 +108,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--ssd-experts", type=float, default=None, metavar="GIB",
                        help="stream routed experts from the checkpoint into a GPU pool of this many GiB, for models "
                             "past the memory budget (the rest stays resident; output is the resident model's)")
+    speed.add_argument("--ram-experts", type=float, default=None, metavar="GIB",
+                       help="Flash Next affine 4-bit CUDA: keep experts in system RAM, using this many GiB for "
+                            "a shared GPU expert cache (one GPU; routing and precision preserved; slower on misses)")
     speed.add_argument("--ple-on-ssd", action="store_true",
                        help="Flash Next: read the n-gram (PLE) tables from the checkpoint on SSD at each lookup "
                             "instead of holding them in memory. A trade: a few percent of decode speed for about "

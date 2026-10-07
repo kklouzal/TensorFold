@@ -4,12 +4,25 @@ from __future__ import annotations
 
 import argparse
 import inspect
+import math
 from typing import Any
 
 
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    ram = getattr(args, "ram_experts", None)
+    if getattr(args, "ssd_experts", None) is not None and backend == "cuda":
+        raise ValueError("--ssd-experts is supported on MLX only; Flash Next CUDA supports --ram-experts GIB")
+    if ram is not None:
+        if isinstance(ram, bool) or not isinstance(ram, (int, float)) or not math.isfinite(ram) or ram <= 0:
+            raise ValueError("--ram-experts must be a finite positive GiB count")
+        if getattr(args, "ssd_experts", None) is not None:
+            raise ValueError("--ram-experts and --ssd-experts cannot be combined")
+        check_ram = getattr(family.package, "check_ram_experts", None)
+        if backend != "cuda" or check_ram is None:
+            raise ValueError("--ram-experts is supported by Flash Next affine 4-bit on CUDA only")
+        check_ram(config_dir, ram, tp=getattr(args, "tp", 1))
     if getattr(args, "yarn_factor", None) is not None:
         if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
             raise ValueError("--yarn-factor is supported by Flash Next on CUDA only")

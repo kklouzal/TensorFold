@@ -61,16 +61,85 @@ class _Reader:
         self.reads.close()
         self.io.close()
 
+    def _path(self, shard: str) -> Path:
+        """Index-relative files in this model or its own HF snapshot blob store."""
+
+        if not isinstance(shard, str):
+            raise ValueError("checkpoint shard names must be relative strings")
+        relative = Path(shard)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"{shard}: checkpoint shard must not be absolute or traverse parent directories")
+        root = self.dir.resolve()
+        allowed = [root]
+        if root.parent.name == "snapshots" and root.parent.parent.name.startswith("models--"):
+            allowed.append((root.parent.parent / "blobs").resolve())
+        path = (root / relative).resolve()
+        if not any(path.is_relative_to(directory) for directory in allowed):
+            raise ValueError(f"{shard}: resolved checkpoint file is outside the model's authorized roots")
+        return path
+
     def _header(self, shard: str) -> tuple[int, dict]:
+        path = self._path(shard)
         got = self.headers.get(shard)
         if got is None:
             import struct
 
-            with open(self.dir / shard, "rb") as f:
-                n = struct.unpack("<Q", f.read(8))[0]
-                got = (8 + n, json.loads(f.read(n)))
+            with open(path, "rb") as f:
+                prefix = f.read(8)
+                n = struct.unpack("<Q", prefix)[0] if len(prefix) == 8 else -1
+                if not 0 <= n <= min(64 << 20, os.fstat(f.fileno()).st_size - 8):
+                    raise ValueError(f"{shard}: truncated or invalid safetensors header")
+                header = json.loads(f.read(n))
+                if not isinstance(header, dict):
+                    raise ValueError(f"{shard}: safetensors header must be a JSON object")
+                got = (8 + n, header)
             self.headers[shard] = got
         return got
+
+    def info(self, name: str) -> dict:
+        """Validated tensor metadata; copied tuples cannot mutate the cached header."""
+
+        import math
+
+        shard = self.where[name]
+        base, header = self._header(shard)
+        entry = header[name]
+        if not isinstance(entry, dict) or not isinstance(entry.get("dtype"), str) or entry["dtype"] not in _DT:
+            raise ValueError(f"{name}: unsupported or invalid safetensors dtype")
+        shape, offsets = entry.get("shape"), entry.get("data_offsets")
+        if (not isinstance(shape, list) or not shape
+                or any(type(size) is not int or size <= 0 for size in shape)
+                or not isinstance(offsets, list) or len(offsets) != 2
+                or any(type(offset) is not int for offset in offsets)):
+            raise ValueError(f"{name}: invalid tensor shape or byte range")
+        begin, end = offsets
+        element_size = torch.empty((), dtype=_DT[entry["dtype"]], device="cpu").element_size()
+        path = self._path(shard)
+        if begin < 0 or end - begin != math.prod(shape) * element_size or base + end > path.stat().st_size:
+            raise ValueError(f"{name}: tensor byte range differs from its shape or checkpoint size")
+        return {"dtype": entry["dtype"], "shape": tuple(shape), "data_offsets": (begin, end),
+                "byte_offset": base + begin, "path": path}
+
+    def get_rows(self, name: str, lo: int, hi: int, device: str = "cpu") -> torch.Tensor:
+        """Read only first-axis rows [lo, hi), without consuming queued CUDA reads.
+
+        Expert spill callers exclude these fields from CUDA read-ahead. Returned
+        storage owns the requested rows; no whole stacked expert tensor is read.
+        """
+
+        import math
+
+        info = self.info(name)
+        shape, dtype = info["shape"], _DT[info["dtype"]]
+        if type(lo) is not int or type(hi) is not int or not 0 <= lo <= hi <= shape[0]:
+            raise ValueError(f"{name}: rows must satisfy 0 <= lo <= hi <= {shape[0]}")
+        if lo == hi:
+            return torch.empty((0, *shape[1:]), dtype=dtype, device=device)
+        row_bytes = math.prod(shape[1:]) * torch.empty((), dtype=dtype, device="cpu").element_size()
+        raw = self.io.read(info["path"], info["byte_offset"] + lo * row_bytes,
+                           (hi - lo) * row_bytes, device)
+        self.touched.add(self.where[name])
+        return raw.view(dtype).reshape(hi - lo, *shape[1:])
 
     def get(self, name: str) -> torch.Tensor:
         shard = self.where[name]
@@ -91,11 +160,16 @@ class _Reader:
 
         for shard in list(self.touched):
             try:
-                fd = os.open(self.dir / shard, os.O_RDONLY)
-                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-                os.close(fd)
+                fd = os.open(self._path(shard), os.O_RDONLY)
             except (OSError, AttributeError):
-                pass
+                continue
+            try:
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                except (OSError, AttributeError):
+                    pass                            # cache eviction is an optional filesystem advisory
+            finally:
+                os.close(fd)                        # owned descriptor cleanup failure is an operation failure
         self.touched.clear()
 
 

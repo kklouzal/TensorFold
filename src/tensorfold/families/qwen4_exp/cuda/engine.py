@@ -37,10 +37,14 @@ class FlashNextEngine:
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "", port: int = 29551,
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
-                 yarn_factor: float | None = None) -> None:
+                 yarn_factor: float | None = None, ram_experts: float | None = None) -> None:
         from .. import rope_parameters
 
         self.rope = rope_parameters(model_dir, yarn_factor)
+        if ram_experts is not None:
+            from ..ram_experts import check
+
+            check(model_dir, ram_experts, tp=tp)
         import torch
 
         from .exl3_pack import admission, extra_files, is_exl3
@@ -105,11 +109,41 @@ class FlashNextEngine:
         workspace = vision_workspace() if vision else 0
         rope_capacity = ({"context_limit": self.rope.context_limit, "original_context": self.rope.native_context}
                          if self.rope.rope_type != "default" else {})
+        weight_rule = vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank)
+        host_capacity = {}
+        ram_layout = None
+        if ram_experts is not None:
+            from ..ram_experts import layout, plan_scratch
+            from tensorfold.cuda.capacity import Geometry
+            from .prompt_plan import IDLE_ROWS
+
+            ram_layout = layout(model_dir, ram_experts, mtp=mtp)
+            weight_rule = ram_layout.transform(weight_rule)
+            scratch_device, scratch_host = plan_scratch(config(model_dir),
+                streams * each if streams > 1 else max(8, each), chunk or IDLE_ROWS, mtp)
+            base_geometry = geometry
+            def geometry(text):
+                base = base_geometry(text)
+                return Geometry(lambda slots: base.bytes_at(slots) + scratch_device,
+                                base.reserve, base.minimum_slots)
+            host_capacity = {"host_resident": ram_layout.host_bytes + ram_layout.staging_bytes + scratch_host,
+                             "host_extra_staging": ram_layout.loading_bytes,
+                             "resident_extra": ram_layout.gpu_bytes}
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
-                                   vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank),
+                                   weight_rule,
                                    rank=rank, world=tp,
-                                   gather=gather, extra_files=extra_files(model_dir) if exl3 else (), **rope_capacity)
+                                   gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
+                                   **rope_capacity, **host_capacity)
+        if ram_layout is not None:
+            self.capacity_plan["ram_experts"] = {
+                "host_bytes": ram_layout.host_bytes, "gpu_bytes": ram_layout.gpu_bytes,
+                "slots": ram_layout.slots, "staging_bytes": ram_layout.staging_bytes,
+                "loading_bytes": ram_layout.loading_bytes, "plan_device_bytes": scratch_device,
+                "plan_host_bytes": scratch_host}
+            print(f"[tensorfold] RAM experts: {ram_layout.host_bytes / 2**30:.2f} GiB pageable host weights, "
+                  f"{ram_layout.gpu_bytes / 2**30:.2f} GiB GPU pool ({ram_layout.slots} experts); "
+                  "eager forwards preserve routing and precision; cache misses transfer weights", flush=True)
         self.capacity_plan["rope"] = self.rope.metadata()
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
@@ -133,96 +167,104 @@ class FlashNextEngine:
         try:
             w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
                      draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
-                     table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope)
+                     table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
+                     **({"ram_experts": ram_experts} if ram_experts is not None else {}))
         except BaseException:
             wait(reads)                               # a failed load leaves no table read behind it
             raise
-        tables_read = bool(reads)
-        waited = time.perf_counter()
-        wait_all(reads)                               # raises a table read's error
-        waited = time.perf_counter() - waited
-        w.comm = self.comm
-        if self.comm is not None:
-            self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
-        if self.depth > 0 and w.mtp is None:
-            raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
-                             "that has it, or --no-drafts for the serial reference (one token a round)")
-        self.w = w
-        from tensorfold.cuda.markers import resume_points
+        self.w, self.scheduler = w, None
+        try:
+            tables_read = bool(reads)
+            waited = time.perf_counter()
+            wait_all(reads)                               # raises a table read's error
+            waited = time.perf_counter() - waited
+            w.comm = self.comm
+            if self.comm is not None:
+                self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
+            if self.depth > 0 and w.mtp is None:
+                raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
+                                 "that has it, or --no-drafts for the serial reference (one token a round)")
+            from tensorfold.cuda.markers import resume_points
 
-        self.points = resume_points(model_dir)          # a prompt's message starts to keep states at, or None
-        if vision:
-            from tensorfold.vision.qwen_cuda import QwenCudaVision
+            self.points = resume_points(model_dir)          # a prompt's message starts to keep states at, or None
+            if vision:
+                from tensorfold.vision.qwen_cuda import QwenCudaVision
 
-            self.vision = QwenCudaVision(model_dir, torch.device("cuda", 0),
-                                         allow_urls=vision_urls)
-            torch.cuda.empty_cache()
-            print(f"[tensorfold] vision: image{' and video' if self.vision.videos else ''} input, a "
-                  f"{self.vision.weight_bytes / 2**30:.2f} GiB tower with {vision_workspace() / 2**30:.2f} GiB of "
-                  f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
-        # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
-        self.concurrent = streams > 1
-        self.multi = self.scheduler = None
-        if self.concurrent:
-            from tensorfold.cuda.scheduler import Scheduler
+                self.vision = QwenCudaVision(model_dir, torch.device("cuda", 0),
+                                             allow_urls=vision_urls)
+                torch.cuda.empty_cache()
+                print(f"[tensorfold] vision: image{' and video' if self.vision.videos else ''} input, a "
+                      f"{self.vision.weight_bytes / 2**30:.2f} GiB tower with {vision_workspace() / 2**30:.2f} GiB of "
+                      f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
+            # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
+            self.concurrent = streams > 1
+            self.multi = self.scheduler = None
+            if self.concurrent:
+                from tensorfold.cuda.scheduler import Scheduler
 
-            from .multi import MultiDecoder
+                from .multi import MultiDecoder
 
-            self.e = None
-            self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
-                                      confidence=self.confidence, keep=KEEP, points=self.points,
-                                      kv_dtype=self.kv_dtype, share=share, vision=self.vision,
-                                      prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace)
-            self.scheduler = Scheduler(self.multi, max_streams=streams)
-        else:
-            self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
-                            kv_dtype=self.kv_dtype, prefill_rows=self.prefill_rows)
-        started = time.perf_counter()
-        locked = False
-        if prefetch and not ple_on_ssd:               # the n-gram tables' pages, read now rather than by requests
-            tables = {id(layer.ple.table): layer.ple.table for layer in w.layers if layer.ple is not None}
-            size = sum(t.nbytes for t in tables.values())
-            # pinned pages are no longer reclaimable: lock only what the startup budget leaves room for
-            room = self.capacity_plan["budget_bytes"] - self.capacity_plan["total_bytes_estimate"]
-            for table in tables.values():
-                if not tables_read:
-                    table.prefetch()                  # eight readers first: mlock alone faults the pages in one by one
-                locked = room >= size and table.lock()
-        read_s = time.perf_counter() - started
-        captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
-        started = time.perf_counter()
-        if self.concurrent:
-            self.multi.warm()
-        else:
-            from .decode import warm
+                self.e = None
+                self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
+                                          confidence=self.confidence, keep=KEEP, points=self.points,
+                                          kv_dtype=self.kv_dtype, share=share, vision=self.vision,
+                                          prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace)
+                self.scheduler = Scheduler(self.multi, max_streams=streams)
+            else:
+                self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
+                                kv_dtype=self.kv_dtype, prefill_rows=self.prefill_rows)
+            started = time.perf_counter()
+            locked = False
+            if prefetch and not ple_on_ssd:               # the n-gram tables' pages, read now rather than by requests
+                tables = {id(layer.ple.table): layer.ple.table for layer in w.layers if layer.ple is not None}
+                size = sum(t.nbytes for t in tables.values())
+                # pinned pages are no longer reclaimable: lock only what the startup budget leaves room for
+                room = self.capacity_plan["budget_bytes"] - self.capacity_plan["total_bytes_estimate"]
+                for table in tables.values():
+                    if not tables_read:
+                        table.prefetch()                  # eight readers first: mlock alone faults the pages in one by one
+                    locked = room >= size and table.lock()
+            read_s = time.perf_counter() - started
+            captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
+            started = time.perf_counter()
+            if self.concurrent:
+                self.multi.warm()
+            else:
+                from .decode import warm
 
-            warm(self.e)
-        if self.vision is not None:
-            self.vision.warm()
-            torch.cuda.empty_cache()
-        warm_s = time.perf_counter() - started
-        self.eos = tuple(w.cfg.eos)
-        self.model_dir = Path(model_dir)
-        self.served = 0
-        self.cache: list[tuple[list[int], dict]] = []    # (committed ids, what resuming from them needs)
-        self.serial = None                                # the serial requests' engine, made on first use
-        rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
-                f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
-        where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
-                 f"lasts ({self.multi.memory_gate.room / 2**30:.1f} GiB free for their caches, "
-                 f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), eager" if self.concurrent else
-                 f"{self.context_window}-token prompt/reply window; {self.max_len}-token cache")
-        if ple_on_ssd:
-            how = "read from SSD at each lookup"
-        elif tables_read:                             # read during the load: the wait after it, then any lock
-            how = f"read alongside the weights ({waited:.1f}s after them)" + (
-                f", locked in memory in {read_s:.1f}s" if locked else "")
-        else:
-            how = f"{'locked in memory' if locked else 'read'} in {read_s:.1f}s"
-        kv = "" if self.kv_dtype == "bf16" else f"; {self.kv_dtype} KV cache (fp16 scale per 32 values)"
-        print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
-              f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
-              f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
+                warm(self.e)
+            if self.vision is not None:
+                self.vision.warm()
+                torch.cuda.empty_cache()
+            warm_s = time.perf_counter() - started
+            self.eos = tuple(w.cfg.eos)
+            self.model_dir = Path(model_dir)
+            self.served = 0
+            self.cache: list[tuple[list[int], dict]] = []    # (committed ids, what resuming from them needs)
+            self.serial = None                                # the serial requests' engine, made on first use
+            rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
+                    f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
+            where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
+                     f"lasts ({self.multi.memory_gate.room / 2**30:.1f} GiB free for their caches, "
+                     f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), eager" if self.concurrent else
+                     f"{self.context_window}-token prompt/reply window; {self.max_len}-token cache")
+            if ple_on_ssd:
+                how = "read from SSD at each lookup"
+            elif tables_read:                             # read during the load: the wait after it, then any lock
+                how = f"read alongside the weights ({waited:.1f}s after them)" + (
+                    f", locked in memory in {read_s:.1f}s" if locked else "")
+            else:
+                how = f"{'locked in memory' if locked else 'read'} in {read_s:.1f}s"
+            kv = "" if self.kv_dtype == "bf16" else f"; {self.kv_dtype} KV cache (fp16 scale per 32 values)"
+            print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
+                  f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
+                  f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise primary from cleanup
+            raise
 
     def _same_settings(self, torch, ids) -> None:
         """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
@@ -395,9 +437,13 @@ class FlashNextEngine:
     def close(self) -> None:
         """Stop the concurrent scheduler's worker, so the engine's GPU memory can go (tests start several engines)."""
 
-        if self.scheduler is not None:
+        if getattr(self, "scheduler", None) is not None:
             self.scheduler.close()
             self.scheduler = None
+        weights = getattr(self, "w", None)
+        cache = None if weights is None else weights.meta.get("expert_cache")
+        if cache is not None:
+            cache.close()
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,

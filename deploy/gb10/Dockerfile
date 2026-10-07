@@ -61,6 +61,7 @@ RUN --mount=type=cache,id=tensorfold-cu134-nightly-pip,target=/root/.cache/pip \
     python3 -m pip install --require-hashes -r /opt/tensorfold-pins/requirements-test.lock
 COPY tests /opt/TensorFold/tests
 COPY deploy /opt/TensorFold/deploy
+COPY tools /opt/TensorFold/tools
 WORKDIR /opt/TensorFold
 ENTRYPOINT ["python3", "-m", "pytest"]
 

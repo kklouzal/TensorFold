@@ -31,7 +31,10 @@ development headers are supplied by those wheels; `CPATH` makes their audited
 include directories available to NVCC and C++. Transformers, tokenizers, the Hub
 client, xgrammar and core model-input dependencies retain their deployed pins
 where compatible. The native reader's C++ source is included in the fork wheel.
-The verification target adds its own pinned pytest tools and contains no weights.
+The verification target adds its own pinned pytest tools and contains no weights. It also includes the synthetic RAM-expert startup and cache-policy benchmarks in `tools/`.
+The opt-in, general CUDA host-RAM expert mode is documented in
+[the RAM-expert recipe](../../docs/recipes/ram-experts.md); this ARM64 image
+keeps its GB10 build target, while the mode itself uses the existing CUDA target.
 
 cuDNN uses the complete hash-pinned wheel provider. Build-time aliases in
 `/opt/tensorfold-cudnn` cover its major, minor and full-version SONAME lookups;
