@@ -177,7 +177,7 @@ mappings. The startup report shows resident and file-backed bytes separately. Ca
 consume RAM and can be reclaimed by the OS; see [Flash Next memory](docs/recipes/qwen3.8-flash-next.md#mlx-execution).
 
 On CUDA machines with limited VRAM, Flash Next's affine 4-bit checkpoints can keep
-experts in system RAM with `--ram-experts GIB`, using a bounded GPU cache of reused
+experts in system RAM with `--vram-experts GIB`, using a bounded GPU cache of reused
 experts. Routing and precision are preserved, including MTP and concurrent requests;
 cache misses cost transfers. See [RAM-backed experts](docs/recipes/ram-experts.md)
 for model support, memory accounting, and performance limits.

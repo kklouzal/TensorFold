@@ -1,6 +1,6 @@
 # CUDA experts backed by system RAM
 
-`--ram-experts GIB` keeps Flash Next's affine 4-bit expert weights in pageable
+`--vram-experts GIB` keeps Flash Next's affine 4-bit expert weights in pageable
 system RAM and allocates a bounded shared cache on the GPU. This is useful on
 machines with separate host RAM and limited NVIDIA VRAM. It uses the ordinary
 CUDA kernels; it has no GB10 hardware dependency. The existing CUDA compute
@@ -10,7 +10,7 @@ For example, in an environment with TensorFold's CUDA runtime and compiler:
 
 ```bash
 tensorfold serve /models/Qwen3.8-Flash-Next-MLX-4bit-MTP \
-  --backend cuda --ram-experts 8 --ple-on-ssd \
+  --backend cuda --vram-experts 8 --ple-on-ssd \
   --context 32768 --parallel 4 --kv-dtype int8
 ```
 
@@ -89,6 +89,32 @@ cold/warm prefill, time to first token, decode rate, p95/p99 stalls, host and GP
 peak memory, cache hit/miss/eviction counts, and copied bytes. Compare fully
 resident execution when it fits and several admitted cache sizes; synthetic
 hit rate alone does not establish an end-to-end speed gain.
+
+## Direct GPU reads from host RAM
+
+A GPU can read suitably mapped host buffers while computing. On a discrete
+GPU, those weight bytes still travel over the CPU–GPU interconnect. Avoiding an
+explicit upload can help a coalesced, one-use access, but repeated reads can
+make an initial copy into VRAM cheaper. NVIDIA describes these conditions in
+its [zero-copy guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#zero-copy).
+
+The grouped kernels reuse weight tiles across up to 16 routed rows in decode
+and 64 rows in prefill. Additional tiles and later requests can reuse an expert
+again. The current miss path stages immutable packed weights and queues their
+upload before the consuming kernels. Ordinary CPU tensors cannot be passed to
+these kernels: they require CUDA weight tensors. Direct access would require a
+validated mapped allocation/alias and matching lifetime rules, or hardware and
+driver support for another host-access mode. Unified-memory page faults may
+trigger migration, as described in the
+[CUDA memory guide](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/understanding-memory.html).
+
+A possible hybrid would stream genuinely cold, single-use experts from mapped
+host buffers and promote experts when reuse justifies it. Reading remotely and
+immediately uploading the same weights can move their bytes twice. That choice
+needs a complete miss/decode/prefill comparison on the intended discrete GPU,
+including mapping, staging, promotion and memory costs. GB10's shared-memory
+measurements cannot establish that PCIe tradeoff. The flag rename changes the
+budget's name; the validated upload-and-cache policy remains the same.
 
 ## Reproducing the synthetic checks
 

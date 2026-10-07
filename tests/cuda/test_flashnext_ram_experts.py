@@ -215,7 +215,7 @@ def test_actual_engine_cold_loading_stays_on_host_and_matches_resident_yarn(tmp_
         with monkeypatch.context() as patcher:
             patcher.setattr(_Reader, "queue", queue)
             patcher.setattr(_Reader, "get", get)
-            cached = FlashNextEngine(tmp_path, ram_experts=2 * entry_bytes / 2**30, **options)
+            cached = FlashNextEngine(tmp_path, vram_experts=2 * entry_bytes / 2**30, **options)
         cache = cached.w.meta["expert_cache"]
         assert queued and taken
         assert not any(".switch_mlp." in name or ".shared_expert." in name for name in queued + taken)
@@ -240,7 +240,7 @@ def test_actual_engine_cold_loading_stays_on_host_and_matches_resident_yarn(tmp_
             assert torch.equal(cold[1][-1], resident.down[-1].cpu())
             expected_host_bytes += resident.count * entry_bytes
         assert cache.host_bytes == expected_host_bytes
-        assert cached.capacity_plan["ram_experts"]["host_bytes"] == expected_host_bytes
+        assert cached.capacity_plan["vram_experts"]["host_bytes"] == expected_host_bytes
         assert cached.rope.factor == native.rope.factor == 2
         assert same_tensor_bits(cached.w.inv_freq, native.w.inv_freq)
         assert cached.e.graphs is None

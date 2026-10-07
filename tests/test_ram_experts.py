@@ -108,27 +108,57 @@ def test_expert_count_limit_matches_native_plan_contract(tmp_path):
 def test_cli_rejects_unsupported_backends_and_silent_cuda_ssd_flag(tmp_path):
     checkpoint(tmp_path)
     family = NS(title=qwen4_exp.TITLE, model_type="qwen4_exp", package=qwen4_exp)
-    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--ram-experts", "0.01"])
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--vram-experts", "0.01"])
     assert serve_options.check(args, family, "cuda", tmp_path) is None
     with pytest.raises(ValueError, match="CUDA only"):
         serve_options.check(args, family, "mlx", tmp_path)
     with pytest.raises(ValueError, match="CUDA only"):
         serve_options.check(args, NS(package=NS()), "cuda", tmp_path)
-    args.ram_experts, args.ssd_experts = None, 1
+    args.vram_experts, args.ssd_experts = None, 1
     with pytest.raises(ValueError, match="MLX only"):
         serve_options.check(args, family, "cuda", tmp_path)
 
 
-def test_ram_option_reaches_cuda_engine(tmp_path, monkeypatch):
+def test_vram_option_name_default_and_help_match_gpu_cache_budget(capsys):
+    parser = cli.build_parser()
+    plain = parser.parse_args(["serve", "owner/model"])
+    cached = parser.parse_args(["serve", "owner/model", "--vram-experts", "0.25"])
+    assert plain.vram_experts is None and cached.vram_experts == 0.25
+    assert not hasattr(cached, "ram_experts")
+    serve = next(action for action in parser._actions if action.dest == "command").choices["serve"]
+    help_text = serve.format_help()
+    assert "--vram-experts GIB" in help_text and "--ram-experts" not in help_text
+    flag = next(action for action in serve._actions if action.dest == "vram_experts")
+    assert "GiB" in flag.help and "GPU expert cache" in flag.help
+    with pytest.raises(SystemExit) as failure:
+        parser.parse_args(["serve", "owner/model", "--ram-experts", "0.25"])
+    assert failure.value.code == 2
+    assert "unrecognized arguments: --ram-experts 0.25" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("budget", [None, 0.25])
+def test_vram_option_reaches_cuda_engine_only_when_set(tmp_path, monkeypatch, budget):
     from tensorfold.cuda import server
     received = []
     family = NS(title="test", model_type="test", package=NS(cuda_engine=lambda *a, **k:
         received.append(k) or NS(max_len=128)))
     monkeypatch.setattr(server, "App", lambda *a, **k: NS(effective_context_window=128))
     monkeypatch.setattr(server, "serve", lambda *a: None)
-    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-drafts", "--ram-experts", "0.25"])
+    command = ["serve", str(tmp_path), "--no-drafts"]
+    if budget is not None:
+        command += ["--vram-experts", str(budget)]
+    args = cli.build_parser().parse_args(command)
     assert cli._serve_cuda(args, family, tmp_path, 128) == 0
-    assert received[0]["ram_experts"] == 0.25
+    assert len(received) == 1 and "ram_experts" not in received[0]
+    if budget is None:
+        assert "vram_experts" not in received[0]
+    else:
+        assert received[0]["vram_experts"] == budget
+
+
+def test_retired_family_keyword_is_refused_before_loading(tmp_path):
+    with pytest.raises(TypeError, match="renamed to vram_experts"):
+        qwen4_exp.cuda_engine(tmp_path, ram_experts=0.25)
 
 
 @pytest.mark.parametrize("unified", [False, True])
@@ -277,7 +307,7 @@ def test_reader_initialization_failure_precedes_expert_cache_acquisition(tmp_pat
         raise OSError("checkpoint index unavailable")
     monkeypatch.setattr(ram_loader.weights, "_Reader", fail)
     with pytest.raises(OSError, match="checkpoint index unavailable"):
-        ram_loader.weights.load(tmp_path, "cpu", ram_experts=1, mtp=False, draft_vocab=None)
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
     assert ram_loader.calls == []
 
 
@@ -286,7 +316,7 @@ def test_norm_probe_failure_closes_reader_before_expert_cache_acquisition(tmp_pa
         raise ValueError("invalid norm encoding")
     monkeypatch.setattr(ram_loader.weights, "norms_around_one", fail)
     with pytest.raises(ValueError, match="invalid norm encoding"):
-        ram_loader.weights.load(tmp_path, "cpu", ram_experts=1, mtp=False, draft_vocab=None)
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
     assert ram_loader.calls == ["reader close"]
 
 
@@ -297,7 +327,7 @@ def test_final_reader_close_failure_also_closes_expert_cache(tmp_path, ram_loade
             raise RuntimeError("reader completion failed")
     ram_loader.reader.close = fail_first
     with pytest.raises(RuntimeError, match="reader completion failed"):
-        ram_loader.weights.load(tmp_path, "cpu", ram_experts=1, mtp=False, draft_vocab=None)
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
     assert ram_loader.calls == ["cache acquire", "reader close", "reader close", "cache close"]
 
 
@@ -313,7 +343,7 @@ def test_payload_failure_preserves_primary_when_both_cleanups_fail(tmp_path, ram
         raise RuntimeError("cache cleanup failed")
     ram_loader.reader.get, ram_loader.reader.close, ram_loader.cache.close = payload, reader_close, cache_close
     with pytest.raises(OSError, match="payload read failed") as caught:
-        ram_loader.weights.load(tmp_path, "cpu", ram_experts=1, mtp=False, draft_vocab=None)
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
     assert caught.value is primary
     assert ram_loader.calls == ["cache acquire", "reader close", "cache close"]
     assert any("reader cleanup failed" in note for note in primary.__notes__)

@@ -32,7 +32,7 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
-         rope: RopeParameters | None = None, ram_experts: float | None = None) -> Weights:
+         rope: RopeParameters | None = None, vram_experts: float | None = None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -42,11 +42,11 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
     model_dir = Path(model_dir)
     ram_layout = None
-    if ram_experts is not None:
+    if vram_experts is not None:
         from ..ram_experts import check, layout
 
-        check(model_dir, ram_experts, tp=tp[1] if tp is not None else 1)
-        ram_layout = layout(model_dir, ram_experts, mtp=mtp)
+        check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
+        ram_layout = layout(model_dir, vram_experts, mtp=mtp)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope)
     full = Config.read(model_dir, rope=rope)

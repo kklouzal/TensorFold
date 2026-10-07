@@ -37,14 +37,14 @@ class FlashNextEngine:
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "", port: int = 29551,
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
-                 yarn_factor: float | None = None, ram_experts: float | None = None) -> None:
+                 yarn_factor: float | None = None, vram_experts: float | None = None) -> None:
         from .. import rope_parameters
 
         self.rope = rope_parameters(model_dir, yarn_factor)
-        if ram_experts is not None:
+        if vram_experts is not None:
             from ..ram_experts import check
 
-            check(model_dir, ram_experts, tp=tp)
+            check(model_dir, vram_experts, tp=tp)
         import torch
 
         from .exl3_pack import admission, extra_files, is_exl3
@@ -112,12 +112,12 @@ class FlashNextEngine:
         weight_rule = vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank)
         host_capacity = {}
         ram_layout = None
-        if ram_experts is not None:
+        if vram_experts is not None:
             from ..ram_experts import layout, plan_scratch
             from tensorfold.cuda.capacity import Geometry
             from .prompt_plan import IDLE_ROWS
 
-            ram_layout = layout(model_dir, ram_experts, mtp=mtp)
+            ram_layout = layout(model_dir, vram_experts, mtp=mtp)
             weight_rule = ram_layout.transform(weight_rule)
             scratch_device, scratch_host = plan_scratch(config(model_dir),
                 streams * each if streams > 1 else max(8, each), chunk or IDLE_ROWS, mtp)
@@ -136,7 +136,7 @@ class FlashNextEngine:
                                    gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
                                    **rope_capacity, **host_capacity)
         if ram_layout is not None:
-            self.capacity_plan["ram_experts"] = {
+            self.capacity_plan["vram_experts"] = {
                 "host_bytes": ram_layout.host_bytes, "gpu_bytes": ram_layout.gpu_bytes,
                 "slots": ram_layout.slots, "staging_bytes": ram_layout.staging_bytes,
                 "loading_bytes": ram_layout.loading_bytes, "plan_device_bytes": scratch_device,
@@ -168,7 +168,7 @@ class FlashNextEngine:
             w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
                      draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
                      table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
-                     **({"ram_experts": ram_experts} if ram_experts is not None else {}))
+                     **({"vram_experts": vram_experts} if vram_experts is not None else {}))
         except BaseException:
             wait(reads)                               # a failed load leaves no table read behind it
             raise

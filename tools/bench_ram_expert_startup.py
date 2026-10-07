@@ -148,7 +148,7 @@ def main() -> int:
                         available = _mem_available()
                         torch.cuda.synchronize()
                         started = time.perf_counter()
-                        engine = FlashNextEngine(root, ram_experts=cache_gib, **options)
+                        engine = FlashNextEngine(root, vram_experts=cache_gib, **options)
                         torch.cuda.synchronize()
                         constructed = time.perf_counter()
                         tokens = []
@@ -160,7 +160,7 @@ def main() -> int:
                     if tokens != expected or cache.host_bytes != expected_host_bytes or cache.gpu_bytes != 2 * entry_bytes:
                         raise RuntimeError("startup candidate differs from native semantics or cache memory accounting")
                     loading = max(64 * 2**20, 4 * entry_bytes * chunk + 256 * 2**10)
-                    if engine.capacity_plan["ram_experts"]["loading_bytes"] != loading:
+                    if engine.capacity_plan["vram_experts"]["loading_bytes"] != loading:
                         raise RuntimeError("startup candidate reported a different loading-memory receipt")
                     wrapped = [layer.moe.experts for layer in engine.w.layers] + [engine.w.mtp.layer.moe.experts]
                     for oracle, expert in zip(source_layers, wrapped):
@@ -174,7 +174,7 @@ def main() -> int:
                             "misses": cache.misses, "copied_bytes": cache.copied_bytes,
                             "reader_direct": direct, "host_mem_available_before": available,
                             "host_mem_available_after": _mem_available(),
-                            "loading_bytes_receipt": engine.capacity_plan["ram_experts"]["loading_bytes"]}
+                            "loading_bytes_receipt": engine.capacity_plan["vram_experts"]["loading_bytes"]}
                 finally:
                     if engine is not None:
                         engine.close()
