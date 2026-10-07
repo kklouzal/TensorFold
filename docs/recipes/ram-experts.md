@@ -149,3 +149,10 @@ Complete synthetic startup and cache-policy replays matched native packed
 weights, generated tokens, logits and residuals. Recorded conditions, numerical
 oracles, paired timings and limits are in
 [the validation receipt](ram-experts-validation.json).
+
+The option is now `--vram-experts`; its Python budget keyword and admission
+receipt key are `vram_experts`. The previous spelling is refused. The rename
+passed 1,669 packaged Linux CPU checks (six skips) and both actual CUDA cold
+load/YaRN/MTP cases; runtime help and source/dependency audits passed. See the
+[rename validation receipt](vram-experts-rename-validation.json). The original
+performance receipt above records its own earlier source revision.

@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "timestamp_utc": "2026-10-07T02:12:01.633587+00:00",
+  "source_revision": "9082066da951850aa69468f301fdcca4a87cffd2",
+  "flag": "--vram-experts GIB",
+  "python_option_and_capacity_key": "vram_experts",
+  "old_cli_and_python_keyword": "refused before loading; no alias",
+  "scope": "Naming/validation migration; cache policy, kernels, quantization and expert storage unchanged. Historical performance receipt remains at its original source revision.",
+  "checks": {
+    "packaged_linux_cpu": {
+      "passed": 1669,
+      "skipped": 6,
+      "exit_code": 0
+    },
+    "actual_cuda_cold_load_yarn_mtp": {
+      "passed": 2,
+      "exit_code": 0
+    },
+    "renamed_keyword_contract": {
+      "passed": 41,
+      "exit_code": 0
+    },
+    "runtime_help": 0,
+    "runtime_old_flag_rejection": 2,
+    "pip_check": 0,
+    "source_files_in_each_image": 418,
+    "runtime_dependency_origins": 65,
+    "verification_dependency_origins": 68
+  },
+  "runtime_image": "sha256:01a5ea4b1ccf77366311d3e80efd993aae1d1c5a590b311c712b696a9531a51a",
+  "verification_image": "sha256:433c0ee9cc6e39d0a60d1982352f11fc309c0469d6c5d7fd4454d37206761ee7",
+  "same_application_layers": true,
+  "direct_host_reads": {
+    "status": "research only; not enabled",
+    "assessment": "Plausible one-use coalesced discrete-GPU optimization; still transfers weights over the link. Reuse across grouped tiles/future requests can favor staged VRAM. Immediate promotion after remote reads may duplicate traffic. Existing CUDA weight-tensor contract needs a mapped-memory adaptation. No discrete GPU available here to resolve relative speed.",
+    "primary_sources": [
+      "https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#zero-copy",
+      "https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/understanding-memory.html",
+      "https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/unified-memory.html"
+    ]
+  }
+}
