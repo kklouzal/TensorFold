@@ -12,11 +12,13 @@ _ROUND_LOG = os.environ.get("TF_FAMILY_ROUND_LOG", "")
 
 
 def drop_spares(cache: list[Any]) -> list[Any]:
-    """``alternating_kv.drop_spares`` (imported when used: this module loads without MLX)."""
+    """``cache`` with every alternating layer (any cache with ``drop_spare``) down to one buffer, for retained copies."""
 
-    from tensorfold.engine.alternating_kv import drop_spares as drop
-
-    return drop(cache)
+    for item in cache:
+        drop = getattr(item, "drop_spare", None)
+        if callable(drop):
+            drop()
+    return cache
 
 
 def _arrays_in(value: Any) -> list[Any]:

@@ -126,15 +126,17 @@ class Engine:
     """Weights, one sequence's state, buffers for decode windows (main model and MTP head) and for prompt chunks."""
 
     def __init__(self, w: Weights, *, capacity: int = 4096, max_rows: int = 8, prefill_rows: int = PREFILL_ROWS,
-                 graphs: bool = False, kv_dtype: str = "bf16") -> None:
+                 graphs: bool = False, kv_dtype: str = "bf16", kv_pair=None,
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
         self.w = w
         self.capacity = capacity
         self.rows, self.prefill_rows = max_rows, prefill_rows
-        self.kv_dtype = kv_dtype
         self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
         self.mbuf = Buffers(w, max_rows, capacity) if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True)
-        self.st = State(w, capacity, max_rows, kv_dtype)
+        self.st = State(w, capacity, max_rows, kv_dtype, kv_pair=kv_pair,
+                        kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype)
+        self.kv_pair = self.st.kv_pair
         self.graphs = None
         if graphs:
             from .graphs import Graphs
@@ -146,6 +148,14 @@ class Engine:
             else:
                 self.graphs = Graphs(self, max_rows=max_rows)
 
+    @property
+    def kv_dtype(self) -> str:
+        """Legacy symmetric cache name; mixed callers use kv_pair."""
+
+        if not self.kv_pair.symmetric:
+            raise ValueError("mixed KV engine has no single dtype; use kv_pair")
+        return self.kv_pair.key_dtype
+
     def reset(self) -> None:
         self.st.reset(self.w)
 
@@ -155,7 +165,8 @@ class Engine:
         other = object.__new__(Engine)
         other.w, other.capacity, other.rows, other.prefill_rows = self.w, self.capacity, self.rows, self.prefill_rows
         other.buf, other.mbuf, other.pbuf, other.graphs = self.buf, None, self.pbuf, None
-        other.st = State(self.w, self.capacity, self.rows, self.st.kv_dtype)
+        other.kv_pair = self.kv_pair
+        other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair)
         return other
 
     def forward(self, tokens: Sequence[int]) -> torch.Tensor:
@@ -169,6 +180,7 @@ class Engine:
                draft: bool = False, gathered: bool = True) -> list[int]:
         """Rows of logits at their positions -> tokens (``draft``: the MTP head's; ``gathered``: own candidates)."""
 
+        self.st.kv_check()
         mapped = draft and self.w.draft_ids is not None
         if self.w.comm is not None:
             b = self.mbuf if draft else self.buf
@@ -183,6 +195,7 @@ class Engine:
     def sample_draft(self, logits: torch.Tensor, position: int, sampling: Sampling | None) -> tuple[int, float]:
         """Return the position's keyed draft and its temperature-1 probability; this confidence ends draft chains early without changing output."""
 
+        self.st.kv_check()
         w = self.w
         mapped = w.draft_ids is not None
         if w.comm is not None:

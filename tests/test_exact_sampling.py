@@ -90,7 +90,7 @@ def test_choose_rows_matches_choose_row_by_row_alone_or_batched():
 def test_nucleus_without_top_k_matches_the_whole_vocabulary_draw():
     """top_k 0: the fast nucleus (GPU candidates + normalizer) draws what sorting every logit draws."""
 
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     from tensorfold.engine import exact_sampling as es
 

@@ -343,6 +343,8 @@ def test_only_flash_next_has_ple_tables_and_their_bytes_are_counted(tmp_path):
 def _flash_next(folder: Path) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "config.json").write_text(json.dumps({"model_type": "qwen4_exp",
+                                                    "hidden_size": 512, "num_attention_heads": 8,
+                                                    "num_key_value_heads": 2, "head_dim": 64,
                                                     "quantization": {"bits": 4, "group_size": 32}}))
     return folder
 
@@ -407,6 +409,7 @@ def test_cuda_admission_counts_no_mapped_pages_for_tables_on_ssd():
 
 
 def test_the_flag_reaches_the_metal_loader(tmp_path, monkeypatch):
+    _flash_next(tmp_path)
     seen = []
     runtime = ModuleType("tensorfold.families.qwen4_exp.runtime")
     runtime.load = lambda path, **k: seen.append(k) or ("model", "tokenizer")

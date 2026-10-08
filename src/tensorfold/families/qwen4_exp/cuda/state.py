@@ -132,14 +132,44 @@ class _MoECfg:
 
 
 # -- committed state -----------------------------------------------------------------------------------
+class KVNumericError(RuntimeError):
+    """A RotorQuant frame failed validation; its sequence requires explicit reset."""
+
+
 class State:
     """Committed caches of one sequence (and the MTP head's attention layer); grown by ``ensure`` up to ``limit``."""
 
     def __init__(self, w: Weights, capacity: int, max_rows: int, kv_dtype: str = "bf16", *,
-                 limit: int | None = None) -> None:
+                 limit: int | None = None, kv_pair=None, kv_key_dtype: str | None = None,
+                 kv_value_dtype: str | None = None) -> None:
         c = w.cfg
         dev = w.device
-        self.kv_dtype = kvcache.check(kv_dtype)
+        kvcache.check(kv_dtype)
+        if kv_pair is not None:
+            if type(kv_pair) is not kvcache.KVPairFormat:
+                raise ValueError("kv_pair must be a registered KVPairFormat")
+            if kv_key_dtype is not None or kv_value_dtype is not None:
+                raise ValueError("explicit KV pair cannot be combined with side dtype overrides")
+            if kv_dtype != "bf16" and kv_pair != kvcache.get_pair(kv_dtype):
+                raise ValueError("KV dtype shorthand conflicts with the explicit pair")
+        self.kv_pair = kv_pair if kv_pair is not None else kvcache.get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
+        self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
+        self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
+        self.kv_format = self.kv_pair.key if self.kv_pair.symmetric else self.kv_pair
+        self.kv_working_policy = "stored-basis-native64-v1"
+        self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
+        self.kv_value_bits = 0 if self.kv_pair.value.bits == 16 else self.kv_pair.value.bits
+        self.kv_key_codec, self.kv_value_codec = self.kv_pair.key.codec, self.kv_pair.value.codec
+        # Graph kernels only OR error bits and publish the first failing layer.
+        # This allocation keeps its address through growth, restore and reset.
+        self.kv_status = (torch.tensor([0, -2], dtype=torch.int32, device=dev)
+                          if not self.kv_pair.symmetric or self.kv_key_codec or self.kv_value_codec else None)
+        world = int(w.meta.get("world", 1))
+        self._kv_peer_status = (torch.empty((world, 2), dtype=torch.int32, device=dev)
+                                if self.kv_status is not None and world > 1 else None)
+        self._kv_pending = False
+        self._kv_error: KVNumericError | None = None
         self.limit = int(capacity if limit is None else limit)     # the rows this sequence may grow to
         capacity = min(int(capacity), self.limit)
         self.capacity = capacity
@@ -161,8 +191,8 @@ class State:
         self.scratch = [gdn_mod.GDNScratch(max_rows, dev, c.nk, c.nv) for _ in range(n)]
         self.ratio, self.index_dim = c.index_ratio, c.index_dim
         self.layers = len(att) + (w.mtp is not None)              # attention caches: the layers', the MTP head's
-        self.row_bytes = kvcache.row_bytes(c.kv_heads, c.head_dim, self.kv_dtype) + c.index_dim * 2
-        self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, self.kv_dtype) for _ in att]
+        self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + c.index_dim * 2
+        self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair) for _ in att]
         self.ikc = [torch.zeros((capacity, c.index_dim), dtype=torch.bfloat16, device=dev) for _ in att]
         nb = -(-capacity // c.index_ratio)
         self.pooled = [torch.zeros((nb, c.index_dim), dtype=torch.bfloat16, device=dev) for _ in att]
@@ -175,12 +205,78 @@ class State:
         self.mtp_drafted = 0
         self.mtp_pos = torch.zeros((1,), dtype=torch.int32, device=dev)
         if w.mtp is not None:
-            self.mtp_kc = kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, self.kv_dtype)
+            self.mtp_kc = kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair)
             self.mtp_ikc = torch.zeros((capacity, c.index_dim), dtype=torch.bfloat16, device=dev)
             self.mtp_pooled = torch.zeros((-(-capacity // c.index_ratio), c.index_dim), dtype=torch.bfloat16,
                                           device=dev)
 
+    @property
+    def kv_dtype(self) -> str:
+        """Legacy symmetric format name; independent sides require their named properties."""
+
+        if not self.kv_pair.symmetric:
+            raise ValueError("mixed KV state has no single dtype; use kv_key_dtype/kv_value_dtype")
+        return self.kv_pair.key_dtype
+
+    def kv_begin(self) -> None:
+        """Mark GPU writes unchecked; never clear a previous numeric failure."""
+
+        if self.kv_status is None:
+            return
+        if self._kv_error is not None:
+            raise self._kv_error
+        self._kv_pending = True
+
+    def kv_check(self) -> None:
+        """Validate pending writes before publication, outside CUDA graph capture.
+
+        A successful check consumes one two-word readback; subsequent checks
+        without new GPU writes do not synchronize. A failed state stays poisoned
+        until ``reset``. CUDA/runtime failures propagate unchanged.
+        """
+
+        status = self.kv_status
+        if status is None:
+            return
+        if self._kv_error is not None:
+            raise self._kv_error
+        if not self._kv_pending:
+            return
+        if status.is_cuda and torch.cuda.is_current_stream_capturing():
+            return
+        bits, layer = status.cpu().tolist()
+        self._kv_pending = False
+        if bits:
+            names = [name for bit, name in ((1, "Q"), (2, "K"), (4, "V"), (8, "RMS"), (16, "index"))
+                     if bits & bit]
+            self._kv_error = KVNumericError(
+                f"K={self.kv_key_dtype}, V={self.kv_value_dtype} numeric validation failed: {','.join(names)} (bits={bits}), "
+                f"layer={'MTP' if layer == -1 else layer}, pos={self.pos}, mtp_len={self.mtp_len}; "
+                "this sequence requires reset")
+            raise self._kv_error
+
+    def kv_snapshot_metadata(self) -> dict:
+        """Pinned codec identity and validated status for an in-memory snapshot."""
+
+        self.kv_check()
+        return {"kv_identity": self.kv_identity, "kv_status": (0, -2)}
+
+    def kv_validate_snapshot(self, snap: dict) -> None:
+        """Reject incompatible/unvalidated RotorQuant snapshots before mutation."""
+
+        self.kv_check()
+        if type(snap) is not dict:
+            raise ValueError("a KV snapshot must be a dictionary")
+        status = snap.get("kv_status")
+        if (type(status) is not tuple or len(status) != 2 or any(type(word) is not int for word in status)
+                or status != (0, -2) or snap.get("kv_identity") != self.kv_identity):
+            raise ValueError("a KV snapshot needs matching ordered formats, working policy and validated status")
+        if any(type(snap.get(name)) is not int or not 0 <= snap[name] <= self.capacity
+               for name in ("pos", "mtp_len")):
+            raise ValueError("KV snapshot positions must be integer rows within its sequence cache")
+
     def set_pos(self, pos: int) -> None:
+        self.kv_check()
         self.pos = pos
         self.pos_dev.fill_(pos)
 
@@ -193,11 +289,12 @@ class State:
         """One attention layer's share of ``cache_bytes``: what a resize holds twice at once."""
 
         rows = self.capacity if rows is None else int(rows)
-        return rows * self.row_bytes + -(-rows // self.ratio) * self.index_dim * 2
+        return rows * self.row_bytes + self.kv_pair.dummy_bytes + -(-rows // self.ratio) * self.index_dim * 2
 
     def ensure(self, rows: int, step: int = 8192) -> int:
         """Grow every context cache to hold ``rows`` rows (a ``step`` at a time, at most ``limit``); returns the new bytes."""
 
+        self.kv_check()
         rows = int(rows)
         if rows <= self.capacity:
             return 0
@@ -208,6 +305,7 @@ class State:
     def resize(self, rows: int) -> int:
         """Reallocate the context caches at ``rows`` rows, keeping every committed row; returns the bytes it added."""
 
+        self.kv_check()
         rows = int(rows)
         before = self.cache_bytes()
         keep = max(self.pos, self.mtp_len)
@@ -230,6 +328,11 @@ class State:
     def reset(self, w: Weights) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
+        if self.kv_status is not None:
+            self.kv_status.zero_()
+            self.kv_status[1].fill_(-2)
+            self._kv_pending = False
+            self._kv_error = None
         self.conv.zero_()
         self.rec.zero_()
         self.cur = [0] * len(self.cur)
@@ -249,6 +352,7 @@ class State:
     def clone(self) -> "State":
         """An independent copy (tests and A/B checks)."""
 
+        self.kv_check()
         import copy
 
         other = copy.copy(self)
@@ -269,23 +373,35 @@ class State:
         return other
 
     def set_mtp_len(self, n: int) -> None:
+        self.kv_check()
         self.mtp_len = n
         self.mtp_pos.fill_(n)
 
     def copy_prefix(self, source: "State", pos: int, mtp_len: int) -> None:
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
 
-        if self is source or self.kv_dtype != source.kv_dtype or self.ratio != source.ratio:
+        source.kv_check()
+        self.kv_check()
+        if self is source or self.kv_identity != source.kv_identity or self.ratio != source.ratio:
             raise ValueError("a prefix copy needs distinct slots with matching cache formats")
-        if not 0 <= pos <= min(self.capacity, source.pos) or not 0 <= mtp_len <= min(self.capacity, source.mtp_len):
+        if (type(pos) is not int or type(mtp_len) is not int
+                or not 0 <= pos <= min(self.capacity, source.pos)
+                or not 0 <= mtp_len <= min(self.capacity, source.mtp_len)):
             raise ValueError("a prefix copy must fit the destination and the source's committed rows")
         if len(self.kc) != len(source.kc):
             raise ValueError("a prefix copy needs matching attention layers")
+        pairs = list(zip(self.kc, source.kc))
+        if mtp_len:
+            pairs.append((self.mtp_kc, source.mtp_kc))
+        for dst, src in pairs:
+            if dst.pair != src.pair or (dst.kv_heads, dst.head_dim) != (src.kv_heads, src.head_dim):
+                raise ValueError("a prefix copy needs matching cache formats, dimensions and rotation tables")
         def copy_cache(dst, src, rows):
             dst.k[:rows].copy_(src.k[:rows])
             dst.v[:rows].copy_(src.v[:rows])
-            if dst.quantized:
+            if dst.key_format.quantized:
                 dst.ks[:rows].copy_(src.ks[:rows])
+            if dst.value_format.quantized:
                 dst.vs[:rows].copy_(src.vs[:rows])
         for i, cache in enumerate(self.kc):
             copy_cache(cache, source.kc[i], pos)
@@ -299,15 +415,17 @@ class State:
     def snapshot(self) -> dict:
         """The committed state outside the cache rows; ``restore`` needs the cache rows below ``pos`` still in place."""
 
+        metadata = self.kv_snapshot_metadata()
         p = self.cur[0] if self.cur else 0
         if any(c != p for c in self.cur):
             raise RuntimeError("DeltaNet layers out of step")
         return {"pos": self.pos, "rec": self.rec[p].clone(), "conv": self.conv.clone(),
                 "ple_tail": self.ple_tail.clone(),
                 "ple_history": None if self.ple_history is None else self.ple_history.copy(),
-                "mtp_len": self.mtp_len - self.mtp_drafted}
+                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata}
 
     def restore(self, snap: dict) -> None:
+        self.kv_validate_snapshot(snap)
         self.rec[0].copy_(snap["rec"])
         self.cur = [0] * len(self.cur)
         self.conv.copy_(snap["conv"])

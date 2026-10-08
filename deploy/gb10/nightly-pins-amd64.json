@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-06",
+  "platform": "linux/amd64",
+  "python": "3.12",
+  "base": "nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:a3733239a1669d4b920fac639576fa254c913defa63d2b9ad1e861aba891cedc",
+  "cuda": "13.4.1",
+  "cache_key": "cu1341-torch216-dev20261006-triton39-aad2a60d",
+  "wheels": {
+    "torch": {
+      "version": "2.16.0.dev20261006+cu134",
+      "url": "https://download.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261006%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "ed3d1b2a9e7a315ff92ed9b457d712414bb5a6b4964e15cea846caf1110f2145"
+    },
+    "torchvision": {
+      "version": "0.30.0.dev20261006+cu134",
+      "url": "https://download.pytorch.org/whl/nightly/cu134/torchvision-0.30.0.dev20261006%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "208d5cd56fe9772fa6524385d6f348548a42eff82b81be530f9c299a86104dfe"
+    },
+    "triton": {
+      "version": "3.9.0+gitaad2a60d",
+      "url": "https://download.pytorch.org/whl/nightly/triton-3.9.0%2Bgitaad2a60d-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "b66dd92d21794f72c66c8185ce28fd09c10a7c43538aff5ff4fd4e0ceea943ec"
+    }
+  }
+}

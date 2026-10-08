@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tensorfold.families.qwen4_exp.kv_formats import get_pair
+
 from tests.test_cuda_geometry import Allocation, allocations  # noqa: F401 (pytest fixture)
 
 
@@ -53,7 +55,9 @@ def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, al
     pooled = Allocation(((slots + 3) // 4, 128), "bf16", "cpu")
     st = SimpleNamespace(image_positions=None, rope_delta=0, att_index={0: 0}, kc=[_kv(cache, bits)],
                          ikc=[ikc], pooled=[pooled], pos_dev=None,
-                         pos=8192 - 8 if not bucket else 100)
+                         pos=8192 - 8 if not bucket else 100,
+                         kv_key_bits=bits % 16, kv_value_bits=bits % 16,
+                         kv_key_codec=0, kv_value_codec=0, kv_status=None)
     mod.attn_block(layer, weights, [(st, 0, 8)], buffers, 8, False, 8192 if bucket else None)
     assert kernels["_chunks"].calls[0][0] == (8, 2, 5)
     assert kernels["_scores"].calls[0][0] == (8, 32)
@@ -78,14 +82,18 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
         return None
     monkeypatch.setattr(mod, "compute", compute)
     monkeypatch.setattr(mod, "mtp_compute", compute)
-    obj = mod.Graphs.__new__(mod.Graphs)
-    obj.max_rows, obj.main, obj.mtp, obj.mtp_out = 8, {}, {}, {}
-    state = SimpleNamespace(pos=2000, mtp_len=2000, cur=[0], capacity=262151)
-    obj.e = SimpleNamespace(w=None, st=state, buf=SimpleNamespace(logits=[0] * rows), mbuf=None, capacity=262151)
+    events = []
+    state = SimpleNamespace(pos=2000, mtp_len=2000, cur=[0], capacity=262151,
+                            kv_identity=(get_pair("bf16").identity, "stored-basis-native64-v1"), version=0,
+                            kv_status=None, kv_begin=lambda: events.append("begin"))
+    engine = SimpleNamespace(w=SimpleNamespace(comm=None), st=state,
+                             buf=SimpleNamespace(logits=[0] * rows), mbuf=None, capacity=262151)
+    monkeypatch.setattr(mod.torch.cuda, "graph_pool_handle", lambda: None)
+    obj = mod.Graphs(engine)
     def capture(fn):
         captures.append(fn)
         fn()
-        return SimpleNamespace(replay=lambda: None)
+        return SimpleNamespace(replay=lambda: events.append("replay"))
     obj._capture = capture
     for context in (2000, 8192 - rows, 8193 - rows, 9000, 10000, 0):
         state.pos = state.mtp_len = context
@@ -95,6 +103,8 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
             obj.forward([1] * rows)
     assert len(captures) == 2
     assert set(computes) == {8192, 16384}
+    assert events == ["begin", "replay"] * 6
+    assert obj.owners == (engine.w, state, engine.buf, engine.mbuf)
 
 
 @pytest.mark.torch
@@ -125,7 +135,8 @@ def test_prompt_blocks_bound_their_launches_by_their_own_rows(monkeypatch, alloc
     cache = Allocation((slots, 2, 64), "bf16", "cpu")
     st = SimpleNamespace(image_positions=None, rope_delta=0, att_index={0: 0}, kc=[_kv(cache, bits)],
                          ikc=[Allocation((slots, 128), "bf16", "cpu")],
-                         pooled=[Allocation(((slots + 3) // 4, 128), "bf16", "cpu")], pos_dev=None, pos=0)
+                         pooled=[Allocation(((slots + 3) // 4, 128), "bf16", "cpu")], pos_dev=None, pos=0, kv_key_bits=bits % 16, kv_value_bits=bits % 16,
+                         kv_key_codec=0, kv_value_codec=0, kv_status=None)
     mod.attn_block(layer, weights, [(st, 0, rows)], buffers, rows, False)
     ends = [mod.ATT_ROWS, 2 * mod.ATT_ROWS]
     assert [call[0] for call in kernels["_scores"].calls] == [(mod.ATT_ROWS, -(-(e // 4) // 64)) for e in ends]

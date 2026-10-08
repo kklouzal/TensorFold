@@ -120,8 +120,10 @@ between MLX and CUDA, different quantizations, or different tensor-parallel rank
 | `--no-drafts` | Decode serially | Both |
 | `--drafter auto`, `none`, or model ID | Select an optional draft model where the family supports it | Both |
 | `--mtp-drafts N` | Family-specific cap on MTP drafts | Both |
-| `--kv-dtype bf16`, `int8`, `int4` | Flash Next: `int8` or `int4` stores keys and values with one fp16 scale per 32 values. Other families and the MLX path refuse it | CUDA |
-| `--mtp-confidence P` | Flash Next: stop a draft chain before a later draft under this probability, 0 to 1 (default 0.30) | CUDA |
+| `--kv-dtype FORMAT` | Flash Next cache format for both keys and values, default `bf16`; native `int8`/`int4` and optional RotorQuant formats are described in [the recipe](docs/recipes/qwen3.8-flash-next.md#kv-cache) | CUDA |
+| `--kv-key-dtype FORMAT`, `--kv-value-dtype FORMAT` | Override the corresponding side of `--kv-dtype`; all 16 Flash Next formats can be combined independently (256 ordered choices). Quantization trades quality for cache space; choose using measured quality and memory | CUDA |
+| `--yarn-factor FACTOR` | Flash Next text RoPE context expansion; for 2× context use `--yarn-factor 2 --context 524288`, subject to memory admission | CUDA |
+| `--mtp-confidence P` | Flash Next: stop a draft chain before a later draft under this probability, 0 to 1 (default 0.70) | CUDA |
 | `--prefill-fp8` | Prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, FP8 and MXFP8 layers of NVFP4 checkpoints): faster prompts at lower precision ([measured](docs/recipes/cuda.md#prompt-precision)). Default: bf16 activations, as decode | CUDA |
 | `--precision checkpoint`, `full` | NVFP4 checkpoints: `checkpoint` (default) runs their own math, FP4 x FP4 on SM 12.x and FP8 x FP8 from 8.9, W4A16 elsewhere; `full` runs bf16 activations against the stored weights ([measured](docs/recipes/cuda.md#nvfp4-precision)) | CUDA |
 | `--tp 2 --rank R --master HOST` | Two-rank CUDA execution; `--master-port P` sets rank 0's rendezvous port (default 29551) | CUDA |
@@ -176,10 +178,12 @@ Flash Next's startup weight check excludes n-gram tensors when the loader keeps 
 mappings. The startup report shows resident and file-backed bytes separately. Cached file pages still
 consume RAM and can be reclaimed by the OS; see [Flash Next memory](docs/recipes/qwen3.8-flash-next.md#mlx-execution).
 
-On CUDA machines with limited VRAM, Flash Next's affine 4-bit checkpoints can keep
+On CUDA machines with limited VRAM, Flash Next's affine 4-bit and EXL3 checkpoints can keep
 experts in system RAM with `--vram-experts GIB`, using a bounded GPU cache of reused
 experts. Routing and precision are preserved, including MTP and concurrent requests;
-cache misses cost transfers. See [RAM-backed experts](docs/recipes/ram-experts.md)
+cache misses cost transfers. On a GPU with separate VRAM, `--vram-experts auto`
+assigns the remaining memory to that cache after allocating resident weights and
+buffers and reserving future sequence state and workspace. See [RAM-backed experts](docs/recipes/ram-experts.md)
 for model support, memory accounting, and performance limits.
 
 An explicit reply limit is reserved before prefill. A request that exceeds context or memory is refused

@@ -21,7 +21,7 @@ from . import gdn as gdn_mod
 from . import attn_multi, bf16, gdn_io, gdn_multi, glue, nvfp4_moe, qmm
 from . import image_rows
 from .hc_check import fuser as _hc_fuser
-from .state import ATT_ROWS, CAND, Buffers, State, _MoECfg
+from .state import ATT_ROWS, CAND, Buffers, State, KVNumericError, _MoECfg
 from .weights import HC, LayerW, Weights
 
 
@@ -235,14 +235,16 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     for st, a0, a1 in segs:
         cache, ikc, pooled, pos, host_pos = _caches(layer, st, mtp)
-        bits = 0 if not cache.quantized else cache.bits
         keys = context if context is not None else host_pos + a1 - a0
         rope = st.image_positions
         length = 0 if rope is None else rope.shape[0]
         delta = st.rope_delta_dev if rope is not None or st.rope_delta else None
         glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
                        b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
-                       index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs, bits=bits,
+                       index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
+                       k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
+                       v_bits=st.kv_value_bits, v_codec=st.kv_value_codec,
+                       status=st.kv_status, layer=layer.index,
                        rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
         if b.prefill:
             if b.attn.qsa:
@@ -255,14 +257,17 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                 if b.attn.qsa:
                     attn_mod.qsa_rows(b.iq[r0:r0 + n], pooled, b.pos_blk, b.attn, n, context=ends)
                 attn_mod.attention(b.q[r0:r0 + n], cache.k, cache.v, b.pos_blk, b.attn, n, scale,
-                                   out=b.attn_o[r0:r0 + n], context=ends, ks=cache.ks, vs=cache.vs, bits=bits)
+                                   out=b.attn_o[r0:r0 + n], context=ends, ks=cache.ks, vs=cache.vs,
+                                   k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
+                                   v_bits=st.kv_value_bits, v_codec=st.kv_value_codec)
             continue
         if b.attn.qsa:
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
                                 rope_scale=rope_scale)
         o = attn_mod.attention(b.q[a0:a1], cache.k, cache.v, pos, b.attn, a1 - a0, scale, context=keys,
-                               ks=cache.ks, vs=cache.vs, bits=bits)
+                               ks=cache.ks, vs=cache.vs, k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
+                               v_bits=st.kv_value_bits, v_codec=st.kv_value_codec)
         if len(segs) > 1:                       # the scratch output is the next stream's too
             b.attn_o[a0:a1].copy_(o[:a1 - a0])
     o = b.attn_o if b.prefill or len(segs) > 1 else o
@@ -421,18 +426,22 @@ def _exl3_moe(m, w: Weights, b: Buffers, R: int) -> tuple:
     """Routed and shared experts on the grouped EXL3 kernel in windows (rows are independent); prompts keep bf16 slots."""
 
     from tensorfold.cuda.exl3.experts import routed
+    from tensorfold.cuda.exl3.host_experts import CachedExl3Experts, routed_cached
 
     from .exl3_pack import MOE_WINDOW
 
     buf = b.moe
     moe_mod.router(b.mixed[:R], m.router, buf.logits[:R])
     moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
+    call = routed_cached if isinstance(m.experts, CachedExl3Experts) else None
     if not b.prefill and R <= MOE_WINDOW:
-        y = routed(b.mixed[:R], buf.pick[:R], None, m.experts, w.x3.moe, None, R)
+        y = (call(b.mixed[:R], buf.pick[:R], m.experts, w.x3.moe, R) if call is not None else
+             routed(b.mixed[:R], buf.pick[:R], None, m.experts, w.x3.moe, None, R))
         return 2, y.view(R, buf.slots, -1), buf.wts[:R]
     for r0 in range(0, R, MOE_WINDOW):
         n = min(MOE_WINDOW, R - r0)
-        y = routed(b.mixed[r0:r0 + n], buf.pick[r0:r0 + n], None, m.experts, w.x3.moe, None, n)
+        y = (call(b.mixed[r0:r0 + n], buf.pick[r0:r0 + n], m.experts, w.x3.moe, n) if call is not None else
+             routed(b.mixed[r0:r0 + n], buf.pick[r0:r0 + n], None, m.experts, w.x3.moe, None, n))
         buf.y[r0:r0 + n].copy_(y.view(n, buf.slots, -1))
     return 2, buf.y[:R], buf.wts[:R]
 
@@ -573,6 +582,7 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None):
     """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states."""
 
+    _kv_begin(segs)
     c = w.cfg
     R = segs[-1][2]
     _embed(w, b.ids[:R], c.streams, b.h[:R])
@@ -584,7 +594,52 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     pending = None
     for layer in w.layers:
         pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
-    return finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
+    result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
+    _kv_check(segs, comm=w.comm)
+    return result
+
+
+def _kv_begin(segs: Sequence[Seg]) -> None:
+    """Mark each codec sequence's next frame as requiring a validation readback."""
+
+    for st, _, _ in segs:
+        if st.kv_status is not None:
+            st.kv_begin()
+
+
+def _kv_check(segs: Sequence[Seg], *, comm=None) -> None:
+    """Latch every numeric failure before exposing any participant's frame."""
+
+    states = [st for st, _, _ in segs if st.kv_status is not None]
+    if not states or (states[0].kv_status.is_cuda and torch.cuda.is_current_stream_capturing()):
+        return
+    first = None
+    for st in states:
+        try:
+            st.kv_check()
+        except KVNumericError as error:
+            if first is None:
+                first = error
+    if comm is not None:
+        if len(states) != 1:
+            raise ValueError("tensor-parallel RotorQuant validation requires one sequence")
+        st = states[0]
+        peers = st._kv_peer_status
+        if peers is None or peers.shape != (comm.world, 2):
+            raise ValueError("RotorQuant peer validation buffer does not match the tensor-parallel world")
+        # Every rank joins even after a local numeric failure. No rank throws
+        # before its peers observe the failure and stop the same frame.
+        comm.all_gather(st.kv_status, peers)
+        for rank, (bits, layer) in enumerate(peers.cpu().tolist()):
+            if bits:
+                if first is None:
+                    first = KVNumericError(f"K={st.kv_key_dtype}, V={st.kv_value_dtype} numeric validation failed on rank {rank}: "
+                                           f"bits={bits}, layer={'MTP' if layer == -1 else layer}, pos={st.pos}; "
+                                           "this sequence requires reset")
+                st._kv_error = first
+                break
+    if first is not None:
+        raise first
 
 
 def converges(w: Weights) -> bool:
@@ -598,6 +653,8 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
                   ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
+    _kv_begin(dsegs)
+    _kv_begin(psegs)
     c = w.cfg
     Rd, Rp = dsegs[-1][2], psegs[-1][2]
     if Rp + Rd > pb.rows:
@@ -612,7 +669,9 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
         pb.mixed[Rp:Rp + Rd].copy_(db.mixed[:Rd])
         mode, y, wts = moe_block(layer, w, pb, Rp + Rd)
         dp, pp = (mode, y[Rp:], wts[Rp:], db.inj_m), (mode, y[:Rp], wts[:Rp], pb.inj_m)
-    return finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
+    result = finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
+    _kv_check([*dsegs, *psegs], comm=w.comm)
+    return result
 
 
 @torch.no_grad()
@@ -661,6 +720,7 @@ def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int
 def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, states: bool = True) -> None:
     """Keep the first ``keep`` of R rows ``st`` ran from row ``at``; ``states=False``: gdn_multi committed them."""
 
+    st.kv_check()
     c = w.cfg
     if not 1 <= keep <= R or (b.prefill and keep != R):
         raise ValueError("keep must be in 1..R, and all of a prompt chunk")
@@ -691,4 +751,5 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> d
         history = np.concatenate([before, tokens[:cut.row]])[-(c.ngram_size - 1):]
         shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1])
     return {"pos": st.pos + cut.row, "rec": cut.rec, "conv": cut.conv, "ple_tail": tail,
-            "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len}
+            "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len,
+            **st.kv_snapshot_metadata()}

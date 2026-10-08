@@ -16,13 +16,17 @@ def test_cancellation_after_evaluated_first_chunk_prevents_next_model_chunk(monk
     token = Cancellation()
     engine.prefill_guard = PrefillGuard(token)
     calls, evaluated = [], []
-    monkeypatch.setattr(sys.modules["mlx.core"], "eval", lambda *args: evaluated.append(True))
+    if not engine.model.cpu_test_arrays:
+        monkeypatch.setattr(sys.modules["mlx.core"], "eval", lambda *args: evaluated.append(True))
     forward = engine.model.hidden
 
     def canceled_forward(rows, cache, parents=None):
         calls.append(int(rows.size))
         token.cancel()
-        return forward(rows, cache, parents)
+        hidden = forward(rows, cache, parents)
+        if engine.model.cpu_test_arrays:
+            evaluated.append(True)  # eager forward completed and wrote the cache
+        return hidden
 
     engine.model.hidden = canceled_forward
     cache = engine.model.make_cache()

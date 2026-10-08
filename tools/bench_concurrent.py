@@ -16,17 +16,33 @@ the reply's usage. A request that fails to connect or errors counts in ``failed`
 server with a small listen backlog resets simultaneous connections; those resets are reported, not hidden).
 Standard library only.
 
+Missing token hashes are unverified, never equal. ``--strict`` requires hashes
+for measured replies and verifies all requested comparisons; failed/unmeasured
+cells or unverified comparisons exit nonzero. Ordinary servers may omit hashes
+without strict mode. SSE arrivals measure text pieces, not individual tokens.
+Transport errors and unequal requested comparisons always exit nonzero.
+
   python3 tools/bench_concurrent.py http://127.0.0.1:8080 MODEL --levels 1,2,4,8 --alone --output out.json
 """
 
 import argparse
 import json
+import math
 import statistics
 import threading
 import time
 import urllib.request
 
 MIN_PIECES = 4           # text pieces a reply needs before its span is timed
+MAX_SSE_BYTES = 16 * 1024**2
+
+
+def compare_hash(left: dict, right: dict) -> bool | None:
+    """Exact keyed comparison; None means failed or missing hash evidence."""
+    a, b = left.get("token_sha"), right.get("token_sha")
+    if left.get("error") or right.get("error") or not isinstance(a, str) or not a or not isinstance(b, str) or not b:
+        return None
+    return a == b
 
 PROMPTS = [
     {"name": "code", "kind": "completion",
@@ -70,12 +86,21 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
     pieces: list[tuple[float, int]] = []           # (arrival, characters) of every text chunk
     usage: dict = {}
     runtime: dict = {}
+    consumed, done = 0, False
     with urllib.request.urlopen(req, timeout=1800) as resp:
         for raw in resp:
+            consumed += len(raw)
+            if len(raw) > 65536 or consumed > MAX_SSE_BYTES:
+                raise ValueError("SSE response exceeded bounded size")
             line = raw.decode().strip()
-            if not line.startswith("data:") or line == "data: [DONE]":
+            if line == "data: [DONE]":
+                done = True
+                break
+            if not line.startswith("data:"):
                 continue
             chunk = json.loads(line[5:])
+            if not isinstance(chunk, dict) or "error" in chunk:
+                raise ValueError(f"SSE error or invalid object: {chunk!r}")
             usage = chunk.get("usage") or usage
             runtime = chunk.get("tensorfold") or runtime
             for choice in chunk.get("choices", []):
@@ -84,7 +109,11 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
                 piece = choice.get("text") or delta.get("content") or delta.get("reasoning_content") or ""
                 if piece:
                     pieces.append((time.perf_counter(), len(piece)))
-    n = int(usage.get("completion_tokens", 0))
+    if not done:
+        raise ValueError("SSE ended before [DONE]")
+    n = usage.get("completion_tokens")
+    if type(n) is not int or n <= 0 or n > tokens:
+        raise ValueError("SSE missing bounded positive completion usage")
     out = {"prompt": item["name"], "seed": seed, "sent": sent, "first": None, "last": None, "tokens": n,
            "pieces": pieces, "ttft_s": None, "decode_tps": None, "token_sha": runtime.get("token_sha")}
     if pieces:
@@ -94,6 +123,8 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
             out["decode_tps"] = (n - 1) / (last - first)
         else:
             out["unmeasured"] = True
+    else:
+        out["unmeasured"] = True
     return out
 
 
@@ -138,7 +169,7 @@ def aggregates(runs: list[dict]) -> dict:
     return out
 
 
-def main() -> None:
+def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("base")
     p.add_argument("model")
@@ -151,16 +182,23 @@ def main() -> None:
     p.add_argument("--alone", action="store_true", help="check each reply's token_sha against its request alone")
     p.add_argument("--serial", action="store_true", help="check the alone runs against \"draft\": false")
     p.add_argument("--no-seed", action="store_true", help="sampled requests without a seed (standards; no checks)")
+    p.add_argument("--strict", action="store_true", help="fail on missing hashes, unverified comparisons or unmeasured cells")
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i this many ms after request i - 1")
     p.add_argument("--label", default="")
     p.add_argument("--output")
     args = p.parse_args()
+    if args.strict and args.no_seed:
+        p.error("--strict requires keyed requests; omit --no-seed")
     if args.no_seed:
         args.alone = args.serial = False
     levels = [int(x) for x in args.levels.split(",")]
     temps = [1.0] if args.mixed else [float(t) for t in args.temperatures.split(",")]
+    if any(n < 1 for n in levels) or args.tokens < 1 or args.reps < 1 or any(not math.isfinite(t) or t < 0 for t in temps):
+        p.error("levels/tokens/reps must be positive and temperatures finite/nonnegative")
     cells = [None] if args.mixed else PROMPTS
-    report: dict = {"label": args.label, "tokens": args.tokens, "mixed": args.mixed, "cells": []}
+    report: dict = {"label": args.label, "tokens": args.tokens, "mixed": args.mixed, "strict": args.strict,
+                   "timing_unit": "SSE text-piece arrivals; not individual-token latency", "cells": []}
+    failed = False
     for temp in temps:
         for item in cells:
             specs: list[tuple[dict, int | None]]
@@ -170,7 +208,9 @@ def main() -> None:
                 specs = [(item, args.seed + i if temp > 0 else args.seed) for i in range(max(levels))]
             if args.no_seed:
                 specs = [(spec[0], None) for spec in specs]
-            together(args.base, args.model, specs[:1], 16, temp)                         # warm-up
+            warmup = together(args.base, args.model, specs[:1], 16, temp)
+            warmup_failed = any(r.get("error") for r in warmup)
+            failed |= warmup_failed
             alone: dict[tuple[str, int | None], dict] = {}
             if args.alone or args.serial:
                 for spec in specs:
@@ -181,8 +221,9 @@ def main() -> None:
                 for key, ref in alone.items():
                     serial = stream(args.base, args.model, next(q for q in PROMPTS if q["name"] == key[0]),
                                     args.tokens, temp, key[1], draft=False)
-                    ref["serial_equal"] = (None if serial.get("error") or ref.get("error")
-                                           else serial["token_sha"] == ref["token_sha"])
+                    ref["serial_equal"] = compare_hash(serial, ref)
+                    ref["serial_error"] = serial.get("error") or ref.get("error")
+                    failed |= bool(ref["serial_error"])
             for n in levels:
                 reps = []
                 for _ in range(args.reps):
@@ -191,15 +232,18 @@ def main() -> None:
                     rep["per_stream_tps"] = [round(r["decode_tps"], 1) for r in runs if r["decode_tps"] is not None]
                     rep["ttft_s"] = [round(r["ttft_s"] or 0.0, 2) for r in runs]
                     rep["errors"] = [r["error"] for r in runs if r.get("error")]
+                    rep["token_hashes"] = [r.get("token_sha") for r in runs]
+                    rep["hashes_unverified"] = sum(not isinstance(r.get("token_sha"), str) or not r["token_sha"]
+                                                  for r in runs)
                     if alone:
-                        # None: the request or its solo run failed (not an exactness result)
-                        rep["equal_alone"] = [None if r.get("error") or alone[(r["prompt"], r["seed"])].get("error")
-                                              else alone[(r["prompt"], r["seed"])]["token_sha"] == r["token_sha"]
+                        rep["equal_alone"] = [compare_hash(alone[(r["prompt"], r["seed"])], r)
                                               for r in runs]
                     reps.append(rep)
                 cell = {"prompt": "mixed" if args.mixed or item is None else item["name"], "temperature": temp,
                         "streams": n, "failed": sum(r["failed"] for r in reps),
                         "unmeasured": sum(r["unmeasured"] for r in reps),
+                        "hashes_unverified": sum(r["hashes_unverified"] for r in reps),
+                        "warmup_failed": warmup_failed,
                         "aggregate_tps": round(statistics.median(r["aggregate_tps"] for r in reps), 1),
                         "per_stream_tps": round(statistics.median([v for r in reps for v in r["per_stream_tps"]] or [0.0]), 1),
                         "ttft_s_max": max(max(r["ttft_s"]) for r in reps)}
@@ -208,20 +252,29 @@ def main() -> None:
                 if alone:
                     checks = [v for r in reps for v in r["equal_alone"]]
                     cell["alone"] = {"equal": checks.count(True), "unequal": checks.count(False),
-                                     "failed": checks.count(None)}
+                                     "failed": checks.count(None), "unverified": checks.count(None)}
                 if args.serial:
                     checks = [v.get("serial_equal") for v in alone.values()]
                     cell["serial"] = {"equal": checks.count(True), "unequal": checks.count(False),
-                                      "failed": checks.count(None)}
+                                      "failed": checks.count(None), "unverified": checks.count(None)}
+                invalid = bool(cell["failed"] or warmup_failed or any(v.get("error") or v.get("serial_error") for v in alone.values()))
+                invalid |= any(cell.get(name, {}).get("unequal", 0) > 0 for name in ("alone", "serial"))
+                if args.strict:
+                    invalid |= bool(cell["unmeasured"] or cell["hashes_unverified"] or
+                                    any(cell.get(name, {}).get("unverified", 0) > 0 for name in ("alone", "serial")))
+                cell["passed"] = not invalid
+                failed |= invalid
                 errors = sorted({e for r in reps for e in r["errors"]})
                 if errors:
                     cell["errors"] = errors[:3]
                 print(json.dumps({"label": args.label, **cell}), flush=True)
                 report["cells"].append({**cell, "reps": reps})
+    report["passed"] = not failed
     if args.output:
         with open(args.output, "w") as f:
             json.dump(report, f, indent=1)
+    return int(failed)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

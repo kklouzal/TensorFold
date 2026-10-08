@@ -244,6 +244,9 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                                "master_port": int(args.master_port), "no_drafts": bool(args.no_drafts)}
     if getattr(args, "kv_dtype", "bf16") != "bf16":
         options["kv_dtype"] = args.kv_dtype
+    for name in ("kv_key_dtype", "kv_value_dtype"):
+        if getattr(args, name, None) is not None:
+            options[name] = getattr(args, name)
     options.update(_vision_options(args))
     if args.mtp_drafts is not None:
         options["mtp_drafts"] = int(args.mtp_drafts)

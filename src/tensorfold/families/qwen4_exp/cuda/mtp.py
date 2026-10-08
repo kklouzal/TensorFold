@@ -7,7 +7,7 @@ from typing import Sequence
 import torch
 
 from . import glue
-from .forward import _embed, _mm, candidates, finish, layer_forward
+from .forward import _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
 from .state import Buffers, State
 from .weights import Weights
 
@@ -39,6 +39,7 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     """The MTP head's GPU work (capturable); ``last_only``: the draft head's logits of each stream's last row.
     ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection."""
 
+    _kv_begin(segs)
     c = w.cfg
     m = w.mtp
     n = segs[-1][2]
@@ -51,9 +52,12 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     pending = layer_forward(m.layer, w, segs, b, n, None, mtp=True, context=context)
     finish(w, m.mixer, b, n, pending, logits=False)
     if not logits:
+        _kv_check(segs, comm=w.comm)
         return None
     if not last_only:
-        return _mm(b.mixed[:n], w.head, b.xs_mixed[:n], b.logits[:n], b)
+        result = _mm(b.mixed[:n], w.head, b.xs_mixed[:n], b.logits[:n], b)
+        _kv_check(segs, comm=w.comm)
+        return result
     head = w.head if w.draft_head is None else w.draft_head
     k = len(segs)
     if b.prefill:                                # prefill buffers mix the last row into row 0: its logits only
@@ -66,6 +70,7 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     out = _mm(rows, head, xs, b.logits.view(-1)[:k * head.n].view(k, head.n), b)     # contiguous at any k
     if w.comm is not None:
         candidates(w, b, out, k, id_map=w.draft_ids, offset=int(w.meta["vocab_offset"]))
+    _kv_check(segs, comm=w.comm)
     return out
 
 

@@ -204,6 +204,14 @@ then `[DONE]`. On two CUDA ranks such an error can leave the ranks out of step, 
 MLX also checks projected memory before prefill. CUDA checks its allocated cache capacity and model window.
 A startup capacity estimate is not a measured release capacity.
 
+Flash Next CUDA supports `--vram-experts auto` on GPUs with separate VRAM. It
+allocates attention and other resident weights, slot state and fixed buffers
+first, accounts for future full-context growth, retained states and workspace,
+and assigns the remaining memory to a shared expert cache with a 512 MiB
+allocation margin. Parallel slots share weights and the expert cache; their
+sequence state is separate. Numeric `--vram-experts GIB` budgets keep their
+existing behavior. See [RAM-backed experts](recipes/ram-experts.md).
+
 On a unified-memory GPU (the DGX Spark's GB10), the CUDA server's allocations come out of the host's RAM but are not
 charged to a container's memory limit (`docker run --memory`, cgroup `memory.max`): the limit neither caps the
 model's weights and cache nor keeps them from crowding other work on the machine. The server sizes its window from the

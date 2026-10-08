@@ -69,7 +69,9 @@ def exl3_indexed_scratch(t: dict, window: int, rows: int) -> int:
     conv = 2 * int(t["linear_num_key_heads"]) * int(t["linear_key_head_dim"]) + \
         int(t["linear_num_value_heads"]) * int(t["linear_value_head_dim"])
     pairs = window * slots
-    moe = pairs * (4 * d + 2 * width + 4 * max(8 * width, 2 * d) + 4 * d) + (pairs + 1024) * 4
+    unique = min(pairs, int(t["num_experts"]) + 1)
+    moe = pairs * (4 * d + 2 * width + 4 * max(8 * width, 2 * d) + 4 * d)
+    moe += unique * (window + 1) * 4 + 4  # IDs, member rows and the unique-expert count
     largest = d * max(2 * heads * hd, conv, hc * d)
     ple = rows * (4 * 81 * 2 * int(t.get("heads_per_ngram", 8)) + 2 * int(t.get("ple_embed_dim") or d))
     return moe + exl3_workspace(largest, rows * hc, max(d, heads * hd)) + ple
@@ -132,14 +134,30 @@ def split_weights(rule, world: int = 2):
     return transform
 
 
-def kv_bytes(head_dim: int, bits: int = 16) -> int:
+def kv_bytes(head_dim: int, bits: int = 16, *, group: int = 32, scale_bytes: int = 2) -> int:
     """One position's keys (or values) for one KV head: bf16, or codes plus an fp16 scale per 32 values."""
 
+    if any(type(value) is not int for value in (head_dim, bits, group, scale_bytes)):
+        raise ValueError("KV geometry dimensions, bits and metadata sizes must be integers")
+    if head_dim <= 0 or not 1 <= bits <= 16 or group <= 0 or scale_bytes <= 0:
+        raise ValueError("KV geometry requires positive dimensions/metadata and 1..16 bits")
     if bits == 16:
         return 2 * head_dim
-    if head_dim % 32:
-        raise ValueError(f"a quantized KV cache needs a head dim that is a multiple of 32, not {head_dim}")
-    return head_dim * bits // 8 + head_dim // 32 * 2
+    if head_dim % group or head_dim * bits % 8:
+        raise ValueError(f"a quantized KV cache needs a positive head dim that is a multiple of {group}, "
+                         f"not {head_dim}, and positive scale bytes")
+    return head_dim * bits // 8 + head_dim // group * scale_bytes
+
+
+def _kv_pair_bytes(head_dim: int, bits: int, group: int, scale_bytes: int,
+                   pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None) -> tuple[int, int]:
+    """Per-head K+V row bytes and per-cache dummy scale bytes, independent of row count."""
+
+    sides = ((bits, group, scale_bytes),) * 2 if pair is None else pair
+    if len(sides) != 2 or any(len(side) != 3 for side in sides):
+        raise ValueError("KV geometry requires ordered key/value (bits, group, scale_bytes) triples")
+    row = sum(kv_bytes(head_dim, side[0], group=side[1], scale_bytes=side[2]) for side in sides)
+    return row, sum(2 for side in sides if side[0] == 16)
 
 
 def layer_counts(t: dict) -> tuple[int, int]:
@@ -171,7 +189,9 @@ def live_kv(t: dict, world: int, window: int) -> int:
 
 def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mtp: bool = False,
                  kv_bits: int = 16, rows: int | None = None, prompt: int = 0, evicts: bool = False,
-                 kept: int = 2, prefill_rows: int = PREFILL_ROWS) -> Geometry:
+                 kept: int = 2, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
+                 kv_scale_bytes: int = 2, kv_status: bool = False,
+                 kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> Geometry:
     """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``evicts``: only the live window counts."""
 
     linear, attention = layer_counts(t)
@@ -195,6 +215,8 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
     extent = d * streams + int(t["vocab_size"]) // world + slots * (intermediate + d) + width + h * hd
     fixed += max(16 * rows * extent * 4, prompt * prompt_row_bytes(t, world) if prompt else 0)
     fixed += (2 if mtp else 1) * 32 * rows * 2560 * 4
+    if kv_status:
+        fixed += 2 * (8 + (world * 8 if world > 1 else 0))  # current state and serial-reference twin
     if indexed:
         fixed += ((2 + kept) * (int(t.get("ple_conv_kernel_size", 4)) - 1) * int(t.get("ngram_size", 3))
                   * streams * d * 2)
@@ -202,11 +224,11 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
         fixed += prefill_rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, intermediate)
     count = attention + int(mtp)
     budget = int(t.get("indexer_budget", 2048))
-    row = kv_bytes(hd, kv_bits)
+    row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def bytes_at(capacity: int) -> int:
         if indexed:
             # Separate K/V arrays in both the main state and the lazy serial-reference twin.
-            cache = 4 * count * capacity * hk * row
+            cache = 2 * count * (capacity * hk * row + dummies)
             cache += 2 * count * (capacity + (capacity + ratio - 1) // ratio) * index_dim * 2
             # chunk partials cover the keys a row reads (at most the indexer budget and a block's tail)
             chunks = (min(capacity, budget + ratio - 1) + 511) // 512
@@ -413,7 +435,9 @@ def stream_geometry(t: dict, world: int, streams: int, keep: int, *, first: int 
 
 
 def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp: bool, kv_bits: int = 16,
-                            first: int = 256, prefill_rows: int = PREFILL_ROWS) -> Geometry:
+                            first: int = 256, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
+                            kv_scale_bytes: int = 2, kv_status: bool = False,
+                            kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> Geometry:
     """Flash Next's concurrent decoder on one GPU: per-row windows and kept snapshots sized to share one GPU."""
 
     linear, attention = layer_counts(t)
@@ -431,9 +455,12 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     extent = d * hc + int(t["vocab_size"]) + slots * (moe + d) + width + h * hd
     fixed += (1 + mtp) * (linear * rows * width * 2 + 32 * max(rows, 4) * 2560 * 4) + 16 * max(64, rows) * extent * 4
     fixed += prefill_rows * _indexed_prefill_row(t, 1, h, hk, hd, nv, dv, width, slots, moe)
-    count, row = attention + int(mtp), kv_bytes(hd, kv_bits)
+    if kv_status:
+        fixed += 8 * streams * (2 + int(mtp))  # state flags and main/MTP status-pointer tables
+    count = attention + int(mtp)
+    row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:
-        return count * (2 * rows * hk * row + (rows + (rows + ratio - 1) // ratio) * index_dim * 2)
+        return count * (rows * hk * row + dummies + (rows + (rows + ratio - 1) // ratio) * index_dim * 2)
 
     def bytes_at(capacity: int) -> int:
         blocks = (capacity + ratio - 1) // ratio

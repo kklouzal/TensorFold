@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -37,14 +38,12 @@ class FlashNextEngine:
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "", port: int = 29551,
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
-                 yarn_factor: float | None = None, vram_experts: float | None = None) -> None:
+                 yarn_factor: float | None = None, vram_experts: float | str | None = None,
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
         from .. import rope_parameters
+        from ..kv_formats import get_pair
 
-        self.rope = rope_parameters(model_dir, yarn_factor)
-        if vram_experts is not None:
-            from ..ram_experts import check
-
-            check(model_dir, vram_experts, tp=tp)
+        self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
         import torch
 
         from .exl3_pack import admission, extra_files, is_exl3
@@ -60,9 +59,13 @@ class FlashNextEngine:
         if exl3 and ple_on_ssd:
             raise ValueError("--ple-on-ssd reads the MLX checkpoint's n-gram tables; an EXL3 pack maps its own table "
                              "from its file, so drop --ple-on-ssd")
+        self.rope = rope_parameters(model_dir, yarn_factor)
+        if vram_experts is not None:
+            from ..ram_experts import check
+
+            check(model_dir, vram_experts, tp=tp)
         from .decode import Engine
         from .prompt_plan import choose as prompt_plan
-        from .kvcache import BITS_OF, check as check_kv
         from .weights import draft_token_ids, load
         from tensorfold.cuda.capacity import admit, config, gather_ints
         from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
@@ -82,7 +85,6 @@ class FlashNextEngine:
             raise ValueError(f"MTP draft confidence: a probability from 0 to 1, not {confidence}")
         torch.cuda.set_device(0)
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
-        self.kv_dtype = check_kv(kv_dtype)
         self.comm = None
         self.vision = None                   # the image tower (``QwenCudaVision``) with --vision
         ids = draft_token_ids(draft_vocab) if self.depth > 0 else None
@@ -94,14 +96,21 @@ class FlashNextEngine:
             self.comm = NCCL(rank, 2, master, port)
             self.comm.barrier()
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None
-        each, mtp, bits = self.depth + 1, self.depth > 0, BITS_OF[self.kv_dtype]
+        each, mtp = self.depth + 1, self.depth > 0
+        text = config(model_dir)
+        head_dim = int(text.get("head_dim") or int(text["hidden_size"]) // int(text["num_attention_heads"]))
+        self.kv_pair.row_bytes(int(text["num_key_value_heads"]) // tp, head_dim)
+        kv_geometry = tuple((side.bits, side.group, side.scale_bytes)
+                            for side in (self.kv_pair.key, self.kv_pair.value))
+        kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         # one admission for one stream or many (every slot, the shared rows and kept snapshots), before any load
         rows0 = chunk or PREFILL_ROWS
-        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, kv_bits=bits,
-                                                          prefill_rows=rows0))
+        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp,
+                                                          kv_pair=kv_geometry,
+                                                          prefill_rows=rows0, kv_status=kv_status))
                     if streams > 1 else
-                    (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_bits=bits,
-                                               kept=KEEP_SERIAL + 1, prefill_rows=rows0)))
+                    (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
+                                               kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status)))
         if exl3:
             geometry = admission(geometry)
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
@@ -111,39 +120,63 @@ class FlashNextEngine:
                          if self.rope.rope_type != "default" else {})
         weight_rule = vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank)
         host_capacity = {}
+        automatic_experts = vram_experts == "auto"
+        if automatic_experts:
+            from tensorfold.cuda.capacity import unified
+
+            if unified(torch):
+                raise ValueError("--vram-experts auto requires a discrete CUDA GPU; on unified memory use a numeric "
+                                 "expert budget or load the experts resident")
+        automatic_capacity = {}
         ram_layout = None
         if vram_experts is not None:
-            from ..ram_experts import layout, plan_scratch
+            from ..ram_experts import AUTO_HEADROOM_BYTES, layout, plan_scratch
             from tensorfold.cuda.capacity import Geometry
             from .prompt_plan import IDLE_ROWS
 
             ram_layout = layout(model_dir, vram_experts, mtp=mtp)
+            if automatic_experts:
+                automatic_capacity = {"memory_reserve": AUTO_HEADROOM_BYTES}
             weight_rule = ram_layout.transform(weight_rule)
-            scratch_device, scratch_host = plan_scratch(config(model_dir),
-                streams * each if streams > 1 else max(8, each), chunk or IDLE_ROWS, mtp)
+            if ram_layout.format == "exl3":
+                from .exl3_pack import MOE_WINDOW
+
+                pairs = MOE_WINDOW * (text["num_experts_per_tok"] + 1)
+                scratch_device, scratch_host = pairs * 4, pairs * 8
+            else:
+                scratch_device, scratch_host = plan_scratch(text,
+                    streams * each if streams > 1 else max(8, each), chunk or IDLE_ROWS, mtp)
             base_geometry = geometry
             def geometry(text):
                 base = base_geometry(text)
                 return Geometry(lambda slots: base.bytes_at(slots) + scratch_device,
                                 base.reserve, base.minimum_slots)
-            host_capacity = {"host_resident": ram_layout.host_bytes + ram_layout.staging_bytes + scratch_host,
+            host_capacity = {"host_resident": ram_layout.host_bytes + ram_layout.metadata_host_bytes
+                             + ram_layout.staging_bytes + ram_layout.control_host_bytes + scratch_host,
                              "host_extra_staging": ram_layout.loading_bytes,
-                             "resident_extra": ram_layout.gpu_bytes}
+                             "resident_extra": ram_layout.gpu_bytes + ram_layout.metadata_device_bytes
+                             + ram_layout.control_device_bytes}
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    weight_rule,
                                    rank=rank, world=tp,
                                    gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
+                                   **automatic_capacity,
                                    **rope_capacity, **host_capacity)
         if ram_layout is not None:
             self.capacity_plan["vram_experts"] = {
                 "host_bytes": ram_layout.host_bytes, "gpu_bytes": ram_layout.gpu_bytes,
                 "slots": ram_layout.slots, "staging_bytes": ram_layout.staging_bytes,
                 "loading_bytes": ram_layout.loading_bytes, "plan_device_bytes": scratch_device,
-                "plan_host_bytes": scratch_host}
-            print(f"[tensorfold] RAM experts: {ram_layout.host_bytes / 2**30:.2f} GiB pageable host weights, "
-                  f"{ram_layout.gpu_bytes / 2**30:.2f} GiB GPU pool ({ram_layout.slots} experts); "
-                  "eager forwards preserve routing and precision; cache misses transfer weights", flush=True)
+                "plan_host_bytes": scratch_host, "format": ram_layout.format,
+                "metadata_device_bytes": ram_layout.metadata_device_bytes,
+                "metadata_host_bytes": ram_layout.metadata_host_bytes,
+                "control_device_bytes": ram_layout.control_device_bytes,
+                "control_host_bytes": ram_layout.control_host_bytes}
+            if not automatic_experts:
+                print(f"[tensorfold] RAM experts: {ram_layout.host_bytes / 2**30:.2f} GiB pageable host weights, "
+                      f"{ram_layout.gpu_bytes / 2**30:.2f} GiB GPU pool ({ram_layout.slots} experts); "
+                      "eager forwards preserve routing and precision; cache misses transfer weights", flush=True)
         self.capacity_plan["rope"] = self.rope.metadata()
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
@@ -207,12 +240,17 @@ class FlashNextEngine:
                 self.e = None
                 self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
                                           confidence=self.confidence, keep=KEEP, points=self.points,
-                                          kv_dtype=self.kv_dtype, share=share, vision=self.vision,
+                                          kv_pair=self.kv_pair, share=share, vision=self.vision,
                                           prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace)
+                if automatic_experts:
+                    self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
                 self.scheduler = Scheduler(self.multi, max_streams=streams)
             else:
                 self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
-                                kv_dtype=self.kv_dtype, prefill_rows=self.prefill_rows)
+                                kv_pair=self.kv_pair, prefill_rows=self.prefill_rows)
+                if automatic_experts:
+                    self.serial = self.e.twin()
+                    self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
             started = time.perf_counter()
             locked = False
             if prefetch and not ple_on_ssd:               # the n-gram tables' pages, read now rather than by requests
@@ -241,7 +279,8 @@ class FlashNextEngine:
             self.model_dir = Path(model_dir)
             self.served = 0
             self.cache: list[tuple[list[int], dict]] = []    # (committed ids, what resuming from them needs)
-            self.serial = None                                # the serial requests' engine, made on first use
+            if not automatic_experts or self.concurrent:
+                self.serial = None                            # the serial requests' engine, made on first use
             rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
                     f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
             where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
@@ -255,7 +294,9 @@ class FlashNextEngine:
                     f", locked in memory in {read_s:.1f}s" if locked else "")
             else:
                 how = f"{'locked in memory' if locked else 'read'} in {read_s:.1f}s"
-            kv = "" if self.kv_dtype == "bf16" else f"; {self.kv_dtype} KV cache (fp16 scale per 32 values)"
+            kv = ("" if self.kv_pair.key_dtype == self.kv_pair.value_dtype == "bf16" else
+                  f"; KV cache K={self.kv_pair.key_dtype}, V={self.kv_pair.value_dtype} "
+                  "(quantized cache changes output)")
             print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
                   f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
                   f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
@@ -266,17 +307,116 @@ class FlashNextEngine:
                 raise primary from cleanup
             raise
 
+    def _configure_auto_experts(self, torch, streams: int, *, vision_workspace_bytes: int = 0) -> None:
+        """Finish fixed device state, then spend its remaining bytes on experts.
+
+        Runs before Scheduler starts or any warmup borrows a cache lease. Full
+        context growth, a layer's resize overlap and every kept/in-flight
+        snapshot remain available; the cache is fixed throughout serving.
+        """
+        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes
+        from tensorfold.cuda.capacity import available_bytes
+
+        cache = self.w.meta["expert_cache"]
+        decoder = self.multi if streams > 1 else self.e
+        states = self.multi.free if streams > 1 else [self.e.st, self.serial.st]
+        state = states[0]
+        growth = sum(st.cache_bytes(st.limit) - st.cache_bytes() for st in states)
+        overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth else 0
+        wide = self.w.cfg.streams * self.w.cfg.hidden
+        snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
+        snapshot += state.ple_tail.numel() * state.ple_tail.element_size()
+        snapshot += wide * 2 if self.w.mtp is not None else 0
+        retained = (self.multi.keep + streams) if streams > 1 else KEEP_SERIAL + 1
+        snapshots = retained * snapshot
+        # Heads and final hidden rows are cloned once for each filling stream.
+        transient = streams * (self.w.head.n * 2 + wide * 2) + vision_workspace_bytes
+        if self.w.x3 is not None:
+            from .exl3_mm import X3
+
+            scratch = self.w.x3
+            projections = [u for u in scratch.users if isinstance(u, X3) and not u.head]
+            if projections:
+                # These grow-only workspaces otherwise appear during the first
+                # prompt, after the expert pool has already occupied the device.
+                scratch.prefill._grow("w", max(u.k * u.n for u in projections), self.w.device)
+                scratch.prefill._grow("xh", decoder.pbuf.rows * max(u.k * (self.w.cfg.streams
+                                      if self.w.mtp is not None and u is self.w.mtp.fc_h else 1) for u in projections),
+                                      self.w.device)
+                scratch.prefill.hadamard(self.w.device)
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        free, total = map(int, torch.cuda.mem_get_info())
+        accounted = int(torch.cuda.memory_allocated())
+        control = 32 if hasattr(cache, "control_device_bytes") else 0
+        decision = auto_pool_bytes(free, cache.entry_bytes, cache.score_history_entries, control_bytes=control,
+                                   growth_bytes=growth + overlap, snapshot_bytes=snapshots, workspace_bytes=transient)
+        cache.configure_before_use(decision["gpu_bytes"])
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        final_free, final_total = map(int, torch.cuda.mem_get_info())
+        final_spare = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+        if (final_total != total or final_free < AUTO_HEADROOM_BYTES
+                or final_free + final_spare < AUTO_HEADROOM_BYTES + growth + overlap + snapshots + transient):
+            raise MemoryError("automatic expert pool cannot retain its declared full service workspace")
+        if streams > 1:
+            from tensorfold.cuda.memory_gate import MemoryGate, torch_live
+
+            raw_live = torch_live(torch, lambda runtime: available_bytes(runtime, reserve=0))
+            # _grow already charges its one-layer copy overlap in fits(extra).
+            self.multi.memory_gate = MemoryGate(growth + overlap, reserve=0,
+                                                live=lambda: max(0, raw_live() - AUTO_HEADROOM_BYTES))
+        decision.update(physical_total_bytes=total, fixed_allocated_bytes_before_pool=accounted,
+                        allocated_bytes_after_pool=int(torch.cuda.memory_allocated()),
+                        physical_free_bytes_after_pool=final_free, kept_snapshot_count=retained,
+                        allocator_spare_bytes_after_pool=final_spare, vision_workspace_bytes=vision_workspace_bytes,
+                        snapshot_bytes_each=snapshot, full_context_growth_bytes=growth,
+                        layer_resize_overlap_bytes=overlap, prompt_transient_bytes=transient,
+                        prefill_rows=decoder.pbuf.rows, shared_attention_routing_recurrent_buffers_already_allocated=True,
+                        lazy_EXL3_prompt_workspace_materialized=self.w.x3 is not None,
+                        pool_configured_before_first_lease=True)
+        initial_plan = deepcopy(self.capacity_plan)
+        self.capacity_plan["initial_minimum_pool_admission"] = initial_plan
+        self.capacity_plan["vram_experts_auto"] = decision
+        pool = self.capacity_plan["vram_experts"]
+        pool.update(gpu_bytes=cache.gpu_bytes, slots=cache.capacity,
+                    control_device_bytes=getattr(cache, "control_device_bytes", 0),
+                    control_host_bytes=getattr(cache, "control_host_bytes", 0), automatic=True)
+        initial_pool = initial_plan["vram_experts"]
+        pool_delta = cache.gpu_bytes + pool["control_device_bytes"] - initial_pool["gpu_bytes"] - initial_pool["control_device_bytes"]
+        final_weight_estimate = initial_plan["weight_bytes_estimate"] + pool_delta
+        final_serving_estimate = decision["allocated_bytes_after_pool"] + growth + overlap + snapshots + transient
+        self.capacity_plan.update(weight_bytes_estimate=final_weight_estimate,
+            startup_peak_bytes_estimate=max(initial_plan["startup_peak_bytes_estimate"], decision["allocated_bytes_after_pool"]),
+            serving_peak_bytes_estimate=final_serving_estimate,
+            total_bytes_estimate=max(initial_plan["startup_peak_bytes_estimate"], final_serving_estimate),
+            cache_workspace_bytes_estimate=final_serving_estimate - final_weight_estimate,
+            full_mapped_working_set_bytes_estimate=max(initial_plan["startup_peak_bytes_estimate"], final_serving_estimate)
+                                                   + initial_plan["mapped_table_bytes"],
+            estimate_scope="auto: measured fixed device allocation plus explicit future service bounds; initial header loading forecast retained separately")
+        print(f"[tensorfold] RAM experts auto: {cache.host_bytes / 2**30:.2f} GiB pageable host authority, "
+              f"{cache.gpu_bytes / 2**30:.2f} GiB GPU pool ({cache.capacity} experts); "
+              f"{streams} full-context slots and {retained} snapshots reserved, 512 MiB headroom", flush=True)
+
+    @property
+    def kv_dtype(self) -> str:
+        """Legacy symmetric cache name; mixed callers use kv_pair."""
+
+        if not self.kv_pair.symmetric:
+            raise ValueError("mixed KV engine has no single dtype; use kv_pair")
+        return self.kv_pair.key_dtype
+
     def _same_settings(self, torch, ids) -> None:
         """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
 
-        from .kvcache import BITS_OF
         import hashlib
 
         total = int(ids.sum()) if ids is not None else -1
         rope_digest = int.from_bytes(hashlib.sha256(json.dumps(self.rope.metadata(), sort_keys=True).encode()).digest()[:8],
                                      "big") & (2**63 - 1)
+        policy_digest = int.from_bytes(hashlib.sha256(b"stored-basis-native64-v1").digest()[:8], "big") & (2**63 - 1)
         mine = torch.tensor([self.depth, round(self.confidence * 1e6), self.max_len,
-                             len(ids) if ids is not None else -1, total, BITS_OF[self.kv_dtype],
+                             len(ids) if ids is not None else -1, total, self.kv_pair.handshake, policy_digest,
                              rope_digest, int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
         both = torch.empty((2 * mine.numel(),), dtype=torch.int64, device="cuda")
         self.comm.all_gather(mine, both)

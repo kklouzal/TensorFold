@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+
 from tensorfold.server.app import ChatJob, CheckpointStore, Scheduler
 from tensorfold.server.memory_budget import cache_nbytes
 from tensorfold.server.http import RequestError
@@ -451,7 +453,8 @@ def test_scheduler_refuses_before_copying_a_retained_prefix_or_running_prefill()
     assert engine.prefill_guard is None
 
 
-def test_oversized_disk_snapshot_is_skipped_before_tensor_load(monkeypatch, tmp_path):
+def test_oversized_disk_snapshot_is_skipped_before_tensor_load(monkeypatch, tmp_path, mlx_host_protocol):
+
     from tensorfold.engine import prefix_snapshots
 
     path = tmp_path / "prefix.safetensors"
@@ -668,7 +671,9 @@ def test_sizing_releases_the_probes_last_round_before_measuring_the_model():
 
 
 def test_nemotron_releases_its_last_rounds_row_states():
-    from tensorfold.families.nemotron_h.model import NemotronH
+    from tests.mlx_host_protocol_fakes import owned_release_class
+
+    NemotronH = owned_release_class("tensorfold/families/nemotron_h/model.py", "NemotronH")
 
     family = NemotronH.__new__(NemotronH)
     family.fused = SimpleNamespace(row_states={0: ("conv", "ssm")})
@@ -681,7 +686,9 @@ def test_nemotron_releases_its_last_rounds_row_states():
 def test_flash_next_sizing_releases_probe_rows_and_draft_references(fused):
     import weakref
 
-    from tensorfold.families.qwen4_exp.runtime import FlashNext
+    from tests.mlx_host_protocol_fakes import owned_release_class
+
+    FlashNext = owned_release_class("tensorfold/families/qwen4_exp/runtime.py", "FlashNext")
 
     class Buffer:
         pass

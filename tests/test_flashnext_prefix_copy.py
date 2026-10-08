@@ -5,13 +5,18 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache
-from tensorfold.families.qwen4_exp.cuda.state import State
+from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.state import State  # noqa: E402
+from tensorfold.families.qwen4_exp.kv_formats import get_pair  # noqa: E402
 
 
 def slot(dtype, capacity, pos):
     st = object.__new__(State)
-    st.capacity, st.pos, st.mtp_len, st.ratio, st.kv_dtype = capacity, pos, max(0, pos - 1), 4, dtype
+    st.capacity, st.pos, st.mtp_len, st.ratio = capacity, pos, max(0, pos - 1), 4
+    st.kv_pair = get_pair(dtype)
+    st.kv_key_dtype, st.kv_value_dtype = st.kv_pair.key_dtype, st.kv_pair.value_dtype
+    st.kv_identity = (st.kv_pair.identity, "stored-basis-native64-v1")
+    st.kv_status, st._kv_pending, st._kv_error = None, False, None
     st.kc = [KVCache(capacity, 2, 64, "cpu", dtype) for _ in range(2)]
     st.ikc = [torch.empty((capacity, 16), dtype=torch.bfloat16) for _ in st.kc]
     st.pooled = [torch.empty(((capacity + 3) // 4, 16), dtype=torch.bfloat16) for _ in st.kc]

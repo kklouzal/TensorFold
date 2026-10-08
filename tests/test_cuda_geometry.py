@@ -33,10 +33,19 @@ class Allocation:
 def allocations(monkeypatch):
     before = set(sys.modules)
     lang = ModuleType("triton.language")
-    lang.constexpr = object
+    class Constexpr:
+        def __init__(self, value):
+            self.value = value
+
+        def __mul__(self, other):
+            return Constexpr(self.value * (other.value if isinstance(other, Constexpr) else other))
+
+        def __rmul__(self, other):
+            return Constexpr((other.value if isinstance(other, Constexpr) else other) * self.value)
+    lang.constexpr = Constexpr
     triton = ModuleType("triton")
     triton.language = lang
-    triton.jit = lambda fn: fn
+    triton.jit = lambda fn=None, **kwargs: fn if fn is not None else (lambda function: function)
     triton.cdiv = lambda a, b: (a + b - 1) // b
     triton.next_power_of_2 = lambda n: 1 << (n - 1).bit_length()
     monkeypatch.setitem(sys.modules, "triton", triton)
@@ -49,6 +58,7 @@ def allocations(monkeypatch):
     fake = SimpleNamespace(bfloat16="bf16", float16="fp16", float32="fp32", int8="int8", uint8="uint8", int16="int16",
                            int32="int32", int64="int64",
                            zeros=allocate, empty=allocate, full=lambda shape, fill, **kw: allocate(shape, **kw),
+                           tensor=lambda values, **kw: allocate((len(values),), **kw),
                            zeros_like=lambda x: allocate(x.shape, dtype=x.dtype, device=x.device),
                            arange=lambda *a, **kw: allocate((len(range(*a)),), **kw),
                            cuda=SimpleNamespace(is_available=lambda: False))
@@ -292,7 +302,8 @@ def test_flash_message_snapshot_budget_counts_actual_saved_tensors(world, mtp):
                           nk=2 // world, nv=4 // world, dk=128, dv=128, kv_heads=2 // world,
                           head_dim=64, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3, ple_layers=[])
     weights = SimpleNamespace(cfg=cfg, device="cpu", layers=[SimpleNamespace(index=i, linear=i % 2 == 0)
-                                                           for i in range(4)], mtp=object() if mtp else None)
+                                                           for i in range(4)], mtp=object() if mtp else None,
+                              meta={"world": world})
     state = State(weights, 32, 8)
     snapshot = state.snapshot()
     tensors = [value for value in snapshot.values() if isinstance(value, torch.Tensor)]

@@ -228,7 +228,9 @@ def test_the_lock_named_is_the_one_torch_waits_on(tmp_path, monkeypatch):
     import torch.utils.cpp_extension as cpp_extension
 
     if not build._uses_file_baton(cpp_extension):
-        pytest.skip("real FileBaton lock test requires the audited FileBaton Torch runtime")
+        assert "FileLock" in cpp_extension._jit_compile.__code__.co_names
+        _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension)
+        return
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
     lock = tmp_path / "extensions" / "tf_lock_probe" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
@@ -430,3 +432,65 @@ def test_a_toolkit_torch_found_or_no_pip_toolkit_changes_nothing(tmp_path, monke
     assert build.pip_toolkit(ext, torch) == [] and ext.CUDA_HOME == "/usr/local/cuda"
     _, torch, ext = _pip_site(tmp_path / "bare", nvcc=False)
     assert build.pip_toolkit(ext, torch) == [] and ext.CUDA_HOME is None and "CUDA_HOME" not in os.environ
+
+
+def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
+    """Current Torch's actual JIT/FileLock contention, without compiling code."""
+    _gpu(monkeypatch, (12, 1))
+    monkeypatch.setattr(build, "_toolkit", lambda: [])
+    directory = tmp_path / "advisory-extension"
+    directory.mkdir()
+    source = tmp_path / "advisory.cpp"
+    source.write_text("int fixture() { return 0; }\n")
+    lock = directory / "lock"
+    actual_lock = cpp_extension.FileLock
+    reached_lock, finished = threading.Event(), threading.Event()
+    acquired, compiled, ended, said = [], [], [], []
+
+    def observed_lock(path, *args, **kwargs):
+        acquired.append(Path(path))
+        reached_lock.set()
+        return actual_lock(path, *args, **kwargs)
+
+    monkeypatch.setattr(cpp_extension, "FileLock", observed_lock)
+    monkeypatch.setattr(cpp_extension, "_write_ninja_file_and_build_library", lambda *a, **k: compiled.append(k))
+    monkeypatch.setattr(cpp_extension, "_import_module_from_library", lambda *a, **k: "fixture-module")
+    monkeypatch.setattr(build, "_say", said.append)
+
+    def run():
+        try:
+            ended.append(build.load(name="tf_advisory_probe", sources=[str(source)],
+                                    build_directory=str(directory), verbose=False, with_cuda=False))
+        except BaseException as error:
+            ended.append(error)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    primary = None
+    try:
+        with actual_lock(str(lock)):
+            worker.start()
+            assert reached_lock.wait(3), "JIT did not reach its actual lock"
+            assert acquired == [lock]
+            worker.join(0.05)
+            assert worker.is_alive() and not finished.is_set() and compiled == []
+            assert lock.exists()
+    except BaseException as error:
+        primary = error
+    finally:
+        if worker.ident is not None:
+            worker.join(10)
+    if worker.is_alive():
+        if primary is not None:
+            primary.add_note("advisory JIT worker did not stop after releasing its owned lock")
+            raise primary
+        raise AssertionError("advisory JIT worker did not stop after releasing its owned lock")
+    if primary is not None:
+        raise primary
+    assert finished.is_set() and ended == ["fixture-module"] and len(compiled) == 1
+    assert all("delete" not in line and "killed build" not in line for line in said)
+    # Advisory locks are acquired independently of a persistent marker file.
+    assert lock.exists()
+    with actual_lock(str(lock), timeout=1):
+        pass

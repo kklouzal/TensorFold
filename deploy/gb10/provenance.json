@@ -47,5 +47,29 @@
     "apache-tvm-ffi": "0.1.12"
   },
   "deployment_file": "deploy/gb10/compose.yaml",
-  "yarn_primary_reference": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices"
+  "yarn_primary_reference": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices",
+  "multiarchitecture_deployment": {
+    "ngc_index_digest": "sha256:f86c199a302a3a7405d5f055adf1311cd660e85d8a66cf452be6eb45d5768639",
+    "arm64": {
+      "base_digest": "sha256:b2d6023181b13e4ca5bc770cbad5e2585d199cf01cb757d58896345b457f7e68",
+      "pins": "nightly-pins.json",
+      "runtime_lock": "requirements-runtime.lock",
+      "verification_lock": "requirements-test.lock",
+      "existing_pins_preserved": true
+    },
+    "amd64": {
+      "base_digest": "sha256:a3733239a1669d4b920fac639576fa254c913defa63d2b9ad1e861aba891cedc",
+      "pins": "nightly-pins-amd64.json",
+      "runtime_lock": "requirements-runtime-amd64.lock",
+      "verification_lock": "requirements-test-amd64.lock",
+      "resolver_report": "resolver-amd64.json",
+      "resolver_report_sha256": "da3afe3034b3b1378a8119ffefc887c7451d5c1e925c1ed84bef505de86b4960",
+      "original_pip_report_sha256": "5c7f862ac08299f4d32230c89a15abe31b251c38a6cd78a84f39311616316292",
+      "resolver_environment": "Linux CPython 3.12 ARM64, explicit AMD64 wheel selection",
+      "target_markers_extras_and_tags_verified": true,
+      "build_verified": false,
+      "gpu_execution_verified": false,
+      "payload_hashes_verified_at_install": false
+    }
+  }
 }

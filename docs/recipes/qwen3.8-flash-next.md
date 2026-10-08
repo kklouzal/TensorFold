@@ -358,6 +358,49 @@ checked against the quantized cache. The dtype holds on every path: prompt chunk
 `"draft": false` requests, `--parallel N` streams and their kept prompt states, and both ranks of `--tp 2`, which
 refuse to start with different `--kv-dtype` values.
 
+Flash Next CUDA also accepts independent `--kv-key-dtype` and `--kv-value-dtype` choices. Each explicit side
+overrides that side of `--kv-dtype`; an omitted side inherits the shorthand. For example:
+
+```bash
+tensorfold serve MODEL --backend cuda --kv-dtype int8 --kv-key-dtype rotorquant6
+```
+
+This stores six-bit RotorQuant keys and native INT8 values. The key format selects the query transform; the
+value format selects the inverse applied to the merged attention output. Each side has independent payloads
+and scale metadata. The indexer stays BF16. Cache copies, prompt states, MTP and peer negotiation preserve the
+ordered pair and its working arithmetic; changing either side requires a new engine.
+
+The available RotorQuant formats are `rotorquant-planar3`, `rotorquant-iso3`, `rotorquant-planar4`,
+`rotorquant-iso4`, `rotorquant-iso64-norm4`,
+`rotorquant-signed128-4`, `rotorquant-signed64-norm4`, `rotorquant6`, `rotorquant6-norm`,
+`rotorquant6-outlier-norm`, `rotorquant7`, `rotorquant8` and `rotorquant8-norm`. All can be combined with each
+other or BF16/INT8/INT4. They use packed Lloyd-Max codes with FP32 metadata per 128 values. Names that include
+`norm` correct the reconstructed group's norm; `rotorquant8-norm` has a distinct codec identity from
+`rotorquant8`. Equal bit widths do not make their cache bytes interchangeable.
+
+For one 256-value key or value head, including scale metadata:
+
+| Format | Bytes per position/head |
+| --- | ---: |
+| BF16 | 512 |
+| INT8 | 272 |
+| INT4 | 144 |
+| RotorQuant 3 | 104 |
+| RotorQuant 4 | 136 |
+| RotorQuant 6 | 200 |
+| RotorQuant 7 | 232 |
+| RotorQuant 8 | 264 |
+
+Add the selected key and value bytes, multiply by the number of KV heads, and include the BF16 indexer and
+pooled cache. Each BF16 side also owns a two-byte dummy scale once per cache. Admission includes both sides,
+MTP, status and workspace. Compression ratios for the entire state are smaller than payload-only ratios.
+
+Quantization is an explicit quality/compression choice. Every supported combination remains selectable;
+measured perplexity or answer differences are reported rather than used as a fixed quality cutoff. Quality
+depends on the model, context and workload. Numeric validation failures stop the affected sequence before
+publication and require reset; they do not silently substitute another format. Native FP16 scale underflow
+retains its existing precision semantics. Gaussian metadata rejects nonfinite values and nonzero RMS erasure.
+
 A quantized cache changes the output, so its replies differ from bf16's. Drafted output still equals
 `"draft": false` output at the same dtype, and a resumed prompt equals a fresh one. The MLX path and the other
 families refuse `--kv-dtype` before any download.

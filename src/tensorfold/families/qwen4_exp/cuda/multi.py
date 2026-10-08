@@ -20,10 +20,10 @@ from tensorfold.engine.grammar import GrammarError
 
 from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
 from . import attn_multi, gdn_multi, image_rows, prefixes
-from .forward import Cut, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
+from .forward import Cut, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import pass_limit
-from .state import ENDS, Buffers, State
+from .state import ENDS, Buffers, KVNumericError, State
 from ..cuda import CONFIDENCE, DEPTH
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -40,6 +40,7 @@ def _slot(w, st: State, buf: Buffers, mbuf: Buffers, pbuf: Buffers, capacity: in
     e = object.__new__(Engine)
     e.w, e.capacity, e.rows, e.prefill_rows = w, capacity, buf.rows, prefill_rows
     e.buf, e.mbuf, e.pbuf, e.st, e.graphs = buf, mbuf, pbuf, st, None
+    e.kv_pair = st.kv_pair
     e.stops = ()
     return e
 
@@ -49,7 +50,8 @@ class MultiDecoder:
 
     def __init__(self, w, *, slots: int, capacity: int, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  stop_eos: bool = True, keep: int = 8, kv_dtype: str = "bf16", prefill_rows: int = PREFILL_ROWS,
-                 share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0) -> None:
+                 share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
         if w.comm is not None:
             raise ValueError("concurrent Flash Next runs on one GPU for now")
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
@@ -68,7 +70,8 @@ class MultiDecoder:
         self.gdn = gdn_multi.Scratch(w, rows)            # every stream's DeltaNet rows, one launch a step
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
         # slots start small and grow with their stream's context, up to the window, while the gate has room
-        self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity) for _ in range(slots)]
+        self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
+                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype) for _ in range(slots)]
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window
         free = torch_live(torch, available_bytes) if torch.cuda.is_available() else None
@@ -164,9 +167,22 @@ class MultiDecoder:
     def _slot_for(self, prompt: list[int], reuse: bool):
         """Reuse the longest kept point, copying a fork into a free slot when the memory gate permits it."""
 
+        best = prefixes._best(self.kept, prompt) if reuse else None
+        if best is not None:
+            source, snap = best[1:3]
+            try:
+                source.kv_validate_snapshot(snap)
+            except KVNumericError:
+                self._drop_kept(source)
+                if id(source) not in self._busy():
+                    self._shrink(source)
+                    if all(st is not source for st in self.free):
+                        self.free.append(source)
+                raise
         return prefixes.slot_for(self, prompt, reuse)
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
+        st.kv_validate_snapshot(snap)
         prefixes.remember(self, ids, st, snap, tail)
 
     def live(self) -> int:
@@ -214,6 +230,7 @@ class MultiDecoder:
                 torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
         except Exception:
             self._drop_kept(st)
+            self._shrink(st)
             self.free.append(st)
             raise
         e.stops = sorted({p for p in self.points(s.prompt) if begin + MIN_GAP <= p < entry_end(s.prompt)}) \
@@ -343,6 +360,7 @@ class MultiDecoder:
     def _absorb(self, pieces, segs, cuts=()) -> list[torch.Tensor]:
         """After a pass's forward: each prompt's last row and kept point, the MTP head's absorb, the commits."""
 
+        _kv_check(segs)
         lasts = [self.pbuf.streams[a1 - 1:a1].clone() for _, _, a1 in segs]
         at, points = {cut.at: cut for cut in cuts}, []
         for (s, a, n), (st, a0, _) in zip(pieces, segs):      # before the MTP head writes the pass's streams
@@ -380,6 +398,7 @@ class MultiDecoder:
     def _joined(self, pieces, heads, lasts, spent: float) -> list[Stream]:
         """Prompts that ended sample their first token, draft and join the rounds; returns those already done."""
 
+        _kv_check([(s.st, 0, n) for s, _, n in pieces])
         joined, head = [], 0
         for (s, a, n), last in zip(pieces, lasts):
             s.prefill_s += spent
@@ -479,6 +498,7 @@ class MultiDecoder:
             if s.sid in grammars:
                 s.constraint.mask(logits[a0:a1], grammars[s.sid])
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
+        _kv_check(segs)
         sampled = sample_streams(logits, starts, positions, [s.sampling for s in live])
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]

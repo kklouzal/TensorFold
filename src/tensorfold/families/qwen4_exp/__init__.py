@@ -5,6 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .kv_formats import DTYPES
+
+CUDA_KV_DTYPES = DTYPES
+
 MODEL_TYPES = ("qwen4_exp", "qwen3_8_flash_next")   # the second: the name newer exports (Mia-AiLab's NVFP4) carry
 TITLE = "Qwen3.8 Flash Next"
 LANES = True
@@ -170,12 +174,12 @@ def kernel_version(model: Any) -> str:
 # the CUDA engine reads MLX affine weights of this (bits, group size), or NVFP4 (ModelOpt) routed experts
 CUDA_QUANTIZATION = (4, 32)
 # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
-CUDA_KV_DTYPES = ("bf16", "int8", "int4")
 CUDA_DECODE_SHARE = True           # --parallel rounds size their prompt pass by --decode-share (0: whole passes)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: an NVFP4 checkpoint's MXFP8 linears have an FP8 prompt kernel
+CUDA_KV_PAIRS = True               # independent key/value storage, including asymmetric quantization
 
 
-def check_vram_experts(model_dir: str | Path, gib: float, *, tp: int = 1) -> None:
+def check_vram_experts(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
     from .ram_experts import check
 
     check(model_dir, gib, tp=tp)
@@ -184,7 +188,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                 master_port: int = 29551, no_drafts: bool = False, mtp_drafts: int | None = None,
                 mtp_confidence: float | None = None, context: int | None = None, ple_on_ssd: bool = False,
                 kv_dtype: str = "bf16", decode_share: float | None = None, yarn_factor: float | None = None,
-                vram_experts: float | None = None,
+                vram_experts: float | str | None = None, kv_key_dtype: str | None = None,
+                kv_value_dtype: str | None = None,
                 **options: Any):
     """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with bf16, int8 or int4 KV storage."""
 
@@ -200,8 +205,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     from .cuda import CONFIDENCE, DEPTH
     from .cuda.engine import FlashNextEngine
 
-    if kv_dtype not in CUDA_KV_DTYPES:       # refuse an unknown cache before any weight is read (no torch import)
-        raise ValueError(f"kv-dtype {kv_dtype!r}: this engine serves {' or '.join(CUDA_KV_DTYPES)}")
+    from .kv_formats import get_pair
+
+    get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # validate before weights or Torch are loaded
     depth = 0 if no_drafts else DEPTH if mtp_drafts is None else int(mtp_drafts)
     if depth and not has_mtp(Path(model_dir)):
         raise ValueError(f"this checkpoint has no MTP head, which {TITLE}'s CUDA engine drafts with ({MODELS[0]} "
@@ -212,6 +218,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                            context_explicit=options.get("context_explicit"), tp=int(tp), rank=int(rank),
                            master=master, port=int(master_port), streams=max(1, int(options.get("parallel") or 1)),
                            ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype,
+                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype,
                            share=0.0 if decode_share is None else float(decode_share),
                            vision=bool(options.get("vision", False)),
                            vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor,

@@ -15,8 +15,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     if getattr(args, "ssd_experts", None) is not None and backend == "cuda":
         raise ValueError("--ssd-experts is supported on MLX only; Flash Next CUDA supports --vram-experts GIB")
     if ram is not None:
-        if isinstance(ram, bool) or not isinstance(ram, (int, float)) or not math.isfinite(ram) or ram <= 0:
-            raise ValueError("--vram-experts must be a finite positive GiB count")
+        if ram != "auto" and (isinstance(ram, bool) or not isinstance(ram, (int, float))
+                              or not math.isfinite(ram) or ram <= 0):
+            raise ValueError("--vram-experts must be auto or a finite positive GiB count")
         if getattr(args, "ssd_experts", None) is not None:
             raise ValueError("--vram-experts and --ssd-experts cannot be combined")
         check_ram = getattr(family.package, "check_vram_experts", None)
@@ -56,6 +57,15 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     supported = getattr(family.package, "CUDA_KV_DTYPES", ("bf16",))
     if kv not in supported:
         raise ValueError(f"{family.title} on CUDA serves a {' or '.join(supported)} KV cache, not --kv-dtype {kv}")
+    for name in ("kv_key_dtype", "kv_value_dtype"):
+        value = getattr(args, name, None)
+        if value is None:
+            continue
+        flag = "--" + name.replace("_", "-")
+        if backend != "cuda" or not getattr(family.package, "CUDA_KV_PAIRS", False):
+            raise ValueError(f"{flag} is supported by Flash Next on CUDA only")
+        if value not in supported:
+            raise ValueError(f"{flag} {value!r}: choose {' or '.join(supported)}")
     slots = getattr(args, "checkpoint_slots", None)
     if slots is not None and backend == "cuda" and getattr(family.package, "CUDA_CHECKPOINT_SLOTS", False):
         if slots < 1:

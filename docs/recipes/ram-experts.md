@@ -1,6 +1,6 @@
 # CUDA experts backed by system RAM
 
-`--vram-experts GIB` keeps Flash Next's affine 4-bit expert weights in pageable
+`--vram-experts GIB|auto` keeps Flash Next's affine 4-bit or EXL3 expert weights in pageable
 system RAM and allocates a bounded shared cache on the GPU. This is useful on
 machines with separate host RAM and limited NVIDIA VRAM. It uses the ordinary
 CUDA kernels; it has no GB10 hardware dependency. The existing CUDA compute
@@ -21,20 +21,85 @@ admits these separately and refuses a context that does not fit. Choose the pool
 and context for the machine's reported capacity; the example is not a capacity
 guarantee for a particular GPU. Omit the flag to keep the fully resident path.
 
-The first model adapter supports Flash Next MLX affine 4-bit/group-32 checkpoints
-on one CUDA GPU. It includes every routed expert, the shared expert in each layer,
-and the MTP expert layer when drafts are enabled. EXL3, NVFP4, tensor parallelism,
+On a GPU with separate VRAM, use `--vram-experts auto` to size the expert cache from the VRAM remaining after
+the model's other allocations. Attention and routing weights, KV caches,
+recurrent state, and compute buffers stay on the GPU. Model weights and the
+expert pool are shared by all parallel slots; each slot needs separate sequence
+state. Automatic sizing accounts for the configured context, KV formats, MTP,
+parallel slots, retained prompt states, and transient workspace before choosing
+whole expert cells. The chosen size is fixed for the engine's lifetime and is
+reported at startup. It leaves allocation headroom rather than treating every
+physically free byte as usable expert storage.
+
+Automatic sizing uses a 512 MiB allocation margin in addition to the explicitly
+budgeted future state and workspace. It sizes the pool once before the first
+expert lease; it does not compete with requests for memory at runtime. Unified
+memory devices retain the existing numeric-budget behavior and reject `auto`.
+
+```bash
+tensorfold serve /models/Qwen3.8-Flash-Next-exl3 \
+  --backend cuda --vram-experts auto \
+  --context 2048 --parallel 4 --kv-dtype int8
+```
+
+Automatic sizing does not change precision or routing. A context or mandatory
+model working set that cannot fit still fails startup; system RAM spillover
+applies to expert weights only. EXL3's separately mapped n-gram tables retain
+their existing host-memory behavior.
+
+An actual RTX PRO 2000 Blackwell run (16 GB VRAM, 64 GB RAM) with
+`turboderp/Qwen3.8-Flash-Next-exl3` at revision
+`65c895314393431c09050b2e04e250836b3a6eb4`, INT8 KV, a 2,048-token context,
+four slots, and YaRN factor 2 chose 2,341 expert cells: 5,753,241,600 bytes
+(5.36 GiB). It left 134,469,952 bytes for full-window KV growth and its copy
+overlap, 1,387,954,176 bytes for retained/in-flight states, and 2,068,480 bytes
+for prompt temporaries, plus the 512 MiB margin. Less than one expert cell
+remained after those reservations.
+
+For the same repeated 128-token greedy reply, a 0.5 GiB pool measured
+6.28–6.33 decode tokens/s without drafts and 7.34–7.35 with warmed MTP.
+Automatic sizing measured 9.21 and 11.96–12.00 respectively, with identical
+output tokens. Warm MTP reused 45 prompt tokens. The serial request's expert
+hit rate rose from 24.03% to 67.49%. These are observations for this model,
+runtime, and prompts, rather than throughput guarantees.
+
+Four simultaneous requests with 1,805–1,808 prompt tokens and 64 output tokens
+also completed. The GPU-thread observer saw all four slots active; minimum
+observed free VRAM was 1,042,087,936 bytes, with no OOM or swap use. This first
+long-prompt batch included prompt work and was the first batch of that shape;
+compilation overhead was not isolated. It is not a warm four-request throughput
+measurement. All measurements used the pinned
+PyTorch `2.16.0.dev20261006+cu134`/CUDA 13.4 runtime.
+
+The adapters support Flash Next MLX affine 4-bit/group-32 and EXL3 checkpoints
+on one CUDA GPU. They include every routed expert, the shared expert in each layer,
+and the MTP expert layer when drafts are enabled. EXL3 retains each original
+trellis stream and bit width, including supported half-bit widths; all experts
+within a layer must use the same native codebook. NVFP4, tensor parallelism,
 MLX, and other model families refuse this flag. `--ssd-experts` remains the MLX
-checkpoint-streaming option and is now explicitly refused on CUDA. Neither flag
-changes `--ple-on-ssd`, which controls the separate n-gram tables.
+checkpoint-streaming option and is now explicitly refused on CUDA. With affine
+checkpoints, `--ple-on-ssd` controls the separate n-gram tables. EXL3 checkpoints
+map their native n-gram tables directly and refuse `--ple-on-ssd`.
 
 ## Residency and execution
 
-The loader reads two experts' projections at a time directly into CPU memory and
+The affine loader reads two experts' projections at a time directly into CPU memory and
 packs its existing bits into the CUDA kernel layout. It never uploads the full
 expert stacks first and never dequantizes or requantizes them. A single fixed GPU
 pool is shared across main and MTP layers. Two expert-sized pinned buffers stage
 cache misses; cold expert weights stay pageable.
+
+For EXL3, CPU authority contains compact original trellis bytes without padding.
+GPU cells are sized for the largest gate/up/down bundle in the model. Prepared
+FP16 scales, logical pointer/width tables, bounded pointer-publication buffers,
+and wave controls are admitted separately from the packed-weight pool. Original
+codebook markers and scale payloads are validated at loading; nonfinite scales
+are rejected before becoming GPU metadata.
+
+The EXL3 loader batches complete expert bundles into bounded reads of at most
+16 MiB, borrowing views until their copies finish. Larger bundles use sequential
+projection reads. Read failures drain outstanding work and preserve the original
+error before releasing the loader's resources.
 
 The cache uses bounded aging frequency counters, with recency and physical slot
 as deterministic tie breakers. Frequently reused experts can remain resident
@@ -50,6 +115,12 @@ Transfer staging and stream changes are ordered with CUDA events. The ordinary
 writeback runs once after all selected experts finish. Single-request decode,
 concurrent decode/prefill, vision's text layers, MTP, and YaRN use the same path.
 Host-coordinated forwards run eagerly; full-forward CUDA graphs are disabled.
+
+The EXL3 adapter preserves native logical expert IDs and row/slot order. Each
+wave publishes leased pointers, executes its selected pairs, and retains the
+other slots' outputs until all waves finish. It then performs the native weighted
+combination once. Duplicate valid expert IDs within a row are rejected before
+native grouping; the existing native limit is 32 route slots including shared.
 
 CPU expert payloads and aliases are immutable for the cache's model lifetime.
 The cache bounds storage, frequency history, resident metadata, and staging;
@@ -78,10 +149,16 @@ reallocation.
 The checked-in tests use independent CPU packed-byte oracles and the unchanged
 resident CUDA execution as an oracle, including forced eviction, shared experts,
 MTP, mixed requests, stream ordering, mutation/resource failures, and memory
-bounds. GB10 is available for functional CUDA validation; discrete PCIe transfer
-throughput and a full host-offloaded production checkpoint require measurements
-on the intended discrete-GPU machine. The existing live GB10 deployment keeps
-its resident experts, YaRN 2x, and four request slots.
+bounds. A complete trained EXL3 checkpoint also passed 32 paired resident/cache
+checks on GB10: all 25,137 bundles and 30,948,556,800 original trellis bytes matched,
+as did routing, full-vocabulary logits, greedy and seeded MTP, n-gram rows, prefix
+restoration, and storage growth. That run used 109 cells in a 267,878,400-byte pool,
+with no container swap and at least 18.39 GiB of sampled available host RAM.
+A separate 33-check run also matched a 112×112 image prefill through the original
+BF16 vision tower, with at least 17.31 GiB of sampled available host RAM. These
+functional runs do not establish language quality, broad vision accuracy, or
+discrete PCIe performance. Those require separate measurements. The GB10 recipe uses resident
+experts, YaRN 2x, and four request slots.
 
 For a comparison on that machine, use identical checkpoint, runtime, context,
 sampling, concurrency, and prompt/token distributions. Record cold startup and
@@ -131,6 +208,10 @@ complete Flash Next checkpoint/forward oracles:
 ```bash
 python3 -m pytest tests/cuda/test_host_experts.py \
   tests/cuda/test_expert_cache.py tests/cuda/test_flashnext_ram_experts.py -q
+python3 -m pytest tests/test_exl3_host_experts.py tests/test_exl3_ram_admission.py \
+  tests/test_exl3_read_recorder.py tests/test_exl3_scale_boundary.py -q
+python3 -m pytest tests/cuda/test_exl3_host_cache_cuda.py \
+  tests/cuda/test_flashnext_exl3_ram_engine.py -q
 python3 tools/bench_ram_expert_startup.py --repeats 9
 python3 tools/bench_ram_expert_policy.py --repeats 9
 ```

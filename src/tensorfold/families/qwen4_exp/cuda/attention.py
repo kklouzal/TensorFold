@@ -7,8 +7,13 @@ import triton
 import triton.language as tl
 
 from .image_rows import rope_axis
+from .kv_pair import load_side, resolve_pair, validate_storage
 
 from .kvquant import dequant_group_4, dequant_group_8, h32
+from .rotorquant_kernel import dequant_group_3 as rotor_dequant_3, dequant_group_4 as rotor_dequant_4
+from .rotorquant_kernel import dequant_group_6 as rotor_dequant_6
+from .rotorquant_kernel import dequant_group_7 as rotor_dequant_7, dequant_group_8 as rotor_dequant_8
+from .rotorquant_kernel import rotate as rotor_rotate
 
 CHUNK = 512
 TILE = 64
@@ -32,7 +37,9 @@ def _tile(q, k, v, m, l, o, valid, scale: tl.constexpr):
 @triton.jit
 def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
-            NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr):
+            NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
+            CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
+            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
     r = tl.program_id(0)
     hk = tl.program_id(1)
     c = tl.program_id(2)
@@ -41,13 +48,19 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR,
     if QSA:
         sparse = tl.load(SPR + r) != 0
         n = tl.where(sparse, tl.load(NKR + r), n)
-    _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS)
+    if K_BITS >= 0:
+        _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
+                    H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC)
+    else:
+        _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
+               H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS, CODEC=CODEC)
 
 
 @triton.jit
 def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
            H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
-           NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr):
+           NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
+           CODEC: tl.constexpr = 0):
     """Row r's keys in chunk c of its ``n`` (a sparse row's through IDS): the chunk's partial o, m and l."""
 
     start = c * CH
@@ -66,7 +79,66 @@ def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
                 if sparse:
                     ki = tl.load(IDS + r * IDW + ki, mask=valid, other=0)
             off = (ki[:, None].to(tl.int64) * HK + hk) * D + d[None, :]
-            if BITS:
+            if CODEC:
+                gs = tl.arange(0, D // 128)
+                sgc = (ki[:, None].to(tl.int64) * HK + hk) * (D // 128) + gs[None, :]
+                sc = tl.load(KSC + sgc, mask=valid[:, None], other=0.0)
+                sv = tl.load(VSC + sgc, mask=valid[:, None], other=0.0)
+                if BITS == 3:
+                    lo = tl.arange(0, D // 4)
+                    hi = tl.arange(0, D // 8)
+                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 3 // 8)
+                    ol = base + (lo[None, :] // 32) * 48 + lo[None, :] % 32
+                    oh = base + (hi[None, :] // 16) * 48 + 32 + hi[None, :] % 16
+                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
+                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
+                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
+                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
+                    kk = rotor_dequant_3(kl, kh, sc, M=64, W=D)
+                    vv = rotor_dequant_3(vl, vh, sv, M=64, W=D)
+                elif BITS == 6:
+                    lo = tl.arange(0, D // 2)
+                    hi = tl.arange(0, D // 4)
+                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 3 // 4)
+                    ol = base + (lo[None, :] // 64) * 96 + lo[None, :] % 64
+                    oh = base + (hi[None, :] // 32) * 96 + 64 + hi[None, :] % 32
+                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
+                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
+                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
+                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
+                    kk = rotor_dequant_6(kl, kh, sc, M=64, W=D)
+                    vv = rotor_dequant_6(vl, vh, sv, M=64, W=D)
+                elif BITS == 7:
+                    lo = tl.arange(0, D // 2)
+                    mid = tl.arange(0, D // 4)
+                    hi = tl.arange(0, D // 8)
+                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 7 // 8)
+                    ol = base + (lo[None, :] // 64) * 112 + lo[None, :] % 64
+                    om = base + (mid[None, :] // 32) * 112 + 64 + mid[None, :] % 32
+                    oh = base + (hi[None, :] // 16) * 112 + 96 + hi[None, :] % 16
+                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
+                    km = tl.load(KC + om, mask=valid[:, None], other=0)
+                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
+                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
+                    vm = tl.load(VC + om, mask=valid[:, None], other=0)
+                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
+                    kk = rotor_dequant_7(kl, km, kh, sc, M=64, W=D)
+                    vv = rotor_dequant_7(vl, vm, vh, sv, M=64, W=D)
+                elif BITS == 8:
+                    offb = (ki[:, None].to(tl.int64) * HK + hk) * D + d[None, :]
+                    kc = tl.load(KC + offb, mask=valid[:, None], other=0)
+                    vc = tl.load(VC + offb, mask=valid[:, None], other=0)
+                    kk = rotor_dequant_8(kc, sc, M=64, W=D)
+                    vv = rotor_dequant_8(vc, sv, M=64, W=D)
+                else:
+                    tl.static_assert(BITS == 4)
+                    db = tl.arange(0, D // 2)
+                    offb = (ki[:, None].to(tl.int64) * HK + hk) * (D // 2) + db[None, :]
+                    kc = tl.load(KC + offb, mask=valid[:, None], other=0)
+                    vc = tl.load(VC + offb, mask=valid[:, None], other=0)
+                    kk = rotor_dequant_4(kc, sc, M=64, W=D)
+                    vv = rotor_dequant_4(vc, sv, M=64, W=D)
+            elif BITS:
                 # codes with an fp16 scale per 32 values, dequantized before the dot; q carries the keys' rotation
                 gs = tl.arange(0, D // 32)
                 sgc = (ki[:, None].to(tl.int64) * HK + hk) * (D // 32) + gs[None, :]
@@ -97,19 +169,54 @@ def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
 
 
 @triton.jit
+def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
+                H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
+                NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr,
+                K_BITS: tl.constexpr, K_CODEC: tl.constexpr, V_BITS: tl.constexpr, V_CODEC: tl.constexpr):
+    """Canonical 64-key arithmetic with each side decoded in its own stored basis."""
+
+    start = c * CH
+    if start < n:
+        gg = tl.arange(0, 16)
+        d = tl.arange(0, D)
+        q = tl.load(Q + (r * H + hk * G + gg[:, None]) * D + d[None, :], mask=gg[:, None] < G, other=0.0)
+        m = tl.full((16,), float("-inf"), tl.float32)
+        denominator = tl.zeros((16,), tl.float32)
+        o = tl.zeros((16, D), tl.float32)
+        tiles = tl.minimum(n - start, CH)
+        for t in range(0, tl.cdiv(tiles, 64)):
+            ki = start + t * 64 + tl.arange(0, 64)
+            valid = ki < n
+            if QSA:
+                if sparse:
+                    ki = tl.load(IDS + r * IDW + ki, mask=valid, other=0)
+            k = load_side(KC, KSC, ki, valid, hk, HK, D, 64, K_BITS, K_CODEC)
+            v = load_side(VC, VSC, ki, valid, hk, HK, D, 64, V_BITS, V_CODEC)
+            m, denominator, o = _tile(q, k, v, m, denominator, o, valid, SCALE)
+        base = (r * NCH + c) * H + hk * G + gg
+        tl.store(PO + base[:, None] * D + d[None, :], o, mask=gg[:, None] < G)
+        tl.store(PM + base, m, mask=gg < G)
+        tl.store(PL + base, denominator, mask=gg < G)
+
+
+@triton.jit
 def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
-           CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr):
+           CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0,
+           V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
     r = tl.program_id(0)
     hk = tl.program_id(1)
     n = tl.load(POS0) + r + 1
     if QSA:
         n = tl.where(tl.load(SPR + r) != 0, tl.load(NKR + r), n)
-    _merge_row(PO, PM, PL, OUT, n, r, hk, H, HK, D, G, CH, NCH, BITS)
+    if V_BITS >= 0:
+        _merge_row(PO, PM, PL, OUT, n, r, hk, H, HK, D, G, CH, NCH, V_BITS, CODEC=V_CODEC)
+    else:
+        _merge_row(PO, PM, PL, OUT, n, r, hk, H, HK, D, G, CH, NCH, BITS, CODEC=CODEC)
 
 
 @triton.jit
 def _merge_row(PO, PM, PL, OUT, n, r, hk, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
-               CH: tl.constexpr, NCH: tl.constexpr, BITS: tl.constexpr):
+               CH: tl.constexpr, NCH: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0):
     """Row r's chunk partials merged in chunk order into its output heads (rotated back when the cache is)."""
 
     gg = tl.arange(0, 16)
@@ -131,7 +238,9 @@ def _merge_row(PO, PM, PL, OUT, n, r, hk, H: tl.constexpr, HK: tl.constexpr, D: 
         l = l * a + cl * b
         m = next_m
     result = o / l[:, None]
-    if BITS:
+    if CODEC:
+        result = rotor_rotate(result, M=16, W=D, CODEC=CODEC, INVERSE=True)
+    elif BITS:
         # values are stored rotated: p . (H v) = H (p . v), so one H32 a row restores the merged output
         result = tl.reshape(h32(tl.reshape(result, (16 * D // 32, 32)), M=16 * D // 32), (16, D))
     tl.store(OUT + (r * H + head[:, None]) * D + d[None, :], result.to(tl.bfloat16), mask=gg[:, None] < G)
@@ -160,15 +269,30 @@ class AttnScratch:
 def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch,
               rows: int, scale: float, out: torch.Tensor | None = None, *,
               context: int | None = None, ks: torch.Tensor | None = None, vs: torch.Tensor | None = None,
-              bits: int = 0) -> torch.Tensor:
-    """q [R, H, D] against caches holding [0, P0 + R) -> [R, H, D] bf16; sparse rows read ``scratch.ids``; ``bits`` 8 or 4: codes with ``ks``/``vs`` scales, q rotated in, the output rotated back."""
+              bits: int = 0, codec: int = 0, k_bits: int | None = None, k_codec: int | None = None,
+              v_bits: int | None = None, v_codec: int | None = None) -> torch.Tensor:
+    """BF16 queries against independent stored-basis K/V sides; sparse rows read scratch IDs.
 
-    if bits and (ks is None or vs is None):
-        raise ValueError("a quantized KV cache needs its scale tensors")
-    if ks is None:
-        ks = vs = kc
+    The query already carries the key basis. Only the value basis is inverted
+    after the canonical chunk merge. Symmetric native formats keep their
+    original shader dispatch; optional side traits are an all-or-none plan.
+    """
+
     _, h, d = q.shape
+    kb, kf, vb, vf = resolve_pair(bits, codec, k_bits, k_codec, v_bits, v_codec, d)
+    native = kf == vf == 0 and kb == vb
+    if (kb and ks is None) or (vb and vs is None):
+        raise ValueError("each quantized KV side needs its own scale tensor")
+    ks = kc if ks is None else ks
+    vs = vc if vs is None else vs
+    pair = {} if native else dict(K_BITS=kb, K_CODEC=kf, V_BITS=vb, V_CODEC=vf)
+    merge_pair = {} if native else dict(V_BITS=vb, V_CODEC=vf)
     hk = kc.shape[1]
+    if not native:
+        if q.dtype != torch.bfloat16 or not q.is_contiguous() or q.shape[0] < rows:
+            raise ValueError("pair attention requires compatible contiguous BF16 query rows")
+        validate_storage(kc, ks, kc.shape[0], hk, d, kb, kf, q.device)
+        validate_storage(vc, vs, kc.shape[0], hk, d, vb, vf, q.device)
     g = h // hk
     if g > 16:
         raise ValueError(
@@ -182,9 +306,9 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     out = scratch.out if out is None else out
     _chunks[(rows, hk, chunks)](q, kc, vc, ks, vs, pos0, scratch.po, scratch.pm, scratch.pl, scratch.ids, scratch.nk,
                              scratch.sparse, H=h, HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, SCALE=scale,
-                             IDW=scratch.idw, QSA=scratch.qsa, BITS=bits, num_warps=4, num_stages=1)
+                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, **pair, num_warps=4, num_stages=1)
     _merge[(rows, hk)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h,
-                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=bits, num_warps=4)
+                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=4)
     return out
 
 

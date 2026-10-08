@@ -7,6 +7,9 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from tests.mlx_host_protocol_fakes import cli_protocol
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+
 from tensorfold import cli, families, hub
 from tensorfold.server import memory_budget
 from tensorfold.server.memory_budget import (
@@ -269,64 +272,53 @@ def test_a_non_kv_entry_such_as_a_draft_slot_counts_as_fixed_memory():
 def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
     """Run `tensorfold serve` up to its HTTP loop with a stub app; returns the app's keyword arguments and output."""
 
-    core = ModuleType("mlx.core")
-    core.set_cache_limit = lambda value: None
-    core.set_memory_limit = lambda value: None
-    core.device_info = lambda: {"max_recommended_working_set_size": 64 * GIB, "memory_size": 128 * GIB}
-    core.__version__ = "0.0"
-    monkeypatch.setattr(memory_budget, "physical_memory_bytes", lambda: 128 * GIB)     # the host's RAM plays no part
-    core.synchronize = core.clear_cache = lambda: None               # the weights' wiring after load
-    core.get_active_memory = lambda: 0
-    core.set_wired_limit = lambda value: 0
-    mlx = ModuleType("mlx")
-    mlx.core = core
-    monkeypatch.setitem(sys.modules, "mlx", mlx)
-    monkeypatch.setitem(sys.modules, "mlx.core", core)
-    monkeypatch.setattr("faulthandler.register", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_config_dir", lambda model: tmp_path)
-    monkeypatch.setattr(cli, "_model_context", lambda path: 262144)
-    monkeypatch.setattr(cli, "_backend", lambda *args: "mlx")
-    monkeypatch.setattr(cli, "_note_untested", lambda *args: None)
-    monkeypatch.setattr(cli, "_drafter", lambda *args: "")
-    monkeypatch.setattr(families, "require_readable", lambda *args: None)
-    monkeypatch.setattr(families, "read_config", lambda *args: {})
-    monkeypatch.setattr(families, "kernel_version", lambda *args: "k")
-    monkeypatch.setattr(hub, "is_repo_id", lambda model: False)
-    monkeypatch.setattr(hub, "resolve", lambda *args, **kwargs: tmp_path)
-    family = SimpleNamespace(title="fixture", model_type="fixture",
-                             package=SimpleNamespace(load=lambda *args, **kwargs: (object(), object())))
-    monkeypatch.setattr(families, "detect", lambda path: family)
-    made = {}
+    with cli_protocol(monkeypatch, "0.0"):
+        monkeypatch.setattr(memory_budget, "physical_memory_bytes", lambda: 128 * GIB)
+        monkeypatch.setattr("faulthandler.register", lambda *args, **kwargs: None)
+        monkeypatch.setattr(cli, "_config_dir", lambda model: tmp_path)
+        monkeypatch.setattr(cli, "_model_context", lambda path: 262144)
+        monkeypatch.setattr(cli, "_backend", lambda *args: "mlx")
+        monkeypatch.setattr(cli, "_note_untested", lambda *args: None)
+        monkeypatch.setattr(cli, "_drafter", lambda *args: "")
+        monkeypatch.setattr(families, "require_readable", lambda *args: None)
+        monkeypatch.setattr(families, "read_config", lambda *args: {})
+        monkeypatch.setattr(families, "kernel_version", lambda *args: "k")
+        monkeypatch.setattr(hub, "is_repo_id", lambda model: False)
+        monkeypatch.setattr(hub, "resolve", lambda *args, **kwargs: tmp_path)
+        family = SimpleNamespace(title="fixture", model_type="fixture",
+                                 package=SimpleNamespace(load=lambda *args, **kwargs: (object(), object())))
+        monkeypatch.setattr(families, "detect", lambda path: family)
+        made = {}
 
-    class App:
-        def __init__(self, model, tokenizer, **kwargs):
-            made.update(kwargs)
-            self.context_window = 61440 if kwargs["fit_context"] else kwargs["context_window"]
-            self.context_fitted = kwargs["fit_context"]
-            self.prompt_memory = SimpleNamespace(resumable=61440)
+        class App:
+            def __init__(self, model, tokenizer, **kwargs):
+                made.update(kwargs)
+                self.context_window = 61440 if kwargs["fit_context"] else kwargs["context_window"]
+                self.context_fitted = kwargs["fit_context"]
+                self.prompt_memory = SimpleNamespace(resumable=61440)
 
-        def close(self):
-            pass
+            def close(self):
+                pass
 
-    class Server:
-        def __init__(self, *args):
-            pass
+        class Server:
+            def __init__(self, *args):
+                pass
 
-        def serve_forever(self):
-            raise KeyboardInterrupt
+            def serve_forever(self):
+                raise KeyboardInterrupt
 
-        def server_close(self):
-            pass
+            def server_close(self):
+                pass
 
-    import tensorfold.server.app as app_module
-    import tensorfold.server.http as http_module
+        import tensorfold.server.app as app_module
+        import tensorfold.server.http as http_module
 
-    monkeypatch.setattr(app_module, "ChatApp", App)
-    monkeypatch.setattr(http_module, "Server", Server)
-    monkeypatch.setattr(http_module, "make_handler", lambda app: None)
-    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", *argv])
-    assert cli.cmd_serve(args) == 0
-    return made, capsys.readouterr().out
+        monkeypatch.setattr(app_module, "ChatApp", App)
+        monkeypatch.setattr(http_module, "Server", Server)
+        monkeypatch.setattr(http_module, "make_handler", lambda app: None)
+        args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", *argv])
+        assert cli.cmd_serve(args) == 0
+        return made, capsys.readouterr().out
 
 
 def test_an_omitted_context_is_fitted_to_memory_and_the_banner_shows_the_window(monkeypatch, tmp_path, capsys):
@@ -373,8 +365,9 @@ def test_weights_past_the_budget_are_refused_before_loading(monkeypatch, tmp_pat
 
 
 
-def test_the_27b_draft_slot_counts_its_drafter_context_as_fixed_memory_and_a_copy_as_none():
+def test_the_27b_draft_slot_counts_its_drafter_context_as_fixed_memory_and_a_copy_as_none(mlx_host_protocol):
     import copy
+
 
     from tensorfold.families.qwen3_5.dflash_head import DraftSlot
 

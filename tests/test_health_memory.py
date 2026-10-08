@@ -123,9 +123,18 @@ def test_legacy_health_app_keeps_metric_reset(measured_runtime):
     assert metrics["peak"] == peak and runtime.peak == runtime.get_active_memory()
 
 
-def test_health_reports_the_budget_and_the_process_footprint(measured_runtime):
+def test_health_reports_the_budget_and_the_process_footprint(measured_runtime, monkeypatch):
+    monkeypatch.setattr("tensorfold.server.prompt_memory.process_footprint", lambda: 2 * 1024**2)
     _, _, guard = measured_runtime
     with serving(guard) as port:
         metrics = health(port, reset=False)
     assert metrics["budget"] == 5300 and metrics["mlx_budget"] == 5300
-    assert metrics["footprint"] > 1024**2            # this test process, Metal buffers included
+    assert metrics["footprint"] == 2 * 1024**2
+
+
+def test_health_omits_footprint_when_the_platform_cannot_observe_it(measured_runtime, monkeypatch):
+    monkeypatch.setattr("tensorfold.server.prompt_memory.process_footprint", lambda: None)
+    _, _, guard = measured_runtime
+    with serving(guard) as port:
+        metrics = health(port, reset=False)
+    assert metrics["budget"] == 5300 and "footprint" not in metrics

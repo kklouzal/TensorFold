@@ -3,11 +3,15 @@ source. It includes the native SSD reader, multi-image/video and copy-draft
 changes, xgrammar 0.2.8, and the Harness `/v1/tokenize` endpoint. The native
 baseline is 262,144 prompt-plus-output tokens with four request slots.
 `provenance.json` records the upstream commits, integrated patch hashes, model
-revision, and the original container stack. The new build uses NGC CUDA 13.4.1
-and upstream ARM64 PyTorch nightly 2.16.0.dev20261006, matching TorchVision
-0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d. `nightly-pins.json` records the
-base digest, official wheel URLs/hashes, and the date of the latest-available
-selection. The current Compose profile enables YaRN factor 2 with 524,288
+revision, and the original container stack. The Dockerfile supports Linux ARM64
+and AMD64 with NGC CUDA 13.4.1 and upstream PyTorch nightly 2.16.0.dev20261006,
+matching TorchVision 0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d.
+`nightly-pins.json` retains the validated ARM64 inputs;
+`nightly-pins-amd64.json` records the corresponding official AMD64 inputs.
+Both include immutable base digests and wheel SHA256 hashes. The AMD64 dependency
+closure was verified using an explicit cross-platform pip report, not native
+image/GPU execution. Its full build and target-machine checks remain required.
+The current Compose profile enables YaRN factor 2 with 524,288
 prompt-plus-reply tokens and four request slots. Caches grow on demand within
 the global memory gate; four simultaneously full-size contexts are not assumed
 to fit the GB10.
@@ -22,7 +26,9 @@ docker compose -f deploy/gb10/compose.yaml config --quiet
 ```
 
 The Dockerfile uses NVIDIA's NGC CUDA DL inference development base, pinned by
-ARM64 manifest digest. That supplies NVCC, CUDA headers and forward-compatibility
+its immutable multiarchitecture OCI index. It selects the original ARM64 child
+or the audited AMD64 child, then validates the actual Linux/Python architecture
+before installing the matching locks. That supplies NVCC, CUDA headers and forward-compatibility
 libraries. Python 3.12 and upstream nightly packages live in an isolated venv;
 NGC's tightly coupled PyTorch plugins are not part of this image. All Python
 runtime dependencies are pinned to wheel URLs and SHA256 hashes, including the
@@ -34,7 +40,21 @@ where compatible. The native reader's C++ source is included in the fork wheel.
 The verification target adds its own pinned pytest tools and contains no weights. It also includes the synthetic RAM-expert startup and cache-policy benchmarks in `tools/`.
 The opt-in, general CUDA host-RAM expert mode is documented in
 [the RAM-expert recipe](../../docs/recipes/ram-experts.md); this ARM64 image
-keeps its GB10 build target, while the mode itself uses the existing CUDA target.
+and its AMD64 counterpart use the model family's existing CUDA target. Hardware
+architecture is selected from the actual GPU when owned CUDA extensions build.
+
+Build AMD64 on the target's native Docker host with the same file:
+
+```bash
+docker buildx build --platform linux/amd64 --load --target runtime \
+  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --tag tensorfold-fork:amd64 --file deploy/gb10/Dockerfile .
+```
+
+The GB10 Compose profile contains its real local paths and model options. Select
+paths, model, memory pool and context for the target machine using actual
+admission and measured peaks. A 16 GiB card does not inherit the GB10's available
+memory or the original MLX checkpoint's host-fit assumptions.
 
 cuDNN uses the complete hash-pinned wheel provider. Build-time aliases in
 `/opt/tensorfold-cudnn` cover its major, minor and full-version SONAME lookups;
@@ -43,8 +63,8 @@ reduced cuDNN library set, so ordinary wheel-directory precedence can mix
 providers and omit the precompiled Conv3d engine needed by the vision tower.
 Neither dependency tree is modified.
 
-Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/`,
-separate from the serving container's older Torch/CUDA caches. Compiler jobs are
+Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/`
+or the sibling `/amd64/`, separate from each other and older Torch/CUDA caches. Compiler jobs are
 bounded to one to limit startup memory peaks. New Torch versions use OS advisory
 locks: a persistent unlocked `lock` file is normal and must not be deleted as a
 recovery step. TensorFold emits old stale-file guidance only for the audited
@@ -59,6 +79,12 @@ This preserves its validation across restarts, when NGC's cached marker survives
 but its process environment loses the probe result.
 Full model startup, memory, long-context quality and performance require their
 own deployment validation.
+
+NVIDIA's forward-compatibility support covers data-center GPUs, selected NGC
+Server Ready RTX models and Jetson. A desktop GeForce Blackwell with an older
+driver cannot assume the GB10's compatibility-library path. Confirm that target's
+native driver and the fresh CUDA probe; a failed probe stops startup. See
+[NVIDIA's compatibility contract](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html).
 
 The pinned image was deployed on this GB10 on 2026-10-06 at native 262,144
 tokens/four slots. Full-model startup, 17 API checks before and after a real
@@ -165,10 +191,29 @@ shutdown after the CUDA suite, which exited successfully. Small isolated compile
 and GPU probes did not reproduce them. Sustained full-model memory behavior still
 needs validation; the warnings are retained rather than suppressed.
 
-To refresh dependency locks, resolve the updated pins in the ARM64 Python 3.12
-foundation environment with `pip install --dry-run --report REPORT.json`, then
-run `python3 deploy/gb10/lock_dependencies.py --report REPORT.json`. Include the
-three exact wheel pins and verification packages in that resolution. The
-generator rejects changed nightly hashes or a different Python/architecture.
+To refresh dependency locks, resolve the updated pins in the matching Linux
+CPython 3.12 environment with `pip install --dry-run --ignore-installed --report
+REPORT.json`, including the three exact wheel pins and verification packages.
+Run the generator in an environment with `packaging` installed:
+
+```bash
+# Existing ARM64 inputs and generated lock names stay unchanged.
+python3 deploy/gb10/lock_dependencies.py --report REPORT.json
+
+# AMD64 native report.
+python3 deploy/gb10/lock_dependencies.py --architecture amd64 --report REPORT.json
+
+# Reproduce the current audited AMD64 cross-report locks.
+python3 deploy/gb10/lock_dependencies.py --architecture amd64 --cross-report \
+  --report deploy/gb10/resolver-amd64.json
+```
+
+The generator checks wheel architecture/ABI, Python versions, approved origins,
+nightly hashes and the full target dependency closure, including transitive
+extras. A cross report requires explicit declaration and retains its actual
+resolver architecture; kernel-dependent markers require native resolution.
+`resolver-amd64.json` preserves the relevant metadata from the genuine pip report
+and its original hash. Dependency selection/provenance does not replace native
+image installation, payload hash verification or CUDA/model checks.
 Update the image/cache identifiers with the pins and rerun CPU, GPU and model
 gates. Do not hand-edit generated requirement locks.

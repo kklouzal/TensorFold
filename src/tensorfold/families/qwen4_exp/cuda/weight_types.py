@@ -261,6 +261,9 @@ class Weights:
             elif isinstance(x, (list, tuple)):
                 for y in x:
                     add(y)
+            elif hasattr(x, "device_tensors"):
+                for tensor in x.device_tensors():
+                    add(tensor)
 
         for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids):
             add(part)

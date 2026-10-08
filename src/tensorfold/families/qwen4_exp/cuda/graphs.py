@@ -4,19 +4,28 @@ from __future__ import annotations
 
 import torch
 
-from .forward import compute, stage
+from .forward import _kv_check, compute, stage
 from .mtp import mtp_compute, mtp_stage
 
 
 class Graphs:
     def __init__(self, e, *, max_rows: int = 8) -> None:
         self.e = e
+        self.owners = (e.w, e.st, e.buf, e.mbuf)  # strong lifetime anchors for captured pointer owners
+        self.state_identity = (e.st.kv_identity, e.st.version)
         self.max_rows = max_rows
         self.main: dict[tuple[int, int, int], torch.cuda.CUDAGraph] = {}
         self.mtp: dict[tuple[int, int], torch.cuda.CUDAGraph] = {}
         self.mtp_out: dict[tuple[int, int], torch.Tensor] = {}
         self.pool = torch.cuda.graph_pool_handle()
         self.captures = 0
+
+    def _check_owner(self) -> None:
+        weights, state, buffers, mtp_buffers = self.owners
+        e = self.e
+        if (e.w is not weights or e.st is not state or e.buf is not buffers or e.mbuf is not mtp_buffers
+                or (state.kv_identity, state.version) != self.state_identity):
+            raise ValueError("captured graphs require their original weights, state, buffers and KV policy")
 
     def _capture(self, fn) -> torch.cuda.CUDAGraph:
         import gc
@@ -45,6 +54,7 @@ class Graphs:
     def forward(self, tokens) -> torch.Tensor:
         e = self.e
         w, st, b = e.w, e.st, e.buf
+        self._check_owner()
         segs = stage(w, b, [(st, tokens)])
         R = segs[-1][2]
         if R > self.max_rows:
@@ -56,13 +66,16 @@ class Graphs:
             compute(w, segs, b, context=context)     # eager warm-up: compiles this launch shape
             g = self._capture(lambda: compute(w, segs, b, context=context))
             self.main[key] = g
+        st.kv_begin()
         g.replay()
+        _kv_check(segs, comm=w.comm)
         return b.logits[:R]
 
     @torch.no_grad()
     def mtp_forward(self, next_tokens, streams: torch.Tensor) -> torch.Tensor:
         e = self.e
         w, st, b = e.w, e.st, e.mbuf
+        self._check_owner()
         segs = mtp_stage(w, b, [(st, next_tokens, streams)])
         n = segs[-1][2]
         if n > self.max_rows:
@@ -75,7 +88,9 @@ class Graphs:
             g = self._capture(lambda: mtp_compute(w, segs, b, context=context))
             self.mtp[key] = g
             self.mtp_out[key] = out
+        st.kv_begin()
         g.replay()
+        _kv_check(segs, comm=w.comm)
         return self.mtp_out[key]
 
     @torch.no_grad()
@@ -97,4 +112,3 @@ class Graphs:
                 self.mtp_forward([0] * n, e.buf.streams[:n])
         torch.cuda.synchronize()
         return self.captures - before
-

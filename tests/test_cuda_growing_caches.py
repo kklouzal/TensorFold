@@ -15,7 +15,7 @@ def weights():
                           kv_heads=2, head_dim=64, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
                           ple_layers=[], eos=(0,))
     layers = [SimpleNamespace(index=i, linear=i % 2 == 0) for i in range(4)]
-    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace())
+    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace(), meta={"world": 1})
 
 
 def filled(state_mod, torch, kv_dtype: str, rows: int = 256):
@@ -45,7 +45,7 @@ def test_a_state_grows_by_steps_and_keeps_every_committed_row(allocations, kv_dt
     assert torch.equal(st.mtp_kc.v[:203], before["mtp"]) and torch.equal(st.mtp_pooled[:51], before["mtp_pooled"])
     grown = [kv.k for kv in st.kc] + [kv.v for kv in st.kc] + st.ikc + st.pooled + [st.mtp_kc.k, st.mtp_kc.v,
                                                                                     st.mtp_ikc, st.mtp_pooled]
-    scales = [t for kv in [*st.kc, st.mtp_kc] for t in (kv.ks, kv.vs)] if kv_dtype != "bf16" else []
+    scales = [t for kv in [*st.kc, st.mtp_kc] for t in (kv.ks, kv.vs)]
     assert st.cache_bytes() == sum(t.numel() * t.element_size() for t in grown + scales)
     assert st.ensure(60000) and st.capacity == 65536                   # the last step stops at the window
     with pytest.raises(ValueError, match="window"):

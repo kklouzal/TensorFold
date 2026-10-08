@@ -6,83 +6,158 @@ import math
 
 import torch
 
+from ..kv_formats import BITS_OF as BITS_OF, DTYPES as DTYPES, KVPairFormat, get, get_pair
+
 GROUP = 32                      # values per scale (ExLlamaV3's cache-quant group)
 SCALE_DTYPE = torch.float16     # ExLlamaV3 stores the group absmax as a half (__float2half_rn)
-DTYPES = ("bf16", "int8", "int4")
-BITS_OF = {"bf16": 16, "int8": 8, "int4": 4}
 R32 = 1.0 / math.sqrt(32)
 
 
 def check(dtype: str) -> str:
     """Refuse a cache dtype this engine has no storage for."""
 
-    if dtype not in DTYPES:
-        raise ValueError(f"kv-dtype {dtype!r}: this engine serves {' or '.join(DTYPES)}")
-    return dtype
+    return get(dtype).name
 
 
-def row_bytes(kv_heads: int, head_dim: int, dtype: str) -> int:
-    """Bytes a position of one layer's keys and values take, their per-row scales included."""
+def _select_pair(dtype: str, pair: KVPairFormat | None, key_dtype: str | None,
+                 value_dtype: str | None) -> KVPairFormat:
+    base = get(dtype)
+    if pair is None:
+        return get_pair(base.name, key_dtype, value_dtype)
+    if type(pair) is not KVPairFormat:
+        raise ValueError("pair must be a registered KVPairFormat")
+    # The default positional shorthand remains backward compatible. An explicit
+    # owned plan has no second set of side overrides or conflicting shorthand.
+    if key_dtype is not None or value_dtype is not None:
+        raise ValueError("explicit KV pair cannot be combined with side dtype overrides")
+    if base.name != "bf16" and pair != get_pair(base.name):
+        raise ValueError("KV dtype shorthand conflicts with the explicit pair")
+    return pair
 
-    if dtype == "bf16":
-        return 2 * kv_heads * head_dim * 2
-    return 2 * kv_heads * (head_dim if dtype == "int8" else head_dim // 2) + 2 * kv_heads * (head_dim // GROUP) * 2
+
+def row_bytes(kv_heads: int, head_dim: int, dtype: str = "bf16", *, pair: KVPairFormat | None = None,
+              key_dtype: str | None = None, value_dtype: str | None = None) -> int:
+    """Per-position K+V bytes; BF16 dummy scales are once per cache, not per row."""
+
+    return _select_pair(dtype, pair, key_dtype, value_dtype).row_bytes(kv_heads, head_dim)
 
 
 # -- storage -------------------------------------------------------------------------------------------
 class KVCache:
-    """One attention layer's keys and values ``[capacity, kv_heads, head_dim]`` (int4: head_dim / 2 bytes); a bf16 cache keeps one-element scales so every kernel takes one argument list."""
+    """Owned K/V storage with one immutable ordered format/shape plan.
 
-    def __init__(self, capacity: int, kv_heads: int, head_dim: int, device, dtype: str = "bf16") -> None:
-        check(dtype)
-        if dtype != "bf16" and head_dim % GROUP:
-            raise ValueError(f"a quantized KV cache needs a head dim that is a multiple of {GROUP}, not {head_dim}")
-        self.dtype = dtype
-        self.bits = BITS_OF[dtype]
-        self.capacity, self.kv_heads, self.head_dim = int(capacity), int(kv_heads), int(head_dim)
-        shape = (int(capacity), int(kv_heads), int(head_dim))
-        if dtype == "int8":
-            self.k = torch.zeros(shape, dtype=torch.int8, device=device)
-            self.v = torch.zeros(shape, dtype=torch.int8, device=device)
-            groups = (int(capacity), int(kv_heads), int(head_dim) // GROUP)
-            self.ks = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
-            self.vs = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
-        elif dtype == "int4":
-            packed = (int(capacity), int(kv_heads), int(head_dim) // 2)
-            self.k = torch.zeros(packed, dtype=torch.uint8, device=device)
-            self.v = torch.zeros(packed, dtype=torch.uint8, device=device)
-            groups = (int(capacity), int(kv_heads), int(head_dim) // GROUP)
-            self.ks = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
-            self.vs = torch.zeros(groups, dtype=SCALE_DTYPE, device=device)
-        else:
-            self.k = torch.zeros(shape, dtype=torch.bfloat16, device=device)
-            self.v = torch.zeros_like(self.k)
-            self.ks = torch.zeros((1,), dtype=SCALE_DTYPE, device=device)
-            self.vs = torch.zeros((1,), dtype=SCALE_DTYPE, device=device)
+    Each side has its own payload type, packed width, scale group/type and BF16
+    dummy. Payload and metadata contents are mutable; formats and dimensions
+    require a new cache. Legacy one-format accessors refuse asymmetric plans.
+    """
+
+    __slots__ = ("_pair", "_capacity", "_kv_heads", "_head_dim", "k", "v", "ks", "vs")
+
+    def __init__(self, capacity: int, kv_heads: int, head_dim: int, device, dtype: str = "bf16", *,
+                 pair: KVPairFormat | None = None, key_dtype: str | None = None,
+                 value_dtype: str | None = None) -> None:
+        selected = _select_pair(dtype, pair, key_dtype, value_dtype)
+        selected.nbytes(capacity, kv_heads, head_dim)  # Validate both sides before the first allocation.
+        self._pair = selected
+        self._capacity, self._kv_heads, self._head_dim = capacity, kv_heads, head_dim
+        self.k, self.ks = self._side(selected.key, device)
+        self.v, self.vs = self._side(selected.value, device)
+
+    def _side(self, format, device):
+        width = self.head_dim if not format.quantized else self.head_dim * format.bits // 8
+        shape = (self.capacity, self.kv_heads, width)
+        groups = ((self.capacity, self.kv_heads, self.head_dim // format.group)
+                  if format.quantized else (1,))
+        return (torch.zeros(shape, dtype=getattr(torch, format.payload_dtype), device=device),
+                torch.zeros(groups, dtype=getattr(torch, format.scale_dtype), device=device))
+
+    @property
+    def pair(self) -> KVPairFormat:
+        return self._pair
+
+    @property
+    def key_format(self):
+        return self.pair.key
+
+    @property
+    def value_format(self):
+        return self.pair.value
+
+    @property
+    def key_dtype(self) -> str:
+        return self.pair.key_dtype
+
+    @property
+    def value_dtype(self) -> str:
+        return self.pair.value_dtype
+
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def kv_heads(self) -> int:
+        return self._kv_heads
+
+    @property
+    def head_dim(self) -> int:
+        return self._head_dim
+
+    @property
+    def format(self):
+        if not self.pair.symmetric:
+            raise ValueError("mixed KV cache has no single format; use key_format/value_format")
+        return self.key_format
+
+    @property
+    def dtype(self) -> str:
+        return self.format.name
+
+    @property
+    def bits(self) -> int:
+        return self.format.bits
+
+    @property
+    def codec(self) -> int:
+        return self.format.codec
 
     @property
     def quantized(self) -> bool:
-        return self.dtype != "bf16"
+        """Whether either side is quantized; per-side work uses its own format."""
+        return self.key_format.quantized or self.value_format.quantized
 
     @property
     def nbytes(self) -> int:
         return self.k.nbytes + self.v.nbytes + self.ks.nbytes + self.vs.nbytes
 
     def resized(self, capacity: int, keep: int) -> "KVCache":
-        """A cache of ``capacity`` rows holding this one's first ``keep`` rows (a bf16 cache's one-element scales too)."""
+        """Independent copy with the same pair, including both dummy scales.
 
-        other = KVCache(capacity, self.kv_heads, self.head_dim, self.k.device, self.dtype)
-        keep = min(int(keep), self.capacity, int(capacity))
-        other.k[:keep], other.v[:keep] = self.k[:keep], self.v[:keep]
-        if self.quantized:
-            other.ks[:keep], other.vs[:keep] = self.ks[:keep], self.vs[:keep]
+        Nonnegative integer ``keep`` is bounded by old/new capacity, preserving
+        existing truncation semantics. New rows retain their zero initialization.
+        """
+
+        if type(keep) is not int or keep < 0:
+            raise ValueError("KV rows to keep must be a nonnegative integer")
+        self.pair.nbytes(capacity, self.kv_heads, self.head_dim)
+        other = KVCache(capacity, self.kv_heads, self.head_dim, self.k.device, pair=self.pair)
+        keep = min(keep, self.capacity, capacity)
+        other.k[:keep].copy_(self.k[:keep])
+        other.v[:keep].copy_(self.v[:keep])
+        for original, copied, format in ((self.ks, other.ks, self.key_format),
+                                          (self.vs, other.vs, self.value_format)):
+            if format.quantized:
+                copied[:keep].copy_(original[:keep])
+            else:
+                copied.copy_(original)
         return other
 
     def clone(self) -> "KVCache":
+        # The validated immutable pair/shape is shared; all four tensors own
+        # fresh initialized storage before the clone can become observable.
         other = object.__new__(KVCache)
-        other.dtype = self.dtype
-        other.bits = self.bits
-        other.capacity, other.kv_heads, other.head_dim = self.capacity, self.kv_heads, self.head_dim
+        other._pair = self.pair
+        other._capacity, other._kv_heads, other._head_dim = self.capacity, self.kv_heads, self.head_dim
         other.k, other.v = self.k.clone(), self.v.clone()
         other.ks, other.vs = self.ks.clone(), self.vs.clone()
         return other

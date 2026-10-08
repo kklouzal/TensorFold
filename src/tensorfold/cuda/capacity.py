@@ -227,16 +227,18 @@ def host_cgroup_bytes() -> int | None:
         current = current.parent
 
 
-def available_bytes(torch) -> int:
+def available_bytes(torch, *, reserve: int | None = None) -> int:
     """The original unified-memory budget, or a discrete GPU's own budget; host staging is checked separately."""
 
     free, total = map(int, torch.cuda.mem_get_info())
-    available = max(0, free - reserve_bytes(total))
+    if reserve is not None and (type(reserve) is not int or not 0 <= reserve <= total):
+        raise ValueError("explicit CUDA memory reserve must be integer bytes within device memory")
+    available = max(0, free - (reserve_bytes(total) if reserve is None else reserve))
     memory = _meminfo()
     if memory is None:
         return available
     if unified(torch):
-        return max(0, memory["MemAvailable"] - reserve_bytes(memory["MemTotal"], host=True))
+        return max(0, memory["MemAvailable"] - (reserve_bytes(memory["MemTotal"], host=True) if reserve is None else reserve))
     return available
 
 
@@ -328,7 +330,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           draft_transform: Callable | None = None,
           draft_weights: Callable[[Path], Weights] | None = None,
           context_limit: int | None = None, original_context: int | None = None,
-          host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0) -> dict:
+          host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0,
+          memory_reserve: int | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating; the draft model by ``draft_weights`` or a transform."""
 
     from tensorfold.cuda import build
@@ -390,7 +393,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 raise ValueError("original context must be positive and no greater than the effective RoPE limit")
         plan = make_plan(native if context_limit is None else context_limit, requested,
                          requested is not None if explicit is None else explicit,
-                         available_bytes(torch), weights, geometry, room=page_room(torch))
+                         available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve),
+                         weights, geometry, room=page_room(torch))
     except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
         error = f"{type(exc).__name__}: {exc}"     # name the cause: its text alone has hidden a dtype's KeyError
     status = [1 if error else 0, *(plan.settings + [plan.fitting, plan.largest] if plan else [0, -1, 0, 0, 0])]

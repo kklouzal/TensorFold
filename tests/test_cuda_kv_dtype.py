@@ -3,6 +3,7 @@
 import pytest
 
 from tests.test_cuda_capacity import Loaded, checkpoint, fake_runtime, small_config  # noqa: F401
+from tensorfold.families.qwen4_exp.kv_formats import get_pair
 
 torch = pytest.importorskip("torch")
 
@@ -109,7 +110,8 @@ def test_two_ranks_with_different_caches_refuse_to_start(fake_runtime, peer):  #
         obj = FlashNextEngine.__new__(FlashNextEngine)
         from tensorfold.families.qwen4_exp.rope import RopeParameters
         obj.rope = RopeParameters.from_config(small_config())
-        obj.depth, obj.confidence, obj.max_len, obj.kv_dtype, obj.comm = 6, 0.3, 8192, kv_dtype, comm
+        obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
+        obj.kv_pair = get_pair(kv_dtype)
         return obj
 
     theirs = Comm()
@@ -134,7 +136,8 @@ def test_two_ranks_with_different_prompt_precision_refuse_to_start(fake_runtime)
         obj = FlashNextEngine.__new__(FlashNextEngine)
         from tensorfold.families.qwen4_exp.rope import RopeParameters
         obj.rope = RopeParameters.from_config(small_config())
-        obj.depth, obj.confidence, obj.max_len, obj.kv_dtype, obj.comm = 6, 0.3, 8192, "bf16", comm
+        obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
+        obj.kv_pair = get_pair("bf16")
         return obj
 
     theirs = Comm()

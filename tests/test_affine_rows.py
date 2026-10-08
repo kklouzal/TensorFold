@@ -208,6 +208,13 @@ def backend(mx, monkeypatch):
     simd.fragments = lambda x: x
     simd.qmm_fragments = lambda x, w, s, b: calls.append(("fragments",)) or Array((x.size // x.shape[-1], w.shape[0]))
     simd.qmm = lambda x, w, s, b, gs: calls.append(("fast", gs)) or Array((*x.shape[:-1], w.shape[0]))
+    bits = ModuleType("tensorfold.kernels.qwen.dense.v1.simd_qmm_bits")
+    bits.fallback = set()
+    bits.check = lambda *args: True
+    bits.qmm = lambda x, w, s, b, width: calls.append(("metal-bits", width)) or Array((*x.shape[:-1], w.shape[0]))
+    bits.fits = lambda *args: False  # this fixture tests native4 versus generic dispatch; Metal5/6/8 is separate
+    monkeypatch.setitem(sys.modules, bits.__name__, bits)
+    monkeypatch.setattr(sys.modules["tensorfold.kernels.qwen.dense.v1"], "simd_qmm_bits", bits, raising=False)
     monkeypatch.setitem(sys.modules, simd.__name__, simd)
     # `from package import simd_qmm` reads the package attribute first, set once the real module was imported
     monkeypatch.setattr(sys.modules["tensorfold.kernels.qwen.dense.v1"], "simd_qmm", simd, raising=False)
@@ -217,7 +224,7 @@ def backend(mx, monkeypatch):
     names = {"Backend", "Stack", "_stackable", "project", "project_stack", "logits", "simd_qmm_backend"}
     load_definitions("row_matmul.py", namespace, names)
     namespace["BACKEND"] = namespace["simd_qmm_backend"]()
-    return NS(api=namespace, calls=calls, simd=simd)
+    return NS(api=namespace, calls=calls, simd=simd, bits=bits)
 
 
 @pytest.mark.parametrize("bits,gs,rows,kind", [(4, 64, 1, ("fast", 64)), (4, 32, 4, ("fast", 32)),
@@ -287,3 +294,11 @@ def test_mixed_gdn_projections_are_forwarded_in_convolution_layout(mx, monkeypat
     rows = NS(single=True, windows=[None], parents=[(-1, 0)], chains=[True], records=[[]])
     out = namespace["_gdn"](gdn, Array((1, 2, 128)), [None], rows)
     assert calls == [2, 3, 5, 8] and out.shape == (1, 2, 28)
+
+
+@pytest.mark.parametrize("width", [5, 6, 8])
+def test_new_metal_bit_backend_dispatch_is_explicit_when_it_fits(backend, width):
+    backend.bits.fits = lambda *args: True
+    module = Linear(bits=width, gs=64)
+    assert backend.api["project"](module, Array((1, 3, 128))).shape == (1, 3, 8)
+    assert backend.calls == [("metal-bits", width)]

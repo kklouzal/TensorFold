@@ -8,6 +8,23 @@ from typing import Callable
 
 from tensorfold import __version__
 from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
+from tensorfold.families.qwen4_exp.kv_formats import DTYPES as FLASH_NEXT_KV_DTYPES
+
+
+def _vram_experts(value: str) -> float | str:
+    """Parse an explicit packed-weight budget or startup-sized expert caching."""
+
+    if value == "auto":
+        return value
+    import math
+
+    try:
+        budget = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--vram-experts: use auto or a finite positive GiB count") from None
+    if not math.isfinite(budget) or budget <= 0:
+        raise argparse.ArgumentTypeError("--vram-experts: use auto or a finite positive GiB count")
+    return budget
 
 
 def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> argparse.ArgumentParser:
@@ -108,9 +125,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--ssd-experts", type=float, default=None, metavar="GIB",
                        help="stream routed experts from the checkpoint into a GPU pool of this many GiB, for models "
                             "past the memory budget (the rest stays resident; output is the resident model's)")
-    speed.add_argument("--vram-experts", type=float, default=None, metavar="GIB",
-                       help="Flash Next affine 4-bit CUDA: keep experts in system RAM, using this many GiB for "
-                            "a shared GPU expert cache (one GPU; routing and precision preserved; slower on misses)")
+    speed.add_argument("--vram-experts", type=_vram_experts, default=None, metavar="GIB|auto",
+                       help="Flash Next affine 4-bit or EXL3 CUDA: keep experts in system RAM; use this many GiB "
+                            "for a shared GPU expert cache, or auto to use the room left after weights, slot state "
+                            "and workspace (one GPU; routing and precision preserved; slower on misses)")
     speed.add_argument("--ple-on-ssd", action="store_true",
                        help="Flash Next: read the n-gram (PLE) tables from the checkpoint on SSD at each lookup "
                             "instead of holding them in memory. A trade: a few percent of decode speed for about "
@@ -128,9 +146,14 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="with --tp 2: this machine's rank; rank 0 serves HTTP, rank 1 follows it")
     cuda.add_argument("--master", default="", help="with --tp 2: rank 0's address on the link between the machines")
     cuda.add_argument("--master-port", type=int, default=29551, help="with --tp 2: rank 0's rendezvous port")
-    cuda.add_argument("--kv-dtype", choices=("bf16", "int8", "int4"), default="bf16",
-                      help="KV cache: bf16 (the default), int8, or int4. Quantized keys and values use one "
-                           "fp16 scale per 32 values (changes the output; Flash Next on CUDA only)")
+    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16",
+                      help="KV cache: bf16 (the default), int8, int4, or a RotorQuant format. "
+                           "INT8/INT4 use one fp16 scale per32 values. RotorQuant uses packed Lloyd-Max codes and "
+                           "fp32 RMS per 128 values (all quantized formats change output; Flash Next CUDA only)")
+    cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
+                      help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
+    cuda.add_argument("--kv-value-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
+                      help="Flash Next CUDA: value-cache format; overrides the value side of --kv-dtype")
     cuda.add_argument("--prefill-fp8", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
                       help="prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an "
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "

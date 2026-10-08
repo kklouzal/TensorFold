@@ -3,12 +3,15 @@
 from importlib import metadata
 from types import SimpleNamespace
 
+
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+
 from tensorfold import cli, families
 from tensorfold.families import qwen4_exp
 from tensorfold.server import app
 
 
-def test_snapshot_identity_changes_with_mlx_lm_version(monkeypatch, tmp_path):
+def test_snapshot_identity_changes_with_mlx_lm_version(monkeypatch, tmp_path, mlx_host_protocol):
     captured = []
 
     class Captured(Exception):

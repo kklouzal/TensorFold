@@ -244,7 +244,46 @@ class HostExpertCache:
         self._next_stage = 0
         self._last_use = torch.cuda.Event()
         self._last_stream = None
+        self._configured_before_use = False
         self.hits = self.misses = self.copied_bytes = self.evictions = 0
+
+    def _replacement_views(self, pool, capacity):
+        views = {key: tuple(pool.narrow(0, capacity * field.offset, capacity * field.size)
+                           .view(field.dtype).view(capacity, *field.shape) for field in layer.fields)
+                 for key, layer in self._layers.items()}
+        return views, None
+
+    def _commit_replacement(self, controls):
+        pass
+
+    def configure_before_use(self, gpu_bytes: int) -> None:
+        """Set the final fixed pool once at startup, before any borrowed lease.
+
+        All replacement storage and layer views are constructed before commit.
+        CPU authority remains unchanged. A failed allocation leaves the initial
+        pool intact; callers must fail startup rather than silently reduce it.
+        """
+        _integer(gpu_bytes, "gpu_bytes")
+        capacity = gpu_bytes // self.entry_bytes
+        if not 0 < capacity <= 2**31 - 1:
+            raise ValueError("automatic pool capacity exceeds expert indexing bounds")
+        with self._lock, torch.cuda.device(self.device), torch.inference_mode(False):
+            self._usable()
+            if (self._configured_before_use or self._last_stream is not None or self._policy.resident
+                    or self._policy.tick or self._policy.touches or self.hits or self.misses or self.evictions or self.copied_bytes):
+                raise RuntimeError("expert pool can be configured only once before its first lease")
+            torch.cuda.current_stream(self.device).synchronize()
+            policy = _Policy(capacity)
+            for key, layer in self._layers.items():
+                policy.register(key, layer.count)
+            pool = torch.empty(capacity * self.entry_bytes, dtype=torch.uint8, device=self.device)
+            views, controls = self._replacement_views(pool, capacity)
+            self._pool, self._policy = pool, policy
+            self.capacity, self.gpu_bytes, self.budget_bytes = capacity, pool.numel(), gpu_bytes
+            for key, layer in self._layers.items():
+                layer.views = views[key]
+            self._commit_replacement(controls)
+            self._configured_before_use = True
 
     @property
     def host_bytes(self) -> int:
@@ -284,7 +323,7 @@ class HostExpertCache:
             self._layers[layer_id] = _Layer(payloads, versions, views, fields, count)
             self._fields = fields
 
-    def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> None:
+    def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> int:
         staging = self._next_stage
         self._next_stage = (staging + 1) % self.staging_slots
         event = self._stage_events[staging]
@@ -296,6 +335,7 @@ class HostExpertCache:
             target[slot].copy_(pinned, non_blocking=True)
         event.record(stream)
         self._stage_pending[staging] = True
+        return sum(field.size for field in layer.fields)
 
     @contextmanager
     def lease(self, layer_id: int, expert_ids: list[int]) -> Iterator[tuple[tuple[torch.Tensor, ...], dict[int, int]]]:
@@ -339,10 +379,10 @@ class HostExpertCache:
                             if self._policy.keys[slot] is not None:
                                 self.evictions += 1
                             self._policy.remove(slot)
-                            self._copy(layer, key[1], slot, stream)
+                            copied = self._copy(layer, key[1], slot, stream)
                             self._policy.install(slot, key)
                             self.misses += 1
-                            self.copied_bytes += sum(field.size for field in layer.fields)
+                            self.copied_bytes += copied
                         else:
                             self.hits += 1
                             self._policy.recency[slot] = self._policy.tick
@@ -407,6 +447,11 @@ class CachedExperts:
 
     def bytes_per_expert(self) -> int:
         return self.cache.entry_bytes
+
+    def device_tensors(self) -> tuple:
+        """Shared device authority for storage accounting; counted once by storage ID."""
+
+        return (self.cache._pool,)
 
     @contextmanager
     def lease(self, expert_ids: list[int]):

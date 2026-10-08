@@ -16,8 +16,26 @@ def until(predicate, timeout=2):
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(.005)
+        time.sleep(0.005)
     raise AssertionError("cancellation did not reach its safe boundary")
+
+
+def receive_until(connection, marker, timeout=2.0):
+    """A bounded test read: EOF/error is failure, never a zero-byte spin."""
+    deadline = time.monotonic() + timeout
+    response = bytearray()
+    while marker not in response:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(f"response did not contain {marker!r} before deadline")
+        connection.settimeout(remaining)
+        chunk = connection.recv(4096)
+        if not chunk:
+            raise AssertionError(f"socket closed before {marker!r}: {bytes(response[-1024:])!r}")
+        response.extend(chunk)
+        if len(response) > 1 << 20:
+            raise AssertionError("test response exceeded one MiB")
+    return bytes(response)
 
 
 class AuditEngine(FakeEngine):
@@ -40,7 +58,7 @@ class AuditEngine(FakeEngine):
         return (yield from super()._family_prefill_steps(stream, **kwargs))
 
     def step(self):
-        time.sleep(.004)
+        time.sleep(0.004)
         return super().step()
 
 
@@ -54,17 +72,24 @@ MESSAGES = [{"role": "user", "content": "Write a greeting."}]
 
 
 def client(server, stream=True):
-    body = json.dumps({"messages": MESSAGES, "max_tokens": 40, "stream": stream,
-                       "tools": [{"type": "function", "function": {"name": "echo",
-                                  "parameters": {"type": "object", "properties": {}}}}]}).encode()
+    body = json.dumps(
+        {
+            "messages": MESSAGES,
+            "max_tokens": 40,
+            "stream": stream,
+            "tools": [
+                {"type": "function", "function": {"name": "echo", "parameters": {"type": "object", "properties": {}}}}
+            ],
+        }
+    ).encode()
     connection = socket.create_connection(server.server_address, timeout=2)
-    headers = ("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
-               f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    headers = (
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+    ).encode()
     connection.sendall(headers + body)
     if stream:
-        response = b""
-        while b"\r\n\r\n" not in response:
-            response += connection.recv(4096)
+        response = receive_until(connection, b"\r\n\r\n")
         assert b"200 OK" in response
     return connection
 
@@ -72,7 +97,7 @@ def client(server, stream=True):
 def serve(instance):
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(instance))
     server.daemon_threads = True
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     return server
 
@@ -80,6 +105,7 @@ def serve(instance):
 def test_callback_disconnect_stops_active_generation_and_recovers():
     instance = app()
     try:
+
         def disconnected(delta):
             raise BrokenPipeError("consumer disconnected")
 
@@ -142,9 +168,7 @@ def test_streaming_socket_disconnect_during_decode_releases_the_active_row():
     connection = None
     try:
         connection = client(server)
-        response = b""
-        while b'"content"' not in response:
-            response += connection.recv(4096)
+        receive_until(connection, b'"content"')
         connection.shutdown(socket.SHUT_RDWR)
         connection.close()
         until(lambda: instance.scheduler.active == 0 and instance.engine.active_count == 0)
@@ -170,7 +194,7 @@ def test_socket_disconnect_in_prefill_stops_before_next_chunk(stream):
         assert instance.engine.entered.wait(2)
         connection.shutdown(socket.SHUT_RDWR)
         connection.close()
-        time.sleep(.15)
+        time.sleep(0.15)
         instance.engine.release.set()
         until(lambda: instance.scheduler._starting is None and instance.scheduler.active == 0)
         assert not instance.engine.audit[0].emitted

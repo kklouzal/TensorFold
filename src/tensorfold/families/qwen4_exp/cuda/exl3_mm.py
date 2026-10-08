@@ -58,7 +58,9 @@ class Scratch:
     def nbytes(self) -> int:
         own = [self.xh, self.z, self.tmp, self.part, self.ple_dev, self.ple_emb]
         moe = [] if self.moe is None else [self.moe.xg, self.moe.xu, self.moe.xd, self.moe.z, self.moe.y,
-                                          self.moe.ids, self.moe.members_buf]
+                                          self.moe.ids, self.moe.count, self.moe.members_buf]
+        if self.moe is not None and hasattr(self.moe, "host_waves"):
+            moe.append(self.moe.host_waves.device_pick)
         return sum(t.numel() * t.element_size() for t in own + moe if t is not None) + self.prefill.nbytes()
 
 

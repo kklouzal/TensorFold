@@ -15,6 +15,22 @@ ACT_BF16, ACT_F32 = 0, 1          # SwiGLU with the GLM family's bf16 roundings 
 # Half-bits a value: 1..8 bits (2, 4, .. 16) and every half-integer rate 1.5..7.5 (3, 5, .. 15).
 K2_SUPPORTED = tuple(range(2, 17))
 
+
+def validate_scale_payload(value: torch.Tensor, context: str) -> torch.Tensor:
+    """Validate an extracted/expanded source scale vector before GPU transfer.
+
+    Original EXL3 scales are nonempty contiguous CPU FP16 values (packed signs expand
+    to that same contract). NaN/Inf is rejected with its checkpoint part name;
+    valid IEEE bits, including signed zero, are returned without conversion.
+    """
+
+    if (not isinstance(value, torch.Tensor) or value.device.type != "cpu"
+            or value.dtype != torch.float16 or value.ndim != 1 or not value.is_contiguous() or value.numel() == 0):
+        raise ValueError(f"{context}: EXL3 scale payload requires a nonempty contiguous CPU FP16 vector")
+    if not bool(torch.isfinite(value).all()):
+        raise ValueError(f"{context}: EXL3 scale payload contains nonfinite values")
+    return value
+
 # (n tiles a block, warps, K splits, tiles in flight): GLM's settings, whose arithmetic order this keeps bit for bit
 GLM_GATEUP = (8, 4, 4, 1)
 GLM_DOWN = (8, 4, 1, 1)

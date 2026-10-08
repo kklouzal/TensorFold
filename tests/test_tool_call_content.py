@@ -17,7 +17,11 @@ ANSWER = '{"temp": 7, "condition": "Overcast", "humidity": 82}'
                                   '```json\n{"temp": 7}\n```', '{"name": "get_weather", "arguments": "oops"}'])
 def test_json_that_is_not_a_call_is_content(text, max_calls) -> None:
     if max_calls == 1 and text.startswith('[{"name"'):
-        pytest.skip("one call a reply takes the leading call, as before")
+        content, calls = parse_tool_calls_from_content(text, TOOLS, max_calls=max_calls)
+        assert content == "" and len(calls) == 1
+        assert calls[0]["function"]["name"] == "get_weather"
+        assert json.loads(calls[0]["function"]["arguments"]) == {}
+        return
     assert parse_tool_calls_from_content(text, TOOLS, max_calls=max_calls) == (text, None)
 
 

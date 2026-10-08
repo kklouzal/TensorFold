@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+
 from tensorfold import cli
 from tensorfold.engine import memory
 from tensorfold.engine.prefill_plan import PrefillPlan
@@ -14,7 +17,7 @@ def parse(*extra):
     return cli.build_parser().parse_args(["serve", "some/model", *extra])
 
 
-def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch):
+def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, mlx_host_protocol):
     seen = {}
 
     class Built(Exception):
@@ -37,7 +40,7 @@ def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch):
 
 
 def test_the_memory_probe_ends_on_full_chunks_of_the_plan_step(monkeypatch):
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
 
     lengths = []
 
@@ -56,7 +59,7 @@ def test_the_memory_probe_ends_on_full_chunks_of_the_plan_step(monkeypatch):
 
 
 def test_the_largest_step_that_leaves_the_context_floor_is_chosen(monkeypatch):
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
     from mlx_lm.models.cache import KVCache
 
     from tensorfold.engine import prefill_step
@@ -92,7 +95,7 @@ def test_the_largest_step_that_leaves_the_context_floor_is_chosen(monkeypatch):
 def test_a_probe_whose_peak_varies_run_to_run_gives_the_same_step(monkeypatch, noise):
     """#95: a streamed-expert probe's peak moves between runs; the worst of three decides, wherever the high one falls."""
 
-    import mlx.core as mx
+    mx = pytest.importorskip("mlx.core")
     from mlx_lm.models.cache import KVCache
 
     from tensorfold.engine import prefill_step

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import time
 from pathlib import Path
 
@@ -50,13 +52,21 @@ def expert_table(pk: Pack, prefix: str, count: int, shared: str, device) -> x3ex
             if run:
                 b0, b1 = entries[run[0]][1], max(entries[k][2] for k in run)
                 host = pk.read(file, b0, b1)
+                # Validate/expand scales before these bytes reach the device.
+                # Every logical scale table is transferred only after all runs
+                # have validated; no corrupt payload becomes native metadata.
+                for k in run:
+                    if not k.endswith(".trellis"):
+                        _, b, e, dtype, shape = entries[k]
+                        value = host[b - b0:e - b0].clone().view(_DT[dtype]).reshape(shape)
+                        if k.endswith((".su", ".sv")):
+                            value = torch.from_numpy(fmt.unpack_signs(value.numpy()))
+                        small[k] = x3experts.validate_scale_payload(value, k)
                 dev = host.to(device)
                 for k in run:
                     _, b, e, dtype, shape = entries[k]
                     if k.endswith(".trellis"):
                         big[place[k]:place[k] + (e - b)].copy_(dev[b - b0:e - b0])
-                    else:
-                        small[k] = host[b - b0:e - b0].clone().view(_DT[dtype]).reshape(shape)
                 del dev, host
 
         for k in keys:                     # a run spans at most ~2 GB and skips at most 16 MB of other tensors
@@ -74,8 +84,7 @@ def expert_table(pk: Pack, prefix: str, count: int, shared: str, device) -> x3ex
         return big[place[k]:place[k] + (e - b)].view(torch.int16).view(shape)
 
     def scales(m: str, part: str) -> torch.Tensor:
-        t = small[f"{m}.{part}"]
-        return (t if part in ("suh", "svh") else torch.from_numpy(fmt.unpack_signs(t.numpy()))).to(device)
+        return small[f"{m}.{part}"].to(device)
 
     lists = {p: [(trellis(f"{nm}.{p}.trellis"), scales(f"{nm}.{p}", parts[f"{nm}.{p}"][0]),
                   scales(f"{nm}.{p}", parts[f"{nm}.{p}"][1])) for nm in names] for p in projs}
@@ -124,7 +133,32 @@ def requant_rows(head, ids: torch.Tensor, device) -> tuple[torch.Tensor, torch.T
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, table_reads: list | None = None,
-         rope: RopeParameters | None = None):
+         rope: RopeParameters | None = None, vram_experts: float | str | None = None, _ram_layout=None):
+    """Load native EXL3 weights, optionally retaining original expert streams on CPU."""
+
+    cache = None
+    if vram_experts is not None:
+        from ..ram_experts import check, layout
+        from tensorfold.cuda.exl3.host_experts import Exl3HostExpertCache
+
+        check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
+        plan = layout(model_dir, vram_experts, mtp=mtp) if _ram_layout is None else _ram_layout
+        cache = Exl3HostExpertCache(plan.gpu_bytes, plan.entry_bytes, device)
+    try:
+        return _load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab,
+                     table_reads=table_reads, rope=rope, expert_cache=cache)
+    except BaseException as primary:
+        if cache is not None:
+            try:
+                cache.close()
+            except BaseException as cleanup:
+                primary.add_note(f"EXL3 expert cache cleanup also failed: {cleanup!r}")
+        raise
+
+
+def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
+          draft_vocab: int | str | None = None, table_reads: list | None = None,
+          rope: RopeParameters | None = None, expert_cache=None):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 
@@ -140,6 +174,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     T = "model.language_model."
     t0 = time.time()
     offset = centred_offset(pk, [f"{T}layers.{i}.attn_hyper_connection.hc_norm.weight" for i in range(cfg.layers)])
+    next_expert_layer = 0
 
     def plain(name: str) -> torch.Tensor:
         return pk.get(name).to(device)
@@ -155,8 +190,16 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         return HC(down, up, centred(name + ".hc_norm.weight"), inject, down, up)
 
     def moe(name: str) -> MoEW:
+        nonlocal next_expert_layer
         router = torch.cat([pk.get(name + ".gate.weight").to(torch.bfloat16),
                             pk.get(name + ".shared_expert_gate.weight").to(torch.bfloat16)]).to(device).contiguous()
+        if expert_cache is not None:
+            from tensorfold.cuda.exl3.host_experts import load_cached
+
+            experts = load_cached(pk, name + ".experts", cfg.experts, name + ".shared_expert",
+                                  expert_cache, next_expert_layer, device, reads=read_session)
+            next_expert_layer += 1
+            return MoEW(router, experts)
         return MoEW(router, expert_table(pk, name + ".experts", cfg.experts, name + ".shared_expert", device))
 
     def attention(name: str) -> AttnW:
@@ -198,35 +241,49 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             entry.ple = ple_layer(base + ".ple", cfg.ple_layers.index(i))
         return entry
 
-    embed = plain(T + "embed_tokens.weight")
-    if embed.dtype not in (torch.bfloat16, torch.float16):
-        embed = embed.to(torch.bfloat16)
-    loaded = []
-    for i in range(cfg.layers):
-        loaded.append(layer(i, f"{T}layers.{i}", cfg.layer_types[i], True))
+    if expert_cache is not None:
+        from tensorfold.cuda.exl3.host_experts import CompactReadSession
+
+        owner = CompactReadSession(pk)
+    else:
+        owner = nullcontext(None)
+    with owner as read_session:
+        embed = plain(T + "embed_tokens.weight")
+        if embed.dtype not in (torch.bfloat16, torch.float16):
+            embed = embed.to(torch.bfloat16)
+        loaded = []
+        for i in range(cfg.layers):
+            loaded.append(layer(i, f"{T}layers.{i}", cfg.layer_types[i], True))
+            pk.release()
+            if i % 8 == 7:                            # each release waits for the device; a layer leaves few temporaries
+                torch.cuda.empty_cache()
+        mixer = hc(T + "hyper_connection_mixer", False)
+        head = x3(sc, pk, "lm_head", device, head=True)
+        w = Weights(cfg, (embed.contiguous(),), loaded, mixer, head, inv.to(device), around_one=True)
+        w.meta.update(rank=0, world=1, vocab_offset=0, full=cfg, centred_offset=offset)
+        w.meta["rope"] = cfg.rope.metadata()
+        if mtp and pk.has("mtp.fc_embedding.trellis"):
+            w.mtp = MTPW(centred("mtp.pre_fc_norm_embedding.weight"), centred("mtp.pre_fc_norm_hidden.weight"),
+                         x3(sc, pk, "mtp.fc_embedding", device), x3(sc, pk, "mtp.fc_hidden", device),
+                         layer(-1, "mtp.layers.0", "attention", False), hc("mtp.hyper_connection_mixer", False))
+        if expert_cache is not None:
+            expert_cache.finish_loading()
+            w.meta["expert_cache"] = expert_cache
+        ple = next((lay.ple for lay in loaded if lay.ple is not None), None)
+        sc.allocate(device, experts=loaded[0].moe.experts, rows=PREFILL_ROWS,
+                    ple_words=ple.table.words_per_row if ple else 0, ple_heads=ple.ngram.heads if ple else 0,
+                    ple_dim=cfg.ple_dim)
+        if expert_cache is not None:
+            from tensorfold.cuda.exl3.host_experts import WaveScratch
+
+            sc.moe.host_waves = WaveScratch(sc.moe.rows, sc.moe.slots, device)
+        w.x3 = sc
+        ids = draft_token_ids(draft_vocab)
+        if ids is not None and w.mtp is not None:
+            ids = ids[ids < cfg.vocab]
+            w.draft_ids = torch.from_numpy(ids).to(device)
+            w.draft_head = make_q4(*requant_rows(head, w.draft_ids, device))
         pk.release()
-        if i % 8 == 7:                            # each release waits for the device; a layer leaves few temporaries
-            torch.cuda.empty_cache()
-    mixer = hc(T + "hyper_connection_mixer", False)
-    head = x3(sc, pk, "lm_head", device, head=True)
-    w = Weights(cfg, (embed.contiguous(),), loaded, mixer, head, inv.to(device), around_one=True)
-    w.meta.update(rank=0, world=1, vocab_offset=0, full=cfg, centred_offset=offset)
-    w.meta["rope"] = cfg.rope.metadata()
-    if mtp and pk.has("mtp.fc_embedding.trellis"):
-        w.mtp = MTPW(centred("mtp.pre_fc_norm_embedding.weight"), centred("mtp.pre_fc_norm_hidden.weight"),
-                     x3(sc, pk, "mtp.fc_embedding", device), x3(sc, pk, "mtp.fc_hidden", device),
-                     layer(-1, "mtp.layers.0", "attention", False), hc("mtp.hyper_connection_mixer", False))
-    ple = next((lay.ple for lay in loaded if lay.ple is not None), None)
-    sc.allocate(device, experts=loaded[0].moe.experts, rows=PREFILL_ROWS,
-                ple_words=ple.table.words_per_row if ple else 0, ple_heads=ple.ngram.heads if ple else 0,
-                ple_dim=cfg.ple_dim)
-    w.x3 = sc
-    ids = draft_token_ids(draft_vocab)
-    if ids is not None and w.mtp is not None:
-        ids = ids[ids < cfg.vocab]
-        w.draft_ids = torch.from_numpy(ids).to(device)
-        w.draft_head = make_q4(*requant_rows(head, w.draft_ids, device))
-    pk.release()
-    torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
     w.meta["load_seconds"] = time.time() - t0
     return w

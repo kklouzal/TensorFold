@@ -5,6 +5,8 @@ from __future__ import annotations
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache
 
+from tensorfold.engine.family_common import drop_spares as drop_spares
+
 
 class AlternatingKVCache(KVCache):
     """Keep [0, offset) in the current buffer and recent rows missing from the spare; longer writes discard the spare."""
@@ -87,13 +89,3 @@ class AlternatingKVCache(KVCache):
     def nbytes(self) -> int:
         spare = sum(a.nbytes for a in (self.spare_keys, self.spare_values) if a is not None)
         return super().nbytes + spare
-
-
-def drop_spares(cache: list) -> list:
-    """``cache`` with every alternating layer (any cache with ``drop_spare``) down to one buffer, for retained copies."""
-
-    for item in cache:
-        drop = getattr(item, "drop_spare", None)
-        if callable(drop):
-            drop()
-    return cache

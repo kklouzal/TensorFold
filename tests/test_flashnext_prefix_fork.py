@@ -7,25 +7,30 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("triton")
 
+from tests.test_flashnext_prefix_copy import slot as state_slot
+
 from tensorfold.cuda.memory_gate import NoRoom
 from tensorfold.cuda.streams import Stream
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
 
 
-class Slot:
-    def __init__(self):
-        self.copied = None
+def slot():
+    state = state_slot("bf16", 1024, 512)
+    state.copied = None
 
-    def copy_prefix(self, source, pos, mtp_len):
-        self.copied = (source, pos, mtp_len)
+    def copy_prefix(source, pos, mtp_len):
+        state.copied = (source, pos, mtp_len)
+
+    state.copy_prefix = copy_prefix
+    return state
 
 
 def decoder(*, busy=False, room=True):
     dec = object.__new__(MultiDecoder)
-    source, spare = Slot(), Slot()
+    source, spare = slot(), slot()
     prefix = list(range(300))
-    snap = {"pos": 300, "mtp_len": 299}
-    dec.kept = [(prefix, source, snap, "tail"), (prefix + [4, 5], source, {"pos": 302}, "later")]
+    snap = {"pos": 300, "mtp_len": 299, **source.kv_snapshot_metadata()}
+    dec.kept = [(prefix, source, snap, "tail"), (prefix + [4, 5], source, {"pos": 302, "mtp_len": 301, **source.kv_snapshot_metadata()}, "later")]
     dec.free, dec.filling, dec.fills = [spare], [], {}
     dec.streams = {1: SimpleNamespace(st=source, waiting=False)} if busy else {}
     dec.depth, dec.capacity = 3, 1024
@@ -59,7 +64,7 @@ def test_copy_reservation_refusal_keeps_the_source_and_returns_the_unadmitted_sl
 
 def test_source_protection_excludes_it_from_growth_eviction():
     dec, source, spare, _, _, _ = decoder()
-    other = Slot()
+    other = slot()
     dec.kept.append(([9], other, {}, None))
     shrunk = []
     dec._shrink = shrunk.append
@@ -104,3 +109,13 @@ def test_a_partial_resize_failure_is_counted_before_the_spare_is_shrunk():
         dec._slot_for(prefix + [6, 7, 8], True)
     assert held == [900] and dec.memory_gate.held == 700
     assert dec.free == [spare] and spare.allocated == 100
+
+
+def test_invalid_kept_snapshot_stops_before_spare_growth_or_copy():
+    dec, source, spare, prefix, snap, growth = decoder()
+    kept = list(dec.kept)
+    snap["pos"] = True
+    with pytest.raises(ValueError, match="integer rows"):
+        dec._slot_for(prefix + [6], True)
+    assert dec.free == [spare] and dec.kept == kept
+    assert growth == [] and spare.copied is None
