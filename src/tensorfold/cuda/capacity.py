@@ -95,6 +95,14 @@ def config(model_dir: str | Path) -> dict:
 
 
 def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path] | None = None) -> dict:
+    """Inspect one operation's checkpoint metadata without caching its namespace.
+
+    Indexed targets are authorized before opening headers, resolved again once
+    per distinct shard for the mapping, and checked before publication. The
+    reader's input-immutability contract covers this metadata operation; these
+    checks detect observed namespace changes, not every transient filesystem
+    mutation. No resolved path survives this invocation.
+    """
     from .tensor_file import checkpoint_path, read_header, read_metadata_json
 
     path = Path(model_dir)
@@ -147,10 +155,25 @@ def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path]
                 raise ValueError(f"duplicate checkpoint tensor: {name}")
             out[name] = {**info, "split": ".rank" in file.name}
             located[name] = authorized
-    if mapping is not None:
+    if mapping is not None and len(mapping) <= 2 * len(authorized_files):
+        # Small indexes do not amortize two distinct-shard walks; keep their
+        # direct original checks rather than adding cache state and IO.
         for name, shard in mapping.items():
             if located.get(name) != checkpoint_path(path, shard):
                 raise ValueError(f"{name}: checkpoint index does not point to its declared tensor shard")
+    elif mapping is not None:
+        targets = {}
+        for name, shard in mapping.items():
+            target = targets.get(shard)
+            if target is None:
+                target = targets[shard] = checkpoint_path(path, shard)
+            if located.get(name) != target:
+                raise ValueError(f"{name}: checkpoint index does not point to its declared tensor shard")
+        # Recheck after the full mapping walk so a persistent retarget during
+        # that walk cannot publish a stale operation-local authorization.
+        for shard, target in targets.items():
+            if checkpoint_path(path, shard) != target:
+                raise ValueError(f"{shard}: checkpoint target changed during header inspection")
     return out
 
 
