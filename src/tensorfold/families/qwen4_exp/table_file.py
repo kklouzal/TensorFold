@@ -103,4 +103,3 @@ class TableFile:
                 if transport is primary:
                     raise
                 raise primary from transport
-
