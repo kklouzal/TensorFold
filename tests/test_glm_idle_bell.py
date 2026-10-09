@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 torch = pytest.importorskip("torch")
-from torch.distributed import TCPStore  # noqa: E402
+from torch.distributed import DistStoreError, TCPStore  # noqa: E402
 
 from tensorfold.families.glm5_next.cuda.engine import GlmEngine  # noqa: E402
 
@@ -90,7 +90,8 @@ def test_idle_timeouts_are_retried_and_other_errors_raise():
         def delete_key(self, key):
             self.deleted.append(key)
 
-    store = Store([RuntimeError("Socket Timeout"), RuntimeError("wait timeout after 3600000ms")])
+    store = Store([DistStoreError("wait timeout after 3600000ms, keys: /tf_glm_request_1"),
+                   DistStoreError("wait timeout after 3600000ms, keys: /tf_glm_request_1")])
     r = SimpleNamespace(comm=SimpleNamespace(store=store))
     for name in ("_store", "_ring", "_await_bell"):
         setattr(r, name, getattr(GlmEngine, name).__get__(r))

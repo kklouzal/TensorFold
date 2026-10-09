@@ -65,14 +65,14 @@ def packed_draft(name: str, shape) -> bool:
 
 
 def draft_weights(draft_dir):
-    """The drafter's bytes and load peak: quantize4 holds 14 bytes an element of its largest tensor while packing."""
+    """Drafter storage and packing overlap, including retained affine64 group metadata."""
 
     from tensorfold.cuda.capacity import Weights, estimate_weights, headers
 
     held = estimate_weights(draft_dir, draft_bytes)
     largest = max((math.prod(info["shape"]) for name, info in headers(draft_dir).items()
                    if packed_draft(name, info["shape"])), default=0)
-    return Weights(held.resident, max(held.staging, 14 * largest), held.mapped)
+    return Weights(held.resident, max(held.staging, 14 * largest + 20 * (largest // 64)), held.mapped)
 
 
 def draft_bytes(name: str, info: dict) -> tuple[int, int]:

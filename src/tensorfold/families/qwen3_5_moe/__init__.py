@@ -16,6 +16,7 @@ DRAFTER = "z-lab/Qwen3.6-35B-A3B-DFlash"      # Macs: DFlash (v1), chains of eac
 CUDA_DRAFTER = ""                             # CUDA: the checkpoint's own MTP layer
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.dense.v1"
 KERNEL_VERSION = "v1"
+MLX_MODEL_FILE = True
 # the CUDA engine's kernels read MLX affine weights of this (bits, group size)
 CUDA_QUANTIZATION = (4, 64)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet projections' FP8 prompt kernel
@@ -31,13 +32,14 @@ def check(model_dir: str | Path) -> None:
                          f"checkpoint has {describe_quantization(read_config(model_dir))}. {OWN_MODEL_HELP}")
 
 
-def load(model_dir: Path, *, drafter: str = "", drafter_bits: int = 4, **_: Any) -> tuple[Any, Any]:
+def load(model_dir: Path, *, drafter: str = "", drafter_bits: int = 4, trust_model_code: bool = False,
+         **_: Any) -> tuple[Any, Any]:
     """The row decoder on every Mac. Text only: mlx_lm drops the vision weights."""
     # Lane kernels take no routed experts. row_forward.moe computes one row's bits at any width.
 
     from tensorfold.families.qwen3_5 import lane_family, load_lane_model
 
-    model, tokenizer = load_lane_model(Path(model_dir))
+    model, tokenizer = load_lane_model(Path(model_dir), trust_model_code=trust_model_code)
     return lane_family(model, lanes=False, drafter=drafter, drafter_bits=drafter_bits, title=TITLE,
                        use=MODELS[1]), tokenizer
 

@@ -167,6 +167,7 @@ def test_concurrent_constrained_replies_equal_their_solo_runs(engine, chat):
     multi = MultiDecoder(engine.w, engine.draft, allow_copy=True, context=4096, keep=KEEP, points=engine.points)
     multi.calibrate(4)
     scheduler = Scheduler(multi, max_streams=4)
+    scheduler.start()
     requests = []
     for name in CASES:
         for sampling in SAMPLINGS:

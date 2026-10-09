@@ -6,6 +6,9 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <algorithm>
+#include <limits>
+#include "../../../cuda/kernels/kernel_configuration.cuh"
 
 namespace {
 
@@ -199,11 +202,8 @@ __global__ void __launch_bounds__(128) b16_prompt_kernel(const __nv_bfloat16* __
 template <int BM>
 void prompt_launch(const at::Tensor& x, const at::Tensor& w, at::Tensor& y, int M, int K, int N,
                    const at::Tensor* w1, at::Tensor* y1) {
-    static bool configured = false;
-    if (!configured) {
-        cudaFuncSetAttribute(b16_prompt_kernel<BM>, cudaFuncAttributeMaxDynamicSharedMemorySize, PST * pstage<BM>());
-        configured = true;
-    }
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(b16_prompt_kernel<BM>, PST * pstage<BM>(), x.get_device());
     const int N1 = w1 ? (int)w1->size(0) : 0, wide = N1 > N ? N1 : N;
     const dim3 grid((unsigned)((wide + PBN - 1) / PBN), (unsigned)((M + BM - 1) / BM), w1 ? 2u : 1u);
     b16_prompt_kernel<BM><<<grid, 128, PST * pstage<BM>(), at::cuda::getCurrentCUDAStream()>>>(
@@ -215,30 +215,62 @@ void prompt_launch(const at::Tensor& x, const at::Tensor& w, at::Tensor& y, int 
 
 }  // namespace
 
+// Kernel row/column padding and the linear K-loop increment use signed int.
+// Keep zero K: the original kernels emit the bias or zero without input loads.
+static void dimensions(const at::Tensor& x, const at::Tensor& w, bool prompt) {
+    constexpr int64_t maximum = std::numeric_limits<int>::max();
+    TORCH_CHECK(x.size(0) >= 1 && x.size(0) <= maximum - 127 && w.size(0) >= 0 &&
+                    w.size(0) <= maximum - 63 && x.size(1) <= maximum - (prompt ? 0 : 256),
+                "B16 dimensions exceed positive signed-int rows or padded column/loop bounds");
+    // Untyped Tensor::data_ptr() is null for an empty tensor, including views.
+    // Prompt zero-fill still forms K-row addresses; with zero K it forms none.
+    TORCH_CHECK(!prompt || w.size(0) > 0 || x.size(1) == 0,
+                "empty prompt weight requires zero K for valid staging pointers");
+}
+
+static void grid_dimensions(const at::Tensor& x, int64_t columns, int rows_per_block, int columns_per_block,
+                            bool paired) {
+    const auto* properties = at::cuda::getDeviceProperties(x.get_device());
+    const int64_t gx = (columns + columns_per_block - 1) / columns_per_block;
+    const int64_t gy = (x.size(0) + rows_per_block - 1) / rows_per_block;
+    TORCH_CHECK(gx >= 1 && gx <= properties->maxGridSize[0] && gy >= 1 && gy <= properties->maxGridSize[1] &&
+                    (paired ? 2 : 1) <= properties->maxGridSize[2], "B16 launch grid exceeds device dimensions");
+}
+
+static void linear_grid(const at::Tensor& x, int64_t columns, bool paired) {
+    const int rows = x.size(0) >= 512 ? 16 : x.size(0) >= 64 ? 4 : 1;
+    const int warps = x.size(0) >= 512 ? 16 : x.size(0) >= 64 ? 8 : 4;
+    grid_dimensions(x, columns, rows, warps, paired);
+}
+
 static void pair_in(const at::Tensor& x, const at::Tensor& w) {
-    TORCH_CHECK(w.is_cuda() && w.is_contiguous() && w.dim() == 2 && w.scalar_type() == x.scalar_type() &&
+    TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.is_contiguous() && w.dim() == 2 && w.scalar_type() == x.scalar_type() &&
                 w.size(1) == x.size(1) && reinterpret_cast<uintptr_t>(w.data_ptr()) % 16 == 0,
                 "w: contiguous 16-byte aligned (N, K) of x's dtype");
 }
 
 at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bias) {
-    TORCH_CHECK(x.is_cuda() && x.is_contiguous(), "x must be contiguous CUDA");
-    TORCH_CHECK(w.is_cuda() && w.is_contiguous() && w.dim() == 2, "w must be a contiguous 2-d CUDA tensor");
+    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
+    TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.is_contiguous() && w.dim() == 2,
+                "w must be a contiguous 2-d tensor on x's CUDA device");
     TORCH_CHECK(x.scalar_type() == w.scalar_type(), "x and w must share a dtype (cast x first)");
     const bool is_half = x.scalar_type() == at::kHalf;
     TORCH_CHECK(is_half || x.scalar_type() == at::kBFloat16, "only fp16 and bf16 weights are supported");
+    dimensions(x, w, false);
     const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
     TORCH_CHECK((int)w.size(1) == K, "w's K must be x's K");
     TORCH_CHECK(K % 8 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0 &&
                     reinterpret_cast<uintptr_t>(w.data_ptr()) % 16 == 0,
                 "K must be a multiple of 8 and x, w 16-byte aligned");
-    at::cuda::CUDAGuard guard(x.device());
-    auto y = at::empty({M, N}, x.options());
     const void* bp = nullptr;
     if (bias.defined() && bias.numel()) {
-        TORCH_CHECK(bias.is_cuda() && bias.is_contiguous() && bias.numel() == N, "bias must be [N]");
+        TORCH_CHECK(bias.is_cuda() && bias.device() == x.device() && bias.scalar_type() == x.scalar_type() &&
+                    bias.is_contiguous() && bias.numel() == N, "bias must hold N elements of x's dtype on its CUDA device");
         bp = bias.data_ptr();
     }
+    linear_grid(x, N, false);
+    at::cuda::CUDAGuard guard(x.device());
+    auto y = at::empty({M, N}, x.options());
     if (is_half) by_rows<half>(x, w, bp, y, M, K, N);
     else by_rows<__nv_bfloat16>(x, w, bp, y, M, K, N);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -247,11 +279,14 @@ at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor
 
 // Two weights of the same rows in one launch (the GDN gates b and a): each output ``b16_linear``'s bits.
 std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w0, const at::Tensor& w1) {
-    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.size(1) % 8 == 0 &&
+    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2 && x.size(1) % 8 == 0 &&
                 reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0 &&
                 (x.scalar_type() == at::kBFloat16 || x.scalar_type() == at::kHalf), "x: contiguous fp16/bf16 rows");
     pair_in(x, w0);
     pair_in(x, w1);
+    dimensions(x, w0, false);
+    dimensions(x, w1, false);
+    linear_grid(x, std::max(w0.size(0), w1.size(0)), true);
     const int M = (int)x.size(0), K = (int)x.size(1);
     at::cuda::CUDAGuard guard(x.device());
     auto y0 = at::empty({M, w0.size(0)}, x.options()), y1 = at::empty({M, w1.size(0)}, x.options());
@@ -261,7 +296,7 @@ std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w
     return {y0, y1};
 }
 
-static int prompt_bm(int64_t bm, int M, int N) {
+static int prompt_bm(int64_t bm, int M, int64_t N) {
     if (bm) return (int)bm;
     const long long want = 2LL * at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
     const long long cols = (N + PBN - 1) / PBN;
@@ -275,12 +310,16 @@ static int prompt_bm(int64_t bm, int M, int N) {
 at::Tensor b16_prompt(const at::Tensor& x, const at::Tensor& w, int64_t bm) {
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == at::kBFloat16 && x.dim() == 2,
                 "x: contiguous (M, K) bf16");
-    TORCH_CHECK(w.is_cuda() && w.is_contiguous() && w.scalar_type() == at::kBFloat16 && w.dim() == 2 &&
+    TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.is_contiguous() && w.scalar_type() == at::kBFloat16 && w.dim() == 2 &&
                 w.size(1) == x.size(1) && x.size(1) % 64 == 0, "w: contiguous (N, K) bf16, K a multiple of 64");
+    dimensions(x, w, true);
+    pair_in(x, w);
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0, "prompt x requires 16-byte staging alignment");
     const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
     at::cuda::CUDAGuard guard(x.device());
-    auto y = at::empty({M, N}, x.options());
     const int b = prompt_bm(bm, M, N);
+    grid_dimensions(x, N, b == 32 ? 32 : b == 64 ? 64 : 128, PBN, false);
+    auto y = at::empty({M, N}, x.options());
     if (b == 32) prompt_launch<32>(x, w, y, M, K, N, nullptr, nullptr);
     else if (b == 64) prompt_launch<64>(x, w, y, M, K, N, nullptr, nullptr);
     else prompt_launch<128>(x, w, y, M, K, N, nullptr, nullptr);
@@ -294,10 +333,15 @@ std::vector<at::Tensor> b16_prompt_pair(const at::Tensor& x, const at::Tensor& w
                 x.size(1) % 64 == 0, "x: contiguous (M, K) bf16, K a multiple of 64");
     pair_in(x, w0);
     pair_in(x, w1);
+    dimensions(x, w0, true);
+    dimensions(x, w1, true);
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0, "prompt x requires 16-byte staging alignment");
     const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w0.size(0);
     at::cuda::CUDAGuard guard(x.device());
+    const int64_t wide = std::max<int64_t>(N, w1.size(0));
+    const int b = prompt_bm(bm, M, 2 * wide);
+    grid_dimensions(x, wide, b == 32 ? 32 : b == 64 ? 64 : 128, PBN, true);
     auto y0 = at::empty({M, N}, x.options()), y1 = at::empty({M, w1.size(0)}, x.options());
-    const int b = prompt_bm(bm, M, 2 * (N > w1.size(0) ? N : (int)w1.size(0)));
     if (b == 32) prompt_launch<32>(x, w0, y0, M, K, N, &w1, &y1);
     else if (b == 64) prompt_launch<64>(x, w0, y0, M, K, N, &w1, &y1);
     else prompt_launch<128>(x, w0, y0, M, K, N, &w1, &y1);

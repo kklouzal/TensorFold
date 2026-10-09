@@ -206,7 +206,9 @@ def test_generic_memory_counts_eight_bit_words_without_four_bit_padding(tmp_path
         entries[prefix + "." + suffix] = {"dtype": dtype, "shape": shape, "data_offsets": [offset, offset + size]}
         offset += size
     raw = json.dumps(entries).encode()
-    (tmp_path / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (tmp_path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + offset)
     transform = weight_transform(tmp_path)
     assert transform(prefix + ".weight", entries[prefix + ".weight"]) == (35 * 64 * 4, 0)
 

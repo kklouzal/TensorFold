@@ -35,18 +35,26 @@ def test_a_refused_capture_reaches_the_disk_and_reads_back_byte_identical(tmp_pa
 
     model = "fake-model|f32"
     prompt, capture = list(range(22)), list(range(12))
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([DiskItem(capture)])
 
     def sizer(cache):
         return sum(len(x.rows[0]) * 4 for x in cache)
 
-    store = CheckpointStore(1, copier=lambda c: c, budget_bytes=8, sizer=sizer,
-                            on_evict=lambda e: spill_conversation(e, tmp_path, model, limit_bytes=1 << 20))
-    store.insert(capture, [DiskItem(capture)], last_prompt=prompt)         # 48 B > the 8 B budget: refused
-    assert store.refused == 0 and store.spilled == 1                        # disk kept it: spillover fired
+    store = CheckpointStore(
+        1,
+        copier=lambda c: c,
+        budget_bytes=8,
+        sizer=sizer,
+        on_evict=lambda e: spill_conversation(e, tmp_path, model, limit_bytes=1 << 20, registry=snapshot_registry),
+    )
+    store.insert(capture, [DiskItem(capture)], last_prompt=prompt)  # 48 B > the 8 B budget: refused
+    assert store.refused == 0 and store.spilled == 1  # disk kept it: spillover fired
     assert len(list(tmp_path.glob("*.safetensors"))) == 1
 
-    found = DiskBlocks(tmp_path, model).best(prompt, 0)
-    loaded = load_snapshot(found[0], model)
+    found = DiskBlocks(tmp_path, model, registry=snapshot_registry).best(prompt, 0)
+    loaded = load_snapshot(found[0], model, registry=snapshot_registry)
     assert loaded is not None
     tokens, cache = loaded
     assert tokens == capture and cache[0].offset == 12
@@ -68,24 +76,26 @@ def test_a_refused_prompt_stays_correct_and_says_so(tmp_path, capsys):
     from tensorfold.server.checkpoints import CheckpointStore, spill_conversation
     from tensorfold.server.scheduler import ChatJob, Scheduler
 
-    model, prompt = "fake-model|f32", _prompt(3)               # 22 tokens: chunks every 4, boundary at 12
+    model, prompt = "fake-model|f32", _prompt(3)  # 22 tokens: chunks every 4, boundary at 12
     fired = []
 
     def spill(e):
         fired.append(e)
         return spill_conversation(e, tmp_path, model, limit_bytes=1 << 20)
 
-    store = CheckpointStore(8, copier=GridEngine.copy_single_cache, budget_bytes=8,
-                            sizer=lambda c: 100 * len(c), on_evict=spill)
-    first = Scheduler(GridEngine(), lanes=3, eos_ids=frozenset({-1}), checkpoints=store,
-                      session_dir=tmp_path, model_id=model)
+    store = CheckpointStore(
+        8, copier=GridEngine.copy_single_cache, budget_bytes=8, sizer=lambda c: 100 * len(c), on_evict=spill
+    )
+    first = Scheduler(
+        GridEngine(), lanes=3, eos_ids=frozenset({-1}), checkpoints=store, session_dir=tmp_path, model_id=model
+    )
     job1 = ChatJob("first", prompt, 4, 0.0, shared_prefix_lens=(12,))
     _run(first, [job1])
-    assert fired and store.refused == 1                          # spillover fired at refusal (fake unserializable)
+    assert fired and store.refused == 1  # spillover fired at refusal (fake unserializable)
     out = capsys.readouterr().out
     assert "conversation spill failed" in out and "kept nothing at 12 tokens" in out
 
     retry = Scheduler(GridEngine(), lanes=3, eos_ids=frozenset({-1}), session_dir=tmp_path, model_id=model)
     job2 = ChatJob("retry", prompt, 4, 0.0)
     _run(retry, [job2])
-    assert job2.error is None and _solo(job2)                    # the retry re-prefills: slower, never wrong
+    assert job2.error is None and _solo(job2)  # the retry re-prefills: slower, never wrong

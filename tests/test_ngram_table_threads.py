@@ -70,13 +70,19 @@ def test_threaded_gathers_give_one_threads_bytes(tmp_path, monkeypatch, threads)
     monkeypatch.setattr(host_table, "GATHER_THREADS", threads)
     for kind, table in tables.items():
         calls = []
-        real = table._pool.map
-        monkeypatch.setattr(table._pool, "map", lambda fn, jobs, real=real: calls.append(1) or real(fn, jobs))
+        real = table._pool.submit
+        monkeypatch.setattr(table._pool, "submit",
+                            lambda fn, *args, real=real, **kwargs: calls.append(1) or real(fn, *args, **kwargs))
+        threaded = 0
         for ids, ref in zip(_ids(table.rows), want[kind], strict=True):
+            before = len(calls)
             got = table.gather(ids)
+            did_submit = len(calls) != before
+            assert did_submit == (np.asarray(ids).size >= 16), kind
+            threaded += did_submit
             assert got.dtype == np.uint16 and got.shape == (np.asarray(ids).size, table.width)
             assert np.array_equal(got, ref), (kind, np.asarray(ids).size)
-        assert len(calls) == 3, kind                                  # the three gathers of 16 rows or more
+        assert threaded == 3, kind                                  # the three gathers of 16 rows or more
     for ids, got in zip(_ids(tables["bf16"].rows), want["bf16"], strict=True):
         assert np.array_equal(got, bf16_rows[np.asarray(ids, dtype=np.int64).reshape(-1)])
 

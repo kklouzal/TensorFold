@@ -11,7 +11,7 @@ from tensorfold.server.checkpoints import CheckpointStore
 from tests.lane_fakes import FakeBatchItem, FakeEngine
 from tests.test_lane_server import make_app
 
-OPEN, ASSIST = 90, 91                   # a message's first token; the role token of an assistant message
+OPEN, ASSIST = 90, 91  # a message's first token; the role token of an assistant message
 
 
 class MessageEngine(FakeEngine):
@@ -39,10 +39,13 @@ def test_a_saved_block_ending_at_a_message_is_warmed_to_its_end(tmp_path) -> Non
     from tensorfold.engine.prefix_snapshots import save_snapshot
     from tensorfold.server.scheduler import Scheduler
 
-    block = [OPEN, *range(20, 30)]                           # a system message; the next message began at 11
+    block = [OPEN, *range(20, 30)]  # a system message; the next message began at 11
     kv = KVCache()
     kv.update_and_fetch(mx.ones((1, 2, 11, 4)), mx.ones((1, 2, 11, 4)))
-    save_snapshot(tmp_path, "/models/fake|kernels=old", block, [kv])
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([kv])
+    save_snapshot(tmp_path, "/models/fake|kernels=old", block, [kv], registry=snapshot_registry)
     seen: list[list[int]] = []
     real = Scheduler.submit
 
@@ -52,7 +55,12 @@ def test_a_saved_block_ending_at_a_message_is_warmed_to_its_end(tmp_path) -> Non
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(Scheduler, "submit", submit)
-        app = make_app(engine_factory=MessageEngine, snapshot_dir=tmp_path, model_id="/models/fake|kernels=new")
+        app = make_app(
+            engine_factory=MessageEngine,
+            snapshot_dir=tmp_path,
+            model_id="/models/fake|kernels=new",
+            snapshot_registry=snapshot_registry,
+        )
         try:
             deadline = time.time() + 10
             while time.time() < deadline and not any(e.pinned for e in app.checkpoints._entries):
@@ -68,7 +76,7 @@ def test_a_follow_up_resumes_at_its_latest_reply_start() -> None:
     from tensorfold.server.scheduler import ChatJob
 
     scheduler, store, engine = _message_scheduler()
-    turn1 = [OPEN, 5, 6, 7, OPEN, 8, 9, OPEN, ASSIST]       # system, user, then the generation prompt at 7
+    turn1 = [OPEN, 5, 6, 7, OPEN, 8, 9, OPEN, ASSIST]  # system, user, then the generation prompt at 7
     scheduler._start_job(ChatJob(job_id="a", prompt_ids=turn1, max_tokens=2, temperature=0.0, history_len=7))
     assert [len(e.tokens) for e in store._entries] == [7]
     # the reply and a new message after the same history: resumed where the reply began
@@ -82,9 +90,9 @@ def test_a_start_too_close_to_the_last_is_merged_and_the_checkpoint_falls_back()
     from tensorfold.server.scheduler import ChatJob
 
     scheduler, store, engine = _message_scheduler()
-    turn1 = [OPEN, 5, 6, 7, OPEN, 8, OPEN, ASSIST]          # the generation prompt 2 tokens after the user's start
+    turn1 = [OPEN, 5, 6, 7, OPEN, 8, OPEN, ASSIST]  # the generation prompt 2 tokens after the user's start
     scheduler._start_job(ChatJob(job_id="a", prompt_ids=turn1, max_tokens=2, temperature=0.0, history_len=6))
-    assert [len(e.tokens) for e in store._entries] == [4]   # its chunk began at the user message
+    assert [len(e.tokens) for e in store._entries] == [4]  # its chunk began at the user message
     turn2 = [*turn1[:6], OPEN, ASSIST, 12, OPEN, 14, OPEN, ASSIST]
     scheduler._start_job(ChatJob(job_id="b", prompt_ids=turn2, max_tokens=2, temperature=0.0))
     assert engine.prefill_calls[-1] == ("b", 4)
@@ -107,11 +115,12 @@ def test_a_shared_system_block_is_kept_at_the_first_message_after_it() -> None:
     from tensorfold.server.scheduler import ChatJob
 
     scheduler, store, engine = _message_scheduler()
-    system = [OPEN, *range(20, 30)]                         # 11 tokens: a grid start at 8, the user's opener at 11
+    system = [OPEN, *range(20, 30)]  # 11 tokens: a grid start at 8, the user's opener at 11
     first = [*system, OPEN, 5, 6, OPEN, ASSIST]
-    scheduler._start_job(ChatJob(job_id="a", prompt_ids=first, max_tokens=2, temperature=0.0, history_len=14,
-                                 shared_prefix_lens=(13,)))
+    scheduler._start_job(
+        ChatJob(job_id="a", prompt_ids=first, max_tokens=2, temperature=0.0, history_len=14, shared_prefix_lens=(13,))
+    )
     assert sorted((len(e.tokens), e.pinned) for e in store._entries) == [(11, True), (14, False)]
-    other = [*system, OPEN, 7, 8, 9, OPEN, ASSIST]           # another session with the same system block
+    other = [*system, OPEN, 7, 8, 9, OPEN, ASSIST]  # another session with the same system block
     scheduler._start_job(ChatJob(job_id="b", prompt_ids=other, max_tokens=2, temperature=0.0))
     assert engine.prefill_calls[-1] == ("b", 11)

@@ -26,6 +26,62 @@ def _same(a, b):
     return bool(mx.all(mx.isfinite(a)).item()) and bool(mx.all(a.view(mx.uint16) == b.view(mx.uint16)).item())
 
 
+def test_scalar_scale_pair_packing_preserves_all_bf16_payloads():
+    """Scalar-aligned reads preserve pair bits, including zeros/NaNs/infinities."""
+    words = mx.arange(65536, dtype=mx.uint32).astype(mx.uint16)
+    raw = words.view(mx.bfloat16).reshape(1, 32768, 2)
+    shifted = mx.concatenate([mx.zeros((1,), dtype=mx.bfloat16), raw.reshape(-1)])[1:].reshape(raw.shape)
+    mx.eval(shifted)
+    body = """
+      const uint e = thread_position_in_grid.x;
+      if (e >= 8192) return;
+      const uint4 v = scale_pair_words4(X + 8 * e);
+      for (int j = 0; j < 4; j++) OUT[4 * e + j] = v[j];
+    """
+    run = mx.fast.metal_kernel(name="lane_scalar_pairs_all_bfloat_payloads", input_names=["X"],
+                               output_names=["OUT"], source=body, header=lane_qmm._HEADER)
+    out = run(inputs=[shifted.reshape(-1)], grid=(8192, 1, 1), threadgroup=(256, 1, 1),
+              output_shapes=[(32768,)], output_dtypes=[mx.uint32])[0]
+    assert bool(mx.all(out == raw.reshape(-1).view(mx.uint32)).item())
+
+
+@pytest.mark.parametrize("bits,group,tiled,nt", [(bits, group, tiled, 32)
+    for bits in WIDTHS for group in (32, 64) for tiled in (False, True)] + [(4, group, True, 64) for group in (32, 64)])
+def test_raw_offset_scale_views_equal_fresh_pairs(bits, group, tiled, nt):
+    _needs_tensor_units()
+    mx.random.seed(71)
+    n, k = 64, 128
+    weight, scales, biases = mx.quantize((mx.random.normal((n, k)) * 0.02).astype(mx.bfloat16),
+                                        group_size=group, bits=bits)
+    x = mx.random.normal((3, k)).astype(mx.bfloat16)
+    sbt = lane_qmm.pack_scales(scales, biases)
+    shifted = mx.concatenate([mx.zeros((1,), dtype=mx.bfloat16), sbt.reshape(-1)])[1:].reshape(sbt.shape)
+    mx.eval(shifted)
+    prepared = lane_qmm.tile_weight(weight, nt, group, bits=bits) if tiled else weight
+    fresh = lane_qmm.lane_matmul(x, prepared, sbt, tiled=tiled, nt=nt, group=group)
+    offset = lane_qmm.lane_matmul(x, prepared, shifted, tiled=tiled, nt=nt, group=group)
+    assert _same(offset, fresh)
+
+
+@pytest.mark.parametrize("bits,group,nt,sk", [(2, 32, 32, 8), (3, 64, 32, 8),
+    (4, 32, 32, 8), (4, 64, 64, 8), (4, 32, 64, 9), (4, 64, 32, 17), (4, 64, 128, 8), (4, 64, 512, 1)])
+def test_aligned_cohorts_and_ordered_device_partials_keep_row_bits(bits, group, nt, sk):
+    """Qualify fixed slices across row-block edges and both partial locations."""
+    _needs_tensor_units()
+    mx.random.seed(97)
+    n, k = max(nt, 128), 256
+    weight, scales, biases = mx.quantize((mx.random.normal((n, k)) * 0.02).astype(mx.bfloat16),
+                                        group_size=group, bits=bits)
+    prepared = lane_qmm.tile_weight(weight, nt, group, bits=bits)
+    sbt = lane_qmm.pack_scales(scales, biases)
+    x = mx.random.normal((65, k)).astype(mx.bfloat16)
+    full = lane_qmm.lane_matmul(x, prepared, sbt, tiled=True, nt=nt, sk=sk, group=group)
+    mx.eval(full)
+    for first, count in ((0, 1), (0, 17), (0, 33), (16, 1), (32, 1), (64, 1)):
+        part = lane_qmm.lane_matmul(x[first:first + count], prepared, sbt, tiled=True, nt=nt, sk=sk, group=group)
+        assert _same(part, full[first:first + count])
+
+
 @pytest.mark.parametrize("bits", WIDTHS)
 @pytest.mark.parametrize("n,k", [(17408, 5120), (5120, 17408), (1024, 5120), (48, 5120), (5120, 6144)])
 def test_rows_do_not_depend_on_row_count(n, k, bits):
@@ -154,7 +210,7 @@ def test_tiled_weights_give_the_same_bits(n, k, bits):
 
 
 @pytest.mark.parametrize("bits", WIDTHS)
-def test_install_tiles_in_place_and_uninstall_restores(bits):
+def test_install_preserves_public_layout_and_uses_current_parameters(bits):
     _needs_tensor_units()
     import mlx.nn as nn
 
@@ -171,13 +227,50 @@ def test_install_tiles_in_place_and_uninstall_restores(bits):
     mx.eval(mlx_wide, plain)
     try:
         lane_qmm.install(model, rows=lane_qmm.MAX_ROWS)
-        assert getattr(wide, "_lane_tiled", False) and not getattr(big, "_lane_tiled", False)   # 48 rows stay as MLX packs them
-        assert wide.weight.shape == q.shape and not bool(mx.all(wide.weight == q).item())
-        assert _same(wide(x[:9]), plain)                        # lane kernel on the tiled layout
-        assert _same(wide(x), mlx_wide)                         # 200 rows: MLX's kernel on the layout rebuilt
+        assert wide._lane_tile and big._lane_tile
+        assert wide.weight is q and bool(mx.all(wide.weight == q).item())
+        assert not getattr(wide, "_lane_tiled", False)
+        assert _same(wide(x[:9]), plain)                        # call-local tiled layout
+        assert _same(wide(x), mlx_wide)                         # 200 rows: current standard layout
     finally:
         lane_qmm.uninstall()
-    assert bool(mx.all(wide.weight == q).item()) and not getattr(wide, "_lane_tiled", True)
+    assert bool(mx.all(wide.weight == q).item()) and not getattr(wide, "_lane_tiled", False)
+
+
+def test_generic_calls_observe_current_input_and_parameter_descriptors():
+    """MLX augmented assignment preserves identity while replacing its descriptor."""
+    _needs_tensor_units()
+    import mlx.nn as nn
+
+    mx.random.seed(31)
+    model = nn.Sequential(nn.Linear(128, 64, bias=False))
+    model.set_dtype(mx.bfloat16)
+    nn.quantize(model, group_size=64, bits=4)
+    module = model.layers[0]
+    x = mx.random.normal((3, 128)).astype(mx.bfloat16)
+    try:
+        lane_qmm.install(model, wide=True)
+        for key in ("input", "weight", "scales", "biases"):
+            before = x if key == "input" else module[key]
+            if key == "input":
+                x += mx.array(0.5, dtype=mx.bfloat16)
+                assert x is before
+            elif key == "weight":
+                module[key][:] = mx.zeros_like(module[key])
+                assert module[key] is before
+            else:
+                module[key] += mx.array(0.03125, dtype=mx.bfloat16)
+                assert module[key] is before
+            expected = lane_qmm.lane_matmul(mx.array(x), mx.array(module.weight),
+                                             lane_qmm.pack_scales(module.scales, module.biases))
+            assert _same(module(x), expected), key
+        # Loading ordinary MLX weights remains valid after lane installation.
+        q, scales, biases = mx.quantize(mx.random.normal((64, 128)).astype(mx.bfloat16), group_size=64, bits=4)
+        module.update({"weight": q, "scales": scales, "biases": biases})
+        expected = lane_qmm.lane_matmul(x, q, lane_qmm.pack_scales(scales, biases))
+        assert _same(module(x), expected)
+    finally:
+        lane_qmm.uninstall()
 
 
 @pytest.mark.parametrize("bits", WIDTHS)
@@ -228,7 +321,8 @@ def test_install_leaves_other_widths_to_mlx_and_reports_them():
     assert lane_qmm.uncovered(model) == {"3-bit g32": 1, "unquantized": 1}
     try:
         lane_qmm.install(model, rows=lane_qmm.MAX_ROWS)
-        assert all(getattr(model.layers[i], "_lane_tiled", False) for i in range(3))
+        assert all(getattr(model.layers[i], "_lane_tile", False) for i in range(3))
+        assert all(not getattr(model.layers[i], "_lane_tiled", False) for i in range(3))
         assert getattr(g32, "_lane_sbt", None) is None and not getattr(g32, "_lane_tiled", False)
         assert g32.weight is q32
         assert _same(g32(x), want)

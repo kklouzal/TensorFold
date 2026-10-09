@@ -111,7 +111,10 @@ class Gemma4:
         parts = [self._tokens(w) for w in windows]
         tokens = mx.concatenate(parts) if len(parts) > 1 else parts[0]
         streams = [(self._layers(c), int(p.shape[0]), self._layers(c)[0].offset) for c, p in zip(caches_, parts)]
-        firsts = [sum(int(p.shape[0]) for p in parts[:i]) for i in range(len(parts))]
+        firsts, at = [], 0
+        for part in parts:
+            firsts.append(at)
+            at += int(part.shape[0])
         self._last = {id(c): (int(s[2]), f) for c, s, f in zip(caches_, streams, firsts)}
         return self.decode(tokens, streams)[None]
 
@@ -310,10 +313,10 @@ def realize(model: Any) -> None:
 
 
 def load(model_dir: Path, *, backend: str | None = None, check: bool = True, drafter: str = "",
-         drafter_bits: int = 8) -> tuple[Gemma4, Any]:
-    from mlx_lm import load as mlx_load
+         drafter_bits: int = 8, trust_model_code: bool = False) -> tuple[Gemma4, Any]:
+    from tensorfold.families.model_code import load_mlx_model as mlx_load
 
-    model, tokenizer = mlx_load(str(model_dir))
+    model, tokenizer = mlx_load(str(model_dir), trust_model_code=trust_model_code)
     realize(model)                     # before a draft model wraps the tapped layers
     draft = None
     if drafter:

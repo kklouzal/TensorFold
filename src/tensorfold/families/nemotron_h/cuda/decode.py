@@ -46,57 +46,66 @@ def prefill(eng: Engine, mtp: MTPHead | None, prompt: Sequence[int], sampling: S
     prompt = [int(t) for t in prompt]
     if not prompt:
         raise ValueError("prefill needs at least one token")
-    begin = 0
-    if resume is None:
-        eng.reset()
-        if mtp is not None:
-            mtp.reset()
-    else:
-        eng.restore(resume[0])
-        if mtp is not None and resume[1] is not None:
-            mtp.restore(resume[1])
-        begin = resume[2]
-        if not 0 < begin < len(prompt):
-            raise ValueError("a resumed prompt must extend the kept tokens")
-        if mtp is not None and resume[3] is not None:
-            mtp.absorb_rows(resume[3], [prompt[begin]])
-    if keep_at is not None and not begin <= keep_at <= len(prompt):
-        raise ValueError("the kept prefix must lie in the prompt's prefill")
-    partial = tail = None
-    if keep_at == begin and resume is not None:
-        partial, tail = resume[0], resume[3]
-    eng.set_sampling(sampling)
-    if constraint is not None:                           # a reply's grammar masks the first token's row
-        eng.mask(constraint, constraint.window([0], [-1]))
-    step = eng.prefill_rows
-    last = None
-    for s in range(begin, len(prompt), step):
-        chunk = prompt[s:s + step]
-        cut = keep_at - s if keep_at is not None and s < keep_at < s + len(chunk) else 0
-        mid = eng.prefill_chunk(chunk, cut=cut)
-        if keep_at is not None and s < keep_at <= s + len(chunk):
-            partial = mid if mid is not None else {
-                "ssm": eng.ssm.clone(), "conv_base": eng.conv_base.clone(),
-                "host": (eng.pos, eng.parity, eng.prev_keep)}
-            row = keep_at - s - 1
-            tail = eng.p_hidden[row:row + 1].clone()
-        if mtp is not None:
-            known = min(len(chunk), len(prompt) - 1 - s)          # rows whose next token is in the prompt
-            if known > 0:
-                mtp.absorb_rows(eng.p_hidden[:known], prompt[s + 1:s + 1 + known])
-        last = len(chunk) - 1
-    last_hidden = eng.p_hidden[last:last + 1].clone()
-    pending = eng.prefill_token()
-    if constraint is not None:
-        eng.mask(None, None)
-        constraint.advance([pending])
-    torch.cuda.synchronize()
-    state, head = eng.snapshot(), mtp.snapshot() if mtp is not None else None
-    kept = None
-    if partial is not None:
-        kept = {"engine": {**state, **partial}, "mtp": {**head, "pos": keep_at - 1} if head else None,
-                "tail": tail}
-    return Prefilled(prompt, pending, last_hidden, state, head, kept)
+    eng.mask(None, None)                 # a new prompt never inherits another request's grammar
+    try:
+        begin = 0
+        if resume is None:
+            eng.reset()
+            if mtp is not None:
+                mtp.reset()
+        else:
+            eng.restore(resume[0])
+            if mtp is not None and resume[1] is not None:
+                mtp.restore(resume[1])
+            begin = resume[2]
+            if not 0 < begin < len(prompt):
+                raise ValueError("a resumed prompt must extend the kept tokens")
+            if mtp is not None and resume[3] is not None:
+                mtp.absorb_rows(resume[3], [prompt[begin]])
+        if keep_at is not None and not begin <= keep_at <= len(prompt):
+            raise ValueError("the kept prefix must lie in the prompt's prefill")
+        partial = tail = None
+        if keep_at == begin and resume is not None:
+            partial, tail = resume[0], resume[3]
+        eng.set_sampling(sampling)
+        if constraint is not None:                           # a reply's grammar masks the first token's row
+            eng.mask(constraint, constraint.window([0], [-1]))
+        step = eng.prefill_rows
+        last = None
+        for s in range(begin, len(prompt), step):
+            chunk = prompt[s:s + step]
+            cut = keep_at - s if keep_at is not None and s < keep_at < s + len(chunk) else 0
+            mid = eng.prefill_chunk(chunk, cut=cut)
+            if keep_at is not None and s < keep_at <= s + len(chunk):
+                partial = mid if mid is not None else {
+                    "ssm": eng.ssm.clone(), "conv_base": eng.conv_base.clone(),
+                    "host": (eng.pos, eng.parity, eng.prev_keep)}
+                row = keep_at - s - 1
+                tail = eng.p_hidden[row:row + 1].clone()
+            if mtp is not None:
+                known = min(len(chunk), len(prompt) - 1 - s)          # rows whose next token is in the prompt
+                if known > 0:
+                    mtp.absorb_rows(eng.p_hidden[:known], prompt[s + 1:s + 1 + known])
+            last = len(chunk) - 1
+        last_hidden = eng.p_hidden[last:last + 1].clone()
+        pending = eng.prefill_token()
+        if constraint is not None:
+            eng.mask(None, None)
+            constraint.advance([pending])
+        torch.cuda.synchronize()
+        state, head = eng.snapshot(), mtp.snapshot() if mtp is not None else None
+        kept = None
+        if partial is not None:
+            kept = {"engine": {**state, **partial}, "mtp": {**head, "pos": keep_at - 1} if head else None,
+                    "tail": tail}
+        return Prefilled(prompt, pending, last_hidden, state, head, kept)
+    except BaseException as error:
+        try:
+            eng.mask(None, None)
+        except BaseException as cleanup:
+            BaseException.add_note(error, "Nemotron request grammar cleanup also failed")
+            raise error from cleanup
+        raise
 
 
 @torch.no_grad()
@@ -168,79 +177,87 @@ def draft_decode(eng: Engine, mtp: MTPHead, pre: Prefilled, count: int, sampling
 
     if not 1 <= drafts <= min(eng.max_rows - 1, 8):
         raise ValueError("drafts must be between 1 and 8")
-    eng.restore(pre.engine)
-    mtp.restore(pre.mtp)
-    eng.set_sampling(sampling)
-    out = [pre.pending]
-    index = CopyIndex(list(pre.prompt) + out) if copy else None
-    eos = set(eng.c.eos)
-    res = DecodeResult([], 0.0, 0)
-    torch.cuda.synchronize()
-    start = time.perf_counter()
-    # the head's first draft reads the prompt's last row and the first sampled token
-    eng.hidden[:1].copy_(pre.last_hidden)
-    eng.sampled[:1].fill_(pre.pending)
-    copied = index.chain(eng.max_rows - 1) if index is not None else []
-    mtp.round(1, 0 if copied else drafts)
-    while len(out) < count and not (stop_eos and out[-1] in eos):
-        if copied:
-            proposal = copied
-        else:
-            n = mtp._count
-            if confidence > 0.0 or constraint is not None:
-                mtp._copied.synchronize()
-                torch.cuda.current_stream().synchronize()
-            if confidence > 0.0:
-                run, n = 1.0, 0
-                for pr in mtp.confidences():
-                    run *= pr
-                    if n > 0 and run < confidence:
+    try:
+        eng.restore(pre.engine)
+        mtp.restore(pre.mtp)
+        eng.set_sampling(sampling)
+        out = [pre.pending]
+        index = CopyIndex(list(pre.prompt) + out) if copy else None
+        eos = set(eng.c.eos)
+        res = DecodeResult([], 0.0, 0)
+        torch.cuda.synchronize()
+        start = time.perf_counter()
+        # the head's first draft reads the prompt's last row and the first sampled token
+        eng.hidden[:1].copy_(pre.last_hidden)
+        eng.sampled[:1].fill_(pre.pending)
+        copied = index.chain(eng.max_rows - 1) if index is not None else []
+        mtp.round(1, 0 if copied else drafts)
+        while len(out) < count and not (stop_eos and out[-1] in eos):
+            if copied:
+                proposal = copied
+            else:
+                n = mtp._count
+                if confidence > 0.0 or constraint is not None:
+                    mtp._copied.synchronize()
+                    torch.cuda.current_stream().synchronize()
+                if confidence > 0.0:
+                    run, n = 1.0, 0
+                    for pr in mtp.confidences():
+                        run *= pr
+                        if n > 0 and run < confidence:
+                            break
+                        n += 1
+                proposal = mtp.drafts()[:n] if constraint is not None else None
+            if constraint is not None:                       # the grammar cuts the chain at its first rejected draft
+                window = constraint.window([out[-1]] + proposal, list(range(-1, len(proposal))))
+                proposal = window.tokens[1:]
+                n = len(proposal)
+                eng.mask(constraint, window)
+            if copied:
+                eng.forward([out[-1]] + proposal)
+            else:
+                eng.forward([out[-1]], rows=1 + n)
+            sampled = eng.tokens()
+            if not copied and constraint is None:
+                proposal = mtp.drafts()[:n]
+            accepted = 0
+            while accepted < len(proposal) and proposal[accepted] == sampled[accepted]:
+                accepted += 1
+            if stop_eos:
+                for j in range(accepted):
+                    if sampled[j] in eos:
+                        accepted = j
                         break
-                    n += 1
-            proposal = mtp.drafts()[:n] if constraint is not None else None
-        if constraint is not None:                       # the grammar cuts the chain at its first rejected draft
-            window = constraint.window([out[-1]] + proposal, list(range(-1, len(proposal))))
-            proposal = window.tokens[1:]
-            n = len(proposal)
-            eng.mask(constraint, window)
-        if copied:
-            eng.forward([out[-1]] + proposal)
-        else:
-            eng.forward([out[-1]], rows=1 + n)
-        sampled = eng.tokens()
-        if not copied and constraint is None:
-            proposal = mtp.drafts()[:n]
-        accepted = 0
-        while accepted < len(proposal) and proposal[accepted] == sampled[accepted]:
-            accepted += 1
-        if stop_eos:
-            for j in range(accepted):
-                if sampled[j] in eos:
-                    accepted = j
-                    break
-        accepted = min(accepted, count - len(out) - 1)
-        keep = accepted + 1
-        eng.commit(keep)
-        new = sampled[:keep]
-        if constraint is not None:
-            constraint.advance(new)
-        out.extend(new)
-        if index is not None:
-            index.extend(new)
-        res.rounds += 1
-        res.drafted += len(proposal)
-        res.accepted += accepted
-        res.widths.append(1 + len(proposal))
-        if len(out) < count and not (stop_eos and out[-1] in eos):
-            # queue the next round's drafts before handing tokens over, so the caller's work overlaps the head's graph
-            copied = index.chain(eng.max_rows - 1) if index is not None else []
-            mtp.round(keep, 0 if copied else drafts)
-        if on_tokens is not None and on_tokens(new):
-            break
-    eng.mask(None, None)
-    if mtp.pos < eng.pos:                   # the last round's kept rows, so the head covers every committed position
-        mtp.round(eng.pos - mtp.pos, 0)
-    torch.cuda.synchronize()
-    res.seconds = time.perf_counter() - start
-    res.tokens = out[:count]
-    return res
+            accepted = min(accepted, count - len(out) - 1)
+            keep = accepted + 1
+            eng.commit(keep)
+            new = sampled[:keep]
+            if constraint is not None:
+                constraint.advance(new)
+            out.extend(new)
+            if index is not None:
+                index.extend(new)
+            res.rounds += 1
+            res.drafted += len(proposal)
+            res.accepted += accepted
+            res.widths.append(1 + len(proposal))
+            if len(out) < count and not (stop_eos and out[-1] in eos):
+                # queue the next round's drafts before handing tokens over, so the caller's work overlaps the head's graph
+                copied = index.chain(eng.max_rows - 1) if index is not None else []
+                mtp.round(keep, 0 if copied else drafts)
+            if on_tokens is not None and on_tokens(new):
+                break
+        eng.mask(None, None)
+        if mtp.pos < eng.pos:                   # the last round's kept rows, so the head covers every committed position
+            mtp.round(eng.pos - mtp.pos, 0)
+        torch.cuda.synchronize()
+        res.seconds = time.perf_counter() - start
+        res.tokens = out[:count]
+        return res
+    except BaseException as error:
+        try:
+            eng.mask(None, None)
+        except BaseException as cleanup:
+            BaseException.add_note(error, "Nemotron request grammar cleanup also failed")
+            raise error from cleanup
+        raise

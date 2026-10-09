@@ -19,6 +19,11 @@ __device__ __forceinline__ float4 widen(uint2 w) {
 
 __device__ __forceinline__ float4 widen(float4 w) { return w; }
 
+__device__ __forceinline__ int stage_row(int t0, int step, int rows) {
+    const int64_t row = static_cast<int64_t>(t0) + step;
+    return row < rows ? static_cast<int>(row) : rows - 1;
+}
+
 // A stage's keys, queries, gates and value rows, loaded into registers a stage ahead (in flight while the current
 // stage computes) and then stored as chain_kernel stages them: keys and queries as fp32 float4s, values bf16.
 template <typename QK, int THREADS, int ROWS, int STEPS>
@@ -36,18 +41,18 @@ struct Prefetch {
 #pragma unroll
         for (int it = 0; it < KQ; ++it) {
             const int i = threadIdx.x + it * THREADS, st = i / (DK / 4), c = i % (DK / 4);
-            const size_t at = (static_cast<size_t>(min(t0 + st, W - 1)) * hk + key_head) * DK + 4 * c;
+            const size_t at = (static_cast<size_t>(stage_row(t0, st, W)) * hk + key_head) * DK + 4 * c;
             kr[it] = *reinterpret_cast<const Raw*>(k + at);
             qr[it] = *reinterpret_cast<const Raw*>(q + at);
         }
 #pragma unroll
         for (int it = 0; it < VV; ++it) {
             const int i = threadIdx.x + it * THREADS, st = i / (ROWS / 8), c = i % (ROWS / 8);
-            vr[it] = *reinterpret_cast<const uint4*>(v + (static_cast<size_t>(min(t0 + st, W - 1)) * hv + head) * DV
+            vr[it] = *reinterpret_cast<const uint4*>(v + (static_cast<size_t>(stage_row(t0, st, W)) * hv + head) * DV
                                                      + col0 + 8 * c);
         }
         if (threadIdx.x < STEPS) {
-            const size_t at = static_cast<size_t>(min(t0 + static_cast<int>(threadIdx.x), W - 1)) * hv + head;
+            const size_t at = static_cast<size_t>(stage_row(t0, threadIdx.x, W)) * hv + head;
             gr = g[at];
             br = beta[at];
         }
@@ -92,12 +97,13 @@ __global__ void __launch_bounds__(2 * ROWS) chain_kernel(
     }
     Prefetch<QK, 2 * ROWS, ROWS, STEPS> pf;                // each stage's loads in flight during the one before
     pf.fetch(q, k, v, g, beta, 0, W, hk, hv, head, key_head, blockIdx.y * ROWS);
-    for (int t0 = 0; t0 < W; t0 += STEPS) {
-        const int n = min(STEPS, W - t0);
+    for (int64_t t0 = 0; t0 < W; t0 += STEPS) {
+        const int n = W - t0 < STEPS ? static_cast<int>(W - t0) : STEPS;
         __syncthreads();
         pf.store(ks, qs, gs, bs, vs);
         __syncthreads();
-        if (t0 + STEPS < W) pf.fetch(q, k, v, g, beta, t0 + STEPS, W, hk, hv, head, key_head, blockIdx.y * ROWS);
+        if (t0 + STEPS < W)
+            pf.fetch(q, k, v, g, beta, static_cast<int>(t0 + STEPS), W, hk, hv, head, key_head, blockIdx.y * ROWS);
         for (int tt = 0; tt < n; ++tt) {
             const float gt = gs[tt], bt = bs[tt];
             const size_t vat = (static_cast<size_t>(t0 + tt) * hv + head) * DV + row;

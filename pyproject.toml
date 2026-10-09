@@ -51,6 +51,7 @@ license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "LICENSES/*"]
 where = ["src"]
 
 [tool.setuptools.package-data]
+"tensorfold" = ["*.c"]
 "tensorfold.drafters.vendor.z_lab_dflash" = ["README.md"]
 "tensorfold.cuda" = ["*.cu", "*.cuh", "*.cpp"]
 "tensorfold.cuda.kernels" = ["*.cu", "*.cuh", "*.cpp"]

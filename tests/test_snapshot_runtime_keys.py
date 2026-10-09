@@ -12,6 +12,8 @@ from tensorfold.server import app
 
 
 def test_snapshot_identity_changes_with_mlx_lm_version(monkeypatch, tmp_path, mlx_host_protocol):
+    (tmp_path / "config.json").write_text('{"model_type":"fake"}')
+    (tmp_path / "model.safetensors").write_bytes(b"owned host-only identity fixture")
     captured = []
 
     class Captured(Exception):

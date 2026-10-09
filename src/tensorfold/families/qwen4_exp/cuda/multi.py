@@ -13,7 +13,7 @@ from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.capacity import available_bytes
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
-from tensorfold.cuda.sampling import sample_streams
+from tensorfold.cuda.sampling import TokenMap, repaired_choose, sample_streams, validate_policy, validate_rows
 from tensorfold.cuda.streams import Stream, accept
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
@@ -67,6 +67,10 @@ class MultiDecoder:
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity) if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
+        from .hc_plans import enroll
+
+        enroll(w, self.buf)
+        enroll(w, self.mbuf, mtp=True)
         self.gdn = gdn_multi.Scratch(w, rows)            # every stream's DeltaNet rows, one launch a step
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
         # slots start small and grow with their stream's context, up to the window, while the gate has room
@@ -85,7 +89,9 @@ class MultiDecoder:
         self.passed: dict[int, int] = {}                 # stream id -> prompt passes since its last rows
         self.arrived = lambda: False                     # a request waits to be admitted (the scheduler sets this)
         self.next_id = 0
-        self.draft_host = w.draft_ids.cpu().numpy() if w.draft_ids is not None else None
+        self._draft_map = TokenMap(w.draft_ids, int(w.draft_ids.numel()), device=w.draft_ids.device) \
+            if w.draft_ids is not None else None
+        self.draft_host = self._draft_map.ids(int(w.draft_ids.numel())) if self._draft_map is not None else None
         self.kept: list[tuple[list[int], State, dict, torch.Tensor | None]] = []   # (ids, slot, snapshot, tail)
         self.keep = keep
 
@@ -221,6 +227,7 @@ class MultiDecoder:
                 self._remember(list(s.prompt[:s.cached]), st, resume["state"], resume["tail"])
             raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
         e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows)
+        e._draft_map = self._draft_map
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
@@ -600,29 +607,71 @@ class MultiDecoder:
             self.mbuf.attn_step = None
 
     def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list) -> list[tuple[int, float]]:
-        """Each row's keyed draft and its probability at temperature 1, one read-back (drafts change speed only)."""
+        """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
+        Positive keyed policies use global-ID ties. Borrow full rows only to
+        repair truncation or apply the complete-vocabulary top-k-off rule.
+        """
+
+        if len(samplings) != len(positions):
+            raise ValueError("one draft policy and absolute position per source row required")
+        validate_rows(logits, positions, None)
+        for i, sampling in enumerate(samplings):
+            validate_policy(positions[i:i + 1], sampling)
+        if self._draft_map is not None:
+            self._draft_map.ids(logits.shape[1])
+        if not positions:
+            return []
         row = logits.float()
-        k = max([int(s.top_k) + MARGIN for s in samplings if s is not None and s.temperature > 0 and s.top_k] or [1])
-        k = min(k, row.shape[1])
-        vals, idx = torch.topk(row, k, dim=-1, sorted=False)
+        # Greedy proposals only consume the original maximum and log-sum-exp.
+        # k=0 retains their common read-back offsets without unused top-k work.
+        k, candidates = 0, []
+        if not all(s is None or s.temperature <= 0 for s in samplings):
+            k = max([int(s.top_k) + MARGIN for s in samplings if s is not None and s.temperature > 0 and s.top_k] or [1])
+            k = min(k, row.shape[1])
+            vals, idx = torch.topk(row, k, dim=-1, sorted=False)
+            candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
         top, col = row.max(dim=-1, keepdim=True)
         lse = torch.logsumexp(row, dim=-1, keepdim=True)
-        got = torch.cat([vals, idx.float(), top, col.float(), lse], dim=1).cpu().numpy()
+        got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
+                         lse.view(torch.int32).to(torch.int64)], dim=1).cpu().numpy()
+        normalizers = got[:, 2 * k + 2].astype(np.int32).view(np.float32)
+        if not np.isfinite(normalizers).all():
+            raise ValueError("FP32 draft confidence normalization is nonfinite")
         out = []
         for i, (pos, smp) in enumerate(zip(positions, samplings)):
             g = got[i]
-            lse_i = float(g[2 * k + 2])
+            lse_i = float(normalizers[i])
             if smp is None or smp.temperature <= 0:
                 c = int(g[2 * k + 1])
                 out.append((int(self.draft_host[c]) if self.draft_host is not None else c,
-                            float(np.exp(float(g[2 * k]) - lse_i))))
+                            float(np.exp(float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0]) - lse_i))))
                 continue
-            cols = g[k:2 * k].astype(np.int64)
+            values = g[:k].astype(np.int32).view(np.float32)
+            cols = g[k:2 * k]
             ids = self.draft_host[cols] if self.draft_host is not None else cols
-            tok = choose_rows(g[None, :k].astype(np.float32), ids[None, :], [pos], smp)[0]
+            complete = None
+            complete_ids = self.draft_host
+
+            def full_row(_):
+                nonlocal complete, complete_ids
+                if complete is None:
+                    complete = row[i].cpu().numpy()
+                    if complete_ids is None:
+                        complete_ids = np.arange(row.shape[1], dtype=np.int64)
+                return complete, complete_ids
+
+            if smp.top_k:
+                tok = repaired_choose(values[None], ids[None], [pos], smp, row.shape[1], full_row)[0]
+            else:
+                full_values, full_ids = full_row(0)
+                tok = choose_rows(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64), smp)[0]
             hit = np.nonzero(ids == tok)[0]
-            out.append((int(tok), float(np.exp(float(g[hit[0]]) - lse_i)) if len(hit) else 0.0))
+            value = values[hit[0]] if len(hit) else complete[int(np.nonzero(complete_ids == tok)[0][0])]
+            probability = float(np.exp(float(value) - lse_i))
+            if not np.isfinite(probability):
+                raise ValueError("FP32 draft confidence produced a nonfinite probability")
+            out.append((int(tok), probability))
         return out
 
     def finish(self, done: list[Stream]) -> None:

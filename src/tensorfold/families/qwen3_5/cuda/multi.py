@@ -14,7 +14,9 @@ from tensorfold.cuda.streams import PrefixCache, Stream, accept, next_fill
 from tensorfold.engine.grammar import GrammarError, pack
 
 from .decode import CopyIndex, clone_state
-from .decode_tp import SAMPLING_WORDS as W, _sample_split, _share, first_token, pack_sampling, unpack_sampling
+from .decode_tp import (
+    SAMPLING_WORDS as W, _sample_split, _share, first_token, pack_sampling, split_sampling_plan, unpack_sampling,
+)
 from .draft_tree import allocate
 from .engine import entry_end
 from .forward import State, _paths, commit_streams, multi_tree_forward, path_indices, reserve
@@ -71,19 +73,81 @@ def kept(st: State) -> State:
     return other
 
 
-def _unflatten(flat: list[int], pairs: bool) -> list:
-    """Length-prefixed lists (``pairs``: each a window's tokens then its parents)."""
+def _unflatten(flat: list[int], pairs: bool, *, groups: int | None = None, max_rows: int | None = None) -> list:
+    """Decode complete bounded frames before the receiver mutates stream state.
+
+    The received integer list remains borrowed and unchanged for this call.
+    ``pairs`` carries tokens then parents; standalone zero-length groups retain
+    their original meaning. A serving window/path has one to ``max_rows`` rows.
+    """
+
+    from operator import index
+
+    if type(pairs) is not bool:
+        raise ValueError("dense frame pair policy must be boolean")
+    for name, value in (("groups", groups), ("max_rows", max_rows)):
+        if value is not None:
+            try:
+                if isinstance(value, bool):
+                    raise TypeError("boolean frame count")
+                normalized = index(value)
+            except TypeError as error:
+                raise ValueError(f"dense frame {name} must be an integer count") from error
+            if normalized < (1 if name == "max_rows" else 0):
+                raise ValueError(f"dense frame {name} is outside its count domain")
+            if name == "groups":
+                groups = normalized
+            else:
+                max_rows = normalized
 
     out, i = [], 0
     while i < len(flat):
-        n = flat[i]
+        try:
+            if isinstance(flat[i], bool):
+                raise TypeError("boolean row count")
+            n = index(flat[i])
+        except TypeError as error:
+            raise ValueError("dense frame row count must be an integer") from error
+        if (n < 0 or n > (len(flat) - i - 1) // (2 if pairs else 1)
+                or max_rows is not None and not 1 <= n <= max_rows
+                or groups is not None and len(out) >= groups):
+            raise ValueError("dense frame has an invalid, truncated or unexpected row group")
         if pairs:
             out.append((flat[i + 1:i + 1 + n], flat[i + 1 + n:i + 1 + 2 * n]))
             i += 1 + 2 * n
         else:
             out.append(flat[i + 1:i + 1 + n])
             i += 1 + n
+    if groups is not None and len(out) != groups:
+        raise ValueError("dense frame group count differs from its admitted plan")
     return out
+
+
+def _received_windows(wins, maximum: int, vocab: int) -> None:
+    """Prove received tokens/tree parents before grammar or target-cache work."""
+
+    for tokens, parents in wins:
+        if not 1 <= len(tokens) <= maximum or len(parents) != len(tokens):
+            raise ValueError("dense received window geometry differs from admission")
+        for row, (token, parent) in enumerate(zip(tokens, parents)):
+            bad_parent = type(parent) is not int or (parent != -1 if row == 0 else not 0 <= parent < row)
+            if type(token) is not int or not 0 <= token < vocab or bad_parent:
+                raise ValueError("dense received token/tree reference is invalid")
+
+
+def _received_paths(wins, paths) -> None:
+    """Prove the complete received root-first tree paths before any commit."""
+
+    if len(wins) != len(paths):
+        raise ValueError("dense received path count differs from its admitted windows")
+    for (_, parents), path in zip(wins, paths):
+        previous = -1
+        if not path or path[0] != 0:
+            raise ValueError("dense received committed path must begin at the root")
+        for row in path:
+            if type(row) is not int or not 0 <= row < len(parents) or parents[row] != previous:
+                raise ValueError("dense received committed path is not an ordered tree path")
+            previous = row
 
 
 class MultiDecoder:
@@ -106,6 +170,7 @@ class MultiDecoder:
         self.rank, self.world, self.device = rank, world, w.norm.device
         self.depth = torch.cuda.is_available() and tuple(torch.cuda.get_device_capability(self.device)) in DEPTH_CHIPS
         self.split = world == 2 and 2 * w.head.n == w.config.vocab       # each rank holds half the head
+        self._sampling_plan = split_sampling_plan(int(w.head.n), self.device, rank) if self.split else None
         self.drafts = draft is not None and (rank == 0 or getattr(draft, "world", 1) == 2)
         self.streams: dict[int, Stream] = {}                  # decoding
         self.filling: list[Stream] = []                        # admitted, prompts still prefilling (oldest first)
@@ -330,7 +395,7 @@ class MultiDecoder:
                     self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
                 n = len(s.prompt)
                 firsts.append(None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                                s.constraint))
+                                                                s.constraint, plan=self._sampling_plan))
                 if end is not None:
                     self.cache.add(list(s.prompt[:end]), viewed(at[0]) if end < n else kept(at[0]), own(at[1]))
         except Exception as exc:
@@ -370,7 +435,7 @@ class MultiDecoder:
             if stop in s.stops:
                 self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
             first = None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                     s.constraint)
+                                                     s.constraint, plan=self._sampling_plan)
             if end is not None:
                 at, snap = out[1]
                 self.cache.add(list(s.prompt[:end]), viewed(at) if end < n else kept(at), own(snap))
@@ -534,7 +599,8 @@ class MultiDecoder:
             grammars = self._constrain(plan, wins)
             self._send([x for tokens, parents in wins for x in (len(tokens), *tokens, *parents)])
         else:
-            wins = _unflatten(_share(None, 1, self.device), pairs=True)
+            wins = _unflatten(_share(None, 1, self.device), pairs=True, groups=len(plan), max_rows=self.max_rows)
+            _received_windows(wins, self.max_rows, self.w.config.vocab)
             grammars = self._masks(plan, wins) if self.split else {}
         self.block = self._deepest(plan, wins, block)
         states = [self.streams[item[0]].st for item in plan]
@@ -548,8 +614,8 @@ class MultiDecoder:
         positions = [[st.pos + d + 1 for d in _paths(parents)[0]] for (_, parents), st in zip(wins, states)]
         samplings = [self.streams[item[0]].sampling for item in plan]
         if self.split:                                # both ranks gather their halves' candidates
-            sampled = [_sample_split(logits[starts[k]:starts[k + 1]], positions[k], samplings[k], self.rank)
-                       for k in range(len(plan))]
+            sampled = [_sample_split(logits[starts[k]:starts[k + 1]], positions[k], samplings[k], self.rank,
+                                     plan=self._sampling_plan) for k in range(len(plan))]
         else:
             sampled = sample_streams(logits, starts, positions, samplings) if self.rank == 0 else [None] * len(plan)
         return wins, record, taps, starts, sampled
@@ -670,7 +736,8 @@ class MultiDecoder:
             elif msg[0] == ROUND:
                 plan = [tuple(msg[2 + 4 * i:6 + 4 * i]) for i in range(msg[1])]
                 wins, record, taps, starts, _ = self._verify(plan)
-                paths = _unflatten(_share(None, 1, self.device), pairs=False)
+                paths = _unflatten(_share(None, 1, self.device), pairs=False, groups=len(plan), max_rows=self.max_rows)
+                _received_paths(wins, paths)
                 self._commit(plan, wins, record, taps, starts, paths)
                 for (sid, *_), (tokens, _), path in zip(plan, wins, paths):
                     s = self.streams[sid]

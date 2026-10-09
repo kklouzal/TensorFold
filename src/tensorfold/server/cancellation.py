@@ -27,8 +27,12 @@ class Cancellation:
             raise RequestCancelled("request cancelled")
 
 
-def socket_cancellation(connection: socket.socket) -> Cancellation:
+def socket_cancellation(connection: socket.socket, *, stopping: threading.Event | None = None) -> Cancellation:
+    """Cancel on peer disconnect or the owning server's explicit shutdown."""
+
     def disconnected() -> bool:
+        if stopping is not None and stopping.is_set():
+            return True
         try:
             if connection.fileno() < 0:
                 return True

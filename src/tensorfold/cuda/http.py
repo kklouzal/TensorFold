@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
-from tensorfold.server import metrics, responses
+from tensorfold.server import metrics, request_body, responses
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
 from tensorfold.server.errors import CapacityError, RequestError, error_body
@@ -57,17 +57,15 @@ def make_handler(app: App):
             except (BrokenPipeError, ConnectionResetError):          # the client has gone
                 self.close_connection = True
 
-        def _discard_body(self) -> None:
+        def _discard_body(self) -> bool:
             """Read a refused request's body, so it cannot reach the next request on this connection."""
 
             try:
-                length = int(self.headers.get("Content-Length", 0))
-            except ValueError:
-                length = -1
-            if 0 <= length <= 32 * 1024**2:
-                self.rfile.read(length)
-            else:
-                self.close_connection = True
+                request_body.discard(self)
+            except RequestError as error:
+                self._json(400, {"error": error_body(error)})
+                return False
+            return True
 
         def _stream_error(self, error: dict[str, Any]) -> None:
             """End an open stream with an error event and ``[DONE]``, as the MLX server does."""
@@ -80,6 +78,8 @@ def make_handler(app: App):
             self.close_connection = True
 
         def do_GET(self):
+            if not self._discard_body():
+                return
             route = self.path.split("?", 1)[0].rstrip("/")
             if route in ("/metrics", "/v1/metrics"):
                 return metrics.send(self, app)
@@ -94,6 +94,8 @@ def make_handler(app: App):
                 self._json(404, {"error": "not found"})
 
         def do_DELETE(self):
+            if not self._discard_body():
+                return
             responses.delete(self, app, responses.route(self.path))
 
         def do_POST(self):
@@ -104,15 +106,13 @@ def make_handler(app: App):
                 return responses.post(self, app)
             chat = self.path.rstrip("/").endswith("/chat/completions")
             if not chat and not self.path.rstrip("/").endswith("/completions"):
-                self._discard_body()
+                if not self._discard_body():
+                    return
                 return self._json(404, {"error": "not found"})
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                if not 0 <= length <= 96 * 1024**2:
-                    self.close_connection = True             # the unread body must not reach the next request
-                    return self._json(400, {"error": {"message": "request body exceeds the 96 MiB limit",
-                                                      "type": "invalid_request_error"}})
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = json.loads(request_body.read(self, 96 << 20) or b"{}")
+            except RequestError as error:
+                return self._json(400, {"error": error_body(error)})
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return self._json(400, {"error": {"message": "the request body is not JSON", "type": "invalid_request_error"}})
             try:
@@ -128,7 +128,7 @@ def make_handler(app: App):
             model = app.reply_model(body)
             stream = bool(body.get("stream"))
             kind = "chat.completion.chunk" if chat else "text_completion"
-            gone = socket_cancellation(self.connection)          # the Mac server's check: the client has closed
+            gone = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))          # the Mac server's check: the client has closed
             cancelled = lambda: gone.cancelled                  # noqa: E731
 
             def chunk(delta: dict[str, Any], finish: str | None = None) -> dict[str, Any]:
@@ -220,14 +220,12 @@ def make_handler(app: App):
         def _post_decisions(self) -> None:
             decide = getattr(app, "decisions", None)
             if decide is None:
+                if not self._discard_body():
+                    return
                 return self._json(404, {"error": {"message": f"unknown path {self.path}",
                                                   "type": "invalid_request_error"}})
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 32 * 1024**2:
-                    return self._json(400, {"error": {"message": "request body exceeds the 32 MiB limit",
-                                                      "type": "invalid_request_error"}})
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = json.loads(request_body.read(self, 32 << 20) or b"{}")
                 if not isinstance(body, dict):
                     raise RequestError("request body must be an object")
             except RequestError as exc:
@@ -249,7 +247,7 @@ def make_handler(app: App):
     return Handler
 
 
-def serve(app: App, host: str, port: int) -> None:
+def serve(app: App, host: str, port: int, *, server: Server | None = None) -> None:
     """Serve until interrupted (SIGTERM included)."""
 
     import signal
@@ -258,10 +256,19 @@ def serve(app: App, host: str, port: int) -> None:
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, _terminate)
-    server = Server((host, port), make_handler(app))
+    server = server if server is not None else Server((host, port), make_handler(app))
+    primary = None
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        server.server_close()
+        try:
+            server.server_close()
+        except BaseException as cleanup:
+            if primary is not None and primary is not cleanup:
+                raise primary from cleanup
+            raise

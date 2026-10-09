@@ -140,21 +140,27 @@ def router_logits(x: mx.array, gate_w: mx.array, *, simdgroups: int = 8) -> mx.a
                   output_shapes=[(rows, experts)], output_dtypes=[mx.bfloat16])[0]
 
 
-def _stack_linears(linears: list[Any]) -> tuple[Any, list[int]]:
+def _stack_linears(linears: list[Any], stacked: Any = None) -> tuple[Any, list[int]]:
     """One quantized linear for projections that read the same input; returns it and the split points."""
 
     import mlx.nn as nn
 
     first = linears[0]
-    stacked = nn.QuantizedLinear(first.weight.shape[1] * 32 // first.bits, 1, bias=False,
-                                 group_size=first.group_size, bits=first.bits)
-    stacked.weight = mx.concatenate([l.weight for l in linears], axis=0)
-    stacked.scales = mx.concatenate([l.scales for l in linears], axis=0)
-    stacked.biases = mx.concatenate([l.biases for l in linears], axis=0)
-    mx.eval(stacked.parameters())
+    created = stacked is None
+    if created:
+        stacked = nn.QuantizedLinear(first.weight.shape[1] * 32 // first.bits, 1, bias=False,
+                                     group_size=first.group_size, bits=first.bits)
+    else:
+        stacked.bits, stacked.group_size = first.bits, first.group_size
+        stacked.mode = getattr(first, "mode", "affine")
+    stacked.weight = mx.concatenate([linear.weight for linear in linears], axis=0)
+    stacked.scales = mx.concatenate([linear.scales for linear in linears], axis=0)
+    stacked.biases = mx.concatenate([linear.biases for linear in linears], axis=0)
+    if created:
+        mx.eval(stacked.parameters())
     cuts, total = [], 0
-    for l in linears[:-1]:
-        total += l.weight.shape[0]
+    for linear in linears[:-1]:
+        total += linear.weight.shape[0]
         cuts.append(total)
     return stacked, cuts
 
@@ -247,7 +253,12 @@ def group_norm(x: mx.array, weight: mx.array, eps: mx.array, group: int) -> mx.a
 
 
 class FusedDecode:
-    """Nemotron-H decode (one or more consecutive rows) through the kernels above and MLX's matmuls."""
+    """Decode under fixed model configuration; borrow current parameter values per call.
+
+    The caller rebuilds this decoder after changing the layer architecture or
+    model configuration. Parameter descriptors may change between synchronous
+    calls; parameters and cache state remain unchanged while a call borrows them.
+    """
 
     # layers per slice handed to the GPU while the rest of the forward is built (0: the caller evaluates)
     eval_every = 8
@@ -270,15 +281,12 @@ class FusedDecode:
         self.mamba: dict[int, tuple[mx.array, ...]] = {}
         # the last call's Mamba states after each of its rows, by layer (for keeping a prefix of a window)
         self.row_states: dict[int, tuple[mx.array, mx.array]] = {}
-        self._compiled_blocks: dict[int, Any] = {}
+        self._compiled_blocks: dict[int, tuple[Any, tuple, dict, Any]] = {}
+        self._zero_conv_bias: dict[int, mx.array] = {}
         self.mamba_conv_dim = int(args.mamba_num_heads * args.mamba_head_dim + 2 * args.n_groups * args.ssm_state_size)
         for i, layer in enumerate(self.layers):
             if layer.block_type == "M":
-                m = layer.mixer
-                conv_w = m.conv1d.weight[:, :, 0].T.astype(mx.float32)          # [KC, CD]
-                conv_b = (m.conv1d.bias if "bias" in m.conv1d else mx.zeros((m.conv_dim,))).astype(mx.float32)
-                self.mamba[i] = (conv_w, conv_b, m.A_log.astype(mx.float32), m.D.astype(mx.float32),
-                                 m.dt_bias.astype(mx.float32))
+                self.mamba[i] = self._mamba_parameters(i, layer.mixer)
         mx.eval(list(self.mamba.values()))
         self.gate_bias = {i: layer.mixer.gate.e_score_correction_bias.astype(mx.float32)
                           for i, layer in enumerate(self.layers) if layer.block_type == "E"}
@@ -346,7 +354,7 @@ class FusedDecode:
                 cache_at += 1
                 conv_in, ssm_in, slots = self._states_in(layer_caches, normed.dtype)
                 mixer = layer.mixer
-                conv_w, conv_b, a_log, d_skip, dt_bias = self.mamba[i]
+                conv_w, conv_b, a_log, d_skip, dt_bias = self._mamba_parameters(i, mixer)
                 y, conv_rows, ssm_rows = mamba_scan(
                     mixer.in_proj(self._use_sums(normed, xs)), conv_in, ssm_in, lengths, conv_w, conv_b, a_log,
                     d_skip, dt_bias,
@@ -404,18 +412,19 @@ class FusedDecode:
         """Read conv/SSM state slots without copies when all streams reference one earlier call; otherwise stack the states."""
 
         refs = [getattr(c, "ref", None) for c in caches]
-        if refs[0] is not None and all(r is not None and r[1] is refs[0][1] for r in refs):
+        if refs[0] is not None and all(r is not None and r[0] is refs[0][0] and r[1] is refs[0][1] for r in refs):
             return refs[0][0], refs[0][1], tuple(r[2] for r in refs)
         states = [self._mamba_states(c, dtype) for c in caches]
         return mx.concatenate([s[0] for s in states]), mx.concatenate([s[1] for s in states]), None
 
-    def _add_norm(self, h: mx.array, delta: mx.array, weight: mx.array, xs: mx.array
+    def _add_norm(self, h: mx.array, delta: mx.array, weight: mx.array, xs: mx.array, *, eps: mx.array | None = None
                   ) -> tuple[mx.array, mx.array, mx.array]:
         """add_norm, and the output's group sums with the lane matmul (else ``xs`` passes through)."""
 
+        epsilon = self.eps if eps is None else eps
         if not self.lane_xs:
-            return (*add_norm(h, delta, weight, self.eps), xs)
-        return add_norm(h, delta, weight, self.eps, group_sums=True)
+            return (*add_norm(h, delta, weight, epsilon), xs)
+        return add_norm(h, delta, weight, epsilon, group_sums=True)
 
     def _use_sums(self, x: mx.array, xs: mx.array) -> mx.array:
         """Hand ``x`` and its group sums to the next lane matmul when ``xs`` is not ``_no_xs``, with compiled blocks deciding per trace."""
@@ -435,38 +444,97 @@ class FusedDecode:
         return conv_state, ssm_state
 
     def _block(self, index: int, kind: str, nxt: mx.array) -> Any:
-        """Compile the layer's work between consecutive input norms, preserving its arithmetic for each row count."""
+        """One current geometry plan; parameter arrays are explicit captured inputs.
 
-        fn = self._compiled_blocks.get(index)
-        if fn is None:
-            fn = mx.compile(self._mamba_block(index, nxt) if kind == "M" else self._moe_block(index, nxt))
-            self._compiled_blocks[index] = fn
+        A synchronous call borrows model parameters without mutation. Value or
+        descriptor updates between calls flow through current ``module.state``;
+        structural/quantization policy changes replace this layer's one plan.
+        Unlisted closure arrays would be constants under MLX's compile contract.
+        """
+        mixer = self.layers[index].mixer
+        signature = (kind, self.lane_xs, tuple(nxt.shape), nxt.dtype, tuple(
+            (name, getattr(type(module), "__call__", None), tuple(
+                (key, self._policy_value(getattr(module, key, None))) for key in
+                ("bits", "group_size", "mode", "conv_dim", "scale", "_lane_tile", "_lane_nt")))
+            for name, module in mixer.named_modules()))
+        if any(value is None for _, _, fields in signature[-1] for _, value in fields):
+            # An unknown host policy may change without a provable version.
+            # Execute current ordinary work; never freeze that external state.
+            self._compiled_blocks.pop(index, None)
+            current = {"module": mixer.state, "norm": nxt, "eps": self.eps,
+                       "limits": self.limits, "scaling": self.scaling}
+            self._set_block_parameters(current, index, kind, mixer)
+            return self._mamba_block(index, current) if kind == "M" else self._moe_block(index, current)
+        found = self._compiled_blocks.get(index)
+        if found is None or found[0] is not mixer or found[1] != signature:
+            current = {"module": mixer.state, "norm": nxt, "eps": self.eps,
+                       "limits": self.limits, "scaling": self.scaling}
+            self._set_block_parameters(current, index, kind, mixer)
+            fn = mx.compile(self._mamba_block(index, current) if kind == "M" else self._moe_block(index, current),
+                            inputs=current)
+            self._compiled_blocks[index] = (mixer, signature, current, fn)
+        else:
+            current, fn = found[2:]
+            current.update(module=mixer.state, norm=nxt, eps=self.eps, limits=self.limits, scaling=self.scaling)
+            self._set_block_parameters(current, index, kind, mixer)
         return fn
 
-    def _mamba_block(self, index: int, nxt: mx.array) -> Any:
+    @staticmethod
+    def _policy_value(value: Any) -> tuple | None:
+        """Compare host policy without device-array equality or synchronization."""
+        if isinstance(value, mx.array):
+            return None
+        if value is None or type(value) in (bool, int, str):
+            return (type(value), value)
+        if type(value) is float:
+            return (float, value.hex())
+        return None
+
+    def _mamba_parameters(self, index: int, mixer: Any) -> tuple[mx.array, ...]:
+        """Derive current exact transforms; the absent bias is a private constant."""
+        if "bias" in mixer.conv1d:
+            bias = mixer.conv1d.bias
+        else:
+            bias = self._zero_conv_bias.get(index)
+            if bias is None or tuple(bias.shape) != (mixer.conv_dim,):
+                bias = self._zero_conv_bias[index] = mx.zeros((mixer.conv_dim,))
+        values = (mixer.conv1d.weight[:, :, 0].T.astype(mx.float32), bias.astype(mx.float32),
+                  mixer.A_log.astype(mx.float32), mixer.D.astype(mx.float32), mixer.dt_bias.astype(mx.float32))
+        self.mamba[index] = values
+        return values
+
+    def _set_block_parameters(self, current: dict, index: int, kind: str, mixer: Any) -> None:
+        if kind == "M":
+            current["mamba"] = self._mamba_parameters(index, mixer)
+        else:
+            current["gate_bias"] = mixer.gate.e_score_correction_bias.astype(mx.float32)
+            self.gate_bias[index] = current["gate_bias"]
+
+    def _mamba_block(self, index: int, current: dict) -> Any:
         mixer = self.layers[index].mixer
-        conv_w, conv_b, a_log, d_skip, dt_bias = self.mamba[index]
 
         def block(x: mx.array, xs: mx.array, h: mx.array, conv_state: mx.array, ssm_state: mx.array
                   ) -> tuple[mx.array, ...]:
+            conv_w, conv_b, a_log, d_skip, dt_bias = current["mamba"]
             proj = mixer.in_proj(self._use_sums(x, xs))
             y, conv_rows, ssm_rows = mamba_step(proj, conv_state, ssm_state, conv_w, conv_b, a_log, d_skip,
-                                                dt_bias, self.limits, heads=self.heads, head_dim=self.head_dim,
+                                                dt_bias, current["limits"], heads=self.heads, head_dim=self.head_dim,
                                                 groups=self.groups, state_dim=self.state_dim)
-            y = group_norm(y, mixer.norm.weight, self.eps, mixer.norm.group_size)
-            hn, xn, xsn = self._add_norm(h, mixer.out_proj(y), nxt, xs)
+            y = group_norm(y, mixer.norm.weight, current["eps"], mixer.norm.group_size)
+            hn, xn, xsn = self._add_norm(h, mixer.out_proj(y), current["norm"], xs, eps=current["eps"])
             return hn, xn, xsn, conv_rows, ssm_rows
 
         return block
 
-    def _moe_block(self, index: int, nxt: mx.array) -> Any:
+    def _moe_block(self, index: int, current: dict) -> Any:
         mixer = self.layers[index].mixer
 
         def block(x: mx.array, xs: mx.array, h: mx.array) -> tuple[mx.array, mx.array, mx.array]:
-            routed, weights, shared = self._moe(index, mixer, self._use_sums(x, xs))
+            routed, weights, shared = self._moe(index, mixer, self._use_sums(x, xs), bias=current["gate_bias"],
+                                                scaling=current["scaling"])
             if not self.lane_xs:
-                return (*add_norm_moe(h, routed, weights, shared, nxt, self.eps), xs)
-            return add_norm_moe(h, routed, weights, shared, nxt, self.eps, group_sums=True)
+                return (*add_norm_moe(h, routed, weights, shared, current["norm"], current["eps"]), xs)
+            return add_norm_moe(h, routed, weights, shared, current["norm"], current["eps"], group_sums=True)
 
         return block
 
@@ -496,8 +564,12 @@ class FusedDecode:
         """q/k/v for all rows, then each stream's rows against its own cache (``lengths``: rows a stream)."""
 
         rows = x.shape[0]
-        if index in self.qkv:
-            stacked, cuts = self.qkv[index]
+        linears = [mixer.q_proj, mixer.k_proj, mixer.v_proj]
+        if index in self.qkv and all("bias" not in linear and all(hasattr(linear, name) for name in
+                ("bits", "group_size", "scales", "biases")) for linear in linears) and len({
+                (linear.bits, linear.group_size, getattr(linear, "mode", "affine"),
+                 linear.weight.shape[1], linear.scales.dtype, linear.biases.dtype) for linear in linears}) == 1:
+            stacked, cuts = self.qkv[index] = _stack_linears(linears, self.qkv[index][0])
             q, k, v = mx.split(stacked(x), cuts, axis=-1)
         else:
             q, k, v = mixer.q_proj(x), mixer.k_proj(x), mixer.v_proj(x)
@@ -536,8 +608,13 @@ class FusedDecode:
             return lane_sdpa(q, keys, values, scale)
         return mx.fast.scaled_dot_product_attention(q, keys, values, scale=scale, mask="causal" if rows > 1 else None)
 
-    def _moe(self, index: int, mixer: Any, x: mx.array) -> tuple[mx.array, mx.array, mx.array]:
+    def _moe(self, index: int, mixer: Any, x: mx.array, *, bias: mx.array | None = None,
+             scaling: mx.array | None = None
+             ) -> tuple[mx.array, mx.array, mx.array]:
         # The router and expert kernels preserve each row's bits; MLX bf16 matmul changes summation order with row count.
         logits = router_logits(x, mixer.gate.weight)
-        experts, weights = route(logits, self.gate_bias[index], self.top_k, self.scaling)
+        if bias is None:
+            bias = mixer.gate.e_score_correction_bias.astype(mx.float32)
+            self.gate_bias[index] = bias
+        experts, weights = route(logits, bias, self.top_k, self.scaling if scaling is None else scaling)
         return row_kernels.experts(mixer.switch_mlp, x, experts), weights, mixer.shared_experts(x)

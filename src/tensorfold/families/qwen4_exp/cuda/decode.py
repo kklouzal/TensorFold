@@ -11,8 +11,11 @@ import torch
 
 from tensorfold.cuda.logprobs import capture
 
-from tensorfold.cuda.sampling import comm_gather, nucleus_rows, sample_rows
-from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows
+from tensorfold.cuda.sampling import (
+    ShardSampler, TokenMap, _tp_choose, comm_gather, sample_rows, sample_shards,
+    valid_scores, validate_policy, validate_rows,
+)
+from tensorfold.engine.exact_sampling import MARGIN, Sampling
 
 from . import CONFIDENCE, DEPTH
 from .forward import Cut, commit, cut_snapshot, forward, read_ahead
@@ -24,86 +27,114 @@ from .weights import Weights
 
 def sample_mapped(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
                   id_map: torch.Tensor) -> list[int]:
-    """Rows of logits over a token subset (column j is token id_map[j]) -> tokens, with the keyed rule on the real ids (the draft head over the draft vocabulary)."""
+    """Apply the shared exact candidate rule to the draft vocabulary's real token IDs."""
 
-    if sampling is None or sampling.temperature <= 0:
-        return [int(t) for t in id_map[logits.argmax(dim=-1)].cpu().tolist()]
-    k = min(logits.shape[1], int(sampling.top_k) + MARGIN) if sampling.top_k else logits.shape[1]
-    vals, idx = torch.topk(logits.float(), k, dim=-1, sorted=False)
-    return choose_rows(vals.cpu().numpy(), id_map[idx].cpu().numpy().astype(np.int64), positions, sampling)
+    return sample_rows(logits, positions, sampling, id_map=id_map)
+
+
+class SamplingShard(ShardSampler):
+    """Bind the shared shard owner to this model's communicator at startup."""
+
+    def __init__(self, w: Weights, width: int, *, offset: int = 0, id_map=None):
+        if w.comm is None or int(w.meta["world"]) != w.comm.world:
+            raise ValueError("TP sampler needs the model's matching communicator")
+        super().__init__(width, w.comm.device, gather=comm_gather(w.comm), world=w.comm.world,
+                         offset=offset, id_map=id_map, identity=w.comm)
+
+    def check_model(self, w: Weights, logits: torch.Tensor) -> None:
+        self.check(logits, identity=w.comm)
 
 
 def tp_sample_rows(w: Weights, logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
-                   offset: int = 0, id_map: torch.Tensor | None = None, with_prob: bool = False):
-    """Gather each rank's global-id candidates and apply the same keyed draw on every rank; ``with_prob`` also returns temperature-1 probabilities from gathered log-sum-exps."""
+                   offset: int = 0, id_map: torch.Tensor | None = None, with_prob: bool = False, *,
+                   plan: SamplingShard | None = None):
+    """Use the shared exact shard rule and this family's original temperature-1 probability contract."""
 
-    R = logits.shape[0]
-    greedy = sampling is None or sampling.temperature <= 0
-    if not greedy and not sampling.top_k:           # top_k off: the shared nucleus rule over every rank's shard
-        probs: list[float] | None = [] if with_prob else None
-        chosen = nucleus_rows(logits, positions, sampling, offset=offset, id_map=id_map, gather=comm_gather(w.comm),
-                              probs=probs)
-        return (chosen, probs) if with_prob else chosen
-    k = 1 if greedy else min(logits.shape[1], int(sampling.top_k) + MARGIN)
-    if greedy:
-        # argmax takes the first (lowest-id) maximum whatever the row count; topk promises no order among ties
-        ids = logits.argmax(dim=-1, keepdim=True)
-        vals = torch.gather(logits, 1, ids).float()
-    else:
-        vals, ids = torch.topk(logits.float(), k, dim=-1)
-    ids = (id_map[ids] if id_map is not None else ids + int(offset)).to(torch.int32)
-    parts = [vals, ids.view(torch.float32)]
-    if with_prob:
-        parts.append(torch.logsumexp(logits.float(), dim=-1, keepdim=True))
-    packed = torch.cat(parts, dim=1).contiguous()
-    width = packed.shape[1]
-    world = int(w.meta["world"])
-    got = torch.empty((world * packed.numel(),), dtype=torch.float32, device=logits.device)
-    w.comm.all_gather(packed.view(-1), got)
-    g = got.view(world, R, width).cpu()
-    values = torch.cat([g[r, :, :k] for r in range(world)], dim=1).numpy().astype(np.float32)
-    tokens = torch.cat([g[r, :, k:2 * k].contiguous().view(torch.int32) for r in range(world)], dim=1).numpy()
-    tokens = tokens.astype(np.int64)
-    if greedy:
-        order = np.lexsort((tokens, -values), axis=-1)
-        chosen = [int(tokens[i, order[i, 0]]) for i in range(R)]
-    else:
-        chosen = choose_rows(values, tokens, positions, sampling)
-    if not with_prob:
-        return chosen
-    lse = g[:, :, 2 * k].numpy().astype(np.float64)                       # [world, R]
-    top = lse.max(axis=0)
-    total = top + np.log(np.exp(lse - top).sum(axis=0))
-    probs = []
-    for i, t in enumerate(chosen):
-        hit = np.nonzero(tokens[i] == t)[0]
-        probs.append(float(np.exp(float(values[i, hit[0]]) - total[i])) if len(hit) else 0.0)
-    return chosen, probs
+    if plan is None:
+        validate_rows(logits, positions, sampling)
+        plan = SamplingShard(w, logits.shape[1], offset=offset, id_map=id_map)
+    plan.check_model(w, logits)
+    return sample_shards(logits, positions, sampling, plan=plan, with_prob=with_prob)
 
 
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
-                    with_prob: bool = False):
-    """Apply keyed sampling to candidates gathered inside the step graph; ``with_prob`` also returns each selected token's probability."""
+                    with_prob: bool = False, *, logits: torch.Tensor | None = None,
+                    plan: SamplingShard | None = None):
+    """Use original FP32-score/FP32-lse packets; borrow original logits to repair tied truncation.
+
+    ``cand_all`` must be the completed packet produced with these exact source
+    rows by ``forward.candidates``. Its FP32 log-sum-exp covers the complete
+    score domain, including omitted scores. Every rank sees the same packet and
+    takes the same fallback collectives. A standalone ambiguous packet cannot
+    prove omitted token IDs and therefore requires its original source.
+    """
 
     world, width = int(w.meta["world"]), 2 * CAND + 1
+    if (type(R) is not int or R < 0 or len(positions) != R
+            or not isinstance(cand_all, torch.Tensor) or cand_all.dtype != torch.float32
+            or not cand_all.is_cuda or not cand_all.is_contiguous() or cand_all.numel() < world * R * width):
+        raise ValueError("complete CUDA candidate packet and one absolute position per row required")
+    validate_policy(positions, sampling)
+    if logits is not None:
+        validate_rows(logits, positions, sampling)
+        if logits.shape[0] != R:
+            raise ValueError("gathered packet and original source must have the same rows")
+        if plan is not None:
+            plan.check_model(w, logits)
+    if R == 0:
+        return ([], []) if with_prob else []
+    # Graph token words are int32. A startup owner proves this range across
+    # every rank; larger signed64 identities must use the original source
+    # before the lossy graph token words are interpreted.
+    need_source = not _gathered_fits(sampling) or (plan is not None and not plan.graph_ids_safe)
+    if need_source:
+        if logits is None:
+            raise ValueError("gathered policy or token-ID range requires the complete original logits")
+        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
+                              offset=int(w.meta.get("vocab_offset", 0)))
     g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
-    values = np.concatenate([g[r, :, :CAND] for r in range(world)], axis=1).astype(np.float32)
-    tokens = np.concatenate([np.ascontiguousarray(g[r, :, CAND:2 * CAND]).view(np.int32) for r in range(world)],
-                            axis=1).astype(np.int64)
-    if sampling is None or sampling.temperature <= 0:
-        order = np.lexsort((tokens, -values), axis=-1)
-        chosen = [int(tokens[i, order[i, 0]]) for i in range(R)]
-    else:
-        chosen = choose_rows(values, tokens, positions, sampling)
+    values = g[:, :, :CAND].astype(np.float32)
+    tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
+    if (tokens < 0).any():
+        raise ValueError("graph-gathered token IDs must be nonnegative int32")
+    valid_scores(values, require_finite=False)
+    norms = g[:, :, 2 * CAND]
+    if np.isnan(norms).any() or np.isposinf(norms).any():
+        raise ValueError("a rank's complete sampling scores contain NaN or positive infinity")
+    if not np.isfinite(norms).any(axis=0).all():
+        raise ValueError("a complete vocabulary row needs at least one finite score")
+    greedy = sampling is None or sampling.temperature <= 0
+    need_source = False
+    k = 1 if greedy else int(sampling.top_k)
+    if not need_source:
+        for row in range(R):
+            v = values[:, row].reshape(-1)
+            cutoff = np.partition(v, len(v) - k)[len(v) - k]
+            for rank in range(world):
+                shard_complete = plan is not None and int(plan.widths[rank]) <= CAND
+                edge = values[rank, row].min()
+                if not shard_complete and np.isfinite(edge) and edge >= cutoff:
+                    need_source = True
+                    break
+            if need_source:
+                break
+    if need_source:
+        if logits is None:
+            raise ValueError("ambiguous gathered cutoff requires the complete original logits")
+        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
+                              offset=int(w.meta.get("vocab_offset", 0)))
+    chosen = _tp_choose(values, tokens, positions, sampling)
     if not with_prob:
         return chosen
-    lse = g[:, :, 2 * CAND].astype(np.float64)
+    lse = norms.astype(np.float64)
     top = lse.max(axis=0)
     total = top + np.log(np.exp(lse - top).sum(axis=0))
     probs = []
-    for i, t in enumerate(chosen):
-        hit = np.nonzero(tokens[i] == t)[0]
-        probs.append(float(np.exp(float(values[i, hit[0]]) - total[i])) if len(hit) else 0.0)
+    for row, token in enumerate(chosen):
+        hit = np.nonzero(tokens[:, row].reshape(-1) == token)[0]
+        if not len(hit):
+            raise ValueError("selected gathered token is absent from its exact score packet")
+        probs.append(float(np.exp(float(values[:, row].reshape(-1)[hit[0]]) - total[row])))
     return chosen, probs
 
 
@@ -134,9 +165,23 @@ class Engine:
         self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
         self.mbuf = Buffers(w, max_rows, capacity) if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True)
+        from .hc_plans import enroll
+
+        enroll(w, self.buf)
+        enroll(w, self.mbuf, mtp=True)
         self.st = State(w, capacity, max_rows, kv_dtype, kv_pair=kv_pair,
                         kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype)
         self.kv_pair = self.st.kv_pair
+        self._sample_plan = self._draft_plan = None
+        self._draft_map = None
+        if w.comm is not None:
+            self._sample_plan = SamplingShard(w, int(w.head.n), offset=int(w.meta["vocab_offset"]))
+            if self.mbuf is not None:
+                self._draft_plan = SamplingShard(w, int(w.draft_head.n if w.draft_head is not None else w.head.n),
+                                                offset=int(w.meta["vocab_offset"]), id_map=w.draft_ids)
+                self._draft_map = self._draft_plan.token_map
+        elif w.draft_ids is not None:
+            self._draft_map = TokenMap(w.draft_ids, int(w.draft_ids.numel()))
         self.graphs = None
         if graphs:
             from .graphs import Graphs
@@ -166,6 +211,7 @@ class Engine:
         other.w, other.capacity, other.rows, other.prefill_rows = self.w, self.capacity, self.rows, self.prefill_rows
         other.buf, other.mbuf, other.pbuf, other.graphs = self.buf, None, self.pbuf, None
         other.kv_pair = self.kv_pair
+        other._sample_plan, other._draft_plan, other._draft_map = self._sample_plan, self._draft_plan, self._draft_map
         other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair)
         return other
 
@@ -185,11 +231,13 @@ class Engine:
         if self.w.comm is not None:
             b = self.mbuf if draft else self.buf
             if gathered and logits.data_ptr() == b.logits.data_ptr() and _gathered_fits(sampling):
-                return choose_gathered(self.w, b.cand_all, logits.shape[0], positions, sampling)
+                return choose_gathered(self.w, b.cand_all, logits.shape[0], positions, sampling, logits=logits,
+                                       plan=self._draft_plan if draft else self._sample_plan)
             return tp_sample_rows(self.w, logits, positions, sampling, offset=self.w.meta["vocab_offset"],
-                                  id_map=self.w.draft_ids if mapped else None)
+                                  id_map=self.w.draft_ids if mapped else None,
+                                  plan=self._draft_plan if draft else self._sample_plan)
         if mapped:
-            return sample_mapped(logits, positions, sampling, self.w.draft_ids)
+            return sample_rows(logits, positions, sampling, id_map=self._draft_map)
         return sample_rows(logits, positions, sampling)
 
     def sample_draft(self, logits: torch.Tensor, position: int, sampling: Sampling | None) -> tuple[int, float]:
@@ -200,29 +248,16 @@ class Engine:
         mapped = w.draft_ids is not None
         if w.comm is not None:
             if logits.data_ptr() == self.mbuf.logits.data_ptr() and _gathered_fits(sampling):
-                toks, probs = choose_gathered(w, self.mbuf.cand_all, 1, [position], sampling, with_prob=True)
+                toks, probs = choose_gathered(w, self.mbuf.cand_all, 1, [position], sampling, with_prob=True,
+                                             logits=logits[:1], plan=self._draft_plan)
             else:
                 toks, probs = tp_sample_rows(w, logits[:1], [position], sampling, offset=w.meta["vocab_offset"],
-                                             id_map=w.draft_ids if mapped else None, with_prob=True)
+                                             id_map=w.draft_ids if mapped else None, with_prob=True,
+                                             plan=self._draft_plan)
             return toks[0], probs[0]
-        if mapped and getattr(self, "_draft_host", None) is None:
-            self._draft_host = w.draft_ids.cpu().numpy()
-        row = logits[:1].float()
-        lse = torch.logsumexp(row, dim=-1, keepdim=True)
-        if sampling is None or sampling.temperature <= 0:
-            top, col = row.max(dim=-1, keepdim=True)            # the first maximum: argmax's (and serial's) choice
-            got = torch.cat([top, lse, col.float()], dim=1).cpu().numpy()[0]       # one sync
-            c = int(got[2])
-            tok = int(self._draft_host[c]) if mapped else c
-            return tok, float(np.exp(float(got[0]) - float(got[1])))
-        k = min(row.shape[1], int(sampling.top_k) + MARGIN) if sampling.top_k else row.shape[1]
-        vals, idx = torch.topk(row, k, dim=-1, sorted=False)
-        got = torch.cat([vals, lse, idx.float()], dim=1).cpu().numpy()[0]          # one sync
-        cols = got[k + 1:].astype(np.int64)
-        ids = self._draft_host[cols] if mapped else cols
-        tok = choose_rows(got[None, :k].astype(np.float32), ids[None, :], [position], sampling)[0]
-        hit = np.nonzero(ids == tok)[0]
-        return int(tok), float(np.exp(float(got[hit[0]]) - float(got[k]))) if len(hit) else 0.0
+        toks, probs = sample_rows(logits[:1], [position], sampling, id_map=self._draft_map if mapped else None,
+                                  with_prob=True)
+        return toks[0], probs[0]
 
     def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor) -> torch.Tensor:
         if self.graphs is not None:

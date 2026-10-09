@@ -3,17 +3,48 @@
 from __future__ import annotations
 
 import os
-import struct
+import stat
 import sys
 import weakref
+from functools import partial
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
+from .read_ahead import row_ids
+from .table_lifetime import PythonPool, TableLifetime, release_files, _note, _cause
+from .table_file import TableFile
+from tensorfold.cuda.capacity import SIZES
+from tensorfold.cuda.tensor_file import read_header_stream
+
 WORKERS = 16                # reads in flight at once: os.pread releases the GIL
 MAX_READ = 1 << 20          # bytes one read of adjacent rows may cover
 _KINDS = (("weight", "U32", 4), ("scales", "BF16", 2), ("biases", "BF16", 2))
+
+
+def _retain_file(slot, file):
+    """Publish exact local ownership even after an interrupted first publication."""
+    interrupted = None
+    while True:
+        try:
+            slot[0] = file
+            return interrupted
+        except KeyboardInterrupt as error:
+            if interrupted is None:
+                interrupted = error
+
+
+def _release_table_files(fds, *, files, unpublished):
+    file = unpublished[0]
+    if file is not None:
+        try:
+            if not file.closed:
+                file.close()
+        finally:
+            if file.closed:
+                unpublished[0] = None
+    release_files(fds, files)
 
 
 def _no_cache(fd: int) -> None:
@@ -25,12 +56,6 @@ def _no_cache(fd: int) -> None:
         fcntl.fcntl(fd, getattr(fcntl, "F_NOCACHE", 48), 1)       # 48: F_NOCACHE in <sys/fcntl.h>
     elif hasattr(os, "posix_fadvise"):
         os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
-
-
-def _release(fds: list[int], pool: ThreadPoolExecutor) -> None:
-    pool.shutdown(wait=True)
-    while fds:
-        os.close(fds.pop())
 
 
 def _span(entry: object, kind: tuple[str, str, int], data: int, size: int, name: str) -> tuple[int, int, int]:
@@ -66,12 +91,26 @@ class SSDTable:
 
     def __init__(self, files: list[tuple[Path, dict, dict, dict]], *, nocache: bool = True) -> None:
         self._fds: list[int] = []
-        self._pool = ThreadPoolExecutor(WORKERS, thread_name_prefix="ple-ssd")
-        self._closer = weakref.finalize(self, _release, self._fds, self._pool)
+        self._files = []
+        self._unpublished_file = [None]
+        self._pool = self._life = self._closer = None
         try:
+            self._pool = ThreadPoolExecutor(WORKERS, thread_name_prefix="ple-ssd")
+            self._life = TableLifetime(PythonPool(self._pool), self._fds,
+                                       partial(_release_table_files, files=self._files, unpublished=self._unpublished_file))
+            self._closer = weakref.finalize(self, self._life.close)
             self._layout(files, nocache)
-        except BaseException:
-            self.close()
+        except BaseException as primary:
+            try:
+                if self._life is not None:
+                    self.close()
+                else:
+                    if self._pool is not None:
+                        self._pool.shutdown(wait=True)
+                    _release_table_files(self._fds, files=self._files, unpublished=self._unpublished_file)
+            except BaseException as cleanup:
+                _note(primary, "SSD table construction cleanup also failed; owner retained")
+                raise primary from _cause(primary, cleanup)
             raise
 
     def _layout(self, files: list[tuple[Path, dict, dict, dict]], nocache: bool) -> None:
@@ -83,18 +122,38 @@ class SSDTable:
         for path, *entries in files:
             path = Path(path)
             if path not in opened:
-                fd = os.open(path, os.O_RDONLY)
-                self._fds.append(fd)
+                file = None
+                try:
+                    file = TableFile(path)
+                    self._unpublished_file[0] = file
+                    file.open()                    # closed owner is published before native acquisition
+                    self._files.append(file)
+                    self._unpublished_file[0] = None
+                    fd = file.fileno()
+                    self._fds.append(fd)
+                except BaseException as primary:
+                    if file is not None:
+                        interruption = _retain_file(self._unpublished_file, file)
+                        if interruption is not None:
+                            _note(primary, "unpublished SSD file ownership repair was interrupted")
+                            raise primary from _cause(primary, interruption)
+                    raise
+                opened_stat = os.fstat(fd)
+                if not stat.S_ISREG(opened_stat.st_mode):
+                    raise ValueError(f"{path.name}: the n-gram checkpoint must be a regular file")
                 if nocache:
                     _no_cache(fd)
-                size, head = os.fstat(fd).st_size, os.pread(fd, 8, 0)
-                data = 8 + struct.unpack("<Q", head)[0] if len(head) == 8 else size + 1
-                if data > size:
-                    raise ValueError(f"{path.name}: truncated safetensors header")
-                opened[path] = (len(self._fds) - 1, data, size)
-            index, data, size = opened[path]
+                size = opened_stat.st_size
+                data, header = read_header_stream(file, SIZES, label=path)
+                descriptors = {(info["dtype"], tuple(info["shape"]), tuple(info["data_offsets"]))
+                               for name, info in header.items() if name != "__metadata__"}
+                opened[path] = (len(self._fds) - 1, data, size, descriptors)
+            index, data, size, descriptors = opened[path]
             (rows, wrow, w0), (srows, grow, s0), (brows, brow, b0) = (
                 _span(entry, kind, data, size, path.name) for entry, kind in zip(entries, _KINDS))
+            if any((entry["dtype"], tuple(entry["shape"]), tuple(entry["data_offsets"])) not in descriptors
+                   for entry in entries):
+                raise ValueError(f"{path.name}: the n-gram tensor metadata disagrees with its opened checkpoint header")
             if not rows == srows == brows or wrow != 8 * grow or brow != grow:
                 raise ValueError(f"{path.name}: an n-gram shard is not 4-bit rows with a scale and bias every 32")
             if widths not in (None, (wrow, grow)):
@@ -113,15 +172,17 @@ class SSDTable:
         self._fd_of = np.array(self._fds, dtype=np.int64)
 
     def gather(self, ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Rows ``ids`` (global) -> words [n, W] uint32, scales and biases [n, G] (bf16 bits as uint16)."""
+        """Validate public IDs once, then gather original checkpoint bytes."""
+        return self._life.call(self._gather_ids, ids)
 
-        if not self._closer.alive:
-            raise ValueError("the n-gram table is closed")
-        flat = np.asarray(ids).reshape(-1)
-        if flat.size and flat.dtype.kind not in "iu":
-            raise TypeError(f"n-gram row ids must be integers, not {flat.dtype}")
-        if flat.size and (flat.min() < 0 or flat.max() >= self.rows):
-            raise ValueError(f"n-gram row ids must lie in [0, {self.rows})")
+    def _gather_ids(self, ids):
+        return self._gather_flat(row_ids(ids, self.rows))
+
+    def _gather_owned(self, flat):
+        """Internal owned immutable int64 IDs; lifetime may change independently."""
+        return self._life.call(self._gather_flat, flat)
+
+    def _gather_flat(self, flat):
         unique, inverse = np.unique(flat.astype(np.int64), return_inverse=True)
         shard = np.searchsorted(self.starts, unique, side="right") - 1
         local, where = unique - self.starts[shard], self.fidx[shard]
@@ -131,7 +192,7 @@ class SSDTable:
             reads += self._reads(where, self.bases[shard, part] + local * width, width, outs[-1])
         batches = min(WORKERS, len(reads))
         if batches > 1:
-            list(self._pool.map(_fill, [reads[i::batches] for i in range(batches)]))
+            self._life.parallel(self._pool, _fill, [reads[i::batches] for i in range(batches)])
         else:
             _fill(reads)
         words, scales, biases = (out[inverse] for out in outs)
@@ -161,4 +222,6 @@ class SSDTable:
     def close(self) -> None:
         """Close the checkpoint's files and the read threads (also done at exit); a later gather raises."""
 
-        self._closer()
+        self._life.close()
+        if self._closer is not None:
+            self._closer.detach()

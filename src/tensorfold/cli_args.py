@@ -40,6 +40,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     serve = commands.add_parser("serve", help="serve a model at an OpenAI-compatible endpoint",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     serve.add_argument("model", help="a Hugging Face repo id (downloaded on first use) or a model directory")
+    serve.add_argument("--trust-model-code", action="store_true",
+                       help="MLX provider recipes: explicitly permit checkpoint model_file Python to execute "
+                            "with server privileges; custom code uses per-process disk cache identity")
     endpoint = serve.add_argument_group("endpoint")
     endpoint.add_argument("--host", default="127.0.0.1", help="address to listen on (0.0.0.0: every interface)")
     endpoint.add_argument("--port", type=int, default=8080)

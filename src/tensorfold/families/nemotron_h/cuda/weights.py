@@ -73,12 +73,15 @@ class Config:
             raise ValueError("Nemotron-H checkpoints with dense MLP blocks are not supported on CUDA")
         limit = raw.get("time_step_limit") or (0.0, float("inf"))
         eos = raw.get("eos_token_id", 2)
+        m_heads, m_groups = int(raw["mamba_num_heads"]), int(raw["n_groups"])
+        if m_heads <= 0 or m_groups <= 0 or m_heads % m_groups:
+            raise ValueError("Nemotron Mamba needs positive heads and groups, with groups dividing heads")
         return cls(
             hidden=int(raw["hidden_size"]), vocab=int(raw["vocab_size"]), pattern=pattern,
             heads=int(raw["num_attention_heads"]), kv_heads=int(raw["num_key_value_heads"]),
             head_dim=int(raw.get("head_dim") or raw["hidden_size"] // raw["num_attention_heads"]),
-            m_heads=int(raw["mamba_num_heads"]), m_head_dim=int(raw["mamba_head_dim"]),
-            m_groups=int(raw["n_groups"]), m_state=int(raw["ssm_state_size"]), conv_kernel=int(raw["conv_kernel"]),
+            m_heads=m_heads, m_head_dim=int(raw["mamba_head_dim"]),
+            m_groups=m_groups, m_state=int(raw["ssm_state_size"]), conv_kernel=int(raw["conv_kernel"]),
             experts=int(raw["n_routed_experts"]), top_k=int(raw["num_experts_per_tok"]),
             moe_width=int(raw["moe_intermediate_size"]),
             shared_width=int(raw["moe_shared_expert_intermediate_size"]),

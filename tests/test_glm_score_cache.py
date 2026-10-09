@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 from tensorfold.families.glm5_next.cuda.engine import GlmEngine
+from tensorfold.cuda.engine_lifetime import EngineLifetime
 
 
 class _Drafter:
@@ -45,7 +46,9 @@ def _engine(monkeypatch, cells, logits):
     engine.comm = None
     engine.rank = 0
     engine.limit = 1000
-    engine._share = lambda values: list(values)
+    engine.w = SimpleNamespace(cfg=SimpleNamespace(vocab=100))
+    engine._lifetime = EngineLifetime()
+    engine._share = lambda values, **kwargs: list(values)
     return engine
 
 

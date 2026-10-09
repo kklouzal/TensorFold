@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import selectors
+import socket
+import threading
 import time
 import traceback
 import uuid
@@ -11,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from tensorfold.engine import grammar
-from tensorfold.server import responses
+from tensorfold.server import request_body, responses
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
                                      tool_choice_requires_call)
 from tensorfold.server.decisions import DecisionError
@@ -45,9 +49,212 @@ def _memory(reset_peak: bool, *, admission: Any = None) -> dict[str, int]:
 
 
 class Server(ThreadingHTTPServer):
-    """One thread a connection; the listen backlog takes a burst of clients connecting at once."""
+    """Own accepted sockets and join their handlers before model teardown.
+
+    Closing stops admission, cancels request work and interrupts socket IO. A
+    failed or interrupted drain retains the journal for an explicit retry.
+    Callers must retain the application until ``handlers_drained`` is true.
+    There is no implicit timeout or worker-count limit.
+    """
 
     request_queue_size = 128
+    daemon_threads = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._connections: dict[Any, dict[str, Any]] = {}
+        self._connection_lock = threading.RLock()
+        self._close_lock = threading.Lock()
+        self.stopping = threading.Event()
+        self._serve_stop = threading.Event()
+        self._serving_thread = None
+        self._handler_failure = None
+        self.handlers_drained = False
+        super().__init__(*args, **kwargs)
+
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        lease = threading.Lock()
+        with lease:
+            try:
+                with self._connection_lock:
+                    serving = self._serving_thread
+                    if serving is not None and not serving[1].locked():
+                        self._serving_thread = None
+                    if self.stopping.is_set() or self._serving_thread is not None:
+                        raise RuntimeError("this server has closed or is already serving")
+                    self._serve_stop.clear()
+                    self._serving_thread = threading.current_thread(), lease
+                # Match socketserver's one-descriptor polling strategy while
+                # owning the loop scope before any interruptible startup.
+                selector_type = getattr(selectors, "PollSelector", selectors.SelectSelector)
+                with selector_type() as selector:
+                    selector.register(self, selectors.EVENT_READ)
+                    while not self._serve_stop.is_set():
+                        ready = selector.select(poll_interval)
+                        if self._serve_stop.is_set():
+                            break
+                        if ready:
+                            self._handle_request_noblock()
+                        self.service_actions()
+            finally:
+                with self._connection_lock:
+                    serving = self._serving_thread
+                    if serving is not None and serving[1] is lease:
+                        self._serving_thread = None
+
+    def shutdown(self) -> None:
+        """Stop a distinct serving scope, including interrupted startup."""
+        with self._connection_lock:
+            serving = self._serving_thread
+            if serving is not None and serving[0] is threading.current_thread() and serving[1].locked():
+                raise RuntimeError("the server loop cannot join itself")
+            self._serve_stop.set()
+        if serving is not None:
+            # Native with cleanup releases this even if Python finalization
+            # was interrupted before it could publish loop completion.
+            with serving[1]:
+                pass
+
+    def handle_request(self) -> None:
+        """Retain stdlib's single-request path and its completed-worker reclamation."""
+        primary = None
+        try:
+            super().handle_request()
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                self.service_actions()
+            except BaseException as cleanup:
+                if primary is not None and primary is not cleanup:
+                    raise primary from cleanup
+                raise
+
+    @staticmethod
+    def _interrupt(request: socket.socket) -> None:
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError as error:
+            # An already disconnected/closed socket has no outstanding IO.
+            if error.errno not in (errno.ENOTCONN, errno.EBADF):
+                raise
+
+    def process_request(self, request: socket.socket, client_address: Any) -> None:
+        with self._connection_lock:
+            if self.stopping.is_set():
+                super().shutdown_request(request)
+                return
+            journal = {"entered": False, "start_error": None, "thread": None, "closed": False,
+                       "start_attempted": False, "lease": None, "entry": None}
+            self._connections[request] = journal
+            try:
+                journal["lease"] = threading.Lock()
+                journal["entry"] = threading.Event()
+                worker = threading.Thread(target=self.process_request_thread,
+                                          args=(request, client_address), daemon=False)
+                journal["thread"] = worker
+                journal["start_attempted"] = True
+                worker.start()
+                journal["entry"].wait()         # entry publishes before the worker asks for this connection lock
+            except BaseException as error:
+                # start() can be interrupted after spawning but before return.
+                # Do not assume absence of an ident means absence of a worker.
+                journal["start_error"] = error
+                self.stopping.set()
+                raise
+
+    def shutdown_request(self, request: socket.socket) -> None:
+        with self._connection_lock:
+            owned = request in self._connections
+        if owned:
+            self._interrupt(request)             # the worker alone closes its IO
+        else:
+            super().shutdown_request(request)
+
+    def process_request_thread(self, request: socket.socket, client_address: Any) -> None:
+        journal = self._connections[request]
+        with journal["lease"]:
+            try:
+                journal["entry"].set()
+                with self._connection_lock:
+                    journal["entered"] = True
+                if not self.stopping.is_set():
+                    try:
+                        self.finish_request(request, client_address)
+                    except Exception:
+                        self.handle_error(request, client_address)
+            except BaseException as error:
+                with self._connection_lock:
+                    self._handler_failure = error
+                    self.stopping.set()
+            finally:
+                try:
+                    super().shutdown_request(request)
+                except BaseException as error:
+                    journal["close_error"] = error
+                else:
+                    with self._connection_lock:
+                        journal["closed"] = True
+
+    def service_actions(self) -> None:
+        # Reap completed handlers at the server-loop control point. Retiring
+        # from inside a handler would lose its join ownership before exit.
+        with self._connection_lock:
+            for request, journal in tuple(self._connections.items()):
+                worker = journal["thread"]
+                if journal["closed"] and not worker.is_alive():
+                    with journal["lease"]:
+                        pass
+                    worker.join()
+                    self._connections.pop(request)
+            failure = self._handler_failure
+        if failure is not None:
+            raise failure
+
+    def server_close(self) -> None:
+        with self._connection_lock:
+            current = threading.current_thread()
+            serving = self._serving_thread
+            if ((serving is not None and serving[0] is current and serving[1].locked())
+                    or any(j["thread"] is current for j in self._connections.values())):
+                raise RuntimeError("the server loop or a connection handler cannot join itself")
+        with self._close_lock:
+            with self._connection_lock:
+                self.stopping.set()
+                serving = self._serving_thread
+                journals = tuple(self._connections.items())
+            if serving is not None:
+                self.shutdown()                  # only a distinct serving thread
+            super().server_close()               # no inherited worker registry
+            for request, _ in journals:
+                self._interrupt(request)
+            for request, journal in journals:
+                if not journal["start_attempted"]:
+                    # Construction cannot publish a native actor. Its socket
+                    # was journaled first and remains owned through cleanup.
+                    super().shutdown_request(request)
+                    with self._connection_lock:
+                        self._connections.pop(request)
+                    continue
+                if not journal["entry"].is_set():
+                    raise RuntimeError("connection start did not settle; its owners remain retained") from journal["start_error"]
+                # Thread.join can mark an active target stopped after SIGINT
+                # on CPython. The native handler/socket scope retires first.
+                with journal["lease"]:
+                    pass
+                journal["thread"].join()
+                with self._connection_lock:
+                    if request in self._connections:  # failed worker socket cleanup
+                        if not journal["closed"]:
+                            super().shutdown_request(request)
+                        self._connections.pop(request)
+            with self._connection_lock:
+                if self._connections:
+                    raise RuntimeError("accepted connection owners remain after shutdown")
+                self.handlers_drained = True
+                failure = self._handler_failure
+            if failure is not None:
+                raise failure
 
 
 def redact_images(value: Any) -> Any:
@@ -98,29 +305,31 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
-        def _discard_body(self) -> None:
+        def _discard_body(self) -> bool:
             """Read a refused request's body, so it cannot reach the next request on this connection."""
 
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                length = -1
-            if 0 <= length <= 32 * 1024**2:
-                self.rfile.read(length)
-            else:
-                self.close_connection = True
+                request_body.discard(self)
+            except RequestError as error:
+                self._send_json({"error": error_body(error)}, status=400)
+                return False
+            return True
 
         def _route(self) -> str:
             # Tolerate query strings, trailing slashes and client URLs with or without the /v1 prefix.
             return self.path.split("?", 1)[0].rstrip("/")
 
         def do_GET(self) -> None:
+            if not self._discard_body():
+                return
             route = self._route()
             if responses.route(route):
                 return responses.get(self, app, responses.route(route))
             if route in {"/metrics", "/v1/metrics"}:
                 return metrics.send(self, app)
             if route in {"", "/health"}:
+                warmup = getattr(app, "warmup_result", None)
+                failure = warmup.exception() if warmup is not None and warmup.done() else None
                 self._send_json(
                     {
                         "status": "ok",
@@ -128,6 +337,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         "model_ids": app.model_ids,
                         "max_batch_size": app.max_batch_size,
                         "warming": bool(getattr(app, "warming", False)),
+                        **({"warmup_error": f"saved-prefix warmup failed: {failure.error_type}"} if failure else {}),
                         "memory": _memory("reset_peak=1" in self.path, admission=getattr(app, "prompt_memory", None)),
                     }
                 )
@@ -180,6 +390,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             return self._legacy_prompt_to_text(prompt)
 
         def do_DELETE(self) -> None:
+            if not self._discard_body():
+                return
             responses.delete(self, app, responses.route(self._route()))
 
         def do_POST(self) -> None:
@@ -192,16 +404,13 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             is_chat_completion = route.endswith("/chat/completions")
             is_text_completion = route.endswith("/completions") and not is_chat_completion
             if not is_chat_completion and not is_text_completion:
-                self._discard_body()
+                if not self._discard_body():
+                    return
                 self._send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
                 return
 
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 32 * 1024**2:
-                    self.close_connection = True         # the unread body must not reach the next request
-                    raise RequestError("request body exceeds the 32 MiB limit")
-                body = parse_numbers(json.loads(self.rfile.read(length) or b"{}"))
+                body = parse_numbers(json.loads(request_body.read(self, 32 << 20) or b"{}"))
                 validate_modalities(body)
                 probability_options(body)
                 named = reply_model(app, body)          # the id the request asked for, as vLLM names it
@@ -237,7 +446,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 sampling_kw = ({"sampling": sampling_fields}
                                if getattr(app, "accepts_sampling", False) else {})
                 if getattr(app, "accepts_cancellation", False):
-                    sampling_kw["cancellation"] = socket_cancellation(self.connection)
+                    sampling_kw["cancellation"] = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))
                 stream = bool(body.get("stream", False))
                 tool_policy = ToolCallPolicy(body)
             except RequestError as exc:
@@ -504,13 +713,12 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
         def _post_decisions(self, app: Any) -> None:
             decide = getattr(app, "decisions", None)
             if decide is None:
+                if not self._discard_body():
+                    return
                 self._send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
                 return
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 32 * 1024**2:
-                    raise RequestError("request body exceeds the 32 MiB limit")
-                body = parse_numbers(json.loads(self.rfile.read(length) or b"{}"))
+                body = parse_numbers(json.loads(request_body.read(self, 32 << 20) or b"{}"))
                 if not isinstance(body, dict):
                     raise RequestError("request body must be an object")
             except RequestError as exc:

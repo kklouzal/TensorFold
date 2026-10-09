@@ -105,6 +105,7 @@ def test_a_failed_prompt_end_copy_answers_its_request_and_the_worker_goes_on(dec
     make, fail = decoders
     dec = make()
     sched = Scheduler(dec, max_streams=4)
+    sched.start()
     assert ask(sched, A, 1)[0] == "done"
     fail["copy"] = True
     b = ask(sched, B, 64)
@@ -123,6 +124,7 @@ def test_a_failed_admission_leaves_the_live_streams_decoding(decoders):
     dec = make()
     dec.gate.clear()
     sched = Scheduler(dec, max_streams=4)
+    sched.start()
     e = Request(sched, E, 3)
     assert dec.entered.wait(WAIT)                                 # E is admitted; its first round waits
     fail["copy"] = True
@@ -141,6 +143,7 @@ def test_two_ranks_answer_every_later_request_with_the_restart_error(decoders):
     make, fail = decoders
     dec = make(world=2)
     sched = Scheduler(dec, max_streams=4)
+    sched.start()
     assert ask(sched, A, 1)[0] == "done"
     fail["copy"] = True
     b = ask(sched, B, 64)
@@ -188,6 +191,7 @@ class FailingRound:
 def test_a_dropped_stream_without_a_request_does_not_stop_the_worker():
     dec = FailingRound()
     sched = Scheduler(dec, max_streams=4)
+    sched.start()
     x = ask(sched, [1, 2, 3], 2)
     assert x is not None and x[0] == "error" and str(x[1]) == "a round failed", x
     y = ask(sched, [4, 5, 6], 2)

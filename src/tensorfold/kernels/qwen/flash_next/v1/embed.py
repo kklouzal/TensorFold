@@ -6,7 +6,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from tensorfold.kernels.qwen.flash_next.v1.base import AFFINE_HEADER, QDOT_HEADER, edited, kernel, padded
+from tensorfold.kernels.qwen.flash_next.v1.base import AFFINE_BITS, AFFINE_HEADER, QDOT_HEADER, edited, kernel, padded
 
 _PLE_LOOKUP = r"""
   // Thread (d, h, r): dim d of head h of row r. Row id IDS[r][h] lies in one of 8 table groups (row starts GSTART);
@@ -182,41 +182,108 @@ def _lookup(name: str, q4: Any, generic: Any, inputs: list[str], bits: int, grou
 
 
 class PleTables:
-    """Keep n-gram shards as views into eight GPU groups, or use the host table with its checkpoint memory-mapped."""
+    """A model-owned plan; each lookup binds the embedding's current shard values.
+
+    Parameter replacement and descriptor mutation between operations are allowed.
+    Callers must serialize mutation with lookups, as with the embedding itself.
+    Prepared grouping arrays live only through the consuming operation; source
+    shard parameters retain their standard MLX layout and ownership.
+    """
 
     groups = 8
 
     def __init__(self, emb: Any) -> None:
-        self.dims = int(emb.dims)
-        self.bits, self.group = int(getattr(emb, "quant_bits", 4)), int(getattr(emb, "quant_group", 32))
-        self.scale = float(getattr(emb, "table_scale", 1.0))
-        self.host = getattr(emb, "host", None)
-        if self.host is not None:
-            return
+        self.embedding = emb
+
+    def current(self):
+        from types import SimpleNamespace
+
+        emb = self.embedding
+        dims = int(emb.dims)
+        bits, group = int(getattr(emb, "quant_bits", 4)), int(getattr(emb, "quant_group", 32))
+        scale = float(getattr(emb, "table_scale", 1.0))
+        host = getattr(emb, "host", None)
+        result = SimpleNamespace(dims=dims, bits=bits, group=group, scale=scale, host=host)
+        if not 0 < dims <= 2**31 - 1 or bits not in AFFINE_BITS or group <= 0 or dims % group or dims * bits % 32:
+            raise ValueError("invalid n-gram affine dimension, bit width or group geometry")
+        if host is not None:
+            return result
         shards = emb.shards
-        if any((int(sh.bits), int(sh.group_size)) != (self.bits, self.group) for sh in shards):
-            raise ValueError("the n-gram shards must share one quantization format")
-        per = -(-len(shards) // self.groups)
-        self.weights, self.scales, self.biases, starts = [], [], [], [0]
-        for g in range(self.groups):
-            part = shards[g * per:(g + 1) * per]
-            w = mx.concatenate([sh.weight for sh in part])
-            sc = mx.concatenate([sh.scales for sh in part])
-            bi = mx.concatenate([sh.biases for sh in part])
-            mx.eval(w, sc, bi)
-            at = 0
-            for sh in part:
-                n = int(sh.weight.shape[0])
-                sh.weight, sh.scales, sh.biases = w[at:at + n], sc[at:at + n], bi[at:at + n]
-                mx.eval(sh.weight, sh.scales, sh.biases)
-                at += n
-            self.weights.append(w)
-            self.scales.append(sc)
-            self.biases.append(bi)
-            starts.append(starts[-1] + at)
-            mx.clear_cache()
-        self.starts = mx.array(starts[:-1], dtype=mx.uint32)
-        mx.eval(self.starts)
+        for shard in shards:
+            if ((int(shard.bits), int(shard.group_size)) != (bits, group)
+                    or getattr(shard, "mode", "affine") != "affine"):
+                raise ValueError("the n-gram shards must share one affine quantization format")
+            rows = int(shard.weight.shape[0])
+            if (shard.weight.shape != (rows, dims * bits // 32)
+                    or shard.scales.shape != (rows, dims // group)
+                    or shard.biases.shape != shard.scales.shape
+                    or shard.weight.dtype != mx.uint32
+                    or shard.scales.dtype != mx.bfloat16 or shard.biases.dtype != mx.bfloat16):
+                raise ValueError("n-gram packed words and bf16 scale/bias geometry must match the current embedding")
+        result.shards = tuple(shards)
+        result.counts = tuple(int(sh.weight.shape[0]) for sh in shards)
+        return result
+
+
+def _selected_shard_rows(counts, ids):
+    """Exact current global-to-local row map, bounded by the requested rows.
+
+    Groups preserve each shard's request order. The returned inverse restores
+    the original flat request order, including duplicates; no table-sized
+    grouping copy or array identity cache is required.
+    """
+    from bisect import bisect_right
+    from operator import index
+
+    starts, total = [], 0
+    for count in counts:
+        if type(count) is not int or count < 0:
+            raise ValueError("n-gram shard row counts must be nonnegative integers")
+        starts.append(total)
+        total += count
+    groups = [[] for _ in counts]
+    positions = [[] for _ in counts]
+    for position, value in enumerate(ids):
+        if isinstance(value, bool):
+            raise TypeError("n-gram row IDs must be integers")
+        try:
+            value = index(value)
+        except TypeError as error:
+            raise TypeError("n-gram row IDs must be integers") from error
+        if not 0 <= value < total:
+            raise ValueError("n-gram row ID exceeds the current shard range")
+        shard = bisect_right(starts, value) - 1
+        groups[shard].append(value - starts[shard])
+        positions[shard].append(position)
+    inverse = [0] * sum(len(part) for part in groups)
+    at = 0
+    for part in positions:
+        for position in part:
+            inverse[position] = at
+            at += 1
+    return groups, inverse
+
+
+def _gather_current_rows(ids, tables):
+    """Borrow current GPU parameters and gather only the requested packed rows."""
+    if ids.size and ids.dtype.kind not in "iu":
+        raise TypeError("n-gram row IDs must be integers")
+    if ids.size > 2**31 - 1:
+        raise ValueError("n-gram requested row count exceeds signed-int kernel indexing")
+    groups, inverse = _selected_shard_rows(tables.counts, ids.reshape(-1).tolist())
+    words, scales, biases = [], [], []
+    for shard, local in zip(tables.shards, groups):
+        if not local:
+            continue
+        if max(local) > 2**32 - 1:
+            raise ValueError("n-gram local row ID exceeds uint32 indexing")
+        take = mx.array(local, dtype=mx.uint32)
+        words.append(shard.weight[take])
+        scales.append(shard.scales[take])
+        biases.append(shard.biases[take])
+    order = mx.array(inverse, dtype=mx.uint32)
+    return tuple(mx.concatenate(parts)[order] for parts in (words, scales, biases))
+
 
 def scaled_rows(rows: mx.array, scale: float) -> mx.array:
     """Looked-up bf16 rows times the table's scale, rounded once to bf16 (the identity for scale 1)."""
@@ -229,6 +296,7 @@ def scaled_rows(rows: mx.array, scale: float) -> mx.array:
 def ple_lookup(ids: Any, tables: PleTables) -> mx.array:
     """Dequantized rows [R, H * DIMS] bf16 for global n-gram row ids [R, H], times the table's scale."""
 
+    tables = tables.current() if isinstance(tables, PleTables) else tables
     return scaled_rows(_ple_lookup(ids, tables), getattr(tables, "scale", 1.0))
 
 
@@ -239,6 +307,10 @@ def _ple_lookup(ids: Any, tables: PleTables) -> mx.array:
 
     ids = np.asarray(ids).reshape(-1, np.asarray(ids).shape[-1])
     rows, heads = ids.shape
+    if rows * heads > 2**31 - 1:
+        raise ValueError("n-gram requested row count exceeds signed-int kernel indexing")
+    if ids.size == 0:
+        return mx.empty((rows, heads * tables.dims), dtype=mx.bfloat16)
     if tables.host is not None:
         words, scales, biases = tables.host.gather(ids)
         run, fmt = _lookup("ple_rows", _PLE_ROWS, _PLE_ROWS_Q, ["W", "SC", "BI"], tables.bits, tables.group)
@@ -246,14 +318,13 @@ def _ple_lookup(ids: Any, tables: PleTables) -> mx.array:
                    template=[("DIMS", tables.dims), *fmt], grid=(tables.dims, rows * heads, 1),
                    threadgroup=(tables.dims, 1, 1), output_shapes=[(rows, heads * tables.dims)],
                    output_dtypes=[mx.bfloat16])[0]
-    names = ["IDS", "GSTART"] + [f"{k}{g}" for g in range(8) for k in ("W", "S", "B")]
-    run, fmt = _lookup("ple_lookup", _PLE_LOOKUP, _PLE_LOOKUP_Q, names, tables.bits, tables.group)
-    arrays = [mx.array(ids.astype(np.uint32)), tables.starts]
-    for g in range(8):
-        arrays += [tables.weights[g], tables.scales[g], tables.biases[g]]
-    return run(inputs=arrays, template=[("H", heads), ("DIMS", tables.dims), *fmt],
-                  grid=(tables.dims, heads, rows), threadgroup=(tables.dims, 1, 1),
-                  output_shapes=[(rows, heads * tables.dims)], output_dtypes=[mx.bfloat16])[0]
+    # The same existing gathered-row shader as host tables, with exact current
+    # GPU row copies. Copy volume depends on the request, not checkpoint size.
+    words, scales, biases = _gather_current_rows(ids, tables)
+    run, fmt = _lookup("ple_rows", _PLE_ROWS, _PLE_ROWS_Q, ["W", "SC", "BI"], tables.bits, tables.group)
+    return run(inputs=[words, scales, biases], template=[("DIMS", tables.dims), *fmt],
+               grid=(tables.dims, rows * heads, 1), threadgroup=(tables.dims, 1, 1),
+               output_shapes=[(rows, heads * tables.dims)], output_dtypes=[mx.bfloat16])[0]
 
 def embed_rows(ids: Any, embedding: Any, *, tile: int = 1) -> mx.array:
     """Repeat each dequantized token row tile times into bf16 [R, tile * DIMS], matching mx.dequantize bit for bit."""

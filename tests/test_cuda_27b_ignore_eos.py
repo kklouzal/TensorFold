@@ -135,6 +135,7 @@ def test_concurrent_streams_each_stop_at_their_own_end_tokens(allocations, draft
 def test_the_scheduler_hands_stop_eos_to_its_stream(allocations):  # noqa: F811
     multi = importlib.import_module("tensorfold.families.qwen3_5.cuda.multi")
     sched = Scheduler(scripted_decoder(multi), max_streams=2)
+    sched.start()
     got: dict[bool, list[int]] = {True: [], False: []}
     for stop_eos in (True, False):
         sched.submit([1], 9, None, True, lambda new, k=stop_eos: got[k].extend(new) or False, stop_eos=stop_eos)

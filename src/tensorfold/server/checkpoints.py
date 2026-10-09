@@ -8,6 +8,7 @@ import threading
 import time
 from typing import Any, Callable
 
+
 def longest_common_prefix(a: list[int], b: list[int]) -> int:
     n = 0
     for x, y in zip(a, b):
@@ -24,9 +25,7 @@ def extends(longer: list[int], shorter: list[int]) -> bool:
     return len(longer) > n > 0 and longer[n - 1] == shorter[-1] and longer[:n] == shorter
 
 
-def choose_checkpoints(
-    history_len: int, cached: int, last_prompt: list[int] | None, prompt: list[int]
-) -> list[int]:
+def choose_checkpoints(history_len: int, cached: int, last_prompt: list[int] | None, prompt: list[int]) -> list[int]:
     """Keep history and stable-prefix boundaries outside the reused prefix and before the prompt end for differently rendered next turns."""
 
     candidates = {int(history_len)}
@@ -45,20 +44,32 @@ class CheckpointEntry:
     nbytes: int = 0
     # A system block (loaded from disk, or saved to it): outside the slot count.
     pinned: bool = False
-    born: int = 0              # the length of the prompt that stored it: a later turn's is longer
+    born: int = 0  # the length of the prompt that stored it: a later turn's is longer
 
 
-def save_conversations(store: "CheckpointStore", directory: Path, model_id: str, *, keep: int = 2,
-                       limit_bytes: int = 10 * 1024**3) -> int:
+def save_conversations(
+    store: "CheckpointStore",
+    directory: Path,
+    model_id: str,
+    *,
+    keep: int = 2,
+    limit_bytes: int = 10 * 1024**3,
+    registry: Any = None,
+    codec: Any = None,
+) -> int:
     """Save up to ``keep`` conversation snapshots within the byte limit; system blocks use their own directory."""
 
     from tensorfold.engine.prefix_snapshots import save_snapshot
 
+    if registry is None:
+        return 0
+
     with store._lock:
-        entries = [entry for entry in store._entries if not entry.pinned]   # most recently used first
+        entries = [entry for entry in store._entries if not entry.pinned]  # most recently used first
+
     # prompt-side entries before reply ends (a re-rendered reply never matches one), then the longest first
     def reply_end(entry: CheckpointEntry) -> bool:
-        return entry.tokens != entry.last_prompt[:len(entry.tokens)]
+        return entry.tokens != entry.last_prompt[: len(entry.tokens)]
 
     entries.sort(key=lambda entry: (reply_end(entry), -len(entry.tokens)))
     saved = total = 0
@@ -67,48 +78,67 @@ def save_conversations(store: "CheckpointStore", directory: Path, model_id: str,
             break
         started = time.perf_counter()
         try:
-            save_snapshot(directory, model_id, entry.tokens, entry.cache, keep=keep)
+            save_snapshot(directory, model_id, entry.tokens, entry.cache, keep=keep, registry=registry, codec=codec)
         except Exception as exc:  # noqa: BLE001 - a full disk must not hang the shutdown
+            from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure
+
+            reject_snapshot_cleanup_failure(exc)
             print(f"[lanes] conversation save failed: {type(exc).__name__}: {exc}", flush=True)
             break
         saved += 1
         total += entry.nbytes
-        print(f"[lanes] saved conversation checkpoint tokens={len(entry.tokens)} "
-              f"({entry.nbytes / 1024**3:.1f} GiB) in {time.perf_counter() - started:.1f}s", flush=True)
+        print(
+            f"[lanes] saved conversation checkpoint tokens={len(entry.tokens)} "
+            f"({entry.nbytes / 1024**3:.1f} GiB) in {time.perf_counter() - started:.1f}s",
+            flush=True,
+        )
     return saved
 
 
-def spill_conversation(entry: CheckpointEntry, directory: Path, model_id: str, *, limit_bytes: int) -> bool:
+def spill_conversation(
+    entry: CheckpointEntry, directory: Path, model_id: str, *, limit_bytes: int, registry: Any = None, codec: Any = None
+) -> bool:
     """Write an evicted conversation where ``_read_disk_block`` finds it, this model's files kept under ``limit_bytes``."""
 
     from tensorfold.engine.prefix_snapshots import save_snapshot
 
-    if entry.nbytes > limit_bytes:
+    if registry is None or entry.nbytes > limit_bytes:
         return False
     started = time.perf_counter()
     try:
-        save_snapshot(directory, model_id, entry.tokens, entry.cache, keep=1 << 30)   # pruned by bytes below
+        save_snapshot(
+            directory, model_id, entry.tokens, entry.cache, keep=1 << 30, registry=registry, codec=codec
+        )  # pruned by bytes below
     except Exception as exc:  # noqa: BLE001 - a full disk costs a later prefill, never the request
+        from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure
+
+        reject_snapshot_cleanup_failure(exc)
         print(f"[tensorfold] conversation spill failed: {type(exc).__name__}: {exc}", flush=True)
         return False
     prune_conversations(directory, model_id, limit_bytes)
-    print(f"[tensorfold] spilled conversation tokens={len(entry.tokens)} ({entry.nbytes / 1024**3:.1f} GiB) "
-          f"in {time.perf_counter() - started:.2f}s", flush=True)
+    print(
+        f"[tensorfold] spilled conversation tokens={len(entry.tokens)} ({entry.nbytes / 1024**3:.1f} GiB) "
+        f"in {time.perf_counter() - started:.2f}s",
+        flush=True,
+    )
     return True
 
 
 def prune_conversations(directory: Path, model_id: str, limit_bytes: int) -> None:
     """Delete this model's oldest saved conversations until the rest fit ``limit_bytes``."""
 
-    from tensorfold.engine.prefix_snapshots import read_metadata
+    from tensorfold.engine.prefix_snapshots import model_group, read_metadata
 
     ours = []
     for path in sorted(directory.glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True):
         if path.name.endswith(".partial.safetensors"):
             continue
         try:
-            same = str(read_metadata(path).get("model", "")).split("|")[0] == model_id.split("|")[0]
-        except Exception:  # noqa: BLE001 - an unreadable file is left alone
+            same = model_group(str(read_metadata(path).get("model", ""))) == model_group(model_id)
+        except Exception as exc:  # noqa: BLE001 - an unreadable file is left alone
+            from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure
+
+            reject_snapshot_cleanup_failure(exc)
             continue
         if same:
             ours.append(path)
@@ -151,7 +181,7 @@ class CheckpointStore:
         # each evicted conversation no remaining entry extends, outside the lock on the thread that owns the arrays
         self.on_evict = on_evict
         self.spilled = 0
-        self.refused = 0                   # a prefix memory or the budget refused: counted, never silent (issue #155)
+        self.refused = 0  # a prefix memory or the budget refused: counted, never silent (issue #155)
 
     def _evicted(self, gone: list[CheckpointEntry]) -> None:
         if self.on_evict is None:
@@ -166,6 +196,9 @@ class CheckpointStore:
                 if self.on_evict(entry) is not False:
                     self.spilled += 1
             except Exception as exc:  # noqa: BLE001 - a failed spill costs a later prefill, never the request
+                from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure
+
+                reject_snapshot_cleanup_failure(exc)
                 print(f"[tensorfold] eviction hook failed: {type(exc).__name__}: {exc}", flush=True)
 
     @property
@@ -189,8 +222,9 @@ class CheckpointStore:
         with self._lock:
             return self._best(prompt, usable)
 
-    def match(self, prompt: list[int], usable: Any = None, *,
-              take: bool = False) -> tuple[int, list[Any], list[int]] | None:
+    def match(
+        self, prompt: list[int], usable: Any = None, *, take: bool = False
+    ) -> tuple[int, list[Any], list[int]] | None:
         """Return the longest usable strict-prefix hit with a copied cache, or remove and transfer the stored arrays with ``take``."""
 
         with self._lock:
@@ -224,13 +258,17 @@ class CheckpointStore:
                     self.spilled += 1
                     return
             except Exception as exc:  # noqa: BLE001 - a bad file costs a refill, never the request
+                from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure
+
+                reject_snapshot_cleanup_failure(exc)
                 print(f"[tensorfold] refused snapshot spillover failed: {type(exc).__name__}: {exc}", flush=True)
         self.refused += 1
-        print(f"[tensorfold] kept nothing at {len(tokens)} tokens ({reason}): a turn reusing this prefix "
-              "re-prefills it", flush=True)
+        print(
+            f"[tensorfold] kept nothing at {len(tokens)} tokens ({reason}): a turn reusing this prefix re-prefills it",
+            flush=True,
+        )
 
-    def insert(self, tokens: list[int], cache: list[Any], *, last_prompt: list[int],
-               pinned: bool = False) -> None:
+    def insert(self, tokens: list[int], cache: list[Any], *, last_prompt: list[int], pinned: bool = False) -> None:
         if not tokens:
             return
         nbytes = int(self.sizer(cache)) if self.sizer is not None else 0
@@ -244,7 +282,7 @@ class CheckpointStore:
             pinned = pinned or any(entry.pinned for entry in replaced)
             entry = CheckpointEntry(list(tokens), cache, list(last_prompt), nbytes, pinned, len(last_prompt))
             entries = [entry, *kept]
-            for extra in [e for e in entries if e.pinned][self.pinned_slots:]:
+            for extra in [e for e in entries if e.pinned][self.pinned_slots :]:
                 extra.pinned = False
             # an oversized newest entry displaces conversations but keeps the pinned system blocks
             limit = self.budget_bytes
@@ -254,8 +292,7 @@ class CheckpointStore:
             gone: list[CheckpointEntry] = []
             while True:
                 over_slots = sum(1 for e in entries if not e.pinned) > self.slots
-                over_budget = (limit is not None and len(entries) > 1
-                               and sum(e.nbytes for e in entries) > limit)
+                over_budget = limit is not None and len(entries) > 1 and sum(e.nbytes for e in entries) > limit
                 if not (over_slots or over_budget):
                     break
                 unpinned = [i for i in range(1, len(entries)) if not entries[i].pinned]

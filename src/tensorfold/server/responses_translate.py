@@ -131,9 +131,12 @@ def _tool_choice(choice: Any, tools: list[dict[str, Any]] | None) -> tuple[Any, 
     if kind == "function" and isinstance(choice.get("name"), str):
         return {"type": "function", "function": {"name": choice["name"]}}, tools
     if kind == "allowed_tools" and choice.get("mode", "auto") in ("auto", "required"):
-        allowed = choice.get("tools") or []
-        if not all(isinstance(t, dict) and t.get("type") == "function" for t in allowed):
-            raise RequestError("allowed_tools may name function tools only")
+        allowed = choice.get("tools")
+        allowed = [] if allowed is None else allowed
+        if not isinstance(allowed, list) or not all(
+                isinstance(t, dict) and t.get("type") == "function"
+                and isinstance(t.get("name"), str) and t["name"] for t in allowed):
+            raise RequestError("allowed_tools must be a list naming function tools with non-empty string names")
         names = {t.get("name") for t in allowed}
         return choice.get("mode", "auto"), [t for t in tools or [] if t["function"]["name"] in names]
     raise RequestError("tool_choice must be none, auto, required, a function or allowed_tools of functions")
@@ -145,6 +148,8 @@ def _format(text: Any) -> dict[str, Any] | None:
     fmt = text.get("format") if isinstance(text, dict) else None
     if text is not None and not isinstance(text, dict):
         raise RequestError("text must be an object")
+    if fmt is not None and not isinstance(fmt, dict):
+        raise RequestError("text.format must be an object")
     if fmt is None or fmt.get("type") == "text":
         return None
     if fmt.get("type") == "json_object":

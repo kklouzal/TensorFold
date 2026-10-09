@@ -1,19 +1,22 @@
 """Measure served Flash Next probabilities and compare drafted, serial and repeated replies."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import http.client
 import json
 from pathlib import Path
 import resource
-import threading
 import time
 
 import torch
 
 from tensorfold.cuda.server import App, Server, make_handler
 from tensorfold.families.qwen4_exp import cuda_engine
+
+if __package__:
+    from .worker_lifetime import Task, drain, raise_failures
+else:
+    from worker_lifetime import Task, drain, raise_failures
 
 PROMPTS = [
     "Answer A or B only: is Paris in France? A yes B no",
@@ -31,6 +34,7 @@ PROMPTS = [
 def request(port, body):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
     start = time.perf_counter()
+    primary = None
     try:
         connection.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
         response = connection.getresponse()
@@ -47,8 +51,14 @@ def request(port, body):
                                  "tokens": len(ids), "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
                                  "rss_peak_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss}
         return result
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        connection.close()
+        try:
+            connection.close()
+        except BaseException as cleanup:
+            raise_failures(primary,[cleanup])
 
 
 def body(prompt, seed=13, temperature=0, count=64, **extra):
@@ -65,12 +75,9 @@ def main():
     parser.add_argument("--supported", action="store_true")
     parser.add_argument("--pp", action="store_true")
     args = parser.parse_args()
-    engine = cuda_engine(args.model, parallel=5, context=69632, context_explicit=True, mtp_confidence=0.7)
-    app = App(engine, args.model, "probability-check", context_window=69632)
-    server = Server(("127.0.0.1", 0), make_handler(app))
-    worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
-    worker.start()
-    port, rows = server.server_port, []
+    engine = server = worker = None
+    primary = None
+    rows = []
 
     def record(name, payload):
         torch.cuda.reset_peak_memory_stats()
@@ -82,6 +89,12 @@ def main():
         return result
 
     try:
+        engine = cuda_engine(args.model, parallel=5, context=69632, context_explicit=True, mtp_confidence=0.7)
+        app = App(engine, args.model, "probability-check", context_window=69632)
+        server = Server(("127.0.0.1", 0), make_handler(app))
+        worker = Task(lambda:server.serve_forever(poll_interval=0.01),name="probability-check-server",daemon=True)
+        worker.start()
+        port = server.server_port
         decision = record("decision-reproduction", body(PROMPTS[0], count=1, logprobs=True, top_logprobs=5))
         present = "logprobs" in decision["choices"][0]
         assert present == args.supported, ("feature capability", present)
@@ -139,8 +152,18 @@ def main():
             del logits, collector
             payloads = [body(prompt, count=32, logprobs=True, top_logprobs=5) for prompt in PROMPTS[1:6]]
             alone = [record(f"alone-{i}", p) for i, p in enumerate(payloads)]
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                together = list(pool.map(lambda p: request(port, p), payloads))
+            together = [None] * len(payloads)
+            requests = []
+            request_error = None
+            try:
+                for i, payload in enumerate(payloads):
+                    task = Task(lambda i=i,payload=payload:together.__setitem__(i,request(port,payload)))
+                    requests.append(task)
+                    task.start()
+            except BaseException as error:
+                request_error = error
+            finally:
+                drain(requests,request_error)
             for i, (a, b) in enumerate(zip(alone, together)):
                 assert a["measurement"]["sha256"] == b["measurement"]["sha256"], ("concurrent tokens", i)
                 assert a["choices"][0]["logprobs"] == b["choices"][0]["logprobs"], ("concurrent probabilities", i)
@@ -154,10 +177,33 @@ def main():
                 result = record(f"cold-pp-{size}", body(prompt, count=1))
                 assert result["measurement"]["stats"].get("cached", 0) == 0
         args.output.write_text(json.dumps({"label": args.label, "exact_cells": exact, "rows": rows}, indent=2) + "\n")
+    except BaseException as error:
+        primary = error
     finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(5)
+        errors = []
+        if server is not None:
+            try:
+                # Project Server closes admission and drains its native serve
+                # and accepted-handler scopes, including delayed startup.
+                server.server_close()
+            except BaseException as error:
+                errors.append(error)
+        quiescent = server is None or server.handlers_drained
+        if worker is not None and (quiescent or worker.done.is_set()):
+            try:
+                drain([worker])
+            except BaseException as error:
+                errors.append(error)
+        # Failed server drain retains the application/model through the
+        # server's accepted-work journal. Never close beneath active handlers.
+        if engine is not None and quiescent:
+            try:
+                engine.close()
+            except BaseException as error:
+                errors.append(error)
+        elif engine is not None:
+            errors.append(RuntimeError("qualification server work remains; model owner retained"))
+        raise_failures(primary,errors)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,14 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from tensorfold.engine.exact_sampling import Sampling
+from tensorfold.engine.exact_sampling import Sampling  # noqa: E402 - skip missing Torch before importing its sampler
 
 
 @pytest.fixture
 def sampler(monkeypatch):
     lang = ModuleType("triton.language")
+    core = ModuleType("triton.language.core")
+    core.TRITON_MAX_TENSOR_NUMEL = 1048576
     lang.constexpr = object
     triton = ModuleType("triton")
     triton.language = lang
@@ -22,6 +24,7 @@ def sampler(monkeypatch):
     triton.next_power_of_2 = lambda n: 1 << (n - 1).bit_length()
     monkeypatch.setitem(sys.modules, "triton", triton)
     monkeypatch.setitem(sys.modules, "triton.language", lang)
+    monkeypatch.setitem(sys.modules, "triton.language.core", core)
     monkeypatch.delitem(sys.modules, "tensorfold.families.nemotron_h.cuda.sampler", raising=False)
     yield importlib.import_module("tensorfold.families.nemotron_h.cuda.sampler")
     sys.modules.pop("tensorfold.families.nemotron_h.cuda.sampler", None)

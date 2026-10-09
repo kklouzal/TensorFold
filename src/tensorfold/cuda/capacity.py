@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 import os
 from pathlib import Path
@@ -80,49 +79,92 @@ class Plan:
 
 
 def config(model_dir: str | Path) -> dict:
-    raw = json.loads((Path(model_dir) / "config.json").read_text())
-    text = dict(raw.get("text_config") or raw)
-    text["_quantization"] = raw.get("quantization") or raw.get("quantization_config") or {}
+    from .tensor_file import checkpoint_path, read_metadata_json
+
+    raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
+    selected = raw.get("text_config")
+    if selected is not None and not isinstance(selected, dict):
+        raise ValueError("checkpoint text_config must be an object or null")
+    text = dict(selected or raw)
+    for name in ("quantization", "quantization_config"):
+        if raw.get(name) is not None and not isinstance(raw[name], dict):
+            raise ValueError(f"checkpoint {name} metadata must be an object or null")
+    quantization = raw.get("quantization") or raw.get("quantization_config") or {}
+    text["_quantization"] = quantization
     return text
 
 
 def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path] | None = None) -> dict:
+    from .tensor_file import checkpoint_path, read_header, read_metadata_json
+
     path = Path(model_dir)
+    if rank is not None and (type(rank) is not int or rank < 0):
+        raise ValueError("checkpoint rank must be a nonnegative integer or null")
     files = list(files or []) or (sorted(path.glob(f"*.rank{rank}.safetensors")) if rank is not None else [])
+    mapping = None
     if not files:
         other = sorted(path.glob("*.rank*.safetensors"))
         if other:
             raise ValueError("checkpoint contains another rank's split weights; use this rank's folder")
-        index = path / "model.safetensors.index.json"
-        files = ([path / n for n in sorted(set(json.loads(index.read_text())["weight_map"].values()))]
-                 if index.exists() else sorted(path.glob("*.safetensors")))
+        index = checkpoint_path(path, "model.safetensors.index.json")
+        if index.exists():
+            mapping = read_metadata_json(index).get("weight_map")
+            if (not isinstance(mapping, dict) or not mapping
+                    or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v
+                           for k, v in mapping.items())):
+                raise ValueError("checkpoint index must contain a nonempty string-to-string weight_map")
+            files = [path / n for n in sorted(set(mapping.values()))]
+        else:
+            files = sorted(path.glob("*.safetensors"))
     if not files:
         raise ValueError("startup memory estimate needs the checkpoint tensor headers")
-    out = {}
+    if mapping is not None:
+        for shard in sorted(set(mapping.values())):
+            checkpoint_path(path, shard)
+    authorized_files = []
+    lexical_root = Path(os.path.abspath(path))
     for file in files:
-        with file.open("rb") as stream:
-            size = struct.unpack("<Q", stream.read(8))[0]
-            if not 0 < size <= 64 * 1024**2:
-                raise ValueError("invalid checkpoint tensor header size")
-            entries = json.loads(stream.read(size))
+        file = Path(file)
+        absolute = Path(os.path.abspath(file))
+        try:
+            relative = absolute.relative_to(lexical_root)
+        except ValueError as error:
+            try:
+                relative = absolute.relative_to(path.resolve())
+            except ValueError:
+                raise ValueError(f"{file}: explicit checkpoint file must lie in the model directory") from error
+        authorized = checkpoint_path(path, str(relative))
+        authorized_files.append((file, authorized))
+    # Prove every indexed relative target before opening any payload header.
+    # Explicit files retain their lexical names for the rank/split contract.
+    out, located = {}, {}
+    for file, authorized in authorized_files:
+        _, entries = read_header(authorized, SIZES)
         for name, info in entries.items():
             if name == "__metadata__":
                 continue
             if name in out:
                 raise ValueError(f"duplicate checkpoint tensor: {name}")
-            shape = info["shape"]
-            item = itemsize(info, name)
-            if any(int(n) < 0 for n in shape) or math.prod(shape) * item != info["data_offsets"][1] - info["data_offsets"][0]:
-                raise ValueError(f"invalid checkpoint tensor geometry: {name}")
             out[name] = {**info, "split": ".rank" in file.name}
+            located[name] = authorized
+    if mapping is not None:
+        for name, shard in mapping.items():
+            if located.get(name) != checkpoint_path(path, shard):
+                raise ValueError(f"{name}: checkpoint index does not point to its declared tensor shard")
     return out
 
 
 def estimate_weights(model_dir: str | Path, transform: Callable, *, rank: int | None = None,
                      files: list[Path] | None = None) -> Weights:
+    return _estimate_weights_from_headers(headers(model_dir, rank=rank, files=files), transform)
+
+
+def _estimate_weights_from_headers(entries: dict, transform: Callable) -> Weights:
+    """The generic estimate from metadata already validated by ``headers``."""
+
     layers: dict[str, int] = {}
     resident = mapped = largest = 0
-    for name, info in headers(model_dir, rank=rank, files=files).items():
+    for name, info in entries.items():
         size, host = transform(name, info)
         size, host = int(size), int(host)
         if min(size, host) < 0:
@@ -329,10 +371,18 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           extra_files: tuple[Path, ...] = (), files: list[Path] | None = None,
           draft_transform: Callable | None = None,
           draft_weights: Callable[[Path], Weights] | None = None,
+          weight_estimator: Callable[[Path], tuple[Weights, int]] | None = None,
           context_limit: int | None = None, original_context: int | None = None,
           host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0,
           memory_reserve: int | None = None) -> dict:
-    """One refusal or capacity on both ranks before allocating; the draft model by ``draft_weights`` or a transform."""
+    """One refusal or capacity on both ranks before allocating.
+
+    ``weight_estimator`` optionally returns the backend's retained GPU weights,
+    GPU load overlap, and a separate host staging allowance, as ``(Weights,
+    host_bytes)``. The default uses the generic estimate for both staging
+    domains. A backend estimate must be a nonnegative integer byte contract.
+    The draft model uses ``draft_weights`` or a transform.
+    """
 
     from tensorfold.cuda import build
 
@@ -342,8 +392,17 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     try:
         text = config(model_dir)
         geometry = geometry(text) if callable(geometry) else geometry
-        weights = estimate_weights(model_dir, transform, rank=rank, files=files)
-        host_staging = weights.staging
+        if weight_estimator is None:
+            weights = estimate_weights(model_dir, transform, rank=rank, files=files)
+            host_staging = weights.staging
+        else:
+            result = weight_estimator(Path(model_dir))
+            if not isinstance(result, tuple) or len(result) != 2 or not isinstance(result[0], Weights):
+                raise ValueError("weight_estimator must return (Weights, host staging bytes)")
+            weights, host_staging = result
+            if any(type(n) is not int or n < 0 for n in
+                   (weights.resident, weights.staging, weights.mapped, host_staging)):
+                raise ValueError("backend weight estimates must be nonnegative integer bytes")
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 0
                for n in (host_resident, host_extra_staging, resident_extra)):
             raise ValueError("additional resident and host staging byte estimates must be nonnegative integers")

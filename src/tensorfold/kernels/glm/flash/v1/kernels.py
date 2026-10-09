@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from operator import index
 from typing import Any
 
 import mlx.core as mx
@@ -246,12 +247,12 @@ _GEMV_T_ROWS = r"""
   int bm = cm * TM;
   const int bn = cn * TN;
   int out_col = int(threadgroup_position_in_grid.x) * blockN + bn;
+  const int write_col = out_col;
   const int n_iter = in_vec_size / blockM;
   const int leftover = in_vec_size - blockM * n_iter;
   if (out_col < out_vec_size) {
     out_col = out_col + TN < out_vec_size ? out_col : out_vec_size - TN;
     for (int i = 0; i < n_iter; ++i) {
-      threadgroup_barrier(mem_flags::mem_none);
       for (int tm = 0; tm < TM; tm++) v_coeff[tm] = static_cast<float>(in_vec[bm + tm]);
       for (int tm = 0; tm < TM; tm++) {
         const float vc = v_coeff[tm];
@@ -274,14 +275,16 @@ _GEMV_T_ROWS = r"""
     threadgroup float* tgp_results = tgp_memory + sgM * (blockN + TN) + bn;
     if (thrM == 0) {
       for (int tn = 0; tn < TN; tn++) tgp_results[tn] = result[tn];
-      threadgroup_barrier(mem_flags::mem_none);
-      if (sgM == 0)
-        for (int sgm = 1; sgm < BM; sgm++)
-          for (int tn = 0; tn < TN; tn++) result[tn] += tgp_results[sgm * (blockN + TN) + tn];
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (thrM == 0 && sgM == 0)
+      for (int sgm = 1; sgm < BM; sgm++)
+        for (int tn = 0; tn < TN; tn++) result[tn] += tgp_results[sgm * (blockN + TN) + tn];
   }
   if (cm == 0 && out_col < out_vec_size)
-    for (int j = 0; j < TN; j++) out_vec[out_col + j] = static_cast<T>(result[j]);
+    for (int j = 0; j < TN; j++)
+      if (out_col + j >= write_col && out_col + j < out_vec_size)
+        out_vec[out_col + j] = static_cast<T>(result[j]);
 """
 
 _GEMV_ROWS = r"""
@@ -306,7 +309,9 @@ _GEMV_ROWS = r"""
   const int bm = (simdM + thrM) * TM;
   int bn = (simdN + thrN) * TN;
   int out_row = int(threadgroup_position_in_grid.x) * blockM + bm;
-  if (out_row >= out_vec_size) return;
+  const int write_row = out_row;
+  const bool live = out_row < out_vec_size;
+  if (!live && BN == 1) return;
   out_row = out_row + TM <= out_vec_size ? out_row : out_vec_size - TM;
   const device T* mat = M + size_t(out_row) * in_vec_size;
   const int n_iter = in_vec_size / blockN;
@@ -334,14 +339,16 @@ _GEMV_ROWS = r"""
     threadgroup float* tgp_results = tgp_memory + sgN * (blockM + TM) + bm;
     if (thrN == 0) {
       for (int tm = 0; tm < TM; tm++) tgp_results[tm] = result[tm];
-      threadgroup_barrier(mem_flags::mem_none);
-      if (sgN == 0)
-        for (int sgn = 1; sgn < BN; sgn++)
-          for (int tm = 0; tm < TM; tm++) result[tm] += tgp_results[sgn * (blockM + TM) + tm];
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (thrN == 0 && sgN == 0)
+      for (int sgn = 1; sgn < BN; sgn++)
+        for (int tm = 0; tm < TM; tm++) result[tm] += tgp_results[sgn * (blockM + TM) + tm];
   }
-  if (simdN == 0 && thrN == 0)
-    for (int tm = 0; tm < TM; tm++) out_vec[out_row + tm] = static_cast<T>(result[tm]);
+  if (simdN == 0 && thrN == 0 && live)
+    for (int tm = 0; tm < TM; tm++)
+      if (out_row + tm >= write_row && out_row + tm < out_vec_size)
+        out_vec[out_row + tm] = static_cast<T>(result[tm]);
 """
 
 _kernels: dict[str, Any] = {}
@@ -493,18 +500,67 @@ def gemv_params(transposed: bool, in_len: int, out_len: int) -> tuple[int, int, 
     return bm, bn, sm, sn, tm, tn
 
 
+def _gemv_geometry(rows: int, in_len: int, out_len: int, transposed: bool,
+                   params: tuple[int, ...]) -> tuple[int, ...]:
+    """Admit signed32 native metadata and the original 32-lane partition.
+
+    Tile widths may not exceed a live output, because original vector loads
+    clamp into a complete tile. Masked padded coordinates must also fit the
+    shader's signed32 indexing. Empty dispatches perform no shader accesses.
+    """
+    try:
+        if len(params) != 6 or any(isinstance(value, bool) for value in params):
+            raise ValueError("six integer GEMV parameters required")
+        values = tuple(index(value) for value in params)
+    except TypeError as error:
+        raise ValueError("six integer GEMV parameters required") from error
+    bm, bn, sm, sn, tm, tn = values
+    limit = 2**31 - 1
+    if any(not 0 < value <= limit for value in values) or sm * sn != 32:
+        raise ValueError("GEMV needs positive parameters and exactly 32 arithmetic lanes")
+    if any(type(value) is not int or not 0 <= value <= limit for value in (rows, in_len, out_len)):
+        raise ValueError("GEMV dimensions exceed native signed32 metadata")
+    block_m, block_n = bm * sm * tm, bn * sn * tn
+    shared = bm * (block_n + tn) if transposed and bm > 1 else \
+        bn * (block_m + tm) if not transposed and bn > 1 else 1
+    # Apple GPU families supported here have at most 1024 threads/32KiB
+    # threadgroup memory. The actual pipeline may admit fewer threads; the
+    # native compiler/launch still owns that dynamic resource check.
+    if 32 * bm * bn > 1024 or shared * 4 > 32768 or max(block_m, block_n) > limit:
+        raise ValueError("GEMV tile exceeds native arithmetic or threadgroup limits")
+    input_block = block_m if transposed else block_n
+    # Each lane advances its signed32 coordinate even after the final complete
+    # input tile. Nontransposed mat_offset also increments TM times per tile.
+    if rows and out_len and (in_len // input_block * input_block + input_block - 1 > limit or
+                            not transposed and tm * in_len > limit):
+        raise ValueError("GEMV input tile indexing exceeds native signed32 range")
+    per_group = bn * sn * tn if transposed else bm * sm * tm
+    tile = tn if transposed else tm
+    # The pinned MLX Python Metal binding accepts grid as tuple<int,int,int>.
+    if -(-out_len // per_group) * 32 * bm * bn > limit:
+        raise ValueError("GEMV launch grid exceeds native signed32 metadata")
+    if rows and out_len and (out_len < tile or -(-out_len // per_group) * per_group > limit):
+        raise ValueError("GEMV vector tile or padded output span is invalid")
+    return values
+
+
 def matmul_rows(x: mx.array, m: mx.array, *, transposed: bool, params: tuple[int, ...] | None = None) -> mx.array:
     """x [R, K] @ m (or m.T) with MLX's one-row matmul bits for every row; no Metal: one MLX matmul a row."""
 
+    if x.ndim != 2 or m.ndim != 2 or x.shape[1] != m.shape[0 if transposed else 1]:
+        raise ValueError("GEMV inputs must be matching two-dimensional matrices")
+    rows, in_len = x.shape
+    out_len = int(m.shape[1] if transposed else m.shape[0])
+    use_metal = metal()
+    if use_metal:
+        chosen = params if params is not None else gemv_params(transposed, in_len, out_len)
+        bm, bn, sm, sn, tm, tn = _gemv_geometry(rows, in_len, out_len, transposed, chosen)
     if x.dtype == mx.float32 and m.dtype == mx.bfloat16:          # float32 rows widen the matrix, not the reverse
         m = m.astype(mx.float32)
     x = x.astype(m.dtype)
-    rows, in_len = x.shape
-    if not metal():
+    if not use_metal:
         mat = m if transposed else m.T
         return mx.concatenate([x[r:r + 1] @ mat for r in range(rows)])
-    out_len = int(m.shape[1] if transposed else m.shape[0])
-    bm, bn, sm, sn, tm, tn = params or gemv_params(transposed, in_len, out_len)
     per_group = bn * sn * tn if transposed else bm * sm * tm
     groups = -(-out_len // per_group)
     name = "gemv_t_rows" if transposed else "gemv_rows"

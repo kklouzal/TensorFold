@@ -124,10 +124,12 @@ def finish_request() -> None:
     if not getattr(_local, "armed", False):
         return
     _local.armed = False
-    job = _local.job
+    job, app = _local.job, _local.app
+    # Persistent HTTP worker threads retain counters, not completed request/model owners.
+    _local.job = _local.app = None
     stream = getattr(job, "stream", None) if job is not None else None
     ttft = (_local.first - _local.started) if _local.first else None
-    note(_local.app, prompt=_local.prompt, generation=_local.generation,
+    note(app, prompt=_local.prompt, generation=_local.generation,
          drafted=int(getattr(stream, "drafted", 0) or 0),
          accepted=int(getattr(stream, "accepted", 0) or 0),
          latency=max(0.0, time.perf_counter() - _local.started), ttft=ttft)

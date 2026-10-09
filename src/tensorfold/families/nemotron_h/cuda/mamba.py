@@ -208,7 +208,9 @@ def scan_rows(proj, xc, state, a, d_skip, dt_bias, rows: int, *, heads: int, hea
               state_dim: int, lo: float, hi: float) -> torch.Tensor:
     """A prompt chunk's scan in ``scan_rows.cu``; ``state`` ends holding the state after the chunk's last row."""
 
-    if state_dim != 128 or head_dim % 32:
+    if heads <= 0 or groups <= 0 or heads % groups:
+        raise ValueError("the prompt scan needs positive heads and groups, with groups dividing heads")
+    if state_dim != 128 or head_dim <= 0 or head_dim % 32:
         raise ValueError("the prompt scan is written for 128 states and value rows in blocks of 32")
     xd = heads * head_dim
     y = torch.empty((rows, xd), dtype=torch.bfloat16, device=proj.device)

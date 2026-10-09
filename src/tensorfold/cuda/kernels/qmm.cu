@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include "qmm_frag.cuh"
+#include "kernel_configuration.cuh"
 
 namespace {
 
@@ -235,16 +236,13 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
     using T = LaneTile<GS, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
     auto kernel = qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE>;
-    static bool configured = false;
-    if (!configured) {
-        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, T::SMEM);
-        configured = true;
-    }
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(kernel, T::SMEM, x.get_device());
     cudaLaunchConfig_t config = {};
     const int rows_t = (M + BM - 1) / BM;
     // a group's inputs stay near 12 MB of L2 while its blocks sweep the column tiles
     const int group = std::max(1, std::min(rows_t, static_cast<int>((12LL << 20) / (static_cast<long long>(BM) * K * 2))));
-    config.gridDim = dim3(rows_t * ((N + BN - 1) / BN), 1, SK);
+    config.gridDim = dim3(static_cast<unsigned>(static_cast<int64_t>(rows_t) * ((N + BN - 1) / BN)), 1, SK);
     config.blockDim = dim3(T::THREADS);
     config.dynamicSmemBytes = T::SMEM;
     config.stream = at::cuda::getCurrentCUDAStream();

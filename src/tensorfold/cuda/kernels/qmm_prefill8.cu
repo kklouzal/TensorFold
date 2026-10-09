@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include "qmm_frag.cuh"
+#include "kernel_configuration.cuh"
 
 namespace {
 
@@ -248,14 +249,12 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& scale, 
     using T = Tile<GS, BM, BN, WM, WN, STAGES, W8>;
     const int M = x.size(0), K = x.size(1);
     auto kernel = prefill8_kernel<GS, BM, BN, WM, WN, STAGES, F32, W8, L64>;
-    static bool configured = false;
-    if (!configured) {
-        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, T::SMEM);
-        configured = true;
-    }
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(kernel, T::SMEM, x.get_device());
     const int rows_t = (M + BM - 1) / BM;
     const int group = std::max(1, std::min(rows_t, static_cast<int>((12LL << 20) / (static_cast<long long>(BM) * K))));
-    kernel<<<rows_t * ((N + BN - 1) / BN), T::THREADS, T::SMEM, at::cuda::getCurrentCUDAStream()>>>(
+    kernel<<<static_cast<unsigned>(static_cast<int64_t>(rows_t) * ((N + BN - 1) / BN)), T::THREADS, T::SMEM,
+             at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const uint8_t*>(x.data_ptr()),
         W8 ? nullptr : reinterpret_cast<const __nv_bfloat16*>(xs.data_ptr()), scale.data_ptr<float>(),
         reinterpret_cast<const uint32_t*>(w.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(scales.data_ptr()),

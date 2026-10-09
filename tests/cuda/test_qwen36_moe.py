@@ -485,6 +485,7 @@ def test_scheduler_serves_concurrent_requests_exactly():
     w, head = _model()
     refs = [_serial(w, p, smp, 20) for p, smp in zip(MIXED, SAMPLED)]
     sched = Scheduler(MultiDecoder(w, head, depth=3, confidence=0.3), max_streams=3)
+    sched.start()
     results: dict[int, tuple] = {}
 
     def go(i, draft):
@@ -520,6 +521,7 @@ def test_a_stopped_stream_and_a_failed_prompt_end_copy_end_only_their_own(monkey
     monkeypatch.setattr(multi, "kept", failing)
     refs = [_serial(w, p, smp, 20) for p, smp in zip(MIXED, SAMPLED)]
     sched = Scheduler(MultiDecoder(w, head, depth=3, confidence=0.3), max_streams=4)
+    sched.start()
     results: dict = {}
 
     def go(key, prompt, sampling, stop_after=0):

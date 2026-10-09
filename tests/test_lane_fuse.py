@@ -7,7 +7,7 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 
-from tensorfold.kernels.qwen.dense.v1 import lane_fuse, lane_glue, lane_qmm  # noqa: E402
+from tensorfold.kernels.qwen.dense.v1 import lane_fuse, lane_glue, lane_qmm, projection_operation  # noqa: E402
 
 from tensorfold.kernels.qwen.dense.v1 import (  # noqa: E402
     lane_attention, lane_multi, lane_tree, stream_attention, stream_gdn)
@@ -89,12 +89,13 @@ def test_stacked_matmul_bits(kind, tile, bits):
 
 
 def _xs_of(out):
-    hit = lane_qmm._xs_cache.get(id(out))
-    assert hit is not None and hit[0] is out
-    return hit[1]
+    sums = projection_operation.sums_of(out, 64)
+    assert sums is not None
+    return sums
 
 
 @pytest.mark.parametrize("W", [1, 7, 16, 17, 32])
+@projection_operation.operation()
 def test_mlp_act_reads_the_stack_in_place(W):
     _needs_tensor_units()
     N = 17408
@@ -117,6 +118,7 @@ def test_mlp_act_reads_the_stack_in_place(W):
 
 
 @pytest.mark.parametrize("W", [1, 7, 16, 17, 32])
+@projection_operation.operation()
 def test_gdn_glue_reads_the_stack_in_place(W):
     _needs_tensor_units()
     nk, nv, dk, dv, taps = 16, 48, 128, 128, 4
@@ -177,7 +179,7 @@ WIDTHS = [(4, 64), (3, 64), (2, 64), (5, 64), (6, 64), (8, 64), (4, 32)]
 
 
 @pytest.mark.parametrize("bits,group", WIDTHS)
-def test_build_keeps_the_weights_and_adds_only_the_scales(bits, group):
+def test_build_retains_geometry_and_reads_current_public_weights(bits, group):
     _needs_tensor_units()
     root = _real_groups(bits, group)
     members = {kind: [getattr(parent, n) for n in lane_fuse.GROUPS[kind]]
@@ -190,28 +192,21 @@ def test_build_keeps_the_weights_and_adds_only_the_scales(bits, group):
         lane_qmm.install(root, rows=lane_qmm.MAX_ROWS)
         alone = {id(m): m(x) for ms in members.values() for m in ms}
         mx.eval(alone)
-        weight_bytes = sum(m["weight"].nbytes for ms in members.values() for m in ms)
         gc.collect()
         before = mx.get_active_memory()
         counts = lane_fuse.build(root)
         gc.collect()
         grown = mx.get_active_memory() - before
         assert counts == {"zba": 1, "kv": 1, "gu": 1}
-        added = lane_fuse.stats(root)["added_bytes"]
-        # the stacks' scales and the tiled [b; a] copy, nothing more: the old weight arrays were freed
-        expect = sum(sum(lane_qmm.pack_scales(m["scales"], m["biases"]).nbytes for m in ms) for ms in members.values())
-        expect += 96 * (K * bits // 32) * 4
-        assert added == expect
-        # scales are 64 / (2 * bits * group) of the weights' bytes (1/8 at 4 bits g64): a second copy would add them all
-        assert abs(grown - expect) < 1024**2 and grown < 1.6 * 64 / (2 * bits * group) * weight_bytes, \
-            (grown, expect, weight_bytes)
+        assert lane_fuse.stats(root)["added_bytes"] == 0
+        assert abs(grown) < 1024**2, grown   # only host geometry plans are retained
         for ms in members.values():
             for m in ms:
                 w = m["weight"]
                 seen = lane_qmm.untile_weight(w, int(getattr(m, "_lane_nt", lane_qmm.NT)), group, bits=bits) \
                     if getattr(m, "_lane_tiled", False) else w
-                assert _same(seen, originals[id(m)]), "a member's weight changed"
-        # each member's own call (on its view of the stack) keeps its bits, and the stack gives them too
+                assert _same(seen, originals[id(m)]), "a public member weight changed"
+        # each call materializes current parameters; separate and stacked arithmetic agree
         lane_fuse.enabled = True
         fused = {"zba": lane_fuse.gdn_in(root.linear_attn, x), "kv": lane_fuse.attn_kv(root.self_attn, x),
                  "gu": lane_fuse.mlp_gate_up(root.mlp, x)}
@@ -230,11 +225,12 @@ def test_build_keeps_the_weights_and_adds_only_the_scales(bits, group):
     finally:
         lane_fuse.enabled = saved
         lane_qmm.uninstall()
-    # uninstall gave the members MLX's layout back as new arrays: the stacks are stale, then dropped
+    # Uninstall changes routing; public arrays never changed encoding.
     for ms in members.values():
         for m in ms:
             assert _same(m["weight"], originals[id(m)])
-    assert lane_fuse._group(root.mlp, "gu", build=False) is None
+    assert lane_fuse._group(root.mlp, "gu", build=False) is not None
+    assert lane_fuse.mlp_gate_up(root.mlp, x) is None
     lane_fuse.clear(root)
 
 

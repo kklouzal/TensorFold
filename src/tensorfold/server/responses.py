@@ -13,6 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from tensorfold.server import request_body
 from tensorfold.server.errors import RequestError
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 
@@ -57,6 +58,9 @@ class Store:
                        added + messages([item for item in response["output"]]))
         entry.size = len(json.dumps(entry.response)) + len(json.dumps(entry.messages))
         with self.lock:
+            previous = self.entries.get(response["id"])
+            if previous is not None:
+                self.bytes -= previous.size
             self.entries[response["id"]] = entry
             self.bytes += entry.size
             while self.entries and (len(self.entries) > self.limit or self.bytes > self.max_bytes):
@@ -65,7 +69,9 @@ class Store:
     def get(self, rid: str) -> dict[str, Any] | None:
         with self.lock:
             entry = self.entries.get(rid)
-            return copy.deepcopy(entry.response) if entry is not None else None
+        # Stored responses are owned snapshots, never mutated after publication.
+        # Keeping this reference makes deletion/eviction safe while it is copied.
+        return copy.deepcopy(entry.response) if entry is not None else None
 
     def delete(self, rid: str) -> bool:
         with self.lock:
@@ -99,7 +105,10 @@ _STORES_LOCK = threading.Lock()
 
 def store_for(app: Any) -> Store:
     with _STORES_LOCK:
-        return _STORES.setdefault(app, Store())
+        found = _STORES.get(app)
+        if found is None:
+            found = _STORES[app] = Store()
+        return found
 
 
 # -- HTTP -------------------------------------------------------------------------------------
@@ -182,12 +191,9 @@ def post(handler: Any, app: Any) -> None:
 
     store = store_for(app)
     try:
-        length = int(handler.headers.get("Content-Length") or 0)
-        if not 0 <= length <= LIMIT:
-            handler.close_connection = True           # the unread body must not reach the next request
-            raise RequestError("request body exceeds the 32 MiB limit")
+        payload = request_body.read(handler, LIMIT)
         try:
-            body = json.loads(handler.rfile.read(length) or b"{}")
+            body = json.loads(payload or b"{}")
         except (ValueError, UnicodeDecodeError):
             raise RequestError("the request body is not JSON") from None
         request = translate(body, store)

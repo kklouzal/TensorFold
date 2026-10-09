@@ -18,10 +18,14 @@ def test_prefetch_reads_each_mapped_arrays_bytes_once_in_spans(tmp_path, monkeyp
         def __init__(self, *args, **kwargs):
             self.f = real(*args, **kwargs)
 
-        def __enter__(self):
-            return self
+        @property
+        def closed(self):
+            return self.f.closed
 
-        def __exit__(self, *exc):
+        def fileno(self):
+            return self.f.fileno()
+
+        def close(self):
             self.f.close()
 
         def seek(self, at):

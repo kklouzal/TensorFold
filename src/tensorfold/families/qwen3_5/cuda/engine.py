@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from functools import partial
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -33,7 +34,7 @@ class Qwen27Engine:
 
         from tensorfold.cuda.nvfp4.format import is_quantized
 
-        from .exl3_load import admission, quant_config
+        from .exl3_load import admission, quant_config, weight_estimate
 
         exl3 = quant_config(Path(model_dir)) is not None
         nvfp4 = not exl3 and is_quantized(Path(model_dir))
@@ -44,7 +45,7 @@ class Qwen27Engine:
             raise ValueError("image input on CUDA is tested on the MLX checkpoint only: drop --vision for an NVFP4 "
                              "checkpoint, or serve Vontra/Qwen3.8-27B-MLX-4bit")
         from .weights import load
-        from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes
+        from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, live_kv, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
         from .affine_memory import draft_weights, weight_transform
@@ -79,7 +80,8 @@ class Qwen27Engine:
                                    f"{both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on both "
                                    "machines, and pass the same --no-drafts, --parallel, --context and "
                                    "--checkpoint-slots to both")
-            gather = lambda values: gather_ints(torch, lambda send, recv: dist.all_gather_into_tensor(recv, send), values)
+            def gather(values):
+                return gather_ints(torch, lambda send, recv: dist.all_gather_into_tensor(recv, send), values)
         else:
             gather = None
         many = streams > 1
@@ -89,17 +91,25 @@ class Qwen27Engine:
                     else (lambda text: gdn_geometry(text, tp, max_rows, rows=max_rows, prompt=chunk, evicts=tp == 1)))
         # an affine checkpoint's packed words at their stored precision; an EXL3 pack's by its own format
         tensor_bytes = weight_transform(model_dir, one_gpu=tp == 1)
+        weight_estimator = None
         if exl3:
             geometry, tensor_bytes = admission(geometry)
+            if not vision and not unified(torch):
+                weight_estimator = partial(weight_estimate, with_drafter=draft_dir is not None)
         elif nvfp4:
             from .nvfp4_load import admission as nvfp4_admission
 
             geometry, tensor_bytes = nvfp4_admission(geometry)
+            if draft_dir is None and not prompt_precision.fp8() and not unified(torch):
+                from .nvfp4_memory import weight_estimate
+
+                weight_estimator = partial(weight_estimate, transform=tensor_bytes)
         # one admission for one stream or many, on every rank, before any weight loads
         self.capacity_plan = admit(model_dir, context, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank),
                                    vision_weights(tensor_bytes, vision, rank),
                                    rank=rank, world=tp, gather=gather,
+                                   weight_estimator=weight_estimator,
                                    draft_dir=draft_dir if rank == 0 or tp_draft else None,
                                    draft_weights=draft_weights,
                                    draft_geometry=lambda text: draft_geometry(text, tp if tp_draft else 1, max_rows,
@@ -108,7 +118,7 @@ class Qwen27Engine:
                                    startup_copies=int(tp == 2))
         self.context_window = self.capacity_plan["context_window"]
         if tp == 2:
-            full = load(model_dir)
+            full = load(model_dir, prefill_world=tp)
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)
         else:
             full = load(model_dir, tiled=True)
@@ -160,6 +170,16 @@ class Qwen27Engine:
                 curve = ", ".join(f"{r}: {ms:.1f}" for r, ms in self.multi.costs)
                 print(f"[tensorfold] verify ms by rows (tree widths follow it): {curve}", flush=True)
                 self.scheduler = Scheduler(self.multi, max_streams=streams)
+                try:
+                    self.scheduler.start()
+                except BaseException as primary:
+                    try:
+                        self.scheduler.close()
+                    except BaseException as cleanup:
+                        if cleanup is primary:
+                            raise primary
+                        raise primary from cleanup
+                    raise
 
     def _resume(self, prompt: list[int]):
         best = self.cache.longest(prompt)
@@ -329,5 +349,5 @@ class Qwen27Engine:
                                             vision=vision, **grammar)
             if end is not None:
                 self._remember(list(prompt[:end]), *kept[0])
-            result = decode_tp(self.w, st, prompt, pending, max_tokens, sampling, 1, drafter, max_rows=self.max_rows,
-                               inplace=True, **grammar)
+            decode_tp(self.w, st, prompt, pending, max_tokens, sampling, 1, drafter, max_rows=self.max_rows,
+                      inplace=True, **grammar)

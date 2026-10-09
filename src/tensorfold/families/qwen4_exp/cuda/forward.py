@@ -107,6 +107,9 @@ def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stre
                    normed: bool = False) -> None:
     """The norm, the down projection with SiLU and the inject gates, the up projection, the mix: separate kernels."""
 
+    if b.hc_plans is not None and b.hc_plans.enabled:
+        b.hc_plans(hc, h, R, eps, streams, low, inject, normed=normed)
+        return
     if not normed:
         glue.hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
     _down_act(hc, b, R, streams, low, inject)

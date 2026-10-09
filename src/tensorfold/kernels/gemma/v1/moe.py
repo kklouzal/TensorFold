@@ -210,11 +210,19 @@ def router_logits(x: mx.array, proj: Any, *, simdgroups: int = 4, rows_per_simdg
 
 
 def route(scores: mx.array, expert_scale: mx.array, top_k: int) -> tuple[mx.array, mx.array]:
-    """Scores [R, E] -> ids (best first) and bf16 weights, row r's at [r K, r K + K), padded to MIN_ELEMENTS."""
+    """Scores [R, E] and scales [E] -> best-first ids and bf16 weights, padded to MIN_ELEMENTS.
+
+    Positive E is a multiple of 32 and K is in 1..E. MLX's kernel builder
+    ensures row-contiguous inputs; shape checks precede that device work.
+    """
 
     rows, experts = scores.shape
-    if experts % 32:
-        raise ValueError("route: the expert count must be a multiple of 32")
+    if experts <= 0 or experts % 32:
+        raise ValueError("route: the expert count must be a positive multiple of 32")
+    if type(top_k) is not int or not 1 <= top_k <= experts:
+        raise ValueError("route: top_k must be an integer in 1..expert count")
+    if tuple(expert_scale.shape) != (experts,):
+        raise ValueError("route: expert_scale must be a vector of exactly one scale per expert")
     size = max(rows * top_k, MIN_ELEMENTS)
     return _route((("NE", experts), ("K", top_k)), inputs=[scores, expert_scale],
                   grid=(32 * rows, 1, 1), threadgroup=(32, 1, 1),

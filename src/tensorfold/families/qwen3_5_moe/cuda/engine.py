@@ -79,7 +79,7 @@ class Qwen36Engine:
                                  "drafts with; add it, or pass --no-drafts for the serial reference")
             from tensorfold.families.qwen4_exp.cuda.weights import draft_token_ids
 
-            self.head = Head(self.w, m, draft_token_ids("default"))    # the same tokenizer's ids
+            self.head = Head(self.w, m, draft_token_ids("default", self.w.config.vocab))    # the same tokenizer's ids
             from .graphs import Graphs
 
             # decoding buffers that outlive requests (with --parallel, the one stream decoding alone's)
@@ -104,6 +104,16 @@ class Qwen36Engine:
             print(f"[tensorfold] {streams} streams of {self.context_window} prompt/reply tokens: together, rounds run "
                   f"eagerly; alone, in CUDA graphs; kernels warmed in {time.perf_counter() - started:.1f}s", flush=True)
             self.scheduler = Scheduler(self.multi, max_streams=streams)
+            try:
+                self.scheduler.start()
+            except BaseException as primary:
+                try:
+                    self.scheduler.close()
+                except BaseException as cleanup:
+                    if cleanup is primary:
+                        raise primary
+                    raise primary from cleanup
+                raise
 
     def _resume(self, prompt: list[int]):
         """The longest kept prefix, after dropping longer entries its resumed writes would overwrite (they share buffers)."""

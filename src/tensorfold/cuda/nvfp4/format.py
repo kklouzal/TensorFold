@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
 import numpy as np
 
@@ -48,7 +49,7 @@ def is_quantized(model_dir: str | Path) -> bool:
     """Whether config.json names ModelOpt or compressed-tensors quantization."""
 
     config = Path(model_dir) / "config.json"
-    return config.is_file() and config_block(json.loads(config.read_text())) is not None
+    return config.is_file() and config_block(read_metadata_json(checkpoint_path(model_dir, "config.json"))) is not None
 
 
 def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:

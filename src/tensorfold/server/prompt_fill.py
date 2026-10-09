@@ -44,6 +44,7 @@ class PromptFill:
         self.starts += 1
         self._starting = job
         filling = Filling(job, left=len(job.prompt_ids))
+        self._owned_fills[id(filling)] = filling
         try:
             job.cancellation.check()
             memory = self.prompt_memory
@@ -227,26 +228,26 @@ class PromptFill:
         finally:
             if filling.held is not None:
                 self.prompt_memory.end(filling.held)
+        self._owned_fills.pop(id(filling), None)
 
     def _preempt_filling(self, filling: Filling) -> None:
         """Stop a background prefill between chunks for a waiting foreground job; its rerun resumes the progress."""
 
         self._fills.remove(filling)
         job = filling.job
-        try:
-            if filling.steps is not None:
-                filling.steps.close()              # the prefill keeps its progress as a checkpoint
-        finally:
-            job.preempted = True
-            self.preemptions += 1
-            self._keep_checkpoints(job, filling.shared_at)
-            if job.stream is not None:
-                self.engine.discard_stream(job.stream)
-                job.stream.finish_reason = "preempted"
-                job.stream.proposer = None
-            if filling.held is not None:
-                self.prompt_memory.end(filling.held)
-            self._finish(job)
+        if filling.steps is not None:
+            filling.steps.close()              # only a successful close proves progress can be kept
+        job.preempted = True
+        self.preemptions += 1
+        self._keep_checkpoints(job, filling.shared_at)
+        if job.stream is not None:
+            self.engine.discard_stream(job.stream)
+            job.stream.finish_reason = "preempted"
+            job.stream.proposer = None
+        if filling.held is not None:
+            self.prompt_memory.end(filling.held)
+        self._finish(job)
+        self._owned_fills.pop(id(filling), None)
 
 
 __all__ = ["Filling", "PromptFill"]

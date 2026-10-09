@@ -375,6 +375,17 @@ class LaneEngine(FamilyRounds):
         if release is not None and not self.active_count:
             release()
 
+    def drain(self) -> None:
+        """Complete owned CPU/GPU default-stream work before terminal state is released.
+
+        Custom execution streams are outside the lane-family contract. A failed
+        drain leaves array owners intact for the scheduler's containment policy.
+        """
+        import mlx.core as mx
+
+        mx.synchronize(mx.default_stream(mx.gpu))
+        mx.synchronize(mx.default_stream(mx.cpu))
+
     def discard_stream(self, stream: LaneStream) -> None:
         """Release a cancelled stream between rounds: no retained cache, no pending draws or drafts."""
 

@@ -294,6 +294,19 @@ class QwenImageProcessor:
         mean = np.asarray(getattr(options, "image_mean", [0.5] * channels), dtype=np.float32)
         std = np.asarray(getattr(options, "image_std", [0.5] * channels), dtype=np.float32)
         scale = np.float32(getattr(options, "rescale_factor", 1 / 255))
+        # VideoInput's uint8 frames can be reordered at one quarter the FP32
+        # bandwidth. Preserve the existing broadcast path for other settings.
+        if (frames.dtype == np.uint8 and scale.ndim == 0 and mean.ndim <= 1 and std.ndim <= 1
+                and mean.size in (1, channels) and std.size in (1, channels)):
+            gt, gh, gw = frames.shape[0] // temporal, height // p, width // p
+            x = frames.transpose(0, 3, 1, 2)
+            x = x.reshape(gt, temporal, channels, gh // merge, merge, p, gw // merge, merge, p)
+            x = x.transpose(0, 3, 6, 4, 7, 2, 1, 5, 8)
+            x = x.reshape(gt * gh * gw, channels, temporal, p, p).astype(np.float32)
+            np.multiply(x, scale, out=x)
+            np.subtract(x, mean.reshape(1, -1, 1, 1, 1), out=x)
+            np.divide(x, std.reshape(1, -1, 1, 1, 1), out=x)
+            return x.reshape(gt * gh * gw, channels * temporal * p * p), np.asarray([gt, gh, gw])
         x = ((frames.astype(np.float32) * scale - mean) / std).transpose(0, 3, 1, 2)       # [T, C, H, W]
         gt, gh, gw = x.shape[0] // temporal, height // p, width // p
         x = x.reshape(gt, temporal, channels, gh // merge, merge, p, gw // merge, merge, p)

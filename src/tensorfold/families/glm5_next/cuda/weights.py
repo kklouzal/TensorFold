@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
 from tensorfold.cuda.exl3.experts import Exl3RoutedExperts as Exl3Experts
 from . import latent
@@ -58,7 +58,7 @@ class Config:
 
     @classmethod
     def read(cls, model_dir: str | Path) -> "Config":
-        raw = json.loads((Path(model_dir) / "config.json").read_text())
+        raw = read_metadata_json(checkpoint_path(Path(model_dir), "config.json"))
         want = raw.get("tensorfold_activation_dtype")
         if want not in (None, "bfloat16", "float32"):
             raise ValueError(f"tensorfold_activation_dtype {want!r}: bfloat16 or float32")
@@ -257,162 +257,163 @@ def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = 
     exl3 = cfg.quant == "exl3"
     dev = torch.device(device)
     rd = RankReader(model_dir, rank)
-    HL = cfg.heads // world
-    LL = cfg.lin_heads // world
+    primary = None
+    try:
+        HL = cfg.heads // world
+        LL = cfg.lin_heads // world
 
-    def t(name: str, dtype: torch.dtype | None = None) -> torch.Tensor:
-        x = rd.get(PREFIX + name)
-        if dtype is not None:
-            x = x.to(dtype)
-        return x.to(dev)
+        def t(name: str, dtype: torch.dtype | None = None) -> torch.Tensor:
+            x = rd.get(PREFIX + name)
+            if dtype is not None:
+                x = x.to(dtype)
+            return x.to(dev)
 
-    def trip(name: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        return (as_i32(t(name + ".weight")), t(name + ".scales"), t(name + ".biases"))
+        def trip(name: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            return (as_i32(t(name + ".weight")), t(name + ".scales"), t(name + ".biases"))
 
-    def q4(name: str) -> Q4 | B16:
-        return make_b16(t(name + ".weight")) if exl3 else make_q4(*trip(name))
+        def q4(name: str) -> Q4 | B16:
+            return make_b16(t(name + ".weight")) if exl3 else make_q4(*trip(name))
 
-    def stack(names: list[str]) -> Q4 | B16:
+        def stack(names: list[str]) -> Q4 | B16:
+            if exl3:
+                return stack_b16([t(n + ".weight") for n in names])
+            return stack_q4([trip(n) for n in names])
+
+        def hc(i: int, site: str) -> HCW:
+            return HCW(t(f"layers.{i}.hc_{site}_fn").contiguous(), t(f"layers.{i}.hc_{site}_base", torch.float32),
+                       t(f"layers.{i}.hc_{site}_scale", torch.float32))
+
+        def kda(i: int) -> KDAW:
+            p = f"layers.{i}.self_attn."
+            proj = stack([p + "q_proj", p + "k_proj", p + "v_proj", p + "f_a_proj", p + "g_a_proj", p + "b_proj"])
+            conv = torch.cat([t(p + f"{x}_conv1d.weight") for x in "qkv"]).reshape(3 * LL * 128, cfg.conv).contiguous()
+            return KDAW(proj, q4(p + "f_b_proj"), q4(p + "g_b_proj"), conv, t(p + "A_log", torch.float32).contiguous(),
+                        t(p + "dt_bias", torch.float32).contiguous(), t(p + "o_norm.weight"), q4(p + "o_proj"), LL)
+
+        def dsa(i: int) -> DSAW:
+            p = f"layers.{i}.self_attn."
+            proj = stack([p + "q_a_proj", p + "kv_a_proj_with_mqa"])
+            rows = torch.arange(HL * 512, device=dev).view(HL, 512)
+            krows, vrows = rows[:, :cfg.qk_dim].reshape(-1), rows[:, cfg.qk_dim:].reshape(-1)
+            if exl3:
+                w = t(p + "kv_b_proj.weight")
+                kv_k, kv_v = make_b16(w[krows]), make_b16(w[vrows])
+                full_k, full_v = (lambda: w[krows].float()), (lambda: w[vrows].float())
+            else:
+                w, s, b = trip(p + "kv_b_proj")
+                kv_k = make_q4(w[krows], s[krows], b[krows])
+                kv_v = make_q4(w[vrows], s[vrows], b[vrows])
+            if not latent.ENABLED:
+                absorb = None
+            elif exl3:
+                absorb = latent.AbsorbW.from_rows(full_k(), full_v(), HL)
+            elif cfg.group_size == 64:        # the checkpoint's own 4-bit rows, read as they are stored
+                absorb = latent.AbsorbQ4((w[krows], s[krows], b[krows]), (w[vrows], s[vrows], b[vrows]), HL)
+            else:
+                absorb = latent.AbsorbW.from_rows(latent.dequant_mlx4(w[krows], s[krows], b[krows], cfg.group_size),
+                                                  latent.dequant_mlx4(w[vrows], s[vrows], b[vrows], cfg.group_size), HL)
+            ix = IndexW(stack([p + "indexer.wk", p + "indexer.weights_proj"]), q4(p + "indexer.wq_b"),
+                        t(p + "indexer.k_norm.weight"), t(p + "indexer.k_norm.bias"),
+                        t(p + "indexer.index_kpool_compress_gate", torch.bfloat16).contiguous(),
+                        t(p + "indexer.index_kpool_compress_ape", torch.bfloat16).contiguous())
+            return DSAW(proj, t(p + "q_a_layernorm.weight"), t(p + "kv_a_layernorm.weight"), q4(p + "q_b_proj"),
+                        kv_k, kv_v, q4(p + "o_proj"), HL, ix, absorb)
+
+        def mlp(p: str) -> MLPW:
+            gu = stack([p + "gate_proj", p + "up_proj"])
+            return MLPW(gu, q4(p + "down_proj"), gu.n // 2)
+
+        def expert_names(i: int) -> list[str]:
+            """Layer ``i``'s expert tensors in the order ``moe`` reads them (none for a dense layer; ``cfg.layers``: MTP)."""
+
+            mtp_layer = i == cfg.layers and cfg.mtp_layers and mtp
+            if not mtp_layer and (i >= cfg.layers or cfg.mlp_kinds[i] != "moe"):
+                return []
+            p, parts = PREFIX + f"layers.{i}.mlp.", ("trellis", "suh", "svh") if exl3 else ("weight", "scales", "biases")
+            names = []
+            for proj in ("gate_proj", "up_proj", "down_proj"):
+                names += [p + f"experts.{e}.{proj}.{x}" for e in range(cfg.experts) for x in parts]
+                if not exl3:
+                    names += [p + f"shared_experts.{proj}.{x}" for x in parts]
+            return names
+
+        def on_device(tensors: list[torch.Tensor]) -> torch.Tensor:
+            """``torch.stack(tensors).to(dev)`` without a host copy: uploaded tensors stacked on the device, host ones copied into their slots."""
+
+            if all(x.is_cuda for x in tensors):
+                return torch.stack(tensors)
+            out = torch.empty((len(tensors), *tensors[0].shape), dtype=tensors[0].dtype, device=dev)
+            for slot, x in zip(out, tensors):
+                slot.copy_(x)
+            return out
+
+        def moe_exl3(p: str) -> Exl3Experts:
+            from tensorfold.cuda.exl3 import experts as generic
+            gate = generic.prepare(
+                [(rd.get(PREFIX + p + f"experts.{e}.gate_proj.trellis").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.gate_proj.suh").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.gate_proj.svh").to(dev)) for e in range(cfg.experts)],
+                [(rd.get(PREFIX + p + f"experts.{e}.up_proj.trellis").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.up_proj.suh").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.up_proj.svh").to(dev)) for e in range(cfg.experts)],
+                [(rd.get(PREFIX + p + f"experts.{e}.down_proj.trellis").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.down_proj.suh").to(dev),
+                  rd.get(PREFIX + p + f"experts.{e}.down_proj.svh").to(dev)) for e in range(cfg.experts)],
+                "mcg", device=dev)
+            return gate
+
+        def moe(i: int) -> MoEW:
+            p = f"layers.{i}.mlp."
+            router = t(p + "gate.weight", torch.bfloat16).contiguous()
+            bias = t(p + "gate.e_score_correction_bias", torch.float32).contiguous()
+            if exl3:
+                return MoEW(router, bias, moe_exl3(p), mlp(p + "shared_experts."))
+            parts = {}
+            for proj in ("gate_proj", "up_proj", "down_proj"):
+                ws, ss, bs = [], [], []
+                for e in range(cfg.experts):
+                    ws.append(as_i32(rd.get(PREFIX + p + f"experts.{e}.{proj}.weight")))
+                    ss.append(rd.get(PREFIX + p + f"experts.{e}.{proj}.scales"))
+                    bs.append(rd.get(PREFIX + p + f"experts.{e}.{proj}.biases"))
+                ws.append(as_i32(rd.get(PREFIX + p + f"shared_experts.{proj}.weight")))
+                ss.append(rd.get(PREFIX + p + f"shared_experts.{proj}.scales"))
+                bs.append(rd.get(PREFIX + p + f"shared_experts.{proj}.biases"))
+                parts[proj] = (on_device(ws), on_device(ss), on_device(bs))
+                del ws, ss, bs
+            ex = grouped.make([parts["gate_proj"], parts["up_proj"]], parts["down_proj"], 64, limit=cfg.limit)
+            del parts
+            return MoEW(router, bias, ex)
+
+        layer_events: list = []                              # each layer's event, recorded once its work is queued
+
+        def layer(i: int, plain: bool = False) -> LayerW:
+            kind = "dsa" if plain else cfg.kinds[i]
+            mk = "moe" if plain else cfg.mlp_kinds[i]
+            if len(layer_events) >= 2:                       # at most two layers queued ahead of the GPU
+                layer_events.pop(0).synchronize()
+            up = None if exl3 else dev                       # MLX experts come uploaded (EXL3's are unpacked on the host)
+            rd.prefetch(expert_names(i), up)                 # already queued, except for the first layer
+            rd.prefetch(expert_names(i + 1), up)             # two layers in flight: reads overlap copies and packing
+            lw = LayerW(i, kind, None if plain else hc(i, "attn"), None if plain else hc(i, "ffn"),
+                        t(f"layers.{i}.input_layernorm.weight"), t(f"layers.{i}.post_attention_layernorm.weight"))
+            if kind == "kda":
+                lw.kda = kda(i)
+            else:
+                lw.dsa = dsa(i)
+            if mk == "dense":
+                lw.mlp = mlp(f"layers.{i}.mlp.")
+            else:
+                lw.moe = moe(i)
+            if i % 8 == 7:                            # each release waits for the device; a layer leaves few temporaries
+                torch.cuda.empty_cache()
+            layer_events.append(torch.cuda.current_stream().record_event())
+            return lw
+
         if exl3:
-            return stack_b16([t(n + ".weight") for n in names])
-        return stack_q4([trip(n) for n in names])
-
-    def hc(i: int, site: str) -> HCW:
-        return HCW(t(f"layers.{i}.hc_{site}_fn").contiguous(), t(f"layers.{i}.hc_{site}_base", torch.float32),
-                   t(f"layers.{i}.hc_{site}_scale", torch.float32))
-
-    def kda(i: int) -> KDAW:
-        p = f"layers.{i}.self_attn."
-        proj = stack([p + "q_proj", p + "k_proj", p + "v_proj", p + "f_a_proj", p + "g_a_proj", p + "b_proj"])
-        conv = torch.cat([t(p + f"{x}_conv1d.weight") for x in "qkv"]).reshape(3 * LL * 128, cfg.conv).contiguous()
-        return KDAW(proj, q4(p + "f_b_proj"), q4(p + "g_b_proj"), conv, t(p + "A_log", torch.float32).contiguous(),
-                    t(p + "dt_bias", torch.float32).contiguous(), t(p + "o_norm.weight"), q4(p + "o_proj"), LL)
-
-    def dsa(i: int) -> DSAW:
-        p = f"layers.{i}.self_attn."
-        proj = stack([p + "q_a_proj", p + "kv_a_proj_with_mqa"])
-        rows = torch.arange(HL * 512, device=dev).view(HL, 512)
-        krows, vrows = rows[:, :cfg.qk_dim].reshape(-1), rows[:, cfg.qk_dim:].reshape(-1)
-        if exl3:
-            w = t(p + "kv_b_proj.weight")
-            kv_k, kv_v = make_b16(w[krows]), make_b16(w[vrows])
-            full_k, full_v = (lambda: w[krows].float()), (lambda: w[vrows].float())
+            embed = rd.get(PREFIX + "embed_tokens.weight").to(torch.bfloat16).contiguous().to(dev)
         else:
-            w, s, b = trip(p + "kv_b_proj")
-            kv_k = make_q4(w[krows], s[krows], b[krows])
-            kv_v = make_q4(w[vrows], s[vrows], b[vrows])
-        if not latent.ENABLED:
-            absorb = None
-        elif exl3:
-            absorb = latent.AbsorbW.from_rows(full_k(), full_v(), HL)
-        elif cfg.group_size == 64:        # the checkpoint's own 4-bit rows, read as they are stored
-            absorb = latent.AbsorbQ4((w[krows], s[krows], b[krows]), (w[vrows], s[vrows], b[vrows]), HL)
-        else:
-            absorb = latent.AbsorbW.from_rows(latent.dequant_mlx4(w[krows], s[krows], b[krows], cfg.group_size),
-                                              latent.dequant_mlx4(w[vrows], s[vrows], b[vrows], cfg.group_size), HL)
-        ix = IndexW(stack([p + "indexer.wk", p + "indexer.weights_proj"]), q4(p + "indexer.wq_b"),
-                    t(p + "indexer.k_norm.weight"), t(p + "indexer.k_norm.bias"),
-                    t(p + "indexer.index_kpool_compress_gate", torch.bfloat16).contiguous(),
-                    t(p + "indexer.index_kpool_compress_ape", torch.bfloat16).contiguous())
-        return DSAW(proj, t(p + "q_a_layernorm.weight"), t(p + "kv_a_layernorm.weight"), q4(p + "q_b_proj"),
-                    kv_k, kv_v, q4(p + "o_proj"), HL, ix, absorb)
-
-    def mlp(p: str) -> MLPW:
-        gu = stack([p + "gate_proj", p + "up_proj"])
-        return MLPW(gu, q4(p + "down_proj"), gu.n // 2)
-
-    def expert_names(i: int) -> list[str]:
-        """Layer ``i``'s expert tensors in the order ``moe`` reads them (none for a dense layer; ``cfg.layers``: MTP)."""
-
-        mtp_layer = i == cfg.layers and cfg.mtp_layers and mtp
-        if not mtp_layer and (i >= cfg.layers or cfg.mlp_kinds[i] != "moe"):
-            return []
-        p, parts = PREFIX + f"layers.{i}.mlp.", ("trellis", "suh", "svh") if exl3 else ("weight", "scales", "biases")
-        names = []
-        for proj in ("gate_proj", "up_proj", "down_proj"):
-            names += [p + f"experts.{e}.{proj}.{x}" for e in range(cfg.experts) for x in parts]
-            if not exl3:
-                names += [p + f"shared_experts.{proj}.{x}" for x in parts]
-        return names
-
-    def on_device(tensors: list[torch.Tensor]) -> torch.Tensor:
-        """``torch.stack(tensors).to(dev)`` without a host copy: uploaded tensors stacked on the device, host ones copied into their slots."""
-
-        if all(x.is_cuda for x in tensors):
-            return torch.stack(tensors)
-        out = torch.empty((len(tensors), *tensors[0].shape), dtype=tensors[0].dtype, device=dev)
-        for slot, x in zip(out, tensors):
-            slot.copy_(x)
-        return out
-
-    def moe_exl3(p: str) -> Exl3Experts:
-        from tensorfold.cuda.exl3 import experts as generic
-        gate = generic.prepare(
-            [(rd.get(PREFIX + p + f"experts.{e}.gate_proj.trellis").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.gate_proj.suh").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.gate_proj.svh").to(dev)) for e in range(cfg.experts)],
-            [(rd.get(PREFIX + p + f"experts.{e}.up_proj.trellis").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.up_proj.suh").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.up_proj.svh").to(dev)) for e in range(cfg.experts)],
-            [(rd.get(PREFIX + p + f"experts.{e}.down_proj.trellis").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.down_proj.suh").to(dev),
-              rd.get(PREFIX + p + f"experts.{e}.down_proj.svh").to(dev)) for e in range(cfg.experts)],
-            "mcg", device=dev)
-        return gate
-
-    def moe(i: int) -> MoEW:
-        p = f"layers.{i}.mlp."
-        router = t(p + "gate.weight", torch.bfloat16).contiguous()
-        bias = t(p + "gate.e_score_correction_bias", torch.float32).contiguous()
-        if exl3:
-            return MoEW(router, bias, moe_exl3(p), mlp(p + "shared_experts."))
-        parts = {}
-        for proj in ("gate_proj", "up_proj", "down_proj"):
-            ws, ss, bs = [], [], []
-            for e in range(cfg.experts):
-                ws.append(as_i32(rd.get(PREFIX + p + f"experts.{e}.{proj}.weight")))
-                ss.append(rd.get(PREFIX + p + f"experts.{e}.{proj}.scales"))
-                bs.append(rd.get(PREFIX + p + f"experts.{e}.{proj}.biases"))
-            ws.append(as_i32(rd.get(PREFIX + p + f"shared_experts.{proj}.weight")))
-            ss.append(rd.get(PREFIX + p + f"shared_experts.{proj}.scales"))
-            bs.append(rd.get(PREFIX + p + f"shared_experts.{proj}.biases"))
-            parts[proj] = (on_device(ws), on_device(ss), on_device(bs))
-            del ws, ss, bs
-        ex = grouped.make([parts["gate_proj"], parts["up_proj"]], parts["down_proj"], 64, limit=cfg.limit)
-        del parts
-        return MoEW(router, bias, ex)
-
-    layer_events: list = []                              # each layer's event, recorded once its work is queued
-
-    def layer(i: int, plain: bool = False) -> LayerW:
-        kind = "dsa" if plain else cfg.kinds[i]
-        mk = "moe" if plain else cfg.mlp_kinds[i]
-        if len(layer_events) >= 2:                       # at most two layers queued ahead of the GPU
-            layer_events.pop(0).synchronize()
-        up = None if exl3 else dev                       # MLX experts come uploaded (EXL3's are unpacked on the host)
-        rd.prefetch(expert_names(i), up)                 # already queued, except for the first layer
-        rd.prefetch(expert_names(i + 1), up)             # two layers in flight: reads overlap copies and packing
-        lw = LayerW(i, kind, None if plain else hc(i, "attn"), None if plain else hc(i, "ffn"),
-                    t(f"layers.{i}.input_layernorm.weight"), t(f"layers.{i}.post_attention_layernorm.weight"))
-        if kind == "kda":
-            lw.kda = kda(i)
-        else:
-            lw.dsa = dsa(i)
-        if mk == "dense":
-            lw.mlp = mlp(f"layers.{i}.mlp.")
-        else:
-            lw.moe = moe(i)
-        if i % 8 == 7:                            # each release waits for the device; a layer leaves few temporaries
-            torch.cuda.empty_cache()
-        layer_events.append(torch.cuda.current_stream().record_event())
-        return lw
-
-    if exl3:
-        embed = rd.get(PREFIX + "embed_tokens.weight").to(torch.bfloat16).contiguous().to(dev)
-    else:
-        embed = (as_i32(rd.get(PREFIX + "embed_tokens.weight")).to(dev), rd.get(PREFIX + "embed_tokens.scales").to(dev),
-                 rd.get(PREFIX + "embed_tokens.biases").to(dev))
-    try:                                          # a failed load still cancels the reads queued ahead
+            embed = (as_i32(rd.get(PREFIX + "embed_tokens.weight")).to(dev), rd.get(PREFIX + "embed_tokens.scales").to(dev),
+                     rd.get(PREFIX + "embed_tokens.biases").to(dev))
         which = list(range(cfg.layers))
         built = [layer(i) for i in which]
         vl = cfg.vocab // world
@@ -432,7 +433,16 @@ def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = 
                         t(f"layers.{i}.shared_head.norm.weight"), layer(i, plain=True))
         w = Weights(cfg, embed, built, t("norm.weight"), head, mtpw, rank, world, dev, draft_head=draft_head)
         w.meta.update(layers=which)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        rd.close()
+        try:
+            rd.close()
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            BaseException.add_note(primary, "GLM checkpoint reader cleanup also failed")
+            raise primary from cleanup
     torch.cuda.empty_cache()
     return w

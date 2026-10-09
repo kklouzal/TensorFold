@@ -287,13 +287,14 @@ class NativeTests(unittest.TestCase):
                 return True
             raise KeyboardInterrupt("controlled wait interruption")
 
-        owner.active = 1
+        token = object()
+        owner.active[token] = -1  # isolated foreign borrower held while close waits
         owner.condition.wait_for = interrupt
         with self.assertRaises(KeyboardInterrupt):
             table.close()
         self.assertFalse(owner.closing)
         owner.condition.wait_for = original
-        owner.active = 0
+        owner.active.clear()
         table.close()
         wrapper = NativeReadAhead(NativeSSDTable(self.files, workers=1))
         original = wrapper._condition.wait_for

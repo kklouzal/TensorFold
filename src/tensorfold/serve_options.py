@@ -8,9 +8,35 @@ import math
 from typing import Any
 
 
+def check_numbers(args: argparse.Namespace) -> None:
+    """Validate CLI floats before downloads or accelerator/resource acquisition.
+
+    Finite temperature/top-p retain their existing greedy/off-range policies;
+    memory budgets and decode-share have nonnegative units, SSD pools positive.
+    Integer clamping/default policies remain with their existing owners.
+    """
+
+    budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
+    for name in (*budgets, "temperature", "top_p", "min_p", "decode_share", "mtp_confidence", "yarn_factor"):
+        value = getattr(args, name, None)
+        if value is None:
+            continue
+        flag = "--" + name.replace("_", "-")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"{flag} must be a finite number")
+        if name in budgets or name == "decode_share":
+            if value < 0 or (name == "ssd_experts" and value == 0):
+                raise ValueError(f"{flag} must be {'positive' if name == 'ssd_experts' else 'nonnegative'}")
+        if name in ("min_p", "mtp_confidence") and not 0 <= value <= 1:
+            raise ValueError(f"{flag} must be between 0 and 1")
+
+
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    if getattr(args, "trust_model_code", False):
+        if backend != "mlx" or not getattr(family.package, "MLX_MODEL_FILE", False):
+            raise ValueError("--trust-model-code requires an MLX family recipe that uses the provider's model_file")
     ram = getattr(args, "vram_experts", None)
     if getattr(args, "ssd_experts", None) is not None and backend == "cuda":
         raise ValueError("--ssd-experts is supported on MLX only; Flash Next CUDA supports --vram-experts GIB")
@@ -108,4 +134,4 @@ def vision_options(args: argparse.Namespace) -> dict[str, Any]:
     return {"vision": True, "vision_urls": bool(getattr(args, "vision_urls", False))}
 
 
-__all__ = ["check", "vision_options"]
+__all__ = ["check", "check_numbers", "vision_options"]

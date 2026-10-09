@@ -6,6 +6,8 @@ from typing import Any, Sequence
 
 import mlx.core as mx
 
+from tensorfold.kernels.qwen.dense.v1 import projection_operation
+
 
 def _attention(attn: Any, x: mx.array, caches: Sequence[Any], positions: list[int], offsets: Sequence[int],
                widths: Sequence[int], records: list[list[Any]], plans: list[Any]) -> mx.array:
@@ -115,6 +117,7 @@ def _windows(parents: Sequence[int], n_keep: int) -> mx.array:
     return stream_gdn.ConvPlan([parents], n_keep).windows
 
 
+@projection_operation.operation()
 def multi_tree_forward(core: Any, head: Any, windows: Sequence[Sequence[int]], parents: Sequence[Sequence[int]],
                        caches: Sequence[list[Any]], starts: Sequence[int], *, pipeline_layers: int = 4,
                        first_alone: bool = True, last_only: bool = False) -> tuple[mx.array, list[list[Any]], list[int]]:

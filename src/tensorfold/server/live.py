@@ -10,13 +10,15 @@ import threading
 import time
 from typing import Any, Callable
 
-WINDOW = 2.0          # seconds a decode rate averages over, and a prefill chunk's rate stays shown
-EVERY = 0.5           # seconds between redraws
-CLEAR = "\r\x1b[2K"   # back to the line's start and erase it
+from tensorfold.thread_work import ThreadWork
+
+WINDOW = 2.0  # seconds a decode rate averages over, and a prefill chunk's rate stays shown
+EVERY = 0.5  # seconds between redraws
+CLEAR = "\r\x1b[2K"  # back to the line's start and erase it
 
 
 class Meter:
-    """Decode tokens as rounds land them; ``rate`` averages the last ``window`` seconds."""
+    """Retain the last ``window`` seconds; sample a nonblocking monotonic clock under the state lock."""
 
     def __init__(self, window: float = WINDOW, clock: Callable[[], float] = time.monotonic) -> None:
         self.window, self.clock = float(window), clock
@@ -26,13 +28,20 @@ class Meter:
     def add(self, tokens: int) -> None:
         if tokens > 0:
             with self._lock:
-                self._events.append((self.clock(), int(tokens)))
+                now = self.clock()
+                self._prune(now)
+                self._events.append((now, int(tokens)))
+
+    def _prune(self, now: float) -> None:
+        """Drop expired events while holding ``_lock``; an exact boundary stays."""
+
+        while self._events and self._events[0][0] < now - self.window:
+            self._events.popleft()
 
     def rate(self) -> float:
-        now = self.clock()
         with self._lock:
-            while self._events and self._events[0][0] < now - self.window:
-                self._events.popleft()
+            now = self.clock()
+            self._prune(now)
             return sum(n for _, n in self._events) / self.window
 
 
@@ -41,7 +50,7 @@ class ChunkRate:
 
     def __init__(self, window: float = WINDOW, clock: Callable[[], float] = time.monotonic) -> None:
         self.window, self.clock = float(window), clock
-        self._last: tuple[float, float] | None = None       # (when it ended, tokens a second)
+        self._last: tuple[float, float] | None = None  # (when it ended, tokens a second)
 
     def add(self, tokens: int, seconds: float) -> None:
         if tokens > 0 and seconds > 0:
@@ -70,9 +79,10 @@ class LiveLine:
         self.render, self.out, self.every = render, out, float(every)
         self._lock = threading.RLock()
         self._shown = False
-        self._line_start = True          # the newest write ended its line: a redraw can't split a log line
+        self._line_start = True  # the newest write ended its line: a redraw can't split a log line
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._tick, name="tensorfold-live", daemon=True)
+        self._work = ThreadWork(self._tick)
+        self._thread = threading.Thread(target=self._work.run, name="tensorfold-live", daemon=True)
         self._saved: tuple[Any, Any] | None = None
 
     def write(self, text: str, real: Any) -> int:
@@ -88,13 +98,13 @@ class LiveLine:
 
     def draw(self) -> None:
         with self._lock:
-            if not self._line_start:
+            if self._stop.is_set() or not self._line_start:
                 return
             try:
                 text = self.render()
             except Exception as exc:  # noqa: BLE001 - a status line must never take the server down
                 text = f"[tensorfold] status unavailable: {type(exc).__name__}"
-            width = max(20, shutil.get_terminal_size((100, 20)).columns - 1)     # a wrapped line can't be redrawn
+            width = max(20, shutil.get_terminal_size((100, 20)).columns - 1)  # a wrapped line can't be redrawn
             self.out.write(CLEAR + text[:width])
             self.out.flush()
             self._shown = True
@@ -106,19 +116,43 @@ class LiveLine:
     def install(self) -> "LiveLine":
         self._saved = (sys.stdout, sys.stderr)
         sys.stdout, sys.stderr = _Proxy(self, sys.stdout), _Proxy(self, sys.stderr)
-        self._thread.start()
+        try:
+            self._work.launch(self._thread)
+        except BaseException as primary:
+            try:
+                self.stop()  # start may have entered the worker before cancellation
+            except BaseException as cleanup:
+                raise primary from cleanup
+            raise
         return self
 
     def stop(self) -> None:
+        """Stop and join before restoring proxies; a stalled output owner stays retained."""
+        if threading.current_thread() is self._thread:
+            raise RuntimeError("the live status worker cannot join itself")
         self._stop.set()
-        with self._lock:
-            if self._saved is not None:
-                sys.stdout, sys.stderr = self._saved
-                self._saved = None
-            if self._shown:
-                self.out.write(CLEAR)
-                self.out.flush()
-                self._shown = False
+        failure = None
+        try:
+            self._work.drain(self._thread, timeout=5.0)
+        except BaseException as error:
+            if not self._work.retired.is_set():
+                raise
+            failure = error
+        try:
+            with self._lock:
+                if self._saved is not None:
+                    sys.stdout, sys.stderr = self._saved
+                    self._saved = None
+                if self._shown:
+                    self.out.write(CLEAR)
+                    self.out.flush()
+                    self._shown = False
+        except BaseException as cleanup:
+            if failure is not None:
+                raise failure from cleanup
+            raise
+        if failure is not None:
+            raise failure
 
 
 class _Proxy:

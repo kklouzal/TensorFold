@@ -183,3 +183,18 @@ def test_attention_rows_alone_equal_window_and_torch():
         s = torch.einsum("hd,lhd->hl", q[r], kf[:L]) * hd ** -0.5
         want = torch.einsum("hl,lhd->hd", torch.softmax(s, -1), vf[:L]).reshape(-1)
         assert (out[r].float() - want).abs().max() < 2e-2
+
+
+@pytest.mark.parametrize("groups", [0, -1, 3])
+def test_prompt_scan_native_refuses_invalid_groups_before_launch(groups):
+    # The earlier bridge divided/modded by groups without a positive guard.
+    # Run only the corrected bridge; never execute the old groups=0 path.
+    ext = M._ext()
+    proj = torch.zeros((1, 386), dtype=torch.bfloat16, device="cuda")
+    xc = torch.zeros((1, 320), dtype=torch.bfloat16, device="cuda")
+    state = torch.zeros((2, 32, 128), dtype=torch.float32, device="cuda")
+    vectors = [torch.zeros(2, dtype=torch.float32, device="cuda") for _ in range(3)]
+    out = torch.empty((1, 64), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(RuntimeError, match="heads a multiple of groups"):
+        ext.scan_rows(proj, xc, state, *vectors, out, 384, groups, 0.0, float("inf"))
+    torch.cuda.synchronize()

@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json, read_header as validated_header
+
 ROW = (
     r"\.mlp\.experts\.\d+\.(gate|up)_proj\.",
     r"\.mlp\.shared_experts\.(gate|up)_proj\.",
@@ -65,10 +67,8 @@ def rule(name: str) -> str:
 
 
 def read_header(path: str | Path) -> tuple[dict, int]:
-    with open(path, "rb") as f:
-        n = struct.unpack("<Q", f.read(8))[0]
-        header = json.loads(f.read(n))
-    return header, 8 + n
+    base, header = validated_header(path, DTYPE_BYTES)
+    return header, base
 
 
 def split_bytes(raw: np.ndarray, shape: list[int], itemsize: int, kind: str, rank: int) -> tuple[np.ndarray, list[int]]:
@@ -139,26 +139,44 @@ class RankReader:
     def __init__(self, model_dir: str | Path, rank: int) -> None:
         from tensorfold.cuda.direct_read import ReadAhead, Reader, SafeTensors
 
-        self.dir, self.rank = Path(model_dir), rank
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank not in (0, 1):
+            raise ValueError("GLM checkpoint rank must be 0 or 1")
+        self.dir, self.rank = Path(model_dir).resolve(strict=True), rank
         self.io = Reader()                                # O_DIRECT reads where the file system allows them
-        self.reads = ReadAhead(self.io, READERS, RUN, GAP)
-        mine, other = rank_files(self.dir, rank), rank_files(self.dir, 1 - rank)
-        if other and not mine:
-            raise ValueError(f"{self.dir} holds rank {1 - rank}'s share: give rank {rank} its own folder or the "
-                             "full checkpoint")
-        self.split = bool(mine)
-        if self.split:
-            self.folder = SafeTensors(mine, self.io)
-            self.index = dict.fromkeys(self.folder.keys())
-            return
-        index = self.dir / "model.safetensors.index.json"
-        if index.exists():
-            names = json.loads(index.read_text())["weight_map"]
-        else:
-            names = {k: p.name for p in sorted(self.dir.glob("*.safetensors")) for k in read_header(p)[0]
-                     if k != "__metadata__"}
-        self.files: dict[str, tuple[dict, int]] = {}
-        self.index = dict(names)
+        try:
+            self.reads = ReadAhead(self.io, READERS, RUN, GAP)
+            mine, other = rank_files(self.dir, rank), rank_files(self.dir, 1 - rank)
+            if other and not mine:
+                raise ValueError(f"{self.dir} holds rank {1 - rank}'s share: give rank {rank} its own folder or the "
+                                 "full checkpoint")
+            self.split = bool(mine)
+            if self.split:
+                self.folder = SafeTensors([checkpoint_path(self.dir, p.name) for p in mine], self.io)
+                self.index = dict.fromkeys(self.folder.keys())
+                return
+            index = self.dir / "model.safetensors.index.json"
+            if index.exists():
+                names = read_metadata_json(checkpoint_path(self.dir, index.name))["weight_map"]
+            else:
+                names = {k: p.name for p in sorted(self.dir.glob("*.safetensors")) for k in read_header(checkpoint_path(self.dir, p.name))[0]
+                         if k != "__metadata__"}
+            self.files: dict[str, tuple[dict, int]] = {}
+            if (not isinstance(names, dict) or any(not isinstance(name, str) or not name
+                    or not isinstance(file, str) or not file for name, file in names.items())):
+                raise ValueError("checkpoint index must map nonempty tensor names to shard names")
+            self.index = dict(names)
+            self._paths = {file: checkpoint_path(self.dir, file) for file in dict.fromkeys(names.values())}
+
+        except BaseException as primary:
+            owner = getattr(self, "reads", None)
+            if owner is None:
+                owner = self.io
+            try:
+                owner.close()
+            except BaseException as cleanup:
+                BaseException.add_note(primary, "GLM checkpoint constructor cleanup also failed")
+                raise primary from cleanup
+            raise
 
     def prefetch(self, names, device=None) -> None:
         """Start reading ``names`` (a layer's hundreds of small expert tensors) in shared reads; with a CUDA ``device``, ``get`` returns them uploaded."""
@@ -186,7 +204,7 @@ class RankReader:
         if self.split:                                    # a rank folder holds the rank's tensors as they are
             path, begin, n, dtype, shape = self.folder.where[name]
             return str(path), begin, begin + n, "rep", list(shape), dtype
-        file = str(self.dir / self.index[name])
+        file = str(self._paths[self.index[name]])
         if file not in self.files:
             self.files[file] = read_header(file)
         header, base = self.files[file]

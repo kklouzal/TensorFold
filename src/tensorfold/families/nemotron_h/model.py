@@ -582,12 +582,13 @@ def find_mtp_head(model_dir: Path, choice: str = "") -> Path | None:
     return None
 
 
-def load(model_dir: Path, *, mtp_head: str = "", mtp_drafts: int | None = None) -> tuple[Any, Any]:
+def load(model_dir: Path, *, mtp_head: str = "", mtp_drafts: int | None = None,
+         trust_model_code: bool = False) -> tuple[Any, Any]:
     """Load the model with an available MTP head unless mtp_drafts is zero, verifying every draft within the configured depth limit."""
 
-    from mlx_lm import load as mlx_load
+    from tensorfold.families.model_code import load_mlx_model as mlx_load
 
     mtp_path = None if mtp_drafts == 0 else find_mtp_head(Path(model_dir), mtp_head)
-    loaded = mlx_load(str(model_dir))
+    loaded = mlx_load(str(model_dir), trust_model_code=trust_model_code)
     drafts = 4 if mtp_drafts is None else int(mtp_drafts)
     return NemotronH(loaded[0], mtp_path=mtp_path, drafts=drafts, tokenizer=loaded[1]), loaded[1]

@@ -7,6 +7,8 @@
 #include <cuda_runtime.h>
 
 #include "qmm_frag.cuh"
+#include "kernel_configuration.cuh"
+#include "qmm_policy.cuh"
 
 namespace {
 
@@ -155,15 +157,13 @@ void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& scales, 
     using T = Tile<GS, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
     auto kernel = prefill_kernel<GS, BM, BN, WM, WN, STAGES, F32>;
-    static bool configured = false;
-    if (!configured) {
-        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, T::SMEM);
-        configured = true;
-    }
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(kernel, T::SMEM, x.get_device());
     const int rows_t = (M + BM - 1) / BM;
     // a group's inputs stay near 12 MB of L2 while its blocks sweep the column tiles
     const int group = std::max(1, std::min(rows_t, static_cast<int>((12LL << 20) / (static_cast<long long>(BM) * K * 2))));
-    kernel<<<rows_t * ((N + BN - 1) / BN), T::THREADS, T::SMEM, at::cuda::getCurrentCUDAStream()>>>(
+    kernel<<<static_cast<unsigned>(static_cast<int64_t>(rows_t) * ((N + BN - 1) / BN)), T::THREADS, T::SMEM,
+             at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), reinterpret_cast<const uint32_t*>(w.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(scales.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(biases.data_ptr()),
         out.data_ptr(), M, N, K, static_cast<int>(scales.size(1)), M == 1 ? K : static_cast<int>(x.stride(0)), group);
@@ -174,17 +174,9 @@ template <int GS, bool F32>
 void dispatch(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tensor& s, const at::Tensor& b,
               at::Tensor& out, int N) {
     switch (tile) {
-        case 0: launch<GS, 128, 128, 2, 4, 3, F32>(x, w, s, b, out, N); break;
-        case 1: launch<GS, 64, 128, 1, 4, 4, F32>(x, w, s, b, out, N); break;
-        case 2: launch<GS, 128, 64, 2, 2, 4, F32>(x, w, s, b, out, N); break;
-        case 3: launch<GS, 64, 64, 1, 4, 4, F32>(x, w, s, b, out, N); break;
-        case 5: launch<GS, 128, 128, 2, 2, 3, F32>(x, w, s, b, out, N); break;
-        case 6: launch<GS, 128, 128, 2, 2, 4, F32>(x, w, s, b, out, N); break;
-        case 7: launch<GS, 128, 256, 2, 4, 3, F32>(x, w, s, b, out, N); break;
-        case 8: launch<GS, 64, 256, 1, 4, 4, F32>(x, w, s, b, out, N); break;
-        case 9: launch<GS, 128, 128, 2, 2, 2, F32>(x, w, s, b, out, N); break;
-        case 10: launch<GS, 64, 128, 1, 2, 2, F32>(x, w, s, b, out, N); break;
-        case 11: launch<GS, 128, 256, 2, 4, 2, F32>(x, w, s, b, out, N); break;
+#define PREFILL_CASE(ID, BM, BN, WM, WN, STAGES) case ID: launch<GS, BM, BN, WM, WN, STAGES, F32>(x, w, s, b, out, N); break;
+        TENSORFOLD_QMM_PREFILL_TILES(PREFILL_CASE)
+#undef PREFILL_CASE
         default: launch<GS, 128, 128, 2, 4, 4, F32>(x, w, s, b, out, N); break;
     }
 }

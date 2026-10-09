@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+from operator import index
 from typing import Any
 
 import mlx.core as mx
 
 from tensorfold.kernels.inputs import ints
+from tensorfold.kernels.qwen.dense.v1.lane_stage import SCALAR_PAIRS, staging_plan, tensor_source
 
 MAX_ROWS = 128         # rows the lane kernel accepts in one call
 ROW_BLOCK = 32         # rows per threadgroup above 32 rows (one 32-row op per weight group)
 NT = 32                # output columns per simdgroup tile
 BITS = (2, 3, 4, 5, 6, 8)   # weight widths the lane matmul takes (MLX affine; all but 4-bit in groups of 64)
 
-_HEADER = r"""
+_HEADER_TEMPLATE = r"""
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 """
+_HEADER = _HEADER_TEMPLATE + SCALAR_PAIRS
 
 _XSUM = r"""
   const int M = mdims[0], MP = mdims[1];
@@ -28,7 +31,7 @@ _XSUM = r"""
   XS[g * MP + m] = acc;
 """
 
-_MAIN = r"""
+_MAIN_TEMPLATE = r"""
   const ushort lane = thread_index_in_simdgroup;
   const ushort sg = simdgroup_index_in_threadgroup;     // K slice
   const short qid = lane >> 2;
@@ -97,15 +100,11 @@ _MAIN = r"""
   }
 """
 
-# Tiled weights (``tile_weight``): column tile t's group g is one contiguous NT x GS block. Same values, same op.
-_MAIN_TILED = _MAIN.replace(
-    "    auto b = tB.slice(g * GS, n0);\n",
-    "    tensor<device uint4b_format, dextents<int32_t, 2>, tensor_inline> b(\n"
-    "        (device uchar*)Wq + (int64_t)(threadgroup_position_in_grid.x * KG + g) * (NT * GS / 2), dextents<int32_t, 2>(GS, NT));\n")
-assert _MAIN_TILED != _MAIN
+# These literal templates retain the selected arithmetic. Only the legal
+# compiler-owned stage variants below are compiled or exposed as sources.
 
 # 64-wide tiles: two simdgroups run each group's 16 TMR x 64 op together; every output keeps _MAIN_TILED's arithmetic.
-_COOP = r"""
+_COOP_TEMPLATE = r"""
   const ushort sg = simdgroup_index_in_threadgroup;
   const ushort slice = sg >> 1;                                  // K slice: a pair of simdgroups each
   const ushort tip = ushort(thread_position_in_threadgroup.x) - slice * 64;   // thread within its pair
@@ -154,6 +153,9 @@ _COOP = r"""
       if (m < M) Y[m * N + n] = static_cast<bfloat>(C[i]);
     }
 """
+_MAIN = tensor_source(_MAIN_TEMPLATE)
+_MAIN_TILED = tensor_source(_MAIN_TEMPLATE, tiled=True)
+_COOP = tensor_source(_COOP_TEMPLATE, coop=True)
 AB_FLAG = [False]                                    # The engine can switch kernel variants between rounds.
 
 _kernels: dict[str, Any] = {}
@@ -188,18 +190,31 @@ def _kernel(name: str) -> Any:
     if name not in _kernels:
         if name == "xsum":
             _kernels[name] = _Baked("lane_qmm_xsum", _XSUM, ["X", "mdims"], ["XS"])
-        else:
-            from tensorfold.kernels.qwen.dense.v1 import lane_widen
+        elif name == "ordered_reduce":
+            from tensorfold.kernels.qwen.dense.v1 import lane_stage
 
-            source = {"coop": _COOP, "main_tiled": _MAIN_TILED, "main": _MAIN, "lowbit": lane_widen.NIBBLES,
-                      "bytes": lane_widen.BYTES, "lowbit_grouped": lane_widen.NIBBLES_GROUPED,
-                      "bytes_grouped": lane_widen.BYTES_GROUPED}[name]
-            _kernels[name] = _Baked("lane_qmm_" + name, source, ["X", "XS", "Wq", "SBt", "mdims"], ["Y"])
+            _kernels[name] = _Baked("lane_qmm_ordered_reduce", lane_stage.ORDERED_REDUCE, ["PART"], ["Y"])
+        else:
+            from tensorfold.kernels.qwen.dense.v1 import lane_stage, lane_widen
+
+            partials = name.endswith("_partials")
+            base = name.removesuffix("_partials")
+            source = {"coop": _COOP_TEMPLATE, "main_tiled": _MAIN_TEMPLATE, "main": _MAIN_TEMPLATE,
+                      "lowbit": lane_widen._NIBBLES_TEMPLATE,
+                      "bytes": lane_widen._BYTES_TEMPLATE, "lowbit_grouped": lane_widen._NIBBLES_GROUPED_TEMPLATE,
+                      "bytes_grouped": lane_widen._BYTES_GROUPED_TEMPLATE}[base]
+            if base in ("coop", "main_tiled", "main", "lowbit", "lowbit_grouped"):
+                source = lane_stage.tensor_source(source, coop=base == "coop", tiled=base == "main_tiled",
+                                                  nibbles=base.startswith("lowbit"), grouped=base.endswith("grouped"),
+                                                  partials=partials)
+            else:
+                source = lane_stage.scalar_scale_source(source)
+            _kernels[name] = _Baked("lane_qmm_" + name, source, ["X", "XS", "Wq", "SBt", "mdims"],
+                                    ["PART"] if partials else ["Y"])
     return _kernels[name]
 
 
 _mdims_cache: dict[tuple[int, int], mx.array] = {}
-_xs_cache: dict[Any, tuple[mx.array, mx.array]] = {}
 
 
 def _mdims(m: int, mp: int) -> mx.array:
@@ -264,23 +279,76 @@ def reads(bits: int, group_size: int) -> bool:
 def supports(weight: mx.array, scales: mx.array, x: mx.array, bits: int, group_size: int, mode: str) -> bool:
     if not readable(bits, group_size, mode):
         return False
-    if x.dtype != mx.bfloat16 or scales.dtype != mx.bfloat16 or weight.dtype != mx.uint32 or weight.ndim != 2:
+    if x.ndim < 1 or x.dtype != mx.bfloat16 or scales.dtype != mx.bfloat16 or weight.dtype != mx.uint32 or weight.ndim != 2:
         return False
     k = int(x.shape[-1])
     n = int(weight.shape[0])
-    return k % 64 == 0 and int(weight.shape[1]) * 32 == k * bits and n % 4 == 0
+    return k > 0 and n > 0 and k % 64 == 0 and int(weight.shape[1]) * 32 == k * bits and n % 4 == 0
+
+
+def _admit_launch(mp: int, n: int, k: int, group: int, nt: int, sk: int, bits: int) -> None:
+    """Prove shader integer arithmetic and target upper limits before native work.
+
+    Apple Metal4 has at most 1024 threads and 32 KiB threadgroup storage.
+    These are ceilings, not pipeline admission: MLX checks each compiled
+    pipeline's actual maxTotalThreadsPerThreadgroup before dispatch, and Metal
+    compilation admits its actual static threadgroup storage. No slice count
+    is reduced to make a launch fit because that would change its arithmetic.
+    """
+    i32, u32 = (1 << 31) - 1, (1 << 32) - 1
+    kg = k // group
+    threads = (64 if bits == 4 and nt == 64 else 32) * sk
+    tiles = -(-n // nt)
+    if (max(k, n, nt, tiles * threads) > i32 or mp * n > i32
+            or kg * n > i32 or sk * kg > i32 or mp * k > u32
+            or nt * group > i32 or (bits != 4 and k * bits > i32)):
+        raise ValueError("lane_matmul geometry exceeds native signed arithmetic or grid representation")
+    if threads > 1024:
+        raise ValueError("lane_matmul threadgroup exceeds the Metal4 thread ceiling")
+    # Packed format tensors use compiler-owned aligned cohorts. If one cohort
+    # cannot coexist with the original partials, float32 partials live in an
+    # operation-owned device output; selected slices and addition order remain.
+    if bits <= 4:
+        staging_plan(nt, sk, coop=bits == 4 and nt == 64)
+        return
+    # Ordinary byte tensors do not have the packed format alignment contract.
+    partial = ((sk - 1) * 16 * 64 * 4 if bits == 4 and nt == 64
+               else (sk - 1) * (nt // 16) * 8 * 32 * 4) if sk > 1 else 0
+    stage = sk * nt * group
+    if partial + stage > 32768:
+        raise ValueError("lane_matmul requires more than the Metal4 threadgroup storage ceiling")
 
 
 def lane_matmul(x: mx.array, weight: mx.array, sbt: mx.array, *, tiled: bool = False,
                 sk: int | None = None, nt: int = NT, group: int = 64) -> mx.array:
     """x (..., K) bf16 times the packed ``weight`` (N, K*bits/32) transposed, rows <= MAX_ROWS, tiled or not."""
 
+    if not isinstance(tiled, bool):
+        raise ValueError("lane_matmul tiled policy must be boolean")
+    if (not isinstance(x, mx.array) or x.ndim < 1 or x.dtype != mx.bfloat16
+            or not isinstance(weight, mx.array) or weight.ndim != 2 or weight.dtype != mx.uint32
+            or not isinstance(sbt, mx.array) or sbt.dtype != mx.bfloat16):
+        raise ValueError("lane_matmul requires bf16 inputs/scales and a rank-two uint32 packed weight")
+    try:
+        if isinstance(group, bool) or isinstance(nt, bool) or isinstance(sk, bool):
+            raise TypeError("boolean layout parameter")
+        group, nt = index(group), index(nt)
+        sk = index(sk) if sk is not None else None
+    except TypeError as error:
+        raise ValueError("lane_matmul layout parameters must be integer counts") from error
+    if group not in (32, 64) or nt < 16 or nt % 16 or (sk is not None and sk < 0):
+        raise ValueError("lane_matmul requires groups32/64, positive whole SIMD tiles and nonnegative slices")
     K = int(x.shape[-1])
     N = int(weight.shape[0])
+    if K <= 0 or K % group or N <= 0 or N % 4:
+        raise ValueError("lane_matmul requires positive grouped inputs and whole four-column output vectors")
+    if tuple(sbt.shape) != (K // group, N, 2):
+        raise ValueError("lane_matmul scale/bias pairs do not match its current weight and group geometry")
     lead = x.shape[:-1]
-    x2 = x.reshape(-1, K)
-    M = int(x2.shape[0])
-    if M > MAX_ROWS:
+    M = 1
+    for dimension in lead:
+        M *= int(dimension)
+    if not 1 <= M <= MAX_ROWS:
         raise ValueError(f"lane_matmul takes at most {MAX_ROWS} rows, got {M}")
     bits = weight_bits(weight, K)
     if not reads(bits, group):
@@ -293,50 +361,63 @@ def lane_matmul(x: mx.array, weight: mx.array, sbt: mx.array, *, tiled: bool = F
             raise ValueError(f"{bits}-bit weights tile {NT} columns wide, got {nt}")
         if sk and int(sk) > 8:    # threadgroup memory: the stage and partial sums of each slice
             raise ValueError(f"{bits}-bit weights take at most 8 K slices (split_k's largest), got {sk}")
+    nt = int(nt) if tiled else NT
+    if tiled and N % nt:
+        raise ValueError(f"tiled weights need N to be a multiple of {nt}, got {N}")
+    sk = int(sk) if sk else split_k(N, K)       # a column's bits follow K and sk (lane_fuse's stacks)
     MP = 16 * ((M + 15) // 16)
     KG = K // group
+    _admit_launch(MP, N, K, group, nt, sk, bits)
+    if (MP * N > (1 << 31) - 1 or MP * K > (1 << 32) - 1
+            or KG * N > (1 << 32) - 1 or N * int(weight.shape[1]) > (1 << 32) - 1):
+        raise ValueError("lane_matmul geometry exceeds its native index representation")
+    stages, partials = 0, False
+    if bits <= 4:
+        stages, partials, _ = staging_plan(nt, sk, coop=bits == 4 and nt == 64)
+        if partials and sk * M * N > ((1 << 64) - 1) // 4:
+            raise ValueError("lane_matmul float32 partial allocation exceeds native size_t")
+    x2 = x.reshape(M, K)
     mdims = _mdims(M, MP)
-    # inputs shared by several projections: their group sums once (the entry holds x alive)
-    key = id(x) if group == 64 else (id(x), group)
-    hit = _xs_cache.get(key)
-    if hit is not None and hit[0] is x:
-        xs = hit[1]
-    else:
+    from tensorfold.kernels.qwen.dense.v1 import projection_operation
+
+    # Only a private forward operation may reuse sums of its immutable input.
+    # Generic array calls always derive sums from the current descriptor.
+    xs = projection_operation.sums_of(x, group)
+    if xs is None:
         xs = _kernel("xsum")(inputs=[x2, mdims], template=[("K", K), ("GS", group)], grid=(KG, MP, 1),
                              threadgroup=(min(KG, 256), 1, 1), output_shapes=[(KG, MP)],
                              output_dtypes=[mx.float32])[0]
-        _xs_cache[key] = (x, xs)
-        while len(_xs_cache) > 4:
-            _xs_cache.pop(next(iter(_xs_cache)))
-    sk = int(sk) if sk else split_k(N, K)       # a column's bits follow K and sk (lane_fuse's stacks)
-    nt = int(nt) if tiled else NT
+        projection_operation.remember(x, xs, group)
     block = MP if MP <= ROW_BLOCK else ROW_BLOCK
     edge = int(MP % block != 0)     # a bound check only where the last block passes MP (33-48, 65-80, 97-112 rows)
+    output_shapes = [(sk, M, N)] if partials else [(M, N)]
+    output_dtypes = [mx.float32] if partials else [mx.bfloat16]
+    suffix = "_partials" if partials else ""
+    stage_template = [("STAGES", stages)] if bits <= 4 else []
     if bits != 4:
-        if tiled and N % NT:
-            raise ValueError(f"tiled weights need N to be a multiple of {NT}, got {N}")
         grouped = [("GS", group)] if group != 64 else []    # groups of 64 keep the original kernels' source
-        y = _kernel(("lowbit" if bits < 4 else "bytes") + ("_grouped" if grouped else ""))(
+        y = _kernel(("lowbit" if bits < 4 else "bytes") + ("_grouped" if grouped else "") + suffix)(
                               inputs=[x2, xs, weight, sbt, mdims],
                               template=[("TMR", block // 16), ("N", N), ("K", K), ("NT", NT), ("SK", sk),
-                                        ("BITS", bits), ("TILED", int(bool(tiled))), *grouped],
+                                        ("BITS", bits), ("TILED", int(bool(tiled))), *grouped, *stage_template],
                               grid=(-(-N // NT) * 32 * sk, -(-MP // block), 1), threadgroup=(32 * sk, 1, 1),
-                              output_shapes=[(M, N)], output_dtypes=[mx.bfloat16])[0]
-        return y.reshape(*lead, N)
-    if nt == 64:
-        y = _kernel("coop")(inputs=[x2, xs, weight, sbt, mdims],
+                              output_shapes=output_shapes, output_dtypes=output_dtypes)[0]
+    elif nt == 64:
+        y = _kernel("coop" + suffix)(inputs=[x2, xs, weight, sbt, mdims],
                             template=[("TMR", block // 16), ("N", N), ("K", K), ("SK", sk), ("GS", group),
-                                      ("EDGE", edge)],
+                                      ("EDGE", edge), *stage_template],
                             grid=((N // 64) * 64 * sk, -(-MP // block), 1), threadgroup=(64 * sk, 1, 1),
-                            output_shapes=[(M, N)], output_dtypes=[mx.bfloat16])[0]
-        return y.reshape(*lead, N)
-    if tiled and N % nt:
-        raise ValueError(f"tiled weights need N to be a multiple of {nt}, got {N}")
-    y = _kernel("main_tiled" if tiled else "main")(inputs=[x2, xs, weight, sbt, mdims],
+                            output_shapes=output_shapes, output_dtypes=output_dtypes)[0]
+    else:
+        y = _kernel(("main_tiled" if tiled else "main") + suffix)(inputs=[x2, xs, weight, sbt, mdims],
                         template=[("TMR", block // 16), ("N", N), ("K", K), ("NT", nt), ("SK", sk), ("GS", group),
-                                  ("EDGE", edge)],
+                                  ("EDGE", edge), *stage_template],
                         grid=(-(-N // nt) * 32 * sk, -(-MP // block), 1), threadgroup=(32 * sk, 1, 1),
-                        output_shapes=[(M, N)], output_dtypes=[mx.bfloat16])[0]
+                        output_shapes=output_shapes, output_dtypes=output_dtypes)[0]
+    if partials:
+        y = _kernel("ordered_reduce")(inputs=[y], template=[("M", M), ("N", N), ("SK", sk)],
+                                       grid=(M * N, 1, 1), threadgroup=(256, 1, 1),
+                                       output_shapes=[(M, N)], output_dtypes=[mx.bfloat16])[0]
     return y.reshape(*lead, N)
 
 
@@ -346,30 +427,50 @@ enabled = False
 max_rows = MAX_ROWS
 
 
-_tiled_modules: list[Any] = []   # modules whose weight install() regrouped (uninstall() restores them)
+def _layout(module: Any) -> tuple[mx.array, bool, int]:
+    """Derive a call's layout from current standard MLX parameters and install policy.
+
+    Public module arrays remain authoritative and may be replaced or overwrite
+    their MLX descriptor between calls. No derived weight or scales are retained.
+    The synchronous caller must not mutate parameters while this call borrows them.
+    """
+
+    weight = module["weight"]
+    nt = int(getattr(module, "_lane_nt", NT))
+    if module.bits != 4 or int(weight.shape[0]) % nt:
+        nt = NT
+    words = int(weight.shape[-1])
+    tiled = (bool(getattr(module, "_lane_tile", False)) and weight.dtype == mx.uint32
+             and weight.ndim == 2 and int(weight.shape[0]) % nt == 0
+             and words % (module.group_size * module.bits // 32) == 0)
+    if tiled:
+        weight = tile_weight(weight, nt, module.group_size, bits=module.bits)
+    return weight, tiled, nt
 
 
 def _call(self: Any, x: mx.array) -> mx.array:
     rows = 1
     for d in x.shape[:-1]:
         rows *= int(d)
-    tiled = getattr(self, "_lane_tiled", False)
-    nt = getattr(self, "_lane_nt", NT)
-    if enabled and rows <= max_rows and supports(self["weight"], self["scales"], x, self.bits,
-                                                 self.group_size, getattr(self, "mode", "affine")):
-        sbt = getattr(self, "_lane_sbt", None)
-        if sbt is None:
-            sbt = pack_scales(self["scales"], self["biases"])
-            mx.eval(sbt)
-            object.__setattr__(self, "_lane_sbt", sbt)
-        y = lane_matmul(x, self["weight"], sbt, tiled=tiled, nt=nt, group=self.group_size)
-    elif tiled:
-        # wider than the lane kernel takes (MLX's chunked prefill): MLX's layout, rebuilt for this call
-        weight = untile_weight(self["weight"], nt, self.group_size, bits=self.bits)
-        y = mx.quantized_matmul(x, weight, self["scales"], self["biases"], transpose=True, group_size=self.group_size,
-                                bits=self.bits)
-    else:
+    if not (enabled and 1 <= rows <= max_rows and supports(self["weight"], self["scales"], x, self.bits,
+                                                     self.group_size, getattr(self, "mode", "affine"))):
         return _ORIG(self, x)
+    shape = (int(self["weight"].shape[0]), int(x.shape[-1]) // self.group_size)
+    if (tuple(self["scales"].shape) != shape or tuple(self["biases"].shape) != shape
+            or self["biases"].dtype != mx.bfloat16):
+        return _ORIG(self, x)
+    # The generic SDK path remains valid outside the raw native index region.
+    # Installed NT32/64 policies use split_k<=8; both satisfy the same ceilings.
+    n, k = shape[0], int(x.shape[-1])
+    if n * int(self["weight"].shape[1]) > (1 << 32) - 1:
+        return _ORIG(self, x)
+    try:
+        _admit_launch(16 * ((rows + 15) // 16), n, k, self.group_size, NT, split_k(n, k), self.bits)
+    except ValueError:
+        return _ORIG(self, x)
+    weight, tiled, nt = _layout(self)
+    sbt = pack_scales(self["scales"], self["biases"])
+    y = lane_matmul(x, weight, sbt, tiled=tiled, nt=nt, group=self.group_size)
     if "bias" in self:
         y = y + self["bias"]
     return y
@@ -387,7 +488,12 @@ def takes(module: Any) -> bool:
 
 
 def install(model: Any = None, *, rows: int = MAX_ROWS, tile: bool = True, wide: bool = False) -> None:
-    """Route the QuantizedLinear calls the lane matmul takes through it; with ``model``, pack scales and tile."""
+    """Route supported calls; preselect tiling policy without changing public weights.
+
+    Parameter replacement and same-object descriptor updates remain legal between
+    calls. Layout/scales materialization is operation-local; ``warm`` compiles the
+    selected variants. No model parameter is stored in a second retained layout.
+    """
 
     global _ORIG, enabled, max_rows
     import mlx.nn as nn
@@ -398,32 +504,13 @@ def install(model: Any = None, *, rows: int = MAX_ROWS, tile: bool = True, wide:
     enabled = True
     max_rows = min(int(rows), MAX_ROWS)
     if model is not None:
-        built, pending = [], 0
         for name, module in model.named_modules():
             if not (isinstance(module, nn.QuantizedLinear) and takes(module)):
                 continue
-            if getattr(module, "_lane_sbt", None) is None:
-                sbt = pack_scales(module["scales"], module["biases"])
-                object.__setattr__(module, "_lane_sbt", sbt)
-                built.append(sbt)
-                pending += sbt.nbytes
-            weight = module["weight"]
-            n, words = int(weight.shape[0]), int(weight.shape[-1])
-            if (tile and not getattr(module, "_lane_tiled", False) and weight.dtype == mx.uint32
-                    and weight.ndim == 2 and n % NT == 0 and words % (module.group_size * module.bits // 32) == 0):
-                nt = 64 if (wide and module.bits == 4 and n % 64 == 0 and not name.endswith(NARROW)) else NT
-                module.weight = tile_weight(weight, nt, module.group_size, bits=module.bits)
-                object.__setattr__(module, "_lane_tiled", True)
-                object.__setattr__(module, "_lane_nt", nt)
-                _tiled_modules.append(module)
-                built.append(module["weight"])
-                pending += 2 * weight.nbytes             # the old layout lives until this batch is evaluated
-            if pending >= 2 * 1024**3:
-                mx.eval(built)
-                built, pending = [], 0
-        if built:
-            mx.eval(built)
-        mx.clear_cache()      # the old layouts' buffers would otherwise sit in MLX's buffer cache
+            n = int(module["weight"].shape[0])
+            nt = 64 if (wide and module.bits == 4 and n % 64 == 0 and not name.endswith(NARROW)) else NT
+            object.__setattr__(module, "_lane_tile", bool(tile))
+            object.__setattr__(module, "_lane_nt", nt)
 
 
 def uncovered(model: Any) -> dict[str, int]:
@@ -458,36 +545,30 @@ def warm(model: Any, *, rows: tuple[int, ...] = (1, 17, 33)) -> int:
     seen: set[tuple[int, ...]] = set()
     outs = []
     for _, module in model.named_modules():
-        if not isinstance(module, nn.QuantizedLinear) or getattr(module, "_lane_sbt", None) is None:
+        if not isinstance(module, nn.QuantizedLinear) or not takes(module):
             continue
         n, k = int(module["weight"].shape[0]), int(module["weight"].shape[1]) * 32 // module.bits
-        key = (n, k, module.bits, module.group_size, getattr(module, "_lane_tiled", False),
-               getattr(module, "_lane_nt", NT))
+        weight, tiled, nt = _layout(module)
+        sbt = pack_scales(module["scales"], module["biases"])
+        key = (n, k, module.bits, module.group_size, tiled, nt)
         if key in seen:
             continue
         seen.add(key)
         for m in rows:
-            outs.append(lane_matmul(mx.zeros((m, k), dtype=mx.bfloat16), module["weight"], module._lane_sbt,
-                                    tiled=getattr(module, "_lane_tiled", False), nt=getattr(module, "_lane_nt", NT),
+            outs.append(lane_matmul(mx.zeros((m, k), dtype=mx.bfloat16), weight, sbt,
+                                    tiled=tiled, nt=nt,
                                     group=module.group_size))
     mx.eval(outs)
     return len(seen)
 
 
 def uninstall() -> None:
-    """MLX's own kernels again, with the weights back in MLX's layout."""
+    """Restore MLX's calls; public parameters already use its layout."""
 
     global enabled
     import mlx.nn as nn
 
     enabled = False
-    while _tiled_modules:
-        module = _tiled_modules.pop()
-        module.weight = untile_weight(module["weight"], getattr(module, "_lane_nt", NT), module.group_size,
-                                      bits=module.bits)
-        object.__setattr__(module, "_lane_tiled", False)
-        object.__setattr__(module, "_lane_nt", NT)
-        mx.eval(module["weight"])
     if _ORIG is not None:
         nn.QuantizedLinear.__call__ = _ORIG
 

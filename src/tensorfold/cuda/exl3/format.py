@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import struct
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+
+from tensorfold.cuda.capacity import SIZES
+from tensorfold.cuda.tensor_file import (_regular_stream, checkpoint_path, read_header as _strict_header,
+                                       read_header_stream, read_metadata_json)
 from typing import Any, Iterable
 
 import numpy as np
@@ -207,20 +210,24 @@ class Exl3Tensor:
 def read_header(path: str | Path) -> dict[str, dict]:
     """A safetensors file's header: {name: {"dtype", "shape", "data_offsets"}} (no ``__metadata__``)."""
 
-    with open(path, "rb") as f:
-        size = struct.unpack("<Q", f.read(8))[0]
-        header = json.loads(f.read(size))
-    header.pop("__metadata__", None)
-    return header
+    _, header = _strict_header(path, SIZES)
+    return {name: entry for name, entry in header.items() if name != "__metadata__"}
 
 
 def read_scalar(path: str | Path, entry: dict) -> int:
     """The value of a scalar int32 tensor (a codebook marker) from its header entry."""
 
-    with open(path, "rb") as f:
-        size = struct.unpack("<Q", f.read(8))[0]
-        f.seek(8 + size + int(entry["data_offsets"][0]))
-        return struct.unpack("<I", f.read(4))[0]
+    with _regular_stream(path) as stream:
+        data, header = read_header_stream(stream, SIZES, label=path)
+        if (not isinstance(entry, dict) or entry.get("dtype") not in ("I32", "U32")
+                or entry.get("shape") not in ([], [1]) or entry not in header.values()
+                or entry["data_offsets"][1] - entry["data_offsets"][0] != 4):
+            raise ValueError("EXL3 marker must match one opened int32 scalar tensor")
+        stream.seek(data + entry["data_offsets"][0])
+        raw = stream.read(4)
+        if len(raw) != 4:
+            raise IOError("short read of EXL3 int32 scalar marker")
+        return struct.unpack("<I", raw)[0]
 
 
 def parse_group(prefix: str, parts: dict[str, dict], files: Iterable[str] = ()) -> Exl3Tensor:
@@ -345,9 +352,12 @@ def scan(model_dir: str | Path, read_markers: bool = True) -> Checkpoint:
 
     root = Path(model_dir)
     entries: dict[str, tuple[str, dict]] = {}
-    for path in sorted(root.glob("*.safetensors")):
+    paths = [(path.name, checkpoint_path(root, path.name)) for path in sorted(root.glob("*.safetensors"))]
+    for file, path in paths:
         for name, entry in read_header(path).items():
-            entries[name] = (path.name, entry)
+            if name in entries:
+                raise ValueError(f"duplicate checkpoint tensor: {name}")
+            entries[name] = (file, entry)
     by_prefix: dict[str, dict[str, dict]] = {}
     files: dict[str, list[str]] = {}
     for name, (file, entry) in entries.items():
@@ -368,10 +378,10 @@ def scan(model_dir: str | Path, read_markers: bool = True) -> Checkpoint:
         cb = groups[prefix].codebook
         if read_markers and cb in MARKERS:
             file = entries[f"{prefix}.{cb}"][0]
-            markers[f"{prefix}.{cb}"] = read_scalar(root / file, parts[cb])
+            markers[f"{prefix}.{cb}"] = read_scalar(checkpoint_path(root, file), parts[cb])
     plain = {name: (entry["dtype"], tuple(entry["shape"])) for name, (_, entry) in entries.items()
              if name not in taken}
-    config = json.loads((root / "config.json").read_text()) if (root / "config.json").exists() else {}
+    config = read_metadata_json(checkpoint_path(root, "config.json")) if (root / "config.json").exists() else {}
     return Checkpoint(groups, plain, bad, config, markers)
 
 
@@ -380,7 +390,7 @@ def is_exl3(model_dir: str | Path) -> bool:
 
     root = Path(model_dir)
     config = root / "config.json"
-    if config.is_file() and config_fields(json.loads(config.read_text())):
+    if config.is_file() and config_fields(read_metadata_json(checkpoint_path(root, "config.json"))):
         return True
     side = root / "quantization_config.json"
-    return side.is_file() and str(json.loads(side.read_text()).get("quant_method", "")).lower() == "exl3"
+    return side.is_file() and str(read_metadata_json(checkpoint_path(root, "quantization_config.json")).get("quant_method", "")).lower() == "exl3"

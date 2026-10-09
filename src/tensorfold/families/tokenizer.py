@@ -29,7 +29,7 @@ def load_tokenizer(model_dir: Path, eos_token_ids: Any = None) -> Any:
     from mlx_lm.utils import load_tokenizer as load
 
     try:
-        return load(Path(model_dir), eos_token_ids=eos_token_ids)
+        return load(Path(model_dir), tokenizer_config_extra={"trust_remote_code": False}, eos_token_ids=eos_token_ids)
     except Exception as error:
         if "layer_types" not in str(error):
             raise
@@ -38,4 +38,5 @@ def load_tokenizer(model_dir: Path, eos_token_ids: Any = None) -> Any:
             raise
         print("[tensorfold] config.json lists a layer type for each MTP layer too; the tokenizer reads it without "
               "them", flush=True)
-        return load(Path(model_dir), tokenizer_config_extra={"config": config}, eos_token_ids=eos_token_ids)
+        return load(Path(model_dir), tokenizer_config_extra={"config": config, "trust_remote_code": False},
+                    eos_token_ids=eos_token_ids)

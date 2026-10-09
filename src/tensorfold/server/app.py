@@ -12,10 +12,9 @@ import uuid
 from tensorfold.engine.lane_engine import LaneEngine, SuffixLookupProposer
 from tensorfold.engine import grammar
 from tensorfold.server.admission import concurrency
-from tensorfold.server.checkpoints import (CheckpointStore, prune_conversations,
-                                           save_conversations, spill_conversation)
+from tensorfold.server.checkpoints import CheckpointStore, prune_conversations, save_conversations, spill_conversation
 from tensorfold.server.cancellation import Cancellation
-from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError
+from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
 from tensorfold.server.decision_requests import DecisionRequests
 from tensorfold.server.prompt_blocks import PromptBlocks, _REQUEST
 from tensorfold.server.request_options import RequestOptions
@@ -31,7 +30,10 @@ from tensorfold.server.text import (
     hide_tool_calls,
     is_title_request,
     parse_harmony_output,
-    CHANNEL_MARKERS, reasoning_count, split_thinking, think_markers,
+    CHANNEL_MARKERS,
+    reasoning_count,
+    split_thinking,
+    think_markers,
     streaming_visible_text,
     template_late_system,
     strip_trailing_stops,
@@ -95,7 +97,12 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         decode_share: float = 0.25,
         grow_checkpoints: bool = False,
         vision_max_images: int | None = None,
+        startup_owner: Callable[[Any], None] | None = None,
+        snapshot_registry: Any = None,
     ) -> None:
+        self._startup_complete = False
+        if startup_owner is not None:
+            startup_owner(self)  # retain partial construction through failed cleanup
         # three candidate entries per conversation (history boundary, stable prefix, reply end)
         if checkpoint_slots is None:
             checkpoint_slots = max(3 * int(lanes), 8)
@@ -126,18 +133,74 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             "note": "every token is the model's own sample at its position; drafts only change speed",
         }
         self.stop_ids = eos_ids_of(tokenizer)
-        self.model_dir = model_dir                    # response_format's grammar compiler reads its tokenizer
+        self.model_dir = model_dir  # response_format's grammar compiler reads its tokenizer
         self.late_system = template_late_system(tokenizer)
-        self.engine = factory(model, max_rows=int(max_rows), max_draft=int(max_draft),
-                              retain_finished_caches=int(checkpoint_slots) > 0)
+        self.engine = factory(
+            model, max_rows=int(max_rows), max_draft=int(max_draft), retain_finished_caches=int(checkpoint_slots) > 0
+        )
+        self.snapshot_registry = snapshot_registry
+        snapshot_profile = None
+        persistence = snapshot_dir is not None and int(checkpoint_slots) > 0
+        if persistence:
+            import mlx.core as mx
+            import numpy as np
+
+            from tensorfold.engine.snapshot_builtin import Profile, UnregisteredCache
+            from tensorfold.engine.snapshot_codec import Codec, SIZES
+            from tensorfold.engine.snapshot_registry import Registry
+            from tensorfold.server.memory_budget import memory_limit_bytes
+
+            self.snapshot_codec = Codec(mx, np)
+            if snapshot_registry is not None and type(snapshot_registry) is not Registry:
+                raise TypeError("snapshot_registry must be an explicit initialized Registry")
+            if snapshot_registry is None:
+                # The current process budget bounds tensor storage. Unlimited
+                # context retains the native signed64 count domain; its actual
+                # reachable cache storage remains bounded by memory admission.
+                tensor_budget = (
+                    memory_budget_bytes if memory_budget_bytes is not None else memory_limit_bytes(mx, fraction=1.0)
+                )
+                args = getattr(model, "args", None)
+                vocab = getattr(args, "vocab_size", None)
+                if type(vocab) is not int or vocab <= 0:
+                    raise ValueError("current-model vocabulary size required for persistent prefixes")
+                try:
+                    snapshot_profile = Profile(
+                        model.make_cache(),
+                        describe_tensor=self.snapshot_codec.describe,
+                        token_limit=self.context_window or 2**63 - 1,
+                        token_id_limit=vocab,
+                        tensor_byte_limit=tensor_budget,
+                        max_draft=self.engine.max_draft,
+                        sizes=SIZES,
+                        main_layers=len(model.layers),
+                    )
+                except UnregisteredCache as error:
+                    # Custom classes need caller-owned schema authority. They
+                    # remain ordinary prefill/cache misses, without disk imports.
+                    print(f"[tensorfold] persistent prefixes unavailable: {error}", flush=True)
+        else:
+            self.snapshot_codec = None
+
+        def observe_snapshot(cache):
+            for item in cache:
+                materialize = getattr(item, "materialize", None)
+                if materialize is not None:
+                    materialize()
+            snapshot_profile.observe(cache)
+
         from tensorfold.server.memory_budget import cache_nbytes
 
         self.checkpoints = (
-            CheckpointStore(int(checkpoint_slots), copier=self.engine.copy_single_cache,
-                            budget_bytes=checkpoint_budget_bytes,
-                            sizer=cache_nbytes if memory_budget_bytes is not None else self.engine.cache_nbytes,
-                            pinned_slots=max(3, self.max_snapshots))
-            if int(checkpoint_slots) > 0 else None
+            CheckpointStore(
+                int(checkpoint_slots),
+                copier=self.engine.copy_single_cache,
+                budget_bytes=checkpoint_budget_bytes,
+                sizer=cache_nbytes if memory_budget_bytes is not None else self.engine.cache_nbytes,
+                pinned_slots=max(3, self.max_snapshots),
+            )
+            if int(checkpoint_slots) > 0
+            else None
         )
         self.requests_completed = 0
         # Delay background requests while foreground requests arrive and prepare so the session turn is admitted first.
@@ -147,27 +210,61 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         self.min_match = int(min_match)
         self.use_proposer = bool(use_proposer)
         self.prompt_memory: Any = None
-        self.context_fitted = False       # the window is what the memory budget fits, below the configured one
+        self.context_fitted = False  # the window is what the memory budget fits, below the configured one
         if memory_budget_bytes is not None:
             from tensorfold.server.prompt_memory import PromptMemory, probe_tokens
 
-            self.prompt_memory = PromptMemory(memory_budget_bytes, model, runtime=memory_runtime,
-                                              store=self.checkpoints, window_tokens=self.context_window,
-                                              chunk_rows=getattr(self.engine.prefill_plan, "step",
-                                                                 self.engine.prefill_step),
-                                              **({} if memory_overhead_bytes is None
-                                                 else {"overhead_bytes": memory_overhead_bytes}))
+            self.prompt_memory = PromptMemory(
+                memory_budget_bytes,
+                model,
+                runtime=memory_runtime,
+                store=self.checkpoints,
+                window_tokens=self.context_window,
+                chunk_rows=getattr(self.engine.prefill_plan, "step", self.engine.prefill_step),
+                profile_observer=observe_snapshot if snapshot_profile is not None else None,
+                **({} if memory_overhead_bytes is None else {"overhead_bytes": memory_overhead_bytes}),
+            )
             if self.checkpoints is not None:
                 # admission evicts on demand, so a long conversation keeps its newest prefix past the budget
                 self.checkpoints.admit_oversize = True
-        measure = lambda: (concurrency(self.engine, self.prompt_memory, float(memory_fraction), int(lanes),
-                                       self.default_max_tokens) if memory_fraction and lanes > 1 else None)
-        admission = measure() if self.prompt_memory is None else self.prompt_memory.sized(
-            self.engine, measure, probe_tokens(tokenizer))
+
+        def measure():
+            return (
+                concurrency(
+                    self.engine, self.prompt_memory, float(memory_fraction), int(lanes), self.default_max_tokens
+                )
+                if memory_fraction and lanes > 1
+                else None
+            )
+
+        admission = (
+            measure()
+            if self.prompt_memory is None
+            else self.prompt_memory.sized(self.engine, measure, probe_tokens(tokenizer))
+        )
         if self.prompt_memory is not None:
             self.context_window, self.context_fitted = self.prompt_memory.fit_window(self.context_window, fit_context)
             if grow_checkpoints and self.checkpoints is not None and self.checkpoints.budget_bytes is not None:
                 self._grow_checkpoints(admission.round_bytes(int(lanes)) if admission is not None else 0)
+        if snapshot_profile is not None:
+            if self.prompt_memory is None:
+                from tensorfold.server.prompt_memory import probe_tokens
+
+                # Standalone App callers with no admission profiler still need
+                # evaluated current-model geometry before any persisted load.
+                count = self.engine.prefill_step + 64
+                if self.context_window:
+                    count = min(count, self.context_window)
+                text = probe_tokens(tokenizer)
+                if not text:
+                    text = [0]
+                probe = (text * (-(-count // len(text))))[:count]
+                cache = self.engine.prefill_prefix(probe, cache=None, cached_tokens=0)
+                observe_snapshot(cache)
+                del cache
+            self.snapshot_registry = snapshot_profile.registry()
+            if self.context_window:
+                self.snapshot_registry.token_limit = self.context_window
         self.scheduler = Scheduler(
             self.engine,
             lanes=int(lanes),
@@ -180,42 +277,72 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             model_id=model_id,
             prompt_memory=self.prompt_memory,
             decode_share=decode_share,
+            snapshot_registry=self.snapshot_registry,
+            snapshot_codec=self.snapshot_codec,
         )
         # evicted conversations go to disk (``spill_bytes`` of this model's files at most) and come back on demand
         self.spill_bytes = int(spill_bytes) if self.checkpoints is not None and self.scheduler.session_dir else 0
         if self.spill_bytes > 0:
             session_dir, spill_limit = Path(self.scheduler.session_dir), self.spill_bytes
-            self.checkpoints.on_evict = lambda entry: spill_conversation(entry, session_dir, model_id,
-                                                                         limit_bytes=spill_limit)
+            self.checkpoints.on_evict = lambda entry: spill_conversation(
+                entry,
+                session_dir,
+                model_id,
+                limit_bytes=spill_limit,
+                registry=self.snapshot_registry,
+                codec=self.snapshot_codec,
+            )
         loaded_count = 0
-        if snapshot_dir is not None and self.checkpoints is not None:
+        if snapshot_dir is not None and self.checkpoints is not None and self.snapshot_registry is not None:
             from tensorfold.engine.prefix_snapshots import load_snapshots
 
             loaded_at = time.perf_counter()
-            allow = None if self.prompt_memory is None else lambda path: self.prompt_memory.allow_load(path.stat().st_size)
-            loaded = list(load_snapshots(snapshot_dir, model_id, limit=self.max_snapshots, allow=allow))
-            for tokens, cache in reversed(loaded):        # the newest ends up most recently used
+            allow = (
+                None if self.prompt_memory is None else lambda path: self.prompt_memory.allow_load(path.stat().st_size)
+            )
+            loaded = list(
+                load_snapshots(
+                    snapshot_dir,
+                    model_id,
+                    registry=self.snapshot_registry,
+                    codec=self.snapshot_codec,
+                    limit=self.max_snapshots,
+                    allow=allow,
+                )
+            )
+            for tokens, cache in reversed(loaded):  # the newest ends up most recently used
                 self.checkpoints.insert(tokens, cache, last_prompt=tokens, pinned=True)
-                print(f"[tensorfold] loaded system-block snapshot tokens={len(tokens)} "
-                      f"in {time.perf_counter() - loaded_at:.1f}s", flush=True)
+                print(
+                    f"[tensorfold] loaded system-block snapshot tokens={len(tokens)} "
+                    f"in {time.perf_counter() - loaded_at:.1f}s",
+                    flush=True,
+                )
             loaded_count = len(loaded)
             del loaded
         self.warming = False
         self.scheduler.start()
-        if snapshot_dir is not None and self.checkpoints is not None and not loaded_count:
+        if (
+            snapshot_dir is not None
+            and self.checkpoints is not None
+            and self.snapshot_registry is not None
+            and not loaded_count
+        ):
             # only when these kernels have no block yet: a warmed block is pinned after the loaded ones
             self._warm_known_blocks(snapshot_dir, model_id)
+        self._startup_complete = True
 
     def _grow_checkpoints(self, work: int) -> None:
         """The default prompt cache takes what the weights, a whole-window request and a shared round leave idle."""
 
-        window = self.context_window or int(self.prompt_memory.affordable or 0)       # 0: no limit, the largest fits
+        window = self.context_window or int(self.prompt_memory.affordable or 0)  # 0: no limit, the largest fits
         spare = self.prompt_memory.spare(window, work)
         if spare > self.checkpoints.budget_bytes:
             self.checkpoints.budget_bytes = spare
-            print(f"[tensorfold] prompt cache up to {spare / 1024**3:.1f} GiB: the memory the weights, a "
-                  f"{window:,}-token request and a shared round leave idle, freed whenever a request needs it",
-                  flush=True)
+            print(
+                f"[tensorfold] prompt cache up to {spare / 1024**3:.1f} GiB: the memory the weights, a "
+                f"{window:,}-token request and a shared round leave idle, freed whenever a request needs it",
+                flush=True,
+            )
 
     def chat(
         self,
@@ -231,25 +358,57 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
     ) -> dict[str, Any]:
         """A reply to ``messages``, or with ``prompt`` (text or token ids) a raw completion: no template, no thinking."""
 
-        _REQUEST.sampling = sampling   # per HTTP thread
-        received_at = time.perf_counter()
-        fields = sampling or {}
-        limit = max(1, int(max_tokens or self.default_max_tokens))
-        background = is_title_request(messages, tools) or fields.get("priority") == "background"
-        preparing = None if background else self._Preparing(self)
-        cancellation = cancellation or Cancellation()
+        previous_sampling = getattr(_REQUEST, "sampling", None)
+        _REQUEST.sampling = sampling  # request-scoped; nested calls restore their outer request
+        preparing = None
+        primary = None
+        cleanup_failures = []
         try:
-            return self._chat_prepared(messages, max_tokens=limit, temperature=temperature, on_delta=on_delta,
-                                       tools=tools, received_at=received_at, background=background,
-                                       preparing=preparing, reply_limit_explicit=max_tokens is not None,
-                                       cancellation=cancellation, prompt=prompt)
-        except BaseException:
-            self.scheduler.cancel(cancellation)
+            received_at = time.perf_counter()
+            fields = sampling or {}
+            limit = max(1, int(max_tokens or self.default_max_tokens))
+            background = is_title_request(messages, tools) or fields.get("priority") == "background"
+            preparing = None if background else self._Preparing(self)
+            cancellation = cancellation or Cancellation()
+            return self._chat_prepared(
+                messages,
+                max_tokens=limit,
+                temperature=temperature,
+                on_delta=on_delta,
+                tools=tools,
+                received_at=received_at,
+                background=background,
+                preparing=preparing,
+                reply_limit_explicit=max_tokens is not None,
+                cancellation=cancellation,
+                prompt=prompt,
+            )
+        except BaseException as error:
+            primary = error
+            if cancellation is not None:
+                try:
+                    self.scheduler.cancel(cancellation)
+                except BaseException as cleanup:
+                    cleanup_failures.append(cleanup)
             raise
         finally:
+            _REQUEST.sampling = previous_sampling
             if preparing is not None:
-                preparing.release()
-            metrics.finish_request()
+                try:
+                    preparing.release()
+                except BaseException as cleanup:
+                    cleanup_failures.append(cleanup)
+            try:
+                metrics.finish_request()
+            except BaseException as cleanup:
+                cleanup_failures.append(cleanup)
+            if cleanup_failures:
+                error = primary if primary is not None else cleanup_failures[0]
+                for _ in cleanup_failures:
+                    BaseException.add_note(error, "request cleanup failed; pending work remains owned")
+                if primary is not None:
+                    raise primary from cleanup_failures[0]
+                raise error
 
     class _Preparing:
         """A user's request between arrival and submission: background requests wait for these."""
@@ -302,9 +461,11 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             room = self.context_window - len(prompt_ids)
             if room < 1:
                 why = ", the most this server's memory budget fits" if self.context_fitted else ""
-                raise ContextLengthError(f"{CONTEXT_LIMIT} {self.context_window} tokens{why}, but the rendered prompt "
-                                         f"has {len(prompt_ids)} tokens and leaves no room for a reply, which exceeds "
-                                         "the context window. Compact or shorten the conversation.")
+                raise ContextLengthError(
+                    f"{CONTEXT_LIMIT} {self.context_window} tokens{why}, but the rendered prompt "
+                    f"has {len(prompt_ids)} tokens and leaves no room for a reply, which exceeds "
+                    "the context window. Compact or shorten the conversation."
+                )
             if reply_limit_explicit and limit > room:
                 raise ContextLengthError(
                     f"{CONTEXT_LIMIT} {self.context_window} tokens, but the rendered prompt has {len(prompt_ids)} "
@@ -313,11 +474,15 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                     "tokens, including chat template and thinking tokens."
                 )
             limit = min(limit, room)
-        system_len = 0 if prompt is not None or rendered.vision is not None else self.system_prefix_len(messages, tools, prompt_ids, thinking=thinking)
+        system_len = (
+            0
+            if prompt is not None or rendered.vision is not None
+            else self.system_prefix_len(messages, tools, prompt_ids, thinking=thinking)
+        )
         spec = self._resolve_sampling(fields, temperature, prompt_ids)
         drafts = self.use_proposer and fields.get("draft", True) is not False
         shaped = thinking and any(fields.get(k) is not None for k in grammar.FIELDS)
-        think_end = self._token_id(self.think_markers[1]) if shaped else -1     # a grammar starts after it
+        think_end = self._token_id(self.think_markers[1]) if shaped else -1  # a grammar starts after it
 
         def make_job() -> ChatJob:
             job = ChatJob(
@@ -327,13 +492,16 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 temperature=float(temperature),
                 history_len=history_len,
                 # Snapshot before the system block ends to retain reusable prefixes when session-specific tails differ.
-                shared_prefix_lens=tuple(n for n in (system_len - 2048, system_len - 512, system_len)
-                                         if n >= 512) if system_len else (),
+                shared_prefix_lens=tuple(n for n in (system_len - 2048, system_len - 512, system_len) if n >= 512)
+                if system_len
+                else (),
                 sampling=spec,
                 background=background,
                 drafts=drafts,
-                ignore_eos=stops.ignore_eos, stop_check=stops if stops.strings else None,
-                cancellation=cancellation, call_gate=self._call_gate(fields, prompt_ids, tools),
+                ignore_eos=stops.ignore_eos,
+                stop_check=stops if stops.strings else None,
+                cancellation=cancellation,
+                call_gate=self._call_gate(fields, prompt_ids, tools),
                 constraint=grammar.request_constraint(self, fields, think_end if think_end >= 0 else None),
                 vision=rendered.vision,
             )
@@ -346,8 +514,9 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 if tools:
                     from tensorfold.engine.tool_draft import ToolCallProposer
 
-                    base = ToolCallProposer(_LockedTokenizer(self.tokenizer, self.tokenizer_lock), tools,
-                                            len(prompt_ids), fallback=base)
+                    base = ToolCallProposer(
+                        _LockedTokenizer(self.tokenizer, self.tokenizer_lock), tools, len(prompt_ids), fallback=base
+                    )
                 job.proposer = base
             return job
 
@@ -363,7 +532,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         metrics.begin(self, len(prompt_ids), received_at)
         metrics.bind(job)
         if preparing is not None:
-            preparing.release()           # submitted: a waiting background request may go now
+            preparing.release()  # submitted: a waiting background request may go now
 
         collected: list[int] = []
         streamed = ""
@@ -375,7 +544,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
 
         calls_stream = ToolCallStreamer(tools) if (tools and on_delta is not None) else None
         visible_text = IncrementalText(self.tokenizer, self.tokenizer_lock)
-        replay: list[int] = []        # tokens a preempted job already delivered, owed again by its rerun
+        replay: list[int] = []  # tokens a preempted job already delivered, owed again by its rerun
         preemptions = 0
         while True:
             cancellation.check()
@@ -393,14 +562,17 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                     self.scheduler.submit(job)
                     metrics.bind(job)
                     continue
+                if replay and job.error is None:
+                    raise RoundError(
+                        "ReplayDivergence", "a preempted request ended before replaying its emitted tokens"
+                    )
                 break
             if replay:
-                owed = replay[:len(chunk)]
-                if list(chunk[:len(owed)]) != owed:
-                    print(f"[tensorfold] rerun of a preempted request diverged: {chunk[:len(owed)]} != {owed}",
-                          flush=True)
-                replay = replay[len(owed):]
-                chunk = chunk[len(owed):]
+                owed = replay[: len(chunk)]
+                if list(chunk[: len(owed)]) != owed:
+                    raise RoundError("ReplayDivergence", "a preempted request diverged from its emitted tokens")
+                replay = replay[len(owed) :]
+                chunk = chunk[len(owed) :]
                 if not chunk:
                     continue
             if not first_token_at:
@@ -417,23 +589,23 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 fresh.append(token)
             text = stops.visible(visible_text.extend(fresh), partial=True)
             if len(visible_text.tokens) and visible_text._read < len(visible_text.tokens):
-                continue                    # a character still split across tokens: wait for the rest
+                continue  # a character still split across tokens: wait for the rest
             answer = text
             if thinking or self.think_markers == CHANNEL_MARKERS:
                 # the prompt opened a think block: reasoning streams as reasoning_content until </think>
                 reasoning_so_far, answer = split_thinking(text, finished=False, markers=self.think_markers)
-                piece = reasoning_so_far[len(streamed_reasoning):]
+                piece = reasoning_so_far[len(streamed_reasoning) :]
                 if piece:
                     streamed_reasoning = reasoning_so_far
                     on_delta({"reasoning_content": piece})
             shown = hide_tool_calls(answer, finished=False) if calls_stream is not None else answer
             visible = streaming_visible_text(shown)
-            delta = visible[len(streamed):]
+            delta = visible[len(streamed) :]
             if delta:
                 streamed = visible
                 on_delta(delta)
             if calls_stream is not None:
-                for call_delta in calls_stream.feed(answer):   # never the reasoning: a call it mentions is not made
+                for call_delta in calls_stream.feed(answer):  # never the reasoning: a call it mentions is not made
                     on_delta(call_delta)
         if job.error is not None:
             raise job.error
@@ -523,23 +695,65 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         if not stats or self.scheduler.active:
             return ""
         n = len(stats)
-        return (f"ms/round={sum(r.total_ms for r in stats) / n:.1f} "
-                f"forward={sum(r.forward_ms for r in stats) / n:.1f} "
-                f"draft={sum(r.draft_ms for r in stats) / n:.1f} post={sum(r.post_ms for r in stats) / n:.1f} "
-                f"rows={sum(r.width for r in stats) / n:.1f} ")
+        return (
+            f"ms/round={sum(r.total_ms for r in stats) / n:.1f} "
+            f"forward={sum(r.forward_ms for r in stats) / n:.1f} "
+            f"draft={sum(r.draft_ms for r in stats) / n:.1f} post={sum(r.post_ms for r in stats) / n:.1f} "
+            f"rows={sum(r.width for r in stats) / n:.1f} "
+        )
 
     def close(self) -> None:
-        self.scheduler.on_stop = self.save_sessions    # saved by the scheduler thread, which owns the arrays
-        self.scheduler.stop(timeout=120.0)
+        """Stop owned scoring/warmup work before return; timed-out owners retain their resources and raise."""
+        scheduler = getattr(self, "scheduler", None)
+        if scheduler is None:
+            engine = getattr(self, "engine", None)
+            if engine is not None:
+                engine.drain()
+                engine.reset()
+            return
+        warmup = getattr(self, "warmup_thread", None)
+        if warmup is not None and threading.current_thread() is warmup:
+            raise RuntimeError("the saved-prefix warmup cannot join itself")
+        failures = []
+        try:
+            if warmup is not None:
+                scheduler.cancel(self.warmup_cancellation)
+        except BaseException as failure:
+            failures.append(failure)
+        try:
+            # Failed construction never persists an incomplete startup snapshot.
+            scheduler.on_stop = self.save_sessions if getattr(self, "_startup_complete", True) else None
+            scheduler.stop(timeout=120.0)
+        except BaseException as failure:
+            failures.append(failure)
+        if warmup is not None:
+            try:
+                self.warmup_work.drain(warmup, timeout=5.0)
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            if len(failures) > 1:
+                raise failures[0] from BaseExceptionGroup("additional application shutdown failures", failures[1:])
+            raise failures[0]
 
     def save_sessions(self) -> int:
         """At shutdown, the most recent conversations' checkpoints to disk (read back on demand)."""
 
-        if self.scheduler.session_dir is None or self.checkpoints is None:
+        if self.scheduler.session_dir is None or self.checkpoints is None or self.snapshot_registry is None:
             return 0
         directory, model = Path(self.scheduler.session_dir), self.scheduler.model_id
-        if self.spill_bytes > 0:        # with spilling, the directory holds every conversation that fits its budget
-            saved = save_conversations(self.checkpoints, directory, model, keep=1 << 30, limit_bytes=self.spill_bytes)
+        if self.spill_bytes > 0:  # with spilling, the directory holds every conversation that fits its budget
+            saved = save_conversations(
+                self.checkpoints,
+                directory,
+                model,
+                keep=1 << 30,
+                limit_bytes=self.spill_bytes,
+                registry=self.snapshot_registry,
+                codec=self.snapshot_codec,
+            )
             prune_conversations(directory, model, self.spill_bytes)
             return saved
-        return save_conversations(self.checkpoints, directory, model)
+        return save_conversations(
+            self.checkpoints, directory, model, registry=self.snapshot_registry, codec=self.snapshot_codec
+        )

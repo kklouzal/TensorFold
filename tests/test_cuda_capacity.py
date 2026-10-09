@@ -19,7 +19,9 @@ def checkpoint(path, config, tensors):
         entries[name] = {"dtype": dtype, "shape": shape, "data_offsets": [offset, offset + size]}
         offset += size
     raw = json.dumps(entries).encode()
-    (path / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + offset)  # sparse, valid isolated payload; no model data is loaded
 
 
 def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch):

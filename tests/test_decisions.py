@@ -131,6 +131,12 @@ def test_scheduler_scores_on_the_engine_thread():
         def score_labels(self, prompt, labels):
             return [float(labels[0]), 0.0], 1.0
 
+        def drain(self):
+            pass  # this scalar CPU fixture has no outstanding native work
+
+        def reset(self):
+            pass
+
     scheduler = Scheduler(Engine(), lanes=1, eos_ids=frozenset())
     scheduler.start()
     try:
@@ -168,6 +174,12 @@ def test_a_decision_fills_beside_a_live_stream():
             return {}
 
         def discard_stream(self, stream):
+            pass
+
+        def drain(self):
+            pass  # this scalar CPU fixture has no outstanding native work
+
+        def reset(self):
             pass
 
     engine = Engine()

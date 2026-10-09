@@ -94,8 +94,13 @@ def test_scheduler_wires_the_foreground_check_before_starting(monkeypatch):
 
     m = SimpleNamespace(arrived=lambda: False)
     started = []
-    monkeypatch.setattr(scheduler.threading, "Thread", lambda **kw: SimpleNamespace(start=lambda: started.append(1)))
+    def start():
+        started.append(1)
+        sched._worker_entered.set()               # this wiring fixture substitutes the actor-entry handshake
+
+    monkeypatch.setattr(scheduler.threading, "Thread", lambda **kw: SimpleNamespace(start=start))
     sched = Scheduler(m)
+    sched.start()
     assert started == [1] and not m.arrived()
     sched.waiting.put((Stream([1], 1, background=True), None))
     assert not m.arrived()

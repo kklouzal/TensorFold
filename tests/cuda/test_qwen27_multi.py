@@ -152,6 +152,7 @@ def test_scheduler_serves_concurrent_requests_exactly():
     w = _model()
     refs = {tuple(p): _serial(w, p, smp, 20) for p, smp in zip(PROMPTS, SAMPLINGS)}
     sched = Scheduler(_Oracle(w, refs, seed=3), max_streams=3)
+    sched.start()
     results: dict[int, tuple] = {}
 
     def go(i):
@@ -194,6 +195,7 @@ def test_a_failed_prompt_end_copy_fails_only_its_request(monkeypatch):
     monkeypatch.setattr("tensorfold.families.qwen3_5.cuda.multi.viewed", failing)
     dec = _Oracle(w, refs, seed=5)
     sched = Scheduler(dec, max_streams=3)
+    sched.start()
     results: dict = {}
 
     def go(key, prompt, sampling):

@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from ..host_table import open_table, shard_keys
+from ..ple_lifetime import PLETables, _note, _retain_failure
 from ..rope import RopeParameters
 from .bf16 import b16_from_rows, quantize4, stack_b16
 from tensorfold.cuda import experts as grouped
@@ -52,12 +53,16 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                          **({"vram_experts": vram_experts, "_ram_layout": ram_layout}
                             if vram_experts is not None else {}))
     full = Config.read(model_dir, rope=rope)
+    ids = draft_token_ids(draft_vocab, full.vocab)
+    if ids is not None and ids.size < (tp[1] if tp is not None else 1):
+        raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
     inv = full.rope.inverse_frequencies(torch)
     rank, world = tp if tp is not None else (0, 1)
     cfg = full if world == 1 else replace(full, heads=full.heads // world, kv_heads=full.kv_heads // world,
                                           nk=full.nk // world, nv=full.nv // world,
                                           moe_width=full.moe_width // world, shared_width=full.shared_width // world)
     expert_cache = None
+    ple_tables = PLETables()
     next_expert_layer = 0
     rd = _Reader(model_dir, device)
     prefix = "language_model." if rd.has("language_model.model.embed_tokens.weight") else ""
@@ -202,8 +207,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         ngram.check(raw(base + "layer_multipliers").cpu().numpy(), raw(base + "ngram_heads_offsets").cpu().numpy(),
                     raw(base + "ngram_heads_vocab_sizes").cpu().numpy())
         keys = shard_keys(prefix + base + "ngram_embedding", cfg.ngram_shards, rd.where)
-        table = open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
-                           lambda n: table_scale(base, n))
+        table = ple_tables.acquire(open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
+                                               lambda n: table_scale(base, n)))
         if getattr(table, "width", ngram.dims) != ngram.dims:
             raise ValueError(f"the n-gram rows hold {table.width} values, expected {ngram.dims}")
         if table.rows != ngram.rows:
@@ -374,14 +379,15 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         ngram.check(raw(base + "layer_multipliers").cpu().numpy(), raw(base + "ngram_heads_offsets").cpu().numpy(),
                     raw(base + "ngram_heads_vocab_sizes").cpu().numpy())
         keys = shard_keys(prefix + base + "ngram_embedding", cfg.ngram_shards, rd.where)
-        table = open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
-                           lambda n: table_scale(base, n), ssd=ple_on_ssd)
+        table = ple_tables.acquire(open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
+                                               lambda n: table_scale(base, n), ssd=ple_on_ssd))
         if table.rows != ngram.rows:
             raise ValueError(f"n-gram tables hold {table.rows} rows, expected {ngram.rows}")
         if table_reads is not None and not ple_on_ssd:     # its pages come in while the weights load
             from tensorfold.cuda.direct_read import in_background
 
-            in_background(table.prefetch, table_reads)      # the caller waits for it (``wait_all``)
+            in_background(table.prefetch, ple_tables.reads)
+            table_reads.append(ple_tables.reads[-1])       # private journal remains authoritative if publication fails
         conv = raw(name + ".conv1d.weight").reshape(cfg.streams * cfg.hidden, cfg.ple_kernel).to(torch.bfloat16)
         return PLEW(table, q4(name + ".key_proj"), q4(name + ".value_proj"),
                     cscale(name + ".norm_key.weight"), cscale(name + ".norm_query.weight"),
@@ -447,9 +453,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             del head_raw
         # NVFP4: the draft head is the bf16 lm_head's draft rows requantized 4-bit at load (drafts only)
         draft_head, draft_ids = None, None
-        ids = draft_token_ids(draft_vocab)
         if ids is not None:
-            ids = np.array_split(ids[ids < full.vocab], world)[rank]
+            ids = np.array_split(ids, world)[rank]
             ids = torch.from_numpy(ids).to(device)
             draft_ids = ids
             if cfg.quant == "modelopt":
@@ -457,7 +462,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             else:
                 draft_head = make_q4(*_rows_at(triple("lm_head"), ids))
         w = Weights(cfg, embed, loaded, mixer, head, inv.to(device), around_one=around_one)
-        w.meta.update(rank=rank, world=world, vocab_offset=rank * vl, full=full)
+        w.meta.update(rank=rank, world=world, vocab_offset=rank * vl, full=full, ple_tables=ple_tables)
         w.meta["rope"] = cfg.rope.metadata()
         if expert_cache is not None:
             w.meta["expert_cache"] = expert_cache
@@ -474,13 +479,25 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         w.meta["load_seconds"] = time.time() - t0
         return w
     except BaseException as primary:
+        # An unresolved drain/fence remains an explicit retryable owner on the
+        # original failure, rather than a silently discarded local journal.
+        _retain_failure(primary, "ple_tables", ple_tables)
+        cleanup_errors = []
+        _retain_failure(primary, "load_cleanup_errors", cleanup_errors)
+        try:
+            ple_tables.close(lambda: torch.cuda.synchronize(device))
+        except BaseException as cleanup:
+            _retain_failure(primary, "ple_cleanup_error", cleanup)
+            cleanup_errors.append(("PLE table cleanup also failed; journal retained", cleanup))
         try:
             rd.close()
         except BaseException as cleanup:
-            primary.add_note(f"checkpoint reader cleanup also failed: {cleanup!r}")
+            cleanup_errors.append(("checkpoint reader cleanup also failed", cleanup))
         if expert_cache is not None:
             try:
                 expert_cache.close()
             except BaseException as cleanup:
-                primary.add_note(f"expert cache cleanup also failed: {cleanup!r}")
+                cleanup_errors.append(("expert cache cleanup also failed", cleanup))
+        for message, _ in cleanup_errors:
+            _note(primary, message)
         raise

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from tensorfold.families.qwen3_5.cuda import glue as base
@@ -32,15 +34,14 @@ class MTPHead:
         self.split = bool(split) and hasattr(engine, "gather")
         self.id_map = None
         self.local_ids = None
-        ids = None if draft_ids is None else torch.as_tensor(list(draft_ids), dtype=torch.int64, device=engine.device)
+        token_list = None if draft_ids is None else S.token_list(draft_ids, engine.w.config.vocab, 128 if self.split else 64)
+        ids = None if token_list is None else torch.as_tensor(token_list, dtype=torch.int64, device=engine.device)
         if self.split:
             from .tp import WORLD, vocab_rows
 
             self.m = engine.w.extra["mtp_local"]
             c = self.cfg = engine.c
             if ids is not None:                                # each rank scores its half of the id list
-                if ids.numel() % (64 * WORLD):
-                    raise ValueError("split draft ids must hold a multiple of 128 ids")
                 half = ids.numel() // WORLD
                 self.local_ids = ids[engine.rank * half:(engine.rank + 1) * half].contiguous()
                 self.offset = 0
@@ -54,8 +55,6 @@ class MTPHead:
             c = self.cfg = engine.w.extra.get("full_config", engine.c)      # replicated on every rank
             self.head = engine.w.head
             if ids is not None:
-                if ids.numel() % 64:
-                    raise ValueError("draft ids must hold a multiple of 64 ids")
                 self.head = head_rows(engine.w.head, ids)
                 self.id_map = ids
         dev = engine.device
@@ -105,12 +104,11 @@ class MTPHead:
             h, normed, xs = e.norm(x[rows - 1:rows].contiguous(), ("ranks", last), m.moe_norm)
             _, out, oxs = e.norm(h, e.moe_tp(m.moe, normed, 1), m.final_norm)
             logits = G.dense(out, self.head, oxs)
-            vals, ids = torch.topk(logits.float(), 28, dim=-1)
-            ids = self.local_ids[ids] if self.local_ids is not None else ids + self.offset
-            both = e.gather(torch.cat([vals.view(torch.int32), ids.view(torch.int32)], dim=1)).view(2, 1, 84)
-            v = both[:, :, :28].contiguous().view(torch.float32)
-            i = both[:, :, 28:].contiguous().view(torch.int64)
-            return out, (torch.cat([v[0], v[1]], dim=1), torch.cat([i[0], i[1]], dim=1))
+            count = S.candidate_count(logits.shape[1], e.params.sampling, minimum=28)
+            vals, ids = S.candidates(logits, count, self.local_ids)
+            if self.local_ids is None:
+                ids = ids + self.offset
+            return out, S.gather_candidates(e.gather, vals, ids, world=2)
         delta = e.attention(m.attn, normed, xs, rows, self.k_cache, self.v_cache, meta, cfg=self.cfg)
         if not tail:
             return None
@@ -218,4 +216,7 @@ class MTPHead:
     def confidences(self) -> list[float]:
         """Each draft's share of the head's top-k probability (read with ``drafts``)."""
 
-        return self._host_probs[:self._count].tolist()
+        values = self._host_probs[:self._count].tolist()
+        if any(not math.isfinite(value) or not 0 <= value <= 1 for value in values):
+            raise ValueError("draft confidence must be finite and in [0, 1]")
+        return values

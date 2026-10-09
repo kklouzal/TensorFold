@@ -91,6 +91,9 @@ def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr):
 def group_sums(x: torch.Tensor) -> torch.Tensor:
     """(M, K) bf16 -> (M, K/64) fp32 sums of each 64-input group."""
 
+    if (not torch.is_tensor(x) or x.dim() != 2 or x.dtype != torch.bfloat16 or not x.is_cuda or not x.is_contiguous()
+            or x.shape[0] <= 0 or x.shape[1] <= 0 or x.shape[1] % 64):
+        raise ValueError("group_sums: contiguous CUDA bf16 rows with positive K divisible by64 required")
     m, k = x.shape
     kg = k // 64
     xs = torch.empty((m, kg), dtype=torch.float32, device=x.device)
@@ -104,19 +107,34 @@ def lane_matmul(x: torch.Tensor, weight: torch.Tensor, scales: torch.Tensor, bia
                 bm: int | None = None) -> torch.Tensor:
     """x (M, K) bf16 times the packed 4-bit ``weight`` (N, K/8) transposed -> (M, N) bf16."""
 
-    if x.dtype != torch.bfloat16 or x.dim() != 2:
-        raise ValueError("lane_matmul: x must be a 2-D bf16 tensor")
+    if (not torch.is_tensor(x) or any(not torch.is_tensor(value) for value in (weight, scales, biases))
+            or (xs is not None and not torch.is_tensor(xs))):
+        raise ValueError("lane_matmul: tensor inputs required")
+    if x.dtype != torch.bfloat16 or x.dim() != 2 or not x.is_cuda:
+        raise ValueError("lane_matmul: x must be a 2-D CUDA bf16 tensor")
     m, k = x.shape
-    n = weight.shape[0]
-    if weight.shape[1] * 8 != k or k % 64:
-        raise ValueError(f"lane_matmul: weight {tuple(weight.shape)} does not match K={k}")
-    x = x.contiguous()
+    if m <= 0 or k <= 0 or k % 64:
+        raise ValueError("lane_matmul: positive rows and K divisible by64 required")
+    if (weight.dim() != 2 or weight.dtype not in (torch.int32, torch.uint32)
+            or weight.shape[0] <= 0 or weight.shape[1] * 8 != k):
+        raise ValueError("lane_matmul: positive packed32-bit weight rows must match K")
+    n, kg = weight.shape[0], k // 64
+    if any(value.device != x.device or not value.is_contiguous() for value in (weight, scales, biases)):
+        raise ValueError("lane_matmul: weights, scales and biases must be contiguous on x's CUDA device")
+    if any(value.dtype not in (torch.bfloat16, torch.float16, torch.float32, torch.float64) or tuple(value.shape) != (n, kg) for value in (scales, biases)):
+        raise ValueError("lane_matmul: scales and biases must be floating with one value per64-input group")
+    if xs is not None and (xs.dtype != torch.float32 or xs.device != x.device or not xs.is_contiguous()
+                           or tuple(xs.shape) != (m, kg)):
+        raise ValueError("lane_matmul: supplied group sums must be contiguous fp32 on x's device with shape(M,K/64)")
     bm = bucket(m) if bm is None else int(bm)
     if bm not in (16, 32, 64, 128):
-        raise ValueError("lane_matmul: row tile must be 16, 32, 64 or 128")
+        raise ValueError("lane_matmul: row tile must be16,32,64 or128")
+    sk = int(sk) if sk else split_k(n, k)
+    if sk <= 0 or kg % sk:
+        raise ValueError("lane_matmul: positive split count must divide the64-input group count")
+    x = x.contiguous()
     if xs is None:
         xs = group_sums(x)
-    sk = int(sk) if sk else split_k(n, k)
     out = torch.empty((m, n), dtype=torch.bfloat16, device=x.device)
     part = out if sk == 1 else torch.empty((sk, m, n), dtype=torch.float32, device=x.device)
     grid = (triton.cdiv(m, bm), triton.cdiv(n, BN), sk)

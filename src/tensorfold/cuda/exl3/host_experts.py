@@ -27,7 +27,8 @@ import torch
 import triton
 import triton.language as tl
 
-from tensorfold.cuda.expert_cache import HostExpertCache
+from tensorfold.cuda.expert_cache import HostExpertCache, _Policy
+from .cache_layout import ExpertSpec, plan
 from tensorfold.cuda.direct_read import ReadAhead
 from . import experts as native
 from . import format as fmt
@@ -98,6 +99,7 @@ class _CompactLayer:
     views: tuple[torch.Tensor, ...]
     count: int
     fields: tuple = ()
+    shared_id: int | None = None
 
 
 def _validate_authority(authority):
@@ -156,6 +158,9 @@ class Exl3HostExpertCache(HostExpertCache):
     """Variable-size compact payloads using the existing cache lease protocol."""
 
     def __init__(self, gpu_bytes, entry_bytes, device, *, staging_slots=2):
+        self._size_layout = None
+        self._shared_cells = {}
+        self._shared_protected = frozenset()
         super().__init__(gpu_bytes, entry_bytes, device, staging_slots=staging_slots)
         if self._pool.data_ptr() % 16 or self._pool.data_ptr() + self.gpu_bytes > 2**63 - 1:
             raise ValueError("EXL3 cells require aligned signed-int64 CUDA addresses")
@@ -172,7 +177,7 @@ class Exl3HostExpertCache(HostExpertCache):
 
     @property
     def control_device_bytes(self):
-        return self.capacity * 32
+        return self.resident_capacity * 32
 
     def _replacement_views(self, pool, capacity):
         if pool.data_ptr() % 16 or pool.data_ptr() + pool.numel() > 2**63 - 1:
@@ -187,7 +192,7 @@ class Exl3HostExpertCache(HostExpertCache):
 
     @property
     def control_host_bytes(self):
-        return self.capacity * 64
+        return self.resident_capacity * 64
 
     @property
     def host_payload_bytes(self):
@@ -197,20 +202,24 @@ class Exl3HostExpertCache(HostExpertCache):
     def metadata_host_bytes(self):
         return sum(layer.authority.metadata_bytes for layer in self._layers.values())
 
-    def register(self, layer_id, authority):
+    def register(self, layer_id, authority, *, shared_id=None):
         _validate_authority(authority)
+        if shared_id is not None and (type(shared_id) is not int or shared_id != authority.count - 1):
+            raise ValueError("the named shared expert must be the final logical EXL3 ID")
         with self._lock:
             self._usable()
             if self._sealed:
                 raise RuntimeError("EXL3 cache registrations are sealed")
             if authority.max_entry_bytes > self.entry_bytes:
                 raise ValueError("an original EXL3 expert does not fit the fixed GPU cell")
-            self._policy.register(layer_id, authority.count)
             source = authority.source
-            self._layers[layer_id] = _CompactLayer(authority, source, tuple(t._version for t in source),
-                                                    (self._cells,), authority.count)
+            layers = dict(self._layers)
+            layers[layer_id] = _CompactLayer(authority, source, tuple(t._version for t in source),
+                                            (self._cells,), authority.count, shared_id=shared_id)
+            self._policy.register(layer_id, authority.count)
+            self._layers = layers
 
-    def _copy(self, layer, expert, slot, stream):
+    def _copy_fixed(self, layer, expert, slot, stream):
         stage = self._next_stage
         self._next_stage = (stage + 1) % self.staging_slots
         event = self._stage_events[stage]
@@ -253,7 +262,7 @@ class Exl3HostExpertCache(HostExpertCache):
             self._header_keys = self._pack_ref = None
             self._sealed = True
 
-    def publish(self, layer_id, tables, ids, mapping):
+    def _publish_fixed(self, layer_id, tables, ids, mapping):
         """Called inside a live parent lease, before its consumers are queued."""
 
         if not self._active:
@@ -283,6 +292,167 @@ class Exl3HostExpertCache(HostExpertCache):
         _publish[(triton.cdiv(len(ids), 128),)](self._publication_device, tables.gate_ptr, tables.up_ptr,
                                              tables.down_ptr, len(ids), B=128, num_warps=4)
 
+    def configure_before_use(self, gpu_bytes):
+        _integer(gpu_bytes, 'gpu_bytes')
+        with self._lock, torch.cuda.device(self.device), torch.inference_mode(False):
+            self._usable()
+            if self._configured_before_use or self._last_stream is not None or self._policy.resident or self._policy.tick or self._policy.touches or self.hits or self.misses or self.evictions or self.copied_bytes:
+                raise RuntimeError('expert arena can be configured only once before its first lease')
+            if not self._sealed or not self._layers:
+                raise RuntimeError('complete immutable logical registrations required before size selection')
+            if any((tuple((t._version for t in data.source)) != data.versions for data in self._layers.values())):
+                raise ValueError('registered CPU expert tensors were mutated')
+            if any((data.shared_id is None for data in self._layers.values())):
+                super().configure_before_use(gpu_bytes)
+                return
+            specs = tuple((ExpertSpec(layer, expert, size, expert == data.shared_id) for layer, data in self._layers.items() for expert, size in enumerate(data.authority.trellis_bytes.tolist())))
+            layout = plan(specs, gpu_bytes, gpu_bytes + gpu_bytes // self.entry_bytes * 32)
+            if layout.kind == 'fixed':
+                super().configure_before_use(gpu_bytes)
+                self._size_layout = layout
+                return
+            torch.cuda.current_stream(self.device).synchronize()
+            policy = _Policy(layout.resident_capacity)
+            for key, data in self._layers.items():
+                policy.register(key, data.count)
+            pool = torch.empty(layout.payload_bytes, dtype=torch.uint8, device=self.device)
+            if pool.data_ptr() % 16 or pool.data_ptr() + pool.numel() > 2 ** 63 - 1:
+                raise ValueError('size-class arena must have aligned signed-int64 addresses')
+            cells = tuple((pool.narrow(0, cell.offset, cell.size) for cell in layout.cells))
+            host = torch.empty((2, layout.resident_capacity, 4), dtype=torch.int64, pin_memory=True)
+            device = torch.empty((layout.resident_capacity, 4), dtype=torch.int64, device=self.device)
+            shared = {cell.shared_key: cell.handle for cell in layout.cells if cell.shared_key is not None}
+            protected = frozenset(shared.values())
+            views = (pool,)
+            layer_iterator = iter(self._layers.values())
+            self._pool, self._policy = (pool, policy)
+            self._cells, self._publication_host, self._publication_device = (cells, host, device)
+            self.capacity, self.gpu_bytes, self.budget_bytes = (layout.safe_lease_count, layout.payload_bytes, gpu_bytes)
+            self._size_layout, self._shared_cells, self._shared_protected = (layout, shared, protected)
+            for data in layer_iterator:
+                data.views = views
+            self._configured_before_use = True
+
+    def _copy(self, layer, expert, slot, stream):
+        if self._size_layout is None or self._size_layout.kind == 'fixed':
+            return self._copy_fixed(layer, expert, slot, stream)
+        stage = self._next_stage
+        self._next_stage = (stage + 1) % self.staging_slots
+        event = self._stage_events[stage]
+        if self._stage_pending[stage] and (not event.query()):
+            event.synchronize()
+        start = int(layer.authority.starts[expert])
+        size = int(layer.authority.trellis_bytes[expert])
+        if size != self._size_layout.cells[slot].size:
+            raise ValueError('logical expert does not fit its prepared size-class cell')
+        pinned = self._staging[stage, :size]
+        pinned.copy_(layer.authority.data.narrow(0, start, size))
+        self._cells[slot].copy_(pinned, non_blocking=True)
+        event.record(stream)
+        self._stage_pending[stage] = True
+        return size
+
+    def publish(self, layer_id, tables, ids, mapping):
+        if self._size_layout is None or self._size_layout.kind == 'fixed':
+            return self._publish_fixed(layer_id, tables, ids, mapping)
+        if not self._active:
+            raise RuntimeError('EXL3 pointer publication requires a live cache lease')
+        if not ids:
+            return
+        stage = self._publication_stage
+        self._publication_stage = (stage + 1) % 2
+        event = self._publication_events[stage]
+        if self._publication_pending[stage] and (not event.query()):
+            event.synchronize()
+        host = self._publication_host[stage, :len(ids)]
+        destination = host.numpy()
+        authority = self._layers[layer_id].authority
+        unit = authority.dims * authority.width // 16
+        widths = authority.k2.numpy()
+        base = self._pool.data_ptr()
+        for row, logical in enumerate(ids):
+            gate = base + self._size_layout.cells[mapping[logical]].offset
+            up = gate + unit * int(widths[logical, 0])
+            down = up + unit * int(widths[logical, 1])
+            destination[row] = (logical, gate, up, down)
+        self._publication_device[:len(ids)].copy_(host, non_blocking=True)
+        stream = torch.cuda.current_stream(self.device)
+        event.record(stream)
+        self._publication_pending[stage] = True
+        _publish[triton.cdiv(len(ids), 128),](self._publication_device, tables.gate_ptr, tables.up_ptr, tables.down_ptr, len(ids), B=128, num_warps=4)
+
+    @contextmanager
+    def lease(self, layer_id, expert_ids):
+        if self._size_layout is None or self._size_layout.kind == 'fixed':
+            with super().lease(layer_id, expert_ids) as borrowed:
+                yield borrowed
+            return
+        with self._lock, torch.cuda.device(self.device):
+            self._usable()
+            _integer(layer_id, 'layer_id', 0)
+            layer = self._layers.get(layer_id)
+            if layer is None:
+                raise ValueError(f'unknown expert layer {layer_id}')
+            if not isinstance(expert_ids, list) or len(expert_ids) > self.capacity:
+                raise ValueError('expert IDs must fit the prepared safe wave capacity')
+            if any((type(i) is not int or not 0 <= i < layer.count for i in expert_ids)) or len(set(expert_ids)) != len(expert_ids):
+                raise ValueError('expert IDs must be distinct in-range integers')
+            if tuple((t._version for t in layer.source)) != layer.versions:
+                raise ValueError('registered CPU expert tensors were mutated')
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError('host-backed expert leases cannot be captured in a CUDA graph')
+            stream = torch.cuda.current_stream(self.device)
+            self._active = True
+            keys = [(layer_id, expert) for expert in expert_ids]
+            mapping = {}
+            primary = None
+            try:
+                try:
+                    if self._last_stream is not None and stream != self._last_stream:
+                        stream.wait_event(self._last_use)
+                    self._policy.touch(keys)
+                    protected = set(self._shared_protected)
+                    protected.update((self._policy.resident[key] for key in keys if key in self._policy.resident))
+                    missing = sum((key not in self._policy.resident and key not in self._shared_cells for key in keys))
+                    victims = (iter(self._policy.victims(protected, missing))
+                               if missing >= 2 and self._policy._logical is not None
+                               and self._policy._batch_scan_limit is not None else None)
+                    for key in keys:
+                        slot = self._policy.resident.get(key)
+                        if slot is None:
+                            slot = self._shared_cells.get(key)
+                            if slot is None:
+                                slot = next(victims) if victims is not None else self._policy.victim(protected)
+                            if self._policy.keys[slot] is not None:
+                                self.evictions += 1
+                            self._policy.remove(slot)
+                            copied = self._copy(layer, key[1], slot, stream)
+                            self._policy.install(slot, key)
+                            self.misses += 1
+                            self.copied_bytes += copied
+                        else:
+                            self.hits += 1
+                            self._policy.recency[slot] = self._policy.tick
+                        protected.add(slot)
+                        mapping[key[1]] = slot
+                except BaseException:
+                    self._failure = 'expert fill or stream dependency failed'
+                    raise
+                yield (layer.views, mapping)
+            except BaseException as error:
+                primary = error
+                raise
+            finally:
+                try:
+                    self._last_use.record(stream)
+                except BaseException as error:
+                    self._failure = 'expert last-use event publication failed'
+                    if primary is not None:
+                        raise primary from error
+                    raise
+                finally:
+                    self._last_stream, self._active = (stream, False)
+
     def close(self):
         super().close()
         self._cells = self._publication_host = self._publication_device = None
@@ -295,14 +465,14 @@ class CachedExl3Experts:
     kernel = "exl3"
     capturable = False
 
-    def __init__(self, authority, tables, cache, layer_id):
+    def __init__(self, authority, tables, cache, layer_id, *, shared_id=None):
         self.cache, self.layer_id, self._tables = cache, layer_id, tables
         for field in ("count", "dims", "width", "cb", "k2_gu", "k2_d", "trellis_bytes"):
             setattr(self, field, getattr(tables, field))
         self._immutable = tuple(getattr(tables, field) for field in
                                 ("gate_k2", "up_k2", "down_k2", "suh_g", "suh_u", "svh_g", "svh_u", "suh_d", "svh_d"))
         self._versions = tuple(t._version for t in self._immutable)
-        cache.register(layer_id, authority)
+        cache.register(layer_id, authority, shared_id=shared_id)
 
     @property
     def capacity(self):
@@ -328,8 +498,8 @@ class CachedExl3Experts:
         with self.cache.lease(self.layer_id, ids) as (_, mapping):
             try:
                 self.cache.publish(self.layer_id, self._tables, ids, mapping)
-            except BaseException as error:
-                self.cache._failure = repr(error)
+            except BaseException:
+                self.cache._failure = "EXL3 expert pointer publication failed"
                 raise
             yield self._tables
 
@@ -771,7 +941,7 @@ def load_cached(pk, prefix, count, shared, cache, layer_id, device, *, reads=Non
         raise ValueError("EXL3 metadata and weight cache must share a CUDA device")
     keys = cache.projection_keys(pk, prefix, shared)
     authority, tables = load_compact(pk, prefix, count, shared, device=cache.device, keys=keys, reads=reads)
-    return CachedExl3Experts(authority, tables, cache, layer_id)
+    return CachedExl3Experts(authority, tables, cache, layer_id, shared_id=count)
 
 
 def logical_waves(pick, count, capacity):
@@ -875,9 +1045,12 @@ def routed_cached(x, pick, cached, scratch, rows, *, limit=math.inf, act_mode=na
         controls = scratch.host_waves = WaveScratch(scratch.rows, scratch.slots, x.device)
     source = controls.read(pick, rows)
     _validate_native_picks(source, cached.count)
-    for ids in logical_waves(source, cached.count, cached.capacity):
+    waves = logical_waves(source, cached.count, cached.capacity)
+    for ids in waves:
         with cached.lease(ids) as hot:
-            masked = controls.stage(source, ids, cached.count)
+            # Every valid pick is covered by the only lease. Native kernels
+            # already skip all negative/out-of-range IDs without writing y.
+            masked = pick if len(waves) == 1 else controls.stage(source, ids, cached.count)
             native.routed(x, masked, None, hot, scratch, None, rows, limit=limit, act_mode=act_mode)
     return scratch.y[:rows * scratch.slots]
 

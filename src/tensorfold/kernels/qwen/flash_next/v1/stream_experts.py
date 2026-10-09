@@ -20,7 +20,7 @@ _ROUTE = r"""
   if (lane == 0) {
     device uint32_t* box = (device uint32_t*)BOX;
     for (int k = 0; k < TOPK; k++) box[r * TOPK + k] = uint32_t(ids[k]);
-    OUT[0] = uint32_t(rows[0]);
+    if (r == 0) OUT[0] = uint32_t(rows[0]);
   }
 """
 
@@ -52,6 +52,8 @@ def route(logits: mx.array, top_k: int, box: mx.array) -> mx.array:
     """Write each row's top-k expert ids into ``box`` (the host reads it after the GPU's signal); returns a token."""
 
     rows = int(logits.shape[0])
+    if rows < 1:
+        raise ValueError("streamed routing requires at least one row")
     run = kernel("q4_stream_route", _ROUTE, ["LOGITS", "BOX", "rows"], ["OUT"])
     return run(inputs=[logits, box, count(rows)],
                template=[("NE", experts_of(logits)), ("NL", int(logits.shape[-1])), ("TOPK", top_k)],

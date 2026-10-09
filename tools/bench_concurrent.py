@@ -19,13 +19,21 @@ Standard library only.
 Missing token hashes are unverified, never equal. ``--strict`` requires hashes
 for measured replies and verifies all requested comparisons; failed/unmeasured
 cells or unverified comparisons exit nonzero. Ordinary servers may omit hashes
-without strict mode. SSE arrivals measure text pieces, not individual tokens.
+without strict mode. SSE arrivals measure text pieces, not individual tokens. Rates estimate tokens
+from total usage and text arrivals; the first piece can contain multiple tokens.
 Transport errors and unequal requested comparisons always exit nonzero.
 
   python3 tools/bench_concurrent.py http://127.0.0.1:8080 MODEL --levels 1,2,4,8 --alone --output out.json
+
+Response budgets: --response-mib defaults to16MiB, --sse-line-kib to64KiB.
+Raise them for larger valid replies or servers that batch a response into one
+SSE line. Event storage shares the response budget. Limits concern client
+measurement storage and never alter generation parameters. Inactivity timeouts
+remain unchanged; these readers do not claim a whole-request wall deadline.
 """
 
 import argparse
+from functools import partial
 import json
 import math
 import statistics
@@ -33,8 +41,16 @@ import threading
 import time
 import urllib.request
 
+if __package__:
+    from . import openai_protocol as protocol
+    from .benchmark_output import write_json
+    from .worker_lifetime import Task, drain, raise_failures
+else:
+    import openai_protocol as protocol
+    from benchmark_output import write_json
+    from worker_lifetime import Task, drain, raise_failures
+
 MIN_PIECES = 4           # text pieces a reply needs before its span is timed
-MAX_SSE_BYTES = 16 * 1024**2
 
 
 def compare_hash(left: dict, right: dict) -> bool | None:
@@ -53,9 +69,11 @@ PROMPTS = [
 
 
 def stream(base: str, model: str, item: dict, tokens: int, temperature: float, seed: int | None,
-           draft: bool = True, gate: threading.Barrier | None = None) -> dict:
+           draft: bool = True, gate: threading.Barrier | None = None, *, limits=None) -> dict:
     try:
-        return _stream(base, model, item, tokens, temperature, seed, draft, gate)
+        if limits is None:
+            return _stream(base, model, item, tokens, temperature, seed, draft, gate)
+        return _stream(base, model, item, tokens, temperature, seed, draft, gate, limits=limits)
     except Exception as exc:  # noqa: BLE001 - a failed request is reported, not fatal
         return {"prompt": item["name"], "seed": seed, "sent": None, "first": None, "last": None, "tokens": 0,
                 "pieces": [], "ttft_s": None, "decode_tps": None, "token_sha": None,
@@ -63,7 +81,7 @@ def stream(base: str, model: str, item: dict, tokens: int, temperature: float, s
 
 
 def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, seed: int | None, draft: bool,
-            gate: threading.Barrier | None) -> dict:
+            gate: threading.Barrier | None, *, limits=None) -> dict:
     body = {"model": model, "max_tokens": tokens, "temperature": temperature, "stream": True,
             "stream_options": {"include_usage": True}, "ignore_eos": True}
     if seed is not None:
@@ -86,36 +104,19 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
     pieces: list[tuple[float, int]] = []           # (arrival, characters) of every text chunk
     usage: dict = {}
     runtime: dict = {}
-    consumed, done = 0, False
     with urllib.request.urlopen(req, timeout=1800) as resp:
-        for raw in resp:
-            consumed += len(raw)
-            if len(raw) > 65536 or consumed > MAX_SSE_BYTES:
-                raise ValueError("SSE response exceeded bounded size")
-            line = raw.decode().strip()
-            if line == "data: [DONE]":
-                done = True
-                break
-            if not line.startswith("data:"):
-                continue
-            chunk = json.loads(line[5:])
-            if not isinstance(chunk, dict) or "error" in chunk:
-                raise ValueError(f"SSE error or invalid object: {chunk!r}")
-            usage = chunk.get("usage") or usage
-            runtime = chunk.get("tensorfold") or runtime
-            for choice in chunk.get("choices", []):
-                delta = choice.get("delta") or {}
-                # reasoning counts: its tokens are in completion_tokens, so the clock starts with them
-                piece = choice.get("text") or delta.get("content") or delta.get("reasoning_content") or ""
+        protocol.response_type(resp, 'text/event-stream')
+        for chunk in protocol.sse_objects(resp, limits=limits):
+            new_usage, new_runtime, new_pieces = protocol.chunk_fields(chunk)
+            usage = new_usage if new_usage is not None else usage
+            runtime = new_runtime if new_runtime is not None else runtime
+            for piece in new_pieces:
                 if piece:
                     pieces.append((time.perf_counter(), len(piece)))
-    if not done:
-        raise ValueError("SSE ended before [DONE]")
-    n = usage.get("completion_tokens")
-    if type(n) is not int or n <= 0 or n > tokens:
-        raise ValueError("SSE missing bounded positive completion usage")
+    n = protocol.completion_usage(usage, tokens)
     out = {"prompt": item["name"], "seed": seed, "sent": sent, "first": None, "last": None, "tokens": n,
-           "pieces": pieces, "ttft_s": None, "decode_tps": None, "token_sha": runtime.get("token_sha")}
+           "pieces": pieces, "ttft_s": None, "decode_tps": None, "token_sha": runtime.get("token_sha"),
+           "timing_scope": "SSE text-arrival estimate; first piece may contain multiple tokens"}
     if pieces:
         first, last = pieces[0][0], pieces[-1][0]
         out.update(first=first, last=last, ttft_s=first - sent)
@@ -129,24 +130,91 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
 
 
 def together(base: str, model: str, specs: list[tuple[dict, int | None]], tokens: int, temperature: float,
-             stagger_ms: float = 0.0) -> list[dict]:
+             stagger_ms: float = 0.0, *, limits=None) -> list[dict]:
+    if not math.isfinite(stagger_ms) or stagger_ms < 0:
+        raise ValueError("stagger milliseconds must be finite and nonnegative")
+    if not specs:
+        return []
     gate = threading.Barrier(len(specs))
-    out: list[dict | None] = [None] * len(specs)
+    callback_failures = [[] for _ in specs]
+    callback_roots = [None] * len(specs)
 
-    def run(i: int) -> None:
-        if stagger_ms:
-            gate.wait()
-            time.sleep(i * stagger_ms / 1e3)
-            out[i] = stream(base, model, specs[i][0], tokens, temperature, specs[i][1])
-        else:
-            out[i] = stream(base, model, specs[i][0], tokens, temperature, specs[i][1], gate=gate)
+    kwargs = {} if limits is None else {"limits": limits}
 
-    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(specs))]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    return [r for r in out if r is not None]
+    def run(i: int) -> dict:
+        try:
+            if stagger_ms:
+                gate.wait()
+                time.sleep(i * stagger_ms / 1e3)
+                result = stream(base, model, specs[i][0], tokens, temperature, specs[i][1], **kwargs)
+            else:
+                result = stream(base, model, specs[i][0], tokens, temperature, specs[i][1], gate=gate, **kwargs)
+            if not isinstance(result, dict):
+                raise TypeError("benchmark request must return a complete result object")
+            if result.get("error"):
+                while True:
+                    try:
+                        gate.abort()
+                        break
+                    except BaseException as cleanup:
+                        callback_failures[i].append(cleanup)
+                if callback_failures[i]:
+                    raise callback_failures[i][0]
+            return result
+        except BaseException as error:
+            callback_roots[i] = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error))
+            while True:
+                try:
+                    gate.abort()
+                    break
+                except BaseException as cleanup:
+                    callback_failures[i].append(cleanup)
+            raise
+
+    # Publish the unstarted owner before acquisition. Completion belongs to
+    # the callback journal, so an interrupted Thread.join cannot release its
+    # resources and a start return interrupted before publication loses no work.
+    tasks, results, primary, failures = [], [None] * len(specs), None, []
+
+    def execute(i):
+        results[i] = run(i)
+
+    try:
+        try:
+            for i in range(len(specs)):
+                task = Task(partial(execute, i), name=f"benchmark-request-{i}")
+                tasks.append(task)
+                task.start()
+        except BaseException as error:
+            primary = error
+            roots = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error))
+            while True:
+                try:
+                    gate.abort()
+                    break
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            failures.extend(root for root in roots if root is not None and root is not error)
+    except BaseException as error:
+        if primary is None:
+            primary = error
+        elif error is not primary:
+            failures.append(error)
+    finally:
+        try:
+            drain(tasks, primary)
+        except BaseException as error:
+            if primary is None:
+                primary = error
+            elif error is not primary:
+                failures.append(error)
+        for errors, roots in zip(callback_failures, callback_roots):
+            failures.extend(errors)
+            if roots is not None:
+                failures.extend(root for root in roots if root is not None and root is not primary)
+        if primary is not None:
+            raise_failures(primary, failures)
+    return results
 
 
 def aggregates(runs: list[dict]) -> dict:
@@ -186,18 +254,23 @@ def main() -> int:
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i this many ms after request i - 1")
     p.add_argument("--label", default="")
     p.add_argument("--output")
+    protocol.add_arguments(p)
     args = p.parse_args()
+    limits = protocol.from_arguments(args)
     if args.strict and args.no_seed:
         p.error("--strict requires keyed requests; omit --no-seed")
     if args.no_seed:
         args.alone = args.serial = False
     levels = [int(x) for x in args.levels.split(",")]
     temps = [1.0] if args.mixed else [float(t) for t in args.temperatures.split(",")]
-    if any(n < 1 for n in levels) or args.tokens < 1 or args.reps < 1 or any(not math.isfinite(t) or t < 0 for t in temps):
-        p.error("levels/tokens/reps must be positive and temperatures finite/nonnegative")
+    if (any(n < 1 for n in levels) or args.tokens < 1 or args.reps < 1
+            or any(not math.isfinite(t) or t < 0 for t in temps)
+            or not math.isfinite(args.stagger_ms) or args.stagger_ms < 0):
+        p.error("levels/tokens/reps must be positive; temperatures/stagger must be finite/nonnegative")
     cells = [None] if args.mixed else PROMPTS
     report: dict = {"label": args.label, "tokens": args.tokens, "mixed": args.mixed, "strict": args.strict,
-                   "timing_unit": "SSE text-piece arrivals; not individual-token latency", "cells": []}
+                   "timing_unit": "SSE text-piece arrivals; not individual-token latency",
+                   "response_budget_bytes": limits.response_bytes, "sse_line_budget_bytes": limits.line_bytes, "cells": []}
     failed = False
     for temp in temps:
         for item in cells:
@@ -208,7 +281,7 @@ def main() -> int:
                 specs = [(item, args.seed + i if temp > 0 else args.seed) for i in range(max(levels))]
             if args.no_seed:
                 specs = [(spec[0], None) for spec in specs]
-            warmup = together(args.base, args.model, specs[:1], 16, temp)
+            warmup = together(args.base, args.model, specs[:1], 16, temp, limits=limits)
             warmup_failed = any(r.get("error") for r in warmup)
             failed |= warmup_failed
             alone: dict[tuple[str, int | None], dict] = {}
@@ -216,18 +289,18 @@ def main() -> int:
                 for spec in specs:
                     key = (spec[0]["name"], spec[1])
                     if key not in alone:
-                        alone[key] = stream(args.base, args.model, spec[0], args.tokens, temp, spec[1])
+                        alone[key] = stream(args.base, args.model, spec[0], args.tokens, temp, spec[1], limits=limits)
             if args.serial:
                 for key, ref in alone.items():
                     serial = stream(args.base, args.model, next(q for q in PROMPTS if q["name"] == key[0]),
-                                    args.tokens, temp, key[1], draft=False)
+                                    args.tokens, temp, key[1], draft=False, limits=limits)
                     ref["serial_equal"] = compare_hash(serial, ref)
                     ref["serial_error"] = serial.get("error") or ref.get("error")
                     failed |= bool(ref["serial_error"])
             for n in levels:
                 reps = []
                 for _ in range(args.reps):
-                    runs = together(args.base, args.model, specs[:n], args.tokens, temp, args.stagger_ms)
+                    runs = together(args.base, args.model, specs[:n], args.tokens, temp, args.stagger_ms, limits=limits)
                     rep = aggregates(runs)
                     rep["per_stream_tps"] = [round(r["decode_tps"], 1) for r in runs if r["decode_tps"] is not None]
                     rep["ttft_s"] = [round(r["ttft_s"] or 0.0, 2) for r in runs]
@@ -271,8 +344,7 @@ def main() -> int:
                 report["cells"].append({**cell, "reps": reps})
     report["passed"] = not failed
     if args.output:
-        with open(args.output, "w") as f:
-            json.dump(report, f, indent=1)
+        write_json(args.output, report)
     return int(failed)
 
 

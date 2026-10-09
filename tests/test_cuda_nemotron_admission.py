@@ -24,7 +24,9 @@ WEIGHTS = [("backbone.layers.0.mixer.in_proj.weight", "U32", [1088, 64], 1088 * 
 def mtp_file(path):
     raw = json.dumps({"layers.0.mixer.q_proj.weight": {"dtype": "U32", "shape": [512, 64],
                                                         "data_offsets": [0, 512 * 64 * 4]}}).encode()
-    (path / "mtp-4bit.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (path / "mtp-4bit.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + 512 * 64 * 4)
 
 
 @pytest.fixture

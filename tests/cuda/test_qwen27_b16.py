@@ -54,3 +54,55 @@ def test_paired_launches_keep_each_weights_bits(n0, n1, k):
     if k % 64 == 0:
         y0, y1 = prompt_pair(x, w0, w1)
         assert torch.equal(y0, prompt(x, w0)) and torch.equal(y1, prompt(x, w1))
+
+
+def test_native_prompt_alignment_and_large_empty_storage_metadata_refuse_before_allocation():
+    from tensorfold.families.qwen3_5.cuda.b16 import _ext
+
+    native = _ext()
+    x = torch.zeros((1, 64), dtype=torch.bfloat16, device='cuda')
+    w = torch.zeros((3, 64), dtype=x.dtype, device=x.device)
+    unaligned = torch.empty(x.numel() + 1, dtype=x.dtype, device=x.device)[1:].view_as(x)
+    malformed = [(native.b16_prompt, (unaligned, w, 32)),
+                 (native.b16_prompt_pair, (unaligned, w, w, 32)),
+                 (native.b16_linear, (torch.empty((2**31, 0), dtype=x.dtype, device=x.device),
+                                      torch.empty((1, 0), dtype=x.dtype, device=x.device), x[:0])),
+                 (native.b16_prompt, (torch.empty((1, 0), dtype=x.dtype, device=x.device),
+                                      torch.empty((2**31, 0), dtype=x.dtype, device=x.device), 128))]
+    for function, arguments in malformed:
+        allocated = torch.cuda.memory_allocated()
+        with pytest.raises(RuntimeError):
+            function(*arguments)
+        torch.cuda.synchronize()
+        assert torch.cuda.memory_allocated() == allocated
+
+
+def test_native_prompt_capture_after_every_tile_is_warm():
+    x = torch.randn((3, 128), dtype=torch.bfloat16, device='cuda')
+    w = torch.randn((7, 128), dtype=x.dtype, device=x.device)
+    for bm in (0, 32, 64, 128):
+        wanted = prompt(x, w, bm)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual = prompt(x, w, bm)
+        graph.replay()
+        assert torch.equal(actual, wanted)
+
+
+def test_native_prompt_specializations_switch_between_compatible_devices():
+    from tensorfold.families.qwen3_5.cuda.b16 import _ext
+
+    if torch.cuda.device_count() < 2:
+        pytest.skip('second compatible CUDA device unavailable')
+    if torch.cuda.get_device_capability(0) != torch.cuda.get_device_capability(1):
+        pytest.skip('same compiled CUDA capability required on both devices')
+    native = _ext()
+    for device in (0, 1, 0, 1):
+        x = torch.ones((3, 128), dtype=torch.bfloat16, device=f'cuda:{device}')
+        w = torch.ones((7, 128), dtype=x.dtype, device=x.device)
+        for bm in (0, 32, 64, 128):
+            torch.cuda.synchronize(device)
+            result = native.b16_prompt(x, w, bm)
+            pair = native.b16_prompt_pair(x, w, w, bm)
+            assert torch.equal(result, torch.full_like(result, 128))
+            assert all(torch.equal(value, result) for value in pair)

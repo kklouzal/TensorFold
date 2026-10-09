@@ -136,6 +136,10 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, _ram_layout=None):
     """Load native EXL3 weights, optionally retaining original expert streams on CPU."""
 
+    from .weight_types import Config, draft_token_ids
+
+    cfg = Config.read(model_dir, rope=rope)
+    ids = draft_token_ids(draft_vocab, cfg.vocab)
     cache = None
     if vram_experts is not None:
         from ..ram_experts import check, layout
@@ -143,31 +147,41 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
         check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
         plan = layout(model_dir, vram_experts, mtp=mtp) if _ram_layout is None else _ram_layout
-        cache = Exl3HostExpertCache(plan.gpu_bytes, plan.entry_bytes, device)
+        # Keep only one bootstrap cell while the immutable host authority and
+        # fixed device weights load. The final arena replaces it once, before
+        # any lease, so numeric budgets do not require two full pools at once.
+        cache = Exl3HostExpertCache(plan.entry_bytes, plan.entry_bytes, device)
     try:
-        return _load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab,
-                     table_reads=table_reads, rope=rope, expert_cache=cache)
+        weights = _load(model_dir, device, mtp=mtp, tp=tp, _config=cfg, _draft_ids=ids,
+                        table_reads=table_reads, rope=rope, expert_cache=cache)
+        if cache is not None and not plan.automatic:
+            # _load has sealed every registration, drained its read owner and
+            # released Pack/load temporaries. Auto defers this same transition
+            # until all decoder buffers and future service bounds are known.
+            cache.configure_before_use(plan.gpu_bytes)
+        return weights
     except BaseException as primary:
         if cache is not None:
             try:
                 cache.close()
             except BaseException as cleanup:
-                primary.add_note(f"EXL3 expert cache cleanup also failed: {cleanup!r}")
+                BaseException.add_note(primary, "EXL3 expert cache cleanup also failed; its owner remains retained")
+                raise primary from cleanup
         raise
 
 
 def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
-          draft_vocab: int | str | None = None, table_reads: list | None = None,
+          _config: object, _draft_ids: object, table_reads: list | None = None,
           rope: RopeParameters | None = None, expert_cache=None):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 
-    from .weights import GDNW, HC, AttnW, Config, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids
+    from .weights import GDNW, HC, AttnW, LayerW, MoEW, MTPW, PLEW, Weights
 
     if tp is not None and tp[1] > 1:
         raise ValueError("EXL3 packs of Flash Next run on one GPU; two ranks read the MLX checkpoint")
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir, rope=rope)
+    cfg, ids = _config, _draft_ids
     inv = cfg.rope.inverse_frequencies(torch)
     pk = Pack(model_dir)
     sc = Scratch(cfg.top_k + 1)
@@ -278,9 +292,7 @@ def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: 
 
             sc.moe.host_waves = WaveScratch(sc.moe.rows, sc.moe.slots, device)
         w.x3 = sc
-        ids = draft_token_ids(draft_vocab)
         if ids is not None and w.mtp is not None:
-            ids = ids[ids < cfg.vocab]
             w.draft_ids = torch.from_numpy(ids).to(device)
             w.draft_head = make_q4(*requant_rows(head, w.draft_ids, device))
         pk.release()

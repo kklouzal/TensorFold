@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from tensorfold.kernels.qwen.dense.v1.lane_stage import scalar_scale_source, tensor_source
+
 # 3- and 2-bit weights to nibbles for the bf16 x uint4 op, lane l widening column n0 + l (TILED: tile_weight's layout)
-NIBBLES = r"""
+_NIBBLES_TEMPLATE = r"""
   static_assert(NT == 32, "one column per lane");
   static_assert(BITS == 2 || BITS == 3, "4-bit weights go to the tensor op as they are");
   const ushort lane = thread_index_in_simdgroup;
@@ -105,8 +107,8 @@ NIBBLES = r"""
 """
 
 # 5-, 6- and 8-bit weights to bytes for the bf16 x uint8 op: a group is one little-endian bit stream, 4 values a word
-_NIBBLE_WIDENING = NIBBLES[NIBBLES.index("    if (BITS == 3) {"):
-                           NIBBLES.index("    simdgroup_barrier(mem_flags::mem_threadgroup);\n    float s[NF][4]")]
+_NIBBLE_WIDENING = _NIBBLES_TEMPLATE[_NIBBLES_TEMPLATE.index("    if (BITS == 3) {"):
+                                   _NIBBLES_TEMPLATE.index("    simdgroup_barrier(mem_flags::mem_threadgroup);\n    float s[NF][4]")]
 _BYTE_WIDENING = """    for (int c = 0; c < 16; c++) {
       const int bit = 4 * BITS * c, i = bit >> 5, sh = bit & 31;
       uint word = w[i] >> sh;
@@ -135,7 +137,8 @@ def _bytes(source: str) -> str:
     return source
 
 
-BYTES = _bytes(NIBBLES)
+_BYTES_TEMPLATE = _bytes(_NIBBLES_TEMPLATE)
+BYTES = scalar_scale_source(_BYTES_TEMPLATE)
 
 
 def grouped(source: str) -> str:
@@ -174,7 +177,11 @@ def grouped(source: str) -> str:
     return source
 
 
-NIBBLES_GROUPED, BYTES_GROUPED = grouped(NIBBLES), grouped(BYTES)
+_NIBBLES_GROUPED_TEMPLATE = grouped(_NIBBLES_TEMPLATE)
+NIBBLES = tensor_source(_NIBBLES_TEMPLATE, nibbles=True)
+NIBBLES_GROUPED = tensor_source(_NIBBLES_GROUPED_TEMPLATE, nibbles=True, grouped=True)
+_BYTES_GROUPED_TEMPLATE = grouped(_BYTES_TEMPLATE)
+BYTES_GROUPED = scalar_scale_source(_BYTES_GROUPED_TEMPLATE)
 
 
 def sources() -> dict[str, str]:

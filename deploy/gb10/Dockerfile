@@ -24,6 +24,8 @@ RUN --mount=type=cache,id=tensorfold-cu134-nightly-pip-${TARGETARCH},target=/roo
 
 FROM dependencies AS application
 ARG TARGETARCH
+ARG MAX_JOBS=8
+ENV MAX_JOBS=${MAX_JOBS}
 ARG SOURCE_REVISION=uncommitted
 LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
       org.opencontainers.image.source="https://github.com/kklouzal/TensorFold" \
@@ -34,7 +36,7 @@ LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
       deployment.cuda="13.4.1" \
       deployment.torch="2.16.0.dev20261006+cu134" \
       deployment.triton="3.9.0+gitaad2a60d"
-COPY pyproject.toml README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/TensorFold/
+COPY pyproject.toml setup.py README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/TensorFold/
 COPY LICENSES /opt/TensorFold/LICENSES
 COPY src /opt/TensorFold/src
 RUN python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/fork-wheel /opt/TensorFold \
@@ -49,7 +51,6 @@ RUN python3 /opt/harness/configure_cudnn.py --output /opt/tensorfold-cudnn
 ENV CUDA_HOME=/usr/local/cuda \
     LD_LIBRARY_PATH=/opt/tensorfold-cudnn:${LD_LIBRARY_PATH} \
     CPATH=/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cu13/include:/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/cudnn/include \
-    MAX_JOBS=1 \
     TORCH_EXTENSIONS_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/${TARGETARCH}/torch_extensions \
     TRITON_CACHE_DIR=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/${TARGETARCH}/triton \
     CUDA_CACHE_PATH=/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/${TARGETARCH}/cuda \

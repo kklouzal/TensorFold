@@ -18,7 +18,10 @@ def _install_cli_protocol(monkeypatch, version='test-host-protocol'):
     core.__file__ = __file__  # metadata path only; this fixture supplies no MLX headers or compiler
     core.int32 = object()  # opaque default-argument metadata; array operations stay absent
     core.set_cache_limit = core.set_memory_limit = lambda value: None
-    core.synchronize = core.clear_cache = lambda: None
+    core.gpu, core.cpu = object(), object()
+    core.default_stream = lambda device: device
+    core.synchronize = lambda stream=None: None
+    core.clear_cache = lambda: None
     core.get_active_memory = lambda: 0
     core.set_wired_limit = lambda value: 0
     core.device_info = lambda: {'max_recommended_working_set_size': 64 << 30, 'memory_size': 128 << 30}

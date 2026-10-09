@@ -28,6 +28,8 @@ class Buffers:
         dev = w.device
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        self.hc_plans = None
+        self.hc_plan_selection = {"status": "original", "reason": "unselected buffer region"}
         self.rope_rows = None          # an image prompt chunk's [rows, 3] positions, else None
         head_rows = ENDS if prefill else rows
         bf, f32 = torch.bfloat16, torch.float32
@@ -180,10 +182,10 @@ class State:
         self.image_positions, self.image_rows, self.image_features = None, (), None
         self.rope_delta = 0
         self.rope_delta_dev = torch.zeros((1,), dtype=torch.int32, device=dev)
-        lin = [l for l in w.layers if l.linear]
-        att = [l for l in w.layers if not l.linear]
-        self.lin_index = {l.index: i for i, l in enumerate(lin)}
-        self.att_index = {l.index: i for i, l in enumerate(att)}
+        lin = [layer for layer in w.layers if layer.linear]
+        att = [layer for layer in w.layers if not layer.linear]
+        self.lin_index = {layer.index: i for i, layer in enumerate(lin)}
+        self.att_index = {layer.index: i for i, layer in enumerate(att)}
         n = len(lin)
         self.conv = torch.zeros((n, c.conv_kernel - 1, c.conv_dim), dtype=torch.bfloat16, device=dev)
         self.rec = torch.zeros((2, n, c.nv, c.dv, c.dk), dtype=torch.float32, device=dev)

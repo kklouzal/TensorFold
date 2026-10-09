@@ -58,12 +58,20 @@ def test_check_reads_json_only_and_names_the_mlx_it_needs(tmp_path, monkeypatch)
 
     from tensorfold.families import glm5_next
 
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "glm5_next", "text_config": TEXT,
-                                                      "quantization": {"bits": 4, "group_size": 64}}))
-    code = ("import sys; from tensorfold.families import glm5_next; glm5_next.check(sys.argv[1]); "
-            "print('mlx.core' in sys.modules)")
-    out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=True,
-                         env={**__import__("os").environ, "PYTHONPATH": ":".join(sys.path)})
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "glm5_next", "text_config": TEXT, "quantization": {"bits": 4, "group_size": 64}})
+    )
+    code = (
+        "import sys; from tensorfold.families import glm5_next; glm5_next.check(sys.argv[1]); "
+        "print('mlx.core' in sys.modules)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**__import__("os").environ, "PYTHONPATH": ":".join(sys.path)},
+    )
     assert out.stdout.strip().splitlines()[-1] == "False"
     monkeypatch.setattr(metadata, "version", lambda name: "0.32.0")
     monkeypatch.setattr(sys, "platform", "darwin")
@@ -82,7 +90,7 @@ def test_loads_the_checkpoint_layout(checkpoint):
     assert mla.wk.weight.shape[:2] == (2, 64) and mla.wv.weight.shape[:2] == (2, 64)
 
 
-@pytest.mark.parametrize("length", [9, 40])   # 40 > index_topk (16): the sparse selection with pooled blocks
+@pytest.mark.parametrize("length", [9, 40])  # 40 > index_topk (16): the sparse selection with pooled blocks
 def test_prefill_path_agrees_with_decode_path(checkpoint, length):
     """The batched prefill path and the one-row decode path compute the same function (to rounding)."""
 
@@ -126,12 +134,13 @@ def test_sparse_attention_reads_a_subset_past_the_budget(checkpoint):
     model.hidden(mx.array([tokens(40)]), cache)
     c = cache[3]
     blocks = 40 // 4
-    scores = mla.index_scores(mx.random.normal((1, 2, 64)).astype(mx.bfloat16),
-                              mx.ones((1, 2), dtype=mx.bfloat16), c.pool[:blocks])
+    scores = mla.index_scores(
+        mx.random.normal((1, 2, 64)).astype(mx.bfloat16), mx.ones((1, 2), dtype=mx.bfloat16), c.pool[:blocks]
+    )
     ids = np.array(mla.selected(scores, 39))
-    assert len(ids) == 4 * (TEXT["index_topk"] // 4)             # 4 blocks of 4, no tail at position 39
+    assert len(ids) == 4 * (TEXT["index_topk"] // 4)  # 4 blocks of 4, no tail at position 39
     assert len(set(ids.tolist())) == len(ids) and ids.max() < 40
-    ids = np.array(mla.selected(scores[:, :9], 37))             # position 37: tail keys 36, 37
+    ids = np.array(mla.selected(scores[:, :9], 37))  # position 37: tail keys 36, 37
     assert ids[-2:].tolist() == [36, 37]
 
 
@@ -227,19 +236,34 @@ def test_image_prefill_across_chunks_and_mtp_matches_the_equivalent_embeddings(c
         def __call__(self, pixels, image_grid):
             return features
 
-    config = {"image_token_id": 10, "vision_config": {"patch_size": 14, "temporal_patch_size": 2,
-              "spatial_merge_size": 2, "out_hidden_size": TEXT["hidden_size"]}}
-    processor = SimpleNamespace(tokenizer=SimpleNamespace(convert_tokens_to_ids=lambda token: 10),
-                                image_processor=SimpleNamespace(patch_size=14, temporal_patch_size=2, merge_size=2))
+    config = {
+        "image_token_id": 10,
+        "vision_config": {
+            "patch_size": 14,
+            "temporal_patch_size": 2,
+            "spatial_merge_size": 2,
+            "out_hidden_size": TEXT["hidden_size"],
+        },
+    }
+    processor = SimpleNamespace(
+        tokenizer=SimpleNamespace(convert_tokens_to_ids=lambda token: 10),
+        image_processor=SimpleNamespace(patch_size=14, temporal_patch_size=2, merge_size=2),
+    )
     runtime.vision = GLMVisionFrontend(config, model.embed_tokens, ImageTower(), processor, mx)
-    prepared = PreparedGLMVisionPrompt(tuple(prompt), np.zeros((24, 1176), dtype=np.float32),
-                                      np.asarray([[1, 4, 6]], dtype=np.int64), ((begin, end),), ("image",))
+    prepared = PreparedGLMVisionPrompt(
+        tuple(prompt),
+        np.zeros((24, 1176), dtype=np.float32),
+        np.asarray([[1, 4, 6]], dtype=np.int64),
+        ((begin, end),),
+        ("image",),
+    )
 
     def run(ids, prompt_data=None, drafts=False):
         engine = LaneEngine(runtime, **engine_settings(runtime))
         engine.prefill_plan = PrefillPlan(grid)
-        stream = LaneStream(stream_id="image", prompt_ids=list(ids), prompt_data=prompt_data,
-                            max_new_tokens=20, drafts=drafts)
+        stream = LaneStream(
+            stream_id="image", prompt_ids=list(ids), prompt_data=prompt_data, max_new_tokens=20, drafts=drafts
+        )
         engine.add_stream(stream, checkpoints_at=(grid,))
         while engine.active_count:
             engine.step()
@@ -298,7 +322,7 @@ def test_lane_engine_resumes_from_a_chunk_start(checkpoint, tmp_path, grid, leng
 
     def run(ids, **kw):
         engine = LaneEngine(runtime)
-        engine.prefill_plan = PrefillPlan(grid)                     # 32-row chunks take the prompt path, 8-row decode's
+        engine.prefill_plan = PrefillPlan(grid)  # 32-row chunks take the prompt path, 8-row decode's
         stream = LaneStream(stream_id="x", prompt_ids=list(ids), max_new_tokens=8)
         engine.add_stream(stream, **kw)
         while engine.active_count:
@@ -307,9 +331,12 @@ def test_lane_engine_resumes_from_a_chunk_start(checkpoint, tmp_path, grid, leng
 
     first = run(prompt[:cut], checkpoints_at=(cut,))
     prefix, cache = first.history_checkpoints[0]
-    assert prefix == prompt[:kept]                                 # the checkpoint moves to a chunk start
-    path = save_snapshot(tmp_path, "glm-test", prefix, cache)
-    got_tokens, stored = load_snapshot(path, "glm-test")
+    assert prefix == prompt[:kept]  # the checkpoint moves to a chunk start
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry(cache)
+    path = save_snapshot(tmp_path, "glm-test", prefix, cache, registry=snapshot_registry)
+    got_tokens, stored = load_snapshot(path, "glm-test", registry=snapshot_registry)
     assert got_tokens == prefix
     fresh = run(prompt).emitted
     assert run(prompt, cache=LaneEngine.copy_single_cache(cache), cached_tokens=kept).emitted == fresh
@@ -333,7 +360,7 @@ def test_prefill_resumed_at_every_grid_point_has_a_fresh_prefills_bits(checkpoin
 
     def feed(ids, cache):
         for b in range(0, len(ids), grid):
-            out = model.hidden(mx.array([ids[b:b + grid]], dtype=mx.uint32), cache)
+            out = model.hidden(mx.array([ids[b : b + grid]], dtype=mx.uint32), cache)
             mx.eval(out)
         return np.array(model.head(out[:, -1:]).astype(mx.float32))
 
@@ -354,14 +381,14 @@ def test_dense_prompt_chunks_attend_their_causal_prefix_as_decode_does(checkpoin
 
     model = backbone(checkpoint)
     attn = next(layer.attn for layer in model.layers if isinstance(layer.attn, MLA))
-    monkeypatch.setattr(attn, "cfg", replace(attn.cfg, index_topk=64))           # 48 positions: all dense
+    monkeypatch.setattr(attn, "cfg", replace(attn.cfg, index_topk=64))  # 48 positions: all dense
     mx.random.seed(4)
     x = (0.5 * mx.random.normal((48, TEXT["hidden_size"]))).astype(mx.bfloat16)
 
     def run(chunk):
         cache, outs = caches.MLACache(), []
         for s in range(0, 48, chunk):
-            part = x[s:s + chunk]
+            part = x[s : s + chunk]
             outs.append(attn(part, [cache], (int(part.shape[0]),), int(part.shape[0]) <= C.DECODE_ROWS))
         return np.array(mx.concatenate(outs).astype(mx.float32))
 
@@ -383,7 +410,7 @@ def test_prompt_attention_matches_the_decode_path(checkpoint):
     def run(chunk):
         cache, outs = caches.MLACache(), []
         for s in range(0, 200, chunk):
-            part = x[s:s + chunk]
+            part = x[s : s + chunk]
             outs.append(attn(part, [cache], (int(part.shape[0]),), int(part.shape[0]) <= C.DECODE_ROWS))
         return np.array(mx.concatenate(outs).astype(mx.float32))
 
@@ -410,8 +437,9 @@ def _run_streams(runtime, specs, together):
 
     def stream(i, spec):
         prompt, n, sampling, drafts = spec
-        return LaneStream(stream_id=f"s{i}", prompt_ids=list(prompt), max_new_tokens=n, sampling=sampling,
-                          drafts=drafts)
+        return LaneStream(
+            stream_id=f"s{i}", prompt_ids=list(prompt), max_new_tokens=n, sampling=sampling, drafts=drafts
+        )
 
     if not together:
         out = []
@@ -471,12 +499,15 @@ def test_qmv_rows_gives_mlx_one_row_bits():
     mx.set_default_device(mx.gpu)
     assert kernels.metal()
     mx.random.seed(3)
-    w = linear.Q(*mx.quantize((0.05 * mx.random.normal((256, 1024))).astype(mx.bfloat16), group_size=64, bits=4),
-                 bits=4, group=64)
+    w = linear.Q(
+        *mx.quantize((0.05 * mx.random.normal((256, 1024))).astype(mx.bfloat16), group_size=64, bits=4),
+        bits=4,
+        group=64,
+    )
     for rows in (2, 3, 4, 8):
         x = mx.random.normal((rows, 1024)).astype(mx.bfloat16)
         many = kernels.qmv_rows(x, w)
-        one = mx.concatenate([w(x[r:r + 1]) for r in range(rows)])
+        one = mx.concatenate([w(x[r : r + 1]) for r in range(rows)])
         assert bool(mx.array_equal(many, one).item()), rows
 
 
@@ -520,32 +551,33 @@ def test_bf16_abliterated_output_projections_keep_prefill_and_mtp_working(tmp_pa
     import json
     from tensorfold.families import glm5_next
 
-    folder = write_checkpoint(tmp_path / 'bf16-output')
-    index = json.loads((folder / 'model.safetensors.index.json').read_text())['weight_map']
-    config = json.loads((folder / 'config.json').read_text())
-    for layer in (0, 3, TEXT['num_hidden_layers']):
-        prefix = f'model.language_model.layers.{layer}.self_attn.o_proj'
+    folder = write_checkpoint(tmp_path / "bf16-output")
+    index = json.loads((folder / "model.safetensors.index.json").read_text())["weight_map"]
+    config = json.loads((folder / "config.json").read_text())
+    for layer in (0, 3, TEXT["num_hidden_layers"]):
+        prefix = f"model.language_model.layers.{layer}.self_attn.o_proj"
         parts = {}
-        shards = {index[f'{prefix}.{suffix}'] for suffix in ('weight', 'scales', 'biases')}
+        shards = {index[f"{prefix}.{suffix}"] for suffix in ("weight", "scales", "biases")}
         for shard in shards:
             parts.update(mx.load(str(folder / shard)))
-        dense = mx.dequantize(parts[prefix + '.weight'], parts[prefix + '.scales'],
-                              parts[prefix + '.biases'], bits=4, group_size=64).astype(mx.bfloat16)
+        dense = mx.dequantize(
+            parts[prefix + ".weight"], parts[prefix + ".scales"], parts[prefix + ".biases"], bits=4, group_size=64
+        ).astype(mx.bfloat16)
         for shard in shards:
             tensors = mx.load(str(folder / shard))
-            for suffix in ('scales', 'biases'):
-                key = f'{prefix}.{suffix}'
+            for suffix in ("scales", "biases"):
+                key = f"{prefix}.{suffix}"
                 tensors.pop(key, None)
                 index.pop(key, None)
-            if prefix + '.weight' in tensors:
-                tensors[prefix + '.weight'] = dense
+            if prefix + ".weight" in tensors:
+                tensors[prefix + ".weight"] = dense
             mx.eval(tensors)
-            staged = folder / (shard + '.new.safetensors')
+            staged = folder / (shard + ".new.safetensors")
             mx.save_safetensors(str(staged), tensors)
             staged.replace(folder / shard)
-        config['quantization'][prefix] = False
-    (folder / 'config.json').write_text(json.dumps(config))
-    (folder / 'model.safetensors.index.json').write_text(json.dumps({'weight_map': index}))
+        config["quantization"][prefix] = False
+    (folder / "config.json").write_text(json.dumps(config))
+    (folder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": index}))
     glm5_next.check(folder)
     model = backbone(folder)
     head = glm_mtp.load(model)
@@ -561,14 +593,15 @@ def test_bf16_abliterated_output_projections_keep_prefill_and_mtp_working(tmp_pa
     a, b = np.array(a.astype(mx.float32)), np.array(b.astype(mx.float32))
     assert int(a.argmax()) == int(b.argmax())
     assert np.max(np.abs(a - b)) < 0.05 * np.max(np.abs(b)) + 0.05
-    drafted = head(model, h.reshape(-1, TEXT['hidden_size']), mx.array([ids[-1]]),
-                   [head.make_cache()], (1,), True)
+    drafted = head(model, h.reshape(-1, TEXT["hidden_size"]), mx.array([ids[-1]]), [head.make_cache()], (1,), True)
     assert bool(mx.all(mx.isfinite(head.logits(model, drafted))).item())
 
 
 def test_unquantized_inputs_still_rejected(tmp_path):
     from tensorfold.families import glm5_next
-    folder = write_checkpoint(tmp_path / 'unsupported', stated={
-        'model.language_model.layers.0.self_attn.q_proj': False})
-    with pytest.raises(ValueError, match='module'):
+
+    folder = write_checkpoint(
+        tmp_path / "unsupported", stated={"model.language_model.layers.0.self_attn.q_proj": False}
+    )
+    with pytest.raises(ValueError, match="module"):
         glm5_next.check(folder)

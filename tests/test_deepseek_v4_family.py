@@ -9,13 +9,20 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from dsv4_fakes import (DSPARK, TEXT, write_checkpoint, write_dspark, write_mtp, write_official_dspark,  # noqa: E402
-                        write_official_mtp)
+from dsv4_fakes import (  # noqa: E402 - native runtime gate precedes fixture imports
+    DSPARK,
+    TEXT,
+    write_checkpoint,
+    write_dspark,
+    write_mtp,
+    write_official_dspark,
+    write_official_mtp,
+)
 from tensorfold.families.deepseek_v4 import mtp as ds_mtp  # noqa: E402
 from tensorfold.families.deepseek_v4 import weights  # noqa: E402
 from tensorfold.families.deepseek_v4.runtime import DeepSeekFlash  # noqa: E402
 
-CPU_ROWS = 7          # MLX's CPU fp32 rms_norm is row-invariant below 8 rows
+CPU_ROWS = 7  # MLX's CPU fp32 rms_norm is row-invariant below 8 rows
 
 
 @pytest.fixture(autouse=True)
@@ -78,12 +85,12 @@ def test_check_refuses_affine_experts(checkpoint, tmp_path):
 
 def test_layers_follow_the_ratios(model):
     ratios = [layer.attn.ratio for layer in model.layers]
-    assert ratios == TEXT["compress_ratios"][:TEXT["num_hidden_layers"]]
+    assert ratios == TEXT["compress_ratios"][: TEXT["num_hidden_layers"]]
     assert [layer.attn.indexer is not None for layer in model.layers] == [r == 4 for r in ratios]
     assert model.layers[0].moe.table is not None and model.layers[1].moe.table is None
 
 
-@pytest.mark.parametrize("length", [6, 40, 300])   # the window, top-k past 4 pooled rows, a ratio-128 block
+@pytest.mark.parametrize("length", [6, 40, 300])  # the window, top-k past 4 pooled rows, a ratio-128 block
 def test_prefill_path_agrees_with_decode_path(model, length):
     """One prompt chunk and one-row steps compute the same function (to rounding)."""
 
@@ -122,7 +129,7 @@ def serial_logits(model, base, window):
     return out, cache
 
 
-@pytest.mark.parametrize("prompt", [5, 38, 124])   # a ratio-128 block completes in the last window
+@pytest.mark.parametrize("prompt", [5, 38, 124])  # a ratio-128 block completes in the last window
 def test_decode_windows_give_one_row_bits(model, prompt):
     """A window of up to 7 rows gives each row its one-row logits bit for bit, across pool emissions."""
 
@@ -182,12 +189,16 @@ def test_official_mtp_shard_converts_to_the_mlx_layout(tmp_path):
     assert json.loads((folder / "config.json").read_text()) == {"model_type": "deepseek_v4_mtp"}
     out = mx.load(str(folder / "model.safetensors"))
     w = mx.from_fp8(raw["mtp.0.e_proj.weight"], dtype=mx.float32) * e8m0(raw["mtp.0.e_proj.scale"])[0, 0]
-    got = mx.dequantize(out["mtp.e_proj.weight"], out["mtp.e_proj.scales"], out["mtp.e_proj.biases"], group_size=64,
-                        bits=4)
+    got = mx.dequantize(
+        out["mtp.e_proj.weight"], out["mtp.e_proj.scales"], out["mtp.e_proj.biases"], group_size=64, bits=4
+    )
     assert float(mx.abs(got - w).max().item()) <= float(mx.abs(w).max().item()) / 7
     codes = out["mtp.ffn.switch_mlp.up_proj.weight"]
-    assert codes.dtype == mx.uint32 and codes.shape == (TEXT["n_routed_experts"], TEXT["moe_intermediate_size"],
-                                                         TEXT["hidden_size"] // 8)
+    assert codes.dtype == mx.uint32 and codes.shape == (
+        TEXT["n_routed_experts"],
+        TEXT["moe_intermediate_size"],
+        TEXT["hidden_size"] // 8,
+    )
     assert mx.array_equal(codes[3].view(mx.uint8), raw["mtp.0.ffn.experts.3.w3.weight"]).item()
     assert mx.array_equal(out["mtp.ffn.gate.e_score_correction_bias"], raw["mtp.0.ffn.gate.bias"]).item()
 
@@ -249,8 +260,11 @@ def test_lane_engine_resumes_from_a_chunk_start(model, drafter, tmp_path, grid, 
     first = run(prompt[:cut], checkpoints_at=(cut,))
     prefix, cache = first.history_checkpoints[0]
     assert prefix == prompt[:kept]
-    path = save_snapshot(tmp_path, "dsv4-test", prefix, cache)
-    got_tokens, stored = load_snapshot(path, "dsv4-test")
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry(cache)
+    path = save_snapshot(tmp_path, "dsv4-test", prefix, cache, registry=snapshot_registry)
+    got_tokens, stored = load_snapshot(path, "dsv4-test", registry=snapshot_registry)
     assert got_tokens == prefix
     fresh = run(prompt).emitted
     assert run(prompt, cache=LaneEngine.copy_single_cache(cache), cached_tokens=kept).emitted == fresh
@@ -264,12 +278,17 @@ def test_concurrent_streams_emit_what_they_emit_alone(model, drafter):
 
     runtime = cpu_runtime(model, ds_mtp.load(model, drafter / "model.safetensors"), 3)
     runtime.max_streams = CPU_ROWS
-    specs = [(tokens(21, seed=4), 16, None, True), (tokens(9, seed=5), 12, Sampling(seed=3, temperature=0.8), True),
-             (tokens(33, seed=6), 14, None, False)]
+    specs = [
+        (tokens(21, seed=4), 16, None, True),
+        (tokens(9, seed=5), 12, Sampling(seed=3, temperature=0.8), True),
+        (tokens(33, seed=6), 14, None, False),
+    ]
 
     def streams():
-        return [LaneStream(stream_id=f"s{i}", prompt_ids=list(p), max_new_tokens=n, sampling=smp, drafts=d)
-                for i, (p, n, smp, d) in enumerate(specs)]
+        return [
+            LaneStream(stream_id=f"s{i}", prompt_ids=list(p), max_new_tokens=n, sampling=smp, drafts=d)
+            for i, (p, n, smp, d) in enumerate(specs)
+        ]
 
     alone = []
     for s in streams():
@@ -309,8 +328,9 @@ def test_dspark_drafts_change_speed_only(model, tmp_path):
             got = []
             for rt, drafts in ((runtime, True), (serial, False)):
                 engine = LaneEngine(rt, **engine_settings(rt))
-                stream = LaneStream(stream_id="s", prompt_ids=tokens(37, seed=11), max_new_tokens=24,
-                                    sampling=sampling, drafts=drafts)
+                stream = LaneStream(
+                    stream_id="s", prompt_ids=tokens(37, seed=11), max_new_tokens=24, sampling=sampling, drafts=drafts
+                )
                 engine.add_stream(stream)
                 while engine.active_count:
                     engine.step()
@@ -332,8 +352,12 @@ def test_official_dspark_converts_and_drafts(model, tmp_path):
     config = json.loads((folder / "config.json").read_text())
     assert config == {"model_type": "deepseek_v4_dspark", **DSPARK}
     names = set(mx.load(str(folder / "model.safetensors")))
-    assert {"dspark.0.main_proj.weight", "dspark.1.markov_head.markov_w2.weight", "dspark.1.hc_head.fn",
-            "dspark.0.ffn.switch_mlp.down_proj.scales"} <= names
+    assert {
+        "dspark.0.main_proj.weight",
+        "dspark.1.markov_head.markov_w2.weight",
+        "dspark.1.hc_head.fn",
+        "dspark.0.ffn.switch_mlp.down_proj.scales",
+    } <= names
     drafter = ds_dspark.load(model, folder / "model.safetensors", config)
     rings = drafter.make_cache()
     drafter.absorb(mx.zeros((3, len(drafter.taps) * TEXT["hidden_size"]), dtype=mx.bfloat16), rings)

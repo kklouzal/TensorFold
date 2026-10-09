@@ -13,7 +13,11 @@ def bench():
     path = Path(__file__).resolve().parents[1] / "tools/bench_concurrent.py"
     spec = importlib.util.spec_from_file_location("bench_concurrent_boundary", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 
@@ -27,6 +31,13 @@ def bench():
 ])
 def test_missing_or_failed_hash_evidence_never_proves_equality(bench, left, right, want):
     assert bench.compare_hash(left, right) is want
+
+
+class Response(io.BytesIO):
+    status = 200
+
+    def getheader(self, name, default=None):
+        return "text/event-stream"
 
 
 def sse(*events, done=True):
@@ -46,7 +57,7 @@ def sse(*events, done=True):
     (b"data: " + b"x" * 65536 + b"\n", "bounded size"),
 ])
 def test_sse_error_incomplete_or_invalid_usage_is_a_failed_stream(bench, monkeypatch, payload, reason):
-    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(payload))
+    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: Response(payload))
     row = bench.stream("http://unused", "fixture", bench.PROMPTS[0], 16, 0, 123)
     assert row["tokens"] == 0 and reason in row["error"]
     assert row["token_sha"] is None and row["decode_tps"] is None
@@ -55,7 +66,7 @@ def test_sse_error_incomplete_or_invalid_usage_is_a_failed_stream(bench, monkeyp
 def test_valid_sse_keeps_optional_missing_hash_explicit(bench, monkeypatch):
     payload = sse(*({"choices": [{"text": "x"}]} for _ in range(4)),
                   {"usage": {"completion_tokens": 4}})
-    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(payload))
+    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: Response(payload))
     row = bench.stream("http://unused", "fixture", bench.PROMPTS[0], 16, 0, 123)
     assert "error" not in row and row["tokens"] == 4 and len(row["pieces"]) == 4
     assert row["token_sha"] is None
@@ -63,7 +74,7 @@ def test_valid_sse_keeps_optional_missing_hash_explicit(bench, monkeypatch):
 
 def test_usage_and_hash_without_text_pieces_cannot_claim_measured_rates(bench, monkeypatch):
     payload = sse({"usage": {"completion_tokens": 4}, "tensorfold": {"token_sha": "abc"}})
-    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(payload))
+    monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: Response(payload))
     row = bench.stream("http://unused", "fixture", bench.PROMPTS[0], 16, 0, 123)
     assert "error" not in row and row["tokens"] == 4 and row["token_sha"] == "abc"
     assert row["unmeasured"] is True and row["decode_tps"] is None
@@ -86,13 +97,20 @@ def test_cli_retains_result_and_exits_by_verified_cells(bench, monkeypatch, tmp_
             result.update(unmeasured=True, decode_tps=None)
         return result
 
-    monkeypatch.setattr(bench, "together", lambda base, model, specs, tokens, temp, *rest:
-                        [row(item, seed, tokens) for item, seed in specs])
-    monkeypatch.setattr(bench, "stream", lambda base, model, item, tokens, temp, seed, draft=True:
-                        row(item, seed, tokens, draft))
+    def together(base, model, specs, tokens, temp, *rest, **kwargs):
+        assert kwargs['limits'].response_bytes == 128 << 20
+        assert kwargs['limits'].line_bytes == 2048 << 10
+        return [row(item, seed, tokens) for item, seed in specs]
+    def stream(base, model, item, tokens, temp, seed, draft=True, **kwargs):
+        assert kwargs['limits'].response_bytes == 128 << 20
+        assert kwargs['limits'].line_bytes == 2048 << 10
+        return row(item, seed, tokens, draft)
+    monkeypatch.setattr(bench, 'together', together)
+    monkeypatch.setattr(bench, 'stream', stream)
     output = tmp_path / "retained.json"
     argv = ["bench_concurrent.py", "http://unused", "fixture", "--levels", "1,4", "--reps", "1",
-            "--temperatures", "0", "--alone", "--serial", "--output", str(output)]
+            "--temperatures", "0", "--alone", "--serial", "--output", str(output),
+            "--response-mib", "128", "--sse-line-kib", "2048"]
     if strict:
         argv.append("--strict")
     monkeypatch.setattr(sys, "argv", argv)

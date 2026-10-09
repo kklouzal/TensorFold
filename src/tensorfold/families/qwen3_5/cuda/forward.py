@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from operator import index
 from typing import Sequence
 
 import numpy as np
@@ -68,7 +69,7 @@ def _paths(parents: Sequence[int]) -> tuple[list[int], bool]:
         raise ValueError("a verify window needs a root at row zero")
     depths: list[int] = []
     for row, parent in enumerate(parents):
-        if parent == -1:
+        if parent == -1 and row == 0:
             depths.append(0)
         elif 0 <= parent < row:
             depths.append(depths[parent] + 1)
@@ -80,11 +81,13 @@ def _paths(parents: Sequence[int]) -> tuple[list[int], bool]:
     return depths, chain
 
 
-def _cache_offsets(states: Sequence["State"], layers: Sequence[int], device) -> dict[int, torch.Tensor]:
+def _cache_offsets(states: Sequence["State"], layers: Sequence[int], origin) -> dict[int, torch.Tensor]:
     """Each attention layer's (streams, 2) key and value cache offsets, from one pinned copy."""
 
-    flat = [o for i in layers for o in tree_attention.offsets([st.kv[i] for st in states], device)]
-    dev = deltanet.to_device(flat, torch.int64, device).view(len(layers), len(states), 2)
+    if not layers:
+        return {}
+    flat = [o for i in layers for o in tree_attention.offsets([st.kv[i] for st in states], origin)]
+    dev = deltanet.to_device(flat, torch.int64, origin.device).view(len(layers), len(states), 2)
     return dict(zip(layers, dev))
 
 
@@ -157,6 +160,8 @@ class Staged:
     windows: torch.Tensor
     host: torch.Tensor
     dev: torch.Tensor
+    origin: torch.Tensor | None
+    caches: tuple[tuple[torch.Tensor, torch.Tensor], ...]
 
     def refresh(self, tokens: Sequence[int], p: int) -> None:
         """This round's tokens at positions [p, p + width) (the host mirror, then one copy)."""
@@ -178,9 +183,12 @@ def stage(w: Weights, st: State, width: int, context: int) -> Staged:
     host = torch.tensor([0] * (2 * width) + flat, dtype=torch.int32).pin_memory()
     dev = host.to(device)
     softmax = [i for i, layer in enumerate(w.layers) if not layer.linear]
+    origin = w.attention_origin if softmax else None
     return Staged(width, dev[:width], dev[width:2 * width], deltanet.plan([parents], device),
                   tree_attention.from_packed(dev[2 * width:], 1, width, items, chunks),
-                  _cache_offsets([st], softmax, device), _conv_windows(parents, c.conv_kernel - 1).to(device), host, dev)
+                  _cache_offsets([st], softmax, origin),
+                  _conv_windows(parents, c.conv_kernel - 1).to(device), host, dev, origin,
+                  tuple(st.kv[i] for i in softmax))
 
 
 def grow(st: State, i: int, need: int, *, exact: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
@@ -217,7 +225,10 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     """Return uncommitted node logits and layer data for topologically sorted parents, with each node seeing only its ancestors and committed prefix."""
 
     c = w.config
-    parents = [int(p) for p in parents]
+    try:
+        parents = [index(p) if not isinstance(p, bool) else -2 for p in parents]
+    except TypeError as exc:
+        raise ValueError("tree parents must be integers") from exc
     W = len(parents)
     depths, chain = _paths(parents)
     if tokens.shape != (W,) or tokens.dtype not in (torch.int32, torch.int64):
@@ -227,6 +238,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     if staged is not None:                          # a graph replay's inputs, refreshed in place
         ids, pos, plan, aplan = staged.ids, staged.pos, staged.plan, staged.aplan
         aoffs, windows = staged.aoffs, staged.windows
+        origin = staged.origin
     else:
         ids = tokens.to(torch.int32)
         pos = torch.tensor([st.pos + st.rope_delta + d for d in depths], device=tokens.device,
@@ -234,7 +246,8 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
         plan = deltanet.plan([parents], tokens.device)
         softmax = [i for i, layer in enumerate(w.layers) if not layer.linear]
         aplan = tree_attention.plan([parents], [st.pos], c.heads // c.kv_heads, tokens.device)
-        aoffs = _cache_offsets([st], softmax, tokens.device)
+        origin = w.attention_origin if softmax else None
+        aoffs = _cache_offsets([st], softmax, origin)
         windows = _conv_windows(parents, c.conv_kernel - 1).to(tokens.device)
     if initial is None:
         x = glue.embedding(ids, w.embed)
@@ -278,7 +291,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
                                     head_dim=c.head_dim)
-            out = tree_attention.attention(q, key, value, aoffs[i], aplan, scale=c.head_dim ** -0.5)
+            out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
@@ -313,7 +326,10 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
     starts = [0]
     ids, positions, windows, sids, local, states = [], [], [], [], [], []
     for s, (tokens, parents, st) in enumerate(streams):
-        parents = [int(p) for p in parents]
+        try:
+            parents = [index(p) if not isinstance(p, bool) else -2 for p in parents]
+        except TypeError as exc:
+            raise ValueError("tree parents must be integers") from exc
         depths, _ = _paths(parents)
         if len(tokens) != len(parents):
             raise ValueError("each stream needs one token id a parent")
@@ -333,9 +349,9 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
     entries, _, slots, most = deltanet.plan_host(local)
     linear = [i for i, layer in enumerate(w.layers) if layer.linear]
     softmax = [i for i, layer in enumerate(w.layers) if not layer.linear]
-    ptrs = [p for i in linear for p in deltanet.pointers([st.rec[i] for st in states])]
-    tables = dict(zip(linear, deltanet.to_device(ptrs, torch.int64, device).view(len(linear), len(states))))
-    aoffs = _cache_offsets(states, softmax, device)
+    tables = dict(zip(linear, deltanet.pointer_tables([[st.rec[i] for st in states] for i in linear], device)))
+    origin = w.attention_origin if softmax else None
+    aoffs = _cache_offsets(states, softmax, origin)
     S = len(states)
     attn_flat, attn_items, attn_chunks = tree_attention.plan_host(local, [st.pos for st in states],
                                                                   c.heads // c.kv_heads)
@@ -384,7 +400,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
                                     head_dim=c.head_dim)
-            out = tree_attention.attention(q, key, value, aoffs[i], aplan, scale=c.head_dim ** -0.5)
+            out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
@@ -403,8 +419,13 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
 
 @torch.no_grad()
 def path_indices(record: Sequence[Record], paths: Sequence[Sequence[int]]) -> list[tuple[torch.Tensor, ...]]:
-    """Each path's device indices for ``commit`` (padded rows, count, int64 rows), all from one pinned copy."""
+    """Validated paths as one pinned copy; consumers on another stream must wait for its producer.
 
+    Returned rows/counts retain the packed allocation and must remain unchanged
+    until replay completes. Supplied commit indices must come from this builder.
+    """
+
+    paths = _validated_paths(record, paths)
     width = record[0].k.shape[0]
     flat: list[int] = []
     for path in paths:
@@ -415,6 +436,25 @@ def path_indices(record: Sequence[Record], paths: Sequence[Sequence[int]]) -> li
         base = j * (width + 1)
         rows = dev[base:base + width]
         out.append((rows, dev[base + width:base + width + 1], rows[:len(path)].long()))
+    return out
+
+
+def _validated_paths(record: Sequence[Record], paths: Sequence[Sequence[int]]) -> list[list[int]]:
+    if not record or not paths:
+        raise ValueError("record and at least one nonempty path required")
+    width = record[0].k.shape[0]
+    if width < 1 or width > 2**31 - 1 or any(item.k.shape[0] != width for item in record):
+        raise ValueError("every record must have the same positive int32 row range")
+    out = []
+    for path in paths:
+        try:
+            rows = [index(row) if not isinstance(row, bool) else -1 for row in path]
+        except TypeError as exc:
+            raise ValueError("accepted path rows must be integers") from exc
+        if (not rows or len(rows) > width or any(row < 0 or row >= width for row in rows)
+                or any(a >= b for a, b in zip(rows, rows[1:]))):
+            raise ValueError("accepted paths must be nonempty, increasing rows within the recorded window")
+        out.append(rows)
     return out
 
 
@@ -430,6 +470,8 @@ def commit_streams(states: Sequence[State], record: Sequence[Record], paths: Seq
                    indices: list | None = None, *, in_place: bool = False) -> None:
     """Commit each stream's accepted path into its own state with one GDN replay launch for every stream (``in_place``: states nothing else holds)."""
 
+    if not states or len(states) != len(paths) or indices is not None and len(indices) != len(states):
+        raise ValueError("one state, accepted path and index tuple per stream")
     indices = indices if indices is not None else path_indices(record, paths)
     width = record[0].k.shape[0]
     packed = indices[0][0].as_strided((len(paths), width + 1), (width + 1, 1))    # path_indices' one copy
@@ -438,7 +480,9 @@ def commit_streams(states: Sequence[State], record: Sequence[Record], paths: Seq
 
 def _commit(states: Sequence[State], record: Sequence[Record], paths: Sequence[Sequence[int]], rows: torch.Tensor,
             counts: torch.Tensor, takes: Sequence[torch.Tensor], in_place: bool = False) -> None:
-    if any(not p for p in paths) or any(len(record) != len(st.rec) for st in states):
+    paths = _validated_paths(record, paths)
+    if (not states or len(states) != len(paths) or len(takes) != len(states)
+            or any(len(record) != len(st.rec) for st in states)):
         raise ValueError("record and nonempty paths required")
     # one GDN replay launch covers every layer and stream
     linear = [(i, item) for i, item in enumerate(record) if isinstance(item, GDNRecord)]
@@ -447,7 +491,8 @@ def _commit(states: Sequence[State], record: Sequence[Record], paths: Sequence[S
     if linear:
         items = [item for _, item in linear]
         ptrs = deltanet.replay_table([t.k for t in items], [t.v for t in items], [t.g for t in items],
-                                     [t.beta for t in items], [[st.rec[i] for i, _ in linear] for st in states])
+                                     [t.beta for t in items], [[st.rec[i] for i, _ in linear] for st in states],
+                                     in_place=in_place)
         table = deltanet.to_device(ptrs, torch.int64, rows.device)
         replayed = deltanet.replay(table, len(items), len(states), rows, counts, items[0].k, items[0].v,
                                    in_place=in_place)

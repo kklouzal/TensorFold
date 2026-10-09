@@ -56,6 +56,7 @@ class Lanes:
 def test_a_background_stream_gives_its_lane_to_a_foreground_request_and_replays():
     dec = Lanes()
     sched = Scheduler(dec, max_streams=1)
+    sched.start()
     back, front, stats = [], [], {}
     worker = threading.Thread(target=lambda: stats.update(back=sched.submit(
         [1] * 10, 60, None, True, lambda new: back.extend(new) or False, background=True)))
@@ -77,6 +78,7 @@ def test_background_requests_wait_for_the_foreground_ones_queued_with_them():
     real = dec.admit
     dec.admit = lambda s: (gate.wait(5), order.append(s.background), real(s))
     sched = Scheduler(dec, max_streams=1)
+    sched.start()
     threads = [threading.Thread(target=sched.submit, args=([3] * 4, 2, None, True, lambda new: False),
                                 kwargs={"background": b}) for b in (True, False, True, False)]
     for t in threads:

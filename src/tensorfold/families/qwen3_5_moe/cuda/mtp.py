@@ -22,6 +22,7 @@ class Cache:
 
     def __init__(self, w: Weights, capacity: int) -> None:
         c = w.config
+        self.origin = w.attention_origin
         self.k = torch.empty((capacity, c.kv_heads, c.head_dim), dtype=torch.bfloat16, device=w.norm.device)
         self.v = torch.empty_like(self.k)
         self.pos = 0
@@ -31,6 +32,7 @@ class Cache:
 
         other = object.__new__(Cache)
         other.k, other.v, other.pos = self.k, self.v, self.pos
+        other.origin = self.origin
         if rows > self.k.shape[0]:
             other.k = torch.cat([self.k[:self.pos], self.k.new_empty((rows - self.pos, *self.k.shape[1:]))])
             other.v = torch.cat([self.v[:self.pos], self.v.new_empty((rows - self.pos, *self.v.shape[1:]))])
@@ -40,7 +42,7 @@ class Cache:
 def offsets(cache: Cache) -> torch.Tensor:
     """The cache's keys and values as the tree attention's (1, 2) device offsets."""
 
-    return torch.tensor(tree_attention.offsets([(cache.k, cache.v)], cache.k.device), dtype=torch.int64,
+    return torch.tensor(tree_attention.offsets([(cache.k, cache.v)], cache.origin), dtype=torch.int64,
                         device=cache.k.device).view(1, 2)
 
 
@@ -55,6 +57,7 @@ class Staged:
         self.ids, self.pos = self.dev[:width], self.dev[width:2 * width]
         self.aplan = tree_attention.from_packed(self.dev[2 * width:], 1, width, items, chunks)
         self.aoffs = offsets(cache)
+        self.origin, self.caches = cache.origin, (cache.k, cache.v)
         self.states = torch.zeros((width, hidden), dtype=torch.bfloat16, device=cache.k.device)
 
     def refresh(self, states: torch.Tensor, tokens: Sequence[int], p0: int) -> None:
@@ -96,8 +99,10 @@ class Head:
             aplan = None if wide else tree_attention.plan([list(range(-1, n - 1))], [p0], c.heads // c.kv_heads,
                                                           states.device)
             aoffs = None if wide else offsets(cache)
+            origin = cache.origin
         else:
             ids, pos, aplan, aoffs = staged.ids, staged.pos, staged.aplan, staged.aoffs
+            origin = staged.origin
 
         def attend(q: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
             slots = pos.long()
@@ -105,7 +110,7 @@ class Head:
                 cache.k.index_copy_(0, slots, key)
                 cache.v.index_copy_(0, slots, value)
                 return prefill_attention(q, cache.k, cache.v, p0, scale=c.head_dim ** -0.5)
-            out = tree_attention.attention(q, key, value, aoffs, aplan, scale=c.head_dim ** -0.5)
+            out = tree_attention.attention(q, key, value, aoffs, aplan, origin=origin, scale=c.head_dim ** -0.5)
             cache.k.index_copy_(0, slots, key)
             cache.v.index_copy_(0, slots, value)
             return out
@@ -128,11 +133,12 @@ class Head:
         ids, pos = dev[:width], dev[width:]
         aplan = tree_attention.plan([list(range(-1, n - 1)) for n in sizes], list(starts), c.heads // c.kv_heads,
                                     device)
-        aoffs = torch.tensor(tree_attention.offsets([(x.k, x.v) for x in caches], device), dtype=torch.int64,
+        origin = self.w.attention_origin
+        aoffs = torch.tensor(tree_attention.offsets([(x.k, x.v) for x in caches], origin), dtype=torch.int64,
                              device=device).view(len(caches), 2)
 
         def attend(q: torch.Tensor, key: torch.Tensor, value: torch.Tensor) -> torch.Tensor:
-            out = tree_attention.attention(q, key, value, aoffs, aplan, scale=c.head_dim ** -0.5)
+            out = tree_attention.attention(q, key, value, aoffs, aplan, origin=origin, scale=c.head_dim ** -0.5)
             dst, src, a0 = [], [], 0
             for cache, n, p0 in zip(caches, sizes, starts):          # each stream's keys at its own slots
                 dst += [cache.k[p0:p0 + n], cache.v[p0:p0 + n]]

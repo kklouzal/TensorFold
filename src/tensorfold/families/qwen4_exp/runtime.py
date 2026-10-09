@@ -12,6 +12,30 @@ from tensorfold.families.qwen4_exp.model import _write_back, select_by_kernels
 from tensorfold.families.qwen4_exp.mtp_cache import MTPCache
 
 
+class _MTPModelView:
+    """Borrow current head modules; prepared parameter bytes never outlive an operation."""
+
+    def __init__(self, backbone, head):
+        self.backbone, self.head = backbone, head
+
+    @property
+    def args(self):
+        from dataclasses import replace
+
+        return replace(self.backbone.args, num_hidden_layers=1, layer_types=["sparse_attention"], ple_layer_ids=[])
+
+    @property
+    def layers(self):
+        return self.head.layers
+
+    @property
+    def model(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(hyper_connection_mixer=self.head.hyper_connection_mixer,
+                               embed_tokens=self.backbone.model.embed_tokens)
+
+
 class FlashNext:
     """Flash Next with the backbone and head apart, the fused decode, and MTP drafting."""
 
@@ -40,28 +64,22 @@ class FlashNext:
         if self.multi_row_exact and head is not None and self.drafts > 0:
             self.mtp = head
             # the head's decoder layer and mixer through the same fused kernels as the model's layers
-            from types import SimpleNamespace
-
             from tensorfold.families.qwen4_exp.decode import FusedDecode
 
-            shell = SimpleNamespace(args=self._head_config(), layers=head.layers,
-                                    model=SimpleNamespace(hyper_connection_mixer=head.hyper_connection_mixer,
-                                                          embed_tokens=model.model.embed_tokens))
-            self.mtp_fused = FusedDecode(shell)
+            self.mtp_fused = FusedDecode(_MTPModelView(model, head))
             select_by_kernels(head.layers)
-            self._mtp_scales = [1.0 + head.pre_fc_norm_embedding.weight.astype(mx.float32),
-                                1.0 + head.pre_fc_norm_hidden.weight.astype(mx.float32)]
             mx.eval(*self._mtp_scales)
             import os
 
             # TF_FLASH_DRAFT_VOCAB=0 scores the full vocabulary; TF_FLASH_QUEUED=0 reads each chained draft immediately.
-            self._draft_ids = self._draft_head = None
+            self._draft_ids = self._draft_cut_ids = None
             if os.environ.get("TF_FLASH_DRAFT_VOCAB", "1") != "0":
-                from tensorfold.families.qwen4_exp.draft_head import cut_head, draft_ids
+                from tensorfold.families.qwen4_exp.draft_head import draft_ids
 
-                ids = draft_ids()
+                ids = draft_ids(vocab=model.lm_head.weight.shape[0])
+                ids.flags.writeable = False
+                self._draft_cut_ids = ids
                 self._draft_ids = mx.array(ids)
-                self._draft_head = cut_head(model.lm_head, ids)
             self.queued_chains = os.environ.get("TF_FLASH_QUEUED", "1") != "0"
             self.mtp_step_ms = self._time_mtp_step()
 
@@ -72,7 +90,8 @@ class FlashNext:
 
         from tensorfold.kernels.qwen.flash_next.v1 import attention
 
-        entry = next((e for e in self.fused.layers if "attn" in e), None)
+        entry = next((self.fused._entry(index) for index, layer in enumerate(self.model.layers)
+                      if not layer.is_linear), None)
         if entry is None:
             return
         c, a = self.args, entry["attn"][-1]
@@ -230,11 +249,6 @@ class FlashNext:
         tokens = [int(t) for t in np.asarray(next_tokens).reshape(-1)]
         self._absorb(self._streams[start:start + len(tokens)], tokens, cache[-1])
 
-    def _head_config(self) -> Any:
-        from dataclasses import replace
-
-        return replace(self.args, num_hidden_layers=1, layer_types=["sparse_attention"], ple_layer_ids=[])
-
     def _mtp_step(self, tokens: Any, streams: mx.array, mtp_cache: MTPCache,
                   last_only: bool = False) -> tuple[mx.array, mx.array]:
         """Run MTP on next tokens and residual streams, using reference modules for prompts and fused kernels for decode."""
@@ -244,13 +258,15 @@ class FlashNext:
         dims = wide // head.streams
         if rows <= self.fused_rows:
             # Fuse embedding rows and centred norms, then run both projections through ``project``.
-            from tensorfold.kernels.qwen.flash_next.v1 import attention, base, embed, experts, gdn, hc
+            from tensorfold.kernels.qwen.flash_next.v1 import embed
             from tensorfold.families.qwen4_exp.decode import project
 
+            self.mtp_fused.model.head = head
             eps = self.mtp_fused.eps
+            mtp_scales = self._mtp_scales
             emb = embed.embed_rows(tokens, self.model.model.embed_tokens)                      # [n, D]
-            e = project(embed.rms_norm_rows(emb, self._mtp_scales[0], eps), head.fc_embedding)
-            normed = embed.rms_norm_rows(streams, self._mtp_scales[1], eps).reshape(rows * head.streams, dims)
+            e = project(embed.rms_norm_rows(emb, mtp_scales[0], eps), head.fc_embedding)
+            normed = embed.rms_norm_rows(streams, mtp_scales[1], eps).reshape(rows * head.streams, dims)
             hs = project(normed, head.fc_hidden)
             x = (e[:, None, :] + hs.reshape(rows, head.streams, dims)).reshape(rows, wide)
             mixed = self.mtp_fused.run(x, None, [mtp_cache])
@@ -267,22 +283,37 @@ class FlashNext:
         h = last_row_layer(layer, x[None], mtp_cache)
         return head.hyper_connection_mixer(h), h[0]
 
-    def _draft_draw(self, mixed: mx.array, sampling: Any, positions: Any) -> mx.array:
+    def _draft_draw(self, mixed: mx.array, sampling: Any, positions: Any, *, prepared=None) -> mx.array:
         """Draw lazy uint32 drafts [n] with the target's keyed rule over the cut head's ids or the whole vocabulary."""
 
         from tensorfold.families.qwen4_exp.decode import project
 
         x = mixed.reshape(-1, mixed.shape[-1])
-        if self._draft_head is not None:
+        draft_head, draft_ids = (self._draft_head, self._draft_ids) if prepared is None else prepared
+        if draft_head is not None:
             from tensorfold.families.qwen4_exp.draft_head import sample as draft_sample
 
-            return draft_sample(project(x, self._draft_head), self._draft_ids, sampling, positions)
+            return draft_sample(project(x, draft_head), draft_ids, sampling, positions)
         from tensorfold.engine.gpu_sampling import sample as gpu_sample
 
         return gpu_sample(self.head(x[None]).reshape(x.shape[0], -1), sampling, positions)
 
-    _draft_head: Any = None
+    _draft_cut_ids: Any = None
     _draft_ids: Any = None
+
+    @property
+    def _mtp_scales(self):
+        head = self.mtp
+        return [1.0 + head.pre_fc_norm_embedding.weight.astype(mx.float32),
+                1.0 + head.pre_fc_norm_hidden.weight.astype(mx.float32)]
+
+    @property
+    def _draft_head(self):
+        if self._draft_cut_ids is None:
+            return None
+        from tensorfold.families.qwen4_exp.draft_head import cut_head
+
+        return cut_head(self.model.lm_head, self._draft_cut_ids)
 
     def _absorb(self, streams: mx.array, tokens: list[int], mtp_cache: MTPCache) -> tuple[mx.array, mx.array]:
         if mtp_cache.drafted:
@@ -299,8 +330,9 @@ class FlashNext:
         mixed, out = self._absorb(streams, [int(t) for t in tokens], mtp_cache)
         drafts: list[int] = []
         count = self.drafts if count is None else int(count)
+        prepared = (self._draft_head, self._draft_ids) if count > 0 else None
         for j in range(count):
-            d = int(self._draft_draw(mixed, sampling, [position + j]).item())
+            d = int(self._draft_draw(mixed, sampling, [position + j], prepared=prepared).item())
             drafts.append(d)
             if j + 1 < count:
                 mixed, out = self._mtp_step([d], out, mtp_cache)
@@ -334,13 +366,14 @@ class FlashNext:
             mtp_cache.trim(rows - keep, self.args.indexer_compress_ratio)
         if count <= 0:
             return []
+        prepared = (self._draft_head, self._draft_ids) if count > 1 else None
         streams = out[keep - 1:keep]
         if not self.queued_chains:
             drafts = [int(first.item() if isinstance(first, mx.array) else first)]
             for j in range(1, count):
                 mixed, streams = self._mtp_step([drafts[-1]], streams, mtp_cache)
                 mtp_cache.drafted += 1
-                drafts.append(int(self._draft_draw(mixed, sampling, [position + j]).item()))
+                drafts.append(int(self._draft_draw(mixed, sampling, [position + j], prepared=prepared).item()))
             return drafts
         # Keep ``first`` and chained draws on the GPU until the next round builds its inputs.
         head = (first.reshape(1).astype(mx.uint32) if isinstance(first, mx.array)
@@ -353,7 +386,7 @@ class FlashNext:
             for j in range(1, count):
                 mixed, streams = self._mtp_step(chain[-1], streams, mtp_cache)
                 mtp_cache.drafted += 1
-                chain.append(self._draft_draw(mixed, sampling, [position + j]))
+                chain.append(self._draft_draw(mixed, sampling, [position + j], prepared=prepared))
                 mx.async_eval(chain[-1])       # the GPU starts each step while the host builds the next
         finally:
             mtp_cache.chaining = False
@@ -412,16 +445,18 @@ class FlashNext:
 
         if len(rows) == 1:
             return self._mtp_step(tokens, streams, mtp_caches[0])
-        from tensorfold.kernels.qwen.flash_next.v1 import attention, base, embed, experts, gdn, hc
+        from tensorfold.kernels.qwen.flash_next.v1 import embed
         from tensorfold.families.qwen4_exp.decode import project
 
         head = self.mtp
         total, wide = streams.shape
         dims = wide // head.streams
+        self.mtp_fused.model.head = head
         eps = self.mtp_fused.eps
+        mtp_scales = self._mtp_scales
         emb = embed.embed_rows(tokens, self.model.model.embed_tokens)
-        e = project(embed.rms_norm_rows(emb, self._mtp_scales[0], eps), head.fc_embedding)
-        normed = embed.rms_norm_rows(streams, self._mtp_scales[1], eps).reshape(total * head.streams, dims)
+        e = project(embed.rms_norm_rows(emb, mtp_scales[0], eps), head.fc_embedding)
+        normed = embed.rms_norm_rows(streams, mtp_scales[1], eps).reshape(total * head.streams, dims)
         hs = project(normed, head.fc_hidden)
         x = (e[:, None, :] + hs.reshape(total, head.streams, dims)).reshape(total, wide)
         mixed = self.mtp_fused.run_multi(x, None, [[m] for m in mtp_caches], rows)
@@ -442,8 +477,9 @@ class FlashNext:
         lasts = [sum(len(k) for k in rows[:i + 1]) - 1 for i in range(len(rows))]
         chains: list[list[mx.array]] = [[] for _ in rows]
         live = [i for i, d in enumerate(depths) if d > 0]
+        prepared = (self._draft_head, self._draft_ids) if live else None
         for i in live:
-            chains[i].append(self._draft_draw(mixed[:, lasts[i]:lasts[i] + 1], samplings[i], [positions[i]]))
+            chains[i].append(self._draft_draw(mixed[:, lasts[i]:lasts[i] + 1], samplings[i], [positions[i]], prepared=prepared))
         streams = {i: out[lasts[i]:lasts[i] + 1] for i in live}
         step = 1
         while True:
@@ -455,7 +491,7 @@ class FlashNext:
                                                 [mtp[i] for i in live], [1] * len(live))
             for j, i in enumerate(live):
                 mtp[i].drafted += 1
-                chains[i].append(self._draft_draw(mixed[:, j:j + 1], samplings[i], [positions[i] + step]))
+                chains[i].append(self._draft_draw(mixed[:, j:j + 1], samplings[i], [positions[i] + step], prepared=prepared))
                 streams[i] = grown[j:j + 1]
             step += 1
         drafts = [mx.concatenate(chain) if chain else [] for chain in chains]

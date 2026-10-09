@@ -18,8 +18,9 @@ void scan_rows(const at::Tensor& proj, const at::Tensor& xc, at::Tensor state, c
     check(dsk, at::kFloat, "D");
     check(dtb, at::kFloat, "dt bias");
     check(y, at::kBFloat16, "y");
-    TORCH_CHECK(state.dim() == 3 && state.size(2) == 128 && state.size(1) % 32 == 0, "state (heads, 32k, 128)");
-    TORCH_CHECK(state.size(0) % groups == 0 && proj.size(0) >= xc.size(0) && y.size(0) >= xc.size(0),
+    TORCH_CHECK(state.dim() == 3 && state.size(0) > 0 && state.size(1) > 0 && state.size(2) == 128 &&
+                    state.size(1) % 32 == 0, "state (positive heads, positive 32k, 128)");
+    TORCH_CHECK(groups > 0 && state.size(0) % groups == 0 && proj.size(0) >= xc.size(0) && y.size(0) >= xc.size(0),
                 "heads a multiple of groups; a projection and an output row a chunk row");
     c10::cuda::CUDAGuard guard(proj.device());
     scan_rows_cuda(proj, xc, state, a, dsk, dtb, y, static_cast<int>(dt_off), static_cast<int>(groups), lo, hi);

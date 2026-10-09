@@ -17,6 +17,7 @@ QUANT_METHODS = {"cuda": ("mlx", "exl3", "modelopt", "compressed-tensors")}   # 
 EXL3_VARIANT = "any"                           # every EXL3 codebook and width (tensorfold.families.EXL3_VARIANT_ANY)
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.dense.v1"
 KERNEL_VERSION = "v1"
+MLX_MODEL_FILE = True
 
 # the widest verify window checked at load (rows) with tensor units; without them ``row_matmul.WINDOW_ROWS``
 WIDEST = 32
@@ -45,10 +46,12 @@ def tensor_units() -> bool:
     return bool(found) and int(found.group(1)) >= 17
 
 
-def load_lane_model(model_dir: Path) -> tuple[Any, Any]:
+def load_lane_model(model_dir: Path, *, trust_model_code: bool = False) -> tuple[Any, Any]:
     """Load through mlx_lm; checkpoints that keep MTP tensors drop them before mlx_lm's sanitize."""
 
-    from mlx_lm import load
+    from tensorfold.families.model_code import authorize_model_code, load_mlx_model as load
+
+    authorize_model_code(model_dir, trust_model_code=trust_model_code)
 
     index_path = Path(model_dir) / "model.safetensors.index.json"
     names: list[str] = []
@@ -56,7 +59,7 @@ def load_lane_model(model_dir: Path) -> tuple[Any, Any]:
         weight_map = json.loads(index_path.read_text()).get("weight_map", {})
         names = [n for n in weight_map if n.startswith("mtp.") or ".mtp." in n]
     if not names:
-        loaded = load(str(model_dir))
+        loaded = load(str(model_dir), trust_model_code=trust_model_code)
         return loaded[0], loaded[1]
     from mlx_lm.models.qwen3_5 import TextModel
 
@@ -68,7 +71,7 @@ def load_lane_model(model_dir: Path) -> tuple[Any, Any]:
 
     TextModel.sanitize = sanitize_without_mtp  # type: ignore[method-assign]
     try:
-        loaded = load(str(model_dir))
+        loaded = load(str(model_dir), trust_model_code=trust_model_code)
         return loaded[0], loaded[1]
     finally:
         TextModel.sanitize = original  # type: ignore[method-assign]
@@ -101,14 +104,17 @@ def refusal(config: dict[str, Any], lanes: bool) -> str | None:
 
 
 def _language_specs(config: dict[str, Any]):
-    from tensorfold.quantization import quantization_block, resolve_affine
+    from tensorfold.quantization import _affine_resolver, quantization_block, resolve_affine
 
     specs = {"": resolve_affine(config)}
+    resolver = None
     for path, value in (quantization_block(config) or {}).items():
         if ((isinstance(value, dict) or type(value) is bool)
                 and not any(part in path.split(".") for part in ("vision_tower", "visual"))
                 and not path.endswith("embed_tokens")):
-            specs[path] = resolve_affine(config, path)
+            if resolver is None:
+                resolver = _affine_resolver(config)
+            specs[path] = resolver(path)
     return specs
 
 
@@ -142,7 +148,8 @@ def check(model_dir: str | Path) -> None:
 
 
 def load(model_dir: Path, *, lane_kernels: str = "auto", drafter: str = "", drafter_bits: int = 4,
-         vision: bool = False, vision_urls: bool = False, **_: Any) -> tuple[Any, Any]:
+         vision: bool = False, vision_urls: bool = False, trust_model_code: bool = False,
+         **_: Any) -> tuple[Any, Any]:
     """Load a supported checkpoint with tensor-unit lane kernels when enabled, otherwise the row-exact decoder."""
 
     from tensorfold.families import read_config
@@ -158,7 +165,7 @@ def load(model_dir: Path, *, lane_kernels: str = "auto", drafter: str = "", draf
         if lane_kernels == "on":
             raise ValueError("this format uses the packed affine row kernels; use --lane-kernels auto or off")
         lanes = False
-    model, tokenizer = load_lane_model(Path(model_dir))
+    model, tokenizer = load_lane_model(Path(model_dir), trust_model_code=trust_model_code)
     family = lane_family(model, lanes=lanes, drafter=drafter, drafter_bits=drafter_bits, title=TITLE, use=MODELS[0])
     if vision:
         from tensorfold.vision.qwen_mlx import QwenVisionFrontend

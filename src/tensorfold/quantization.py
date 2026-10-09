@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Callable, Sequence
 
 AFFINE_BITS = (2, 3, 4, 5, 6, 8)
 AFFINE_GROUPS = (32, 64, 128)
@@ -74,6 +74,47 @@ def resolve_affine(config: dict, path: str | None = None) -> AffineSpec | None:
     if any(spec != specs[0] for spec in specs[1:]):
         raise ValueError(f'conflicting quantization aliases for {path}')
     return specs[0]
+
+
+def _affine_resolver(config: dict) -> Callable[[str | None], AffineSpec | None]:
+    """Prepare aliases for one startup operation's owned JSON configuration.
+
+    Alias values are snapshotted; the callable owns no global state. The public
+    ``resolve_affine`` continues to observe its configuration on every call.
+    No-override configurations retain that original path.
+    """
+    from copy import deepcopy
+    from functools import partial
+
+    block = quantization_block(config)
+    if block is None or not any(isinstance(value, dict) or type(value) is bool for value in block.values()):
+        return partial(resolve_affine, config)
+    global_spec = resolve_affine(config)
+    aliases = {}
+    for key, value in deepcopy(block).items():
+        aliases.setdefault(canonical_path(str(key)), []).append(value)
+
+    def resolve(path: str | None = None) -> AffineSpec | None:
+        if path is None:
+            return global_spec
+        values = aliases.get(canonical_path(path))
+        if values is None:
+            return global_spec
+        specs = []
+        for value in values:
+            if value is False or value == {}:
+                specs.append(None)
+            elif value is True:
+                specs.append(global_spec)
+            elif isinstance(value, dict):
+                specs.append(_spec(value, default_bits=4))
+            else:
+                raise ValueError(f'invalid per-module quantization metadata: {path}')
+        if any(spec != specs[0] for spec in specs[1:]):
+            raise ValueError(f'conflicting quantization aliases for {path}')
+        return specs[0]
+
+    return resolve
 
 
 def validate_shapes(weight_shape: Sequence[int], scale_shape: Sequence[int], bias_shape: Sequence[int],

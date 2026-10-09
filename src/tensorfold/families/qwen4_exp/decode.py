@@ -31,35 +31,48 @@ class _Split:
         return mx.concatenate([outs[m] for m in sorted(outs)], axis=-1)
 
 
+class _PreparedLinear(nn.QuantizedLinear):
+    """An operation's exact packed stack; no random initialization or source edits."""
+
+    def __init__(self, parts: list[Any], group: int) -> None:
+        nn.Module.__init__(self)
+        self.bits, self.group_size, self.mode = parts[0].bits, group, "affine"
+        self.weight = mx.concatenate([p.weight for p in parts])
+        self.scales = mx.concatenate([p.scales for p in parts])
+        self.biases = mx.concatenate([p.biases for p in parts])
+        self.__dict__["member_rows"] = [p.rows for p in parts]
+        self.freeze()
+        mx.eval(self.weight, self.scales, self.biases)
+
+
+class _StackPlan:
+    """Read the owning module's current projections at each prefill operation."""
+
+    def __init__(self, owner: Any, names: tuple[str, ...]) -> None:
+        self.owner, self.names = owner, names
+
+    def current(self):
+        linears = [getattr(self.owner, name) for name in self.names]
+        if len({int(linear.bits) for linear in linears}) != 1:
+            return None
+        return _stacked(linears)[0]
+
+
 def _stacked(linears: list[Any]) -> tuple[Any, list[int]]:
-    """One quantized linear for projections of the same input (one per bit width, groups made equal exactly)."""
+    """Stack current affine values, preserving bit-width groups and member order."""
 
     by_bits: dict[int, list[int]] = {}
-    for i, l in enumerate(linears):
-        by_bits.setdefault(int(l.bits), []).append(i)
+    for i, linear in enumerate(linears):
+        by_bits.setdefault(int(linear.bits), []).append(i)
     if len(by_bits) > 1:
-        return _Split([(_stacked([linears[i] for i in members])[0], members) for members in by_bits.values()]), []
-    group = min(int(l.group_size) for l in linears)
-    parts = [base.QWeights(l.weight, l.scales, l.biases, l.bits, l.group_size).widened(int(l.bits), group)
-             for l in linears]
-    first = linears[0]
-    rows = sum(p.rows for p in parts)
-    stacked = nn.QuantizedLinear(int(first.weight.shape[1]) * 32 // first.bits, rows, bias=False,
-                                 group_size=group, bits=first.bits)
-    stacked.weight = mx.concatenate([p.weight for p in parts])
-    stacked.scales = mx.concatenate([p.scales for p in parts])
-    stacked.biases = mx.concatenate([p.biases for p in parts])
-    stacked.__dict__["member_rows"] = [p.rows for p in parts]
-    mx.eval(stacked.weight, stacked.scales, stacked.biases)
+        return _Split([(_stacked([linears[i] for i in members])[0], members)
+                       for members in by_bits.values()]), []
+    group = min(int(linear.group_size) for linear in linears)
+    parts = [base.QWeights.of(linear).widened(int(linear.bits), group) for linear in linears]
+    stacked = _PreparedLinear(parts, group)
     cuts, at = [], 0
-    for l in linears:
-        n = int(l.weight.shape[0])
-        if int(l.group_size) == group:            # a regrouped member keeps its own arrays (its format is its own)
-            l.weight, l.scales, l.biases = (stacked.weight[at:at + n], stacked.scales[at:at + n],
-                                            stacked.biases[at:at + n])
-            # Evaluate stacked-buffer views on this thread so the scheduler thread needs no lazy-op stream.
-            mx.eval(l.weight, l.scales, l.biases)
-        at += n
+    for part in parts:
+        at += part.rows
         cuts.append(at)
     return stacked, cuts[:-1]
 
@@ -79,28 +92,22 @@ def first(a: mx.array) -> mx.array:
     return a.reshape(a.shape[1:])
 
 
-_checked: set[tuple[int, int, int]] = set()
 # "lane": lane_qmm; "rows": per-row kernels; "simd": simd_qmm, selected by TF_FLASH_DENSE.
 DENSE = os.environ.get("TF_FLASH_DENSE") or ("lane" if tensor_units() else "rows")
-_lane: dict[int, tuple[mx.array, mx.array, mx.array, int]] = {}   # id(linear) -> weight, tiled copy, scales, tile
 
 
 def _lane_project(x: mx.array, linear: Any) -> mx.array:
-    """Project through lane_qmm with a cached tiled weight, retaining the original for reference forwards."""
+    """Project the current descriptor values; object identity is not a byte version."""
 
     weight = linear.weight
-    hit = _lane.get(id(linear))
-    if hit is None or hit[0] is not weight:
-        n, bits, group = int(weight.shape[0]), int(linear.bits), int(linear.group_size)
-        scales, biases = linear.scales, linear.biases
-        if group == 128:              # two groups of 64 with the group's scale and bias: the same weights
-            scales, biases, group = mx.repeat(scales, 2, axis=1), mx.repeat(biases, 2, axis=1), 64
-        nt = 64 if (bits == 4 and n % 64 == 0) else 32 if n % 32 == 0 else 0   # other widths: 32 wide
-        tiled = lane_qmm.tile_weight(weight, nt, group, bits=bits) if nt else weight
-        sbt = lane_qmm.pack_scales(scales, biases)
-        mx.eval(tiled, sbt)
-        hit = _lane[id(linear)] = (weight, tiled, sbt, nt, group)
-    _, tiled, sbt, nt, group = hit
+    n, bits, group = int(weight.shape[0]), int(linear.bits), int(linear.group_size)
+    scales, biases = linear.scales, linear.biases
+    if group == 128:
+        scales, biases, group = mx.repeat(scales, 2, axis=1), mx.repeat(biases, 2, axis=1), 64
+    nt = 64 if (bits == 4 and n % 64 == 0) else 32 if n % 32 == 0 else 0
+    tiled = lane_qmm.tile_weight(weight, nt, group, bits=bits) if nt else weight
+    sbt = lane_qmm.pack_scales(scales, biases)
+    mx.eval(tiled, sbt)
     k = int(x.shape[-1])
     rows = x.size // k
     kwargs = {"tiled": bool(nt), "nt": nt or lane_qmm.NT, "group": group}
@@ -139,13 +146,13 @@ def project(x: mx.array, linear: Any) -> mx.array:
         return linear(x) if x.size // x.shape[-1] == 1 else rows.qmv_rows(x, linear)
     weight = linear.weight
     shape = (int(weight.shape[0]), int(weight.shape[1]) * 8, int(linear.group_size))
-    if shape not in _checked:
-        if not simd_qmm.fits(linear):
-            raise ValueError(f"simd_qmm does not take a {shape} linear ({linear.bits}-bit, group {linear.group_size})")
-        if not simd_qmm.check(weight, linear.scales, linear.biases, group_size=linear.group_size):
-            simd_qmm.mma_one_row.add(shape)
-        _checked.add(shape)
-    return simd_qmm.qmm(x, weight, linear.scales, linear.biases, linear.group_size)
+    if not simd_qmm.fits(linear):
+        raise ValueError(f"simd_qmm does not take a {shape} linear ({linear.bits}-bit, group {linear.group_size})")
+    # Public MLX arrays can change their descriptor without changing identity.
+    # A current-weight check cannot authorize another matrix of the same shape.
+    kind = None if simd_qmm.check(weight, linear.scales, linear.biases,
+                                  group_size=linear.group_size) else "mma"
+    return simd_qmm.qmm(x, weight, linear.scales, linear.biases, linear.group_size, kind=kind)
 
 
 _NONE: tuple[str, tuple[mx.array, ...], Any] = ("none", (), None)
@@ -158,16 +165,6 @@ class _HC:
         parts = [conn.input_mix_weight_down] + ([conn.block_inject_weight] if inject else [])
         self.down = base.QWeights.of(*parts)
         mx.eval(self.down.weight, self.down.scales, self.down.biases)
-        same = all((int(l.bits), int(l.group_size)) == (self.down.bits, self.down.group) for l in parts)
-        if len(parts) > 1 and same:
-            # keep the modules' own weights as views of the stacked matrix
-            at = 0
-            for lin in parts:
-                n = int(lin.weight.shape[0])
-                lin.weight, lin.scales, lin.biases = (self.down.weight[at:at + n], self.down.scales[at:at + n],
-                                                      self.down.biases[at:at + n])
-                mx.eval(lin.weight, lin.scales, lin.biases)
-                at += n
         self.up = base.QWeights.of(conn.input_mix_weight_up)
         self.scale = (1.0 + conn.hc_norm.weight.astype(mx.float32))
         self.low = int(conn.input_mix_weight_down.weight.shape[0])
@@ -175,57 +172,23 @@ class _HC:
 
 
 class FusedDecode:
-    """Decode rows of Flash Next through the fused kernels, with the reference model's caches."""
+    """Decode current model parameters through fused kernels and reference caches.
+
+    Parameter mutation/replacement is allowed between completed operations and
+    must be serialized with forwards. Derived arrays are operation-owned; MLX
+    object identity never serves as an immutable parameter-byte version.
+    """
 
     def __init__(self, model: Any) -> None:
-        cfg = model.args
         self.model = model
-        self.cfg = cfg
-        self.streams = cfg.hc_count
-        self.eps = mx.array([cfg.rms_norm_eps], dtype=mx.float32)
-        self.layers: list[dict[str, Any]] = []
+        # Hints retain modules and resolve their current arrays, never derived bytes.
         for layer in model.layers:
-            entry: dict[str, Any] = {
-                "attn_hc": _HC(layer.attn_hyper_connection, inject=True),
-                "mlp_hc": _HC(layer.mlp_hyper_connection, inject=True),
-            }
             if layer.is_linear:
                 g = layer.linear_attn
-                proj, _ = _stacked([g.in_proj_qkv, g.in_proj_z, g.in_proj_b, g.in_proj_a])
-                # prefill chunks project through one stack too (GatedDeltaNet); split widths go one by one
-                g.__dict__["stacked"] = proj if isinstance(proj, nn.QuantizedLinear) else None
-                conv_w = mx.contiguous(g.conv1d.weight[:, :, 0])
-                mx.eval(conv_w)
-                entry["gdn"] = (proj, conv_w, g)
-            else:
-                a = layer.self_attn
-                proj, _ = _stacked([a.q_proj, a.k_proj, a.v_proj, a.indexer.index_qk_proj])
-                scales = [1.0 + n.weight.astype(mx.float32) for n in
-                          (a.q_norm, a.k_norm, a.indexer.q_layernorm, a.indexer.k_layernorm)]
-                mx.eval(*scales)
-                entry["attn"] = (proj, *scales, a)
-            moe = layer.mlp
-            # the router's bf16 rows and the shared expert's gate row (dequantized): one matvec
-            router_rows = mx.concatenate([_dense_rows(moe.gate), _dense_rows(moe.shared_expert_gate)])
-            mx.eval(router_rows)
-            entry["moe"] = (moe, router_rows)
-            self.layers.append(entry)
-        self.mixer = _HC(model.model.hyper_connection_mixer, inject=False)
-        # Concatenate the PLE tables for one lookup kernel.
-        self.ple_tables = None
-        self.ple_parts: dict[int, tuple[Any, ...]] = {}
-        for layer in model.layers:
+                g.__dict__["stacked"] = _StackPlan(g, ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"))
             if "ple" in layer:
-                ple = layer.ple
-                self.ple_tables = embed.PleTables(ple.ple_embedding)
-                # prefill chunks look their rows up through the same tables (NGramEmbedding.__call__)
-                ple.ple_embedding.__dict__["fused_tables"] = self.ple_tables
-                if isinstance(ple.key_proj, nn.QuantizedLinear) and isinstance(ple.value_proj, nn.QuantizedLinear):
-                    kv, _ = _stacked([ple.key_proj, ple.value_proj])
-                    scales = [1.0 + n.weight.astype(mx.float32) for n in (ple.norm_key, ple.norm_query, ple.norm_conv)]
-                    conv_w = mx.contiguous(ple.conv1d.weight[:, :, 0]).astype(mx.float32)
-                    mx.eval(*scales, conv_w)
-                    self.ple_parts[id(ple)] = (kv, *scales, conv_w)
+                embedding = layer.ple.ple_embedding
+                embedding.__dict__["fused_tables"] = embed.PleTables(embedding)
         # Keep per-row recurrent states by layer and stream for prefix rollback, plus each stream's first cache.
         self.row_states: dict[int, list[tuple[mx.array, mx.array, int]]] = {}
         self._last_heads: list[Any] = []
@@ -233,9 +196,65 @@ class FusedDecode:
         # Queue each layer as soon as Python finishes building it.
         self.eval_every = 1
 
+    @property
+    def cfg(self):
+        return self.model.args
+
+    @property
+    def streams(self):
+        return self.cfg.hc_count
+
+    @property
+    def eps(self):
+        return mx.array([self.cfg.rms_norm_eps], dtype=mx.float32)
+
+    @property
+    def mixer(self):
+        return _HC(self.model.model.hyper_connection_mixer, inject=False)
+
+    def _entry(self, index, *, connections_only=False):
+        layer = self.model.layers[index]
+        entry = {"attn_hc": _HC(layer.attn_hyper_connection, inject=True),
+                 "mlp_hc": _HC(layer.mlp_hyper_connection, inject=True)}
+        if connections_only:
+            return entry
+        if layer.is_linear:
+            g = layer.linear_attn
+            proj, _ = _stacked([g.in_proj_qkv, g.in_proj_z, g.in_proj_b, g.in_proj_a])
+            conv_w = mx.contiguous(g.conv1d.weight[:, :, 0])
+            mx.eval(conv_w)
+            entry["gdn"] = (proj, conv_w, g)
+        else:
+            a = layer.self_attn
+            proj, _ = _stacked([a.q_proj, a.k_proj, a.v_proj, a.indexer.index_qk_proj])
+            scales = [1.0 + n.weight.astype(mx.float32) for n in
+                      (a.q_norm, a.k_norm, a.indexer.q_layernorm, a.indexer.k_layernorm)]
+            mx.eval(*scales)
+            entry["attn"] = (proj, *scales, a)
+        moe = layer.mlp
+        router_rows = mx.concatenate([_dense_rows(moe.gate), _dense_rows(moe.shared_expert_gate)])
+        mx.eval(router_rows)
+        entry["moe"] = (moe, router_rows)
+        return entry
+
+    @property
+    def layers(self):
+        """Current-value views for startup warmers; no authority survives mutation."""
+        return [self._entry(i) for i in range(len(self.model.layers))]
+
+    def _ple_parts(self, ple):
+        if DENSE != "rows" or not all(isinstance(linear, nn.QuantizedLinear)
+                                      for linear in (ple.key_proj, ple.value_proj)):
+            return None
+        kv, _ = _stacked([ple.key_proj, ple.value_proj])
+        scales = [1.0 + n.weight.astype(mx.float32) for n in (ple.norm_key, ple.norm_query, ple.norm_conv)]
+        conv_w = mx.contiguous(ple.conv1d.weight[:, :, 0]).astype(mx.float32)
+        mx.eval(*scales, conv_w)
+        return kv, *scales, conv_w
+
     # -- blocks ------------------------------------------------------------------
-    def _gdn(self, index: int, x: mx.array, cache: Any) -> mx.array:
-        proj, conv_w, g = self.layers[index]["gdn"]
+    def _gdn(self, index: int, x: mx.array, cache: Any, entry=None) -> mx.array:
+        proj, conv_w, g = (self._entry(index) if entry is None else entry)["gdn"]
         cfg = self.cfg
         rows = x.shape[0]
         conv_state = first(cache.conv) if cache.conv is not None else mx.zeros(
@@ -258,8 +277,8 @@ class FusedDecode:
             self._pos = (key, mx.arange(past, past + rows, dtype=mx.int32))
         return self._pos[1]
 
-    def _attention(self, index: int, x: mx.array, cache: Any) -> mx.array:
-        proj, q_scale, k_scale, iq_scale, pool_scale, a = self.layers[index]["attn"]
+    def _attention(self, index: int, x: mx.array, cache: Any, entry=None) -> mx.array:
+        proj, q_scale, k_scale, iq_scale, pool_scale, a = (self._entry(index) if entry is None else entry)["attn"]
         cfg = self.cfg
         rows = x.shape[0]
         heads, kv_heads, dims = cfg.num_attention_heads, cfg.num_key_value_heads, cfg.head_dim
@@ -306,10 +325,10 @@ class FusedDecode:
             cache.pooled = fresh if cache.pooled is None else mx.concatenate([cache.pooled, fresh], axis=1)
         return attention.index_select(iq, first(cache.pooled), complete, ends, top=top)
 
-    def _moe(self, index: int, x: mx.array, h: mx.array, inject: mx.array) -> tuple[mx.array, Any]:
+    def _moe(self, index: int, x: mx.array, h: mx.array, inject: mx.array, entry=None) -> tuple[mx.array, Any]:
         """The MoE: the streams and the grouped write-back the next hyper-connection's hc_norm applies."""
 
-        moe, router_rows = self.layers[index]["moe"]
+        moe, router_rows = (self._entry(index) if entry is None else entry)["moe"]
         cfg = self.cfg
         rows = int(x.shape[0])
         step = base.MAX_ROWS
@@ -356,11 +375,11 @@ class FusedDecode:
                 pending = _NONE
                 host = np.asarray(tokens, dtype=np.int64).reshape(1, -1)      # a GPU window's ids, read after layer 0
                 h = self._ple(layer.ple, h, host, c)
-            entry = self.layers[i]
+            entry = self._entry(i)
             h, mixed, inj = self._hc(h, pending, entry["attn_hc"])
-            out = self._gdn(i, mixed, c) if layer.is_linear else self._attention(i, mixed, c)
+            out = self._gdn(i, mixed, c, entry) if layer.is_linear else self._attention(i, mixed, c, entry)
             h, mixed, inj = self._hc(h, ("plain", (out,), inj), entry["mlp_hc"])
-            h, pending = self._moe(i, mixed, h, inj)
+            h, pending = self._moe(i, mixed, h, inj, entry)
             if self.eval_every and (i + 1) % self.eval_every == 0:
                 mx.async_eval(h, *pending[1])
         h, mixed, _ = self._hc(h, pending, self.mixer)
@@ -376,7 +395,7 @@ class FusedDecode:
             history = np.full((1, emb_mod.context), emb_mod.eos, dtype=np.int64)
         ids = emb_mod.ids(history, tokens)
         cache.history = np.concatenate([history, tokens.astype(np.int64)], axis=1)[:, -emb_mod.context:]
-        emb = embed.ple_lookup(ids[0], self.ple_tables)                           # [R, E]
+        emb = embed.ple_lookup(ids[0], embed.PleTables(emb_mod))                           # [R, E]
         gated, normed = self._ple_gate(ple, emb, h)
         tail = cache.ple_conv if cache.ple_conv is not None else mx.zeros((1, ple.tail, h.shape[-1]), h.dtype)
         conv_in = mx.concatenate([tail, normed[None]], axis=1)
@@ -387,7 +406,7 @@ class FusedDecode:
     def _ple_gate(self, ple: Any, emb: mx.array, h: mx.array) -> tuple[mx.array, mx.array]:
         """(gated, conv-normed) rows [R, S*D]: before M5 two kernels, otherwise the reference ops."""
 
-        parts = self.ple_parts.get(id(ple)) if DENSE == "rows" else None
+        parts = self._ple_parts(ple)
         if parts is not None:
             kv, key_scale, query_scale, conv_scale, _ = parts
             return embed.ple_gate(project(emb, kv), h, key_scale, query_scale, conv_scale, self.eps,
@@ -405,7 +424,7 @@ class FusedDecode:
     def _ple_conv(self, ple: Any, conv_in: mx.array, gated: mx.array, h: mx.array) -> mx.array:
         """h + gated + SiLU(conv) for the rows after conv_in's tail [1, T + R, S*D]."""
 
-        parts = self.ple_parts.get(id(ple)) if DENSE == "rows" else None
+        parts = self._ple_parts(ple)
         if parts is not None:
             return embed.ple_conv(first(conv_in), parts[-1], gated, h, streams=ple.streams, dilation=ple.dilation)
         return h + (gated + first(nn.silu(ple.conv1d(conv_in))))
@@ -437,19 +456,19 @@ class FusedDecode:
                 h = self._write_back(h, pending)
                 pending = _NONE
                 h = self._ple_multi(layer.ple, h, tokens, cs, spans)
-            entry = self.layers[i]
+            entry = self._entry(i)
             h, mixed, inj = self._hc(h, pending, entry["attn_hc"])
-            out = self._gdn_multi(i, mixed, cs, spans) if layer.is_linear else self._attention_multi(i, mixed, cs, spans)
+            out = self._gdn_multi(i, mixed, cs, spans, entry) if layer.is_linear else self._attention_multi(i, mixed, cs, spans, entry)
             h, mixed, inj = self._hc(h, ("plain", (out,), inj), entry["mlp_hc"])
-            h, pending = self._moe(i, mixed, h, inj)
+            h, pending = self._moe(i, mixed, h, inj, entry)
             if self.eval_every and (i + 1) % self.eval_every == 0:
                 mx.async_eval(h, *pending[1])
         h, mixed, _ = self._hc(h, pending, self.mixer)
         self.last_streams = h
         return mixed[None]
 
-    def _gdn_multi(self, index: int, x: mx.array, caches: list[Any], spans: list[tuple[int, int]]) -> mx.array:
-        proj, conv_w, g = self.layers[index]["gdn"]
+    def _gdn_multi(self, index: int, x: mx.array, caches: list[Any], spans: list[tuple[int, int]], entry=None) -> mx.array:
+        proj, conv_w, g = (self._entry(index) if entry is None else entry)["gdn"]
         cfg = self.cfg
         nv, dk, dv = cfg.linear_num_value_heads, cfg.linear_key_head_dim, cfg.linear_value_head_dim
         # the states go to the kernel as stored ([1, ...] row slices of the last call): it reads flat buffers
@@ -474,8 +493,8 @@ class FusedDecode:
         self.row_states[index] = states
         return project(outs[0] if len(outs) == 1 else mx.concatenate(outs), g.out_proj)
 
-    def _attention_multi(self, index: int, x: mx.array, caches: list[Any], spans: list[tuple[int, int]]) -> mx.array:
-        proj, q_scale, k_scale, iq_scale, pool_scale, a = self.layers[index]["attn"]
+    def _attention_multi(self, index: int, x: mx.array, caches: list[Any], spans: list[tuple[int, int]], entry=None) -> mx.array:
+        proj, q_scale, k_scale, iq_scale, pool_scale, a = (self._entry(index) if entry is None else entry)["attn"]
         cfg = self.cfg
         total = int(x.shape[0])
         heads, kv_heads, dims = cfg.num_attention_heads, cfg.num_key_value_heads, cfg.head_dim
@@ -539,7 +558,7 @@ class FusedDecode:
                 history = np.full((1, emb_mod.context), emb_mod.eos, dtype=np.int64)
             histories.append(history)
             ids.append(emb_mod.ids(history, t)[0])
-        emb = embed.ple_lookup(np.concatenate(ids), self.ple_tables)
+        emb = embed.ple_lookup(np.concatenate(ids), embed.PleTables(emb_mod))
         gated, normed = self._ple_gate(ple, emb, h)
         outs = []
         for c, t, history, (s, e) in zip(caches, tokens, histories, spans):

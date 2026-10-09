@@ -15,6 +15,8 @@ from dataclasses import dataclass
 import threading
 from typing import Iterator
 
+from .expert_rank import calibrate
+
 import numpy as np
 import torch
 
@@ -87,6 +89,10 @@ class _Policy:
         self.capacity = _integer(capacity, "capacity")
         if capacity > 2**31 - 1:
             raise ValueError("policy capacity exceeds signed 32-bit expert indexing bounds")
+        # Preflight and tune private rank scratch before allocating resident
+        # arrays. Insufficient declared startup resources fail before growth.
+        receipt = (calibrate(capacity, workspace_budget_bytes=64 << 20, rank_work_budget_elements=1 << 30)
+                   if capacity >= _VECTOR_MIN_CAPACITY else None)
         self.frequency: dict[int, memoryview] = {}
         self._ranges: dict[int, tuple[int, int]] = {}
         self._flat = bytearray(1)
@@ -107,6 +113,10 @@ class _Policy:
             self._empty = np.empty(capacity, dtype=np.bool_)
             self._scratch = np.empty(capacity, dtype=np.int64)
             self.victim = self._vector_victim
+        self.victim_selection_receipt = receipt
+        self._batch_scan_limit = None
+        if receipt is not None and receipt["scan_limit"] is not None:
+            self.configure_victim_selection(receipt["scan_limit"])
 
     def register(self, layer: int, count: int) -> None:
         _integer(layer, "layer_id", 0)
@@ -151,7 +161,7 @@ class _Policy:
         return min(candidates, key=lambda slot: (-1 if self.keys[slot] is None else
             self.frequency[self.keys[slot][0]][self.keys[slot][1]], self.recency[slot], slot))
 
-    def _vector_victim(self, protected: set[int]) -> int:
+    def _vector_scores(self, protected: set[int]) -> None:
         # Flat indices are proven in-range by register/install and lease
         # validation. mode='raise' retains invariant-failure detection.
         np.take(self._flat_view, self._logical, out=self._scores)
@@ -165,11 +175,62 @@ class _Policy:
         else:
             indices = np.fromiter(protected, dtype=np.intp, count=len(protected))
             self._scratch[indices] = _BLOCKED
+
+    def _vector_victim(self, protected: set[int]) -> int:
+        self._vector_scores(protected)
         # argmin chooses the first physical cell on equal composite keys.
         slot = int(self._scratch.argmin())
         if self._scratch[slot] == _BLOCKED:
             raise ValueError("expert lease exceeds the fixed hot-pool capacity")
         return slot
+
+    def configure_victim_selection(self, scan_limit):
+        """Select an evidence-backed cutoff outside leases under cache ownership.
+
+        This only chooses between exact ranking algorithms; it never mutates
+        authority, frequency, recency, residents or counters. The caller holds
+        cache ownership and records runtime/capacity/raw benchmark provenance.
+        """
+        scan_limit = _integer(scan_limit, "batch scan limit", 0)
+        if scan_limit > self.capacity:
+            raise ValueError("batch scan limit exceeds policy capacity")
+        self._batch_scan_limit = scan_limit
+
+    def victims(self, protected: set[int], count: int) -> list[int]:
+        """Exact repeated-victim order using the startup-selected ranking cutoff.
+
+        The adaptive cutoff is selected once at a controlled ownership boundary
+        using representative real NumPy evidence for this capacity/runtime.
+        Selection does not affect exact ranking or numerical computation.
+        """
+        if type(count) is not int or not 0 <= count <= self.capacity - len(protected):
+            raise ValueError("expert miss count exceeds unprotected pool capacity")
+        if count == 0:
+            return []
+        if count == 1:
+            return [self.victim(protected)]
+        if self._logical is None:
+            return sorted((i for i in range(self.capacity) if i not in protected),
+                          key=lambda i: (-1 if self.keys[i] is None else self.frequency[self.keys[i][0]][self.keys[i][1]],
+                                         self.recency[i], i))[:count]
+        self._vector_scores(protected)
+        if count <= self._batch_scan_limit:
+            chosen = []
+            for _ in range(count):
+                slot = int(self._scratch.argmin())
+                if self._scratch[slot] == _BLOCKED:
+                    raise ValueError("expert lease exceeds the fixed hot-pool capacity")
+                chosen.append(slot)
+                self._scratch[slot] = _BLOCKED
+            return chosen
+        threshold = np.partition(self._scratch, count - 1)[count - 1]
+        if threshold == _BLOCKED:
+            raise ValueError("expert lease exceeds the fixed hot-pool capacity")
+        below = np.flatnonzero(self._scratch < threshold)
+        ties = np.flatnonzero(self._scratch == threshold)[:count - len(below)]
+        chosen = np.concatenate((below, ties))
+        order = np.argsort(self._scratch[chosen], kind="stable")
+        return [int(slot) for slot in chosen[order]]
 
     def remove(self, slot: int) -> None:
         key = self.keys[slot]
@@ -278,12 +339,20 @@ class HostExpertCache:
                 policy.register(key, layer.count)
             pool = torch.empty(capacity * self.entry_bytes, dtype=torch.uint8, device=self.device)
             views, controls = self._replacement_views(pool, capacity)
+            replacements = tuple((layer, views[key]) for key, layer in self._layers.items())
+            layer_iterator = iter(replacements)
             self._pool, self._policy = pool, policy
             self.capacity, self.gpu_bytes, self.budget_bytes = capacity, pool.numel(), gpu_bytes
-            for key, layer in self._layers.items():
-                layer.views = views[key]
+            for layer, view in layer_iterator:
+                layer.views = view
             self._commit_replacement(controls)
             self._configured_before_use = True
+
+    @property
+    def resident_capacity(self) -> int:
+        """Number of resident GPU handles; a specialized safe lease may be smaller."""
+
+        return self._policy.capacity
 
     @property
     def host_bytes(self) -> int:
@@ -316,11 +385,13 @@ class HostExpertCache:
             with torch.inference_mode(False):
                 views = tuple(self._pool.narrow(0, self.capacity * field.offset, self.capacity * field.size)
                               .view(field.dtype).view(self.capacity, *field.shape) for field in fields)
-            self._policy.register(layer_id, count)
             # Inference tensors deliberately have no version counter. Their
             # aliases obey the same immutable-authority contract as all sources.
             versions = tuple(None if torch.is_inference(t) else t._version for t in payloads)
-            self._layers[layer_id] = _Layer(payloads, versions, views, fields, count)
+            layers = dict(self._layers)
+            layers[layer_id] = _Layer(payloads, versions, views, fields, count)
+            self._policy.register(layer_id, count)
+            self._layers = layers
             self._fields = fields
 
     def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> int:
@@ -372,10 +443,14 @@ class HostExpertCache:
                         stream.wait_event(self._last_use)
                     self._policy.touch(keys)
                     protected = {self._policy.resident[key] for key in keys if key in self._policy.resident}
+                    missing = len(keys) - len(protected)
+                    victims = (iter(self._policy.victims(protected, missing))
+                               if missing >= 2 and self._policy._logical is not None
+                               and self._policy._batch_scan_limit is not None else None)
                     for key in keys:
                         slot = self._policy.resident.get(key)
                         if slot is None:
-                            slot = self._policy.victim(protected)
+                            slot = next(victims) if victims is not None else self._policy.victim(protected)
                             if self._policy.keys[slot] is not None:
                                 self.evictions += 1
                             self._policy.remove(slot)
@@ -388,8 +463,8 @@ class HostExpertCache:
                             self._policy.recency[slot] = self._policy.tick
                         protected.add(slot)
                         mapping[key[1]] = slot
-                except BaseException as error:
-                    self._failure = repr(error)
+                except BaseException:
+                    self._failure = "expert fill or stream dependency failed"
                     raise
                 yield layer.views, mapping
             except BaseException as error:
@@ -399,7 +474,7 @@ class HostExpertCache:
                 try:
                     self._last_use.record(stream)
                 except BaseException as error:
-                    self._failure = repr(error)
+                    self._failure = "expert last-use event publication failed"
                     if primary is not None:
                         raise primary from error
                     raise

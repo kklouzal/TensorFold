@@ -50,7 +50,8 @@ def load(model_dir: str | Path) -> Weights:
     """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels."""
 
     return load_dense(model_dir, tiled=True,
-                      mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)})
+                      mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)},
+                      prefill_mlp=())
 
 
 @dataclass

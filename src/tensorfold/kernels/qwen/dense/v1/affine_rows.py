@@ -7,7 +7,7 @@ from typing import Any
 BITS = (2, 3, 4, 5, 6, 8)
 GROUP_SIZES = (32, 64, 128)
 MAX_ROWS = 1 << 16
-SG = 8                  # simdgroups a threadgroup: 256 threads, within every M1/M2 pipeline's limit
+SG = 8                  # 256 threads; the actual pipeline maximum must be qualified on the target
 
 _HEADER = r"""
 #define PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
@@ -118,8 +118,6 @@ def fits(module: Any) -> bool:
     import mlx.core as mx
 
     if not readable(getattr(module, "bits", 0), getattr(module, "group_size", 0), getattr(module, "mode", "affine")):
-        return False
-    if getattr(module, "_lane_tiled", False):
         return False
     try:
         weight, scales, biases = module["weight"], module["scales"], module["biases"]

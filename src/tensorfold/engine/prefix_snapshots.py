@@ -1,20 +1,33 @@
-"""Store system-prefix caches as tensors and JSON keyed by model and tokens, restoring layer classes by import path."""
+"""Persist validated prefix caches under explicit current-model authority.
+
+FORMAT2 stores tensor data and fixed JSON fields. A serialized class name only
+matches an initialized registered class; it never imports or constructs code.
+Legacy/unregistered/malformed files are cache misses and are rebuilt by normal
+prefill. The caller owns immutable cache tensors through synchronous writes.
+"""
 
 from __future__ import annotations
 
 import hashlib
-import importlib
-import json
 import os
 from pathlib import Path
-import time
+import re
 from typing import Any, Sequence
 
 import mlx.core as mx
 import numpy as np
 
-FORMAT = 1
+from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES
+from tensorfold.engine.snapshot_codec import Codec, SIZES
+from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure as _miss, snapshot_header
+from tensorfold.engine.snapshot_integrity import FIELD, ZERO, expected_digest, seal_snapshot, verify_snapshot
+from tensorfold.engine.snapshot_payload import capture_snapshot, publish_snapshot
+from tensorfold.engine.snapshot_registry import Registry
+from tensorfold.engine.snapshot_restore import restore_snapshot
+
+FORMAT = 2
 DEFAULT_DIR = Path.home() / ".cache" / "tensorfold" / "prefix-snapshots"
+_NAME = re.compile(r"[0-9a-f]{32}\.safetensors\Z")
 
 
 def snapshot_key(model_id: str, tokens: Sequence[int]) -> str:
@@ -25,227 +38,292 @@ def snapshot_key(model_id: str, tokens: Sequence[int]) -> str:
     return digest.hexdigest()[:32]
 
 
-def save_snapshot(directory: Path, model_id: str, tokens: Sequence[int], cache: list[Any],
-                  *, keep: int = 8) -> Path | None:
-    """Write one snapshot unless it is already there; keep the ``keep`` newest."""
+def model_group(model_id: str) -> str:
+    """Eviction owner, distinct from exact cross-restart reuse identity.
 
-    directory.mkdir(parents=True, exist_ok=True)
-    key = snapshot_key(model_id, tokens)
-    target = directory / f"{key}.safetensors"
-    if target.exists():
-        os.utime(target)
-        return None
-    arrays: dict[str, mx.array] = {}
-    layers: list[dict[str, Any]] = []
-    # an entry with ``stored = False`` (a stream's drafter state) is left out: the family adds a fresh one on resume
-    for index, item in enumerate(item for item in cache if getattr(item, "stored", True)):
+    Trusted custom code gets a per-process namespace for reuse. Its prior-run
+    files still belong to the same selected checkpoint for keep/byte pruning;
+    otherwise a new UUID on each startup would evade the existing disk budget.
+    Only the project's explicitly versioned namespace has this interpretation.
+    """
+    first = model_id.split("|", 1)[0]
+    parts = first.split(":")
+    if (
+        len(parts) == 3
+        and parts[0] == "custom-code-v1"
+        and len(parts[1]) == 64
+        and len(parts[2]) == 32
+        and all(c in "0123456789abcdef" for c in parts[1] + parts[2])
+    ):
+        return ":".join(parts[:2])
+    return first
+
+
+def _require_registry(registry):
+    if type(registry) is not Registry:
+        raise TypeError("an explicit initialized current-model cache Registry is required")
+    return registry
+
+
+def _paths(directory):
+    if not Path(directory).is_dir():
+        return []
+    return [path for path in Path(directory).glob("*.safetensors") if _NAME.fullmatch(path.name)]
+
+
+def _identity(path):
+    info = path.lstat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def _header(path, registry):
+    return snapshot_header(
+        Path(path), max_bytes=registry.tensor_byte_limit + MAX_HEADER_BYTES + 8, sizes=registry.sizes
+    )
+
+
+def _validated(path, model_id, registry, *, tokens=None):
+    header, identity = _header(path, registry)
+    metadata = header.get("__metadata__") or {}
+    expected_digest(metadata)  # index hint only; the full payload is verified before native use
+    found, _ = registry.validate(metadata, header, model_id=model_id)
+    if tokens is not None and found != list(tokens):
+        raise ValueError("stored tokens differ from the selected prefix")
+    return found, identity
+
+
+def save_snapshot(
+    directory: Path,
+    model_id: str,
+    tokens: Sequence[int],
+    cache: list[Any],
+    *,
+    registry: Registry,
+    keep: int = 8,
+    codec: Codec | None = None,
+) -> Path | None:
+    """Validate then publish atomically; keep this model's newest ``keep`` files."""
+    _require_registry(registry)
+    if type(keep) is not int or keep < 0:
+        raise ValueError("snapshot keep count must be a nonnegative integer")
+    codec = Codec(mx, np) if codec is None else codec
+    for item in cache:
         materialize = getattr(item, "materialize", None)
         if materialize is not None:
             materialize()
-        cls = type(item)
-        entry: dict[str, Any] = {"class": f"{cls.__module__}:{cls.__qualname__}", "plain": {},
-                                 "arrays": [], "lists": {}, "numpy": []}
-        transient = set(getattr(cls, "transient", ()))    # runtime-only state the class rebuilds itself
-        for name, value in vars(item).items():
-            if name in transient:
-                continue
-            if isinstance(value, mx.array):
-                arrays[f"{index}.{name}"] = value
-                entry["arrays"].append(name)
-            elif isinstance(value, np.ndarray):          # host-side state (token history of an n-gram layer)
-                arrays[f"{index}.{name}"] = mx.array(value)
-                entry["numpy"].append(name)
-            elif isinstance(value, list) and any(isinstance(v, mx.array) for v in value):
-                slots = []
-                for slot, element in enumerate(value):
-                    if isinstance(element, mx.array):
-                        arrays[f"{index}.{name}.{slot}"] = element
-                        slots.append(slot)
-                    elif element is not None:
-                        raise TypeError(f"cannot store {name}[{slot}] of {cls.__name__}")
-                entry["lists"][name] = {"length": len(value), "slots": slots}
-            elif value is None or isinstance(value, (bool, int, float, str)):
-                entry["plain"][name] = value
-            else:
-                raise TypeError(f"cannot store attribute {name} of {cls.__name__}")
-        layers.append(entry)
-    meta = {"format": str(FORMAT), "model": model_id, "tokens": json.dumps([int(t) for t in tokens]),
-            "layers": json.dumps(layers), "saved": str(time.time())}
-    partial = target.with_suffix(".partial.safetensors")
-    mx.save_safetensors(str(partial), arrays, metadata=meta)
-    partial.rename(target)
-    # keep the newest ``keep`` of this model only: another model's blocks are not this one's to evict
-    ours = []
-    for path in sorted(directory.glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if path.name.endswith(".partial.safetensors"):
-            continue
+    payload = capture_snapshot(
+        registry, model_id, tokens, cache, describe_tensor=codec.describe, tensor_kind=codec.kind
+    )
+    payload.metadata[FIELD] = ZERO
+    key = snapshot_key(model_id, tokens)
+    sealed = []
+
+    def write(path):
+        codec.write(path, payload)
+        sealed.append(
+            seal_snapshot(path, sizes=registry.sizes, max_bytes=registry.tensor_byte_limit + MAX_HEADER_BYTES + 8)
+        )
+
+    def valid_existing(path):
         try:
-            same = str(read_metadata(path).get("model", "")).split("|")[0] == model_id.split("|")[0]
-        except Exception:  # noqa: BLE001 - an unreadable file is left alone
+            _, identity = _validated(path, model_id, registry, tokens=tokens)
+            metadata = read_metadata(path)
+            expected = expected_digest(metadata)
+            if not registry.integrity_memo.matches(path, identity, expected):
+                current, digest = verify_snapshot(
+                    path, sizes=registry.sizes, max_bytes=registry.tensor_byte_limit + MAX_HEADER_BYTES + 8
+                )
+                if current != identity:
+                    raise ValueError("snapshot changed between schema and content verification")
+                registry.integrity_memo.remember(path, current, digest)
+        except (OSError, ValueError) as error:
+            _miss(error)
+            return False
+        return True
+
+    written = publish_snapshot(
+        Path(directory), key, write, valid_existing=valid_existing, reuse_observed=registry.integrity_memo.reused
+    )
+    if written is not None and sealed:
+        identity, digest = sealed[-1]
+        current = _identity(written)
+        # chmod/rename alter ctime, but the private writer's inode/bytes/mtime
+        # remain unchanged. A concurrent replacement never gains this receipt.
+        if current[:4] == identity[:4]:
+            registry.integrity_memo.remember(written, current, digest)
+    ours = []
+    for path in _paths(directory):
+        try:
+            metadata = read_metadata(path)
+            if model_group(metadata.get("model", "")) == model_group(model_id):
+                ours.append((path, _identity(path)))
+        except (OSError, ValueError) as error:
+            _miss(error)
+    ours.sort(key=lambda item: item[1][3], reverse=True)
+    for path, identity in ours[keep:]:
+        if _identity(path) == identity:
+            path.unlink(missing_ok=True)
+    return written
+
+
+def load_snapshot(
+    path: Path, model_id: str, *, registry: Registry, expected_tokens=None, codec: Codec | None = None
+) -> tuple[list[int], list[Any]] | None:
+    """Restore initialized registered state; invalid data costs a normal prefill."""
+    _require_registry(registry)
+    codec = Codec(mx, np) if codec is None else codec
+    try:
+        return restore_snapshot(
+            path,
+            model_id,
+            registry,
+            load_tensors=codec.load,
+            describe_tensor=codec.describe,
+            convert_numpy=codec.host_array,
+            expected_tokens=expected_tokens,
+        )
+    except (OSError, ValueError) as error:
+        _miss(error)
+        return None
+
+
+def load_snapshots(
+    directory: Path,
+    model_id: str,
+    *,
+    registry: Registry,
+    limit: int | None = None,
+    allow: Any = None,
+    codec: Codec | None = None,
+):
+    """Yield current validated snapshots one at a time, newest first."""
+    _require_registry(registry)
+    if limit is not None and (type(limit) is not int or limit < 0):
+        raise ValueError("snapshot load limit must be a nonnegative integer or None")
+    candidates = []
+    for path in _paths(directory):
+        try:
+            candidates.append((path, _identity(path)))
+        except OSError:
             continue
-        if same:
-            ours.append(path)
-    for stale in ours[keep:]:
-        stale.unlink(missing_ok=True)
-    return target
-
-
-def load_snapshots(directory: Path, model_id: str, *, limit: int | None = None, allow: Any = None):
-    """Yield newest model snapshots one at a time so unread blocks do not occupy memory."""
-
-    if not directory.is_dir():
-        return
+    candidates.sort(key=lambda item: item[1][3], reverse=True)
     count = 0
-    files = sorted(directory.glob("*.safetensors"), key=lambda p: p.stat().st_mtime, reverse=True)
-    for path in files:
+    for path, _ in candidates:
         if limit is not None and count >= limit:
             return
-        if path.name.endswith(".partial.safetensors"):
-            continue
         try:
-            if read_metadata(path).get("model") != model_id:
-                continue                          # another configuration's block: not read at all
-        except Exception:  # noqa: BLE001 - a bad file is skipped, never fatal
+            tokens, _ = _validated(path, model_id, registry)
+        except (OSError, ValueError) as error:
+            _miss(error)
             continue
         if allow is not None and not allow(path):
             continue
-        loaded = load_snapshot(path, model_id)
-        if loaded is None:
-            continue
-        count += 1
-        yield loaded
-
-
-def load_snapshot(path: Path, model_id: str) -> tuple[list[int], list[Any]] | None:
-    """One stored block as (tokens, cache), evaluated in the calling thread; None if unusable."""
-
-    try:
-        arrays, meta = mx.load(str(path), return_metadata=True)
-        # Evaluate lazy loads here because the scheduler thread has no CPU stream for their arrays.
-        mx.eval(list(arrays.values()))
-    except Exception:  # noqa: BLE001 - a bad file is skipped, never fatal
-        return None
-    if meta.get("format") != str(FORMAT) or meta.get("model") != model_id:
-        return None
-    cache: list[Any] = []
-    for index, entry in enumerate(json.loads(meta["layers"])):
-        module_name, qualname = entry["class"].split(":")
-        cls: Any = importlib.import_module(module_name)
-        for part in qualname.split("."):
-            cls = getattr(cls, part)
-        item = cls.__new__(cls)
-        for name, value in entry["plain"].items():
-            setattr(item, name, value)
-        for name in entry["arrays"]:
-            setattr(item, name, arrays[f"{index}.{name}"])
-        for name in entry.get("numpy", []):
-            setattr(item, name, np.array(arrays[f"{index}.{name}"]))
-        for name, spec in entry["lists"].items():
-            values: list[Any] = [None] * int(spec["length"])
-            for slot in spec["slots"]:
-                values[slot] = arrays[f"{index}.{name}.{slot}"]
-            setattr(item, name, values)
-        cache.append(item)
-    return [int(t) for t in json.loads(meta["tokens"])], cache
+        loaded = load_snapshot(path, model_id, registry=registry, expected_tokens=tokens, codec=codec)
+        if loaded is not None:
+            count += 1
+            yield loaded
 
 
 class DiskBlocks:
-    """Index stored prefixes for on-demand loading, refreshing metadata only when files change and touching used blocks for startup priority."""
+    """Current-schema token index; exact stat identities are freshness hints.
 
-    def __init__(self, directory: Path, model_id: str) -> None:
-        self.directory = Path(directory)
-        self.model_id = model_id
-        self._known: dict[Path, tuple[float, list[int] | None]] = {}
+    Selected tokens bind the subsequent private-copy restore, including when a
+    pathname is replaced after indexing. Indexed metadata never authorizes code.
+    """
 
-    def blocks(self) -> list[tuple[Path, list[int]]]:
-        if not self.directory.is_dir():
-            return []
-        known: dict[Path, tuple[float, list[int] | None]] = {}
-        for path in self.directory.glob("*.safetensors"):
-            if path.name.endswith(".partial.safetensors"):
-                continue
+    def __init__(self, directory: Path, model_id: str, *, registry: Registry):
+        self.directory, self.model_id = Path(directory), model_id
+        self.registry = _require_registry(registry)
+        self._known: dict[Path, tuple[tuple[int, ...], list[int] | None]] = {}
+
+    def blocks(self):
+        known = {}
+        for path in _paths(self.directory):
             try:
-                mtime = path.stat().st_mtime
-            except OSError:
+                identity = _identity(path)
+                entry = self._known.get(path)
+                if entry is None or entry[0] != identity:
+                    try:
+                        tokens, observed = _validated(path, self.model_id, self.registry)
+                        entry = (observed, tokens)
+                    except (OSError, ValueError) as error:
+                        _miss(error)
+                        entry = (identity, None)
+                known[path] = entry
+            except OSError as error:
+                _miss(error)
                 continue
-            entry = self._known.get(path)
-            if entry is None or entry[0] != mtime:
-                tokens: list[int] | None = None
-                try:
-                    meta = read_metadata(path)
-                    if meta.get("model") == self.model_id:
-                        tokens = [int(t) for t in json.loads(meta["tokens"])]
-                except Exception:  # noqa: BLE001 - an unreadable file is skipped
-                    tokens = None
-                entry = (mtime, tokens)
-            known[path] = entry
         self._known = known
         return [(path, tokens) for path, (_, tokens) in known.items() if tokens]
 
-    def best(self, prompt: Sequence[int], longer_than: int, usable: Any = None) -> tuple[Path, list[int]] | None:
-        """The longest stored strict prefix of ``prompt`` longer than ``longer_than``, of a length ``usable`` takes."""
-
-        best: tuple[Path, list[int]] | None = None
+    def best(self, prompt: Sequence[int], longer_than: int, usable: Any = None):
+        best = None
         for path, tokens in self.blocks():
             if usable is not None and not usable(len(tokens)):
                 continue
-            if longer_than < len(tokens) < len(prompt) and list(prompt[:len(tokens)]) == tokens:
+            if longer_than < len(tokens) < len(prompt) and list(prompt[: len(tokens)]) == tokens:
                 if best is None or len(tokens) > len(best[1]):
                     best = (path, tokens)
         return best
 
-    def touch(self, tokens: Sequence[int]) -> None:
-        """Mark the stored block with exactly these tokens as just used (newest first at startup)."""
-
-        wanted = [int(t) for t in tokens]
-        for path, (mtime, known) in list(self._known.items()):
-            if known is not None and len(known) == len(wanted) and known == wanted:
+    def touch(self, tokens: Sequence[int]):
+        wanted = list(tokens)
+        for path, (identity, known) in list(self._known.items()):
+            if known == wanted:
                 try:
+                    if _identity(path) != identity:
+                        continue
                     os.utime(path)
-                    self._known[path] = (path.stat().st_mtime, known)
+                    self._known[path] = (_identity(path), known)
                 except OSError:
-                    pass
+                    continue
 
 
 def read_metadata(path: Path) -> dict[str, str]:
-    """A safetensors file's metadata from its header, without loading any tensor."""
-
-    import struct
-
-    with open(path, "rb") as handle:
-        size = struct.unpack("<Q", handle.read(8))[0]
-        header = json.loads(handle.read(size))
+    """Strict header-only regular-file metadata; no tensor or code loading."""
+    # Eviction reads use the native format's signed64 payload bound; actual
+    # restoration/indexing instead enforce the current model's memory budget.
+    header, _ = snapshot_header(path, max_bytes=2**63 - 1, sizes=SIZES)
     return dict(header.get("__metadata__") or {})
 
 
-def blocks_to_warm(directory: Path, model_id: str) -> list[list[int]]:
-    """Return longest uncovered token prefixes from other kernel configurations of the same model, newest first; other models' token ids are incompatible."""
-
-    if not directory.is_dir():
-        return []
-    have: list[list[int]] = []
-    other: list[tuple[float, list[int]]] = []
-    for path in directory.glob("*.safetensors"):
-        if path.name.endswith(".partial.safetensors"):
-            continue
+def blocks_to_warm(directory: Path, model_id: str, *, registry: Registry):
+    """Validated token prefixes from other runtime modes of identical content."""
+    _require_registry(registry)
+    have, other = [], []
+    for path in _paths(directory):
         try:
-            meta = read_metadata(path)
-            tokens = [int(t) for t in json.loads(meta["tokens"])]
-        except Exception:  # noqa: BLE001 - an unreadable file is skipped
+            header, identity = _header(path, registry)
+            metadata = header.get("__metadata__") or {}
+            stored_id = metadata.get("model", "")
+            if stored_id.split("|", 1)[0] != model_id.split("|", 1)[0]:
+                continue
+            tokens, _ = registry.validate(metadata, header, model_id=stored_id)
+        except (OSError, ValueError) as error:
+            _miss(error)
             continue
-        if meta.get("model") == model_id:
+        if stored_id == model_id:
             have.append(tokens)
-        elif str(meta.get("model", "")).split("|")[0] == model_id.split("|")[0]:
-            other.append((path.stat().st_mtime, tokens))
+        else:
+            other.append((identity[3], tokens))
     other.sort(key=lambda item: item[0], reverse=True)
-    wanted: list[list[int]] = []
+    wanted = []
     for _, tokens in other:
-        if any(tokens == h for h in have) or any(tokens == w or w[:len(tokens)] == tokens for w in wanted):
+        if any(tokens == h for h in have) or any(tokens == w or w[: len(tokens)] == tokens for w in wanted):
             continue
-        wanted = [w for w in wanted if tokens[:len(w)] != w]  # a longer block covers its prefixes
+        wanted = [w for w in wanted if tokens[: len(w)] != w]
         wanted.append(tokens)
     return wanted
 
 
-__all__ = ["DEFAULT_DIR", "DiskBlocks", "blocks_to_warm", "load_snapshot", "load_snapshots", "read_metadata",
-           "save_snapshot", "snapshot_key"]
+__all__ = [
+    "DEFAULT_DIR",
+    "DiskBlocks",
+    "blocks_to_warm",
+    "load_snapshot",
+    "load_snapshots",
+    "read_metadata",
+    "save_snapshot",
+    "snapshot_key",
+    "model_group",
+]

@@ -114,6 +114,7 @@ def test_failed_round_caches_are_collectable_while_scheduler_stays_idle(chained,
 
     engine = LaneEngine(SimpleNamespace(lane_family=True, exact_width=2, streams_exact=True,
                                        hidden_rows=lambda *args: None))
+    engine.drain = lambda: None  # all operations in this failure-frame fixture are synchronous Python
     scheduler = Scheduler(engine, lanes=2, eos_ids=frozenset())
     jobs, refs = [], []
 

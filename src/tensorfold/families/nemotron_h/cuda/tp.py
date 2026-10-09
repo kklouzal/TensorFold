@@ -220,22 +220,22 @@ class TPEngine(Engine):
         """The vocabulary-wide draw from a rank's shard: top_k + MARGIN best, or the whole shard."""
 
         s = self.params.sampling
+        if (not isinstance(logits, torch.Tensor) or logits.ndim != 2 or logits.shape[1] != self.local_head.n
+                or logits.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64)):
+            raise ValueError("floating local vocabulary rows matching the owned head required")
         rows = logits.shape[0]
-        top_k = CANDIDATES - S.MARGIN if s is None or s.temperature <= 0 else int(s.top_k)
-        if not top_k:
+        if s is not None and s.temperature > 0 and not s.top_k:
             got = self.gather(logits.float().contiguous())                 # [2 * rows, n], rank 0's rows first
+            if (not isinstance(got, torch.Tensor) or got.dtype != torch.float32 or got.device != logits.device
+                    or got.shape != (WORLD * rows, self.local_head.n)):
+                raise ValueError("gather must preserve the complete FP32 shard geometry/device")
             S.nucleus(torch.cat([got[:rows], got[rows:]], dim=1), meta, self.params, out)
             return
-        if top_k + S.MARGIN > 256:
-            raise ValueError("the GPU sampler takes top_k + margin <= 256 candidates")
-        count = min(self.local_head.n, max(CANDIDATES, top_k + S.MARGIN))
-        vals, ids = torch.topk(logits.float(), count, dim=-1)
+        count = S.candidate_count(self.local_head.n, s, minimum=CANDIDATES)
+        vals, ids = S.candidates(logits, count)
         ids = ids + self.rank * self.local_head.n
-        both = self.gather(torch.cat([vals.view(torch.int32), ids.view(torch.int32)], dim=1)).view(
-            WORLD, rows, 3 * count)
-        v = both[:, :, :count].contiguous().view(torch.float32)
-        i = both[:, :, count:].contiguous().view(torch.int64)
-        S.sample_candidates(torch.cat([v[0], v[1]], dim=1), torch.cat([i[0], i[1]], dim=1), meta, self.params, out)
+        values, tokens = S.gather_candidates(self.gather, vals, ids, world=WORLD)
+        S.sample_candidates(values, tokens, meta, self.params, out)
 
     def _forward(self, rows: int) -> None:
         w, c = self.w, self.c

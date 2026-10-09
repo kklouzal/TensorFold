@@ -95,7 +95,7 @@ def hidden(model: Any, tokens: np.ndarray, cache: list[Any]) -> mx.array:
     depth = model.__dict__.get("prefill_queue", QUEUE_LAYERS)          # 1 where memory is tight
     states: list[mx.array] = []
     for i, (layer, c) in enumerate(zip(model.layers, cache)):
-        entry = fused.layers[i]
+        entry = fused._entry(i, connections_only=True)
         if "ple" in layer:
             if pending is not None:
                 h = hc_norm(h, streams=streams, write_back="plain", branch=(pending[0],), inject=pending[1])[0]
@@ -143,7 +143,7 @@ def hidden_pass(model: Any, tokens: np.ndarray, cache: list[Any], sizes: Any) ->
     states: list[mx.array] = []
     with prefill_mm.prompt_pass(sizes):
         for i, (layer, c) in enumerate(zip(model.layers, cache)):
-            entry = fused.layers[i]
+            entry = fused._entry(i, connections_only=True)
             if "ple" in layer:
                 if pending is not None:
                     h = hc_norm(h, streams=streams, write_back="plain", branch=(pending[0],), inject=pending[1])[0]

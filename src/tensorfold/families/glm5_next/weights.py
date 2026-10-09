@@ -8,6 +8,7 @@ from typing import Any
 
 import mlx.core as mx
 
+from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.glm5_next import layouts
 from tensorfold.families.glm5_next.config import BITS, GROUPS, Config, quant_formats, unreadable
 from tensorfold.families.glm5_next.kda import KDA
@@ -21,8 +22,13 @@ class Weights:
     """The language model's tensors by short name in either layout (``layouts``), read shard by shard when asked."""
 
     def __init__(self, model_dir: Path, mtp_layer: int | None = None) -> None:
-        index = json.loads((model_dir / "model.safetensors.index.json").read_text())["weight_map"]
+        index = json.loads(checkpoint_path(model_dir, "model.safetensors.index.json").read_text())["weight_map"]
+        if (not isinstance(index, dict) or any(not isinstance(shard, str) or not shard for shard in index.values())):
+            raise ValueError("checkpoint weight_map must map tensor names to nonempty relative file names")
         self.dir = model_dir
+        # Resolve unique immutable checkpoint targets once, before lazy MLX loads.
+        # Standard HF snapshot links into this model's own blobs remain valid.
+        self._paths = {shard: checkpoint_path(model_dir, shard) for shard in dict.fromkeys(index.values())}
         self.mtp_layer = mtp_layer
         self.layout = layouts.detect(index)
         self.where: dict[str, str] = {}
@@ -45,7 +51,7 @@ class Weights:
         shard = self.where[name]
         loaded = self._cache.get(shard)
         if loaded is None:
-            raw = mx.load(str(self.dir / shard))
+            raw = mx.load(str(self._paths[shard]))
             loaded = {}
             for full, value in raw.items():
                 short = self._short(full)

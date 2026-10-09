@@ -65,8 +65,8 @@ def _prefill(model, prompt):
 
 
 def test_stacks_hold_the_weights_once(tiny):
-    """The members become views of the stacked weight (same values, nothing stored twice); the stacked projection
-    matches each member's to rounding (simd_qmm's split count follows the output count, so stacking is part of the
+    """Plans retain geometry; each call concatenates current member arrays without changing their ownership.
+    The stacked projection matches each member's to rounding (simd_qmm's split count follows the output count, so stacking is part of the
     arithmetic every path shares)."""
 
     model, originals, stacked = tiny

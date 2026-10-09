@@ -169,8 +169,7 @@ def test_checkpoint_store_byte_budget_evicts_least_recently_used() -> None:
 
 def test_checkpoint_store_pins_system_blocks_outside_the_slots() -> None:
     sizes = {"block": 400, "conv": 100}
-    store = CheckpointStore(2, copier=lambda c: c, budget_bytes=1000, sizer=lambda c: sizes[c[0]],
-                            pinned_slots=2)
+    store = CheckpointStore(2, copier=lambda c: c, budget_bytes=1000, sizer=lambda c: sizes[c[0]], pinned_slots=2)
     store.insert([1, 2, 3], ["block", "long"], last_prompt=[1, 2, 3], pinned=True)
     store.insert([1, 2], ["block", "short"], last_prompt=[1, 2], pinned=True)
     # a title request and a turn: conversation entries do not push the blocks out
@@ -184,7 +183,7 @@ def test_checkpoint_store_pins_system_blocks_outside_the_slots() -> None:
     store.insert([5], ["block", "third"], last_prompt=[5], pinned=True)
     assert [e.cache[1] for e in store._entries] == ["third", "long", "turn", "title-end"]
     assert [e.pinned for e in store._entries] == [True, True, False, False]
-    store.insert([6], ["block", "fourth"], last_prompt=[6], pinned=True)   # 1400 > 1000
+    store.insert([6], ["block", "fourth"], last_prompt=[6], pinned=True)  # 1400 > 1000
     assert [e.cache[1] for e in store._entries] == ["fourth", "third"]
     sizes["tiny"] = 1
     store.insert([4], ["tiny", "b3"], last_prompt=[4], pinned=True)
@@ -261,9 +260,7 @@ def test_concurrent_chats_share_rounds_and_each_matches_serial() -> None:
 
         def worker(index: int) -> None:
             try:
-                results[index] = app.chat(
-                    [{"role": "user", "content": prompts[index]}], max_tokens=30 + index
-                )
+                results[index] = app.chat([{"role": "user", "content": prompts[index]}], max_tokens=30 + index)
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
@@ -286,10 +283,14 @@ def test_concurrent_chats_share_rounds_and_each_matches_serial() -> None:
 def test_a_title_request_steps_aside_for_the_turn_and_reruns_exactly() -> None:
     app = make_app(lanes=1, engine_factory=SlowFakeEngine)
     try:
-        title = [{"role": "system", "content": "Write a ~5 word title for the next user message."},
-                 {"role": "user", "content": "<user>how are you today</user>"}]
-        turn = [{"role": "system", "content": "You are a coding agent."},
-                {"role": "user", "content": "how are you today"}]
+        title = [
+            {"role": "system", "content": "Write a ~5 word title for the next user message."},
+            {"role": "user", "content": "<user>how are you today</user>"},
+        ]
+        turn = [
+            {"role": "system", "content": "You are a coding agent."},
+            {"role": "user", "content": "how are you today"},
+        ]
         finished: dict[str, float] = {}
         results: dict[str, dict[str, Any]] = {}
         deltas: list[str] = []
@@ -301,7 +302,7 @@ def test_a_title_request_steps_aside_for_the_turn_and_reruns_exactly() -> None:
         background = threading.Thread(target=run, args=("title", title, 60, deltas.append))
         background.start()
         deadline = time.perf_counter() + 5
-        while not deltas and time.perf_counter() < deadline:     # the title is decoding
+        while not deltas and time.perf_counter() < deadline:  # the title is decoding
             time.sleep(0.002)
         assert deltas
         run("turn", turn, 12)
@@ -321,8 +322,10 @@ def test_a_title_request_steps_aside_for_the_turn_and_reruns_exactly() -> None:
 def test_is_title_request_matches_only_short_tool_free_title_prompts() -> None:
     from tensorfold.server.text import is_title_request
 
-    title = [{"role": "system", "content": "Write a ~5 word title using only the task."},
-             {"role": "user", "content": "<user>hi</user>"}]
+    title = [
+        {"role": "system", "content": "Write a ~5 word title using only the task."},
+        {"role": "user", "content": "<user>hi</user>"},
+    ]
     assert is_title_request(title, None)
     assert not is_title_request(title, [{"type": "function"}])
     assert not is_title_request([title[0], {"role": "user", "content": "x" * 5000}], None)
@@ -332,27 +335,29 @@ def test_is_title_request_matches_only_short_tool_free_title_prompts() -> None:
 def test_a_title_request_sent_just_before_the_turn_waits_for_it() -> None:
     app = make_app(lanes=1, engine_factory=SlowFakeEngine)
     try:
-        title = [{"role": "system", "content": "Write a ~5 word title for the next user message."},
-                 {"role": "user", "content": "<user>hello there</user>"}]
-        turn = [{"role": "system", "content": "You are a coding agent."},
-                {"role": "user", "content": "hello there"}]
+        title = [
+            {"role": "system", "content": "Write a ~5 word title for the next user message."},
+            {"role": "user", "content": "<user>hello there</user>"},
+        ]
+        turn = [{"role": "system", "content": "You are a coding agent."}, {"role": "user", "content": "hello there"}]
         started: dict[str, float] = {}
         results: dict[str, dict[str, Any]] = {}
 
         def run(name: str, messages: list[dict[str, Any]]) -> None:
             def first(_: Any) -> None:
                 started.setdefault(name, time.perf_counter())
+
             results[name] = app.chat(messages, max_tokens=20, on_delta=first)
 
         threads = [threading.Thread(target=run, args=("title", title))]
         threads[0].start()
-        time.sleep(0.01)                                    # an agent client: the title goes out first
+        time.sleep(0.01)  # an agent client: the title goes out first
         threads.append(threading.Thread(target=run, args=("turn", turn)))
         threads[1].start()
         for thread in threads:
             thread.join(timeout=30)
         assert started["turn"] < started["title"]
-        assert app.scheduler.preemptions == 0               # it never had to step aside
+        assert app.scheduler.preemptions == 0  # it never had to step aside
         assert results["title"]["content"] == expected_reply(app, title, 20)[1]
         assert results["turn"]["content"] == expected_reply(app, turn, 20)[1]
     finally:
@@ -473,7 +478,7 @@ def test_checkpoint_store_longest_does_not_count_a_hit() -> None:
     store.insert([1, 2], ["a"], last_prompt=[1, 2, 3])
     store.insert([1, 2, 3, 4], ["b"], last_prompt=[1, 2, 3, 4, 5])
     assert store.longest([1, 2, 3, 4, 5]) == 4
-    assert store.longest([1, 2, 3, 4]) == 2          # strict prefixes only
+    assert store.longest([1, 2, 3, 4]) == 2  # strict prefixes only
     assert store.longest([9]) == 0
     assert store.hits == 0 and store.misses == 0
 
@@ -488,16 +493,26 @@ def test_scheduler_reads_a_stored_block_the_store_lacks(tmp_path) -> None:
     kv = KVCache()
     kv.update_and_fetch(mx.ones((1, 2, 40, 4)), mx.ones((1, 2, 40, 4)))
     block = list(range(40))
-    save_snapshot(tmp_path, "model-a", block, [kv])
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([kv])
+    save_snapshot(tmp_path, "model-a", block, [kv], registry=snapshot_registry)
     store = CheckpointStore(3, copier=lambda c: c)
     store.insert(list(range(10)), ["short"], last_prompt=list(range(12)), pinned=True)
-    scheduler = Scheduler(FakeEngine(), lanes=1, eos_ids=frozenset(), checkpoints=store,
-                              snapshot_dir=tmp_path, model_id="model-a")
+    scheduler = Scheduler(
+        FakeEngine(),
+        lanes=1,
+        eos_ids=frozenset(),
+        checkpoints=store,
+        snapshot_dir=tmp_path,
+        model_id="model-a",
+        snapshot_registry=snapshot_registry,
+    )
     scheduler._read_disk_block(list(range(50)))
     hit = store.match(list(range(50)))
     assert hit is not None and hit[0] == 40 and hit[1][0].offset == 40
     before = len(store)
-    scheduler._read_disk_block(list(range(50)))      # already there: nothing read again
+    scheduler._read_disk_block(list(range(50)))  # already there: nothing read again
     assert len(store) == before
 
 
@@ -514,24 +529,41 @@ def test_conversations_saved_at_shutdown_are_read_back_on_demand(tmp_path) -> No
         return [kv]
 
     store = CheckpointStore(4, copier=lambda c: c, sizer=lambda c: 1)
-    store.insert(list(range(20)), cache(20), last_prompt=list(range(22)), pinned=True)   # a system block
+    store.insert(list(range(20)), cache(20), last_prompt=list(range(22)), pinned=True)  # a system block
     store.insert(list(range(50)), cache(50), last_prompt=list(range(52)))
     store.insert(list(range(60)), cache(60), last_prompt=list(range(62)))
     store.insert([5, 5, 5], cache(3), last_prompt=[5, 5, 5, 5])
-    assert save_conversations(store, tmp_path / "sessions", "model-a", keep=2) == 2
-    assert len(list((tmp_path / "sessions").glob("*.safetensors"))) == 2    # the newest two only
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry(cache(60))
+    assert save_conversations(store, tmp_path / "sessions", "model-a", keep=2, registry=snapshot_registry) == 2
+    assert len(list((tmp_path / "sessions").glob("*.safetensors"))) == 2  # the newest two only
 
     fresh = CheckpointStore(4, copier=lambda c: c)
-    scheduler = Scheduler(FakeEngine(), lanes=1, eos_ids=frozenset(), checkpoints=fresh,
-                              model_id="model-a", session_dir=tmp_path / "sessions")
+    scheduler = Scheduler(
+        FakeEngine(),
+        lanes=1,
+        eos_ids=frozenset(),
+        checkpoints=fresh,
+        model_id="model-a",
+        session_dir=tmp_path / "sessions",
+        snapshot_registry=snapshot_registry,
+    )
     scheduler._read_disk_block(list(range(70)))
     hit = fresh.match(list(range(70)))
     assert hit is not None and hit[0] == 60 and hit[1][0].offset == 60
     assert not fresh._entries[0].pinned
     other = CheckpointStore(4, copier=lambda c: c)
-    Scheduler(FakeEngine(), lanes=1, eos_ids=frozenset(), checkpoints=other, model_id="model-b",
-                  session_dir=tmp_path / "sessions")._read_disk_block(list(range(70)))
-    assert len(other) == 0                                               # other kernels: never read
+    Scheduler(
+        FakeEngine(),
+        lanes=1,
+        eos_ids=frozenset(),
+        checkpoints=other,
+        model_id="model-b",
+        session_dir=tmp_path / "sessions",
+        snapshot_registry=snapshot_registry,
+    )._read_disk_block(list(range(70)))
+    assert len(other) == 0  # other kernels: never read
 
 
 def test_scheduler_runs_its_stop_hook_in_its_own_thread() -> None:
@@ -554,8 +586,9 @@ def test_checkpoints_and_shared_prefixes_are_taken_on_the_prefill_grid() -> None
 
     store = CheckpointStore(4, copier=lambda c: c)
     scheduler = Scheduler(GridEngine(), lanes=1, eos_ids=frozenset(), checkpoints=store)
-    job = ChatJob(job_id="j", prompt_ids=list(range(1, 11)), max_tokens=2, temperature=0.0, history_len=9,
-                  shared_prefix_lens=(7,))
+    job = ChatJob(
+        job_id="j", prompt_ids=list(range(1, 11)), max_tokens=2, temperature=0.0, history_len=9, shared_prefix_lens=(7,)
+    )
     scheduler._start_job(job)
     # the history boundary 9 is kept at 8, the system block's 7 at 4 (pinned)
     assert sorted((len(e.tokens), e.pinned) for e in store._entries) == [(4, True), (8, False)]
@@ -574,7 +607,12 @@ def test_a_saved_block_is_warmed_in_background_jobs_one_grid_chunk_each(tmp_path
 
     kv = KVCache()
     kv.update_and_fetch(mx.ones((1, 2, 10, 4)), mx.ones((1, 2, 10, 4)))
-    save_snapshot(tmp_path, "/models/fake|kernels=old", list(range(5, 15)), [kv])   # computed by other kernels
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([kv])
+    save_snapshot(
+        tmp_path, "/models/fake|kernels=old", list(range(5, 15)), [kv], registry=snapshot_registry
+    )  # computed by other kernels
     seen: list[tuple[int, bool]] = []
     real = Scheduler.submit
 
@@ -584,7 +622,12 @@ def test_a_saved_block_is_warmed_in_background_jobs_one_grid_chunk_each(tmp_path
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(Scheduler, "submit", submit)
-        app = make_app(engine_factory=GridEngine, snapshot_dir=tmp_path, model_id="/models/fake|kernels=new")
+        app = make_app(
+            engine_factory=GridEngine,
+            snapshot_dir=tmp_path,
+            model_id="/models/fake|kernels=new",
+            snapshot_registry=snapshot_registry,
+        )
         try:
             deadline = time.time() + 10
             while time.time() < deadline and not any(e.pinned for e in app.checkpoints._entries):
@@ -607,7 +650,7 @@ def test_a_stored_state_off_the_grid_is_never_matched() -> None:
     engine = GridEngine()
     scheduler = Scheduler(engine, lanes=1, eos_ids=frozenset(), checkpoints=store)
     prompt = list(range(1, 12))
-    for n in (4, 6):                               # a grid state and a longer one off the grid (from disk, say)
+    for n in (4, 6):  # a grid state and a longer one off the grid (from disk, say)
         store.insert(prompt[:n], [FakeBatchItem([prompt[:n]])], last_prompt=prompt[:n])
     scheduler._start_job(ChatJob(job_id="j", prompt_ids=prompt, max_tokens=2, temperature=0.0))
     assert engine.prefill_calls[-1] == ("j", 4)
@@ -618,8 +661,16 @@ def test_a_job_that_would_not_fit_waits_for_a_live_stream_to_finish() -> None:
     from tensorfold.server.scheduler import ChatJob, Scheduler
 
     # 100 bytes up to 1,000 tokens, then 1 a token (a stream's footprint by length); rounds take 50
-    memory = StreamMemory(short_tokens=1000, short=100, long_tokens=2000, long=1100, per_token=1.0, prefill_a=0.0,
-                          prefill_b=0.0, round_bytes=50)
+    memory = StreamMemory(
+        short_tokens=1000,
+        short=100,
+        long_tokens=2000,
+        long=1100,
+        per_token=1.0,
+        prefill_a=0.0,
+        prefill_b=0.0,
+        round_bytes=50,
+    )
     jobs = [ChatJob(job_id=f"j{i}", prompt_ids=list(range(1, 11)), max_tokens=40, temperature=0.0) for i in range(2)]
 
     def started(budget: int) -> tuple[list[str], Any]:
@@ -630,7 +681,7 @@ def test_a_job_that_would_not_fit_waits_for_a_live_stream_to_finish() -> None:
             job.stream, job.error = None, None
             scheduler.submit(job)
         scheduler._admit()
-        while scheduler._fills:                        # an admitted prompt waits a round (the loop's) to fill
+        while scheduler._fills:  # an admitted prompt waits a round (the loop's) to fill
             scheduler._fill()
         return [s.stream_id for s in engine.streams], scheduler
 
@@ -646,8 +697,16 @@ def test_a_job_that_would_not_fit_waits_for_a_live_stream_to_finish() -> None:
 def test_admission_projects_growth_prefill_and_rounds() -> None:
     from tensorfold.engine.memory import Admission, StreamMemory
 
-    memory = StreamMemory(short_tokens=64, short=1_000, long_tokens=264, long=3_000, per_token=10.0, prefill_a=2.0,
-                          prefill_b=0.001, round_bytes=5_000)
+    memory = StreamMemory(
+        short_tokens=64,
+        short=1_000,
+        long_tokens=264,
+        long=3_000,
+        per_token=10.0,
+        prefill_a=2.0,
+        prefill_b=0.001,
+        round_bytes=5_000,
+    )
     # 256 tokens of slack: 0 tokens priced at 256, between the two lengths measured; 8 at the longer one
     assert [memory.stream_bytes(t) for t in (0, 8)] == [1_000 + 2_000 * 192 // 200, 3_000]
     admission = Admission(10**6, memory, used=lambda: 20_000)
@@ -657,7 +716,7 @@ def test_admission_projects_growth_prefill_and_rounds() -> None:
     assert memory.prefill_bytes(10_000) == int(2.0 * 2048 + 0.001 * 2048 * 10_000)
     assert Admission(expected, memory, used=lambda: 20_000).admits(100, 500, [(300, 1_000)])
     assert not Admission(expected - 1, memory, used=lambda: 20_000).admits(100, 500, [(300, 1_000)])
-    assert Admission(40_000, memory, used=lambda: 20_000).fitting(500) == 1          # 7,920 a stream in 15,000
+    assert Admission(40_000, memory, used=lambda: 20_000).fitting(500) == 1  # 7,920 a stream in 15,000
     # measured at 4 streams, a round of 2 needs half: two 7,920-byte streams and 2,500 fit in 20,000
     four = Admission(40_000, memory, used=lambda: 20_000, lanes=4)
     assert four.round_bytes(1) == 1_250 and four.round_bytes(2) == 2_500 and four.round_bytes(9) == 5_000
@@ -688,18 +747,19 @@ def test_kv_caches_set_the_floor_of_a_streams_per_token_memory() -> None:
     plain, alternating = KVCache(), AlternatingKVCache()
     for cache in (plain, alternating):
         cache.update_and_fetch(mx.ones((1, 2, 40, 8), dtype=mx.bfloat16), mx.ones((1, 2, 40, 8), dtype=mx.bfloat16))
-    each = 2 * (2 * 8 * 2)                 # keys and values: heads x head_dim x bf16 bytes, a position
+    each = 2 * (2 * 8 * 2)  # keys and values: heads x head_dim x bf16 bytes, a position
     assert _kv_bytes([plain]) == (each, 0)
-    assert _kv_bytes([plain, alternating, object()]) == (2 * each, each)   # decoding adds a spare buffer
+    assert _kv_bytes([plain, alternating, object()]) == (2 * each, each)  # decoding adds a spare buffer
 
 
 def test_concurrent_admission_never_plans_past_the_prompt_admissions_budget(capsys) -> None:
     mx = pytest.importorskip("mlx.core")
-    app = make_app(lanes=2, memory_fraction=0.7, memory_budget_bytes=int(mx.get_active_memory()) + 2**30,
-                   memory_overhead_bytes=0)
+    app = make_app(
+        lanes=2, memory_fraction=0.7, memory_budget_bytes=int(mx.get_active_memory()) + 2**30, memory_overhead_bytes=0
+    )
     try:
         assert 0 < app.scheduler.admission.budget <= app.prompt_memory.budget
-        assert app.scheduler.admission.used == app.prompt_memory.held       # freed buffers and prefixes are free
+        assert app.scheduler.admission.used == app.prompt_memory.held  # freed buffers and prefixes are free
         assert "MLX's share" in capsys.readouterr().out
     finally:
         app.close()

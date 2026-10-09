@@ -9,10 +9,10 @@ from typing import Sequence
 import numpy as np
 import torch
 
-from tensorfold.cuda.sampling import comm_gather, nucleus_rows, one_rank
-from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows
+from tensorfold.cuda.sampling import ShardSampler, comm_gather, one_rank, sample_shards, validate_rows
+from tensorfold.engine.exact_sampling import MARGIN, Sampling
 
-from . import glue, prof, qmm
+from . import prof
 from .forward import Buffers, State, chunks_for, commit, compute, stage
 from .mtp import mtp_compute, mtp_forward, mtp_stage
 from .sparse import pool_bucket
@@ -20,38 +20,27 @@ from .weights import Weights
 
 
 def sample_rows(w: Weights, logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
-                offset: int | None = None, probs: list[float] | None = None) -> list[int]:
-    """Rows of (this rank's vocabulary slice of) logits at their absolute positions -> tokens, same on all ranks."""
+                offset: int | None = None, probs: list[float] | None = None, *,
+                plan: ShardSampler | None = None) -> list[int]:
+    """Use exact original-shard candidates while preserving GLM's filtered confidence measure."""
 
-    R = logits.shape[0]
-    greedy = sampling is None or sampling.temperature <= 0
-    if not greedy and not sampling.top_k:           # top_k off: the shared nucleus rule over every rank's shard
-        return nucleus_rows(logits, positions, sampling, offset=w.vocab_offset if offset is None else offset,
-                            gather=one_rank if w.comm is None else comm_gather(w.comm), probs=probs)
-    k = 1 if greedy else min(logits.shape[1], int(sampling.top_k) + MARGIN)
-    if probs is not None and greedy:
-        k = min(logits.shape[1], 20 + MARGIN)       # the draft's confidence needs its competitors too
-    vals, ids = torch.topk(logits.float(), k, dim=-1)
-    ids = (ids + (w.vocab_offset if offset is None else offset)).to(torch.int32)
-    if w.comm is None:
-        values = vals.cpu().numpy().astype(np.float32)
-        tokens = ids.cpu().numpy().astype(np.int64)
-    else:
-        packed = torch.cat([vals, ids.view(torch.float32)], dim=1).contiguous()
-        got = torch.empty((w.world * packed.numel(),), dtype=torch.float32, device=logits.device)
-        w.comm.all_gather(packed.view(-1), got)
-        g = got.view(w.world, R, 2 * k).cpu()
-        values = torch.cat([g[r, :, :k] for r in range(w.world)], dim=1).numpy().astype(np.float32)
-        tokens = torch.cat([g[r, :, k:].contiguous().view(torch.int32) for r in range(w.world)], dim=1).numpy()
-        tokens = tokens.astype(np.int64)
-    if greedy:
-        order = np.lexsort((tokens, -values), axis=-1)
-        chosen = [int(tokens[i, order[i, 0]]) for i in range(R)]
-    else:
-        chosen = choose_rows(values, tokens, positions, sampling)
+    offset = w.vocab_offset if offset is None else offset
+    if plan is None:
+        validate_rows(logits, positions, sampling)
+        plan = ShardSampler(logits.shape[1], logits.device, offset=offset, native_greedy=False,
+                            gather=one_rank if w.comm is None else comm_gather(w.comm),
+                            world=w.world, identity=w.comm)
+    elif plan.offset != offset:
+        raise ValueError("sampling shard owner differs from the requested vocabulary offset")
+    plan.check(logits, identity=w.comm)
+    result = sample_shards(logits, positions, sampling, plan=plan, with_prob=probs is not None,
+                           probability=_probability if probs is not None else None,
+                           greedy_count=20 + MARGIN if probs is not None else 1)
     if probs is not None:
-        probs.extend(_probability(values, tokens, chosen, sampling))
-    return chosen
+        chosen, probability = result
+        probs.extend(probability)
+        return chosen
+    return result
 
 
 def _probability(values: np.ndarray, tokens: np.ndarray, chosen: list[int], sampling: Sampling | None) -> list[float]:
@@ -66,9 +55,13 @@ def _probability(values: np.ndarray, tokens: np.ndarray, chosen: list[int], samp
         v = values[i][order].astype(np.float64) / temp
         p = np.exp(v - v.max())
         p /= p.sum()
+        if not np.isfinite(p).all():
+            raise ValueError("GLM confidence normalization is nonfinite")
         if 0.0 < top_p < 1.0:
             keep = int(np.searchsorted(np.cumsum(p), top_p) + 1)
             p = p[:keep] / p[:keep].sum()
+            if not np.isfinite(p).all():
+                raise ValueError("GLM confidence nucleus normalization is nonfinite")
             order = order[:keep]
         ids = tokens[i][order]
         hit = np.nonzero(ids == tok)[0]
@@ -98,6 +91,9 @@ class Engine:
         self.last_hidden: torch.Tensor | None = None
         self.constraint = self.window = None            # a request's grammar, and the next sample's rows under it
         self.draft_n = w.head.n
+        self._sampling_plan = ShardSampler(int(w.head.n), w.device, offset=w.vocab_offset,
+                                          native_greedy=False, world=w.world,
+                                          gather=one_rank if w.comm is None else comm_gather(w.comm), identity=w.comm)
         self.graphs = None
         self.replays = {"main": 0, "sparse": 0, "mtp": 0, "sparse_mtp": 0, "eager": 0}   # steps by path
         if graphs:
@@ -154,7 +150,7 @@ class Engine:
         if not draft and self.constraint is not None and self.window is not None:
             self.constraint.mask(logits, self.window, self.w.vocab_offset)   # this rank's vocabulary columns
             self.window = None
-        return sample_rows(self.w, logits, positions, sampling, None, probs)
+        return sample_rows(self.w, logits, positions, sampling, None, probs, plan=self._sampling_plan)
 
     def verify_window(self, tokens: list[int]) -> list[int]:
         """The window a reply's grammar keeps (a chain cut at its first rejected draft), masked at the next sample."""

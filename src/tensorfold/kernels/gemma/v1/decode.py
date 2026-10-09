@@ -44,12 +44,18 @@ class RowDecode:
             raise ValueError("Gemma's decode kernels cover checkpoints without per-layer inputs or shared KV layers")
         if not getattr(args, "enable_moe_block", False):
             raise ValueError("Gemma's decode kernels cover the MoE checkpoints (26B-A4B)")
+        experts, top_k = int(args.num_experts), int(args.top_k_experts)
+        if experts <= 0 or experts % 32 or not 1 <= top_k <= experts:
+            raise ValueError("Gemma's decode needs a positive multiple of 32 experts and top_k in 1..expert count")
         self.backbone = text_model.model
         self.layers = self.backbone.layers
+        for layer in self.layers:
+            if int(layer.router.proj.weight.shape[0]) != experts or tuple(layer.router.per_expert_scale.shape) != (experts,):
+                raise ValueError("Gemma's router weights and scale vector must match its configured expert count")
         self.window = int(args.sliding_window)
         self.eps_value = float(args.rms_norm_eps)
         self.eps = mx.array([self.eps_value], dtype=mx.float32)
-        self.top_k = int(args.top_k_experts)
+        self.top_k = top_k
         self.backend = backend
         self.qkv, self.o, self.gate_up, self.down = [], [], [], []
         self.inv_freq, self.router_norm = [], []

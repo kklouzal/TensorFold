@@ -223,6 +223,7 @@ def test_concurrent_streams_one_ignoring_eos_equal_their_serial_references(ignor
 def test_scheduler_serves_a_stream_ignoring_eos_beside_ones_that_stop():
     w, full, refs = _setup(20)
     sched = Scheduler(_Oracle(w, full, seed=3), max_streams=3)
+    sched.start()
     results: dict[int, list[int]] = {}
 
     def go(i, stop_eos):

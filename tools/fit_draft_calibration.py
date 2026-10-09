@@ -5,16 +5,29 @@
              sampling regime, check it on held-out streams, and write the file with its source
 
 The corpus, the collect command and its seed go into the file's ``source``; the logs never ship.
+
+Response budgets: --response-mib defaults to16MiB, --sse-line-kib to64KiB.
+Raise them for larger valid replies or servers that batch a response into one
+SSE line. Event storage shares the response budget. Limits concern client
+measurement storage and never alter generation parameters. Inactivity timeouts
+remain unchanged; these readers do not claim a whole-request wall deadline.
 """
 
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import json
 import math
 import sys
-import threading
 import urllib.request
+
+if __package__:
+    from . import openai_protocol as protocol
+    from .worker_lifetime import Task, drain, raise_failures
+else:
+    import openai_protocol as protocol
+    from worker_lifetime import Task, drain, raise_failures
 from pathlib import Path
 
 CORPUS = [
@@ -38,7 +51,7 @@ CORPUS = [
 ]
 
 
-def _send(base: str, model: str, kind: str, prompt: str, tokens: int, temperature: float, seed: int) -> None:
+def _send(base: str, model: str, kind: str, prompt: str, tokens: int, temperature: float, seed: int, *, limits=None) -> None:
     body = {"model": model, "max_tokens": tokens, "temperature": temperature, "seed": seed, "ignore_eos": True}
     if temperature > 0:
         body.update(top_k=20, top_p=0.95)
@@ -51,18 +64,36 @@ def _send(base: str, model: str, kind: str, prompt: str, tokens: int, temperatur
         body["prompt"] = prompt
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=900) as response:
-        response.read()
+        protocol.json_response(response, tokens, limits=limits)
 
 
 def collect(args: argparse.Namespace) -> None:
+    if type(args.streams) is not int or args.streams < 1 or type(args.tokens) is not int or args.tokens < 1:
+        raise ValueError("calibration collection requires positive integer streams and tokens")
+    kwargs = {} if not hasattr(args, "response_limits") else {"limits": args.response_limits}
     jobs = [(kind, prompt, t, args.seed + i) for t in (1.0, 0.0) for i, (kind, prompt) in enumerate(CORPUS)]
     for at in range(0, len(jobs), args.streams):
-        threads = [threading.Thread(target=_send, args=(args.base, args.model, kind, prompt, args.tokens, t, seed))
-                   for kind, prompt, t, seed in jobs[at:at + args.streams]]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        tasks, primary, failures = [], None, []
+        try:
+            for index, (kind, prompt, t, seed) in enumerate(jobs[at:at + args.streams], start=at):
+                task = Task(partial(_send, args.base, args.model, kind, prompt, args.tokens, t, seed, **kwargs),
+                            name=f"calibration-request-{index}")
+                tasks.append(task)
+                task.start()
+        except BaseException as error:
+            primary = error
+            failures.extend(root for root in (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error))
+                            if root is not None and root is not error)
+        finally:
+            try:
+                drain(tasks, primary)
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+                elif error is not primary:
+                    failures.append(error)
+            if primary is not None:
+                raise_failures(primary, failures)
         print(f"sent {min(at + args.streams, len(jobs))} of {len(jobs)}", flush=True)
 
 
@@ -132,12 +163,17 @@ def main() -> None:
     c.add_argument("--tokens", type=int, default=512)
     c.add_argument("--streams", type=int, default=8)
     c.add_argument("--seed", type=int, default=7)
+    protocol.add_arguments(c)
     f = sub.add_parser("fit")
     f.add_argument("logs", nargs="+")
     f.add_argument("--output", required=True)
     f.add_argument("--source", help="a JSON file naming the model, drafter, collect command and seed")
     args = parser.parse_args()
-    collect(args) if args.command == "collect" else fit(args)
+    if args.command == "collect":
+        args.response_limits = protocol.from_arguments(args)
+        collect(args)
+    else:
+        fit(args)
 
 
 if __name__ == "__main__":

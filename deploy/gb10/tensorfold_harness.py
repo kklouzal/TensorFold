@@ -121,6 +121,7 @@ def count_request(app: Any, body: Any, request_error: type[Exception],
 def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any], type]:
     """Add one route to the native factory; every other route stays native."""
     def make_handler(app: Any) -> type:
+        from tensorfold.server import request_body
         from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
         from tensorfold.server.errors import CapacityError, RequestError, error_body
 
@@ -140,18 +141,10 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                 route = self.path.split("?", 1)[0].rstrip("/")
                 if route != "/v1/tokenize":
                     return super().do_POST()
-                gone = socket_cancellation(self.connection)
+                gone = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))
                 try:
                     with gate.enter(lambda: gone.cancelled, CapacityError, RequestCancelled):
-                        if self.headers.get("Transfer-Encoding") is not None:
-                            raise RequestError("token counting requires Content-Length, without Transfer-Encoding")
-                        raw_length = self.headers.get("Content-Length")
-                        try:
-                            length = int(raw_length) if raw_length is not None else -1
-                        except ValueError:
-                            length = -1
-                        if not 0 < length <= MAX_BODY_BYTES:
-                            raise RequestError("token counting body must be nonempty and at most 96 MiB")
+                        length = request_body.content_length(self, MAX_BODY_BYTES, require_nonempty=True)
                         previous_timeout = self.connection.gettimeout()
                         self.connection.settimeout(BODY_TIMEOUT_S)
                         try:
@@ -159,6 +152,7 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                         finally:
                             self.connection.settimeout(previous_timeout)
                         if len(payload) != length:
+                            self.close_connection = True
                             raise RequestError("token counting request body ended before Content-Length")
                         try:
                             body = json.loads(payload, parse_constant=_invalid_json_number)

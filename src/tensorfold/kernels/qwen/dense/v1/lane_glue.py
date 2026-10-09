@@ -200,13 +200,11 @@ def _eps(eps: float) -> mx.array:
 
 
 def remember(x: mx.array, xs: mx.array) -> mx.array:
-    """Hand ``xs`` to the lane matmul as ``x``'s group sums (its XSUM kernel then does not run)."""
+    """Publish sums inside the owning forward operation; generic callers retain no cache."""
 
-    from tensorfold.kernels.qwen.dense.v1 import lane_qmm
+    from tensorfold.kernels.qwen.dense.v1 import projection_operation
 
-    lane_qmm._xs_cache[id(x)] = (x, xs)
-    while len(lane_qmm._xs_cache) > 4:
-        lane_qmm._xs_cache.pop(next(iter(lane_qmm._xs_cache)))
+    projection_operation.remember(x, xs)
     return x
 
 

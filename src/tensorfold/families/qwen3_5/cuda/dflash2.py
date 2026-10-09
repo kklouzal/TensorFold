@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 import torch
@@ -13,6 +11,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda.direct_read import SafeTensors
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from tensorfold.engine.exact_sampling import Sampling
 
 from .affine_memory import packed_draft
@@ -190,7 +189,7 @@ class DFlash2:
             raise ValueError("a two-rank drafter needs world=2 with the fused 4-bit path")
         self.rank, self.world = rank, world
         self.block = block          # masked positions drafted per round (the checkpoint trained with 8)
-        cfg = json.loads((path / "config.json").read_text())
+        cfg = read_metadata_json(checkpoint_path(path, "config.json"))
         self.hidden = int(cfg["hidden_size"])
         self.head_dim = int(cfg["head_dim"])
         self.heads = int(cfg["num_attention_heads"])
@@ -206,15 +205,27 @@ class DFlash2:
         self.target_embed = target.embed
         self.device = target.norm.device
         self.weights: dict[str, torch.Tensor] = {}
-        f = SafeTensors([path / "model.safetensors"])
-        for name in f.keys():
-            tensor = f.get(name)
-            if name in ("candidate_selector.predecessor_codebook",
-                        "candidate_selector.successor_codebook"):
-                self.weights[name] = tensor.float().numpy().copy()
-            else:
-                self.weights[name] = tensor                  # on the host until packed: no bf16 copy on the device
-        del f
+        f = SafeTensors([checkpoint_path(path, "model.safetensors")])
+        primary = None
+        try:
+            for name in f.keys():
+                tensor = f.get(name)
+                if name in ("candidate_selector.predecessor_codebook",
+                            "candidate_selector.successor_codebook"):
+                    self.weights[name] = tensor.float().numpy().copy()
+                else:
+                    self.weights[name] = tensor                  # on the host until packed: no bf16 copy on the device
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                f.close()
+            except BaseException as cleanup:
+                if primary is not None:
+                    BaseException.add_note(primary, "DFlash checkpoint reader cleanup also failed")
+                    raise primary from cleanup
+                raise
         self.inv_freq = (1.0 / self.theta **
                          (torch.arange(self.head_dim // 2, device=self.device,
                                        dtype=torch.float32) * 2 / self.head_dim))

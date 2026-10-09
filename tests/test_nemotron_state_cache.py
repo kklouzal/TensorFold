@@ -26,7 +26,7 @@ def test_a_pointed_row_reads_as_its_states():
     assert bool(mx.array_equal(cache[0], conv[3:4]).item()) and bool(mx.array_equal(cache[1], ssm[3:4]).item())
     assert cache.ref is None
     cache.point(conv, ssm, 1)
-    cache[1] = ssm[4:5]                          # a write keeps the other slot's pointed state
+    cache[1] = ssm[4:5]  # a write keeps the other slot's pointed state
     assert bool(mx.array_equal(cache[0], conv[1:2]).item()) and bool(mx.array_equal(cache[1], ssm[4:5]).item())
 
 
@@ -38,8 +38,11 @@ def test_copies_and_stored_snapshots_hold_the_row(tmp_path):
     assert copied.ref is None and cache.ref is None
     assert bool(mx.array_equal(copied[1], ssm[2:3]).item())
     cache.point(conv, ssm, 4)
-    path = save_snapshot(tmp_path, "m", [1, 2, 3], [cache])
-    tokens, loaded = load_snapshot(path, "m")
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([cache])
+    path = save_snapshot(tmp_path, "m", [1, 2, 3], [cache], registry=snapshot_registry)
+    tokens, loaded = load_snapshot(path, "m", registry=snapshot_registry)
     assert tokens == [1, 2, 3] and isinstance(loaded[0], RowStateCache)
     assert bool(mx.array_equal(loaded[0][0], conv[4:5]).item())
     assert bool(mx.array_equal(loaded[0][1], ssm[4:5]).item())

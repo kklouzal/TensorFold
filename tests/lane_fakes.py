@@ -153,6 +153,11 @@ class FakeEngine(LaneEngine):
         super().__init__(model if model is not None else FakeFamily(), **kwargs)
         self.prefill_calls: list[tuple[str, int]] = []
 
+    def drain(self) -> None:
+        """CPU test arrays are eager; actual MLX arrays use the production drain."""
+        if not getattr(self.model, "cpu_test_arrays", False):
+            super().drain()
+
     def _family_prefill_steps(
         self, stream: Any, *, cache: list[Any] | None, cached_tokens: int, checkpoints_at: Any
     ) -> Any:

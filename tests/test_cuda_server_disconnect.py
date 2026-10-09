@@ -389,6 +389,7 @@ class SchedulerEngine:
     def __init__(self):
         self.decoder = PacedDecoder()
         self.scheduler = Scheduler(self.decoder, max_streams=2)
+        self.scheduler.start()
 
     def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True):
         return self.scheduler.submit(list(prompt), max_tokens, sampling, draft, on_tokens)

@@ -8,6 +8,7 @@ from typing import Any
 
 import mlx.core as mx
 
+from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.deepseek_v4.attention import Attention
 from tensorfold.families.deepseek_v4.compressor import Compressor, Indexer
 from tensorfold.families.deepseek_v4.config import Config
@@ -49,15 +50,19 @@ class Weights:
     def __init__(self, model_dir: Path, where: dict[str, str] | None = None) -> None:
         self.dir = model_dir
         if where is None:
-            where = json.loads((model_dir / "model.safetensors.index.json").read_text())["weight_map"]
-        self.where = where
+            where = json.loads(checkpoint_path(model_dir, "model.safetensors.index.json").read_text())["weight_map"]
+        if (not isinstance(where, dict) or any(not isinstance(name, str) or not isinstance(shard, str) or not shard
+                                             for name, shard in where.items())):
+            raise ValueError("checkpoint weight_map must map tensor names to nonempty relative file names")
+        self.where = dict(where)           # Own the mapping through all outstanding lazy array loads.
+        self._paths = {shard: checkpoint_path(model_dir, shard) for shard in dict.fromkeys(self.where.values())}
         self._shard: tuple[str, dict[str, mx.array]] | None = None
 
     @classmethod
     def file(cls, path: Path) -> "Weights":
         """One safetensors file's tensors (the converted MTP layer)."""
 
-        return cls(path.parent, {name: path.name for name in mx.load(str(path))})
+        return cls(path.parent, {name: path.name for name in mx.load(str(checkpoint_path(path.parent, path.name)))})
 
     def has(self, name: str) -> bool:
         return name in self.where
@@ -65,7 +70,7 @@ class Weights:
     def get(self, name: str) -> mx.array:
         shard = self.where[name]
         if self._shard is None or self._shard[0] != shard:
-            self._shard = (shard, mx.load(str(self.dir / shard)))
+            self._shard = (shard, mx.load(str(self._paths[shard])))
         return self._shard[1][name]
 
     def q(self, prefix: str) -> Q:

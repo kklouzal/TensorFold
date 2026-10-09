@@ -46,6 +46,21 @@ the memory budget.
 | `adopt_cache(cache)` | Restore family-specific cache classes from snapshots |
 | `release_rounds()` | Drop the last forward's rollback buffers when no stream is live, including after startup probes |
 
+Persistent MLX caches also need an explicit initialized schema. Builtin cache
+classes bind their exact source layout in `engine.snapshot_builtin`; startup
+captures dtype and fixed dimensions from an evaluated prefix without retaining
+its tensor buffers. Declare required fields/list capacities, growing axes and
+allocation bounds, constructor scalars, transient fields, and token/cursor
+relations. Main offsets equal the stored prefix length; auxiliary draft context
+has its separately declared bounds. Custom classes may supply a `Registry` to
+`ChatApp(snapshot_registry=...)`. Disk metadata cannot select a module, class,
+constructor, allocation size, or missing field default. Unsupported or old
+snapshots are cache misses and rebuild through normal prefill.
+Register every external data input selected by the loader in the startup content
+closure before loading. Auxiliary MTP context may be empty for a one-token
+prefix; populated main and side buffers still require their declared allocation
+and cursor relationships. A disk class name cannot authorize custom code.
+
 Start with `exact_width = 1`. Use one sampler consistently for serial and drafted calls; the host and GPU
 implementations can differ at near-ties. Prompt chunks must follow the engine's plan both fresh and resumed.
 The CLI finds message markers in the tokenizer's chat template. The plan uses assistant-message starts

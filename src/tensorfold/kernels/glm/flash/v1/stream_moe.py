@@ -25,7 +25,15 @@ PRESENT = r"""
   device uint32_t* box = (device uint32_t*)BOX;
   for (uint e = t; e < uint(NE); e += 1024) box[e] = 0u;
   threadgroup_barrier(mem_flags::mem_device);
-  for (uint i = t; i < uint(N); i += 1024) box[IDS[i]] = 1u;
+  // Repeated expert ids are normal. Atomic writes select one set-membership value
+  // without racing; this dispatch is exactly one threadgroup. Its device barrier
+  // orders the unique zero stores before all marks, and the existing command
+  // completion event makes the completed bitmap visible to the host.
+  static_assert(sizeof(atomic_uint) == sizeof(uint32_t), "expert flags require32-bit atomic storage");
+  static_assert(alignof(atomic_uint) <= alignof(uint32_t), "expert flags requireuint32 alignment");
+  device atomic_uint* flags = (device atomic_uint*)box;
+  for (uint i = t; i < uint(N); i += 1024)
+    atomic_store_explicit(flags + IDS[i], 1u, memory_order_relaxed);
   threadgroup_barrier(mem_flags::mem_device);
   if (t == 0) OUT[0] = 1u;
 """

@@ -281,11 +281,14 @@ class QwenCudaVision:
             elif patches:
                 # Flash Next: images never attend to one another; runs of whole images, MAX_PATCHES a tower call
                 runs, done, spans_left = [[]], 0, iter(prepared.image_spans)
+                run_size = 0
                 for row in grid:
                     size = int(row[0]) * int(row[1]) * int(row[2])
-                    if runs[-1] and sum(int(t) * int(h) * int(w) for t, h, w in runs[-1]) + size > MAX_PATCHES:
+                    if runs[-1] and run_size + size > MAX_PATCHES:
                         runs.append([])
+                        run_size = 0
                     runs[-1].append(row)
+                    run_size += size
                 for run in runs:
                     size = sum(int(t) * int(h) * int(w) for t, h, w in run)
                     pixels = prepared.pixel_values[done:done + size].to(self.device)

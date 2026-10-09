@@ -148,6 +148,11 @@ def _group_sums(X, XS, ldx, KG: tl.constexpr, GS: tl.constexpr, GB: tl.constexpr
 def group_sums(x: torch.Tensor, gs: int = 64) -> torch.Tensor:
     """(M, K) bf16 (rows may be strided) -> (M, K/gs) fp32 sums of each group's inputs."""
 
+    if type(gs) is not int or gs not in (32, 64):
+        raise ValueError("group_sums takes groups of 32 or 64 inputs")
+    if (not isinstance(x, torch.Tensor) or not x.is_cuda or x.dtype != torch.bfloat16 or x.dim() != 2
+            or x.shape[0] < 1 or x.shape[1] < 1 or x.shape[1] % gs or x.stride(1) != 1):
+        raise ValueError("group_sums takes positive CUDA (M, K) bf16 rows, unit inner stride and whole groups")
     m, k = x.shape
     xs = torch.empty((m, k // gs), dtype=torch.float32, device=x.device)
     _group_sums[(m, triton.cdiv(k // gs, 16))](x, xs, x.stride(0), KG=k // gs, GS=gs, GB=16, num_warps=2)
@@ -156,7 +161,12 @@ def group_sums(x: torch.Tensor, gs: int = 64) -> torch.Tensor:
 
 def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, sk: int | None = None, f32: bool = False,
            out: torch.Tensor | None = None, part: torch.Tensor | None = None, reduce: bool = True) -> torch.Tensor:
-    """x @ q.T as (M, n) bf16, or unrounded fp32 with ``f32``; ``reduce=False`` returns K slices to add in order."""
+    """x @ q.T as (M, n) bf16, or fp32; unreduced K slices are added in order.
+
+    Written buffers must be disjoint from simultaneous kernel reads. A staged
+    reduction may alias out with an input; unused out/part buffers are allowed.
+    See ``docs/cuda-kernel-contracts.md`` for stream and scratch ownership.
+    """
 
     if x.dtype != torch.bfloat16 or x.dim() != 2 or x.shape[1] != q.k:
         raise ValueError(f"matmul: x must be (M, {q.k}) bf16")
@@ -185,6 +195,8 @@ def matmul_group(x: torch.Tensor, qs: list[Q4], xs: torch.Tensor | None = None, 
     if x.dtype != torch.bfloat16 or x.dim() != 2 or any(x.shape[1] != q.k for q in qs):
         raise ValueError("matmul_group: x must be (M, K) bf16 with every weight's K")
     sks = sks or [split_k(q.n, q.k, q.gs) for q in qs]
+    if len(sks) != len(qs):
+        raise ValueError("matmul_group needs exactly one K split per weight")
     if not (1 <= len(qs) <= 4 and all(q.gs == 64 for q in qs) and grouped(x.device.index)):
         return [matmul(x, q, xs, sk=s, f32=f32) for q, s in zip(qs, sks)]
     if x.stride(1) != 1 or (x.shape[0] > 1 and x.stride(0) % 8) or x.data_ptr() % 16:

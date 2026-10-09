@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from pathlib import Path
@@ -20,13 +19,20 @@ class _Reader:
 
     def __init__(self, model_dir: Path, device: str) -> None:
         from tensorfold.cuda.direct_read import ReadAhead, Reader
+        from tensorfold.cuda.tensor_file import read_metadata_json
 
-        index = json.loads((model_dir / "model.safetensors.index.json").read_text())
-        self.where = index["weight_map"]
         self.dir = model_dir
+        index = read_metadata_json(self._path("model.safetensors.index.json"))
+        where = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(where, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                             for k, v in where.items()):
+            raise ValueError("checkpoint index must contain a string-to-string weight_map")
+        self.where = dict(where)
         self.device = device
         self.headers: dict[str, tuple[int, dict]] = {}
         self.touched: set[str] = set()
+        for shard in sorted(set(self.where.values())):
+            self._path(shard)                  # authorize every indexed target before starting owned reads
         self.io = Reader()
         self.reads = ReadAhead(self.io)
 
@@ -35,11 +41,10 @@ class _Reader:
 
         items = []
         for name in names:
-            shard = self.where[name]
-            base, header = self._header(shard)
-            begin, end = header[name]["data_offsets"]
-            items.append((name, self.dir / shard, base + begin, base + end, None))
-            self.touched.add(shard)
+            info = self.info(name)
+            begin, end = info["data_offsets"]
+            items.append((name, info["path"], info["byte_offset"], info["byte_offset"] + end - begin, None))
+            self.touched.add(self.where[name])
         self.reads.queue(items, self.device)
 
     def drop(self, names) -> None:
@@ -58,64 +63,56 @@ class _Reader:
         return [groups.get(key, []) for key in order]
 
     def close(self) -> None:
-        self.reads.close()
+        try:
+            self.reads.close()
+        except BaseException as primary:
+            # A reported payload failure can still have completed shutdown.
+            # Return Reader staging only after all read/upload owners drained.
+            if not self.reads._shutdown_pending:
+                try:
+                    self.io.close()
+                except BaseException as cleanup:
+                    BaseException.add_note(primary, "checkpoint staging cleanup also failed")
+                    raise primary from cleanup
+            raise
         self.io.close()
 
     def _path(self, shard: str) -> Path:
         """Index-relative files in this model or its own HF snapshot blob store."""
+        from tensorfold.cuda.tensor_file import checkpoint_path
 
-        if not isinstance(shard, str):
-            raise ValueError("checkpoint shard names must be relative strings")
-        relative = Path(shard)
-        if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"{shard}: checkpoint shard must not be absolute or traverse parent directories")
-        root = self.dir.resolve()
-        allowed = [root]
-        if root.parent.name == "snapshots" and root.parent.parent.name.startswith("models--"):
-            allowed.append((root.parent.parent / "blobs").resolve())
-        path = (root / relative).resolve()
-        if not any(path.is_relative_to(directory) for directory in allowed):
-            raise ValueError(f"{shard}: resolved checkpoint file is outside the model's authorized roots")
-        return path
+        return checkpoint_path(self.dir, shard)
 
     def _header(self, shard: str) -> tuple[int, dict]:
-        path = self._path(shard)
         got = self.headers.get(shard)
         if got is None:
-            import struct
+            from tensorfold.cuda.direct_read import read_header
 
-            with open(path, "rb") as f:
-                prefix = f.read(8)
-                n = struct.unpack("<Q", prefix)[0] if len(prefix) == 8 else -1
-                if not 0 <= n <= min(64 << 20, os.fstat(f.fileno()).st_size - 8):
-                    raise ValueError(f"{shard}: truncated or invalid safetensors header")
-                header = json.loads(f.read(n))
-                if not isinstance(header, dict):
-                    raise ValueError(f"{shard}: safetensors header must be a JSON object")
-                got = (8 + n, header)
+            got = read_header(self._path(shard))
             self.headers[shard] = got
         return got
 
     def info(self, name: str) -> dict:
         """Validated tensor metadata; copied tuples cannot mutate the cached header."""
-
-        import math
+        from tensorfold.cuda.capacity import SIZES
+        from tensorfold.cuda.tensor_file import tensor_shape
 
         shard = self.where[name]
         base, header = self._header(shard)
         entry = header[name]
         if not isinstance(entry, dict) or not isinstance(entry.get("dtype"), str) or entry["dtype"] not in _DT:
             raise ValueError(f"{name}: unsupported or invalid safetensors dtype")
+        # read_header proves full-buffer coverage once. These public metadata
+        # and index objects can be edited by a caller, so recheck the selected
+        # shape/range and authorized target after each such boundary crossing.
         shape, offsets = entry.get("shape"), entry.get("data_offsets")
-        if (not isinstance(shape, list) or not shape
-                or any(type(size) is not int or size <= 0 for size in shape)
-                or not isinstance(offsets, list) or len(offsets) != 2
-                or any(type(offset) is not int for offset in offsets)):
+        elements = tensor_shape(shape)
+        if (not isinstance(offsets, list) or len(offsets) != 2
+                or any(type(n) is not int for n in offsets)):
             raise ValueError(f"{name}: invalid tensor shape or byte range")
         begin, end = offsets
-        element_size = torch.empty((), dtype=_DT[entry["dtype"]], device="cpu").element_size()
         path = self._path(shard)
-        if begin < 0 or end - begin != math.prod(shape) * element_size or base + end > path.stat().st_size:
+        if begin < 0 or end - begin != elements * SIZES[entry["dtype"]] or base + end > path.stat().st_size:
             raise ValueError(f"{name}: tensor byte range differs from its shape or checkpoint size")
         return {"dtype": entry["dtype"], "shape": tuple(shape), "data_offsets": (begin, end),
                 "byte_offset": base + begin, "path": path}
@@ -129,28 +126,30 @@ class _Reader:
 
         import math
 
+        from tensorfold.cuda.capacity import SIZES
+
         info = self.info(name)
         shape, dtype = info["shape"], _DT[info["dtype"]]
+        if not shape:
+            raise ValueError(f"{name}: scalar tensors have no first-axis rows")
         if type(lo) is not int or type(hi) is not int or not 0 <= lo <= hi <= shape[0]:
             raise ValueError(f"{name}: rows must satisfy 0 <= lo <= hi <= {shape[0]}")
         if lo == hi:
             return torch.empty((0, *shape[1:]), dtype=dtype, device=device)
-        row_bytes = math.prod(shape[1:]) * torch.empty((), dtype=dtype, device="cpu").element_size()
+        row_bytes = math.prod(shape[1:]) * SIZES[info["dtype"]]
         raw = self.io.read(info["path"], info["byte_offset"] + lo * row_bytes,
                            (hi - lo) * row_bytes, device)
         self.touched.add(self.where[name])
         return raw.view(dtype).reshape(hi - lo, *shape[1:])
 
     def get(self, name: str) -> torch.Tensor:
-        shard = self.where[name]
-        base, header = self._header(shard)
-        entry = header[name]
-        begin, end = entry["data_offsets"]
+        info = self.info(name)
+        begin, end = info["data_offsets"]
         raw = self.reads.take(name)
         if raw is None:
-            raw = self.io.read(self.dir / shard, base + begin, end - begin, self.device)
-        self.touched.add(shard)
-        return raw.view(_DT[entry["dtype"]]).reshape(entry["shape"])
+            raw = self.io.read(info["path"], info["byte_offset"], end - begin, self.device)
+        self.touched.add(self.where[name])
+        return raw.view(_DT[info["dtype"]]).reshape(info["shape"])
 
     def has(self, name: str) -> bool:
         return name in self.where

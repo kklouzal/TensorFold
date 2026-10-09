@@ -497,6 +497,8 @@ def deltanet_in(g: Any, x: mx.array) -> tuple[mx.array, mx.array, mx.array, mx.a
 
     batch, length, _ = x.shape
     stacked = g.__dict__.get("stacked")                                 # the fused decode's stacked rows
+    if stacked is not None and hasattr(stacked, "current"):
+        stacked = stacked.current()
     if stacked is not None and active(batch * length):
         cuts = [g.conv_dim, g.conv_dim + g.value_dim, g.conv_dim + g.value_dim + g.nv]
         qkv, z, b, a = mx.split(linear(stacked, x), cuts, axis=-1)

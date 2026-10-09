@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+MLX_MODEL_FILE = True
+
 MODEL_TYPES = ("gemma4", "gemma4_text")
 TITLE = "Gemma 4"
 LANES = True
@@ -22,11 +24,14 @@ def check(model_dir: str | Path) -> None:
 
     config = read_config(model_dir)
     text = config.get("text_config") or config
+    experts, top_k = int(text.get("num_experts") or 0), int(text.get("top_k_experts") or 0)
     missing = [what for what, ok in (
         ("a MoE block in every layer", bool(text.get("enable_moe_block"))),
         ("no per-layer inputs", not int(text.get("hidden_size_per_layer_input") or 0)),
         ("no shared-KV layers", not int(text.get("num_kv_shared_layers") or 0)),
         ("head dims a multiple of 64", all(int(text.get(k) or 64) % 64 == 0 for k in ("head_dim", "global_head_dim"))),
+        ("a positive multiple of 32 experts and top_k in 1..expert count",
+         experts > 0 and experts % 32 == 0 and 1 <= top_k <= experts),
     ) if not ok]
     if missing:
         raise ValueError(f"TensorFold's Gemma 4 kernels cover the MoE checkpoints ({MODELS[0]}); this one lacks "
@@ -43,13 +48,14 @@ def check(model_dir: str | Path) -> None:
 
 
 def load(model_dir: Path, *, lane_kernels: str = "auto", drafter: str = "", drafter_bits: int = 8,
-         **_: Any) -> tuple[Any, Any]:
+         trust_model_code: bool = False, **_: Any) -> tuple[Any, Any]:
     """MLX's qmv loop a row by default; ``lane_kernels`` "on": the lane matmul; ``drafter``: a DFlash model's chains."""
 
     from tensorfold.families.gemma4.model import load as load_model
 
     backend = "lane" if str(lane_kernels) == "on" else "rows"
-    return load_model(Path(model_dir), backend=backend, drafter=drafter, drafter_bits=drafter_bits)
+    return load_model(Path(model_dir), backend=backend, drafter=drafter, drafter_bits=drafter_bits,
+                      trust_model_code=trust_model_code)
 
 
 def engine_settings(model: Any) -> dict[str, Any]:

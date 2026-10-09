@@ -16,6 +16,17 @@ GROUP = 64
 
 _HEADER = r"""
 #define PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
+// Generic views prove scalar alignment, not the alignment of a uint4/uint2.
+// Pack the same little-endian bits without a wider pointer dereference.
+inline uint4 load_words4(const device uint* p) { return uint4(p[0], p[1], p[2], p[3]); }
+inline uint2 load_words2(const device uint* p) { return uint2(p[0], p[1]); }
+inline uint4 load_bf16_8(const device bfloat* p) {
+  uint4 v;
+  for (int i = 0; i < 4; i++)
+    v[i] = uint(as_type<ushort>(p[2 * i])) | (uint(as_type<ushort>(p[2 * i + 1])) << 16);
+  return v;
+}
+inline float2 load_float_pair(const device float* p) { return float2(p[0], p[1]); }
 // the bf16 at index e (0..7) of 8 packed bf16 as fp32
 inline float bf8(uint4 v, int e) {
   const uint w = v[e / 2];
@@ -37,7 +48,7 @@ _SCALAR = r"""
   // inputs pre-scaled in chain order. A row's chain is the same at any RS.
   constexpr int WPG = GS / 8, NS = 8 / WPG;     // words a group; nibble stride of an MMA step
   constexpr int XP = GS == 64 ? 76 : 44;        // floats a staged group: GS inputs, WPG sums, pad (bank spread)
-  threadgroup float xs[RS * XB * XP];
+  alignas(16) threadgroup float xs[RS * XB * XP];
   const uint lane = thread_index_in_simdgroup;
   const int tid = int(simdgroup_index_in_threadgroup) * 32 + int(lane);
   const int c = int(lane) % S;
@@ -46,14 +57,14 @@ _SCALAR = r"""
                  + int(lane) / S;
   constexpr int G = K / GS;
   const float one = ONE[0];
-  const device uint4* wr[NR];
+  const device uint* wr[NR];
   const device bfloat* sr[NR];
   const device bfloat* br[NR];
   float acc[NR][RS];
   PRAGMA_UNROLL
   for (int u = 0; u < NR; u++) {
     const int nn = min(n0 + SLOTS * u, N - 1);
-    wr[u] = (const device uint4*)(W + size_t(nn) * (K / 8));
+    wr[u] = (const device uint*)W + size_t(nn) * (K / 8);
     sr[u] = SC + size_t(nn) * G;
     br[u] = BI + size_t(nn) * G;
     PRAGMA_UNROLL
@@ -61,7 +72,7 @@ _SCALAR = r"""
   }
   uint4 nw[NR][WPG / 4];
   PRAGMA_UNROLL
-  for (int u = 0; u < NR; u++) for (int h = 0; h < WPG / 4; h++) nw[u][h] = c < G ? wr[u][(WPG / 4) * c + h] : uint4(0);
+  for (int u = 0; u < NR; u++) for (int h = 0; h < WPG / 4; h++) nw[u][h] = c < G ? load_words4(wr[u] + WPG * c + 4 * h) : uint4(0);
   for (int b0 = 0; b0 < G; b0 += XB) {
     const int nbk = min(XB, G - b0);
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -81,7 +92,7 @@ _SCALAR = r"""
       for (int u = 0; u < NR; u++) for (int h = 0; h < WPG / 4; h++) wv[u][h] = nw[u][h];
       if (g + S < G) {
         PRAGMA_UNROLL
-        for (int u = 0; u < NR; u++) for (int h = 0; h < WPG / 4; h++) nw[u][h] = wr[u][(WPG / 4) * (g + S) + h];
+        for (int u = 0; u < NR; u++) for (int h = 0; h < WPG / 4; h++) nw[u][h] = load_words4(wr[u] + WPG * (g + S) + 4 * h);
       }
       float xsum[RS];
       float P[NR][RS];
@@ -153,7 +164,6 @@ _MMA = r"""
   const int nb = int(threadgroup_position_in_grid.x) * (8 * NT);
   const int rb = int(threadgroup_position_in_grid.y) * (8 * RT);
   threadgroup float red[S > 1 ? S * RT * NT * 64 : 1];
-  const device uint2* W2 = (const device uint2*)W;
   const device uint* W1 = (const device uint*)W;
   int wrow[NT];
   for (int t = 0; t < NT; t++) wrow[t] = min(nb + 8 * t + fm, N - 1);
@@ -167,7 +177,7 @@ _MMA = r"""
       uint2 wv[NT];
       PRAGMA_UNROLL
       for (int t = 0; t < NT; t++)
-        if (GS == 64) wv[t] = W2[size_t(wrow[t]) * (K / 16) + 4 * g + fn / 2];
+        if (GS == 64) wv[t] = load_words2(W1 + size_t(wrow[t]) * (K / 8) + 8 * g + fn);
         else wv[t] = uint2(W1[size_t(wrow[t]) * (K / 8) + 4 * g + fn / 2]);
       uint4 xa[RT], xb[RT];
       float xs0[RT], xs1[RT];
@@ -259,9 +269,12 @@ _PREP = r"""
   const float one = ONE[0];
   const int r0 = min(8 * tile + fn, R - 1), r1 = min(8 * tile + fn + 1, R - 1);
   const uint4 xa = LOAD8(r0, 8 * g + fm), xb = LOAD8(r1, 8 * g + fm);
-  device float2* xf = (device float2*)XF + (size_t(tile) * G + g) * 256 + lane;
+  device float* xf = XF + (size_t(tile) * G + g) * 512 + 2 * lane;
   PRAGMA_UNROLL
-  for (int s = 0; s < 8; s++) xf[32 * s] = float2(bf8(xa, s) * pre(s), bf8(xb, s) * pre(s));
+  for (int s = 0; s < 8; s++) {
+    xf[64 * s] = bf8(xa, s) * pre(s);
+    xf[64 * s + 1] = bf8(xb, s) * pre(s);
+  }
   float v = sum8(xa, one), u = sum8(xb, one);
   v = fma(simd_shuffle_xor(v, ushort(2)), one, v); u = fma(simd_shuffle_xor(u, ushort(2)), one, u);
   v = fma(simd_shuffle_xor(v, ushort(4)), one, v); u = fma(simd_shuffle_xor(u, ushort(4)), one, u);
@@ -278,7 +291,7 @@ def _fragment_source(mma: str) -> str:
 
     x_block = mma[mma.index("      uint4 xa[RT], xb[RT];"):mma.index("      simdgroup_matrix<float, 8, 8> P[RT][NT];")]
     out = mma.replace("  const int R = X_shape[0];", "  const int R = XS_shape[0];\n  const int T8 = (R + 7) / 8;\n"
-                      "  const device float2* XF2 = (const device float2*)XF;")
+                      "  const device float* XF1 = XF;")
     out = out.replace(x_block, """      float xs0[RT], xs1[RT];
       PRAGMA_UNROLL
       for (int rt = 0; rt < RT; rt++) { xs0[rt] = XS[size_t(xr0[rt]) * G + g]; xs1[rt] = XS[size_t(xr1[rt]) * G + g]; }
@@ -286,7 +299,7 @@ def _fragment_source(mma: str) -> str:
     old_bm = """          bm[rt].thread_elements()[0] = bf8(xa[rt], e) * ps;
           bm[rt].thread_elements()[1] = bf8(xb[rt], e) * ps;"""
     assert old_bm in out
-    out = out.replace(old_bm, """          const float2 f = XF2[(size_t(min(rb / 8 + rt, T8 - 1)) * G + g) * 256 + 32 * s + lane];
+    out = out.replace(old_bm, """          const float2 f = load_float_pair(XF1 + 2 * ((size_t(min(rb / 8 + rt, T8 - 1)) * G + g) * 256 + 32 * s + lane));
           bm[rt].thread_elements()[0] = f.x;
           bm[rt].thread_elements()[1] = f.y;""")
     return out
@@ -313,22 +326,20 @@ class Prologue(NamedTuple):
     header: str = ""
 
 
-_DEFAULT = Prologue("x", "(((const device uint4*)X)[size_t(r) * (K / 8) + (j)])")
+_DEFAULT = Prologue("x", "load_bf16_8((const device bfloat*)X + size_t(r) * K + 8 * (j))")
 
 
 def _compiled(kind: str, consts: tuple[tuple[str, int], ...], dep: bool = False, prologue: Prologue = _DEFAULT
               ) -> Any:
     """Compile per kind, constants and prologue, embedding constants in source to avoid MLX's per-call template regex."""
 
-    key = (kind, consts, dep, prologue.name)
+    key = (kind, consts, dep, prologue)
     kernel = _kernels.get(key)
     if kernel is None:
         body = {"scalar": _SCALAR, "mma": _MMA, "prep": _PREP, "mmaf": _fragment_source(_MMA)}[kind]
         source = ("".join(f"  constexpr int {k} = {v};\n" for k, v in consts)
                   + f"  #define LOAD8(r, j) ({prologue.load8})\n" + body + "  #undef LOAD8\n")
         header = _HEADER + prologue.header
-        name = (f"simd_qmm_{kind}_{prologue.name}_" + hashlib.sha256((header + source).encode()).hexdigest()[:16]
-                + ("_dep" if dep else ""))
         if kind == "prep":
             inputs, outputs = ["X", "ONE", *prologue.inputs], ["XF", "XS"]
         elif kind == "mmaf":
@@ -336,6 +347,9 @@ def _compiled(kind: str, consts: tuple[tuple[str, int], ...], dep: bool = False,
         else:
             inputs, outputs = ["X", "W", "SC", "BI", "ONE", *prologue.inputs], ["OUT"]
         inputs = inputs + (["DEP"] if dep else [])
+        identity = repr((header, source, tuple(inputs), tuple(outputs)))
+        name = (f"simd_qmm_{kind}_{prologue.name}_" + hashlib.sha256(identity.encode()).hexdigest()[:16]
+                + ("_dep" if dep else ""))
         kernel = _kernels[key] = mx.fast.metal_kernel(name=name, input_names=inputs, output_names=outputs,
                                                       source=source, header=header)
     return kernel
@@ -411,7 +425,7 @@ def _go(kind: str, plan: tuple, dep: bool, pro: Prologue, inputs: list) -> mx.ar
 def _run(kind: str, rows: int, n: int, dims: int, group: int, dep: bool, pro: Prologue, inputs: list) -> mx.array:
     """Launch through the call's cached plan; a new MMA plan takes the physical simdgroups its pipeline allows here."""
 
-    key = (kind, rows, n, dims, group, dep, pro.name)
+    key = (kind, rows, n, dims, group, dep, pro)
     plan = _plans.get(key)
     if plan is not None:
         return _go(kind, plan, dep, pro, inputs)
@@ -426,7 +440,7 @@ def _run(kind: str, rows: int, n: int, dims: int, group: int, dep: bool, pro: Pr
         made.append(_launch(shape, rows, n, dims, group, size // 32))
         return _go(kind, made[-1], dep, pro, inputs)
 
-    pipeline = (f"simd_qmm {kind}", tuple(c for c in consts if c[0] != "SGS"), dep, pro.name)
+    pipeline = (f"simd_qmm {kind}", tuple(c for c in consts if c[0] != "SGS"), dep, pro)
     out = threads.fit(pipeline, [32 * g for g in (16, 8, 4, 2, 1) if g <= dict(consts)["SGS"]], launch, inputs)
     if threads.fitted(pipeline) is not None:
         _plans[key] = made[-1]

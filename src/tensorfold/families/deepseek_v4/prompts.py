@@ -8,6 +8,8 @@ from typing import Any
 from tensorfold.families.deepseek_v4.vendor.encoding_dsv4 import ASSISTANT_SP_TOKEN as ASSISTANT
 from tensorfold.families.deepseek_v4.vendor.encoding_dsv4 import encode_messages
 
+from .rendering import _eligible as _long_suffix, encode_long_messages
+
 EFFORTS = {"max": "max", "high": "high", "xhigh": "max"}
 
 
@@ -25,7 +27,10 @@ def render(messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None
         msgs[0]["tools"] = [t if "function" in t else {"type": "function", "function": t} for t in tools]
     mode = "thinking" if thinking else "chat"
     effort = EFFORTS.get(str(reasoning_effort)) if thinking and reasoning_effort else None
-    return encode_messages(msgs, thinking_mode=mode, reasoning_effort=effort)
+    encoder = encode_messages
+    if len(msgs) >= 64 and _long_suffix(msgs, len(msgs)):
+        encoder = encode_long_messages
+    return encoder(msgs, thinking_mode=mode, reasoning_effort=effort)
 
 
 class DeepSeekTokenizer:

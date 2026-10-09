@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from tensorfold.cleanup import finish, rollback
+from tensorfold.cuda.engine_lifetime import EngineLifetime
+from tensorfold.cuda.rank_protocol import MAX_GRAMMAR_ITEMS, finite, grammar as rank_grammar, ints, packed_grammar
+
 DEFAULT_POLICY = "auto"
 DFLASH_POLICY = "fc5:0.3"             # DFlash2 drafts every round: up to 5 while their probability product holds 0.3
 EXL3_AUTO = DFLASH_POLICY             # what auto runs on an EXL3 checkpoint with the draft model
@@ -106,11 +110,31 @@ def without_mtp(transform, layers: int):
 
 
 class GlmEngine:
-    """GLM-5.3-Flash on two ranks (this one ``rank``): weights, MTP and DFlash2 drafting, per-request policies."""
+    """Two ranks mirror one mutable request; close drains it before retirement.
+
+    Failed accepted requests close admission. Both owned NCCL ranks close;
+    callers retain and retire an explicitly supplied borrowed communicator.
+    Request sampling/policies and gathered arithmetic use the same rule as before.
+    """
 
     def __init__(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str = DEFAULT_POLICY,
                  drafter: Path | None = None, context: int | None = None, context_explicit: bool | None = None, serial_only: bool = False, comm=None,
                  prefill_rows: int | None = None) -> None:
+        self._lifetime = EngineLifetime()
+        self.torch = self.comm = self.w = self.e = self.drafter = None
+        self._owns_comm = comm is None
+        self._stop_sent = False
+        self.cache, self.live = [], []
+        try:
+            self._initialize(model_dir, rank=rank, master=master, port=port, policy=policy, drafter=drafter,
+                             context=context, context_explicit=context_explicit, serial_only=serial_only,
+                             comm=comm, prefill_rows=prefill_rows)
+        except BaseException as error:
+            rollback(self, error, lambda: self.close(abort=True))
+
+    def _initialize(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str,
+                    drafter: Path | None, context: int | None, context_explicit: bool | None,
+                    serial_only: bool, comm, prefill_rows: int | None) -> None:
         """``comm``: a communicator with ``all_gather`` and ``barrier`` instead of NCCL between two machines (tests)."""
 
         import torch
@@ -124,12 +148,16 @@ class GlmEngine:
                                               split_weights)
 
         encode_policy(policy)                           # a bad default fails here, not in the first request
+        if type(rank) is not int or rank not in (0, 1):
+            raise ValueError("GLM requires integer rank zero or one")
         torch.cuda.set_device(0)
         self.torch = torch
         self.rank = rank
         self.policy = "0" if serial_only else policy
         self.serial_only = serial_only
-        self.comm = comm if comm is not None else NCCL(rank, 2, master, port)
+        self.comm = comm if comm is not None else NCCL()
+        if comm is None:
+            self.comm.open(rank, 2, master, port)
         self.comm.barrier()
         cfg = Config.read(model_dir)
         # Without --context the window stays dense, attending every key without indexer work.
@@ -208,6 +236,39 @@ class GlmEngine:
         self.cache: list = []
         self.live: list[int] = []
         self.cache_entries = int(os.environ.get("TF_GLM_CACHE_ENTRIES", "8"))
+
+    def shutdown(self) -> None:
+        """Rank zero sends an unused score header to retire the idle follower."""
+        if self.rank == 0 and not self._stop_sent:
+            self._ring()
+            self._share([0, 0], maximum=19)
+            self._stop_sent = True
+
+    def close(self, *, abort: bool = False) -> None:
+        """Drain requests and fence scratch; a supplied communicator is borrowed.
+
+        Both owned NCCL ranks participate in normal shutdown. Failed startup
+        or requests abort instead. Failed retirement retains the complete
+        engine journal for retry or process containment.
+        """
+        if type(abort) is not bool:
+            raise ValueError("typed engine abort policy required")
+        def retire():
+            operations = []
+            failed = abort or self._lifetime.failed is not None
+            if self.comm is not None and self._owns_comm:
+                def close_comm():
+                    if not failed:
+                        self.shutdown()
+                    self.comm.close(abort=failed)
+                operations.append(close_comm)
+            if self.torch is not None:
+                operations.append(lambda: self.torch.cuda.synchronize(0))
+            finish(operations)
+            self.w = self.e = self.drafter = self.comm = None
+            self.cache.clear()
+            self.live.clear()
+        self._lifetime.close(retire)
 
     def _calibrate(self) -> dict:
         """Per-piece ms for ``drafter_choice.DrafterChoice``: fastest of interleaved passes, equal on both ranks."""
@@ -307,26 +368,34 @@ class GlmEngine:
         if store is None:
             return
         from datetime import timedelta
+        from tensorfold.cuda.store_wait import timed_out
 
         key = f"tf_glm_request_{getattr(self, '_bell', 0) + 1}"
+        timeout = timedelta(hours=1)
         while True:
             try:
-                store.wait([key], timedelta(hours=1))
+                store.wait([key], timeout)
                 break
-            except Exception as e:            # an idle hour: wait again (a lost rank 0 is a connection error instead)
-                if "timeout" not in str(e).lower():
+            except Exception as error:
+                if not timed_out(error, [key], timeout):
                     raise
         store.delete_key(key)
         self._bell = getattr(self, "_bell", 0) + 1
 
-    def _share(self, values: list[int] | None) -> list[int]:
+    def _share(self, values: list[int] | None, *, maximum: int) -> list[int]:
         """Rank 0's int list on every rank (a length, then the values, through the all-gather)."""
 
         torch = self.torch
+        if type(maximum) is not int or not 1 <= maximum <= (1 << 31) - 1:
+            raise ValueError("rank message requires a finite int32 count bound")
+        if self.rank == 0:
+            ints(values, maximum, lower=-(1 << 31), empty=True)
         n = torch.tensor([len(values) if self.rank == 0 else 0], dtype=torch.int32, device="cuda")
         got = torch.empty((2,), dtype=torch.int32, device="cuda")
         self.comm.all_gather(n, got)
         count = int(got[0].item())
+        if not 0 <= count <= maximum:
+            raise ValueError("rank message count exceeds its role bound")
         buf = (torch.tensor(values, dtype=torch.int32, device="cuda") if self.rank == 0
                else torch.zeros((count,), dtype=torch.int32, device="cuda"))
         allv = torch.empty((2 * count,), dtype=torch.int32, device="cuda")
@@ -483,6 +552,11 @@ class GlmEngine:
 
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens, draft: bool = True,
                  constraint=None) -> dict[str, Any]:
+        with self._lifetime.request(lambda: ints(prompt, self.limit - 1, upper=self.w.cfg.vocab - 1)):
+            return self._generate(prompt, max_tokens, sampling, on_tokens, draft, constraint)
+
+    def _generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens, draft: bool = True,
+                  constraint=None) -> dict[str, Any]:
         """Mirror one rank-0 request on rank 1; draft=False uses serial decoding and fresh prefill as the reference drafted replies must equal."""
 
         if len(prompt) >= self.limit:
@@ -495,24 +569,38 @@ class GlmEngine:
         code = self._effective(encode_policy(spec))
         stop_eos = bool(getattr(self.request, "stop_eos", True))
         hit = self._resume(list(prompt), code) if draft else None
+        if sampling is not None:
+            finite(float(sampling.temperature))
+            finite(float(sampling.top_p))
+            minimum = finite(float(sampling.min_p))
+            if not 0 <= minimum <= 1:
+                raise ValueError("rank min_p must be between zero and one")
         seed = (sampling.seed if sampling else 0) & 0xFFFFFFFFFFFFFFFF
         header = [max_tokens, int(stop_eos), int(draft), len(hit.ids) if hit is not None else 0,
                   seed & 0x7FFFFFFF, (seed >> 31) & 0x7FFFFFFF, seed >> 62,
                   *_f64_ints(sampling.temperature if sampling else 0.0), int(sampling.top_k) if sampling else 0,
                   *_f64_ints(sampling.top_p if sampling else 1.0), *_f64_ints(sampling.min_p if sampling else 0.0),
                   int(constraint is not None)] + code
-        from tensorfold.engine.grammar import pack
-
+        ints(header, 19, lower=-(1 << 31))
+        ints(prompt, self.limit - 1, upper=self.w.cfg.vocab - 1)
+        packed = packed_grammar(constraint, self.w.cfg.vocab) if constraint is not None else []
         self._ring()                                   # wakes rank 1, which idles on the store, not in the all-gather
-        self._share(header)
-        self._share(list(prompt))
+        self._share(header, maximum=19)
+        self._share(list(prompt), maximum=self.limit)
         if constraint is not None:                     # the request's grammar: rank 1 compiles the same
-            self._share(pack(constraint))
+            self._share(packed, maximum=MAX_GRAMMAR_ITEMS)
         stats = self._run(list(prompt), max_tokens, sampling, stop_eos, on_tokens, code, hit, draft, constraint)
         stats.update(policy=spec, drafts=draft)
         return stats
 
     def score_labels(self, prompt_ids: list[int], label_ids: list[int]) -> tuple[list[float], float]:
+        def prepare():
+            ints(prompt_ids, self.limit - 1, upper=self.w.cfg.vocab - 1)
+            ints(label_ids, self.w.cfg.vocab, upper=self.w.cfg.vocab - 1)
+        with self._lifetime.request(prepare):
+            return self._score_labels(prompt_ids, label_ids)
+
+    def _score_labels(self, prompt_ids: list[int], label_ids: list[int]) -> tuple[list[float], float]:
         """Both ranks prefill the prompt and return its label logits plus the full-vocabulary logsumexp."""
 
         prompt = [int(token) for token in prompt_ids]
@@ -523,10 +611,12 @@ class GlmEngine:
             raise ValueError("empty labels")
         if len(prompt) >= self.limit:
             raise ValueError(f"prompt of {len(prompt)} tokens: this engine serves contexts up to {self.limit}")
+        ints(prompt, self.limit - 1, upper=self.w.cfg.vocab - 1)
+        ints(labels, self.w.cfg.vocab, upper=self.w.cfg.vocab - 1)
         self._ring()                    # rank 1 waits on the store before this header, as a chat request does
-        self._share([0, len(labels)])   # max_tokens on a chat header is at least 1, so 0 is a score
-        self._share(prompt)
-        self._share(labels)
+        self._share([0, len(labels)], maximum=19)   # max_tokens on a chat header is at least 1, so 0 is a score
+        self._share(prompt, maximum=self.limit)
+        self._share(labels, maximum=self.w.cfg.vocab)
         return self._score_local(prompt, labels)
 
     def _score_local(self, prompt: list[int], labels: list[int]) -> tuple[list[float], float]:
@@ -554,30 +644,50 @@ class GlmEngine:
         return [[float(item) for item in got[:width].tolist()], [float(item) for item in got[width:].tolist()]]
 
     def follow(self) -> None:
+        with self._lifetime.request():
+            self._follow()
+
+    def _follow(self) -> None:
         """Rank 1: mirror every request rank 0 serves, forever."""
 
         from tensorfold.engine.exact_sampling import Sampling
 
         while True:
             self._await_bell()
-            header = self._share(None)
+            header = self._share(None, maximum=19)
+            if header == [0, 0]:
+                return
             if len(header) == 2 and header[0] == 0:     # a decision: both ranks prefill, neither samples
-                prompt = self._share(None)
-                labels = self._share(None)
+                if not 1 <= header[1] <= self.w.cfg.vocab:
+                    raise ValueError("rank score count exceeds vocabulary")
+                prompt = ints(self._share(None, maximum=self.limit), self.limit - 1, upper=self.w.cfg.vocab - 1)
+                labels = ints(self._share(None, maximum=self.w.cfg.vocab), self.w.cfg.vocab, upper=self.w.cfg.vocab - 1)
+                if len(labels) != header[1]:
+                    raise ValueError("rank score count differs from label payload")
                 self._score_local(prompt, labels)
                 continue
+            if len(header) != 19:
+                raise ValueError("rank chat header requires nineteen integers")
             (max_tokens, stop_eos, draft, cached, s_lo, s_hi, s_top, t_lo, t_hi, top_k, p_lo, p_hi, m_lo, m_hi, shaped,
              *code) = header
-            prompt = self._share(None)
-            packed = self._share(None) if shaped else []
+            prompt = ints(self._share(None, maximum=self.limit), self.limit - 1, upper=self.w.cfg.vocab - 1)
+            if (not 1 <= max_tokens <= self.limit - len(prompt) or not 0 <= cached < len(prompt)
+                    or stop_eos not in (0, 1) or draft not in (0, 1) or shaped not in (0, 1)
+                    or not 0 <= s_lo < 1 << 31 or not 0 <= s_hi < 1 << 31 or not 0 <= s_top < 4
+                    or top_k < 0):
+                raise ValueError("rank chat header counts/flags are invalid")
+            packed = rank_grammar(self._share(None, maximum=MAX_GRAMMAR_ITEMS), self.w.cfg.vocab) if shaped else []
             constraint = None
             if packed:                                  # compiled here as on rank 0
                 from tensorfold.engine import grammar
 
                 constraint = grammar.compiler(self, self.model_dir, self.eos).follow(packed)
-            temperature = _ints_f64(t_lo, t_hi)
+            temperature = finite(_ints_f64(t_lo, t_hi))
+            top_p, min_p = finite(_ints_f64(p_lo, p_hi)), finite(_ints_f64(m_lo, m_hi))
+            if not 0 <= min_p <= 1 or code[0] not in (0, 1, 2, 3, 4, 5, 11, 12, 13, 14, 15):
+                raise ValueError("rank sampling or policy fields are invalid")
             seed = (s_top << 62) | (s_hi << 31) | s_lo
-            sampling = (Sampling(seed, temperature, top_k, _ints_f64(p_lo, p_hi), _ints_f64(m_lo, m_hi))
+            sampling = (Sampling(seed, temperature, top_k, top_p, min_p)
                         if temperature > 0 else None)
             hit = None
             if cached:

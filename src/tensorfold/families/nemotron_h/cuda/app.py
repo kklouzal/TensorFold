@@ -10,16 +10,40 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tensorfold.cuda import prompt_precision
+from tensorfold.cleanup import finish, rollback
+from tensorfold.cuda.engine_lifetime import EngineLifetime
+from tensorfold.cuda.rank_protocol import MAX_GRAMMAR_ITEMS, bounded_json, finite, grammar, ints, packed_grammar, request_json
 from . import CONFIDENCE, DRAFTS
 
 
 class NemotronEngine:
-    """``eos``, ``generate`` (rank 0 or one GPU), ``follow`` (rank 1) and ``shutdown``, as the server expects."""
+    """One mutable request at a time; close drains it before device retirement.
+
+    ``generate`` runs on rank zero (or one GPU), ``follow`` on rank one. Failed
+    accepted requests close admission; recreate the engine after teardown.
+    Both TP ranks close; the owned communicator is never a borrowed caller resource.
+    """
 
     def __init__(self, model_dir: Path, *, drafts: int = DRAFTS, confidence: float = CONFIDENCE,
                  draft_ids: str | list[int] | None = "default", context: int | None = None,
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "",
                  port: int = 29571) -> None:
+        self._lifetime = EngineLifetime()
+        self.torch = self.comm = self.e = self.mtp = self.serial = self.w = None
+        self.cache = []
+        self._make = None
+        self._stop_sent = False
+        try:
+            self._initialize(model_dir, drafts=drafts, confidence=confidence, draft_ids=draft_ids,
+                             context=context, context_explicit=context_explicit, tp=tp, rank=rank,
+                             master=master, port=port)
+        except BaseException as error:
+            rollback(self, error, lambda: self.close(abort=True))
+
+    def _initialize(self, model_dir: Path, *, drafts: int, confidence: float,
+                    draft_ids: str | list[int] | None, context: int | None,
+                    context_explicit: bool | None, tp: int, rank: int, master: str,
+                    port: int) -> None:
         """``draft_ids``: "default" (the family's ``draft_ids.txt``, the Mac engine's list), a list, or None (all)."""
         import torch
 
@@ -31,10 +55,13 @@ class NemotronEngine:
         from .mtp import MTPHead
         from .weights import MTP_FILE, load
 
-        if tp not in (1, 2) or rank not in range(tp):
+        if type(tp) is not int or tp not in (1, 2) or type(rank) is not int or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Nemotron runs on one GPU or two")
         if not 0 <= int(drafts) <= 8:
             raise ValueError(f"MTP drafts a round: 0 to 8, not {drafts}")
+        if not 0 <= float(confidence) <= 1:
+            raise ValueError("MTP confidence must be a probability between zero and one")
+        self.torch = torch
         torch.cuda.set_device(0)
         if draft_ids == "default":
             draft_ids = [int(v) for v in (Path(__file__).parent.parent / "draft_ids.txt").read_text().split()]
@@ -49,7 +76,8 @@ class NemotronEngine:
 
             if not master:
                 raise ValueError("two ranks need rank 0's address (master)")
-            self.comm = NCCL(rank, 2, master, port)
+            self.comm = NCCL()
+            self.comm.open(rank, 2, master, port)
             self.comm.barrier()
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None
         head = Path(model_dir) / MTP_FILE
@@ -64,7 +92,7 @@ class NemotronEngine:
         self.max_len = -(-self.capacity_plan["cache_slots"] // CHUNK) * CHUNK
         if tp == 2:
             self._same_settings(torch, draft_ids)
-        w = load(model_dir, mtp=self.drafts > 0)
+        w = self.w = load(model_dir, mtp=self.drafts > 0)
         if self.comm is not None:
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
         if self.drafts and w.mtp is None:
@@ -74,7 +102,7 @@ class NemotronEngine:
         if tp == 2:
             from .tp import TPEngine, split_weights
 
-            w = split_weights(w, rank)
+            w = self.w = split_weights(w, rank)
             torch.cuda.empty_cache()
             self._make = lambda: TPEngine(w, self._gather, max_len=self.max_len)  # noqa: E731
         self.e = self._make()
@@ -124,39 +152,65 @@ class NemotronEngine:
     def shutdown(self) -> None:
         """Rank 0: tell rank 1 to leave ``follow``."""
 
-        if self.tp == 2 and self.rank == 0:
+        if self.tp == 2 and self.rank == 0 and not self._stop_sent:
             self.comm.store.set(self._key(self.served), json.dumps({"stop": True}))
+            self._stop_sent = True
+
+    def close(self, *, abort: bool = False) -> None:
+        """Stop admission, drain requests and retire device work before release.
+
+        Both tensor-parallel ranks must close. An incomplete constructor or
+        failed request aborts the communicator. Failed fences/native teardown
+        retain every resource on this object; retry never frees unknown work.
+        """
+        if type(abort) is not bool:
+            raise ValueError("typed engine abort policy required")
+        def retire():
+            operations = []
+            failed = abort or self._lifetime.failed is not None
+            if self.comm is not None:
+                def close_comm():
+                    if not failed:
+                        self.shutdown()
+                    self.comm.close(abort=failed)
+                operations.append(close_comm)
+            if self.torch is not None:
+                operations.append(lambda: self.torch.cuda.synchronize(0))
+            finish(operations)
+            self.e = self.mtp = self.serial = self.w = self._make = None
+            self.cache.clear()
+            self.comm = None
+        self._lifetime.close(retire)
 
     def _share(self, prompt: list[int], max_tokens: int, sampling, draft: bool, cached: int, constraint=None,
                stop_eos: bool = True) -> tuple:
-        from tensorfold.engine.grammar import pack
-
         body = {"prompt": prompt, "max_tokens": max_tokens, "draft": bool(draft), "cached": int(cached),
                 "stop_eos": bool(stop_eos),
-                "sampling": None if sampling is None else [int(sampling.seed), float(sampling.temperature),
+                "sampling": None if sampling is None else [int(sampling.seed) & 0xFFFFFFFFFFFFFFFF, float(sampling.temperature),
                                                            int(sampling.top_k), float(sampling.top_p),
                                                            float(sampling.min_p)],
-                "grammar": pack(constraint)}                 # rank 1 walks and masks the same rows
-        text = json.dumps(body)
+                "grammar": packed_grammar(constraint, self.e.c.vocab)}  # rank 1 walks and masks the same rows
+        request = _request(body, maximum=self.context_window, vocab=self.e.c.vocab)
+        text = bounded_json(body)
         self.comm.store.set(self._key(self.served), text)
-        return _unpack(text)
+        return request
 
     def _receive(self) -> tuple | None:
-        from torch.distributed import DistNetworkError
+        from tensorfold.cuda.store_wait import timed_out
 
         key = self._key(self.served)
+        timeout = timedelta(hours=1)
         while True:
             try:
-                self.comm.store.wait([key], timedelta(hours=1))
+                self.comm.store.wait([key], timeout)
                 break
-            except DistNetworkError:                        # rank 0 is gone: leave ``follow``
-                print("[tensorfold] rank 0 closed the connection; rank 1 stops", flush=True)
-                return None
-            except Exception:                               # noqa: BLE001  (no request within the hour: wait on)
-                continue
-        text = self.comm.store.get(key).decode()
+            except Exception as error:
+                if not timed_out(error, [key], timeout):
+                    raise
+        text = self.comm.store.get(key)
+        request = _unpack(text, maximum=self.context_window, vocab=self.e.c.vocab)
         self.comm.store.delete_key(key)
-        return _unpack(text)
+        return request
 
     # -- prefix reuse ----------------------------------------------------------------------------------------------
     def _resume(self, prompt: list[int]):
@@ -179,6 +233,9 @@ class NemotronEngine:
         return max(0, self.max_len - self.e.max_rows)
 
     def _limit(self, prompt: list[int], max_tokens: int) -> int:
+        ints(prompt, self.context_window, upper=self.e.c.vocab - 1)
+        if type(max_tokens) is not int:
+            raise ValueError("max_tokens must be an integer")
         room = self.max_len - len(prompt) - self.e.max_rows
         if room < 1:
             raise ValueError(f"a prompt of {len(prompt)} tokens leaves no room in the {self.max_len}-token context")
@@ -240,9 +297,14 @@ class NemotronEngine:
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,
                  stop_eos: bool = True) -> dict[str, Any]:
+        with self._lifetime.request(lambda: self._limit(prompt, max_tokens)) as accepted:
+            return self._generate(prompt, accepted, sampling, on_tokens, draft, constraint, stop_eos)
+
+    def _generate(self, prompt: list[int], max_tokens: int, sampling,
+                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,
+                  stop_eos: bool = True) -> dict[str, Any]:
         """``draft=False``: serial one-token rounds from a fresh prefill; ``stop_eos=False``: past end tokens."""
 
-        max_tokens = self._limit(prompt, max_tokens)
         hit = self._resume(prompt) if draft else None
         if self.tp == 2:                     # rank 0 decodes exactly what it hands rank 1
             prompt, max_tokens, sampling, draft, _, _, stop_eos = self._share(
@@ -255,6 +317,10 @@ class NemotronEngine:
         return self._decode(prompt, max_tokens, sampling, on_tokens, hit, constraint, stop_eos)
 
     def follow(self) -> None:
+        with self._lifetime.request():
+            self._follow()
+
+    def _follow(self) -> None:
         """Rank 1: decode every request rank 0 serves, until rank 0 stops."""
 
         while True:
@@ -274,13 +340,10 @@ class NemotronEngine:
                            None)
                 if hit is None:
                     raise RuntimeError(f"rank 1 has no kept state for the {cached} tokens rank 0 resumes from")
-            try:
-                if draft:
-                    self._decode(prompt, max_tokens, sampling, None, hit, constraint, stop_eos)
-                else:
-                    self._serial(prompt, max_tokens, sampling, None, constraint, stop_eos)
-            except ValueError as exc:                       # rank 0 raised at the same point on the same input
-                print(f"[tensorfold] request {self.served} failed on both ranks: {exc}", flush=True)
+            if draft:
+                self._decode(prompt, max_tokens, sampling, None, hit, constraint, stop_eos)
+            else:
+                self._serial(prompt, max_tokens, sampling, None, constraint, stop_eos)
 
 
 def _default_sampling():
@@ -289,12 +352,34 @@ def _default_sampling():
     return Sampling(0, 1.0, 20, 0.95)
 
 
-def _unpack(text: str) -> tuple | None:
+def _unpack(text: str | bytes, *, maximum: int, vocab: int) -> tuple | None:
+    body = request_json(text, counts={"prompt": maximum, "sampling": 5, "grammar": MAX_GRAMMAR_ITEMS})
+    return _request(body, maximum=maximum, vocab=vocab)
+
+
+def _request(body: dict, *, maximum: int, vocab: int) -> tuple | None:
     from tensorfold.engine.exact_sampling import Sampling
 
-    body = json.loads(text)
-    if body.get("stop"):
+    if body == {"stop": True} and type(body["stop"]) is bool:
         return None
+    if set(body) != {"prompt", "max_tokens", "draft", "cached", "stop_eos", "sampling", "grammar"}:
+        raise ValueError("rank request fields do not match the protocol")
+    ints(body["prompt"], maximum, upper=vocab - 1)
+    if (type(body["max_tokens"]) is not int or not 1 <= body["max_tokens"] <= maximum - len(body["prompt"])
+            or type(body["cached"]) is not int or not 0 <= body["cached"] < len(body["prompt"])
+            or type(body["draft"]) is not bool or type(body["stop_eos"]) is not bool):
+        raise ValueError("rank request counts/flags are invalid")
+    grammar(body["grammar"], vocab)
     s = body["sampling"]
+    if s is not None:
+        if type(s) is not list or len(s) != 5:
+            raise ValueError("rank sampling requires five fields")
+        if (type(s[0]) is not int or not 0 <= s[0] < 1 << 64
+                or type(s[2]) is not int or not 0 <= s[2] < 1 << 31):
+            raise ValueError("rank sampling integer fields are invalid")
+        for value in (s[1], s[3], s[4]):
+            finite(value)
+        if not 0 <= s[4] <= 1:
+            raise ValueError("rank min_p must be between zero and one")
     return (body["prompt"], body["max_tokens"], None if s is None else Sampling(*s), body["draft"],
-            body["cached"], body.get("grammar") or [], body.get("stop_eos", True))
+            body["cached"], body["grammar"], body["stop_eos"])

@@ -114,8 +114,9 @@ def test_a_prompt_chunks_gather_on_threads_gives_the_same_bytes(tmp_path, monkey
     monkeypatch.setattr(host_table, "GATHER_SPLIT", 8)                # the test shards are small: split every 8 rows
     host = HostTable(files)
     calls = []
-    real = host._pool.map
-    monkeypatch.setattr(host._pool, "map", lambda fn, jobs: calls.append(len(jobs)) or real(fn, jobs))
+    real = host._pool.submit
+    monkeypatch.setattr(host._pool, "submit",
+                        lambda fn, *args, **kwargs: calls.append(1) or real(fn, *args, **kwargs))
     for ids in (np.random.default_rng(5).integers(0, host.rows, (40, 16)),   # 640 rows: threaded when threads > 1
                 np.arange(host.rows)[::-1], np.array([3, 3, 1]), []):         # every row reversed; a few; none
         flat = np.asarray(ids, dtype=np.int64).reshape(-1)

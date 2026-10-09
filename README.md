@@ -138,6 +138,22 @@ between MLX and CUDA, different quantizations, or different tensor-parallel rank
 | `--max-snapshots N` | System-block snapshots loaded at start, default 3 | MLX |
 | `--no-update-check` | Disable the startup release check | Both |
 
+MLX prefix snapshots use format 2 and explicit current-model cache schemas.
+The startup probe supplies evaluated cache geometry; stored class names cannot
+import code. Format 1, malformed, mismatched, or unregistered snapshots are
+rebuilt by ordinary prefill. Custom cache classes require an initialized
+`snapshot_registry` passed to `ChatApp`; otherwise persistent reuse is unavailable
+and startup reports that fact. The standalone snapshot APIs likewise require
+the caller's initialized registry. Snapshot tensor reads complete against an
+owned private file, and writes validate before conversion and atomic publication.
+With persistence enabled, startup hashes the complete selected model and draft
+trees, external MTP input, and installed runtime inputs, including bytecode and
+native libraries. The reported bytes and time include every successor pass for
+new loader-generated files. Inputs must stay immutable while loading and using
+the model; post-load verification detects changes rather than preventing trusted
+code from executing. Explicitly trusted checkpoint/tokenizer Python gets a
+process-specific snapshot namespace. `--snapshot-dir none` skips these hashes.
+
 The default sampling settings come from `generation_config.json`. Requests can override sampling and reply
 length. CUDA does not implement the MLX-only options above. See [API fields](docs/api.md) for request scope.
 

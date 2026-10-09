@@ -24,8 +24,8 @@ def _inputs(w: int, p: int, *, h: int = 24, hk: int = 4, d: int = 256, seed: int
 
 def _attend(q, kn, vn, caches, trees, lengths, scale):
     plan = shared.plan(trees, lengths, q.shape[1] // kn.shape[1], "cuda")
-    offs = torch.tensor(shared.offsets(caches, "cuda"), dtype=torch.int64, device="cuda").view(-1, 2)
-    return shared.attention(q, kn, vn, offs, plan, scale=scale)
+    offs = torch.tensor(shared.offsets(caches, q), dtype=torch.int64, device="cuda").view(-1, 2)
+    return shared.attention(q, kn, vn, offs, plan, origin=q, scale=scale)
 
 
 def _path(parents, node):
@@ -113,5 +113,31 @@ def test_a_padded_plan_gives_the_exact_plans_bits(w, p, context):
     flat, items, chunks = shared.padded_host(parents, context, q.shape[1] // kn.shape[1])
     flat[w + 2], flat[w + 3] = p, -(-(p + w) // shared.CHUNK)
     plan = shared.from_packed(torch.tensor(flat, dtype=torch.int32, device="cuda"), 1, w, items, chunks)
-    offs = torch.tensor(shared.offsets([(kc, vc)], "cuda"), dtype=torch.int64, device="cuda").view(-1, 2)
-    assert torch.equal(shared.attention(q, kn, vn, offs, plan, scale=1 / 16), want)
+    offs = torch.tensor(shared.offsets([(kc, vc)], q), dtype=torch.int64, device="cuda").view(-1, 2)
+    assert torch.equal(shared.attention(q, kn, vn, offs, plan, origin=q, scale=1 / 16), want)
+
+
+def test_model_address_origin_borrows_storage_without_an_allocation():
+    inv = torch.ones(16, dtype=torch.float32, device="cuda")
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_allocated()
+    origin = shared.address_origin(inv)
+    assert origin.dtype == torch.bfloat16 and origin.data_ptr() == inv.data_ptr()
+    assert torch.cuda.memory_allocated() == before
+    empty = torch.empty((0, 2, 128), dtype=torch.bfloat16, device="cuda")
+    offsets = shared.offsets([(empty, empty)], origin)
+    assert [origin.data_ptr() + 2 * offset for offset in offsets] == [0, 0]
+
+
+def test_two_live_model_origins_reconstruct_the_same_cache_and_bits():
+    q, kn, vn, kc, vc = _inputs(4, 513, h=12, hk=2, d=128)
+    plan = shared.plan([[-1, 0, 0, 2]], [513], 6, "cuda")
+    inv = [torch.ones(16, dtype=torch.float32, device="cuda") for _ in range(2)]
+    outputs = []
+    for source in inv:
+        origin = shared.address_origin(source)
+        offsets = shared.offsets([(kc, vc)], origin)
+        assert [origin.data_ptr() + 2 * offset for offset in offsets] == [kc.data_ptr(), vc.data_ptr()]
+        offs = torch.tensor(offsets, dtype=torch.int64, device="cuda").view(1, 2)
+        outputs.append(shared.attention(q, kn, vn, offs, plan, origin=origin, scale=128 ** -0.5))
+    assert torch.equal(*outputs)

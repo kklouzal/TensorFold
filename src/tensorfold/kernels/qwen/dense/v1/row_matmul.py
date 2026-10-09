@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from operator import index
 from typing import Any, Callable, Sequence
 
 import mlx.core as mx
@@ -76,35 +77,69 @@ _ATTR = "_row_forward_stacks"
 
 
 class Stack:
-    """Weights of projections that read the same rows, concatenated along the outputs; the members hold views."""
+    """A geometry plan over mutable projections; derived arrays belong to one call.
 
-    __slots__ = ("weight", "scales", "biases", "group_size", "bits", "sizes", "members", "held")
+    Parameters may be replaced or overwrite their MLX descriptor between calls.
+    No derived parameter array is retained or installed into a public member.
+    Callers may not mutate members while a synchronous projection borrows them.
+    """
+
+    __slots__ = ("group_size", "bits", "sizes", "members", "schema")
+
+    @staticmethod
+    def _schema(m: Any) -> tuple[Any, ...]:
+        try:
+            if isinstance(m.bits, bool) or isinstance(m.group_size, bool):
+                raise TypeError("boolean quantization format")
+            bits, group = index(m.bits), index(m.group_size)
+        except TypeError as error:
+            raise ValueError("Stacked projection bit width and group size must be integer counts") from error
+        if bits <= 0 or group <= 0:
+            raise ValueError("Stacked projection bit width and group size must be positive")
+        return (bits, group, getattr(m, "mode", "affine"),
+                tuple(m["weight"].shape), m["weight"].dtype,
+                tuple(m["scales"].shape), m["scales"].dtype,
+                tuple(m["biases"].shape), m["biases"].dtype, "bias" in m)
 
     def __init__(self, members: Sequence[Any]) -> None:
-        formats = {(int(m.bits), int(m.group_size), getattr(m, "mode", "affine"), int(m["weight"].shape[1]),
+        if not members:
+            raise ValueError("A stacked projection needs members")
+        for member in members:
+            schema = self._schema(member)
+            if "bias" in member or getattr(member, "mode", "affine") != "affine" or member["weight"].ndim != 2:
+                raise ValueError("Stacked projections require unbiased rank-two affine weights")
+            bits, group = schema[:2]
+            n, words = map(int, member["weight"].shape)
+            if n <= 0 or words <= 0 or words * 32 % bits:
+                raise ValueError("Stacked weights need positive outputs and whole packed input values")
+            k = words * 32 // bits
+            if (k % group or tuple(member["scales"].shape) != (n, k // group)
+                    or tuple(member["biases"].shape) != (n, k // group)):
+                raise ValueError("Stacked weight/scale/bias group geometry must agree")
+        formats = {(index(m.bits), index(m.group_size), getattr(m, "mode", "affine"), int(m["weight"].shape[1]),
                     m["scales"].dtype, m["biases"].dtype) for m in members}
         if len(formats) != 1:
             raise ValueError("Stacked projections must share their bit width, group size, layout and scale dtype")
         self.members = tuple(members)
-        self.group_size = int(members[0].group_size)
-        self.bits = int(members[0].bits)
+        self.group_size = index(members[0].group_size)
+        self.bits = index(members[0].bits)
         self.sizes = tuple(int(m["weight"].shape[0]) for m in members)
-        self.weight = mx.concatenate([m["weight"] for m in members], axis=0)
-        self.scales = mx.concatenate([m["scales"] for m in members], axis=0)
-        self.biases = mx.concatenate([m["biases"] for m in members], axis=0)
-        mx.eval(self.weight, self.scales, self.biases)
-        offset = 0
-        for m, n in zip(members, self.sizes):
-            m.weight = self.weight[offset:offset + n]
-            m.scales = self.scales[offset:offset + n]
-            m.biases = self.biases[offset:offset + n]
-            offset += n
-        mx.eval([a for m in members for a in (m["weight"], m["scales"], m["biases"])])
-        self.held = tuple(m["weight"] for m in members)
+        self.schema = tuple(self._schema(m) for m in members)
 
     def valid(self) -> bool:
-        return all(m["weight"] is w and int(m.bits) == self.bits and int(m.group_size) == self.group_size
-                   and getattr(m, "mode", "affine") == "affine" for m, w in zip(self.members, self.held))
+        return tuple(self._schema(m) for m in self.members) == self.schema
+
+    @property
+    def weight(self) -> mx.array:
+        return mx.concatenate([m["weight"] for m in self.members], axis=0)
+
+    @property
+    def scales(self) -> mx.array:
+        return mx.concatenate([m["scales"] for m in self.members], axis=0)
+
+    @property
+    def biases(self) -> mx.array:
+        return mx.concatenate([m["biases"] for m in self.members], axis=0)
 
 
 def _stackable(members: Sequence[Any], backend: Backend) -> bool:
@@ -122,11 +157,13 @@ def stack_of(parent: Any, kind: str) -> Stack | None:
     if stacks is None:
         return None
     stack = stacks.get(kind)
-    return stack if stack is not None and stack.valid() else None
+    return stack if (stack is not None and stack.valid()
+                     and all(getattr(parent, name, None) is m
+                             for name, m in zip(GROUPS[kind], stack.members))) else None
 
 
 def build(model: Any, backend: Backend) -> dict[str, int]:
-    """Stack every group now: {kind: groups stacked}. No weight is stored twice."""
+    """Prepare geometry plans: {kind: groups prepared}; derived weights are call-local."""
 
     counts = {kind: 0 for kind in GROUPS}
     for _, module in model.named_modules():
@@ -139,7 +176,6 @@ def build(model: Any, backend: Backend) -> dict[str, int]:
             stacks = module.__dict__.setdefault(_ATTR, {})
             stacks[kind] = Stack(members)
             counts[kind] += 1
-    mx.clear_cache()          # the replaced arrays' buffers would otherwise sit in MLX's buffer cache
     return counts
 
 
@@ -156,6 +192,8 @@ def project(module: Any, x: mx.array) -> mx.array:
 
 
 def project_stack(stack: Stack, x: mx.array) -> mx.array:
+    if not stack.valid():
+        raise ValueError("Stacked projection geometry changed; rebuild its plan")
     return BACKEND(x, stack.weight, stack.scales, stack.biases, stack.group_size, stack.bits)
 
 

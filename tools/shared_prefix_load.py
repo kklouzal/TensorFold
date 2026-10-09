@@ -2,7 +2,8 @@
 
 Output tok/s = completion tokens / (last token of any request - first request sent). Per stream: (tokens - 1) /
 (last - first token). ``--mem`` samples nvidia-smi's compute processes (all but ``--ignore``) and the host's
-MemTotal - MemAvailable every 0.5 s. Standard library only.
+MemTotal - MemAvailable every 0.5 s. Failed samples stop the benchmark; the
+nvidia-smi diagnostic has a five-second timeout. Standard library only.
 """
 
 import argparse
@@ -12,6 +13,11 @@ import queue
 import statistics
 import subprocess
 import threading
+
+if __package__:
+    from .worker_lifetime import Task, drain
+else:
+    from worker_lifetime import Task, drain
 import time
 import urllib.request
 
@@ -66,30 +72,31 @@ def one(base: str, model: str, item: dict, max_tokens: int, temperature: float, 
     return out
 
 
-class Memory(threading.Thread):
+class Memory:
     def __init__(self, ignore: tuple[str, ...]) -> None:
-        super().__init__(daemon=True)
         self.ignore, self.stop, self.samples = ignore, threading.Event(), []
 
     @staticmethod
     def host_used() -> float:
         info = {}
-        for row in open("/proc/meminfo"):
-            key, value = row.split(":")
-            info[key] = int(value.split()[0])
+        with open("/proc/meminfo") as source:
+            for row in source:
+                key, value = row.split(":")
+                info[key] = int(value.split()[0])
         return (info["MemTotal"] - info["MemAvailable"]) / 2**20
 
     def gpu(self) -> float:
         rows = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
-                               "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+                               "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                              check=True, timeout=5).stdout
         total = 0.0
         for row in rows.strip().splitlines():
             parts = [p.strip() for p in row.split(",")]
             if len(parts) == 3 and not any(name in parts[1] for name in self.ignore):
                 try:
                     total += float(parts[2]) / 1024
-                except ValueError:
-                    pass
+                except ValueError as error:
+                    raise ValueError("nvidia-smi returned an invalid memory sample") from error
         return total
 
     def snapshot(self) -> tuple[float, float]:
@@ -117,7 +124,10 @@ def main() -> None:
     p.add_argument("--label", default="")
     p.add_argument("--output")
     args = p.parse_args()
-    items = json.load(open(args.prompts))["items"]
+    if args.concurrency <= 0 or args.first < 0 or args.max_tokens <= 0:
+        raise ValueError("positive concurrency/token count and nonnegative first count required")
+    with open(args.prompts) as source:
+        items = json.load(source)["items"]
     items = items[:args.first] if args.first else items
     memory = Memory(tuple(s for s in args.ignore.split(",") if s)) if args.mem else None
     idle = memory.snapshot() if memory else None
@@ -126,9 +136,10 @@ def main() -> None:
         todo.put(item)
     results: list[dict] = []
     lock = threading.Lock()
+    cancel = threading.Event()
 
     def worker() -> None:
-        while True:
+        while not cancel.is_set():
             try:
                 item = todo.get_nowait()
             except queue.Empty:
@@ -138,17 +149,28 @@ def main() -> None:
             with lock:
                 results.append(r)
 
-    if memory:
-        memory.start()
+    tasks = []
+    sampler = Task(memory.run, name="shared-prefix-memory", daemon=True) if memory else None
+    primary = None
     start = time.perf_counter()
-    threads = [threading.Thread(target=worker) for _ in range(args.concurrency)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    if memory:
-        memory.stop.set()
-        memory.join()
+    try:
+        if sampler:
+            tasks.append(sampler)
+            sampler.start()
+        requests = [Task(worker,name="shared-prefix-request-"+str(i)) for i in range(min(args.concurrency,len(items)))]
+        for task in requests:
+            tasks.append(task)
+            task.start()
+        drain(requests)
+    except BaseException as error:
+        primary = error
+        cancel.set()
+    finally:
+        if memory:
+            memory.stop.set()
+        drain(tasks,primary)
+    if len(results) != len(items):
+        raise RuntimeError("shared-prefix collection omitted accepted requests")
     ok = [r for r in results if not r["error"] and r["first"] is not None]
     end = max((r["last"] for r in ok), default=start)
     tokens = sum(r["tokens"] for r in ok)
@@ -171,8 +193,9 @@ def main() -> None:
     print(json.dumps(summary), flush=True)
     if args.output:
         results.sort(key=lambda r: r["id"])
-        json.dump({"summary": summary, "results": results,
-                   "memory": [list(s) for s in memory.samples] if memory else []}, open(args.output, "w"), indent=1)
+        with open(args.output, "w") as target:
+            json.dump({"summary": summary, "results": results,
+                       "memory": [list(s) for s in memory.samples] if memory else []}, target, indent=1)
 
 
 if __name__ == "__main__":

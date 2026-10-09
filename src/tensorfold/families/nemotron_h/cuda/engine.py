@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.cleanup import rollback
 from tensorfold.cuda.kernels import prefill_attention
 from tensorfold.families.qwen3_5.cuda import glue as base
 
@@ -28,6 +29,14 @@ class Engine:
 
     def __init__(self, w: Weights, *, max_len: int = 8192, max_rows: int = ROWS, graphs: bool = True,
                  prefill_rows: int = PREFILL_ROWS):
+        self.device = None
+        self._retired = False
+        try:
+            self._initialize(w, max_len=max_len, max_rows=max_rows, graphs=graphs, prefill_rows=prefill_rows)
+        except BaseException as error:
+            rollback(self, error, self.close)
+
+    def _initialize(self, w: Weights, *, max_len: int, max_rows: int, graphs: bool, prefill_rows: int):
         if max_rows > ROWS:
             raise ValueError(f"windows hold at most {ROWS} rows")
         if max_len % A.CHUNK:
@@ -79,6 +88,19 @@ class Engine:
         self.p_meta = torch.zeros(4, dtype=torch.int32, device=dev)
         self.p_sampled = torch.zeros(1, dtype=torch.int32, device=dev)
         self._host_p = torch.zeros(1, dtype=torch.int32).pin_memory()
+
+    def close(self) -> None:
+        """Release owned scratch after the caller retires all method/graph borrows.
+
+        Weights are borrowed. A failed fence leaves scratch and weights on this
+        object; the constructor's primary error retains a partial owner.
+        """
+        if self._retired:
+            return
+        if self.device is not None:
+            torch.cuda.synchronize(self.device)
+        self.__dict__.clear()
+        self._retired = True
 
     # -- state ------------------------------------------------------------------------------------
     def reset(self) -> None:

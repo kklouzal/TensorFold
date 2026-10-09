@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Sequence
 
 import torch
@@ -223,37 +222,52 @@ def from_packed(dev: torch.Tensor, streams: int, width: int, n_items: int, chunk
     return Plan(rows, table, items, parents, paths, depths, chunks, width)
 
 
-def base(device) -> torch.Tensor:
-    """A fixed bf16 tensor that cache offsets are measured from (so an empty cache still has a valid offset)."""
+def address_origin(inv_freq: torch.Tensor) -> torch.Tensor:
+    """Borrow the model's aligned frequency storage as an address-only BF16 view.
 
-    device = torch.device(device)
-    return _base(device.index if device.index is not None else torch.cuda.current_device())
+    Resolve once after loading inverse frequencies. Neither the view's values
+    nor its size participate in attention: offsets reconstruct cache addresses.
+    The model and any staged plan keep this view alive through all device use.
+    """
+    if (inv_freq.dtype != torch.float32 or not inv_freq.is_cuda or not inv_freq.is_contiguous()
+            or inv_freq.numel() == 0 or inv_freq.data_ptr() % 16):
+        raise ValueError("attention origin needs nonempty aligned contiguous CUDA float32 frequency storage")
+    return inv_freq.view(torch.bfloat16)
 
 
-@lru_cache(maxsize=None)
-def _base(index: int) -> torch.Tensor:
-    return torch.zeros(64, dtype=torch.bfloat16, device=torch.device("cuda", index))
+def offsets(caches: Sequence[tuple[torch.Tensor, torch.Tensor]], origin: torch.Tensor) -> list[int]:
+    """BF16 cache offsets from the owned address origin, in stream order.
 
-
-def offsets(caches: Sequence[tuple[torch.Tensor, torch.Tensor]], device) -> list[int]:
-    """Each stream's key and value cache as bf16 element offsets from ``base(device)``, in stream order."""
-
-    origin = base(device).data_ptr()
+    An empty cache may have address zero; masked kernel loads never access it.
+    Callers retain the origin and cache owners while these offsets are in use.
+    """
+    if (origin.dtype != torch.bfloat16 or not origin.is_cuda or not origin.is_contiguous()
+            or origin.numel() == 0 or origin.data_ptr() % 16):
+        raise ValueError("attention origin needs nonempty aligned contiguous CUDA bf16 storage")
+    address = origin.data_ptr()
     out = []
     for k, v in caches:
         for t in (k, v):
-            if t.dtype != torch.bfloat16 or not t.is_contiguous():
-                raise ValueError("caches: contiguous bf16 tensors")
-            delta = t.data_ptr() - origin
+            if t.dtype != torch.bfloat16 or not t.is_contiguous() or t.device != origin.device:
+                raise ValueError("caches: contiguous bf16 tensors on the origin's CUDA device")
+            delta = t.data_ptr() - address
             if delta % 16:
                 raise ValueError("caches must be 16-byte aligned")
-            out.append(delta // 2)
+            offset = delta // 2
+            if not -(1 << 63) <= offset < (1 << 63):
+                raise ValueError("cache offset exceeds signed int64")
+            out.append(offset)
     return out
 
 
 def attention(q: torch.Tensor, k_nodes: torch.Tensor, v_nodes: torch.Tensor, offs: torch.Tensor, p: Plan, *,
-              scale: float) -> torch.Tensor:
-    """Attend (W, H, D) queries to committed keys and own paths; ``offs`` holds ``offsets`` as device (S, 2) int64."""
+              origin: torch.Tensor, scale: float) -> torch.Tensor:
+    """Attend queries using offsets prepared from this same live address origin.
+
+    ``offs`` is the validated ``offsets`` result as device (S, 2) int64. Origin
+    layout is proved at load/offset preparation; its owners and cache storage
+    must remain fixed through this call and any captured replay.
+    """
 
     w, h, d = q.shape
     hk = k_nodes.shape[1]
@@ -262,7 +276,8 @@ def attention(q: torch.Tensor, k_nodes: torch.Tensor, v_nodes: torch.Tensor, off
         raise ValueError("unsupported attention shape")
     if any(x.dtype != torch.bfloat16 or not x.is_cuda or not x.is_contiguous() for x in (q, k_nodes, v_nodes)):
         raise ValueError("q and node keys and values must be contiguous CUDA bf16 tensors")
-    origin = base(q.device)
+    if origin.device != q.device:
+        raise ValueError("queries and attention origin must share a CUDA device")
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("scale must be positive and finite")
     g = h // hk

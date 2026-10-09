@@ -1,4 +1,4 @@
-"""Stack projections with equal K splits to preserve separate-call bits, share tiled weights as views, and consume strided outputs in place without changing arithmetic."""
+"""Stack current projections with equal K splits and consume strided outputs without changing arithmetic."""
 
 from __future__ import annotations
 
@@ -19,128 +19,134 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "gu": ("gate_proj", "up_proj"),
 }
 _ATTR = "_lane_fuse_groups"      # parent.__dict__[_ATTR]: {kind: _Group}
-_SMALL_TAIL = 8 * 1024 * 1024    # an untiled tail is tiled into the stack as a copy up to this size
+
+
+def _schema(module: Any) -> tuple[Any, ...]:
+    return (module.bits, int(module.group_size), getattr(module, "mode", "affine"),
+            tuple(module["weight"].shape), module["weight"].dtype,
+            tuple(module["scales"].shape), module["scales"].dtype,
+            tuple(module["biases"].shape), module["biases"].dtype, "bias" in module,
+            bool(getattr(module, "_lane_tile", False)), int(getattr(module, "_lane_nt", 32)))
+
+
+def _shared_transform(outer: tuple[Any, ...]) -> bool:
+    """Admit equal current transforms for both initial and cached geometry.
+
+    Rotation owners remain mutable between synchronous calls. Shared signs
+    prove equal transforms only for the declared wrapper and rotation policy.
+    """
+
+    if (len({id(getattr(m, "signs", None)) for m in outer}) != 1
+            or len({hasattr(m, "rotate") for m in outer}) != 1):
+        return False
+    if not hasattr(outer[0], "rotate"):
+        return True
+    from tensorfold.families.bonsai.modules import RotatedLinear, RotationCache
+
+    return all(type(m) is RotatedLinear and type(m.rotation) is RotationCache
+               and getattr(m.rotate, "__func__", None) is RotatedLinear.rotate for m in outer)
 
 
 class _Group:
-    """A stacked projection: ``weight`` (sum N, K*bits/32) and ``sbt`` (K/group, sum N, 2) for one lane matmul."""
+    """A geometry plan; current member arrays are materialized for each projection.
 
-    __slots__ = ("weight", "sbt", "tiled", "sk", "k", "sizes", "added", "members", "held", "sbts", "nt", "rotate",
-                 "group")
+    Public arrays retain standard MLX encoding and remain mutable between calls.
+    A synchronous call borrows the members and transform without concurrent mutation.
+    The plan retains no derived weight/scales arrays and never replaces member arrays.
+    """
 
-    def __init__(self, weight: Any, sbt: Any, tiled: bool, sk: int, k: int, sizes: tuple[int, ...], added: int,
-                 members: tuple[Any, ...], nt: int = 32, rotate: Any = None, group: int = 64) -> None:
-        self.weight, self.sbt, self.tiled, self.sk, self.k, self.sizes = weight, sbt, tiled, sk, k, sizes
-        self.group = group                                                # the members' shared group size
-        self.rotate = rotate                                              # the members' shared input transform
-        self.nt = nt                                                      # the stack's tile width (lane_qmm)
-        self.added = added                                                # bytes not shared with the modules
-        self.members = members
-        self.held = tuple(m["weight"] for m in members)                  # what each module held at build
-        self.sbts = tuple(getattr(m, "_lane_sbt", None) for m in members)
+    __slots__ = ("tiled", "sk", "k", "sizes", "added", "members", "nt", "group", "parent", "kind", "outer",
+                 "schema", "signs", "rotators")
+
+    def __init__(self, sk: int, k: int, sizes: tuple[int, ...], members: tuple[Any, ...], parent: Any,
+                 kind: str, outer: tuple[Any, ...], tiled: bool, nt: int, group: int) -> None:
+        self.tiled, self.sk, self.k, self.sizes = tiled, sk, k, sizes
+        self.members, self.parent, self.kind, self.outer = members, parent, kind, outer
+        self.nt, self.group, self.added = nt, group, 0
+        self.schema = tuple(_schema(m) for m in members)
+        self.signs = tuple(getattr(m, "signs", None) for m in outer)
+        self.rotators = tuple(getattr(getattr(m, "rotate", None), "__func__", getattr(m, "rotate", None))
+                              for m in outer)
 
     def valid(self) -> bool:
-        """The members still hold what was stacked (a reinstall or reload replaces their arrays)."""
+        return (all(getattr(self.parent, name, None) is m for name, m in zip(GROUPS[self.kind], self.outer))
+                and all((getattr(o, "inner", o) if hasattr(o, "rotate") else o) is m
+                        for o, m in zip(self.outer, self.members))
+                and tuple(_schema(m) for m in self.members) == self.schema
+                and all(getattr(o, "signs", None) is signs for o, signs in zip(self.outer, self.signs))
+                and tuple(getattr(getattr(o, "rotate", None), "__func__", getattr(o, "rotate", None))
+                          for o in self.outer) == self.rotators
+                and _shared_transform(self.outer))
 
-        for m, w, s in zip(self.members, self.held, self.sbts):
-            if m["weight"] is not w or getattr(m, "_lane_sbt", None) is not s:
-                return False
-        return True
+    @property
+    def rotate(self) -> Any:
+        return getattr(self.outer[0], "rotate", None)
 
+    @property
+    def weight(self) -> mx.array:
+        from tensorfold.kernels.qwen.dense.v1 import lane_qmm
 
-def _weight_of(m: Any) -> Any:
-    return m["weight"] if isinstance(m, dict) and "weight" in m else None
+        weight = mx.concatenate([m["weight"] for m in self.members], axis=0)
+        return lane_qmm.tile_weight(weight, self.nt, self.group, bits=self.members[0].bits) if self.tiled else weight
+
+    @property
+    def sbt(self) -> mx.array:
+        from tensorfold.kernels.qwen.dense.v1 import lane_qmm
+
+        return mx.concatenate([lane_qmm.pack_scales(m["scales"], m["biases"]) for m in self.members], axis=1)
 
 
 class _Unfusable:
-    """A group that cannot be stacked (bias, shapes, splits), remembered while its members are unchanged."""
-
-    __slots__ = ("members", "held")
+    """A failed admission is reevaluated on use because parameters remain mutable."""
 
     def __init__(self, members: tuple[Any, ...]) -> None:
-        self.members = members
-        self.held = tuple(_weight_of(m) for m in members)
+        pass
 
     def valid(self) -> bool:
-        return all(_weight_of(m) is w for m, w in zip(self.members, self.held))
+        return False
 
 
 def _build(parent: Any, kind: str) -> _Group | _Unfusable:
-    """Stack ``parent``'s group ``kind``: the tiled members become views of the stack."""
+    """Prepare current geometry without retaining or replacing parameter arrays."""
 
     import mlx.nn as nn
 
     from tensorfold.kernels.qwen.dense.v1 import lane_qmm
 
     outer = tuple(getattr(parent, name, None) for name in GROUPS[kind])
-    # a projection that transforms its rows first (``rotate``) stacks its ``inner`` matmul when all share the transform
     members = tuple(getattr(m, "inner", m) if hasattr(m, "rotate") else m for m in outer)
     no = _Unfusable(members)
     if not all(isinstance(m, nn.QuantizedLinear) for m in members):
         return no
-    transforms = {id(getattr(m, "signs", None)) for m in outer}
-    if len(transforms) != 1 or len({hasattr(m, "rotate") for m in outer}) != 1:
+    if not _shared_transform(outer):
         return no
-    rotate = outer[0].rotate if hasattr(outer[0], "rotate") else None
     for m in members:
         w = m["weight"]
         if not lane_qmm.takes(m) or m.group_size not in (32, 64) or "bias" in m or w.dtype != mx.uint32 or w.ndim != 2:
             return no
     bits, group = members[0].bits, int(members[0].group_size)
-    # one kernel a stack: members of mixed widths or group sizes stay separate calls
     if any(m.bits != bits or int(m.group_size) != group for m in members):
         return no
     kw = int(members[0]["weight"].shape[1])
     k = kw * 32 // bits
     sizes = tuple(int(m["weight"].shape[0]) for m in members)
     if (k % 64 or k * bits != kw * 32 or any(int(m["weight"].shape[1]) != kw for m in members)
-            or any(n % 4 for n in sizes)):
+            or any(n % 4 for n in sizes)
+            or any(tuple(m["scales"].shape) != (n, k // group)
+                   or tuple(m["biases"].shape) != (n, k // group)
+                   or m["biases"].dtype != mx.bfloat16 for m, n in zip(members, sizes))):
         return no
     splits = {lane_qmm.split_k(n, k) for n in sizes}
-    if len(splits) != 1:                  # a column's bits depend on its split: only equal splits stack
+    if len(splits) != 1:
         return no
     sk = splits.pop()
-    tiled = [bool(getattr(m, "_lane_tiled", False)) for m in members]
-    j = tiled.index(False) if False in tiled else len(members)       # tiled prefix [0, j)
-    widths = {int(getattr(m, "_lane_nt", lane_qmm.NT)) for m in members[:j]}
-    if len(widths) > 1:                   # a stack of tiled weights is tiled only when their tile widths agree
+    widths = {int(getattr(m, "_lane_nt", lane_qmm.NT)) for m in members}
+    tiled = all(bool(getattr(m, "_lane_tile", False)) for m in members)
+    if tiled and len(widths) != 1:
         return no
-    nt = widths.pop() if widths else lane_qmm.NT
-    tail = sum(sizes[j:])
-    if 0 < j < len(members) and nt != lane_qmm.NT:
-        return no                         # the tail is tiled into the stack 32 columns wide
-    if 0 < j < len(members):
-        # a tiled prefix and an untiled tail: the tail is tiled into the stack as a copy (small, whole tiles)
-        if any(tiled[j:]) or tail % lane_qmm.NT or sum(m["weight"].nbytes for m in members[j:]) > _SMALL_TAIL:
-            return no
-        parts = [m["weight"] for m in members[:j]]
-        parts.append(lane_qmm.tile_weight(mx.concatenate([m["weight"] for m in members[j:]], axis=0), group=group,
-                                          bits=bits))
-        viewed = members[:j]
-        stacked_tiled = True
-        copied = parts[-1].nbytes
-    else:
-        parts = [m["weight"] for m in members]
-        viewed = members                                                  # all tiled, or all MLX layout
-        stacked_tiled = j == len(members)
-        copied = 0
-    sbts = []
-    for m in members:
-        s = getattr(m, "_lane_sbt", None)
-        sbts.append(s if s is not None else lane_qmm.pack_scales(m["scales"], m["biases"]))
-    weight = mx.concatenate(parts, axis=0)
-    sbt = mx.concatenate(sbts, axis=1)
-    mx.eval(weight, sbt)
-    del parts, sbts
-    offset, views = 0, []
-    for m, n in zip(members, sizes):
-        if any(m is v for v in viewed):
-            m.weight = weight[offset:offset + n]            # shares the stack's buffer: the old array goes
-            views.append(m["weight"])
-        offset += n
-    mx.eval(views)
-    return _Group(weight, sbt, stacked_tiled, sk, k, sizes, sbt.nbytes + copied, members,
-                  nt if stacked_tiled else lane_qmm.NT, rotate, group)
+    nt = widths.pop() if tiled and bits == 4 else lane_qmm.NT
+    tiled = tiled and sum(sizes) % nt == 0
+    return _Group(sk, k, sizes, members, parent, kind, outer, tiled, nt, group)
 
 
 def _group(parent: Any, kind: str, *, build: bool | None = None) -> _Group | None:
@@ -157,8 +163,6 @@ def _group(parent: Any, kind: str, *, build: bool | None = None) -> _Group | Non
         return None
     group = _build(parent, kind)
     groups[kind] = group
-    if build is None and isinstance(group, _Group):
-        mx.clear_cache()      # built inside a forward: the replaced arrays would sit in MLX's buffer cache
     return group if isinstance(group, _Group) else None
 
 
@@ -173,7 +177,7 @@ def _project(parent: Any, kind: str, x: mx.array) -> mx.array | None:
         return None
     k = int(x.shape[-1])
     rows = x.size // max(k, 1)
-    if rows > lane_qmm.max_rows or rows in separate_rows.get(kind, ()):
+    if rows < 1 or rows > lane_qmm.max_rows or rows in separate_rows.get(kind, ()):
         return None
     group = _group(parent, kind)
     if group is None or group.k != k:
@@ -203,19 +207,18 @@ def mlp_gate_up(mlp: Any, x: mx.array) -> mx.array | None:
 
 
 def build(model: Any) -> dict[str, int]:
-    """Stack every group of ``model`` now (after ``lane_qmm.install(model)``): {kind: groups stacked}."""
+    """Prepare group geometry after lane installation: {kind: groups prepared}."""
 
     counts = {kind: 0 for kind in GROUPS}
     for _, module in model.named_modules():
         for kind, names in GROUPS.items():
             if all(hasattr(module, name) for name in names) and _group(module, kind, build=True) is not None:
                 counts[kind] += 1
-    mx.clear_cache()          # the replaced arrays' buffers would otherwise sit in MLX's buffer cache
     return counts
 
 
 def clear(model: Any) -> None:
-    """Drop stacks; module views retain their buffers until uninstall replaces the arrays."""
+    """Drop geometry plans; public parameters remain unchanged."""
 
     for _, module in model.named_modules():
         if _ATTR in module.__dict__:
@@ -223,7 +226,7 @@ def clear(model: Any) -> None:
 
 
 def stats(model: Any) -> dict[str, Any]:
-    """Groups stacked per kind and the bytes the stacks add (their scales and tiled tails)."""
+    """Prepared groups per kind and retained derived-array bytes (zero)."""
 
     counts = {kind: 0 for kind in GROUPS}
     added = 0
@@ -335,17 +338,19 @@ def warm(model: Any, *, rows: tuple[int, ...] = (1, 17, 33)) -> int:
     seen: set[tuple[int, ...]] = set()
     outs: list[mx.array] = []
     for _, module in model.named_modules():
-        for kind, group in module.__dict__.get(_ATTR, {}).items():
+        for kind in list(module.__dict__.get(_ATTR, {})):
+            group = _group(module, kind, build=True)
             if not isinstance(group, _Group):
                 continue
-            key = (int(group.weight.shape[0]), group.k, lane_qmm.weight_bits(group.weight, group.k), group.sk,
-                   group.tiled, group.nt)
+            weight, sbt = group.weight, group.sbt
+            key = (int(weight.shape[0]), group.k, lane_qmm.weight_bits(weight, group.k), group.sk,
+                   group.tiled, group.nt, group.group)
             if key in seen:
                 continue
             seen.add(key)
             for m in rows:
-                y = lane_qmm.lane_matmul(mx.zeros((m, group.k), dtype=mx.bfloat16), group.weight, group.sbt,
-                                         tiled=group.tiled, sk=group.sk, nt=group.nt)
+                y = lane_qmm.lane_matmul(mx.zeros((m, group.k), dtype=mx.bfloat16), weight, sbt,
+                                         tiled=group.tiled, sk=group.sk, nt=group.nt, group=group.group)
                 outs.append(y)
                 if kind == "gu":
                     outs.append(mlp_act(y[None]))

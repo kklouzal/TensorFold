@@ -160,10 +160,9 @@ def build(model_dir: str | Path, *, form: str) -> Any:
     """The mlx_lm Qwen3.8 model with the pack's weights, its projections in ``form`` (FORMS)."""
 
     import mlx.core as mx
-    import mlx.nn as nn
     from mlx_lm.models.qwen3_5 import Model, ModelArgs
 
-    from tensorfold.families.bonsai.modules import RotatedEmbedding, RotatedLinear, RowDense
+    from tensorfold.families.bonsai.modules import RotatedEmbedding, RotatedLinear, RotationCache, RowDense
 
     if form not in FORMS and not (form.startswith("widened:") and form.split(":")[1].isdigit()):
         raise ValueError(f"Ternary Bonsai: projections are {', '.join(FORMS)} or widened:N, not {form!r}")
@@ -175,6 +174,7 @@ def build(model_dir: str | Path, *, form: str) -> Any:
     tensors = mx.load(str(Path(model_dir) / "model.safetensors"))
     text = {k[len(PREFIX):]: v for k, v in tensors.items() if k.startswith(PREFIX)}
     signs = {w: mx.array(v, dtype=mx.float32) for w, v in signs_by_width(hadamard).items()}
+    rotations = {w: RotationCache() for w in signs}
     used: set[str] = set()
     records = {r["path"]: r for r in config["modules"]}
     for path, record in records.items():
@@ -187,7 +187,8 @@ def build(model_dir: str | Path, *, form: str) -> Any:
         if record["embedding"]:
             module: Any = RotatedEmbedding(weight, scales, biases, signs[width], 128)
         else:
-            module = RotatedLinear(_linear(weight, scales, biases, module_form(form, path)), signs[width])
+            module = RotatedLinear(_linear(weight, scales, biases, module_form(form, path)), signs[width],
+                                   rotations[width])
         setattr(parent, leaf, module)
     for index, layer in enumerate(lm.model.layers):
         if layer.is_linear:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+MLX_MODEL_FILE = True
+
 MODEL_TYPES = ("nemotron_h",)
 TITLE = "Nemotron 3.5 Lightning"
 LANES = True
@@ -68,14 +70,16 @@ def unreadable(model: Any) -> dict[str, int]:
     return counts
 
 
-def load(model_dir: Path, *, mtp_head: str = "", mtp_drafts: int | None = None, **_: Any) -> tuple[Any, Any]:
+def load(model_dir: Path, *, mtp_head: str = "", mtp_drafts: int | None = None,
+         trust_model_code: bool = False, **_: Any) -> tuple[Any, Any]:
     from tensorfold.families import read_config
     from tensorfold.families.nemotron_h.model import load as load_model
 
     why = refusal(read_config(model_dir))
     if why:
         raise SystemExit(f"[tensorfold] {TITLE} cannot run this checkpoint: {why}. Use {MODELS[0]}")
-    model, tokenizer = load_model(Path(model_dir), mtp_head=mtp_head, mtp_drafts=mtp_drafts)
+    model, tokenizer = load_model(Path(model_dir), mtp_head=mtp_head, mtp_drafts=mtp_drafts,
+                                  trust_model_code=trust_model_code)
     missed = unreadable(model.model)          # the loaded modules, in case config.json did not name a width
     if missed:
         kinds = ", ".join(f"{n} {kind}" for kind, n in sorted(missed.items()))

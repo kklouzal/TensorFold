@@ -312,8 +312,8 @@ def test_range_reader_rejects_oversized_header_without_reading_it(tmp_path):
     words, _, _ = triple(1, 32, 64)
     write_checkpoint(tmp_path, {"words": words})
     with (tmp_path / "model.safetensors").open("wb") as stream:
-        stream.write(struct.pack("<Q", 65 << 20))
-        stream.truncate((65 << 20) + 8)
+        stream.write(struct.pack("<Q", 100_000_001))
+        stream.truncate(100_000_001 + 8)
     reader = _Reader(tmp_path, "cpu")
     try:
         with pytest.raises(ValueError, match="invalid safetensors header"):

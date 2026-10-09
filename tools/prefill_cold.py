@@ -2,13 +2,26 @@
 a unique first line each so no cached prefix resumes; TTFT and prompt tok/s per length.
 
 build (where tensorfold is installed): python3 tools/prefill_cold.py build MODEL_DIR PROMPTS.json
-run (any client):                      python3 tools/prefill_cold.py run URL MODEL PROMPTS.json OUT.json"""
+run (any client):                      python3 tools/prefill_cold.py run URL MODEL PROMPTS.json OUT.json
+Response budgets: --response-mib defaults to16MiB, --sse-line-kib to64KiB.
+Raise them for larger valid replies or servers that batch a response into one
+SSE line. Event storage shares the response budget. Limits concern client
+measurement storage and never alter generation parameters. Inactivity timeouts
+remain unchanged; these readers do not claim a whole-request wall deadline.
+"""
 
+import argparse
 import json
 import statistics
-import sys
 import time
 import urllib.request
+
+if __package__:
+    from . import openai_protocol as protocol
+    from .benchmark_output import write_json
+else:
+    import openai_protocol as protocol
+    from benchmark_output import write_json
 
 LENGTHS = (2048, 8192, 16384, 32768, 65536)
 REPS = 3
@@ -57,34 +70,35 @@ def build(model_dir: str, out: str) -> None:
             m = messages(nonce, start, lo)
             items.append({"length": length, "rep": rep, "tokens": count(m), "messages": m})
             print(json.dumps({"length": length, "rep": rep, "tokens": items[-1]["tokens"]}), flush=True)
-    json.dump({"items": items}, open(out, "w"))
+    write_json(out, {"items": items})
 
 
-def one(url: str, model: str, m) -> dict:
+def one(url: str, model: str, m, *, limits=None) -> dict:
     body = {"model": model, "messages": m, "max_tokens": 2, "temperature": 0, "stream": True,
             "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": False}}
     req = urllib.request.Request(url + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     sent, first, usage = time.perf_counter(), None, {}
     with urllib.request.urlopen(req, timeout=3600) as resp:
-        for raw in resp:
-            line = raw.decode().strip()
-            if not line.startswith("data:") or line == "data: [DONE]":
-                continue
-            chunk = json.loads(line[5:])
-            for c in chunk.get("choices") or []:
-                d = c.get("delta") or {}
-                if first is None and (d.get("content") or d.get("reasoning_content") or d.get("reasoning")):
-                    first = time.perf_counter()
-            usage = chunk.get("usage") or usage
-    return {"ttft_s": round((first or time.perf_counter()) - sent, 4), "prompt_tokens": usage.get("prompt_tokens")}
+        protocol.response_type(resp, 'text/event-stream')
+        for chunk in protocol.sse_objects(resp, limits=limits):
+            new_usage, _runtime, pieces = protocol.chunk_fields(chunk)
+            if first is None and any(pieces):
+                first = time.perf_counter()
+            usage = new_usage if new_usage is not None else usage
+    protocol.completion_usage(usage, 2, prompt=True)
+    if first is None:
+        raise ValueError('prefill response emitted no text or reasoning')
+    return {"ttft_s": round(first - sent, 4), "prompt_tokens": usage['prompt_tokens']}
 
 
-def run(url: str, model: str, prompts: str, out: str) -> None:
-    items = json.load(open(prompts))["items"]
+def run(url: str, model: str, prompts: str, out: str, *, limits=None) -> None:
+    limits = limits or protocol.Limits()
+    with open(prompts, encoding="utf-8") as stream:
+        items = json.load(stream)["items"]
     rows = []
     for it in items:
-        r = one(url, model, it["messages"])
+        r = one(url, model, it["messages"], limits=limits)
         r.update(length=it["length"], rep=it["rep"])
         rows.append(r)
         print(json.dumps(r), flush=True)
@@ -96,11 +110,26 @@ def run(url: str, model: str, prompts: str, out: str) -> None:
         summary.append({"length": length, "prompt_tokens": n, "ttft_s": round(t, 3), "tok_s": round(n / t, 1),
                         "ttft_all": [r["ttft_s"] for r in rs]})
         print(json.dumps(summary[-1]), flush=True)
-    json.dump({"model": model, "rows": rows, "summary": summary}, open(out, "w"))
+    write_json(out, {"model": model, "rows": rows, "summary": summary,
+                     "response_budget_bytes": limits.response_bytes, "sse_line_budget_bytes": limits.line_bytes})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    prepare = commands.add_parser('build')
+    prepare.add_argument('model_dir')
+    prepare.add_argument('out')
+    execute = commands.add_parser('run')
+    for name in ('url', 'model', 'prompts', 'out'):
+        execute.add_argument(name)
+    protocol.add_arguments(execute)
+    args = parser.parse_args()
+    if args.command == 'build':
+        build(args.model_dir, args.out)
+    else:
+        run(args.url, args.model, args.prompts, args.out, limits=protocol.from_arguments(args))
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "build":
-        build(sys.argv[2], sys.argv[3])
-    else:
-        run(*sys.argv[2:6])
+    main()

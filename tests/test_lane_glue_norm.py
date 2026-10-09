@@ -5,7 +5,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from tensorfold.kernels.qwen.dense.v1 import lane_glue, lane_qmm  # noqa: E402
+from tensorfold.kernels.qwen.dense.v1 import lane_glue, projection_operation  # noqa: E402
 
 
 def _inputs(rows: int, seed: int, scale: float = 1.0):
@@ -17,22 +17,24 @@ def _inputs(rows: int, seed: int, scale: float = 1.0):
 
 
 @pytest.mark.parametrize("rows", [1, 5, 16, 17, 32])
+@projection_operation.operation()
 def test_norm_xs_rows_are_independent(rows):
     h, r, w = _inputs(rows, rows)
     hs, x = lane_glue.norm_xs(h, r, w, 1e-6)
-    xs = lane_qmm._xs_cache[id(x)][1]
+    xs = projection_operation.sums_of(x, 64)
     for row in range(rows):
         h1, x1 = lane_glue.norm_xs(h[:, row:row + 1], r[:, row:row + 1], w, 1e-6)
-        xs1 = lane_qmm._xs_cache[id(x1)][1]
+        xs1 = projection_operation.sums_of(x1, 64)
         assert mx.array_equal(h1[0, 0], hs[0, row]).item()
         assert mx.array_equal(x1[0, 0], x[0, row]).item()
         assert mx.array_equal(xs1[:, 0], xs[:, row]).item()
 
 
+@projection_operation.operation()
 def test_norm_xs_is_rmsnorm_to_bf16_rounding():
     h, r, w = _inputs(16, 7, scale=3.0)
     hs, x = lane_glue.norm_xs(h, r, w, 1e-6)
-    xs = lane_qmm._xs_cache[id(x)][1]
+    xs = projection_operation.sums_of(x, 64)
     hn = np.array(hs[0].astype(mx.float32), dtype=np.float64)
     ref = np.array(w.astype(mx.float32), dtype=np.float64)[None] * hn / np.sqrt((hn ** 2).mean(axis=1, keepdims=True) + 1e-6)
     got = np.array(x[0].astype(mx.float32), dtype=np.float64)

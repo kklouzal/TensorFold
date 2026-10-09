@@ -91,6 +91,10 @@ an interoperability contract for TensorFold's format.
 `src/tensorfold/families/deepseek_v4/vendor/encoding_dsv4.py` is the unmodified `encoding/encoding_dsv4.py` of
 [deepseek-ai/DeepSeek-V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash) (revision 60d8d70), and
 `tests/fixtures/deepseek_v4/` holds two of its test cases, MIT License, Copyright (c) 2023 DeepSeek.
+`src/tensorfold/families/deepseek_v4/rendering.py` is a maintained adaptation of that encoder's
+`render_message` and `encode_messages`. It resolves the last-user index once for long, inert assistant/reminder
+suffixes; other helpers/templates and the original fallback remain unchanged. Its MIT license and DeepSeek's
+copyright notice are retained in `LICENSES/DeepSeek-MIT.txt`.
 The MTP layer TensorFold drafts with comes from that checkpoint's last shard (MIT), converted by
 `families/deepseek_v4/convert.py`.
 

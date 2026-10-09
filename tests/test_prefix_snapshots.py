@@ -19,8 +19,11 @@ class Layer:
 
 
 def test_numpy_state_round_trips(tmp_path):
-    ps.save_snapshot(tmp_path, "model-a|mlx=1", [1, 2, 3], [Layer()])
-    [(tokens, cache)] = list(ps.load_snapshots(tmp_path, "model-a|mlx=1"))
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([Layer()])
+    ps.save_snapshot(tmp_path, "model-a|mlx=1", [1, 2, 3], [Layer()], registry=snapshot_registry)
+    [(tokens, cache)] = list(ps.load_snapshots(tmp_path, "model-a|mlx=1", registry=snapshot_registry))
     layer = cache[0]
     assert tokens == [1, 2, 3] and layer.offset == 7
     assert isinstance(layer.history, np.ndarray) and layer.history.tolist() == [[11, 12]]
@@ -28,16 +31,22 @@ def test_numpy_state_round_trips(tmp_path):
 
 
 def test_warming_only_takes_blocks_of_the_same_model(tmp_path):
-    ps.save_snapshot(tmp_path, "/models/qwen|mlx=1", [5, 6, 7], [Layer()])
-    ps.save_snapshot(tmp_path, "/models/nemotron|mlx=1", [8, 9], [Layer()])
-    assert ps.blocks_to_warm(tmp_path, "/models/qwen|mlx=2") == [[5, 6, 7]]
-    assert ps.blocks_to_warm(tmp_path, "/models/other|mlx=1") == []
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([Layer()])
+    ps.save_snapshot(tmp_path, "/models/qwen|mlx=1", [5, 6, 7], [Layer()], registry=snapshot_registry)
+    ps.save_snapshot(tmp_path, "/models/nemotron|mlx=1", [8, 9], [Layer()], registry=snapshot_registry)
+    assert ps.blocks_to_warm(tmp_path, "/models/qwen|mlx=2", registry=snapshot_registry) == [[5, 6, 7]]
+    assert ps.blocks_to_warm(tmp_path, "/models/other|mlx=1", registry=snapshot_registry) == []
 
 
 def test_keeping_the_newest_counts_one_model_only(tmp_path):
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([Layer()])
     for i in range(3):
-        ps.save_snapshot(tmp_path, "/models/qwen|mlx=1", [i, 1], [Layer()], keep=2)
-    ps.save_snapshot(tmp_path, "/models/nemotron|mlx=1", [9], [Layer()], keep=1)
+        ps.save_snapshot(tmp_path, "/models/qwen|mlx=1", [i, 1], [Layer()], keep=2, registry=snapshot_registry)
+    ps.save_snapshot(tmp_path, "/models/nemotron|mlx=1", [9], [Layer()], keep=1, registry=snapshot_registry)
     models = sorted(ps.read_metadata(p)["model"] for p in tmp_path.glob("*.safetensors"))
     assert models == ["/models/nemotron|mlx=1", "/models/qwen|mlx=1", "/models/qwen|mlx=1"]
 
@@ -49,7 +58,12 @@ def test_a_drafter_slot_is_left_out_of_a_saved_snapshot(tmp_path):
 
     kv = KVCache()
     kv.update_and_fetch(mx.ones((1, 2, 4, 4)), mx.ones((1, 2, 4, 4)))
-    path = ps.save_snapshot(tmp_path, "model", [1, 2, 3, 4], [kv, DraftSlot(object())])   # its drafter: no array
-    tokens, cache = ps.load_snapshot(path, "model")
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([kv, DraftSlot(object())])
+    path = ps.save_snapshot(
+        tmp_path, "model", [1, 2, 3, 4], [kv, DraftSlot(object())], registry=snapshot_registry
+    )  # its drafter: no array
+    tokens, cache = ps.load_snapshot(path, "model", registry=snapshot_registry)
     assert tokens == [1, 2, 3, 4] and [type(item) for item in cache] == [KVCache]
     assert bool(mx.array_equal(cache[0].state[0], kv.state[0]).item())

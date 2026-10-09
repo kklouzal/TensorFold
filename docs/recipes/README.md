@@ -36,6 +36,18 @@ previous start and otherwise end at the first eligible point or after 2,048 toke
 markers, chunks use the 2,048-token grid. Rewriting earlier template text can invalidate reuse.
 The chunk scheme and kernel/runtime identity must match before a stored prefix can be reused.
 
+MLX recipes that load through `mlx-lm` reject a checkpoint's `model_file` by default:
+that field executes Python with the server's privileges. Prefer a maintained family
+recipe. `--trust-model-code` explicitly authorizes this behavior for the Qwen dense,
+Qwen MoE, Gemma and Nemotron provider recipes. The file must stay inside the selected
+checkpoint or its own Hugging Face blob store. TensorFold pins the authorized field
+through the provider's supported configuration override, passes the same explicit
+authorization to tokenizer `trust_remote_code`, and checks configuration/code
+mutation around loading; it does not sandbox trusted Python or its imports. Checkpoint
+inputs must remain immutable while loaded. Custom Python uses a unique per-process
+disk prefix identity because external imports cannot be certified by a checkpoint
+hash. In-process prefix caching and the provider's custom model loading remain available.
+
 ## Measurements
 
 `tools/bench_openai.py` contains public fixtures: a raw Fibonacci-function prompt and a chat prompt asking

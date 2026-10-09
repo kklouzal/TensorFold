@@ -1,8 +1,10 @@
 """Two ranks meet on the store after loading: a rank that never arrives is named instead of waited on in NCCL."""
 
 import pytest
+import threading
 
 pytest.importorskip("torch")
+from torch.distributed import DistStoreError
 
 from tensorfold.cuda.comm import NCCL
 
@@ -19,12 +21,15 @@ class Store:
     def wait(self, keys, timeout):
         self.waits += 1
         if not set(keys) <= self.keys:
-            raise RuntimeError(f"wait timeout after {timeout.total_seconds() * 1000:.0f}ms, keys: {keys}")
+            raise DistStoreError(f"wait timeout after {timeout.total_seconds() * 1000:.0f}ms, keys: " +
+                                 ", ".join("/" + key for key in keys))
 
 
 def comm(store, rank=0):
     c = object.__new__(NCCL)
     c.rank, c.world, c.store = rank, 2, store
+    c._close_lock, c.closed = threading.Lock(), False
+    c._opened = True
     return c
 
 

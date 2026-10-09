@@ -41,8 +41,8 @@ struct Inputs {
         const size_t val = (static_cast<size_t>(node) * hv + head) * dv + value0;
 #pragma unroll
         for (int r = 0; r < R; ++r) v[r] = value0 + r < dv ? __bfloat162float(vp[val + r]) : 0.0f;
-        g = gp[node * hv + head];
-        beta = bp[node * hv + head];
+        g = gp[static_cast<size_t>(node) * hv + head];
+        beta = bp[static_cast<size_t>(node) * hv + head];
     }
 };
 
@@ -100,7 +100,8 @@ __global__ void __launch_bounds__(32 * WARPS) tree_kernel(
     const int key_head = head / (hv / hk);
     const int begin = starts ? starts[stream] : 0, end = starts ? starts[stream + 1] : nodes;
     if (!CHAIN) {
-        for (int i = threadIdx.x; i < 3 * (end - begin); i += 32 * WARPS) order[i] = plan[3 * begin + i];
+        for (int i = threadIdx.x; i < 3 * (end - begin); i += 32 * WARPS)
+            order[i] = plan[static_cast<size_t>(3) * begin + i];
         __syncthreads();
     }
     if (value0 >= dv) return;
@@ -113,8 +114,8 @@ __global__ void __launch_bounds__(32 * WARPS) tree_kernel(
     }
     if (pending.k != nullptr) {
         // the last commit's rows as replay steps them; each thread writes back only the elements it loaded
-        const int n = pending.counts[stream * pending.count_stride];
-        const int* rows = pending.rows + stream * pending.row_stride;
+        const int n = pending.counts[static_cast<size_t>(stream) * pending.count_stride];
+        const int* rows = pending.rows + static_cast<size_t>(stream) * pending.row_stride;
         Inputs<QK, R> nx;
         if (n > 0) nx.load(nullptr, pending.k, pending.v, pending.g, pending.beta, rows[0], key_head, head, value0, hk, hv, dv,
                            lane, false);
@@ -231,8 +232,8 @@ __global__ void __launch_bounds__(32 * WARPS) replay_kernel(
         const int row = value0 + r < dv ? value0 + r : value0;
         load4(s0 + (static_cast<size_t>(head) * dv + row) * DK + lane * 4, s[r]);
     }
-    const int* path = rows + stream * row_stride;
-    const int count = counts[stream * count_stride];
+    const int* path = rows + static_cast<size_t>(stream) * row_stride;
+    const int count = counts[static_cast<size_t>(stream) * count_stride];
     Inputs<QK, R> next;
     if (count > 0) next.load(nullptr, k, v, g, beta, path[0], key_head, head, value0, hk, hv, dv, lane, false);
     for (int j = 0; j < count; ++j) {
@@ -259,7 +260,8 @@ void launch_tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, 
     const dim3 grid((dv + R * WARPS - 1) / (R * WARPS), hv, streams);
     const size_t shared = sizeof(float4) * WARPS * SLOTS * R * 32 + (CHAIN ? 0 : sizeof(int) * 3 * max_rows);
     auto kernel = tree_kernel<QK, SLOTS, R, WARPS, CHAIN>;
-    if (shared > 48 * 1024) cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared);
+    if (shared > 48 * 1024)
+        C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared));
     kernel<<<grid, 32 * WARPS, shared, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const QK*>(q.data_ptr()), reinterpret_cast<const QK*>(k.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()), g.data_ptr<float>(), beta.data_ptr<float>(),
@@ -273,8 +275,9 @@ Pending<QK> pending_of(const at::Tensor& pk, const at::Tensor& pv, const at::Ten
                        const at::Tensor& rows, const at::Tensor& counts) {
     if (!pk.defined()) return Pending<QK>{nullptr, nullptr, nullptr, nullptr, nullptr, 0, nullptr, 0};
     return Pending<QK>{reinterpret_cast<const QK*>(pk.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(pv.data_ptr()),
-                       pg.data_ptr<float>(), pb.data_ptr<float>(), rows.data_ptr<int>(), static_cast<int>(rows.stride(0)),
-                       counts.data_ptr<int>(), static_cast<int>(counts.stride(0))};
+                       pg.data_ptr<float>(), pb.data_ptr<float>(), rows.data_ptr<int>(),
+                       rows.size(0) <= 1 ? 0 : static_cast<int>(rows.stride(0)), counts.data_ptr<int>(),
+                       counts.size(0) <= 1 ? 0 : static_cast<int>(counts.stride(0))};
 }
 
 template <typename QK>
@@ -323,7 +326,8 @@ void gdn_replay_cuda(const at::Tensor& table, int layers, int streams, const at:
     const dim3 grid((dv + R * WARPS - 1) / (R * WARPS), hv, layers * streams);
     auto stream = at::cuda::getCurrentCUDAStream();
     const auto* t = reinterpret_cast<const long long*>(table.data_ptr<int64_t>());
-    const int rs = static_cast<int>(rows.stride(0)), cs = static_cast<int>(counts.stride(0));
+    const int rs = rows.size(0) <= 1 ? 0 : static_cast<int>(rows.stride(0));
+    const int cs = counts.size(0) <= 1 ? 0 : static_cast<int>(counts.stride(0));
     float* dst = out.defined() ? out.data_ptr<float>() : nullptr;
     if (fp32_keys)
         replay_kernel<float, R, WARPS><<<grid, 32 * WARPS, 0, stream>>>(

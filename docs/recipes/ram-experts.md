@@ -26,12 +26,14 @@ the model's other allocations. Attention and routing weights, KV caches,
 recurrent state, and compute buffers stay on the GPU. Model weights and the
 expert pool are shared by all parallel slots; each slot needs separate sequence
 state. Automatic sizing accounts for the configured context, KV formats, MTP,
-parallel slots, retained prompt states, and transient workspace before choosing
+all configured parallel slots' scratch and sequence state, retained prompt
+states, and transient workspace before choosing
 whole expert cells. The chosen size is fixed for the engine's lifetime and is
 reported at startup. It leaves allocation headroom rather than treating every
 physically free byte as usable expert storage.
 
-Automatic sizing uses a 512 MiB allocation margin in addition to the explicitly
+Automatic sizing materializes EXL3's lazy prompt workspaces before measuring
+free VRAM and uses one 512 MiB allocation margin in addition to the explicitly
 budgeted future state and workspace. It sizes the pool once before the first
 expert lease; it does not compete with requests for memory at runtime. Unified
 memory devices retain the existing numeric-budget behavior and reject `auto`.
@@ -47,21 +49,40 @@ model working set that cannot fit still fails startup; system RAM spillover
 applies to expert weights only. EXL3's separately mapped n-gram tables retain
 their existing host-memory behavior.
 
-An actual RTX PRO 2000 Blackwell run (16 GB VRAM, 64 GB RAM) with
+The baseline RTX PRO 2000 Blackwell run (16 GB VRAM, 64 GB RAM) with
 `turboderp/Qwen3.8-Flash-Next-exl3` at revision
 `65c895314393431c09050b2e04e250836b3a6eb4`, INT8 KV, a 2,048-token context,
 four slots, and YaRN factor 2 chose 2,341 expert cells: 5,753,241,600 bytes
 (5.36 GiB). It left 134,469,952 bytes for full-window KV growth and its copy
 overlap, 1,387,954,176 bytes for retained/in-flight states, and 2,068,480 bytes
 for prompt temporaries, plus the 512 MiB margin. Less than one expert cell
-remained after those reservations.
+remained after those reservations. The final compact arena holds 4,632 resident
+cells, with at most 4,583 arbitrary experts borrowed by one lease, within the
+same 5,753,241,600-byte (5.36 GiB) expert-storage budget. Its packed GPU storage
+uses 5,752,012,800 bytes after whole-cell rounding. This changes cell geometry; the
+four full-context slots' scratch and sequence-state reservation remains
+separate from the pool. The original expert payload authority occupies
+30,948,556,800 bytes (28.82 GiB) in pageable host RAM, before other host allocations.
 
-For the same repeated 128-token greedy reply, a 0.5 GiB pool measured
+For the baseline arena's repeated 128-token greedy reply, a 0.5 GiB pool measured
 6.28–6.33 decode tokens/s without drafts and 7.34–7.35 with warmed MTP.
 Automatic sizing measured 9.21 and 11.96–12.00 respectively, with identical
 output tokens. Warm MTP reused 45 prompt tokens. The serial request's expert
 hit rate rose from 24.03% to 67.49%. These are observations for this model,
-runtime, and prompts, rather than throughput guarantees.
+runtime, and prompts, rather than throughput guarantees or measurements of the
+final compact arena.
+
+A later controlled comparison of the baseline and compact arena completed
+20 matched trials per region in alternating baseline/candidate/candidate/baseline
+order. Complete request medians were 8.09→11.64 tokens/s for serial greedy,
+12.76→21.95 with MTP, and 48.82→81.71 aggregate tokens/s for four simultaneous
+requests. All 240 timed requests produced the exact 64-token teacher output.
+Expert bytes copied per output token fell by 52.3%, 60.9%, and 61.4%, respectively.
+Constructor time increased from 225–228 seconds to 280 seconds. These results
+apply to the tested 2,048-token INT8/YaRN-2 region and intermediate source build;
+they do not prove that a full 524,288-token window fits this GPU. See
+[optimization validation](../optimization-validation.md) for the run-order,
+uncertainty, exact sampling checks, and remaining final-build gates.
 
 Four simultaneous requests with 1,805–1,808 prompt tokens and 64 output tokens
 also completed. The GPU-thread observer saw all four slots active; minimum
@@ -90,7 +111,16 @@ pool is shared across main and MTP layers. Two expert-sized pinned buffers stage
 cache misses; cold expert weights stay pageable.
 
 For EXL3, CPU authority contains compact original trellis bytes without padding.
-GPU cells are sized for the largest gate/up/down bundle in the model. Prepared
+Fixed GPU cells are sized for the largest gate/up/down bundle in the model. With
+numeric budgets or `--vram-experts auto`, final startup sizing can use smaller routed cells when all
+routed bundles have one size and every named shared bundle has one larger size.
+It reserves a cell for each shared expert and uses the remaining space for routed
+experts, within the original packed-weight and publication-device budgets. Other
+distributions retain fixed cells. Diagnostics distinguish resident cell capacity
+from the maximum number of arbitrary experts that one lease can safely borrow.
+Numeric pools are finalized after loading, before the first lease, using a
+single bootstrap cell so arena replacement never duplicates a full pool.
+Prepared
 FP16 scales, logical pointer/width tables, bounded pointer-publication buffers,
 and wave controls are admitted separately from the packed-weight pool. Original
 codebook markers and scale payloads are validated at loading; nonfinite scales
@@ -107,6 +137,17 @@ across layer calls. The distribution can change: counters age, and every selecte
 expert remains eligible for execution. The router's choices, top-k weights,
 quantization, pair ordering, and reductions remain unchanged. A request cannot
 restrict routing to cached experts.
+
+Larger pools rank missing routed experts together. A bounded private startup
+calibration selects between exact repeated scans and partition selection; it
+retains raw timings and runtime provenance. Both preserve frequency, recency,
+aging, protected entries, and physical-slot tie order. Small pools and single
+misses retain their original selection path. Original ranking also remains
+available when a large pool's representative
+calibration cannot fit its optional startup budget. This does not limit the
+supported pool size or invent a ranking cutoff. Single-wave EXL3 execution uses the
+original GPU routing table after validating the host snapshot, avoiding a second
+routing-table upload.
 
 A prompt or mixed batch can select more experts than the pool holds. Execution
 windows the existing grouped plan items and remaps their expert IDs to cache

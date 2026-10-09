@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "qmm_frag.cuh"
+#include "kernel_configuration.cuh"
+#include "qmm_policy.cuh"
 
 namespace {
 
@@ -351,21 +353,20 @@ template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool SWA
 void launch(const at::Tensor& x, const at::Tensor& xs, Parts& parts, int C, bool pdl) {
     using T = LaneTile<GS, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1), rows_t = (M + BM - 1) / BM;
-    int clusters = 0;
+    int64_t clusters = 0;
     for (int i = 0; i < parts.count; ++i) {
         Part& P = parts.p[i];
         P.tiles = (P.n + BN - 1) / BN;
-        P.first = clusters;
-        clusters += rows_t * ((P.tiles + C / P.sk - 1) / (C / P.sk));
+        // The public wrapper proved the complete grid fits signed int before
+        // these assignments; multiplication still promotes before evaluation.
+        P.first = static_cast<int>(clusters);
+        clusters += static_cast<int64_t>(rows_t) * ((P.tiles + C / P.sk - 1) / (C / P.sk));
     }
     auto kernel = group_kernel<GS, BM, BN, WM, WN, STAGES, F32, SWAP, SKIP, SPREAD>;
-    static bool configured = false;
-    if (!configured) {
-        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, T::SMEM);
-        configured = true;
-    }
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(kernel, T::SMEM, x.get_device());
     cudaLaunchConfig_t config = {};
-    config.gridDim = dim3(clusters * C);
+    config.gridDim = dim3(static_cast<unsigned>(clusters * C));
     config.blockDim = dim3(T::THREADS);
     config.dynamicSmemBytes = T::SMEM;
     config.stream = at::cuda::getCurrentCUDAStream();
@@ -394,25 +395,17 @@ void launch(const at::Tensor& x, const at::Tensor& xs, Parts& parts, int C, bool
 // 10-12 (``qmm.group_tile`` on SM 12.0 from 96 SMs) spread the slice sums and skip m16 tiles wholly past M.
 template <bool F32>
 void dispatch(int tile, int M, bool gb10, const at::Tensor& x, const at::Tensor& xs, Parts& parts, int C, bool pdl) {
-    if (tile == 0 && gb10) tile = M <= 16 ? 2 : M <= 32 ? 3 : M <= 64 ? 4 : 5;
-    if (tile == 0) tile = M <= 8 ? 7 : M <= 16 ? 8 : M <= 32 ? 9 : M <= 64 ? 4 : 5;
-    auto go = [&](auto full, auto skip, int bm) { M % bm ? skip() : full(); };
+    tile = tensorfold::resolve_qmm_group_tile(tile, M, gb10);
     switch (tile) {
-        case 1: launch<64, 16, 64, 1, 4, 4, F32>(x, xs, parts, C, pdl); break;
-        case 2: launch<64, 16, 64, 1, 4, 8, F32>(x, xs, parts, C, pdl); break;
-        case 3: launch<64, 32, 64, 1, 4, 4, F32>(x, xs, parts, C, pdl); break;
-        case 4: launch<64, 64, 64, 1, 4, 4, F32>(x, xs, parts, C, pdl); break;
-        case 5: launch<64, 64, 128, 2, 4, 3, F32>(x, xs, parts, C, pdl); break;
-        case 6: launch<64, 8, 64, 1, 4, 4, F32, true>(x, xs, parts, C, pdl); break;
-        case 7: launch<64, 8, 128, 1, 4, 4, F32, true>(x, xs, parts, C, pdl); break;
-        case 8: launch<64, 16, 128, 1, 8, 4, F32>(x, xs, parts, C, pdl); break;
-        case 9: launch<64, 32, 128, 1, 8, 4, F32>(x, xs, parts, C, pdl); break;
-        case 10: go([&] { launch<64, 128, 128, 2, 4, 2, F32, false, false, true>(x, xs, parts, C, pdl); },
-                    [&] { launch<64, 128, 128, 2, 4, 2, F32, false, true, true>(x, xs, parts, C, pdl); }, 128); break;
-        case 11: go([&] { launch<64, 64, 128, 1, 8, 3, F32, false, false, true>(x, xs, parts, C, pdl); },
-                    [&] { launch<64, 64, 128, 1, 8, 3, F32, false, true, true>(x, xs, parts, C, pdl); }, 64); break;
-        case 12: go([&] { launch<64, 64, 128, 2, 4, 3, F32, false, false, true>(x, xs, parts, C, pdl); },
-                    [&] { launch<64, 64, 128, 2, 4, 3, F32, false, true, true>(x, xs, parts, C, pdl); }, 64); break;
+#define GROUP_CASE(ID, BM, BN, WM, WN, STAGES, SWAP, SPREAD) \
+        case ID: \
+            if constexpr (SPREAD) { \
+                if (M % BM) launch<64, BM, BN, WM, WN, STAGES, F32, SWAP, true, SPREAD>(x, xs, parts, C, pdl); \
+                else launch<64, BM, BN, WM, WN, STAGES, F32, SWAP, false, SPREAD>(x, xs, parts, C, pdl); \
+            } else launch<64, BM, BN, WM, WN, STAGES, F32, SWAP, false, SPREAD>(x, xs, parts, C, pdl); \
+            break;
+        TENSORFOLD_QMM_GROUP_TILES(GROUP_CASE)
+#undef GROUP_CASE
         default: TORCH_CHECK(false, "unknown group tile ", tile);
     }
 }

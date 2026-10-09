@@ -7,11 +7,28 @@ import pytest
 from tensorfold.engine.tool_draft import ToolCallProposer, tool_schema
 
 TOOLS = [
-    {"type": "function", "function": {"name": "read", "parameters": {
-        "type": "object", "properties": {"path": {}, "offset": {}, "limit": {}}, "required": ["path"]}}},
-    {"type": "function", "function": {"name": "edit", "parameters": {
-        "type": "object", "properties": {"path": {}, "old_text": {}, "new_text": {}},
-        "required": ["path", "old_text", "new_text"]}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {}, "offset": {}, "limit": {}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {}, "old_text": {}, "new_text": {}},
+                "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
 ]
 
 
@@ -31,7 +48,7 @@ def test_schema_puts_required_parameters_first():
 def test_structure_follows_the_call():
     call = "<tool_call>\n<function="
     assert _next("") == "<tool_call>\n<function="
-    assert _next(call) is None                      # the model picks the tool
+    assert _next(call) is None  # the model picks the tool
     assert _next(call + "edit") == ">\n<parameter=path>\n"
     assert _next(call + "edit>") == "\n<parameter=path>\n"
     value = call + "edit>\n<parameter=path>\ncalc.py\n"
@@ -56,10 +73,13 @@ def test_snapshot_round_trip(tmp_path):
     gdn = ArraysCache(2)
     gdn.cache = [mx.arange(6).reshape(1, 2, 3), mx.full((1, 2, 2), 0.5)]
     tokens = list(range(40))
-    assert save_snapshot(tmp_path, "model-a", tokens, [kv, gdn]) is not None
-    assert save_snapshot(tmp_path, "model-a", tokens, [kv, gdn]) is None  # already there
-    assert list(load_snapshots(tmp_path, "model-b")) == []
-    (got_tokens, (kv2, gdn2)), = load_snapshots(tmp_path, "model-a")
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry([kv, gdn])
+    assert save_snapshot(tmp_path, "model-a", tokens, [kv, gdn], registry=snapshot_registry) is not None
+    assert save_snapshot(tmp_path, "model-a", tokens, [kv, gdn], registry=snapshot_registry) is None  # already there
+    assert list(load_snapshots(tmp_path, "model-b", registry=snapshot_registry)) == []
+    ((got_tokens, (kv2, gdn2)),) = load_snapshots(tmp_path, "model-a", registry=snapshot_registry)
     assert got_tokens == tokens
     assert type(kv2) is KVCache and kv2.offset == 5
     assert mx.array_equal(kv2.keys[..., :5, :], kv.keys[..., :5, :]).item()
@@ -74,11 +94,24 @@ def test_streamed_tool_call_arguments_equal_the_parsed_call():
     from tensorfold.server.tools import parse_tool_calls_from_content
     from tensorfold.engine.tool_draft import ToolCallStreamer
 
-    tools = [{"type": "function", "function": {"name": "write", "parameters": {
-        "type": "object", "properties": {"path": {}, "content": {}}, "required": ["path", "content"]}}}]
-    full = ('Writing it.\n<tool_call>\n<function=write>\n<parameter=path>\nsite/index.html\n</parameter>\n'
-            '<parameter=content>\n<!DOCTYPE html>\n<p class="x">Hi "there" \\ ok</p>\n  \n</parameter>\n'
-            '</function>\n</tool_call>')
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {}, "content": {}},
+                    "required": ["path", "content"],
+                },
+            },
+        }
+    ]
+    full = (
+        "Writing it.\n<tool_call>\n<function=write>\n<parameter=path>\nsite/index.html\n</parameter>\n"
+        '<parameter=content>\n<!DOCTYPE html>\n<p class="x">Hi "there" \\ ok</p>\n  \n</parameter>\n'
+        "</function>\n</tool_call>"
+    )
     streamer = ToolCallStreamer(tools)
     deltas = []
     for n in range(1, len(full) + 1, 5):
@@ -111,14 +144,18 @@ def test_parameter_values_keep_their_own_whitespace():
     from tensorfold.server.tools import parse_tool_calls_from_content
     from tensorfold.engine.tool_draft import ToolCallStreamer
 
-    tools = [{"type": "function", "function": {"name": "write", "parameters": {
-        "type": "object", "properties": {"path": {}, "content": {}}}}}]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "write", "parameters": {"type": "object", "properties": {"path": {}, "content": {}}}},
+        }
+    ]
     values = {"path": "site/index.html", "content": "  <html>\n    <p>x</p>\n</html>\n"}
     body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in values.items())
     full = f"Writing it.\n\n<tool_call>\n<function=write>\n{body}</function>\n</tool_call>"
     _, calls = parse_tool_calls_from_content(full, tools)
     assert json.loads(calls[0]["function"]["arguments"]) == values
-    for step in (1, 3, 7):          # the framing newline may arrive after its tag
+    for step in (1, 3, 7):  # the framing newline may arrive after its tag
         streamer = ToolCallStreamer(tools)
         deltas = []
         for n in range(1, len(full) + 1, step):
@@ -142,17 +179,22 @@ def test_disk_blocks_read_the_longest_stored_prefix(tmp_path):
         return [kv]
 
     short, long = list(range(30)), list(range(60))
-    save_snapshot(tmp_path, "model-a", long, cache(60))
-    save_snapshot(tmp_path, "model-a", short, cache(30))
-    save_snapshot(tmp_path, "model-b", list(range(90)), cache(90))    # other kernels: never offered
-    blocks = DiskBlocks(tmp_path, "model-a")
+    from tests.snapshot_fixtures import fixture_registry
+
+    snapshot_registry = fixture_registry(cache(60))
+    save_snapshot(tmp_path, "model-a", long, cache(60), registry=snapshot_registry)
+    save_snapshot(tmp_path, "model-a", short, cache(30), registry=snapshot_registry)
+    save_snapshot(
+        tmp_path, "model-b", list(range(90)), cache(90), registry=snapshot_registry
+    )  # other kernels: never offered
+    blocks = DiskBlocks(tmp_path, "model-a", registry=snapshot_registry)
     prompt = list(range(100))
     path, tokens = blocks.best(prompt, 0)
     assert tokens == long
-    assert blocks.best(prompt, 60) is None                 # the store already has as much
-    assert blocks.best(list(range(59)), 0)[1] == short     # a strict prefix only
+    assert blocks.best(prompt, 60) is None  # the store already has as much
+    assert blocks.best(list(range(59)), 0)[1] == short  # a strict prefix only
     assert blocks.best([7] + prompt, 0) is None
-    got_tokens, (kv,) = load_snapshot(path, "model-a")
+    got_tokens, (kv,) = load_snapshot(path, "model-a", registry=snapshot_registry)
     assert got_tokens == long and kv.offset == 60
     os.utime(path, (1, 1))
     blocks.blocks()
@@ -184,6 +226,7 @@ def test_target_candidates_reach_the_capture_sidecar(tmp_path):
     outer.capture_target([11, 12], keep["cand"][[0, 1]], keep["vals"][[0, 1]])
     _capture_writer().put((tmp_path / "flush-marker", b""))
     import time
+
     deadline = time.time() + 5
     while not (tmp_path / "flush-marker").exists() and time.time() < deadline:
         time.sleep(0.01)
@@ -206,8 +249,9 @@ def test_the_family_rounds_copy_gate_takes_structure_and_the_fallbacks_copies():
 
     blank = SimpleNamespace(decode=lambda ids: "", encode=lambda text, **_: [7, 8], convert_tokens_to_ids=lambda t: -1)
     opening = ToolCallProposer(blank, TOOLS, 3, fallback=Copies())
-    assert opening.propose([1, 2, 3, 4], 15) == [7, 8] and opening.last_match >= 1 << 20   # the call's opening
-    prose = SimpleNamespace(decode=lambda ids: "Some prose.", encode=lambda text, **_: [1],
-                            convert_tokens_to_ids=lambda t: -1)
+    assert opening.propose([1, 2, 3, 4], 15) == [7, 8] and opening.last_match >= 1 << 20  # the call's opening
+    prose = SimpleNamespace(
+        decode=lambda ids: "Some prose.", encode=lambda text, **_: [1], convert_tokens_to_ids=lambda t: -1
+    )
     fallback = ToolCallProposer(prose, TOOLS, 3, fallback=Copies())
-    assert fallback.propose([1, 2, 3, 4], 15) == [5, 6, 7] and fallback.last_match == 9    # the fallback's copy
+    assert fallback.propose([1, 2, 3, 4], 15) == [5, 6, 7] and fallback.last_match == 9  # the fallback's copy

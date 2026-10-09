@@ -121,6 +121,7 @@ def test_shared_rounds_keep_the_other_streams_exact():
     w = _model()
     refs = {tuple(p): _full(w, p, s) for p, s in zip(PROMPTS[:4], SAMPLINGS)}
     scheduler = Scheduler(_Oracle(w, refs, seed=3), max_streams=3)
+    scheduler.start()
     app = _app(_engine(w, scheduler))
     gate = threading.Barrier(3)
     results: dict[int, object] = {}

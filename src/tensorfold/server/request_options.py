@@ -133,7 +133,8 @@ class RequestOptions:
         temp = options.get("temperature", 0.0)
         if temp <= 0.0:
             return None
-        return Sampling(seed=options.get("seed", seed_for(prompt_ids)), temperature=temp,
+        seed = options["seed"] if "seed" in options else seed_for(prompt_ids)
+        return Sampling(seed=seed, temperature=temp,
                         top_k=options.get("top_k", 0), top_p=options.get("top_p", 1.0),
                         min_p=options.get("min_p", 0.0))
 

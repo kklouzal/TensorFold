@@ -70,16 +70,28 @@ def _block_attention(Q, KB, VB, TABLE, LENS, O, scale, window, R,
 def block_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, keys: Sequence[torch.Tensor],
                     values: Sequence[torch.Tensor], length: int, window: int, scale: float,
                     causal: bool = False) -> torch.Tensor:
-    """q [H, S*L, D], k and v [Hkv, S*L, D] (S streams' blocks of ``length`` rows), stream s's context [Hkv, n_s, D] -> [S*L, H*D] bf16."""
+    """Contiguous CUDA bf16 q [H, S*L, D], k/v [Hkv, S*L, D] and
+    same-device contexts [Hkv, n_s, D] -> [S*L, H*D] bf16."""
 
+    if (not isinstance(q, torch.Tensor) or not isinstance(k, torch.Tensor) or not isinstance(v, torch.Tensor)
+            or q.ndim != 3 or k.ndim != 3 or v.ndim != 3
+            or type(length) is not int or length <= 0):
+        raise ValueError("attention blocks require three rank3 tensors and a positive integer length")
     heads, rows, dim = q.shape
     kv_heads = k.shape[0]
     streams = rows // length
-    if len(keys) != streams or len(values) != streams or rows != streams * length or heads % kv_heads:
+    if (heads <= 0 or kv_heads <= 0 or dim <= 0 or k.shape != (kv_heads, rows, dim) or v.shape != k.shape
+            or len(keys) != streams or len(values) != streams or rows != streams * length or heads % kv_heads
+            or not q.is_cuda or k.device != q.device or v.device != q.device
+            or q.dtype != torch.bfloat16 or k.dtype != torch.bfloat16 or v.dtype != torch.bfloat16
+            or not q.is_contiguous() or not k.is_contiguous() or not v.is_contiguous()):
         raise ValueError("one context a stream, and blocks of equal length")
     for kc, vc in zip(keys, values):
-        if kc.shape != vc.shape or kc.shape[0] != kv_heads or kc.shape[2] != dim or not kc.is_contiguous() \
-                or not vc.is_contiguous() or kc.dtype != torch.bfloat16 or (kc.data_ptr() | vc.data_ptr()) % 16:
+        if (not isinstance(kc, torch.Tensor) or not isinstance(vc, torch.Tensor) or kc.ndim != 3 or vc.ndim != 3
+                or kc.shape != vc.shape or kc.shape[0] != kv_heads or kc.shape[2] != dim or not kc.is_contiguous()
+                or kc.shape[1] > 2**31 - 1
+                or not vc.is_contiguous() or kc.dtype != torch.bfloat16 or vc.dtype != torch.bfloat16
+                or kc.device != q.device or vc.device != q.device or (kc.data_ptr() | vc.data_ptr()) % 16):
             raise ValueError("contexts are contiguous, 16-byte aligned bf16 [Hkv, n, D] keys and values")
     host = torch.tensor([p for kc, vc in zip(keys, values) for p in (kc.data_ptr(), vc.data_ptr())] +
                         [kc.shape[1] for kc in keys], dtype=torch.int64).pin_memory()
@@ -117,13 +129,24 @@ def _append(TABLE, SIZES, NEW, R, H: tl.constexpr, D: tl.constexpr, BR: tl.const
 
 
 def append(new: torch.Tensor, olds: Sequence[torch.Tensor | None], sizes: Sequence[int], window: int) -> list[torch.Tensor]:
-    """new [Hkv, R, D] (each stream's rows in turn) after each stream's context [Hkv, n, D] -> its last ``window`` rows."""
+    """Contiguous CUDA bf16 new [Hkv, R, D] after same-device contexts
+    [Hkv, n, D] -> their last ``window`` rows. ``sizes`` covers each input row."""
 
+    if (not isinstance(new, torch.Tensor) or new.ndim != 3 or not new.is_cuda
+            or new.dtype != torch.bfloat16 or not new.is_contiguous()
+            or type(window) is not int or window < 0
+            or len(olds) != len(sizes) or any(type(n) is not int or n < 0 for n in sizes)):
+        raise ValueError("append needs contiguous CUDA bf16 rows, one nonnegative size per context and window")
     heads, rows, dim = new.shape
+    if heads <= 0 or dim <= 0 or sum(sizes) != rows:
+        raise ValueError("append sizes must cover all new rows with positive head geometry")
+    for old in olds:
+        if old is not None and (not isinstance(old, torch.Tensor) or old.ndim != 3
+                                or old.shape[0] != heads or old.shape[2] != dim or old.device != new.device
+                                or old.dtype != torch.bfloat16 or not old.is_contiguous() or old.data_ptr() % 16):
+            raise ValueError("a context to extend is same-device contiguous, 16-byte aligned bf16 [Hkv, n, D]")
     outs, table, meta, first = [], [], [], 0
     for old, add in zip(olds, sizes):
-        if old is not None and (not old.is_contiguous() or old.data_ptr() % 16):
-            raise ValueError("a context to extend is a contiguous, 16-byte aligned [Hkv, n, D] tensor")
         n = 0 if old is None else old.shape[1]
         keep = min(window, n + add)
         out = torch.empty((heads, keep, dim), dtype=new.dtype, device=new.device)

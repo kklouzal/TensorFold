@@ -6,6 +6,7 @@ import struct
 import time
 from typing import Callable, Sequence
 
+import numpy as np
 import torch
 import torch.distributed as dist
 
@@ -13,7 +14,9 @@ from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows
 
 from .decode import CopyIndex, DecodeResult, clone_state
 from .forward import State, _paths, commit, tree_forward
-from tensorfold.cuda.sampling import dist_gather, nucleus_rows, sample_rows
+from tensorfold.cuda.sampling import (
+    ShardSampler, _stacked, dist_gather, sample_rows, sample_shards, valid_scores, validate_policy, validate_rows,
+)
 from .weights import Weights
 
 
@@ -70,42 +73,56 @@ def unpack_sampling(words: Sequence[int]) -> Sampling | None:
 
 
 def split_candidates(logits: torch.Tensor, sampling: Sampling | None, offset: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the first local maximum when greedy, otherwise enough local candidates to contain the global top-k."""
+    """Standalone exact candidate extraction; distributed decode uses the shared bounded repair protocol.
 
+    The input score domain is validated by the operation owning these logits.
+    Stable column order resolves every tied boundary, including a tie wider
+    than the readback margin. This helper is also an independent test oracle.
+    """
+
+    scores = logits.float()
     if sampling is None or sampling.temperature <= 0:
-        values, ids = logits.float().max(dim=-1)
+        values, ids = scores.max(dim=-1)
         return values[:, None].contiguous(), (ids + offset)[:, None].contiguous()
     count = min(logits.shape[1], int(sampling.top_k) + MARGIN) if sampling.top_k else logits.shape[1]
-    values, ids = torch.topk(logits.float(), count, dim=-1, sorted=False)
-    return values.contiguous(), (ids + offset).contiguous()
+    ids = torch.argsort(scores, dim=-1, descending=True, stable=True)[:, :count]
+    return scores.gather(1, ids).contiguous(), (ids + offset).contiguous()
 
 
 def choose_merged(values, ids, positions: Sequence[int], sampling: Sampling | None) -> list[int]:
-    """Merge rank-zero candidates first to preserve first-maximum ties, then sample the union in value-and-id order."""
+    """Choose from a complete exact candidate union, with greedy ties resolved by global ID."""
 
+    validate_policy(positions, sampling)
+    if values.shape != ids.shape or len(positions) != values.shape[0]:
+        raise ValueError("one global-ID candidate table and position per row required")
+    valid_scores(values)
     if sampling is None or sampling.temperature <= 0:
-        # the whole vocabulary's first maximum: rank 0's half holds the lower ids
-        return [int(ids[r, 0] if values[r, 0] >= values[r, 1] else ids[r, 1]) for r in range(ids.shape[0])]
-    return choose_rows(values, ids, positions, sampling)
+        order = np.lexsort((ids, -values), axis=-1)
+        return [int(ids[row, order[row, 0]]) for row in range(ids.shape[0])]
+    return choose_rows(values, ids, np.asarray(positions, dtype=np.uint64), sampling)
+
+
+def split_sampling_plan(width: int, device: torch.device, rank: int) -> ShardSampler:
+    """Create the two-rank vocabulary owner outside token work; global columns follow prefix shard widths."""
+
+    if rank not in (0, 1) or dist.get_world_size() != 2:
+        raise ValueError("Qwen27 split sampling requires its declared two-rank process group")
+    widths = _stacked(dist_gather, torch.tensor([width], dtype=torch.int64, device=device)).cpu().numpy()[:, 0]
+    offset = sum(int(part) for part in widths[:rank])
+    return ShardSampler(width, device, gather=dist_gather, world=2, offset=offset,
+                        native_greedy=False, identity=dist.group.WORLD)
 
 
 def _sample_split(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
-                  rank: int) -> list[int] | None:
-    """Both ranks call this with their half of the logits; rank 0 returns the tokens, rank 1 None."""
+                  rank: int, *, plan: ShardSampler | None = None) -> list[int] | None:
+    """Both ranks finish exact source sampling; rank zero returns tokens and rank one returns None."""
 
-    if sampling is not None and sampling.temperature > 0 and not sampling.top_k:     # the shared nucleus rule
-        tokens = nucleus_rows(logits, positions, sampling, offset=rank * logits.shape[1], gather=dist_gather)
-        return tokens if rank == 0 else None
-    values, ids = split_candidates(logits, sampling, rank * logits.shape[1])
-    all_values = torch.empty((2, *values.shape), dtype=values.dtype, device=values.device)
-    all_ids = torch.empty((2, *ids.shape), dtype=ids.dtype, device=ids.device)
-    dist.all_gather_into_tensor(all_values, values)
-    dist.all_gather_into_tensor(all_ids, ids)
-    if rank != 0:
-        return None
-    return choose_merged(torch.cat((all_values[0], all_values[1]), dim=1).cpu().numpy(),
-                         torch.cat((all_ids[0], all_ids[1]), dim=1).cpu().numpy().astype("int64"),
-                         positions, sampling)
+    if plan is None:
+        validate_rows(logits, positions, sampling)
+        plan = split_sampling_plan(logits.shape[1], logits.device, rank)
+    plan.check(logits, identity=dist.group.WORLD)
+    tokens = sample_shards(logits, positions, sampling, plan=plan)
+    return tokens if rank == 0 else None
 
 
 def _tokens(ids: Sequence[int], device: torch.device) -> torch.Tensor:
@@ -113,7 +130,7 @@ def _tokens(ids: Sequence[int], device: torch.device) -> torch.Tensor:
 
 
 def first_token(w: Weights, normed: torch.Tensor, n: int, sampling: Sampling | None, rank: int = 0,
-                world: int = 1, constraint=None) -> int:
+                world: int = 1, constraint=None, *, plan: ShardSampler | None = None) -> int:
     """The token after an ``n``-token prompt from its last row's normed state; two ranks share rank 0's draw."""
 
     from .forward import _mm
@@ -131,7 +148,7 @@ def first_token(w: Weights, normed: torch.Tensor, n: int, sampling: Sampling | N
     if constraint is not None and last is not None:  # each rank masks the vocabulary columns it holds
         constraint.mask(last, None, rank * w.head.n if split else 0)
     if split:
-        first = _sample_split(last, [n], sampling, rank)
+        first = _sample_split(last, [n], sampling, rank, plan=plan)
     else:
         first = [sample_rows(last, [n], sampling)[0]] if rank == 0 else None
     first = _share(first, rank, w.norm.device)[0]
@@ -186,6 +203,7 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
 
     device = w.norm.device
     split = 2 * w.head.n == w.config.vocab          # split_weights(..., split_head=True)
+    sampling_plan = split_sampling_plan(int(w.head.n), device, rank) if split else None
     st = st if inplace else clone_state(st)
     out = [pending]
     context = list(prompt) + out
@@ -254,7 +272,7 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
             constraint.mask(logits, masks, rank * w.head.n if split else 0)
         depths, _ = _paths(parents)
         positions = [st.pos + d + 1 for d in depths]
-        sampled = _sample_split(logits, positions, sampling, rank) if split else None
+        sampled = _sample_split(logits, positions, sampling, rank, plan=sampling_plan) if split else None
         if rank == 0:
             torch.cuda.synchronize()
             stages["verify"] += time.perf_counter() - stage

@@ -47,15 +47,21 @@ class Stream:
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
 
-        self.out.extend(new)
-        self.context.extend(new)
-        self.accepted += max(0, len(new) - 1)             # a round's kept drafts come before its own token
         fresh = list(new)
         if self.owed:                                     # a replay writes the tokens it sent before again first
             k = min(len(self.owed), len(fresh))
             if fresh[:k] != self.owed[:k]:
                 self.error = RuntimeError("a background request's replay differs from the reply it sent")
+                self.done, self.finished = True, time.perf_counter()
+                return                              # no divergent/new bytes or success-shaped counters
             self.owed, fresh = self.owed[k:], fresh[k:]
+        self.out.extend(new)
+        self.context.extend(new)
+        self.accepted += max(0, len(new) - 1)             # a round's kept drafts come before its own token
+        if self.owed and (len(self.out) >= self.count or self.out[-1] in eos):
+            self.error = RuntimeError("a background request ended before replaying the reply it sent")
+            self.done, self.finished = True, time.perf_counter()
+            return
         stop = bool(self.emit(fresh)) if self.emit is not None and fresh else False
         if self.error is not None or stop or len(self.out) >= self.count or self.out[-1] in eos:
             self.done = True
