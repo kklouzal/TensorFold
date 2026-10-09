@@ -3,6 +3,8 @@
 import faulthandler
 import os
 import signal
+import socket
+import sys
 from http.server import BaseHTTPRequestHandler
 
 DUMP = getattr(signal, "SIGBREAK" if os.name == "nt" else "SIGUSR1", None)
@@ -40,7 +42,18 @@ def arm() -> None:
 
 
 class Rearming(BaseHTTPRequestHandler):
-    """A request handler that arms the dump again after each request, which may have built a kernel."""
+    """Re-arm stack dumps; Linux avoids delayed writes once a connection is reused."""
+
+    if sys.platform == "linux":
+        def parse_request(self) -> bool:
+            parsed = BaseHTTPRequestHandler.parse_request(self)
+            if parsed and not self.close_connection and not getattr(self, "_keepalive_nodelay", False):
+                if getattr(self, "_keepalive_request_seen", False):
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    self._keepalive_nodelay = True
+                else:
+                    self._keepalive_request_seen = True
+            return parsed
 
     def handle_one_request(self) -> None:
         super().handle_one_request()

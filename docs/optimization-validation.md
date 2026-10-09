@@ -135,6 +135,39 @@ KV format or an unrelated model family.
 
 ## Final release checks
 
+Serving can optionally bound CPU request ownership with three positive integer
+flags. Their default is unset, preserving the existing admission and dispatch.
+These controls change capacity policy; they do not alter model arithmetic or
+discard generated tokens.
+
+- `--max-http-connections` caps retained HTTP handler/socket owners. At capacity,
+  the server pauses acceptance and leaves unaccepted connections in the existing
+  listen backlog of 128. Completed owners wake acceptance; shutdown wakes a
+  saturated wait. Idle keepalive and monitoring connections count toward this
+  cap, so allow room for health and metrics clients as well as generation.
+- `--max-pending-requests` caps unfinished logical generation requests, including
+  queued, running, and canceled work whose engine ownership has not retired.
+  Background continuations and replay retain their request's admission. A new
+  request at capacity receives HTTP 503 before SSE begins. Configured streaming
+  replies open their headers after admission, when output or completion is known.
+- `--max-engine-calls` caps queued or running calls on the MLX engine thread,
+  including calls whose waiting caller timed out. A timeout does not release a
+  callback still owned by the engine. Unsupported backends refuse this flag.
+
+Choose counts for the deployment's request sizes and RAM budget; model slot
+count does not determine an HTTP worker or waiting-request cap. `/health`
+reports configured limits and their owned counts under `admission`. `/metrics`
+reports HTTP connection ownership and configured request/RPC limit gauges.
+Source controls exercise real owned sockets and threads, including saturation,
+retirement, shutdown, and pre-SSE refusal. Installed runtime and complete model
+generation checks remain separate release gates. On Linux, a reused HTTP
+connection enables TCP_NODELAY once; its first operation retains the stock socket
+setting. Paired complete `/v1/models` requests on `.250` reduced reused-connection
+medians from 40.8–41.1 ms to 0.25–0.52 ms across both codecs, with 20 balanced pairs
+per region and equal complete responses. Fresh-connection effects remained within
+measurement uncertainty; other platforms retain stock parsing. These measurements
+cover HTTP metadata handling and do not establish LLM generation speeds.
+
 Final release requires current installed source/wheel/native provenance,
 affected model and API generations, cancellation/shutdown/resource checks,
 controlled performance comparisons, and a post-change bottleneck review.
