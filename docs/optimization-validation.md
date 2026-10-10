@@ -169,14 +169,14 @@ observed sampled cgroup RAM and Torch allocated/reserved peaks were 46.595, 14.0
 regions. The guarded alternative's positive MTP estimate did not establish
 repeatable superiority across process starts; this is an uncertain result,
 not an equivalence or regression claim. The current reference does not imply
-a gain over the historical comparison or qualify other pending candidates,
+a gain over the historical comparison or qualify other policies,
 HTTP serving, future images, general answer quality or sustained full-context
 capacity. See the [README reference](../README.md#current-default-prefetch-reference)
 for observed first-token and emission-stall summaries.
 
 The current notification comparison is closed with the original policy retained. A separate full-request optional expert-arena comparison also retained the fixed expert-cache policy in serial, MTP and four-request workloads: it did not establish a repeatable improvement, and no successfully active arena loan was observed in the timed trials. The separate aggregate-room-clipping diagnostic completed 1,320 observations: one allocation success, 1,319 classified native OOM refusals, no aggregate precheck refusal and no positive strict-partial-room opportunity. Its formula selected the original requested size in every case, so clipping was inapplicable in this measured region and no arena-lending/clipping implementation is retained. No smaller arena was allocated. This single-process diagnostic does not identify the underlying refusal cause, hypothetical smaller-allocation success or other-region behavior, and it carries no throughput credit. These decisions do not change the current stock observations above.
 
-The maintained source integrates the selected `rotorquant7` lookup decoder only within its existing controlled Blackwell/recorded-runtime, plain symmetric codec-4/head-256, one-request ordinary foreground, unconstrained/no-logprob greedy serial/MTP region, with no waiting/copy/background/owed-token/carry states. Native and composed source/image provenance passed; all 128 quality tokens and 1,352 ordered same-format score/state/attention/pending/confidence records matched exactly. Four balanced performance starts with 20 matched 64-token pairs per workload showed gains in both run-order halves. Only two starts per arm were measured, and independent two-process-contrast intervals include 1; selection does not assert population confidence or universal superiority. The [README controlled comparison](../README.md#controlled-rotorquant7-decoder-comparison) identifies the exact images, settings, medians and paired ratios. Full default-prefetch, concurrent requests, other formats/settings/hardware and BF16 quality remain outside this selection, and no new public flag is added. Fresh canonical shipping-image/audit and packaging qualification remain pending.
+The maintained source integrates the selected `rotorquant7` lookup decoder only within its existing controlled Blackwell/recorded-runtime, plain symmetric codec-4/head-256, one-request ordinary foreground, unconstrained/no-logprob greedy serial/MTP region, with no waiting/copy/background/owed-token/carry states. Native and composed source/image provenance passed; all 128 quality tokens and 1,352 ordered same-format score/state/attention/pending/confidence records matched exactly. Four balanced performance starts with 20 matched 64-token pairs per workload showed gains in both run-order halves. Only two starts per arm were measured, and independent two-process-contrast intervals include 1; selection does not assert population confidence or universal superiority. The [README controlled comparison](../README.md#controlled-rotorquant7-decoder-comparison) identifies the exact images, settings, medians and paired ratios. Full default-prefetch, concurrent requests, other formats/settings/hardware and BF16 quality remain outside this selection, and no new public flag is added. Frozen selected-source shipping audits, baked packaging and fresh API qualification are complete; the controlled performance comparison retains its original image and region scope.
 
 ## Completed installed-origin Linux CPU qualification
 
@@ -193,7 +193,7 @@ The combined result reuses 16 original successful chunks and eight corrected-fix
 then adds the final Dense EXL3 cleanup-fixture rerun. Each retains its actual source and fixture
 identity; earlier failed receipts are preserved. Native UID-1000 checks verified all 1,033
 qualified fixture files before and after the final rerun. This closes the scoped Linux CPU lane;
-current baseline model generation and CLI/API results are recorded separately. The selected Rotor7 decoder and new maintained native GPU test are not blanket-certified by this earlier CPU snapshot; their native/model evidence and fresh shipping-image/packaging qualification are separate.
+current baseline model generation and CLI/API results are recorded separately. The selected Rotor7 decoder and new maintained native GPU test are not blanket-certified by this earlier CPU snapshot; their native/model evidence and completed frozen shipping-image/packaging qualification are separate.
 See [verification and development](../README.md#verification-and-development).
 
 ## Completed current installed CLI/API qualification
@@ -216,8 +216,12 @@ does not prove suppression of an unobserved EOS.
 The 360.63-second whole operation included startup and first native compilation. Sampled
 cgroup RAM peaked at 47.386 GB within 56 GB with no swap. This is the completed current
 baseline API gate, not an API throughput/tail comparison, all-format/model quality proof
-or 524k-context qualification. Changed shipping code/images require the relevant source,
-model/API and resource requalification. See the [README API qualification](../README.md#current-installed-cliapi-qualification).
+or 524k-context qualification. Future changed code/images require their relevant source,
+model/API and resource qualification. See the [README API qualification](../README.md#current-installed-cliapi-qualification).
+
+The final frozen-source shipping gates are also complete for commit `07f4294306aba4cc6e1851b9c774fbf89d234900`, runtime UID `e7a15d7331560e25bc31bcd5caedf27c6c81c7dbc6d19b2f74d281c78534daba`: serving image `sha256:b091954b6556a540123d2872d30fe86905344f4b24a6ff47e8361269916f7117`, verification image `sha256:46f16ad6498378a3d9a186dcbfc671c1459e86765a2ee21b950291517968455f`, and shared wheel `4d79339aa56286d6d5863e1d37c6584abacb79938ca97c75386649f62f32fbd2`. Both normal Python 3.12 installed native/source audits passed 15 controls without skips. The separate baked CPU24 packaging batch passed 343 cases, with eight explicit skips, over 16 modules as UID 1000 without a checkout mount; genuine CHANGELOG/update/public-permissions checks passed. These counts do not replace or extend the historical Source06 full CPU snapshot.
+
+The initial same-serving-image GPU probe reported 15,868,952,576 free bytes/16,584,343,552 total and zero Torch allocated/reserved bytes, not loaded-model occupancy. Fresh ordinary installed PID-1 CLI/API qualification then passed all seven functional groups under the same recorded INT8/default-prefetch/four-slot/context-2048/YaRN-2/auto-expert settings and test caps 5/32, with FIFO/pre-SSE refusals/cancel recovery/zero final logical owners/SIGINT zero and clean process/container retirement. Its 359.99 s includes startup/warmup/first request compilation; 349 running samples observed a cgroup peak of 46.036 GB under 56 decimal GB/no swap with no sampled swap/OOM event, ending before final retirement. No new throughput/tail/full-context/all-codec/quality conclusion follows. This final documentation-only result update leaves qualified runtime code unchanged; frozen artifact IDs are not aliases for later HEADs or rebuilds. See [the shipping results](../README.md#frozen-source-shipping-qualification).
 
 ## Final release checks
 
