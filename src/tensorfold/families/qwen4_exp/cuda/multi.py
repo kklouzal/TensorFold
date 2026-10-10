@@ -55,6 +55,8 @@ class MultiDecoder:
         if w.comm is not None:
             raise ValueError("concurrent Flash Next runs on one GPU for now")
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
+        from .rotor_decoder import RotorDecoderPolicy
+        self.rotor_decoder_policy = RotorDecoderPolicy()
         self.points = points                         # a prompt's message starts to keep states at, or None
         self.vision = vision
         self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1"
@@ -94,6 +96,10 @@ class MultiDecoder:
         self.draft_host = self._draft_map.ids(int(w.draft_ids.numel())) if self._draft_map is not None else None
         self.kept: list[tuple[list[int], State, dict, torch.Tensor | None]] = []   # (ids, slot, snapshot, tail)
         self.keep = keep
+
+    def _rotor_lookup(self, request, participants=1):
+        return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
+                                                 participants=participants, copy=self.copy)
 
     def _busy(self) -> set[int]:
         return {id(s.st) for s in [*self.streams.values(), *self.filling]}
@@ -307,6 +313,7 @@ class MultiDecoder:
 
         pieces = self._pieces()
         self._note_passed(pieces)
+        self.pbuf.rotor_lookup = bool(pieces) and self._rotor_lookup(pieces[0][0], len(pieces))
         t0 = time.perf_counter()
         try:
             self._read_ahead(pieces)
@@ -434,6 +441,9 @@ class MultiDecoder:
             s.started = time.perf_counter()
             self.streams[s.sid] = s
             s.take([first], self._ends(s))               # the first token goes out before the next draft
+            e.buf.rotor_lookup = self._rotor_lookup(s)
+            if e.mbuf is not None:
+                e.mbuf.rotor_lookup = e.buf.rotor_lookup
             if mtp and not s.done and s.count > 1:
                 s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
                                  self.confidence)
@@ -472,6 +482,8 @@ class MultiDecoder:
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
+        self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
+        self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
         segs = stage(self.w, self.buf, windows)
@@ -489,7 +501,7 @@ class MultiDecoder:
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
         tables = self.buf.gdn_tables = gdn_multi.Tables(self.w, self.gdn, segs, held)
-        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False)
+        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, rotor_lookup=self.buf.rotor_lookup)
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 pends = self._end_rows(pieces, psegs)
@@ -600,7 +612,11 @@ class MultiDecoder:
     def _mtp(self, segs: list) -> torch.Tensor:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
 
-        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True)
+        self.mbuf.rotor_lookup = False
+        if self.live() == 1:
+            request = next(iter(self.streams.values())) if self.streams else self.filling[0]
+            self.mbuf.rotor_lookup = self._rotor_lookup(request, len(segs))
+        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, rotor_lookup=self.mbuf.rotor_lookup)
         try:
             return mtp_compute(self.w, segs, self.mbuf)
         finally:

@@ -291,6 +291,31 @@ class FlashNextEngine:
             if automatic_experts:
                 self.serial = self.e.twin()
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
+        if self.multi is not None:
+            from .rotor_decoder import MTP_FORMATS, SERIAL_FORMATS, select
+            runtime = None
+            if self.kv_pair.symmetric and self.kv_pair.key_dtype in SERIAL_FORMATS + MTP_FORMATS:
+                import hashlib
+                import platform
+                from importlib.metadata import version
+                try:
+                    with Path('/proc/driver/nvidia/version').open('rb') as driver:
+                        driver_raw = driver.read(32769)
+                except OSError:
+                    driver_raw = b''
+                runtime = dict(torch=torch.__version__, torch_git=torch.version.git_version,
+                               CUDA=torch.version.cuda, triton_distribution=version('triton'),
+                               device=torch.cuda.get_device_name(0), capability=torch.cuda.get_device_capability(0),
+                               kernel_release=platform.release(),
+                               driver_proc_sha256=hashlib.sha256(driver_raw).hexdigest())
+            self.multi.rotor_decoder_policy = select(mode=self.kv_pair.key_dtype,
+                symmetric=self.kv_pair.symmetric, head_dim=head_dim, context=self.context_window,
+                slots=streams, depth=self.depth, confidence=self.confidence, exl3=exl3, graphs=graphs,
+                prefetch=prefetch, automatic_experts=automatic_experts, vision=vision, tp=tp,
+                yarn_factor=yarn_factor, runtime=runtime)
+            self.capacity_plan['rotor_decoder_lookup'] = dict(
+                serial=self.multi.rotor_decoder_policy.serial, mtp=self.multi.rotor_decoder_policy.mtp,
+                concurrent_requests=False, encoder_changed=False)
         started = time.perf_counter()
         locked = False
         if prefetch and not ple_on_ssd:               # the n-gram tables' pages, read now rather than by requests

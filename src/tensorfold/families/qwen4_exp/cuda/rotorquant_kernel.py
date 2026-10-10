@@ -469,3 +469,37 @@ def dequant_group_8(code, scale, M: tl.constexpr, W: tl.constexpr):
     c = tl.reshape(_centroids(code.to(tl.int32), 8), (M, W // 128, 128))
     s = tl.reshape(scale.to(tl.float32), (M, W // 128, 1))
     return tl.reshape(_mul_rn(c, s), (M, W)).to(tl.bfloat16)
+
+
+@triton.jit
+def _register_centroids(values: tl.constexpr, N: tl.constexpr, M: tl.constexpr):
+    coordinate = tl.arange(0, N)
+    table = tl.full((N,), values[N - 1], tl.float32)
+    for i in tl.static_range(N - 1):
+        table = tl.where(coordinate == i, values[i], table)
+    return tl.broadcast_to(table[None, :], (M, N))
+
+
+@triton.jit
+def _centroids_lookup(q, BITS: tl.constexpr):
+    tl.static_assert(BITS == 7)
+    table = _register_centroids(_C7, 128, q.shape[0])
+    return tl.gather(table, q, 1)
+
+
+@triton.jit
+def dequant_group_7_lookup(low, middle, high, scale, M: tl.constexpr, W: tl.constexpr):
+    """Low4/mid2/high1 planes and FP32 RMS -> rotated BF16 ``[M,W]``.
+
+    Physical groups are112 bytes:64 low-nibble,32 middle-two-bit,16 high-bit.
+    The caller gathers each plane independently across complete128 groups.
+    """
+
+    tl.static_assert(W % 128 == 0)
+    low = low.to(tl.int32)
+    lo = tl.reshape(tl.join(low & 15, low >> 4), (M, W))
+    mid = tl.reshape((middle.to(tl.int32)[:, :, None] >> (tl.arange(0, 4) * 2)[None, None, :]) & 3, (M, W))
+    hi = tl.reshape((high.to(tl.int32)[:, :, None] >> tl.arange(0, 8)[None, None, :]) & 1, (M, W))
+    c = tl.reshape(_centroids_lookup(lo | (mid << 4) | (hi << 6), 7), (M, W // 128, 128))
+    s = tl.reshape(scale.to(tl.float32), (M, W // 128, 1))
+    return tl.reshape(_mul_rn(c, s), (M, W)).to(tl.bfloat16)

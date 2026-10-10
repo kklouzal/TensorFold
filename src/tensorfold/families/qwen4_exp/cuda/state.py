@@ -28,6 +28,7 @@ class Buffers:
         dev = w.device
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
         self.hc_plans = None
         self.hc_plan_selection = {"status": "original", "reason": "unselected buffer region"}
         self.rope_rows = None          # an image prompt chunk's [rows, 3] positions, else None

@@ -39,7 +39,7 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
             NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
             CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
+            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, ROTOR_LOOKUP: tl.constexpr = False):
     r = tl.program_id(0)
     hk = tl.program_id(1)
     c = tl.program_id(2)
@@ -50,7 +50,7 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR,
         n = tl.where(sparse, tl.load(NKR + r), n)
     if K_BITS >= 0:
         _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
-                    H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC)
+                    H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
     else:
         _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
                H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS, CODEC=CODEC)
@@ -172,7 +172,8 @@ def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
 def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
                 H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
                 NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr,
-                K_BITS: tl.constexpr, K_CODEC: tl.constexpr, V_BITS: tl.constexpr, V_CODEC: tl.constexpr):
+                K_BITS: tl.constexpr, K_CODEC: tl.constexpr, V_BITS: tl.constexpr, V_CODEC: tl.constexpr,
+                ROTOR_LOOKUP: tl.constexpr = False):
     """Canonical 64-key arithmetic with each side decoded in its own stored basis."""
 
     start = c * CH
@@ -190,8 +191,8 @@ def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
             if QSA:
                 if sparse:
                     ki = tl.load(IDS + r * IDW + ki, mask=valid, other=0)
-            k = load_side(KC, KSC, ki, valid, hk, HK, D, 64, K_BITS, K_CODEC)
-            v = load_side(VC, VSC, ki, valid, hk, HK, D, 64, V_BITS, V_CODEC)
+            k = load_side(KC, KSC, ki, valid, hk, HK, D, 64, K_BITS, K_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
+            v = load_side(VC, VSC, ki, valid, hk, HK, D, 64, V_BITS, V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
             m, denominator, o = _tile(q, k, v, m, denominator, o, valid, SCALE)
         base = (r * NCH + c) * H + hk * G + gg
         tl.store(PO + base[:, None] * D + d[None, :], o, mask=gg[:, None] < G)
@@ -270,7 +271,7 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
               rows: int, scale: float, out: torch.Tensor | None = None, *,
               context: int | None = None, ks: torch.Tensor | None = None, vs: torch.Tensor | None = None,
               bits: int = 0, codec: int = 0, k_bits: int | None = None, k_codec: int | None = None,
-              v_bits: int | None = None, v_codec: int | None = None) -> torch.Tensor:
+              v_bits: int | None = None, v_codec: int | None = None, rotor_lookup: bool = False) -> torch.Tensor:
     """BF16 queries against independent stored-basis K/V sides; sparse rows read scratch IDs.
 
     The query already carries the key basis. Only the value basis is inverted
@@ -306,7 +307,7 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     out = scratch.out if out is None else out
     _chunks[(rows, hk, chunks)](q, kc, vc, ks, vs, pos0, scratch.po, scratch.pm, scratch.pl, scratch.ids, scratch.nk,
                              scratch.sparse, H=h, HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, SCALE=scale,
-                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, **pair, num_warps=4, num_stages=1)
+                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, ROTOR_LOOKUP=rotor_lookup, **pair, num_warps=4, num_stages=1)
     _merge[(rows, hk)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h,
                        HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=4)
     return out

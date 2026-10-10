@@ -70,7 +70,8 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, N, H: tl.constexpr, HK
                   G: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr,
                   QSA: tl.constexpr, BITS: tl.constexpr, KT: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
                   CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-                  V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None):
+                  V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
+                  ROTOR_LOOKUP: tl.constexpr = False):
     r = tl.program_id(0)
     s = tl.load(SID + r)
     n = tl.load(POSR + r) + 1
@@ -83,7 +84,7 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, N, H: tl.constexpr, HK
         VS_TYPE: tl.constexpr = tl.float32 if V_CODEC else tl.float16
         _chunk_pair(Q, _ptr(CP, s, KT), _ptr(CP + N, s, VT), _ptr(CP + 2 * N, s, KS_TYPE),
                     _ptr(CP + 3 * N, s, VS_TYPE), n, sparse, r, tl.program_id(1), tl.program_id(2),
-                    PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC)
+                    PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
     else:
         ST: tl.constexpr = tl.float32 if CODEC else tl.float16
         _chunk(Q, _ptr(CP, s, KT), _ptr(CP + N, s, KT), _ptr(CP + 2 * N, s, ST), _ptr(CP + 3 * N, s, ST),
@@ -109,7 +110,8 @@ def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, HK: tl.constexpr, 
 class Step:
     """A step's row, stream and cache-pointer tables (the MTP head's with ``mtp``), read now: caches may move."""
 
-    def __init__(self, w, segs: Sequence, mtp: bool) -> None:
+    def __init__(self, w, segs: Sequence, mtp: bool, *, rotor_lookup: bool = False) -> None:
+        self.rotor_lookup = rotor_lookup
         n, rows = len(segs), segs[-1][2]
         self.identity = segs[0][0].kv_identity
         self.pair = segs[0][0].kv_pair
@@ -204,7 +206,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
     g = c.heads // hk
     _chunks_multi[(rows, hk, chunks)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n, H=c.heads,
                                       HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch, SCALE=scale, IDW=sc.idw,
-                                      QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top, CODEC=0, **pair, num_warps=4,
+                                      QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top, CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4,
                                       num_stages=1)
     _merge_multi[(rows, hk)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, HK=hk, D=c.head_dim, G=g,
                              CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,

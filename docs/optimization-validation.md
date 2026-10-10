@@ -174,13 +174,17 @@ HTTP serving, future images, general answer quality or sustained full-context
 capacity. See the [README reference](../README.md#current-default-prefetch-reference)
 for observed first-token and emission-stall summaries.
 
+The current notification comparison is closed with the original policy retained. A separate full-request optional expert-arena comparison also retained the fixed expert-cache policy in serial, MTP and four-request workloads: it did not establish a repeatable improvement, and no successfully active arena loan was observed in the timed trials. The separate aggregate-room-clipping diagnostic completed 1,320 observations: one allocation success, 1,319 classified native OOM refusals, no aggregate precheck refusal and no positive strict-partial-room opportunity. Its formula selected the original requested size in every case, so clipping was inapplicable in this measured region and no arena-lending/clipping implementation is retained. No smaller arena was allocated. This single-process diagnostic does not identify the underlying refusal cause, hypothetical smaller-allocation success or other-region behavior, and it carries no throughput credit. These decisions do not change the current stock observations above.
+
+The maintained source integrates the selected `rotorquant7` lookup decoder only within its existing controlled Blackwell/recorded-runtime, plain symmetric codec-4/head-256, one-request ordinary foreground, unconstrained/no-logprob greedy serial/MTP region, with no waiting/copy/background/owed-token/carry states. Native and composed source/image provenance passed; all 128 quality tokens and 1,352 ordered same-format score/state/attention/pending/confidence records matched exactly. Four balanced performance starts with 20 matched 64-token pairs per workload showed gains in both run-order halves. Only two starts per arm were measured, and independent two-process-contrast intervals include 1; selection does not assert population confidence or universal superiority. The [README controlled comparison](../README.md#controlled-rotorquant7-decoder-comparison) identifies the exact images, settings, medians and paired ratios. Full default-prefetch, concurrent requests, other formats/settings/hardware and BF16 quality remain outside this selection, and no new public flag is added. Fresh canonical shipping-image/audit and packaging qualification remain pending.
+
 ## Completed installed-origin Linux CPU qualification
 
 The normal verification image `sha256:aeef439e98eb2c885e5c131105e2d9b612410e81336d6fa63c36078eb6522b64`
 used the same Source06 wheel `80f1c23f390da93ead7a88928f3b19b0448508567c5e95464c7b9940d8c9842e`,
 Python 3.12 and pytest 8.4.2. A qualified read-only fixture supplied maintained tests/tools;
-package and native-provider imports remained the normal installed copies. The maintained manifest
-contains 387 modules. Its complete 386-path Linux inventory finished in 25 successful chunks:
+package and native-provider imports remained the normal installed copies. The qualified Source06 manifest
+contained 387 modules. Its complete 386-path Linux inventory finished in 25 successful chunks:
 6,369 cases, with 6,214 non-skipped passes, zero failures/errors, and 155 explicit skips.
 The separate Apple-only module contains two off-target tests. Skips remain unrun for their targets;
 source/fake CPU controls do not qualify GPU/model math, Apple or true two-GPU execution.
@@ -189,8 +193,7 @@ The combined result reuses 16 original successful chunks and eight corrected-fix
 then adds the final Dense EXL3 cleanup-fixture rerun. Each retains its actual source and fixture
 identity; earlier failed receipts are preserved. Native UID-1000 checks verified all 1,033
 qualified fixture files before and after the final rerun. This closes the scoped Linux CPU lane;
-current baseline model generation and CLI/API results are recorded separately; candidate decisions, packaging
-and changed shipping-image requalification remain separate.
+current baseline model generation and CLI/API results are recorded separately. The selected Rotor7 decoder and new maintained native GPU test are not blanket-certified by this earlier CPU snapshot; their native/model evidence and fresh shipping-image/packaging qualification are separate.
 See [verification and development](../README.md#verification-and-development).
 
 ## Completed current installed CLI/API qualification

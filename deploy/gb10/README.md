@@ -196,12 +196,12 @@ context quality, memory and performance are still deployment gates.
 
 Later native AMD64 installed-origin CPU qualification completed 25 successful chunks against the
 normal Source06 verification image: 6,214 non-skipped passes, zero failures/errors and 155 explicit
-skips over the 386-path Linux inventory. The qualified read-only test fixture preserved installed
+skips over its qualified 386-path Linux inventory. These counts retain that source-bound snapshot before the new maintained Rotor7 native GPU test; the changed runtime has separate qualification. The qualified read-only test fixture preserved installed
 package/native origins; its full 1,033-file native UID-1000 hashes matched before and after.
 The dated GB10 counts above retain their original scope. Current source/image identities, default-prefetch
-generation observations, completed current CLI/API qualification and future changed-image/shipping gates are recorded in the
+generation observations and completed current CLI/API qualification are recorded in the
 [README](../../README.md#verification-and-development) and
-[optimization validation](../../docs/optimization-validation.md).
+[optimization validation](../../docs/optimization-validation.md). The tested notification and full-request optional expert-arena alternatives retain the original notification and fixed-cache policies. The seven-bit decoder lookup was selected only for the [controlled AMD64 serial/MTP region](../../README.md#controlled-rotorquant7-decoder-comparison), without a new public flag; it does not change the full-prefetch Compose profile. The separate aggregate-room-clipping diagnostic was inapplicable in its measured workload, so no arena-lending/clipping path is retained. Changed-image/shipping packaging qualification remains pending; these AMD64 results do not add GB10 performance or context coverage.
 
 The nightly Triton bindings emitted nanobind reference warnings at interpreter
 shutdown after the CUDA suite, which exited successfully. Small isolated compiler

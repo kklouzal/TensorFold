@@ -159,9 +159,10 @@ def store_side(x, DATA, SCALE, slot, STATUS, D: tl.constexpr, BITS: tl.constexpr
 
 @triton.jit
 def load_side(DATA, SCALE, ki, valid, hk, HK: tl.constexpr, D: tl.constexpr, M: tl.constexpr,
-              BITS: tl.constexpr, CODEC: tl.constexpr):
+              BITS: tl.constexpr, CODEC: tl.constexpr, ROTOR_LOOKUP: tl.constexpr = False):
     """Decode [M,D] in the stored basis; invalid rows return zero without out-of-range loads."""
 
+    tl.static_assert(not ROTOR_LOOKUP or (M == 64 and D == 256 and BITS == 7 and CODEC == 4))
     row = ki.to(tl.int64) * HK + hk
     if CODEC:
         group = tl.arange(0, D // 128)
@@ -196,7 +197,10 @@ def load_side(DATA, SCALE, ki, valid, hk, HK: tl.constexpr, D: tl.constexpr, M: 
                           mask=valid[:, None], other=0)
             hi = tl.load(DATA + base + (high[None, :] // 16) * 112 + 96 + high[None, :] % 16,
                          mask=valid[:, None], other=0)
-            out = rotor.dequant_group_7(lo, mid, hi, scale, M=M, W=D)
+            if ROTOR_LOOKUP:
+                out = rotor.dequant_group_7_lookup(lo, mid, hi, scale, M=M, W=D)
+            else:
+                out = rotor.dequant_group_7(lo, mid, hi, scale, M=M, W=D)
         elif BITS == 8:
             code = tl.load(DATA + row[:, None] * D + tl.arange(0, D)[None, :],
                            mask=valid[:, None], other=0)
