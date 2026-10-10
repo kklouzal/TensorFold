@@ -8,9 +8,13 @@ and AMD64 with NGC CUDA 13.4.1 and upstream PyTorch nightly 2.16.0.dev20261006,
 matching TorchVision 0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d.
 `nightly-pins.json` retains the validated ARM64 inputs;
 `nightly-pins-amd64.json` records the corresponding official AMD64 inputs.
-Both include immutable base digests and wheel SHA256 hashes. The AMD64 dependency
-closure was verified using an explicit cross-platform pip report, not native
-image/GPU execution. Its full build and target-machine checks remain required.
+Both include immutable base digests and wheel SHA256 hashes. These are the
+recorded 2026-10-06 inputs, rather than floating latest tags. The AMD64 dependency
+closure began with an explicit cross-platform pip report; subsequent native
+AMD64 image installation, installed-wheel audits, CUDA checks and actual
+generations ran on the 16 GB Blackwell test host. Those results belong to their
+recorded image/source identities. Fresh final-image checks for the latest source
+remain tracked in [optimization validation](../../docs/optimization-validation.md).
 The current Compose profile enables YaRN factor 2 with 524,288
 prompt-plus-reply tokens and four request slots. Caches grow on demand within
 the global memory gate; four simultaneously full-size contexts are not assumed
@@ -64,8 +68,12 @@ providers and omit the precompiled Conv3d engine needed by the vision tower.
 Neither dependency tree is modified.
 
 Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/`
-or the sibling `/amd64/`, separate from each other and older Torch/CUDA caches. Compiler jobs are
-bounded to one to limit startup memory peaks. New Torch versions use OS advisory
+or the sibling `/amd64/`, separate from each other and older Torch/CUDA caches.
+The Dockerfile defaults `MAX_JOBS` to eight. Set `--build-arg MAX_JOBS=N` when
+building or `-e MAX_JOBS=N` when running to choose a bounded compiler worker
+count appropriate to that host's CPU and memory. This setting does not prove
+that a compiler used every worker. The small verification examples below use
+one worker to limit memory peaks. New Torch versions use OS advisory
 locks: a persistent unlocked `lock` file is normal and must not be deleted as a
 recovery step. TensorFold emits old stale-file guidance only for the audited
 FileBaton implementation.
@@ -217,3 +225,49 @@ and its original hash. Dependency selection/provenance does not replace native
 image installation, payload hash verification or CUDA/model checks.
 Update the image/cache identifiers with the pins and rerun CPU, GPU and model
 gates. Do not hand-edit generated requirement locks.
+
+## Deployment upkeep
+
+This Compose file is the captured **GB10 deployment profile**. Its 114 GiB memory
+limit, CPU set, local model path, 524,288-token context, and four-slot configuration
+are specific to that host. Start a different machine with its own model, resource
+budget, and context using the standalone command in the [fork README](../../README.md).
+The runtime image's default entrypoint already invokes the CUDA compatibility
+launcher and Harness; pass `serve` and its model/options after the image name.
+
+The images default to the container's root user. Model files must be readable,
+and the persistent `/cache` directory must be writable by the user selected for
+the container. Keep a local model mount read-only when downloading is not
+needed. Changing `--user` requires checking those paths and the runtime's home
+directory; the verification stage makes its public project files readable to
+unprivileged test workers. No model or kernel cache belongs in a source checkout.
+
+For the GB10 profile, set `HF_CACHE`, `KERNEL_CACHE`, and `TENSORFOLD_IMAGE` for
+the selected paths and built image, then use:
+
+```bash
+docker compose -f deploy/gb10/compose.yaml config --quiet
+docker compose -f deploy/gb10/compose.yaml up -d
+docker compose -f deploy/gb10/compose.yaml ps
+docker compose -f deploy/gb10/compose.yaml logs --tail 100 -f tensorfold
+curl -fsS http://127.0.0.1:8888/health
+curl -fsS http://127.0.0.1:8888/v1/models
+docker compose -f deploy/gb10/compose.yaml stop tensorfold
+docker compose -f deploy/gb10/compose.yaml start tensorfold
+```
+
+Initial kernel compilation and full-model loading can take minutes. Read startup
+logs and use the health endpoint to establish readiness before sending requests.
+The profile's health check allows a 15-minute initial startup period. `stop` and
+`start` retain the container; `restart tensorfold` restarts it. After rebuilding
+with a new source commit and image tag, set `TENSORFOLD_IMAGE` and run `up -d`
+to replace the service, then repeat health, model, generation and restart checks.
+Retain the previous image tag for rollback until those checks pass. Updating
+packages inside a running container would discard the build's recorded identity.
+
+When changing features, flags, defaults, pins, deployment settings, or qualified
+performance/validation results, update the root README and affected guide in the
+same change. Follow [CONTRIBUTING.md](../../CONTRIBUTING.md) for source validation
+and upstream merges. Documentation changes to `README.md` also change the wheel's
+package metadata, so publish a fresh source capture and image identity while
+reusing native compilation evidence only where its actual inputs still match.

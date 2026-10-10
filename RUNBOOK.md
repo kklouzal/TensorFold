@@ -1,7 +1,7 @@
 # Installation runbook
 
 Use the backend that matches the host. TensorFold needs Python 3.11 or newer, Apple Silicon for MLX,
-or a supported NVIDIA CUDA environment. Choose one checkpoint from the [model table](README.md#models)
+or a supported NVIDIA CUDA environment. Choose one checkpoint from the [model table](README.md#supported-models-and-formats)
 and check disk space and available memory before downloading it.
 
 ## Apple Silicon
@@ -119,11 +119,9 @@ explicit `--context`.
 
 ## Windows with an NVIDIA card
 
-Native Windows is experimental: its host layer is in, but it has not served a request on a Windows PC yet. It runs
-one GPU a process, since CUDA on Windows has no NCCL for two ranks; it reads weights through pinned buffers where
-Linux uses O_DIRECT, sizes memory with Windows' own API, and prints every thread's stack on Ctrl+Break. GPUs below
-compute capability 8.9 are refused at startup. WSL2 runs the Linux engine instead: inside Ubuntu, follow
-[RTX cards without Docker](#rtx-cards-without-docker). We have not run it under WSL2 yet either.
+This fork targets Linux and macOS. Its required POSIX descriptor extension explicitly refuses a native
+Windows build. The CUDA container is qualified on Linux hosts; native Windows and WSL2 have not been
+qualified by this fork's current validation.
 
 ## Memory and context
 
@@ -146,7 +144,7 @@ The same budget reaches concurrent admission; context and request memory checks 
 Requested replies need cache space too. Reduce context, reply length, retained prefixes on MLX, or
 checkpoint size after a memory refusal. The MLX process budget reserves 3 GiB outside the allocator.
 Release-qualified memory and speed results are TBD [release-0.3.5]; see the
-[memory-class table](README.md#context-and-memory). Do not assume model-file size is the whole process
+[memory/context guide](README.md#context-rope-and-yarn). Do not assume model-file size is the whole process
 footprint. Prompt caching uses token-derived message boundaries; `--prefill-grid` is no longer an option.
 
 ## Updating

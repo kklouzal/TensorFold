@@ -5,6 +5,14 @@ mode. A result applies to that region while its checkpoint, source, compiler,
 runtime, configuration and relevant cache state match. Rebuild or revalidate
 when those inputs change.
 
+Keep the README's measured-results summary and this validation document current
+in the same change whenever a retained optimization, configuration, supported
+region, or qualification result changes. Identify the tested checkpoint,
+hardware, runtime, workload and uncertainty alongside each result. Historical
+generation evidence keeps its original build identity; it does not qualify a
+later release automatically. Task artifacts referenced during development are
+local evidence unless published with an accessible validation receipt.
+
 Preserve functionality, authorization, data integrity, memory ownership and
 the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently

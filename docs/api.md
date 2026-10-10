@@ -306,3 +306,7 @@ HTTP 400 refuses what this server does not run: built-in tools (web search, file
 others), `background`, `include` (encrypted reasoning among them), `conversation`, `prompt` templates,
 `truncation: "auto"`, `top_logprobs`, `input_file` parts and file IDs, `item_reference` items, encrypted reasoning
 items, and a `previous_response_id` that is not stored.
+
+Maintainers: update the [README deployment guide](../README.md), this API reference and the affected recipes
+in the same change when public request fields, serve options, backend or model capabilities, or container
+deployment instructions change. Keep defaults, runnable examples and validation scope consistent with the source.

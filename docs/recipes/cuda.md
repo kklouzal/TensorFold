@@ -3,8 +3,8 @@
 CUDA families read supported checkpoints through PyTorch loaders and execute family-specific Triton and
 CUDA kernels. Use the [runbook](../../RUNBOOK.md#nvidia-gpus) for the container and two-rank setup.
 
-Native Windows is experimental, one GPU a process and not yet run on Windows hardware: see the
-[runbook](../../RUNBOOK.md#win-nvidia).
+This fork targets Linux CUDA and macOS MLX. Its required POSIX descriptor extension does not build on
+native Windows; WSL2 remains unqualified. See the [runbook](../../RUNBOOK.md#win-nvidia).
 
 | Family | CUDA execution |
 | --- | --- |

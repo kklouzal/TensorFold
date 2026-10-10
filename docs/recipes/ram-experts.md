@@ -1,5 +1,10 @@
 # CUDA experts backed by system RAM
 
+Keep the README's expert-cache usage and measured-performance summary current
+in the same change when flags, defaults, cache policy, RAM/VRAM budgeting, or
+qualified performance results change. State each measurement's model, runtime,
+context, parallelism, and evidence scope.
+
 `--vram-experts GIB|auto` keeps Flash Next's affine 4-bit or EXL3 expert weights in pageable
 system RAM and allocates a bounded shared cache on the GPU. This is useful on
 machines with separate host RAM and limited NVIDIA VRAM. It uses the ordinary

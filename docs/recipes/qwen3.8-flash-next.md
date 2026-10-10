@@ -344,6 +344,9 @@ On an M3 Ultra, each flag was held to a smaller Mac's budget and compared on the
 
 ### KV cache
 
+Maintain this recipe and the main README in the same change whenever supported KV formats, public settings,
+deployment requirements, or published quality and performance results change.
+
 `--kv-dtype bf16` is the default. `--kv-dtype int8` and `--kv-dtype int4` store each attention layer's keys and
 values as codes with one fp16 scale per 32 values, the arithmetic of ExLlamaV3's `-cq 8` and `-cq 4` (the
 non-companded grid): each group of 32 is rotated by a 32-point Hadamard, its absmax is the scale, and the codes sit
