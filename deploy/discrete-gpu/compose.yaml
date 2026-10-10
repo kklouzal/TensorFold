@@ -1,0 +1,99 @@
+name: tensorfold-discrete-gpu
+
+services:
+  tensorfold:
+    image: ${TENSORFOLD_IMAGE:?Set TENSORFOLD_IMAGE to the built fork image}
+    command:
+      - serve
+      - /model
+      - --backend
+      - cuda
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8080'
+      - --name
+      - Qwen3.8-Flash-Next
+      - --parallel
+      - '2'
+      - --context
+      - '262144'
+      - --kv-dtype
+      - rotorquant-iso3
+      - --mtp-drafts
+      - '0'
+      - --vram-experts
+      - auto
+      - --thinking-budget
+      - '0'
+      - --max-tokens
+      - '32768'
+      - --no-prefill-fp8
+      - --max-http-connections
+      - '32'
+      - --max-pending-requests
+      - '8'
+      - --no-update-check
+    user: '1000:1000'
+    working_dir: /work
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /work
+      TMPDIR: /tmp
+      HF_HOME: /work/huggingface
+      HF_HUB_OFFLINE: '1'
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      MAX_JOBS: '8'
+      PYTHONUNBUFFERED: '1'
+    volumes:
+      - type: bind
+        source: ${TF_MODEL_DIR:?Set TF_MODEL_DIR to the absolute immutable model path}
+        target: /model
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TF_CACHE_DIR:?Set TF_CACHE_DIR to the absolute writable cache path}
+        target: /cache
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TF_TMP_DIR:?Set TF_TMP_DIR to the absolute writable temporary path}
+        target: /tmp
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TF_WORK_DIR:?Set TF_WORK_DIR to the absolute writable work path}
+        target: /work
+        bind:
+          create_host_path: false
+    ports:
+      - target: 8080
+        published: '${TF_PORT:-8080}'
+        host_ip: ${TF_BIND_IP:-127.0.0.1}
+        protocol: tcp
+    gpus: all
+    mem_limit: '56000000000'
+    memswap_limit: '56000000000'
+    pids_limit: 256
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 60s
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3

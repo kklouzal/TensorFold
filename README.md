@@ -45,6 +45,8 @@ The image includes the extension build toolchain and isolates compiler caches by
 
 ## Build and run the NVIDIA container
 
+For a persistent service targeting the full native 262,144-token window on a discrete GPU, use the [discrete-GPU Compose guide](deploy/discrete-gpu/README.md). It supplies service-owned writable storage, health checks, bounded RAM and logs, and automatic restart. Its configuration and measured deployment results are recorded separately from the shorter-context example below.
+
 The following example is for a **native AMD64 Linux host with a separate 16 GB GPU and 64 GB RAM**. It uses the tested Flash Next EXL3 checkpoint, a 2,048-token configured context, four shared decode slots, and a RAM-backed expert cache. Memory admission can still refuse a configuration that does not fit your actual host.
 
 ### 1. Clone and build
@@ -389,6 +391,72 @@ On Linux, the measured transport policy enables TCP_NODELAY once a connection su
 ## Measured performance and tested hardware
 
 The principal separate-VRAM trials used **RTX PRO 2000 Blackwell (SM 120), nominal 16 GB VRAM / 64 GB system RAM**, on native AMD64 Linux. Observed physical GPU memory was 16,584,343,552 bytes; one intermediate-image startup probe reported 15,868,952,576 bytes available to the job. Available memory changes with other users and allocations.
+
+### Full native context deployment
+
+On **2026-10-10**, the RTX PRO 2000 Blackwell / 64 GB RAM host deployed the
+[discrete-GPU Compose profile](deploy/discrete-gpu/README.md): **262,144 native
+prompt-plus-reply tokens, two slots, `rotorquant-iso3` K/V, `--vram-experts auto`,
+MTP disabled (`--mtp-drafts 0`), BF16 prompt activations, default n-gram prefetch,
+thinking enabled and checkpoint sampling defaults**. No YaRN override is used.
+The default reply limit is 32,768 tokens; HTTP/pending-request caps are 32/8.
+The model is [turboderp/Qwen3.8-Flash-Next-exl3](https://huggingface.co/turboderp/Qwen3.8-Flash-Next-exl3),
+branch `2.05bpw_h4_ng4`, revision `65c895314393431c09050b2e04e250836b3a6eb4`.
+This selects the Flash Next backbone at 2.05-bpw checkpoint precision rather
+than reducing the model architecture. Weight and three-bit KV quantization
+are explicit accuracy/memory tradeoffs.
+
+The deployed runtime image is
+`sha256:b091954b6556a540123d2872d30fe86905344f4b24a6ff47e8361269916f7117`,
+wheel `4d79339aa56286d6d5863e1d37c6584abacb79938ca97c75386649f62f32fbd2`,
+source UID `e7a15d7331560e25bc31bcd5caedf27c6c81c7dbc6d19b2f74d281c78534daba`.
+Its 465 installed package sources and non-documentary runtime/build pins match `1ea26a4`;
+the deployment-documentation changes do not alter runtime code. Reusing this
+verified image does not relabel an older build as a new source identity.
+
+Startup reported **28.24 GiB of pageable expert authority** and a **1.92 GiB GPU
+expert pool, 1,631 resident entries and 1,583 experts per lease**. Mandatory
+weights, attention/recurrent state and scratch remain on the GPU. Automatic
+sizing reserves both complete context windows, ten retained snapshots, resize
+overlap and 512 MiB headroom. Consequently, idle VRAM can include room reserved
+for future KV growth. The service has a **56,000,000,000-byte RAM limit with no
+additional swap**. Same-container restart and subsequent complete generations
+passed, including the arithmetic answer `888`. The observed cgroup peak at the
+final receipt was **53.148 GB**, with no OOM or swap event. NVFP4 expert offload remains unsupported; Blackwell's FP4
+instructions alone do not make a resident Flash Next NVFP4 export fit 16 GB.
+
+Actual HTTP/SSE generations used public sky, arithmetic and evaporation prompts,
+greedy decoding, seed 777, thinking enabled and 128 generated tokens per request.
+Across one-slot MTP, two-slot MTP and two-slot MTP-disabled starts, all three
+matched draft/serial pairs produced the same sampled token hashes and text under
+this EXL3/ISO3 contract. Two simultaneous requests also matched their solo outputs.
+Each concurrent comparison excluded one warmup and consumed three complete
+256-token batches. Rates include prompt processing and complete HTTP response
+consumption; they are aggregate client throughput, not each user's decode rate.
+
+| Full configured context, two concurrent requests | Median aggregate tokens/s | Three warm samples |
+| --- | ---: | --- |
+| MTP-4, confidence 0.5; 1.28 GiB expert pool | 10.25 | 10.22, 10.33, 10.25 |
+| MTP disabled; 1.92 GiB expert pool — deployed | 11.20 | 11.20, 11.05, 11.28 |
+
+Single-request complete-response medians across the three prompts were 6.43
+(tokens/s, MTP enabled) and 7.79 (MTP-disabled serial requests) on two slots;
+individual prompt and cache state affected rates. An earlier 64-token warm
+single-slot example measured 10.42–10.52 server decode tokens/s with MTP and
+8.91–8.99 without; these are different timing scopes and workloads. MTP can
+help particular prompts, and remains available by changing the profile and
+rechecking admission. The selected default favors the measured concurrent
+workload and the larger expert cache.
+
+Three slots with the lowest supported KV footprint and MTP disabled were
+refused by normal automatic-cache admission: the full service workspace left
+no room for one expert cell. Four requires still more memory under the same
+resource budget and was ruled out by source arithmetic, not a physical run.
+INT4 KV without MTP fitted one slot but was slower in the bounded warm example
+(8.64–9.01 server decode tokens/s). These are small, sequentially collected
+samples from one start per comparison configuration, without population
+confidence or sustained full-window quality/performance claims. The context
+was admitted and reserved; **a filled 262,144-token prompt was not tested**.
 
 ### Current default-prefetch reference
 

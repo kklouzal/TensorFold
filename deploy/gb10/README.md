@@ -55,6 +55,10 @@ docker buildx build --platform linux/amd64 --load --target runtime \
   --tag tensorfold-fork:amd64 --file deploy/gb10/Dockerfile .
 ```
 
+For a persistent service on a separate-VRAM AMD64 host, use the
+[discrete-GPU Compose profile](../discrete-gpu/README.md). Its context, slots
+and expert-cache allocation have their own qualification scope.
+
 The GB10 Compose profile contains its real local paths and model options. Select
 paths, model, memory pool and context for the target machine using actual
 admission and measured peaks. A 16 GiB card does not inherit the GB10's available
