@@ -163,7 +163,10 @@ def test_loader_resolves_each_module_and_keeps_metadata_precision():
     tree = ast.parse((ROOT / "families/qwen3_5/cuda/weights.py").read_text())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "QLinear")
     load = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "load")
-    linear = next(node for node in load.body if isinstance(node, ast.FunctionDef) and node.name == "qlinear")
+    # The loader's owned reader now encloses its projections in a try/finally.
+    linears = [node for node in ast.walk(load) if isinstance(node, ast.FunctionDef) and node.name == "qlinear"]
+    assert len(linears) == 1
+    linear = linears[0]
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     class Tensor:
         def __init__(self, shape, dtype):

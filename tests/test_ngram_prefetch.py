@@ -12,32 +12,16 @@ def test_prefetch_reads_each_mapped_arrays_bytes_once_in_spans(tmp_path, monkeyp
     path.write_bytes(b"h" * 1000 + (np.arange(41_000) % 251).astype(np.uint8).tobytes())
     arrays = [np.memmap(path, dtype=np.uint8, mode="r", offset=1000, shape=(20_000,)),
               np.memmap(path, dtype=np.uint16, mode="r", offset=21_000, shape=(10_000,))]
-    reads, real = [], open
+    reads = []
 
-    class Spy:
-        def __init__(self, *args, **kwargs):
-            self.f = real(*args, **kwargs)
-
-        @property
-        def closed(self):
-            return self.f.closed
-
-        def fileno(self):
-            return self.f.fileno()
-
-        def close(self):
-            self.f.close()
-
-        def seek(self, at):
-            self.at = at
-            return self.f.seek(at)
-
+    class Spy(host_table._HostFile):
         def readinto(self, view):
-            got = self.f.readinto(view)
-            reads.append((self.at, got, bytes(view[:got])))
+            at = self.tell()
+            got = super().readinto(view)
+            reads.append((at, got, bytes(view[:got])))
             return got
 
-    monkeypatch.setattr(host_table, "open", Spy, raising=False)
+    monkeypatch.setattr(host_table, "_HostFile", Spy)
     assert host_table._prefetch(arrays, workers=3) >= 0.0
     spans = sorted((at, n) for at, n, _ in reads)
     assert all(n <= 4096 for _, n in spans) and len(spans) == len({at for at, _ in spans})
@@ -49,5 +33,5 @@ def test_prefetch_reads_each_mapped_arrays_bytes_once_in_spans(tmp_path, monkeyp
 
 
 def test_prefetch_faults_in_an_array_that_maps_no_file(monkeypatch):
-    monkeypatch.setattr(host_table, "open", lambda *a, **k: pytest.fail("no file to read"), raising=False)
+    monkeypatch.setattr(host_table, "_HostFile", lambda *a, **k: pytest.fail("no file to read"))
     assert host_table._prefetch([np.ones((3, 5000), dtype=np.uint16)], workers=2) >= 0.0

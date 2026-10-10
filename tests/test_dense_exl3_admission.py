@@ -308,6 +308,8 @@ class DenseAdmissionContract(unittest.TestCase):
                 scope = {"_read": read, "_read_groups": groups, "files": SimpleNamespace(close=close),
                          "where": {}, "ckpt": SimpleNamespace(plain={}), "foreign": lambda name: False,
                          "device": "metadata-only", "groups": {}, "Workspace": object}
+                functions(LOADER.with_name("weights.py"),
+                          {"_close_failed_checkpoint_impl", "_close_failed_checkpoint"}, scope)
                 exec(compile(ast.fix_missing_locations(ast.Module([block], [])), str(LOADER), "exec"), scope)
                 if failing is not None or close_fails:
                     with self.assertRaises(RuntimeError) as result:
@@ -319,6 +321,38 @@ class DenseAdmissionContract(unittest.TestCase):
                 else:
                     scope["read_owned"]()
                 self.assertEqual(events, ["read", "close"] if failing == "read" else ["read", "group", "close"])
+
+    def test_checkpoint_cleanup_helper_retains_native_roots_and_malformed_note_status(self):
+        for malformed_notes in (False, True):
+            helpers = functions(LOADER.with_name("weights.py"),
+                                {"_close_failed_checkpoint_impl", "_close_failed_checkpoint"})
+            primary = RuntimeError("primary checkpoint failure")
+            cause, context = LookupError("prior cause"), KeyError("prior context")
+            cleanup = OSError("reader cleanup failure")
+            primary.__cause__, primary.__context__ = cause, context
+            if malformed_notes:
+                primary.__notes__ = 42
+            events = []
+
+            def close():
+                events.append("close")
+                primary.__cause__, primary.__context__ = ValueError("foreign cause"), ValueError("foreign context")
+                raise cleanup
+
+            with self.assertRaises(RuntimeError) as caught:
+                helpers["_close_failed_checkpoint"](SimpleNamespace(close=close), primary)
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(events, ["close"])
+            self.assertIsInstance(primary.__cause__, BaseExceptionGroup)
+            retained = primary.__cause__.exceptions
+            self.assertIs(retained[0], cause)
+            self.assertIs(retained[1], context)
+            self.assertIs(retained[2], cleanup)
+            if malformed_notes:
+                self.assertEqual(len(retained), 4)
+                self.assertIsInstance(retained[3], TypeError)
+            else:
+                self.assertEqual(len(retained), 3)
 
 
 if __name__ == "__main__":

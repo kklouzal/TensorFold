@@ -39,7 +39,7 @@ def test_the_estimate_no_longer_grows_with_the_window():
 
 
 def test_the_drafters_weights_are_its_4bit_copies(tmp_path):
-    """The weights estimate of a checkpoint with GLM-5.3-Flash-DFlash2's shapes (headers only, no data)."""
+    """Estimate GLM-5.3-Flash-DFlash2 weights from a sparse checkpoint without materializing tensors."""
 
     import json
     import struct
@@ -67,7 +67,9 @@ def test_the_drafters_weights_are_its_4bit_copies(tmp_path):
         header[name] = {"dtype": "BF16", "shape": shape, "data_offsets": [off, off + n]}
         off += n
     raw = json.dumps(header).encode()
-    (tmp_path / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (tmp_path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + off)
     w = dflash2_weights(tmp_path, 2)
     q4 = 9 / 16                                               # bytes a value: 4 bits, BF16 scale and bias a 64
     per_layer = ((32 + 16) * hd // 2 * D + 16 * hd // 2 * D + D * H * hd // 2 + 2 * inter // 2 * D + D * inter // 2

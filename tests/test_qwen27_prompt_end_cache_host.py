@@ -429,7 +429,11 @@ def _stand_in_prefills(m, monkeypatch):
         return "normed", (kept, _snap(keep_at))
 
     monkeypatch.setattr(m.multi, "prefill_state", prefill_state)
-    monkeypatch.setattr(m.multi, "first_token", lambda w, normed, n, *rest: _reply(recs[w.rank].last)[0])
+    def first_token(w, normed, n, *rest, plan=None):
+        assert plan is None  # these fixtures retain a complete, unsplit head on both ranks
+        return _reply(recs[w.rank].last)[0]
+
+    monkeypatch.setattr(m.multi, "first_token", first_token)
     return recs
 
 
@@ -444,6 +448,7 @@ def _admitted(dec, s):
 
     dec.admit(s)
     dec._fill()
+    assert s.error is None, "successful prefill must not hide a stand-in callback signature failure"
 
 
 def _cache_ids(dec):
@@ -612,7 +617,11 @@ def _tapped_prefills(m, monkeypatch):
 
     monkeypatch.setattr(m.prefill, "prefill_chunk", chunk)
     monkeypatch.setattr(m.multi, "State", lambda w: _ids_state(m, []))
-    monkeypatch.setattr(m.multi, "first_token", lambda w, normed, n, *rest: _reply([n])[0])
+    def first_token(w, normed, n, *rest, plan=None):
+        assert plan is None  # the drafter-context fixture also holds an unsplit head
+        return _reply([n])[0]
+
+    monkeypatch.setattr(m.multi, "first_token", first_token)
 
 
 def _context_rows_in(tensors):
@@ -668,8 +677,8 @@ def _drafter_rows(m, monkeypatch, turns, *, whole_prompt, rank):
 
         mp.setattr(m.multi, "_share", share)
         world = 1 if rank is None else 2
-        w = SimpleNamespace(config=SimpleNamespace(eos=(0,), vocab=8), norm=m.torch.zeros(1),
-                            head=SimpleNamespace(n=8), layers=[])
+        w = SimpleNamespace(config=SimpleNamespace(eos=(0,), vocab=VOCAB), norm=m.torch.zeros(1),
+                            head=SimpleNamespace(n=VOCAB), layers=[])
         drafts = [ContextDraft(m.torch, WINDOW, world) for _ in range(world)]
         decs = [m.multi.MultiDecoder(w, d, keep=KEEP, rank=r, world=world, context=CONTEXT, allow_copy=False)
                 for r, d in enumerate(drafts)]

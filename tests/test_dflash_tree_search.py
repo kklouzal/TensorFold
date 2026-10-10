@@ -5,7 +5,7 @@ import heapq
 import numpy as np
 import pytest
 
-from tensorfold.drafters.dflash_drafter import best_first_tree
+from tensorfold.drafters.dflash_tree import best_first_tree
 
 
 def _reference(cands, unary, hproj, noise, anchor, pred, succ, temp, edge, noise_weight, tau, kids, nodes):
@@ -138,7 +138,7 @@ def test_tree_with_a_prior_matches_the_offline_study():
 
 
 def test_lattice_gain_is_the_true_tokens_log_softmax_change():
-    from tensorfold.drafters.dflash_drafter import lattice_gain
+    from tensorfold.drafters.dflash_tree import lattice_gain
 
     rng = np.random.default_rng(3)
     pred, succ, cands, unary, hproj = _lattice(rng)

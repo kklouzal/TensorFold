@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import importlib.abc
@@ -23,14 +24,21 @@ class NoSDK(importlib.abc.MetaPathFinder):
         return None
 
 
-sys.meta_path.insert(0, NoSDK())
-sys.path.insert(0, str(ROOT / 'src'))
-from tensorfold.families.deepseek_v4 import prompts as current  # noqa: E402
-from tensorfold.families.deepseek_v4 import rendering  # noqa: E402
-from tensorfold.families.deepseek_v4.vendor import encoding_dsv4 as vendor  # noqa: E402
-spec = importlib.util.spec_from_file_location('owned_original_prompt_oracle', ROOT / 'tests/fixtures/deepseek_v4/original_prompts.py')
-original = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(original)
+@contextmanager
+def source_imports():
+    """Reject SDK discovery only while this source control owns its imports."""
+    with patch.object(sys, 'meta_path', [NoSDK(), *sys.meta_path]), \
+            patch.object(sys, 'path', [str(ROOT / 'src'), *sys.path]):
+        yield
+
+
+with source_imports():
+    from tensorfold.families.deepseek_v4 import prompts as current
+    from tensorfold.families.deepseek_v4 import rendering
+    from tensorfold.families.deepseek_v4.vendor import encoding_dsv4 as vendor
+    spec = importlib.util.spec_from_file_location('owned_original_prompt_oracle', ROOT / 'tests/fixtures/deepseek_v4/original_prompts.py')
+    original = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(original)
 
 
 def observations(function, messages, options):
@@ -43,6 +51,18 @@ def observations(function, messages, options):
 
 
 class Selected(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(source_imports())
+
+    def test_source_import_scope_restores_prior_import_lists_on_failure(self):
+        before_meta, before_path = sys.meta_path, sys.path
+        with self.assertRaisesRegex(AssertionError, 'source control must not import SDK'):
+            with source_imports():
+                self.assertIsInstance(sys.meta_path[0], NoSDK)
+                sys.meta_path[0].find_spec('torch')
+        self.assertIs(sys.meta_path, before_meta)
+        self.assertIs(sys.path, before_path)
+
     def test_exact_original_source_golden_and_current_two_function_math(self):
         self.assertEqual(hashlib.sha256((ROOT / 'tests/fixtures/deepseek_v4/original_prompts.py').read_bytes()).hexdigest(),
                          '430acf50757a0bae1e8e5137326729cc3eae123d72835c2a4567a84af4b513de')

@@ -16,6 +16,7 @@ import weakref
 from tensorfold.engine.snapshot_codec import DTYPES
 from tensorfold.server.checkpoints import CheckpointStore
 from tensorfold.server.prompt_memory import PromptMemory
+from tensorfold.server.request_limits import RequestLimit, optional_limit
 
 
 class ProbeRuntime:
@@ -147,6 +148,8 @@ class StartupControls(unittest.TestCase):
                 events.append("start")
 
         ns = {
+            "optional_limit": optional_limit,
+            "RequestLimit": RequestLimit,
             "LaneEngine": Engine,
             "Scheduler": Scheduler,
             "CheckpointStore": CheckpointStore,

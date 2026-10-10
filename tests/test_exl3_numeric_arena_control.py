@@ -27,6 +27,7 @@ LAYOUT = source_module("_numeric_arena_layout", "src/tensorfold/cuda/exl3/cache_
 RAM = source_module("_numeric_arena_ram", "src/tensorfold/families/qwen4_exp/ram_experts.py")
 ExpertSpec, arena_plan, Layout = LAYOUT.ExpertSpec, LAYOUT.plan, RAM.Layout
 from tensorfold.cuda.capacity import Weights  # noqa: E402 - stdlib-only source imports
+from tensorfold.families.qwen4_exp.ple_lifetime import PLETables  # noqa: E402 - actual stdlib owner
 
 
 def function(path, name, namespace):
@@ -130,6 +131,8 @@ class NumericArenaControl(unittest.TestCase):
             self.assertIs(kwargs["expert_cache"], cache)
             self.assertIs(kwargs["_config"], configuration)
             self.assertIs(kwargs["_draft_ids"], draft_ids)
+            self.assertIsInstance(kwargs["_ple_tables"], PLETables)
+            self.assertFalse(kwargs["_ple_tables"].closed)
             order.append("load-owner-drained")
             if failed == "load":
                 raise self.primary
@@ -149,7 +152,10 @@ class NumericArenaControl(unittest.TestCase):
 
         types.draft_token_ids = selected_ids
         load = function("src/tensorfold/families/qwen4_exp/cuda/exl3.py", "load",
-                        {"__package__": "tensorfold.families.qwen4_exp.cuda", "_load": loaded})
+                        {"__package__": "tensorfold.families.qwen4_exp.cuda", "_load": loaded,
+                         "PLETables": PLETables,
+                         "torch": SimpleNamespace(device=lambda device: SimpleNamespace(type=device),
+                                                  cuda=SimpleNamespace(synchronize=lambda device: order.append("fence")))})
         return load, weights, order, {ram.__name__: ram, host.__name__: host, types.__name__: types}
 
     def test_numeric_configuration_follows_drained_load_once(self):
@@ -158,12 +164,17 @@ class NumericArenaControl(unittest.TestCase):
             result = load("fixture", vram_experts=.5)
         self.assertIs(result, weights)
         self.assertEqual(order, [("create", 256, 256, "cuda"), "load-owner-drained", ("configure", 1024)])
+        self.assertIsInstance(weights.meta["ple_tables"], PLETables)
+        weights.meta["ple_tables"].close(lambda: None)
+        self.assertTrue(weights.meta["ple_tables"].closed)
 
     def test_auto_retains_bootstrap_for_decoder_owned_sizing(self):
         load, weights, order, modules = self.loader(automatic=True)
         with patch.dict(sys.modules, modules):
             self.assertIs(load("fixture", vram_experts="auto"), weights)
         self.assertEqual(order, [("create", 256, 256, "cuda"), "load-owner-drained"])
+        weights.meta["ple_tables"].close(lambda: None)
+        self.assertTrue(weights.meta["ple_tables"].closed)
 
     def test_configuration_or_load_failure_closes_before_propagating(self):
         for phase in ("load", "configure"):

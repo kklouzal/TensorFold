@@ -10,9 +10,9 @@ from tensorfold.families.qwen3_5.cuda.weights import Config  # noqa: E402
 
 IM_END, ENDOFTEXT = 248046, 248044
 TEXT = {
-    "hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 4, "num_attention_heads": 4,
-    "num_key_value_heads": 2, "head_dim": 16, "vocab_size": 248320, "linear_num_key_heads": 2,
-    "linear_num_value_heads": 4, "linear_key_head_dim": 16, "linear_value_head_dim": 16, "linear_conv_kernel_dim": 4,
+    "hidden_size": 512, "intermediate_size": 1024, "num_hidden_layers": 4, "num_attention_heads": 4,
+    "num_key_value_heads": 2, "head_dim": 128, "vocab_size": 248320, "linear_num_key_heads": 2,
+    "linear_num_value_heads": 4, "linear_key_head_dim": 128, "linear_value_head_dim": 128, "linear_conv_kernel_dim": 4,
 }
 
 

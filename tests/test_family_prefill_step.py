@@ -1,6 +1,7 @@
 """A family's engine_settings names its prompt chunk: the prefill plan and the stream memory probe take it."""
 
-from pathlib import Path
+import json
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -13,12 +14,18 @@ from tensorfold.engine import memory
 from tensorfold.engine.prefill_plan import PrefillPlan
 
 
-def parse(*extra):
-    return cli.build_parser().parse_args(["serve", "some/model", *extra])
+def parse(model, *extra):
+    return cli.build_parser().parse_args(["serve", str(model), *extra])
 
 
-def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, mlx_host_protocol):
+def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, mlx_host_protocol, tmp_path):
     seen = {}
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps({"model_type": "fake"}))
+    header = json.dumps({"fixture.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}).encode()
+    header += b" " * (-len(header) % 8)
+    (model_dir / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + b"\x00\x00")
 
     class Built(Exception):
         pass
@@ -35,7 +42,7 @@ def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, 
                                   engine_settings=lambda model, s=settings: dict(s), kernel_version=lambda m: "k")
         family = SimpleNamespace(title="fake", model_type="fake", package=package)
         with pytest.raises(Built):
-            cli._serve_mlx(parse("--no-drafts"), family, Path("some/model"), 0, [], 1 << 30)
+            cli._serve_mlx(parse(model_dir, "--no-drafts"), family, model_dir, 0, [], 1 << 30)
         assert seen["plan"].step == step and seen["plan"].min_chunk == 256 and seen["rows"] == 4
 
 

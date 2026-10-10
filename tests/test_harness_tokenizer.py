@@ -2,6 +2,7 @@
 
 import base64
 import importlib.util
+from http.client import HTTPMessage
 from io import BytesIO
 import json
 from pathlib import Path
@@ -255,8 +256,12 @@ def handler_post(bridge, app, payload, headers, path="/v1/tokenize"):
 
     handler_type = bridge.make_handler_factory(lambda ignored: NativeHandler)(app)
     handler = handler_type()
-    handler.path, handler.headers, handler.rfile = path, headers, BytesIO(payload)
+    parsed_headers = HTTPMessage()
+    for name, value in headers.items():
+        parsed_headers[name] = value
+    handler.path, handler.headers, handler.rfile = path, parsed_headers, BytesIO(payload)
     handler.close_connection = False
+    handler.server = SimpleNamespace(stopping=threading.Event())
     connected, peer = socket.socketpair()
     try:
         connected.settimeout(7)
@@ -281,10 +286,10 @@ def test_tokenize_route_and_native_route_delegation(bridge, app):
 @pytest.mark.parametrize("payload, headers, problem", [
     (b"{}", {}, "body must be nonempty"),
     (b"", {"Content-Length": "0"}, "body must be nonempty"),
-    (b"{}", {"Content-Length": "invalid"}, "body must be nonempty"),
-    (b"{}", {"Content-Length": str(96 * 1024**2 + 1)}, "at most 96 MiB"),
+    (b"{}", {"Content-Length": "invalid"}, "Content-Length must contain a decimal byte count"),
+    (b"{}", {"Content-Length": str(96 * 1024**2 + 1)}, "exceeds the 96 MiB limit"),
     (b"{}", {"Content-Length": "3"}, "ended before Content-Length"),
-    (b"{}", {"Content-Length": "2", "Transfer-Encoding": "chunked"}, "without Transfer-Encoding"),
+    (b"{}", {"Content-Length": "2", "Transfer-Encoding": "chunked"}, "Transfer-Encoding is unsupported; use Content-Length"),
     (b"[}", {"Content-Length": "2"}, "valid UTF-8 JSON"),
     (b"\xff", {"Content-Length": "1"}, "valid UTF-8 JSON"),
     (b"{\"x\":NaN}", {"Content-Length": "9"}, "valid UTF-8 JSON"),

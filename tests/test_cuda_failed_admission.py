@@ -1,11 +1,14 @@
 """A failed admission answers its own request; the concurrent CUDA scheduler goes on serving the others."""
 
 import importlib
+import sys
 import threading
 import time
 from types import SimpleNamespace
 
 import pytest
+
+from tensorfold.cleanup import finish
 
 torch = pytest.importorskip("torch")
 
@@ -14,6 +17,24 @@ from tensorfold.cuda.streams import Stream
 from tests.test_cuda_geometry import allocations  # noqa: F401  (fixture: fake triton, so the module imports)
 
 WAIT = 10.0                                   # seconds a reply may take; a stopped worker never replies
+
+
+@pytest.fixture(autouse=True)
+def owned_schedulers(monkeypatch):
+    """Retire each actual worker after the original request/recovery assertions."""
+    scheduler_type = Scheduler
+    owners = []
+
+    def construct(*args, **kwargs):
+        owner = scheduler_type(*args, **kwargs)
+        owners.append(owner)
+        return owner
+
+    monkeypatch.setattr(sys.modules[__name__], "Scheduler", construct)
+    yield
+    finish([owner.close for owner in owners])
+    assert all(owner._worker_done.is_set() and not owner.thread.is_alive() and owner.decoder is None
+               for owner in owners)
 
 
 class Request:
@@ -70,7 +91,11 @@ def decoders(monkeypatch, allocations):  # noqa: F811
 
     monkeypatch.setattr(multi, "prefill_state", prefill_state)
     monkeypatch.setattr(multi, "prefill_batch", prefill_batch)
-    monkeypatch.setattr(multi, "first_token", lambda *args: 7)
+    def first_token(*args, plan=None):
+        assert plan is None                    # these stand-ins use the unsharded target sampler
+        return 7
+
+    monkeypatch.setattr(multi, "first_token", first_token)
     monkeypatch.setattr(multi, "kept", entry)
     monkeypatch.setattr(multi, "viewed", entry)
     monkeypatch.setattr(multi, "private", lambda st, rows: St(st.pos))

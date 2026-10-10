@@ -66,19 +66,23 @@ has been loaded here yet.
 
 The CUDA engine reads NVIDIA's ModelOpt export of the model (`nvidia/Qwen3.8-27B-NVFP4`: NVFP4 MLP and head, FP8
 attention and DeltaNet projections, bf16 embedding and gates) as it ships. The reader also takes
-compressed-tensors NVFP4 and FP8 exports, checked on synthetic tensors only. Each projection is read by its tensors: NVFP4 codes with their e4m3 block scales and
-FP8 bytes go to the device unchanged, and the lane matmuls turn them into exact bf16 operands (an e2m1 code times
+compressed-tensors NVFP4 and FP8 exports. The `RishabhSinha/Qwen3.5-9B-NVFP4` packed export has the bounded
+public-constructor qualification described in [NVFP4 precision](cuda.md#nvfp4-precision); other export layouts
+retain their separate validation scope. Each projection is read by its tensors: NVFP4 codes with their e4m3 block scales and
+FP8 bytes go to the device unchanged. Under `--precision full`, the lane matmuls turn them into exact bf16 operands
+(an e2m1 code times
 its block scale fits bf16), so drafted replies equal `"draft": false` ones and prompts keep their bits in any
 chunking. `--parallel` serves concurrent requests as on the MLX checkpoint, each reply equal to the same request
 alone. One GPU: `--tp 2` stops at startup (two ranks read the MLX checkpoint), and so does `--vision` until image
-input is qualified on this checkpoint.
+input is qualified on this checkpoint. The default `--precision checkpoint` selects the checkpoint activation math
+described in [NVFP4 precision](cuda.md#nvfp4-precision).
 
 ```bash
 tensorfold pull nvidia/Qwen3.8-27B-NVFP4 z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve nvidia/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8080
 ```
 
-Prompts take bf16 rows on a prompt GEMM that reads the stored bytes: each FP8 byte and each NVFP4 code times its
+Under `--precision full`, prompts take bf16 rows on a prompt GEMM that reads the stored bytes: each FP8 byte and each NVFP4 code times its
 block scale is exact in bf16, summed in fp32 over the inputs, the tensor scale last. `--prefill-fp8` restores the FP8
 prompt matmul (FP8 projections as stored, NVFP4 ones staged to e4m3 once a chunk, a step that rounds by 2^-4 at most,
 and e4m3 activations). Decode, measured on one DGX Spark (GB10) through `tensorfold serve` against the MLX 4-bit

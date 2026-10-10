@@ -8,6 +8,8 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from tests.cli_server_fixture import install_cli_server
+
 from tensorfold import cli, serve_options
 from tensorfold.cuda.http import make_handler as cuda_handler
 from tensorfold.server.errors import RequestError
@@ -136,7 +138,7 @@ def test_bad_image_count_options_are_refused_before_checkpoint_reads(backend, va
 
 
 @pytest.mark.parametrize("flag, accepted", [([], 4), (["--vision-max-images", "8"], 8)])
-def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, flag, accepted):
+def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, request, flag, accepted):
     from tensorfold.cuda import server
     from tests.test_cuda_admission import model_dir as _model_dir
 
@@ -146,7 +148,7 @@ def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, flag,
     family = NS(title="fixture", model_type="qwen3_5", package=NS(cuda_engine=lambda *a, **k: engine))
     seen = []
 
-    def serve(app, *_):
+    def exercise(app):
         # A tokenizer template need only preserve markers for our model-free processor.
         app.template = NS(render=lambda *args, **kwargs: "rendered prompt")
         prepared = app.prepare({"messages": image_messages() * accepted, "max_tokens": 2}, True)
@@ -154,7 +156,7 @@ def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, flag,
         with pytest.raises(RequestError, match=f"at most {accepted}"):
             app.prepare({"messages": image_messages() * (accepted + 1)}, True)
 
-    monkeypatch.setattr(server, "serve", serve)
+    install_cli_server(monkeypatch, request, server, on_serve=exercise)
     args = cli.build_parser().parse_args(["serve", str(folder), "--vision", "--no-drafts", *flag])
     assert cli._serve_cuda(args, family, folder, 32) == 0
     assert seen == [accepted]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -62,7 +63,7 @@ def test_serve_limits_memory_before_loading_without_changing_residency(monkeypat
 
     family = SimpleNamespace(title="fixture", model_type="fixture", package=SimpleNamespace(load=load))
     monkeypatch.setattr(families, "detect", lambda path: family)
-    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check"])
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", "--snapshot-dir", "none"])
     with pytest.raises(LoadingReached):
         cli.cmd_serve(args)
     assert ("memory", 12 * GIB - PROCESS_BYTES) in calls
@@ -289,26 +290,37 @@ def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
                                  package=SimpleNamespace(load=lambda *args, **kwargs: (object(), object())))
         monkeypatch.setattr(families, "detect", lambda path: family)
         made = {}
+        apps, servers = [], []
 
         class App:
             def __init__(self, model, tokenizer, **kwargs):
                 made.update(kwargs)
+                self.close_calls = 0
+                apps.append(self)
                 self.context_window = 61440 if kwargs["fit_context"] else kwargs["context_window"]
                 self.context_fitted = kwargs["fit_context"]
                 self.prompt_memory = SimpleNamespace(resumable=61440)
 
             def close(self):
-                pass
+                self.close_calls += 1
 
         class Server:
-            def __init__(self, *args):
-                pass
+            def __init__(self, address, handler, *, max_connections=None):
+                assert max_connections is None or type(max_connections) is int and max_connections > 0
+                self.address, self.handler = address, handler
+                self.max_connections = max_connections
+                self.stopping = threading.Event()
+                self.serve_calls = self.close_calls = 0
+                servers.append(self)
 
             def serve_forever(self):
+                assert not self.stopping.is_set() and self.close_calls == 0
+                self.serve_calls += 1
                 raise KeyboardInterrupt
 
             def server_close(self):
-                pass
+                self.close_calls += 1
+                self.stopping.set()
 
         import tensorfold.server.app as app_module
         import tensorfold.server.http as http_module
@@ -316,8 +328,13 @@ def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
         monkeypatch.setattr(app_module, "ChatApp", App)
         monkeypatch.setattr(http_module, "Server", Server)
         monkeypatch.setattr(http_module, "make_handler", lambda app: None)
-        args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", *argv])
+        args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", "--snapshot-dir", "none", *argv])
         assert cli.cmd_serve(args) == 0
+        assert len(apps) == len(servers) == 1
+        assert apps[0].close_calls == servers[0].close_calls == servers[0].serve_calls == 1
+        assert servers[0].address == (args.host, args.port)
+        assert servers[0].max_connections == args.max_http_connections
+        assert servers[0].stopping.is_set()
         return made, capsys.readouterr().out
 
 
@@ -359,7 +376,7 @@ def test_weights_past_the_budget_are_refused_before_loading(monkeypatch, tmp_pat
     family = SimpleNamespace(title="fixture", model_type="fixture",
                              package=SimpleNamespace(load=lambda *args, **kwargs: pytest.fail("weights loaded")))
     monkeypatch.setattr(families, "detect", lambda path: family)
-    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check"])
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", "--snapshot-dir", "none"])
     with pytest.raises(ValueError, match=r"weights \(1\.0 GiB\) do not fit.*1\.0 GiB memory budget"):
         cli.cmd_serve(args)
 
@@ -445,5 +462,5 @@ def test_serve_applies_the_family_allowance_before_loading(monkeypatch, tmp_path
     package = SimpleNamespace(load=load, memory_fraction=lambda ram: 0.85)
     monkeypatch.setattr(families, "detect", lambda path: SimpleNamespace(title="f", model_type="f", package=package))
     with pytest.raises(LoadingReached):
-        cli.cmd_serve(cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check"]))
+        cli.cmd_serve(cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", "--snapshot-dir", "none"]))
     assert ("memory", int(0.85 * 256 * GIB) - memory_budget.PROCESS_BYTES) in calls      # MLX gets the rest

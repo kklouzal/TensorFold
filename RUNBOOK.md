@@ -11,7 +11,7 @@ Create an environment and install the package:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install git+https://github.com/ashhart/TensorFold.git
+python -m pip install git+https://github.com/kklouzal/TensorFold.git@gb10-flash-next
 tensorfold --version
 tensorfold models
 ```
@@ -52,12 +52,14 @@ See [API fields](docs/api.md) for streaming and tool calls.
 
 ## NVIDIA GPUs
 
-Start NVIDIA's container, then install and serve inside it:
+For the reproducible fork deployment, use the [pinned NVIDIA build and run instructions](README.md#build-and-run-the-nvidia-container).
+The generic source-install examples below use a different container or PyPI stack; they do not reproduce the
+recorded NGC/nightly image or its qualification. Start NVIDIA's container, then install and serve inside it:
 
 ```bash
 nvidia-smi
 docker run -it --gpus all --ipc=host --network host nvcr.io/nvidia/pytorch:26.07-py3
-python -m pip install git+https://github.com/ashhart/TensorFold.git
+python -m pip install git+https://github.com/kklouzal/TensorFold.git@gb10-flash-next
 tensorfold pull Vontra/Qwen3.8-27B-MLX-4bit z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve Vontra/Qwen3.8-27B-MLX-4bit --name local-model --host 0.0.0.0 --port 8080
 ```
@@ -105,7 +107,7 @@ compiler from NVIDIA's own wheels, all in a virtual environment, with no root an
 ```bash
 python3 -m venv ~/tf-venv && . ~/tf-venv/bin/activate
 python -m pip install torch ninja "cuda-toolkit[nvcc,cccl]==13.0.*"
-python -m pip install git+https://github.com/ashhart/TensorFold.git
+python -m pip install git+https://github.com/kklouzal/TensorFold.git@gb10-flash-next
 tensorfold pull Vontra/Qwen3.8-27B-MLX-4bit z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve Vontra/Qwen3.8-27B-MLX-4bit --name local-model --host 127.0.0.1 --port 8080
 ```

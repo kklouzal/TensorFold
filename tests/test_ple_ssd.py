@@ -202,8 +202,14 @@ def test_prefetch_and_an_empty_gather_read_nothing(tmp_path, monkeypatch, tables
 @pytest.mark.parametrize("nocache", [True, False])
 def test_each_file_is_opened_once_with_one_cache_hint(tmp_path, monkeypatch, tables, nocache):
     files, _ = _checkpoint(tmp_path)
-    real_open, opened, hints = os.open, [], []
-    monkeypatch.setattr(os, "open", lambda path, *a, **k: opened.append(Path(path).name) or real_open(path, *a, **k))
+    real_open, opened, hints = ssd_table.TableFile.open, [], []
+
+    def opening(file):
+        result = real_open(file)
+        opened.append(Path(file.name).name)
+        return result
+
+    monkeypatch.setattr(ssd_table.TableFile, "open", opening)
     if sys.platform == "darwin":
         import fcntl
 
@@ -224,8 +230,14 @@ def test_each_file_is_opened_once_with_one_cache_hint(tmp_path, monkeypatch, tab
 
 def test_close_and_collection_release_the_files(tmp_path, monkeypatch):
     files, _ = _checkpoint(tmp_path)
-    real_open, fds = os.open, []
-    monkeypatch.setattr(os, "open", lambda *a, **k: fds.append(real_open(*a, **k)) or fds[-1])
+    real_open, fds = ssd_table.TableFile.open, []
+
+    def opening(file):
+        result = real_open(file)
+        fds.append(file.fileno())
+        return result
+
+    monkeypatch.setattr(ssd_table.TableFile, "open", opening)
     ssd = SSDTable(files)
     ssd.close()
     ssd.close()
@@ -275,19 +287,30 @@ def test_shards_that_are_not_4_bit_group_32_rows_or_differ_in_width_are_refused(
 
 
 def test_a_truncated_file_is_refused_at_open_with_its_files_closed(tmp_path, monkeypatch):
+    import errno
+
     files, _ = _checkpoint(tmp_path, counts=(7,))
     path = files[0][0]
     path.write_bytes(path.read_bytes()[:-1])
-    real_open, fds = os.open, []
-    monkeypatch.setattr(os, "open", lambda *a, **k: fds.append(real_open(*a, **k)) or fds[-1])
-    with pytest.raises(ValueError, match="pass the file's end"):
+    real_open, fds = ssd_table.TableFile.open, []
+
+    def opening(file):
+        result = real_open(file)
+        fds.append(file.fileno())
+        return result
+
+    monkeypatch.setattr(ssd_table.TableFile, "open", opening)
+    with pytest.raises(OSError, match="short read.*past its end") as truncated:
         SSDTable(files)
+    assert type(truncated.value) is OSError
     path.write_bytes(b"123")
     with pytest.raises(ValueError, match="truncated safetensors header"):
         SSDTable(files)
+    assert len(fds) == 2
     for fd in fds:
-        with pytest.raises(OSError):
+        with pytest.raises(OSError) as retired:
             os.fstat(fd)
+        assert retired.value.errno == errno.EBADF
 
 
 @pytest.mark.parametrize("ids, error", [

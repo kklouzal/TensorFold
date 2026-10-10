@@ -1,16 +1,36 @@
-"""top_k off on CUDA: the nucleus draw (``cuda.sampling.nucleus_rows``) gives the same tokens from one rank's whole
-rows as from two ranks' vocabulary shards, whether the candidates cover the nucleus or a row reads whole shards, and
-draws from the same distribution as the float rule."""
+"""CPU replay of the unchanged CUDA nucleus/distributed arithmetic.
 
+The private namespace replaces only CUDA device admission with explicit CPU
+metadata admission. Real CUDA validation stays intact; native tests separately
+exercise the production device path.
+"""
+
+from pathlib import Path
 import threading
+from types import ModuleType
 
 import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
 
-from tensorfold.cuda import sampling as cs  # noqa: E402
+from tensorfold.cuda import sampling as cuda_sampling  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling, choose_rows  # noqa: E402
+from tensorfold.thread_work import ThreadWork  # noqa: E402
+
+
+def _cpu_rows(logits, positions, sampling):
+    if (not isinstance(logits, torch.Tensor) or logits.ndim != 2 or logits.is_cuda
+            or logits.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64)
+            or logits.shape[1] <= 0 or len(positions) != logits.shape[0]):
+        raise ValueError("CPU nucleus replay requires floating CPU rows and matching positions")
+    cuda_sampling.validate_policy(positions, sampling)
+
+
+cs = ModuleType("_cpu_nucleus_arithmetic_replay")
+cs.__file__ = cuda_sampling.__file__
+exec(compile(Path(cs.__file__).read_bytes(), cs.__file__, "exec"), vars(cs))
+cs.validate_rows = _cpu_rows
 
 
 class Ranks:
@@ -32,17 +52,41 @@ class Ranks:
 
 def two_ranks(logits, positions, sampling, split, probs=None):
     ranks, out = Ranks(), [None, None]
+    errors = [None, None]
     shards = (logits[:, :split], logits[:, split:])
 
     def run(r):
-        out[r] = cs.nucleus_rows(shards[r], positions, sampling, offset=0 if r == 0 else split,
-                                 gather=ranks.gather(r), probs=probs if r == 0 else None)
+        try:
+            out[r] = cs.nucleus_rows(shards[r], positions, sampling, offset=0 if r == 0 else split,
+                                     gather=ranks.gather(r), probs=probs if r == 0 else None)
+        except BaseException as error:
+            errors[r] = error
+            ranks.barrier.abort()
 
-    threads = [threading.Thread(target=run, args=(r,)) for r in (0, 1)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Publish every callback owner before launch. An interrupted native start
+    # can later run only a cancelled empty controller, never borrowed tensors.
+    work = [ThreadWork(lambda r=r: run(r)) for r in (0, 1)]
+    threads = [threading.Thread(target=owner.run) for owner in work]
+    primary = None
+    cleanup = []
+    try:
+        for owner, thread in zip(work, threads):
+            owner.launch(thread)
+    except BaseException as error:
+        primary = error
+        ranks.barrier.abort()
+    finally:
+        for owner, thread in zip(work, threads):
+            try:
+                owner.drain(thread, timeout=60, cancel_unentered=primary is not None)
+            except BaseException as error:
+                cleanup.append(error)
+    failures = [error for error in errors if error is not None]
+    failures.extend(cleanup)
+    if primary is not None:
+        failures.insert(0, primary)
+    if failures:
+        raise BaseExceptionGroup("CPU nucleus rank failures", failures)
     assert out[0] == out[1]                                       # every rank draws the same tokens
     return out[0]
 
@@ -50,6 +94,68 @@ def two_ranks(logits, positions, sampling, split, probs=None):
 def _logits(seed, rows=6, vocab=6000, scale=3.0):
     g = torch.Generator().manual_seed(seed)
     return (torch.randn(rows, vocab, generator=g) * scale).to(torch.bfloat16)
+
+
+def test_cpu_replay_keeps_production_cuda_validation_and_policy_validation():
+    logits = torch.zeros(2, 4)
+    with pytest.raises(ValueError, match="floating CUDA logits"):
+        cuda_sampling.nucleus_rows(logits, [1, 2], Sampling(3, 1.0, 0, 1.0))
+    with pytest.raises(ValueError, match="unsigned64"):
+        cs.nucleus_rows(logits, [True, 2], Sampling(3, 1.0, 0, 1.0))
+    with pytest.raises(ValueError, match="floating CPU"):
+        cs.nucleus_rows(logits.to(torch.int64), [1, 2], Sampling(3, 1.0, 0, 1.0))
+    assert cuda_sampling.validate_rows is not cs.validate_rows
+
+
+def test_rank_failures_are_drained_and_reported(monkeypatch):
+    primary = OSError("rank zero failed before its collective")
+    original = cs.nucleus_rows
+
+    def fail(logits, positions, sampling, **kwargs):
+        if kwargs["offset"] == 0:
+            raise primary
+        return original(logits, positions, sampling, **kwargs)
+
+    monkeypatch.setattr(cs, "nucleus_rows", fail)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        two_ranks(torch.zeros(2, 4), [1, 2], Sampling(3, 1.0, 0, 1.0), 2)
+    assert any(error is primary for error in caught.value.exceptions)
+    assert any(isinstance(error, threading.BrokenBarrierError) for error in caught.value.exceptions)
+
+
+def test_partial_rank_start_failure_drains_the_started_rank(monkeypatch):
+    primary = RuntimeError("rank one could not start")
+    original = threading.Thread.start
+    started = []
+
+    def start(thread):
+        if started:
+            raise primary
+        original(thread)
+        started.append(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        two_ranks(torch.zeros(2, 4), [1, 2], Sampling(3, 1.0, 0, 1.0), 2)
+    assert caught.value.exceptions[0] is primary
+    assert len(started) == 1 and not started[0].is_alive()
+
+
+def test_rank_start_acceptance_interruption_still_joins_owned_rank(monkeypatch):
+    primary = KeyboardInterrupt("accepted rank start interrupted before caller return")
+    original = threading.Thread.start
+    accepted = []
+
+    def start(thread):
+        original(thread)
+        accepted.append(thread)
+        raise primary
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        two_ranks(torch.zeros(2, 4), [1, 2], Sampling(3, 1.0, 0, 1.0), 2)
+    assert caught.value.exceptions[0] is primary
+    assert len(accepted) == 1 and not accepted[0].is_alive()
 
 
 @pytest.mark.parametrize("top_p", [0.8, 0.95, 1.0])

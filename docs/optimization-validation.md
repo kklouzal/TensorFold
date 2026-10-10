@@ -101,8 +101,11 @@ correctly armed native fault control also passed: the injected close failure
 retired its published owner without retrying or closing the replacement
 descriptor. This proves the tested fault contract, not a performance win.
 
-## Recorded Flash Next generations
+## Historical Flash Next generation evidence
 
+The compact-cache comparison below used prefetch disabled in both arms. Its original image was
+`sha256:afed8f340bba01d2333d2408faeb2daf9d3209c7411cc0a87482bccf7bed0387`;
+the compact image was `sha256:fb20eb4c7c55018c93f889c1705bdc4b8d56a3dd2845f3dc4e509b45eedc5fdc`.
 An alternating baseline/candidate/candidate/baseline comparison on the RTX PRO
 2000 Blackwell used the pinned EXL3 checkpoint described in the
 [system RAM expert recipe](recipes/ram-experts.md), four slots, a 2,048-token
@@ -140,6 +143,78 @@ at a time instead of preserving the production batched operation. The corrected
 oracle kept exact bit comparisons and passed a fresh run; production arithmetic
 was unchanged. These checks cover the declared INT8 region, not every optional
 KV format or an unrelated model family.
+
+## Current default-prefetch Flash Next reference
+
+A separate completed qualification used normal Source06 image
+`sha256:cf99e0cf0ab8007f0cfcad962c7df3aac8a845f743619fa9e3616239b8847a08`,
+source UID `0b6aa865d82a70e5b2633e90c6ad3e8c7670579f45a078b235f904e81ca48c2e`
+and wheel `80f1c23f390da93ead7a88928f3b19b0448508567c5e95464c7b9940d8c9842e`.
+The same pinned EXL3 model ran with automatic compact expert caching,
+configured context 2,048 with four slots, INT8 KV, YaRN-2, eager execution and full default
+n-gram prefetch. MTP requests used depth 4 and confidence 0.5. Stock-policy
+median complete generation rates were 11.74 tokens/s for serial greedy,
+21.94 for one MTP request, and 82.39 aggregate across four concurrent MTP
+requests. These are 20 warmed short-prompt trials from two stock-policy
+starts per region, with 64 output tokens per request. They measure consumed
+public `Engine.generate` work with synchronized GPU completion and callback
+first-token/stall timings, not HTTP client performance.
+
+All four starts, including the two private notification-alternative starts,
+completed full prefetch, refused optional table pins, reproduced the original
+64-token teacher for all 308 requests, and retired cleanly. The jobs held
+the 56 decimal GB/no-swap RAM budget and 15,868,952,576-byte GPU grant;
+observed sampled cgroup RAM and Torch allocated/reserved peaks were 46.595, 14.002 and
+14.321 GB. The original notification policy remains selected in all three
+regions. The guarded alternative's positive MTP estimate did not establish
+repeatable superiority across process starts; this is an uncertain result,
+not an equivalence or regression claim. The current reference does not imply
+a gain over the historical comparison or qualify other pending candidates,
+HTTP serving, future images, general answer quality or sustained full-context
+capacity. See the [README reference](../README.md#current-default-prefetch-reference)
+for observed first-token and emission-stall summaries.
+
+## Completed installed-origin Linux CPU qualification
+
+The normal verification image `sha256:aeef439e98eb2c885e5c131105e2d9b612410e81336d6fa63c36078eb6522b64`
+used the same Source06 wheel `80f1c23f390da93ead7a88928f3b19b0448508567c5e95464c7b9940d8c9842e`,
+Python 3.12 and pytest 8.4.2. A qualified read-only fixture supplied maintained tests/tools;
+package and native-provider imports remained the normal installed copies. The maintained manifest
+contains 387 modules. Its complete 386-path Linux inventory finished in 25 successful chunks:
+6,369 cases, with 6,214 non-skipped passes, zero failures/errors, and 155 explicit skips.
+The separate Apple-only module contains two off-target tests. Skips remain unrun for their targets;
+source/fake CPU controls do not qualify GPU/model math, Apple or true two-GPU execution.
+
+The combined result reuses 16 original successful chunks and eight corrected-fixture reruns,
+then adds the final Dense EXL3 cleanup-fixture rerun. Each retains its actual source and fixture
+identity; earlier failed receipts are preserved. Native UID-1000 checks verified all 1,033
+qualified fixture files before and after the final rerun. This closes the scoped Linux CPU lane;
+current baseline model generation and CLI/API results are recorded separately; candidate decisions, packaging
+and changed shipping-image requalification remain separate.
+See [verification and development](../README.md#verification-and-development).
+
+## Completed current installed CLI/API qualification
+
+The ordinary installed PID-1 CLI and HTTP server in the normal Source06 `cf99…` image above
+completed seven functional groups. The configuration used full default n-gram prefetch,
+automatic expert caching, four slots, context 2,048, INT8 K/V, YaRN-2, eager execution,
+BF16 prompts and MTP-4/confidence 0.5. Its positive limits were five unfinished requests
+and 32 HTTP connections, rather than new defaults.
+
+Repeated serial/drafted token-ID and exact log-probability results, the legacy endpoint,
+xgrammar `TFOK` followed by actual EOS, a 16-token `ignore_eos` length result, and invalid
+requests refused as JSON400 before SSE passed. Four occupied lanes and a FIFO fifth request
+were observed; a sixth streaming POST received JSON503 before SSE with the original owners
+preserved. Cancellation admitted the queued request and recovery completed. Final request ownership
+was zero; the live engine was idle with no running jobs or active streams. The health socket still counted toward HTTP ownership.
+SIGINT returned zero; the server/client/container retired cleanly. The `ignore_eos` case
+does not prove suppression of an unobserved EOS.
+
+The 360.63-second whole operation included startup and first native compilation. Sampled
+cgroup RAM peaked at 47.386 GB within 56 GB with no swap. This is the completed current
+baseline API gate, not an API throughput/tail comparison, all-format/model quality proof
+or 524k-context qualification. Changed shipping code/images require the relevant source,
+model/API and resource requalification. See the [README API qualification](../README.md#current-installed-cliapi-qualification).
 
 ## Final release checks
 

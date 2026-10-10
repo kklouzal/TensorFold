@@ -11,6 +11,17 @@ GIB = capacity.GIB
 HEAD = 248320 * 640 * 4 + 2 * 248320 * 80 * 2          # the 4-bit head: words, scales and biases
 
 
+def _draft_quantize_buffers(rows, columns):
+    """Conservative source-estimator allowance, not a measured simultaneous allocator peak."""
+
+    values, groups = rows * columns, rows * (columns // 64)
+    return {"bf16_upload": 2 * values, "fp32_grouped_weights": 4 * values,
+            "fp32_numerator": 4 * values, "fp32_quotient": 4 * values,
+            "fp32_minima": 4 * groups, "fp32_maxima": 4 * groups,
+            "bf16_scales": 2 * groups, "bf16_biases": 2 * groups,
+            "fp32_bias_conversion": 4 * groups, "fp32_scale_conversion": 4 * groups}
+
+
 @pytest.fixture(scope="module")
 def model(tmp_path_factory):
     root = tmp_path_factory.mktemp("27b")
@@ -31,7 +42,7 @@ def test_the_drafter_load_peak_is_its_largest_quantize(model):
     held = capacity.estimate_weights(folder, draft_bytes)
     peak = draft_weights(folder)
     assert peak.resident == held.resident and round(held.resident / GIB, 2) == 0.97
-    assert peak.staging == 14 * 5120 * 25600                        # fc: bf16 upload, fp32 copy, two fp32 temporaries
+    assert peak.staging == sum(_draft_quantize_buffers(5120, 25600).values()) == 1_875_968_000
 
 
 def test_the_drafter_loads_after_the_target(model, monkeypatch):
@@ -45,8 +56,8 @@ def test_the_drafter_loads_after_the_target(model, monkeypatch):
                              draft_dir=draft, draft_weights=draft_weights)
     assert receipt["weight_bytes_estimate"] == main.resident + side.resident
     assert receipt["loading_bytes_estimate"] == max(main.staging - side.resident, side.staging)
-    # measured on an RTX 4090: 16.73 GiB allocated at the load's peak (17.95 reserved: the budget's reserve covers it)
-    assert round((receipt["weight_bytes_estimate"] + receipt["loading_bytes_estimate"]) / GIB, 2) == 16.78
+    # The estimate includes retained affine64 metadata and its conservative conversion allowance.
+    assert round((receipt["weight_bytes_estimate"] + receipt["loading_bytes_estimate"]) / GIB, 2) == 16.81
 
 
 @pytest.mark.parametrize("gib,rows", [(128, 4096), (80, 4096), (23.54, 2048), (16, 1024), (12, 1024), (8, 512)])

@@ -19,6 +19,11 @@ ROUTES = ["/v1/chat/completions", "/v1/completions"]
 class CommitEngine(LaneEngine):
     def __init__(self, model=None, **kwargs):
         super().__init__(SimpleNamespace(lane_family=True, exact_width=4), **kwargs)
+        self.drain_calls = 0
+
+    def drain(self):
+        """This fixture owns only synchronous Python token lists, never device work."""
+        self.drain_calls += 1
 
     def _family_prefill_steps(self, stream, **kwargs):
         stream.cache_len = len(stream.prompt_ids)
@@ -68,6 +73,7 @@ def test_ignore_eos_matches_drafted_and_serial_requests(route, stream, ignore, f
         assert app.stop_ids == app.scheduler.eos_ids == eos_ids
     finally:
         app.close()
+        assert app.engine.drain_calls >= 2
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -80,6 +86,7 @@ def test_unmatched_stop_prefix_is_flushed_at_the_length_limit(route, stream):
         assert replies == [(app.tokenizer.decode(REPLY), "length", 8)] * 2
     finally:
         app.close()
+        assert app.engine.drain_calls >= 2
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -95,6 +102,7 @@ def test_ignore_eos_preserves_user_stop_strings_across_rounds(route, stream, as_
         assert replies == [expected, expected]
     finally:
         app.close()
+        assert app.engine.drain_calls >= 2
 
 
 @pytest.mark.parametrize("route", ROUTES)

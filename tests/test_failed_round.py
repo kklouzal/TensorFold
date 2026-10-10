@@ -151,8 +151,8 @@ def test_failed_round_caches_are_collectable_while_scheduler_stays_idle(chained,
 
     engine._family_round_streams = fail
     scheduler._queue.get = idle_get
-    scheduler._thread.start()
     try:
+        scheduler.start()
         assert all(job.done.wait(2) for job in jobs)
         assert idle.wait(2) and scheduler._thread.is_alive()
         gc.collect()

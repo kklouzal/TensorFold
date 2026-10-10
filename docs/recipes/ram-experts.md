@@ -54,7 +54,7 @@ model working set that cannot fit still fails startup; system RAM spillover
 applies to expert weights only. EXL3's separately mapped n-gram tables retain
 their existing host-memory behavior.
 
-The baseline RTX PRO 2000 Blackwell run (16 GB VRAM, 64 GB RAM) with
+An earlier fixed-cell RTX PRO 2000 Blackwell run (16 GB VRAM, 64 GB RAM) with
 `turboderp/Qwen3.8-Flash-Next-exl3` at revision
 `65c895314393431c09050b2e04e250836b3a6eb4`, INT8 KV, a 2,048-token context,
 four slots, and YaRN factor 2 chose 2,341 expert cells: 5,753,241,600 bytes
@@ -77,8 +77,8 @@ hit rate rose from 24.03% to 67.49%. These are observations for this model,
 runtime, and prompts, rather than throughput guarantees or measurements of the
 final compact arena.
 
-A later controlled comparison of the baseline and compact arena completed
-20 matched trials per region in alternating baseline/candidate/candidate/baseline
+A historical controlled comparison of the baseline and compact arena, with
+prefetch disabled in both arms, completed 20 matched trials per region in alternating baseline/candidate/candidate/baseline
 order. Complete request medians were 8.09→11.64 tokens/s for serial greedy,
 12.76→21.95 with MTP, and 48.82→81.71 aggregate tokens/s for four simultaneous
 requests. All 240 timed requests produced the exact 64-token teacher output.
@@ -89,8 +89,37 @@ they do not prove that a full 524,288-token window fits this GPU. See
 [optimization validation](../optimization-validation.md) for the run-order,
 uncertainty, exact sampling checks, and remaining final-build gates.
 
-Four simultaneous requests with 1,805–1,808 prompt tokens and 64 output tokens
-also completed. The GPU-thread observer saw all four slots active; minimum
+Current normal Source06 qualification on the same RTX PRO 2000 used image
+`sha256:cf99e0cf0ab8007f0cfcad962c7df3aac8a845f743619fa9e3616239b8847a08`,
+source UID `0b6aa865d82a70e5b2633e90c6ad3e8c7670579f45a078b235f904e81ca48c2e`
+and wheel `80f1c23f390da93ead7a88928f3b19b0448508567c5e95464c7b9940d8c9842e`.
+It retained the compact arena and the same checkpoint, 2,048-token context,
+four slots, INT8 KV, YaRN-2 and MTP-4/confidence 0.5, with eager execution
+and full default n-gram prefetch. Stock-policy median complete generation
+rates were 11.74 tokens/s for serial greedy, 21.94 for one MTP request, and
+82.39 aggregate across four concurrent MTP requests. Each rate describes
+20 warmed short-prompt trials from two stock-policy process starts, with
+64 output tokens per request. These consumed `Engine.generate` operations
+include synchronized GPU completion; first-token and stall timings come
+from generation callbacks, not HTTP clients.
+
+All 308 requests across the four qualification starts reproduced the original
+teacher. Each start completed the selected n-gram table's full prefetch,
+refused optional table pinning, and retired all engine, cache, scheduler and
+process owners. Sampled cgroup RAM peaked at 46.595 decimal GB under the
+56 GB/no-swap limit; Torch peaks were 14.002 GB allocated and 14.321 GB
+reserved under the 15,868,952,576-byte GPU grant. The two stock constructors
+took 244.37 and 241.21 seconds. These observations do not establish a new
+speedup, general answer quality, HTTP performance or sustained four-full-context
+capacity. The original notification policy remains selected; its guarded
+alternative did not establish repeatable superiority across independent
+starts. The current normal installed CLI/API baseline also passed its seven functional groups;
+see the [README API qualification](../../README.md#current-installed-cliapi-qualification).
+Final candidate decisions and changed shipping-runtime requalification remain separate.
+See the [current reference in the README](../../README.md#current-default-prefetch-reference).
+
+A separate earlier batch of four simultaneous requests with 1,805–1,808
+prompt tokens and 64 output tokens also completed. The GPU-thread observer saw all four slots active; minimum
 observed free VRAM was 1,042,087,936 bytes, with no OOM or swap use. This first
 long-prompt batch included prompt work and was the first batch of that shape;
 compilation overhead was not isolated. It is not a warm four-request throughput
@@ -283,7 +312,8 @@ warm-cache region. Use the pinned verification image and NVIDIA launcher
 described in the [container recipe](../../deploy/gb10/README.md) on GB10. These
 checks complement measurements with a real checkpoint on the intended machine.
 
-The pinned NGC/nightly build passed 1,666 applicable Linux CPU checks
+The earlier NGC/nightly build recorded in the linked receipt passed 1,666
+applicable Linux CPU checks
 (six platform/fixture skips) and 194 affected CUDA checks. The built verification
 image also passed all 28 feature checks with bytewise tensor comparisons.
 Complete synthetic startup and cache-policy replays matched native packed
@@ -292,8 +322,8 @@ oracles, paired timings and limits are in
 [the validation receipt](ram-experts-validation.json).
 
 The option is now `--vram-experts`; its Python budget keyword and admission
-receipt key are `vram_experts`. The previous spelling is refused. The rename
-passed 1,669 packaged Linux CPU checks (six skips) and both actual CUDA cold
+receipt key are `vram_experts`. The previous spelling is refused. The earlier
+rename qualification recorded in its receipt passed 1,669 packaged Linux CPU checks (six skips) and both actual CUDA cold
 load/YaRN/MTP cases; runtime help and source/dependency audits passed. See the
 [rename validation receipt](vram-experts-rename-validation.json). The original
 performance receipt above records its own earlier source revision.

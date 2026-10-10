@@ -72,9 +72,15 @@ def fixture():
     node = next(
         n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "load_nvfp4"
     )
+    helper_names = {"_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill"}
+    helpers = [n for n in ast.parse((SOURCE.parent / "weights.py").read_text()).body
+               if isinstance(n, ast.FunctionDef) and n.name in helper_names]
+    if {n.name for n in helpers} != helper_names:
+        raise AssertionError("all actual checkpoint cleanup and precision helpers are required")
     exec(
         compile(
-            ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec", flags=__future__.annotations.compiler_flag
+            ast.Module(body=[*helpers, node], type_ignores=[]), str(SOURCE), "exec",
+            flags=__future__.annotations.compiler_flag
         ),
         namespace,
     )
@@ -124,6 +130,8 @@ def fixture():
         Config=SimpleNamespace(read=lambda path: cfg),
         Weights=lambda **kw: SimpleNamespace(attention_origin=object(), **kw),
         _Tensors=Reader,
+        _close_failed_checkpoint=namespace["_close_failed_checkpoint"],
+        _validate_fp8_prefill=namespace["_validate_fp8_prefill"],
     )
     capacity = ModuleType("tensorfold.cuda.capacity")
     capacity.headers = lambda path: {name: {"dtype": "BF16", "shape": [1, 1]} for name in names}

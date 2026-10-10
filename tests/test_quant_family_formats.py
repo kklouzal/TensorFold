@@ -114,7 +114,7 @@ def test_flash_next_refuses_unquantized_and_non_affine_checkpoints(tmp_path):
 @pytest.mark.parametrize("lane_kernels", ["auto", "on", "off"])
 def test_cli_passes_kernel_choice_to_family_loader_without_allocating(tmp_path, monkeypatch, lane_kernels):
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--lane-kernels", lane_kernels,
-                                          "--no-drafts", "--no-update-check"])
+                                          "--no-drafts", "--no-update-check", "--snapshot-dir", "none"])
     core, mlx = ModuleType("mlx.core"), ModuleType("mlx")
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)

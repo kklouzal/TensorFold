@@ -166,7 +166,7 @@ class OwnershipControls(unittest.TestCase):
         function = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4")))
         helper_tree = ast.parse((PATH / "weights.py").read_text())
         helpers = [n for n in helper_tree.body if isinstance(n, ast.FunctionDef)
-                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint")]
+                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill")]
         module = ast.Module(body=[*helpers, function], type_ignores=[])
 
         def weights(*a, **kw):
@@ -182,6 +182,7 @@ class OwnershipControls(unittest.TestCase):
             "checkpoint_path": lambda root, name: Path(root) / name,
             "read_metadata_json": lambda path: json.loads(path.read_text()),
             "torch": self.torch,
+            "prompt_precision": self.modules["tensorfold.cuda"].prompt_precision,
             "_Tensors": self.reader,
             "Config": types.SimpleNamespace(read=lambda _: self.cfg),
             "QLinear": weights,
@@ -196,6 +197,7 @@ class OwnershipControls(unittest.TestCase):
         with patch.dict(sys.modules, self.modules), contextlib.redirect_stdout(__import__("io").StringIO()):
             exec(compile(module, str(path), "exec", flags=__import__("__future__").annotations.compiler_flag), scope)
             self.modules["tensorfold.families.qwen3_5.cuda.weights"]._close_failed_checkpoint = scope["_close_failed_checkpoint"]
+            self.modules["tensorfold.families.qwen3_5.cuda.weights"]._validate_fp8_prefill = scope["_validate_fp8_prefill"]
             return scope[function.name](self.home, device="cpu")
 
     def test_group_allocation_failure_retains_primary_native_and_reader_statuses(self):

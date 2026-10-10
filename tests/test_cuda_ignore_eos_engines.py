@@ -4,6 +4,7 @@ rank 0 sends), and a first token that is an end token ends the reply only when e
 
 import importlib
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,10 @@ def _flash_next(monkeypatch, calls):
     monkeypatch.setattr(decode, "mtp_decode", _recording(calls, "mtp"))
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *a: None)
     eng = mod.FlashNextEngine.__new__(mod.FlashNextEngine)
+    eng._lifecycle = threading.Condition()
+    eng._closing = eng._closed = eng._close_running = False
+    eng._calls = {}
+    eng._abort_comm = eng._receiving = eng._shutdown_sent = False
     eng.e = SimpleNamespace(st=SimpleNamespace(snapshot=lambda: {}), mbuf=None, last_streams=None, kept={})
     eng.serial, eng.tp, eng.depth, eng.confidence, eng.scheduler = SimpleNamespace(), 1, 3, 0.0, None
     eng.cache, eng.eos, eng.max_len, eng.served = [], (END,), 1024, 0
@@ -55,7 +60,8 @@ def _nemotron(monkeypatch, calls):
     monkeypatch.setattr(decode, "serial_decode", _recording(calls, "serial"))
     monkeypatch.setattr(decode, "draft_decode", _recording(calls, "mtp"))
     eng = mod.NemotronEngine.__new__(mod.NemotronEngine)
-    eng.e, eng.mtp, eng.serial = SimpleNamespace(max_rows=16), object(), SimpleNamespace()
+    eng._lifetime = mod.EngineLifetime()
+    eng.e, eng.mtp, eng.serial = SimpleNamespace(max_rows=16, c=SimpleNamespace(vocab=1024)), object(), SimpleNamespace()
     eng.tp, eng.drafts, eng.confidence, eng.cache = 1, 3, 0.0, []
     eng.eos, eng.max_len, eng.served = (END,), 1024, 0
     return mod, eng
@@ -72,6 +78,7 @@ def test_every_path_takes_stop_eos(modules, monkeypatch, family, stop_eos, draft
     assert heard == [[END]]
     # an end token first: the reply ends there unless end tokens are ignored, and then it decodes on without them
     assert calls == ([] if stop_eos else [("mtp" if draft else "serial", False)])
+    assert (not eng._calls if family is _flash_next else eng._lifetime.active is None)
 
 
 @pytest.mark.torch
@@ -93,11 +100,19 @@ def test_rank_one_reads_the_field_rank_zero_sends(modules, monkeypatch, family, 
     eng.comm = SimpleNamespace(store=SimpleNamespace(set=lambda key, text: sent.update(text=text)))
     eng._key = lambda n: f"request/{n}"
     got = eng._share([5, 6], 9, None, True, 0, None, stop_eos)
-    unpack = getattr(mod, "_unpack", None) or eng._unpack
+    if family is _nemotron:
+        def unpack(text):
+            return mod._unpack(text, maximum=eng.context_window, vocab=eng.e.c.vocab)
+    else:
+        unpack = eng._unpack
     assert got[6] is stop_eos and unpack(sent["text"])[6] is stop_eos      # Flash Next's keep points follow it
     body = json.loads(sent["text"])
-    body.pop("stop_eos")                                 # a body from before the field: end tokens count
-    assert unpack(json.dumps(body))[6] is True
+    body.pop("stop_eos")
+    if family is _nemotron:                              # its strict rank schema requires every field
+        with pytest.raises(ValueError, match="fields"):
+            unpack(json.dumps(body))
+    else:                                               # Flash Next retains its old-message default
+        assert unpack(json.dumps(body))[6] is True
 
 
 @pytest.mark.torch

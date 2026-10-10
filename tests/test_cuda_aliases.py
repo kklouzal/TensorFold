@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.cli_server_fixture import install_cli_server
+
 pytest.importorskip("jinja2")
 
 from tensorfold import cli
@@ -54,12 +56,12 @@ def test_a_reply_names_the_id_it_was_asked_for_when_it_answers_to_it(tmp_path, a
         assert status == 200 and json.loads(text)["model"] == named
 
 
-def test_serve_hands_the_aliases_to_the_cuda_app(tmp_path, monkeypatch):
+def test_serve_hands_the_aliases_to_the_cuda_app(tmp_path, monkeypatch, request):
     made = []
     family = SimpleNamespace(title="Test family", model_type="test",
                              package=SimpleNamespace(cuda_engine=lambda *a, **k: SimpleNamespace(max_len=8192)))
     monkeypatch.setattr(server, "App", lambda *a, **k: made.append(k) or SimpleNamespace(effective_context_window=8192))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
                                           "--name", "qwen3.6", "--alias", "qwen3.8-27b-fp4", "--alias", "chat"])
     assert cli._serve_cuda(args, family, tmp_path, 8192) == 0

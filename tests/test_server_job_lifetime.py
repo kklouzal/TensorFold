@@ -273,6 +273,7 @@ class WarmupTests(unittest.TestCase):
         from io import BytesIO
 
         handler.headers, handler.rfile = HTTPMessage(), BytesIO()
+        handler.server = SimpleNamespace(stopping=threading.Event(), max_connections=None)
         found = []
         handler._send_json = found.append
         with patch.object(http, "_memory", return_value={}):

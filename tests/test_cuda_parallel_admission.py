@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_cuda_capacity import HEAD, Loaded, checkpoint, construct, fake_runtime, small_config  # noqa: F401
-from tests.test_cuda_geometry import allocations, bytes_in  # noqa: F401
+from tests.test_cuda_geometry import Allocation, allocations, bytes_in  # noqa: F401
 
 WEIGHTS = HEAD
 
@@ -35,8 +35,8 @@ def test_parallel_startup_is_admitted_before_any_load(tmp_path, fake_runtime, fa
 
 @pytest.mark.torch
 @pytest.mark.parametrize("family,world", [("linear", 1), ("linear", 2), ("indexed", 1)])
-def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(tmp_path, monkeypatch, fake_runtime,
-                                                                                family, world):  # noqa: F811
+def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(tmp_path, monkeypatch, fake_runtime,  # noqa: F811
+                                                                                family, world):
     from tensorfold.cuda.geometry import indexed_stream_geometry, stream_geometry
     checkpoint(tmp_path, small_config(), WEIGHTS)
     calls, capacity = fake_runtime
@@ -77,13 +77,17 @@ def test_stream_geometry_counts_every_stream_and_kept_prompt_end():
 @pytest.mark.parametrize("streams", [2, 5])
 @pytest.mark.parametrize("prefill_rows", [2048, 4096])
 @pytest.mark.parametrize("kv_dtype,bits", [("bf16", 16), ("int8", 8), ("int4", 4)])
-def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocations, streams, kv_dtype,
-                                                         bits, prefill_rows):  # noqa: F811
+def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocations, streams, kv_dtype,  # noqa: F811
+                                                         bits, prefill_rows):
     arrays, fake = allocations
     state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
     for mod in (state, state.gdn_mod, state.attn_mod, state.moe_mod, state.kvcache):
         monkeypatch.setattr(mod, "torch", fake)
     multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
+    # Record the round's replay scratch too, and let the production owner walk
+    # recognize allocation-only tensors rather than silently counting zero.
+    monkeypatch.setattr(multi.gdn_multi, "torch", fake)
+    monkeypatch.setattr(multi, "torch", SimpleNamespace(**vars(fake), Tensor=Allocation))
     text = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 64,
             "num_hidden_layers": 4, "layer_types": ["linear_attention", "full_attention"] * 2,
             "linear_num_key_heads": 2, "linear_num_value_heads": 4, "linear_key_head_dim": 128,
@@ -92,10 +96,11 @@ def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocation
                           kv_heads=2, head_dim=64, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
                           ple_layers=[], heads=8, index_heads=4, index_budget=2048, low=320, experts=8, top_k=2,
                           moe_width=512, shared_width=512, heads_per_ngram=8, ple_dim=512, eos=(0,))
-    weights = SimpleNamespace(cfg=cfg, device="cpu", layers=[SimpleNamespace(index=i, linear=i % 2 == 0)
+    weights = SimpleNamespace(cfg=cfg, device="cpu", layers=[SimpleNamespace(index=i, linear=i % 2 == 0,
+                                                                          moe=SimpleNamespace(experts=SimpleNamespace(kernel="qmm")))
                                                              for i in range(4)],
                               mtp=SimpleNamespace(), meta={"world": 1}, head=SimpleNamespace(n=1024), comm=None,
-                              draft_ids=None)
+                              draft_ids=None, x3=None)  # grouped Q4 weights: no EXL3 scratch or compiled HC owners
     slots, depth, keep = 65536, 3, 8
     from tensorfold.cuda.geometry import indexed_prompt_bytes, indexed_stream_geometry, kv_bytes
     workspace = indexed_prompt_bytes(text, prefill_rows)
@@ -103,6 +108,15 @@ def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocation
                              kv_dtype=kv_dtype, prefill_rows=prefill_rows, workspace_bytes=workspace)
     assert dec.memory_gate.reserve >= workspace
     one = dec.free[0]
+    rows, linear = streams * (depth + 1), 2
+    assert dec.converged and dec.gdn.lin == linear
+    assert dec.gdn.q.shape == (rows, cfg.nk, cfg.dk)
+    assert dec.gdn.k.shape == (2, linear, rows, cfg.nk, cfg.dk)
+    assert dec.gdn.v.shape == (2, linear, rows, cfg.nv, cfg.dv)
+    assert all(any(owner is array for array in arrays)
+               for owner in (dec.gdn.q, dec.gdn.k, dec.gdn.v, dec.gdn.g, dec.gdn.beta))
+    assert dec.slot_bytes == bytes_in(list(multi._tensors(one))) > 0
+    assert dec.buf.hc_plans is None and dec.mbuf.hc_plans is None
     snapshot = bytes_in([one.rec]) // 2 + bytes_in([one.conv, one.ple_tail])
     first = [t for t in arrays if t.shape[:2] == (multi.FIRST, cfg.kv_heads)]     # K and V: two layers and the MTP's
     assert len(dec.free) == streams and all(st.kv_dtype == kv_dtype for st in dec.free)
@@ -138,8 +152,8 @@ def handshake(monkeypatch, path, rank, **kw):
 @pytest.mark.torch
 @pytest.mark.parametrize("peer", [dict(streams=4), dict(streams=2, context=8192, context_explicit=True),
                                   dict(streams=2, keep=6)])
-def test_two_ranks_with_different_streams_or_context_refuse_to_start(tmp_path, monkeypatch, fake_runtime,
-                                                                     peer):  # noqa: F811
+def test_two_ranks_with_different_streams_or_context_refuse_to_start(tmp_path, monkeypatch, fake_runtime,  # noqa: F811
+                                                                     peer):
     import torch
     import torch.distributed as dist
     from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine

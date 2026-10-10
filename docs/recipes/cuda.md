@@ -142,6 +142,16 @@ GPU runs under `checkpoint` (its startup line says which; no GPU from 8.9 is ref
 | SM 12.x (RTX 50, RTX PRO 6000 Blackwell, DGX Spark) | FP4 x FP4, block-scaled mma | FP8 x FP8 |
 | SM 8.9-10.x (RTX 40, H100, H200, B200) | W4A16 (bf16 activations) | FP8 x FP8 |
 
+The normal public constructor was exercised on `RishabhSinha/Qwen3.5-9B-NVFP4` revision
+`d51f8fa57a09df7d91a2d84017b7f7cb310887da`, a compressed-tensors `nvfp4-pack-quantized` export,
+on the RTX PRO 2000 Blackwell with 16 GB VRAM and 64 GB RAM. The Source06 image identified in the
+[README](../../README.md#additional-exercised-checkpoints) completed nine 64-token generations each for
+`full` and `checkpoint`, exactly matching each mode's prior teacher. The runs used context 512, one stream,
+max row width 16, BF16 KV, drafts off, `--prefill-fp8` disabled and the default 4 GiB reserve, through the
+public constructor without admission, loader or precision hooks. Checkpoint/model bytes remained unchanged,
+and model allocations and reservations returned to zero on close. This coverage does not establish other
+export layouts, drafted or concurrent decoding, cross-precision equality or broader quality.
+
 `nvidia/Qwen3.8-27B-NVFP4` ran on an RTX PRO 6000 Blackwell Max-Q and a DGX Spark (GB10). The SM 8.9, 9.0 and 10.0
 builds are compiled, and their math is checked on Blackwell: the SM 8.9-10.x choice served with drafted == serial,
 and the split-K reduction those GPUs take without clusters bit for bit against the clusters' one. They have not run

@@ -9,7 +9,7 @@ import torch
 from tensorfold.cuda.exl3 import host_experts as host
 from tensorfold.families.qwen4_exp.cuda.exl3_pack import Pack
 from flashnext_exl3_fixture import write_checkpoint
-from test_exl3_host_experts import Checkpoint, PREFIX, SHARED, PROJECTIONS
+from test_exl3_host_experts import Checkpoint, PREFIX, SHARED, PROJECTIONS, failure_nodes
 
 
 def test_real_multilayer_pack_reuses_one_worker_and_preserves_original_bytes(tmp_path):
@@ -101,7 +101,7 @@ def test_consumer_failure_drains_poison_and_retains_primary_through_shutdown_ret
             host.load_compact(pk, PREFIX, pk.count, SHARED, reads=reads)
     assert caught.value is primary and reads.closed and reads.poisoned
     assert len(calls) == 2 and all(not thread.is_alive() for thread in workers)
-    assert any("first shutdown interrupted" in note for note in primary.__notes__)
+    assert any(error is close_failure for error in failure_nodes(primary))
     assert not reads.ahead.ahead and not reads.queued
 
 
@@ -112,6 +112,7 @@ def test_late_queued_failure_is_observed_before_reader_scope_exits(monkeypatch):
             if key.startswith(name + "."):
                 pk.where[key] = pk.headers[key][0] = f"frame{expert}.safetensors"
     failed, workers, active = threading.Event(), set(), []
+    secondary = OSError("late queued reader failure")
     read, unpack = pk.read, host.struct.unpack
 
     def fault(file, begin, end):
@@ -120,7 +121,7 @@ def test_late_queued_failure_is_observed_before_reader_scope_exits(monkeypatch):
         try:
             if file == "frame1.safetensors":
                 failed.set()
-                raise OSError("late queued reader failure")
+                raise secondary
             value = read(file, begin, end)
             if file == "frame0.safetensors":
                 offset = pk.headers[PREFIX + ".0.gate_proj.mul1"][1] - begin
@@ -136,15 +137,21 @@ def test_late_queued_failure_is_observed_before_reader_scope_exits(monkeypatch):
     pk.read = fault
     monkeypatch.setattr(host.struct, "unpack", marker)
     reads = host.CompactReadSession(pk)
-    with reads:
-        with pytest.raises(ValueError, match="marker payload") as caught:
-            host.load_compact(pk, PREFIX, pk.count, SHARED, reads=reads)
-        assert any("late queued reader failure" in note for note in caught.value.__notes__)
-        assert reads.poisoned and not active and not reads.ahead.ahead and not reads.queued
-        before = len(pk.reads)
-        with pytest.raises(RuntimeError, match="unavailable"):
-            host.load_compact(pk, PREFIX, pk.count, SHARED, reads=reads)
-        assert len(pk.reads) == before
+    with pytest.raises(ValueError, match="marker payload") as retired:
+        with reads:
+            with pytest.raises(ValueError, match="marker payload") as caught:
+                host.load_compact(pk, PREFIX, pk.count, SHARED, reads=reads)
+            assert any(error is secondary for error in failure_nodes(caught.value))
+            assert reads.poisoned and not active and not reads.ahead.ahead and not reads.queued
+            before = len(pk.reads)
+            with pytest.raises(RuntimeError, match="unavailable"):
+                host.load_compact(pk, PREFIX, pk.count, SHARED, reads=reads)
+            assert len(pk.reads) == before
+            # Let the owned scope retire with the original operation failure.
+            raise caught.value
+    assert retired.value is caught.value
+    assert any(error is secondary for error in failure_nodes(retired.value))
+    assert reads.closed and reads.pk is None and reads.ahead.reader.pk is None
     assert all(not thread.is_alive() for thread in workers)
 
 
@@ -241,7 +248,7 @@ def test_cleanup_interruption_finalizes_layer_and_owner_joins_preserving_primary
     assert not reads.ahead.ahead and not reads.queued and reads.ahead.reader.pk is None
     assert all(future.done() for future in observed)
     assert all(not thread.is_alive() for thread in workers)
-    assert any(str(cleanup) in note for note in primary.__notes__)
+    assert any(error is cleanup for error in failure_nodes(primary))
 
 
 def test_repeated_drain_failure_finally_observes_actual_failed_future(monkeypatch):
@@ -276,8 +283,8 @@ def test_repeated_drain_failure_finally_observes_actual_failed_future(monkeypatc
     assert caught.value is primary and reads.closed and reads.poisoned
     assert reads.ahead.pool is None and not reads.queued and not reads.ahead.ahead
     assert all(not worker.is_alive() for worker in workers) and future.done()
-    assert any(str(secondary) in note for note in primary.__notes__)
-    assert any(str(drain) in note for note in primary.__notes__)
+    assert any(error is secondary for error in failure_nodes(primary))
+    assert any(error is drain for error in failure_nodes(primary))
     assert reads.pk is None and reads.ahead.reader.pk is None
 
 

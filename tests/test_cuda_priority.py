@@ -174,6 +174,11 @@ def test_the_engines_hand_background_to_their_scheduler_only_when_set(allocation
     cls = next(c for c in vars(mod).values() if inspect.isclass(c) and c.__module__ == mod.__name__
                and "generate" in vars(c) and "background" in inspect.signature(c.generate).parameters)
     eng = cls.__new__(cls)
+    if family == "qwen4_exp":
+        eng._lifecycle = threading.Condition()
+        eng._closing = eng._closed = eng._close_running = False
+        eng._calls = {}
+        eng._abort_comm = eng._receiving = eng._shutdown_sent = False
     calls = []
     eng.scheduler = type("S", (), {"submit": lambda self, *a, **kw: calls.append(kw) or {}})()
     for name, value in (("context_window", 4096), ("max_len", 4096), ("depth", 1), ("vision", None)):
@@ -184,6 +189,8 @@ def test_the_engines_hand_background_to_their_scheduler_only_when_set(allocation
     for background in (False, True):
         eng.generate([1, 2, 3], 4, None, lambda new: False, background=background)
     assert ["background" in kw for kw in calls] == [False, True] and calls[1]["background"] is True
+    if family == "qwen4_exp":
+        assert not eng._calls
 
 
 @pytest.mark.torch

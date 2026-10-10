@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.cli_server_fixture import install_cli_server
+
 from tensorfold import cli
 from tensorfold.cuda import precision
 from tests.test_cuda_cli import _family
@@ -23,7 +25,7 @@ def test_the_flag_parses_and_defaults_to_the_checkpoints_math():
 
 @pytest.mark.parametrize("flags,mode,asked", [([], "checkpoint", False), (["--precision", "full"], "full", True),
                                               (["--precision", "checkpoint"], "checkpoint", True)])
-def test_the_mode_is_set_before_loading_and_shown(tmp_path, monkeypatch, capsys, flags, mode, asked):
+def test_the_mode_is_set_before_loading_and_shown(tmp_path, monkeypatch, request, capsys, flags, mode, asked):
     import tensorfold.cuda.server as server
 
     seen = []
@@ -35,7 +37,7 @@ def test_the_mode_is_set_before_loading_and_shown(tmp_path, monkeypatch, capsys,
     family = _family(cuda_engine=engine)
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=8185))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + flags)
     try:
         assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
@@ -46,13 +48,13 @@ def test_the_mode_is_set_before_loading_and_shown(tmp_path, monkeypatch, capsys,
         precision.set_mode(precision.CHECKPOINT)
 
 
-def test_prefill_fp8_is_refused_under_the_checkpoints_math(tmp_path, monkeypatch):
+def test_prefill_fp8_is_refused_under_the_checkpoints_math(tmp_path, monkeypatch, request):
     import tensorfold.cuda.server as server
 
     family = _family(cuda_engine=lambda *a, **k: SimpleNamespace(
         max_len=8192, w=SimpleNamespace(fast_prefill=False, precision="checkpoint")))
     family.model_type = "test"
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts", "--prefill-fp8"])
     try:
         with pytest.raises(ValueError, match="--precision full"):

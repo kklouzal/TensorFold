@@ -1,4 +1,4 @@
-"""Public offload boundaries and independent header-only CPU/GPU memory oracles."""
+"""Public offload boundaries and independent sparse-checkpoint CPU/GPU memory oracles."""
 
 import json
 import math
@@ -39,7 +39,9 @@ def checkpoint(path, *, mtp=True, missing=None, bits=4, group=32):
         for field, dtype, n in (("weight", "U32", 32), ("scales", "BF16", 8), ("biases", "BF16", 8)):
             add(base + ".shared_expert_gate." + field, dtype, [1, n])
     raw = json.dumps(entries).encode()
-    (path / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + offset)
     return text, entries
 
 
@@ -139,11 +141,25 @@ def test_vram_option_name_default_and_help_match_gpu_cache_budget(capsys):
 @pytest.mark.parametrize("budget", [None, 0.25])
 def test_vram_option_reaches_cuda_engine_only_when_set(tmp_path, monkeypatch, budget):
     from tensorfold.cuda import server
-    received = []
+    received, retired = [], []
+    engine = NS(max_len=128, close=lambda: retired.append("engine"))
+    app = NS(effective_context_window=128)
+    owned_server = NS(server_close=lambda: retired.append("server"), handlers_drained=True)
+    handler = object()
     family = NS(title="test", model_type="test", package=NS(cuda_engine=lambda *a, **k:
-        received.append(k) or NS(max_len=128)))
-    monkeypatch.setattr(server, "App", lambda *a, **k: NS(effective_context_window=128))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+        received.append(k) or engine))
+    monkeypatch.setattr(server, "App", lambda *a, **k: app)
+    def make_handler(actual):
+        assert actual is app
+        return handler
+    monkeypatch.setattr(server, "make_handler", make_handler)
+    def bind(address, actual_handler, *, max_connections):
+        assert actual_handler is handler and max_connections is None
+        return owned_server
+    def serve(actual_app, host, port, *, server):
+        assert actual_app is app and server is owned_server
+    monkeypatch.setattr(server, "Server", bind)
+    monkeypatch.setattr(server, "serve", serve)
     command = ["serve", str(tmp_path), "--no-drafts"]
     if budget is not None:
         command += ["--vram-experts", str(budget)]
@@ -154,6 +170,7 @@ def test_vram_option_reaches_cuda_engine_only_when_set(tmp_path, monkeypatch, bu
         assert "vram_experts" not in received[0]
     else:
         assert received[0]["vram_experts"] == budget
+    assert retired == ["server", "engine"]
 
 
 def test_retired_family_keyword_is_refused_before_loading(tmp_path):
@@ -203,28 +220,50 @@ def test_fixed_pool_does_not_manufacture_weight_packing_staging(tmp_path, monkey
     assert plan["loading_bytes_estimate"] == 0
 
 
-def test_engine_shutdown_joins_worker_before_closing_cache():
+def test_engine_shutdown_joins_worker_before_closing_cache(tmp_path, monkeypatch):
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
-    calls = []
-    engine = FlashNextEngine.__new__(FlashNextEngine)
+    torch = pytest.importorskip("torch")
+    calls, fences = [], []
+    device = object()
+    monkeypatch.setattr(FlashNextEngine, "_initialize", lambda *a, **k: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda actual: fences.append(actual))
+    engine = FlashNextEngine(tmp_path)
     engine.scheduler = NS(close=lambda: calls.append("joined"))
-    engine.w = NS(meta={"expert_cache": NS(close=lambda: calls.append("cache"))})
+    def cache_close():
+        assert calls == ["joined"] and fences == [device]
+        calls.append("cache")
+    engine.w = NS(device=device, meta={"expert_cache": NS(close=cache_close)})
     engine.close()
     assert calls == ["joined", "cache"]
     assert engine.scheduler is None
+    assert fences == [device] and engine._closed is True
+    engine.close()
+    assert calls == ["joined", "cache"] and fences == [device]
 
 
-def test_failed_worker_join_keeps_expert_cache_alive():
+def test_failed_worker_join_keeps_expert_cache_alive(tmp_path, monkeypatch):
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    torch = pytest.importorskip("torch")
+    primary = RuntimeError("worker still active")
     def fail():
-        raise RuntimeError("worker still active")
-    engine = FlashNextEngine.__new__(FlashNextEngine)
+        raise primary
+    monkeypatch.setattr(FlashNextEngine, "_initialize", lambda *a, **k: None)
+    fences = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda actual: fences.append(actual))
+    engine = FlashNextEngine(tmp_path)
     engine.scheduler = NS(close=fail)
     closed = []
-    engine.w = NS(meta={"expert_cache": NS(close=lambda: closed.append(True))})
-    with pytest.raises(RuntimeError, match="worker still active"):
+    engine.w = NS(device=object(), meta={"expert_cache": NS(close=lambda: closed.append(True))})
+    with pytest.raises(RuntimeError, match="worker still active") as caught:
         engine.close()
     assert not closed and engine.scheduler is not None
+    assert caught.value is primary and not fences
+    assert engine._closing is True and engine._closed is False
+    with pytest.raises(RuntimeError, match="closing or closed"):
+        engine._begin_request(object())
+    engine.scheduler.close = lambda: None
+    engine.close()
+    assert closed == [True] and fences == [engine.w.device] and engine._closed is True
 
 
 def cgroup_files(monkeypatch, membership, entries):
@@ -299,6 +338,9 @@ def ram_loader(monkeypatch):
     monkeypatch.setattr(weights, "stack_q4", lambda *a: NS())
     monkeypatch.setattr(expert_cache, "HostExpertCache", create_cache)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    def cpu_fence(device):
+        assert device == "cpu"
+    monkeypatch.setattr(torch.cuda, "synchronize", cpu_fence)
     return NS(weights=weights, reader=reader, cache=cache, calls=calls)
 
 
@@ -333,18 +375,22 @@ def test_final_reader_close_failure_also_closes_expert_cache(tmp_path, ram_loade
 
 def test_payload_failure_preserves_primary_when_both_cleanups_fail(tmp_path, ram_loader):
     primary = OSError("payload read failed")
+    reader_failure = RuntimeError("reader cleanup failed")
+    cache_failure = RuntimeError("cache cleanup failed")
     def payload(name):
         raise primary
     def reader_close():
         ram_loader.calls.append("reader close")
-        raise RuntimeError("reader cleanup failed")
+        raise reader_failure
     def cache_close():
         ram_loader.calls.append("cache close")
-        raise RuntimeError("cache cleanup failed")
+        raise cache_failure
     ram_loader.reader.get, ram_loader.reader.close, ram_loader.cache.close = payload, reader_close, cache_close
     with pytest.raises(OSError, match="payload read failed") as caught:
         ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
     assert caught.value is primary
     assert ram_loader.calls == ["cache acquire", "reader close", "cache close"]
-    assert any("reader cleanup failed" in note for note in primary.__notes__)
-    assert any("cache cleanup failed" in note for note in primary.__notes__)
+    assert primary.load_cleanup_errors == [
+        ("checkpoint reader cleanup also failed", reader_failure),
+        ("expert cache cleanup also failed", cache_failure),
+    ]

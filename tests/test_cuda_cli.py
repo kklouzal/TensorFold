@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.cli_server_fixture import install_cli_server
+
 from tensorfold import cli
 
 
@@ -89,7 +91,7 @@ def test_a_cuda_start_dumps_its_stacks_on_sigusr1(tmp_path, monkeypatch):
     assert events == [("register", signal.SIGUSR1, {"all_threads": True}), ("serve",)]
 
 
-def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, monkeypatch, capsys):
+def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, monkeypatch, request, capsys):
     import tensorfold.cuda.server as server
 
     made, served = [], []
@@ -98,7 +100,7 @@ def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, mon
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: served.append(k) or
                         SimpleNamespace(effective_context_window=8185))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     assert cli._serve_cuda(args, family, tmp_path, 262144) == 0
     assert made[0]["context"] == 262144
@@ -123,7 +125,7 @@ def test_the_prompt_precision_flag_parses_and_help_states_the_default():
 @pytest.mark.parametrize("fast,flags,fp8", [(True, [], None), (True, ["--prefill-fp8"], True),
                                             (True, ["--no-prefill-fp8"], False), (False, ["--prefill-fp8"], True),
                                             (False, [], None), (False, ["--no-prefill-fp8"], False)])
-def test_the_prompt_precision_is_set_before_loading_and_shown(tmp_path, monkeypatch, capsys, fast, flags, fp8):
+def test_the_prompt_precision_is_set_before_loading_and_shown(tmp_path, monkeypatch, request, capsys, fast, flags, fp8):
     """The switch is set before the engine loads (None: the default); a checkpoint without an FP8 prompt kernel
     refuses the flag by name and serves bf16 prompts otherwise."""
 
@@ -140,7 +142,7 @@ def test_the_prompt_precision_is_set_before_loading_and_shown(tmp_path, monkeypa
     family = _family(cuda_engine=engine)
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=8185))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + flags)
     try:
         if not fast and flags == ["--prefill-fp8"]:
@@ -201,8 +203,8 @@ def test_kv_dtype_reaches_only_the_families_that_declare_it(tmp_path, monkeypatc
     (["--mtp-confidence", "0.6"], "mlx", "qwen4_exp", "on MLX has no such rule"),
     (["--mtp-confidence", "0.6"], "cuda", "glm5_next", "on CUDA has no such rule"),
     (["--mtp-confidence", "0.6"], "cuda", "nemotron_h", "on CUDA has no such rule"),
-    (["--mtp-confidence", "1.5"], "cuda", "qwen4_exp", "probability from 0 to 1"),
-    (["--mtp-confidence", "-0.1"], "cuda", "qwen4_exp", "probability from 0 to 1"),
+    (["--mtp-confidence", "1.5"], "cuda", "qwen4_exp", "--mtp-confidence must be between 0 and 1"),
+    (["--mtp-confidence", "-0.1"], "cuda", "qwen4_exp", "--mtp-confidence must be between 0 and 1"),
     (["--prefill-fp8"], "mlx", "qwen3_5", "Qwen3.8 dense on MLX has none"),
     (["--prefill-fp8"], "cuda", "nemotron_h", "on CUDA has none"),
     (["--prefill-fp8"], "cuda", "glm5_next", "on CUDA has none"),
@@ -295,7 +297,7 @@ def test_no_cuda_engine_serves_one_token_a_round_by_default(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("flag, streams", [(None, None), ("auto", None), ("1", None), ("4", 4)])
-def test_cuda_parallel_is_one_request_at_a_time_unless_a_number_asks(tmp_path, monkeypatch, flag, streams):
+def test_cuda_parallel_is_one_request_at_a_time_unless_a_number_asks(tmp_path, monkeypatch, request, flag, streams):
     import tensorfold.cuda.server as server
 
     made = []
@@ -303,7 +305,7 @@ def test_cuda_parallel_is_one_request_at_a_time_unless_a_number_asks(tmp_path, m
     family = _family(cuda_engine=lambda *a, **k: made.append(k) or engine)
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=4096))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + (["--parallel", flag] if flag else [])
     assert cli._serve_cuda(cli.build_parser().parse_args(command), family, tmp_path, 4096) == 0
     assert made[0].get("parallel") == streams
@@ -329,7 +331,7 @@ def test_gb10_reads_the_devices_capability_or_name(monkeypatch, available, capab
 
 
 @pytest.mark.parametrize("declares, expected", [(True, 6), (False, None)])
-def test_checkpoint_slots_reach_a_cuda_engine_only_when_its_family_declares_them(tmp_path, monkeypatch, declares,
+def test_checkpoint_slots_reach_a_cuda_engine_only_when_its_family_declares_them(tmp_path, monkeypatch, request, declares,
                                                                                     expected):
     import tensorfold.cuda.server as server
 
@@ -339,7 +341,7 @@ def test_checkpoint_slots_reach_a_cuda_engine_only_when_its_family_declares_them
                      **({"CUDA_CHECKPOINT_SLOTS": True} if declares else {}))
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=4096))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts", "--parallel", "2", "--checkpoint-slots", "6"]
     assert cli._serve_cuda(cli.build_parser().parse_args(command), family, tmp_path, 4096) == 0
     assert made[0].get("checkpoint_slots") == expected

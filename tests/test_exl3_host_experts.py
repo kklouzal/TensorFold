@@ -18,6 +18,20 @@ PREFIX, SHARED = "model.layers.0.mlp.experts", "model.layers.0.mlp.shared_expert
 PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
+def failure_nodes(primary):
+    """Inspect native exception transport by identity, independently of note text."""
+    pending, seen = [primary], []
+    while pending:
+        error = pending.pop()
+        if error is None or any(error is previous for previous in seen):
+            continue
+        seen.append(error)
+        pending.extend((BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error)))
+        if isinstance(error, BaseExceptionGroup):
+            pending.extend(error.exceptions)
+    return seen
+
+
 class Checkpoint:
     """Independent in-memory file-boundary fixture: exact header plus CPU payload."""
 
@@ -402,6 +416,7 @@ def test_marker_failure_drains_other_failed_future_preserving_primary_and_reader
             if key.startswith(name + "."):
                 pk.where[key] = pk.headers[key][0] = f"frame{expert}.safetensors"
     failed, active = threading.Event(), []
+    secondary = OSError("secondary queued reader failure")
     read = pk.read
 
     def fault(file, begin, end):
@@ -409,7 +424,7 @@ def test_marker_failure_drains_other_failed_future_preserving_primary_and_reader
         try:
             if file == "frame1.safetensors":
                 failed.set()
-                raise IOError("secondary queued reader failure")
+                raise secondary
             value = read(file, begin, end)
             if file == "frame0.safetensors":
                 key = PREFIX + ".0.gate_proj.mul1"
@@ -429,7 +444,7 @@ def test_marker_failure_drains_other_failed_future_preserving_primary_and_reader
     monkeypatch.setattr(host.struct, "unpack", wait_then_unpack)
     with pytest.raises(ValueError, match="codebook marker payload") as caught:
         host.load_compact(pk, PREFIX, pk.count, SHARED)
-    assert any("secondary queued reader failure" in note for note in caught.value.__notes__)
+    assert any(error is secondary for error in failure_nodes(caught.value))
     assert active == [] and failed.is_set()
 
 

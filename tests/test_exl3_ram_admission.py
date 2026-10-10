@@ -46,7 +46,9 @@ def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, rout
                     [n // 16 if signs else n])
                 add(prefix + ".mul1", "I32", [])
     raw = json.dumps(entries).encode()
-    (path / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    with (path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + offset)
     return text, entries
 
 
@@ -107,12 +109,17 @@ def test_bad_configured_layer_width_and_mixed_codebooks_fail_before_payload(tmp_
     _, entries = checkpoint(tmp_path)
     name = "model.language_model.layers.0.mlp.experts.0.gate_proj.trellis"
     entries[name]["shape"][0] = 8
-    entries[name]["data_offsets"][1] = entries[name]["data_offsets"][0] + math.prod(entries[name]["shape"]) * 2
     scale = name.removesuffix(".trellis") + ".suh"
     entries[scale]["shape"] = [128]
-    entries[scale]["data_offsets"][1] = entries[scale]["data_offsets"][0] + 128 * 2
+    offset = 0
+    for info in entries.values():
+        size = math.prod(info["shape"]) * (4 if info["dtype"] == "I32" else 2)
+        info["data_offsets"] = [offset, offset + size]
+        offset += size
     blob = json.dumps(entries).encode()
-    (tmp_path / "model.safetensors").write_bytes(struct.pack("<Q", len(blob)) + blob)
+    with (tmp_path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(blob)) + blob)
+        stream.truncate(8 + len(blob) + max(info["data_offsets"][1] for info in entries.values()))
     with pytest.raises(ValueError, match="incompatible EXL3 projection"):
         ram_experts.layout(tmp_path, 1)
     checkpoint(tmp_path, missing="model.language_model.layers.0.mlp.experts.0.gate_proj.mul1")

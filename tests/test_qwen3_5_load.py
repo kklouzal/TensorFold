@@ -74,20 +74,35 @@ def gate(monkeypatch):
     family = ModuleType("tensorfold.families.qwen3_5.family")
     family.Qwen35Family = Family
     monkeypatch.setitem(sys.modules, family.__name__, family)
-    calls = {"loaded": [], "lanes": [], "rows": []}
+    calls = {"loaded": [], "lanes": [], "rows": [], "trust": []}
 
     def run(top, widths, *, units=True, lane_kernels="auto", config=None, tied=False, dtype="bfloat16",
-            row_supported=True):
+            row_supported=True, trust_model_code=False):
         model = Model(widths, tied=tied, dtype=dtype)
-        monkeypatch.setattr(qwen3_5, "load_lane_model", lambda path: calls["loaded"].append(model) or (model, "tok"))
+        expected_trust = trust_model_code
+        def load_model(path, *, trust_model_code=False):
+            assert type(trust_model_code) is bool and trust_model_code is expected_trust
+            calls["loaded"].append(model)
+            calls["trust"].append(trust_model_code)
+            return model, "tok"
+
+        monkeypatch.setattr(qwen3_5, "load_lane_model", load_model)
         monkeypatch.setattr(families, "read_config",
                             lambda path: {"quantization": {"bits": top[0], "group_size": top[1]}, **(config or {})})
         monkeypatch.setattr(qwen3_5, "tensor_units", lambda: units)
         monkeypatch.setattr(qwen3_5, "install_lane_kernels", calls["lanes"].append)
         monkeypatch.setattr(qwen3_5, "install_row_decoder", lambda m: calls["rows"].append(m) or row_supported)
-        return qwen3_5.load("unused", lane_kernels=lane_kernels)
+        return qwen3_5.load("unused", lane_kernels=lane_kernels, trust_model_code=trust_model_code)
 
     return run, calls
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_checkpoint_code_authority_is_forwarded_to_the_owned_loader(gate, trusted):
+    run, calls = gate
+    family, tokenizer = run((4, 64), (4, 4), trust_model_code=trusted)
+    assert calls["loaded"] == [family.inner] and calls["trust"] == [trusted]
+    assert tokenizer == "tok"
 
 
 @pytest.mark.parametrize("top,widths", [((4, 64), (4, 4)), ((3, 64), (3, 3)), ((2, 64), (2, 2)),

@@ -1,4 +1,4 @@
-"""Header-only checkpoints shaped like Qwen3.8-27B (MLX 4-bit) and its DFlash2 drafter, for the startup estimates."""
+"""Sparse checkpoints shaped like Qwen3.8-27B and its DFlash2 drafter, for startup estimates."""
 
 import json
 import math
@@ -23,7 +23,9 @@ def _write(folder: Path, config: dict, tensors: list[tuple[str, str, list[int]]]
         entries[name] = {"dtype": dtype, "shape": shape, "data_offsets": [offset, offset + size]}
         offset += size
     raw = json.dumps(entries).encode()
-    (folder / "model.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)    # the estimate reads headers
+    with (folder / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + offset)  # Valid tensor ranges without materializing their payload.
     return folder
 
 

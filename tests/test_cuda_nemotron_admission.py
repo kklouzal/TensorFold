@@ -96,6 +96,8 @@ class Tensor(Allocation):
 @pytest.fixture
 def fake_torch(monkeypatch):
     lang = ModuleType("triton.language")
+    core = ModuleType("triton.language.core")
+    core.TRITON_MAX_TENSOR_NUMEL = 1 << 20  # opaque metadata boundary; no compiler capability claim
     lang.constexpr = object
     triton = ModuleType("triton")
     triton.language = lang
@@ -105,6 +107,7 @@ def fake_torch(monkeypatch):
     before = set(sys.modules)
     monkeypatch.setitem(sys.modules, "triton", triton)
     monkeypatch.setitem(sys.modules, "triton.language", lang)
+    monkeypatch.setitem(sys.modules, "triton.language.core", core)
     recorded = []
 
     def allocate(shape, **kw):

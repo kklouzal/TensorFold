@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.cli_server_fixture import install_cli_server
+
 from tensorfold import cli
 from tensorfold.families.glm5_next.cuda import LATENT
 
@@ -24,7 +26,7 @@ def checkpoint(path, config, tensors):
         stream.truncate(8 + len(raw) + offset)  # sparse, valid isolated payload; no model data is loaded
 
 
-def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch):
+def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch, request):
     from tensorfold.cuda import server
 
     observed = []
@@ -33,7 +35,7 @@ def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch):
         return SimpleNamespace(context_window=options.get("context", 8192))
     family = SimpleNamespace(title="Test", model_type="test", package=SimpleNamespace(cuda_engine=engine))
     monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=a[0].context_window))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     cli._serve_cuda(args, family, tmp_path, 262144)
     assert observed[0]["context"] == 262144
@@ -73,13 +75,13 @@ def test_glm_nonfit_refuses_before_weight_load(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("override", [None, 0, 12345])
-def test_cli_preserves_default_vs_explicit_context(tmp_path, monkeypatch, override):
+def test_cli_preserves_default_vs_explicit_context(tmp_path, monkeypatch, request, override):
     from tensorfold.cuda import server
     seen = []
     package = SimpleNamespace(cuda_engine=lambda *a, **kw: seen.append(kw) or SimpleNamespace(context_window=99))
     family = SimpleNamespace(title="Test", model_type="test", package=package)
     monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=99))
-    monkeypatch.setattr(server, "serve", lambda *a: None)
+    install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"]
     if override is not None:
         command += ["--context", str(override)]
@@ -111,6 +113,39 @@ class Loaded(Exception):
     pass
 
 
+class ConstructorComm:
+    """Metadata-only NCCL owner: closed construction, explicit open and retirement."""
+
+    def __init__(self, all_gather):
+        self.all_gather_callback = all_gather
+        self.closed = True
+        self.opened = False
+        self.open_calls = []
+        self.close_calls = []
+
+    def open(self, rank, world, master, port):
+        assert not self.opened and self.closed
+        assert type(rank) is int and world == 2 and 0 <= rank < world
+        assert master == "example" and type(port) is int and port > 0
+        self.open_calls.append((rank, world, master, port))
+        self.opened, self.closed = True, False
+
+    def barrier(self):
+        assert self.opened and not self.closed
+
+    def ready(self, *args, **kwargs):
+        assert self.opened and not self.closed
+
+    def all_gather(self, send, receive):
+        assert self.opened and not self.closed
+        self.all_gather_callback(send, receive)
+
+    def close(self, *, abort=False):
+        if not self.closed:
+            self.close_calls.append(abort)
+            self.closed = True
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     import sys
@@ -136,8 +171,12 @@ def fake_runtime(monkeypatch):
         raise Loaded
     def both(send, recv):
         recv.view(-1).copy_(torch.cat([send.view(-1), send.view(-1)]))
-    comm = SimpleNamespace(barrier=lambda: None, ready=lambda *a, **k: None, all_gather=both)
-    monkeypatch.setitem(sys.modules, "tensorfold.cuda.comm", SimpleNamespace(NCCL=lambda *a: comm))
+    comms = []
+    def comm_owner():
+        comm = ConstructorComm(both)
+        comms.append(comm)
+        return comm
+    monkeypatch.setitem(sys.modules, "tensorfold.cuda.comm", SimpleNamespace(NCCL=comm_owner))
     for family in ("qwen3_5", "qwen4_exp", "glm5_next"):
         prefix = f"tensorfold.families.{family}.cuda"
         weights = SimpleNamespace(load=load, draft_token_ids=lambda *a: None,
@@ -149,7 +188,12 @@ def fake_runtime(monkeypatch):
     monkeypatch.setattr(dist, "init_process_group", lambda *a, **kw: None)
     monkeypatch.setattr(dist, "all_gather_into_tensor", lambda recv, send: both(send, recv))
     monkeypatch.setitem(sys.modules, "tensorfold.families.qwen3_5.cuda.distributed", SimpleNamespace(split_weights=None))
-    return calls, capacity
+    try:
+        yield calls, capacity
+    finally:
+        for comm in comms:
+            comm.close(abort=True)
+        assert all(comm.closed for comm in comms)
 
 
 def construct(family, path, requested, explicit, world, rank=0):

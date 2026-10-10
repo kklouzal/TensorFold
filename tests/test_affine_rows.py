@@ -125,11 +125,13 @@ def test_unimplemented_formats_are_not_advertised(bits, group, mode):
     assert not affine_rows.readable(bits, group, mode)
 
 
-def test_fits_refuses_tiled_weights_missing_groups_and_mismatched_dtypes(mx):
+def test_fits_keeps_standard_parameters_with_lane_policy_and_checks_groups_and_dtypes(mx):
     module = Linear(bits=3, gs=32)
-    module._lane_tiled = True
-    assert not affine_rows.fits(module)
-    module._lane_tiled = False
+    original = module.weight, module.scales, module.biases
+    module._lane_tile, module._lane_nt = True, 32
+    assert affine_rows.fits(module)
+    assert all(current is previous for current, previous in zip(
+        (module.weight, module.scales, module.biases), original))
     module.scales = Array((8, 3))
     assert not affine_rows.fits(module)
     module.scales = Array((8, 4), "f16")
@@ -193,7 +195,12 @@ def test_bad_inputs_fail_before_a_kernel_is_requested(mx, monkeypatch, x):
 
 def load_definitions(filename, namespace, names):
     tree = ast.parse((KERNELS / filename).read_text())
-    nodes = [node for node in tree.body if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in names]
+    # Preserve the actual stdlib integer-index dependency without importing
+    # MLX/native modules in this source-only fixture.
+    nodes = [node for node in tree.body
+             if (isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in names)
+             or (isinstance(node, ast.ImportFrom) and node.module == "operator"
+                 and all(alias.name == "index" for alias in node.names))]
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[future, *nodes], type_ignores=[])), filename, "exec"), namespace)
     return namespace

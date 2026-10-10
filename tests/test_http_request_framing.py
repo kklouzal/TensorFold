@@ -5,10 +5,11 @@ from io import BytesIO, StringIO
 import importlib.util
 from pathlib import Path
 import socket
-import sys
 import threading
 from types import SimpleNamespace
 import unittest
+
+from http_import_control import assert_accelerator_free_imports
 
 from tensorfold.server import request_body
 from tensorfold.server.errors import RequestError
@@ -210,7 +211,7 @@ class Framing(unittest.TestCase):
             self.assertIn(b'"count": 3', raw)
 
     def test_no_real_accelerator_runtime_imports(self):
-        self.assertFalse(any(name in sys.modules for name in ('torch', 'numpy', 'mlx')))
+        assert_accelerator_free_imports("tensorfold.server.request_body", "tensorfold.server.http", "tensorfold.cuda.http")
 
     def test_real_loopback_socket_contains_bad_frame_and_keeps_valid_pipeline(self):
         class App:

@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from http_import_control import assert_accelerator_free_imports
+
 from tensorfold import cli
 from tensorfold.server.cancellation import socket_cancellation
 from tensorfold.server.http import Server, make_handler
@@ -471,7 +473,7 @@ class Lifetime(unittest.TestCase):
         self.assertTrue(server.handlers_drained)
 
     def test_no_accelerator_imports(self):
-        self.assertFalse(any(name in sys.modules for name in ("torch", "numpy", "mlx")))
+        assert_accelerator_free_imports("tensorfold.cli", "tensorfold.server.http", "tensorfold.server.cancellation")
 
 
 if __name__ == "__main__":

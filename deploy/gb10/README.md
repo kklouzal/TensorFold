@@ -78,7 +78,7 @@ locks: a persistent unlocked `lock` file is normal and must not be deleted as a
 recovery step. TensorFold emits old stale-file guidance only for the audited
 FileBaton implementation.
 
-The current GB10 host driver is 580.178.04. A fresh container check demonstrated
+The 2026-10-06 GB10 check used host driver 580.178.04. A fresh container check demonstrated
 NGC's enabled CUDA forward compatibility with user-mode driver 615.71.09 and
 the nightly's CUDA tensor operations on SM 12.1. No host driver change was made.
 The project CUDA launcher reruns NVIDIA's shipped compatibility probe on each
@@ -193,6 +193,15 @@ An additional 19 CUDA grammar cases passed against an independent CPU matcher
 oracle across FP32, BF16 and FP16 logits. These checks establish component
 behavior; full-model startup and expanded
 context quality, memory and performance are still deployment gates.
+
+Later native AMD64 installed-origin CPU qualification completed 25 successful chunks against the
+normal Source06 verification image: 6,214 non-skipped passes, zero failures/errors and 155 explicit
+skips over the 386-path Linux inventory. The qualified read-only test fixture preserved installed
+package/native origins; its full 1,033-file native UID-1000 hashes matched before and after.
+The dated GB10 counts above retain their original scope. Current source/image identities, default-prefetch
+generation observations, completed current CLI/API qualification and future changed-image/shipping gates are recorded in the
+[README](../../README.md#verification-and-development) and
+[optimization validation](../../docs/optimization-validation.md).
 
 The nightly Triton bindings emitted nanobind reference warnings at interpreter
 shutdown after the CUDA suite, which exited successfully. Small isolated compiler
