@@ -68,6 +68,7 @@ RUN --mount=type=cache,id=tensorfold-cu134-nightly-pip-${TARGETARCH},target=/roo
 COPY tests /opt/TensorFold/tests
 COPY deploy /opt/TensorFold/deploy
 COPY tools /opt/TensorFold/tools
+COPY CHANGELOG.md /opt/TensorFold/CHANGELOG.md
 # Private source captures can have 0700/0600 modes; test workers run as a different UID.
 RUN chmod -R a+rX /opt/TensorFold
 WORKDIR /opt/TensorFold

@@ -486,7 +486,7 @@ Source installations print a live throughput line when attached to a terminal. R
 
 ### Verification and development
 
-The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest and maintained tests/tools:
+The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, maintained tests/tools and `CHANGELOG.md`, readable by unprivileged test workers:
 
 ```bash
 docker buildx build --platform linux/amd64 --load --target verification \
@@ -501,6 +501,8 @@ docker run --rm --network none --memory 3g --memory-swap 3g \
 The completed installed-origin Linux CPU qualification used normal verification image `sha256:aeef439e98eb2c885e5c131105e2d9b612410e81336d6fa63c36078eb6522b64`, with the Source06 wheel `80f1…` above, Python 3.12 and pytest 8.4.2. A read-only qualified fixture supplied maintained tests/tools while the package and native provider remained the normal installed copies. The maintained manifest contains **387 modules**; its **386-path Linux inventory** completed in **25 successful chunks**, totaling **6,369 cases**: **6,214 non-skipped passes**, **zero failures/errors**, and **155 explicit skips**. One additional Apple-only module with two tests was excluded off target. Skips remain unrun for their declared targets; CPU source/fake controls do not qualify GPU/model numerics, Apple execution or true two-GPU behavior.
 
 The successful evidence combines 16 original chunks, eight corrected-fixture reruns and one final Dense EXL3 cleanup-fixture rerun, each retaining its original source/fixture identity. The full 1,033-file read-only fixture passed native UID-1000 readability/hash checks before and after the final rerun. Current baseline generation and CLI/API evidence is recorded above. Final candidate decisions and changed shipping-image requalification remain separate from this completed Linux CPU lane.
+
+The verification target copies the maintained changelog into `/opt/TensorFold`. The completed CPU results above used the qualified read-only fixture; they do not certify this packaging change. A fresh built verification image still needs the update and public-permissions checks without a checkout mount.
 
 This ordinary command exercises the configured source tests; it is not an installed-wheel origin/audit proof. GPU, distributed, model-quality, performance and native-origin gates require their declared hardware and controlled receipts. Missing or skipped hardware checks remain unrun. Follow [CONTRIBUTING.md](CONTRIBUTING.md), [the runbook](RUNBOOK.md), [family interfaces](src/tensorfold/families/README.md) and [kernel layout](src/tensorfold/kernels/README.md) before changing numerical or ownership contracts.
 

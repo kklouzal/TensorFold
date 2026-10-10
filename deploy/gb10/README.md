@@ -41,7 +41,7 @@ development headers are supplied by those wheels; `CPATH` makes their audited
 include directories available to NVCC and C++. Transformers, tokenizers, the Hub
 client, xgrammar and core model-input dependencies retain their deployed pins
 where compatible. The native reader's C++ source is included in the fork wheel.
-The verification target adds its own pinned pytest tools and contains no weights. It also includes the synthetic RAM-expert startup and cache-policy benchmarks in `tools/`.
+The verification target adds its own pinned pytest tools, maintained tests and `CHANGELOG.md`, all readable by unprivileged workers, and contains no weights. It also includes the synthetic RAM-expert startup and cache-policy benchmarks in `tools/`. Its changelog packaging requires the built-image update and public-permissions checks without a checkout mount; the earlier qualified-fixture CPU results retain their original scope.
 The opt-in, general CUDA host-RAM expert mode is documented in
 [the RAM-expert recipe](../../docs/recipes/ram-experts.md); this ARM64 image
 and its AMD64 counterpart use the model family's existing CUDA target. Hardware

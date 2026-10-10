@@ -47,7 +47,7 @@ class VerificationPermissions(unittest.TestCase):
         copies = [i for i, line in enumerate(stage) if line.startswith('COPY ')]
         self.assertTrue(copies)
         self.assertGreater(index, max(copies))
-        for name in ('tests', 'deploy', 'tools'):
+        for name in ('tests', 'deploy', 'tools', 'CHANGELOG.md'):
             self.assertIn(f'COPY {name} /opt/TensorFold/{name}', stage[:index])
         self.assertIn('COPY src /opt/TensorFold/src', rows[:rows.index('FROM application AS verification')])
         self.assertLess(index, stage.index('WORKDIR /opt/TensorFold'))
@@ -68,6 +68,11 @@ class VerificationPermissions(unittest.TestCase):
                 path.chmod(0o600)
                 os.utime(path, ns=(1_700_000_000_123_456_789, 1_700_000_000_123_456_789))
                 files.append(path)
+            changelog = root / 'CHANGELOG.md'
+            changelog.write_bytes(b'public changelog fixture\n')
+            changelog.chmod(0o600)
+            os.utime(changelog, ns=(1_700_000_000_123_456_789, 1_700_000_000_123_456_789))
+            files.append(changelog)
             executable = root / 'tools' / 'executable'
             executable.write_bytes(b'public executable fixture\n')
             executable.chmod(0o700)
