@@ -1,3 +1,5 @@
+# GB10 Flash Next deployment
+
 This integration reproduces the GB10 Flash Next deployment from repository
 source. It includes the native SSD reader, multi-image/video and copy-draft
 changes, xgrammar 0.2.8, and the Harness `/v1/tokenize` endpoint. The native
@@ -13,18 +15,99 @@ recorded 2026-10-06 inputs, rather than floating latest tags. The AMD64 dependen
 closure began with an explicit cross-platform pip report; subsequent native
 AMD64 image installation, installed-wheel audits, CUDA checks and actual
 generations ran on the 16 GB Blackwell test host. Those results belong to their
-recorded image/source identities. Fresh final-image checks for the latest source
-remain tracked in [optimization validation](../../docs/optimization-validation.md).
+recorded image/source identities. The current ARM64 deployment is recorded below;
+the separate AMD64 shipping checks retain their own scope in
+[optimization validation](../../docs/optimization-validation.md).
 The current Compose profile enables YaRN factor 2 with 524,288
 prompt-plus-reply tokens and four request slots. Caches grow on demand within
 the global memory gate; four simultaneously full-size contexts are not assumed
 to fit the GB10.
 
+## Current ARM64 redeployment
+
+On **2026-10-10**, the GB10 at **192.168.1.50:8888** was redeployed from the
+maintained fork with the same affine **4-bit/group-32** Flash Next checkpoint,
+revision `2b170fa6309d5d1ee380b35636075fac7945f286`. Its approximately 113.2 GB
+of checkpoint assets include the SSD-backed n-gram table; disk size is not a
+resident-memory figure. The selected built artifacts are:
+
+| Artifact | Recorded identity |
+| --- | --- |
+| Built source commit | `5fe0e89d4697cf2c2f152a720df7de1c0d90ec8c` |
+| Native ARM64 runtime image | `sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec` |
+| Application wheel SHA256 | `4ea0280726172616432a20f770ffd4fdbd98be7ceadf1d1915267ae2ebbae391` |
+
+All **465 packaged source files** were audited. The selected image is tagged
+`tensorfold-gb10-fork:local`; the immutable image ID above identifies the tested
+build rather than a later documentation commit or rebuild.
+The maintained [deployment receipt](deployment-20261010.json) records the exact
+configuration, measurements, completed checks and evidence identities.
+
+The plain Compose deployment preserves **four slots**, **524,288 configured
+prompt-plus-reply tokens**, **YaRN-2**, INT8 K/V, MTP-4/confidence 0.5,
+`TENSORFOLD_MTP_COPY=1`, SSD n-gram reads, vision/video, thinking and the existing
+sampler defaults. The memory and swap limits remain **114 GiB** with no extra
+swap budget. The CPU set `5-9,15-19` retains the ten fast cores. Selected changes
+are **2,048 prefill rows** and **20 compiler jobs**; a job limit does not prove
+all workers remain busy. This resident unified-memory deployment does not
+enable RAM-backed expert offload.
+
+Startup observations reported **28.8–29.1 GiB of cache room** and **8.94 GiB
+for one full window**. Caches grow under the runtime memory gate; this does not
+establish that four simultaneously full windows fit. No new filled-524k prompt
+was exercised on this image. The historical 523,882-token retrieval below
+belongs to its earlier image.
+
+Actual short greedy HTTP/SSE generations kept the checkpoint, INT8 KV and
+request settings fixed. Three 128-token draft/serial pairs matched their serial
+targets and the earlier 512-row baseline outputs. One concurrent warmup was
+excluded before three consumed batches of four 128-token replies:
+
+| Selected 2,048-row workload | Observed client tokens/s |
+| --- | ---: |
+| One MTP request, median of three | 57.40 |
+| One serial request, median of three | 36.21 |
+| Four concurrent MTP requests, median aggregate | 115.16 |
+
+The three concurrent samples were **115.16, 115.98 and 114.63 aggregate
+tokens/s**. Completion usage includes reasoning tokens, and timings cover the
+complete consumed HTTP response. They are not GPU emission timestamps or each
+concurrent user's rate. The original four-draft configuration measured 114.23
+aggregate tokens/s and its repeat measured 116.10, so these trials do **not**
+establish a short-decode throughput improvement. Six drafts gave no repeatable
+gain; disabling copy drafts gave about a 1% gain that did not survive the
+baseline repeat, so four drafts and copy drafts remain selected.
+
+For a fresh **1,886-token prompt plus 64 reply tokens**, serial requests reported
+zero cached tokens. The 512-row baseline's reported prefill time was about
+0.98 s; the selected 2,048-row confirmation median was **0.2355 s**, with samples
+**0.2413, 0.2341 and 0.2355 s**, and the recorded output hash matched. This
+prefill observation has a different timing scope from complete-response rates.
+These are small, warm-cache samples from the recorded starts, with no
+population-confidence or sustained full-context quality/performance claim.
+
+The current image passed six feature groups: image and video recognition,
+their generation-free `/v1/tokenize` counts (150 and 302), media capability
+reporting, the required typed `add_tags` call (integer 42, list and boolean true),
+and xgrammar's exact `TFOK` result. An ordinary thinking-enabled LAN arithmetic
+request completed with **888** for 37 × 24. A same-container restart passed:
+the container ID/image stayed fixed, its start time changed, Docker health
+became healthy, and LAN health advertised the configured 524,288 context and
+four slots. Restart loading took **25.9 s**, including **1.6 s** prompt warming.
+**All six feature groups passed again after restart**, and a fresh ordinary
+thinking-enabled LAN arithmetic request again completed with **888**. Final
+observations showed no container OOM kill, zero container swap and **33.42 GiB
+host MemAvailable**. Unified GPU allocations are not fully charged to the
+cgroup, so host memory must also be observed; this one observation is not a
+guaranteed free-memory floor. This record does not relabel the earlier exhaustive
+AMD64 or historical GB10 checks as new runs.
+
 Build from the repository root:
 
 ```bash
-docker buildx build --load --target runtime \
+docker buildx build --platform linux/arm64 --load --target runtime \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg MAX_JOBS=20 \
   --tag tensorfold-gb10-fork:local --file deploy/gb10/Dockerfile .
 docker compose -f deploy/gb10/compose.yaml config --quiet
 ```
@@ -71,8 +154,14 @@ reduced cuDNN library set, so ordinary wheel-directory precedence can mix
 providers and omit the precompiled Conv3d engine needed by the vision tower.
 Neither dependency tree is modified.
 
-Compiled artifacts use `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/`
-or the sibling `/amd64/`, separate from each other and older Torch/CUDA caches.
+Generic image defaults put compiled artifacts under
+`/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/` or the sibling
+`/amd64/`, separate from each other and older Torch/CUDA caches. This GB10's
+Compose profile explicitly reuses its existing **ARM64-only, unsuffixed**
+`/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/` directories for Torch
+extensions, Triton, CUDA, Inductor and XDG caches. The pinned runtime ABI is
+unchanged; source-aware rebuilds still apply. These deployment overrides do not
+change the generic image defaults or authorize sharing native caches with AMD64.
 The Dockerfile defaults `MAX_JOBS` to eight. Set `--build-arg MAX_JOBS=N` when
 building or `-e MAX_JOBS=N` when running to choose a bounded compiler worker
 count appropriate to that host's CPU and memory. This setting does not prove
@@ -98,7 +187,7 @@ driver cannot assume the GB10's compatibility-library path. Confirm that target'
 native driver and the fresh CUDA probe; a failed probe stops startup. See
 [NVIDIA's compatibility contract](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html).
 
-The pinned image was deployed on this GB10 on 2026-10-06 at native 262,144
+The historical pinned image was deployed on this GB10 on 2026-10-06 at native 262,144
 tokens/four slots. Full-model startup, 17 API checks before and after a real
 same-container restart, four simultaneous requests, 20 repeated requests, tool
 result round trips, two-image input and MP4 video recognition passed. The final
@@ -107,7 +196,7 @@ tests. The previous container and image were retained stopped for rollback.
 These are bounded functional checks; 512k YaRN quality/capacity and sustained
 memory/performance validation remain separate.
 
-The factor-2 profile also passed startup, 17 short API checks and four concurrent
+That earlier image's factor-2 profile also passed startup, 17 short API checks and four concurrent
 requests. One 523,882-token prompt plus 18 reply tokens retrieved the exact
 synthetic passphrase at 60% depth without truncation. The trial took 442 seconds
 and included three simultaneous short requests, all correct in about 2.3 seconds
@@ -116,7 +205,8 @@ capacity/quality check; it does not establish uniform long-context accuracy.
 
 `compose.yaml` preserves the current sampler, MTP, vision and model/cache mounts,
 request slots, memory/swap settings, CPU set, health checks, and restart policy.
-Cache paths come from the runtime image's ABI-specific defaults. Its container
+Cache paths explicitly preserve this host's existing ARM64 namespace as described
+above. Its container
 name and port are the existing production service's. Rendering the
 configuration is read-only; applying it is a service replacement and belongs to
 the deployment step after validation.
@@ -125,8 +215,17 @@ The current Compose project is named `tensorfold-gb10-yarn2`, separating the
 retained native fork container from the new managed service. After a controlled
 cutover, manage it from this repository with
 `docker compose -f deploy/gb10/compose.yaml up -d`, or restart the existing
-container with `docker restart qwen38-flash-next-tf`. Preserve the previous
-container stopped under a distinct rollback name during deployment validation.
+container with `docker restart qwen38-flash-next-tf`. A simple rename of a
+Compose-owned old container is not safe rollback preservation: its Compose
+ownership labels can still cause replacement or removal. During this cutover,
+the old container was renamed and then removed by that label match. The saved
+old image `sha256:089bfba448433506ec3e2fe6332848824c299e7358f76996af44e4e6b6df389f`
+and exact saved container/host configuration were used to recreate
+`qwen38-flash-next-tf-rollback-20261010`, with only Compose ownership labels
+removed. It is retained in **Created/stopped** state. Stop the current service
+before starting a rollback on the same ports; validate its health and complete
+generations. Capture the previous configuration before future replacements,
+and keep rollback containers outside the active Compose ownership labels.
 The earlier recipe and Harness launch scripts manage their captured images;
 use this fork's Compose configuration for the new deployment.
 
@@ -141,8 +240,9 @@ YaRN is an optional CUDA text-RoPE policy for Flash Next. The CLI option
 `--yarn-factor 2 --context 524288` requests a 2× window without modifying the
 shared model snapshot. Native operation omits that option. A full 512k validation
 must measure memory and long-context quality; four full 512k streams are not
-assumed to fit. Four slots are retained for mixed workloads. Startup logged
-29.8 GiB of cache room and 8.94 GiB for one full window; four full windows need
+assumed to fit. Four slots are retained for mixed workloads. The historical
+startup logged 29.8 GiB of cache room; the current startup observations above
+reported 28.8–29.1 GiB. One full window needs 8.94 GiB; four full windows need
 about 35.8 GiB before transient copies. Runtime growth/eviction/admission and
 resource failure handling remain active. The singleton growth path can exceed
 the soft memory gate, so reserves are not an unconditional headroom floor.

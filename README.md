@@ -390,6 +390,75 @@ On Linux, the measured transport policy enables TCP_NODELAY once a connection su
 
 ## Measured performance and tested hardware
 
+### GB10 deployment with YaRN 2×
+
+On **2026-10-10**, the ARM64 **NVIDIA GB10 / 128 GB unified-memory** host
+redeployed the latest runtime at **`http://192.168.1.50:8888/v1`** using the
+[GB10 Compose profile](deploy/gb10/README.md). It retains
+**TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP**, revision
+`2b170fa6309d5d1ee380b35636075fac7945f286`, affine 4-bit/group-32 weights,
+**524,288 prompt-plus-reply tokens, YaRN factor 2, four slots, INT8 K/V,
+four MTP drafts at confidence 0.50, copy drafting, vision/video and thinking**.
+The production sampler remains temperature 1.0, top-p 0.95 and top-k 20;
+the default reply limit is 32,768. Weight/KV precision was preserved, and the
+quantized checkpoint is not an NVFP4 checkpoint. Resident experts share the
+GB10's physical memory; this deployment does not enable `--vram-experts`.
+
+The runtime image is
+`sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec`,
+built from `5fe0e89d4697cf2c2f152a720df7de1c0d90ec8c`, with wheel SHA256
+`4ea0280726172616432a20f770ffd4fdbd98be7ceadf1d1915267ae2ebbae391`.
+All 465 installed package source/data files matched the audited source inputs.
+The deployment-documentation changes do not alter that runtime identity.
+The pinned stack is NGC CUDA 13.4.1, PyTorch
+`2.16.0.dev20261006+cu134`, Triton `3.9.0+gitaad2a60d` and xgrammar 0.2.8.
+Host driver 580.178.04 runs with NGC's validated forward-compatibility user
+driver 615.71.09; the launcher selects the actual SM 121 device.
+
+The selected profile increases `TENSORFOLD_PREFILL_ROWS` from 512 to **2,048**
+and sets `MAX_JOBS=20`. It preserves the CPU set `5-9,15-19`, containing all
+ten fast cores; compiler worker limits do not prove use of every CPU.
+
+| Measured workload | Result |
+| --- | --- |
+| Three solo, greedy 128-token replies, MTP enabled | Median **57.40 tokens/s**, including complete HTTP/SSE consumption |
+| Same three replies, target-only decoding | Median **36.21 tokens/s** |
+| Three warm batches of four concurrent requests, 512 generated tokens per batch | **115.16, 115.98, 114.63 tokens/s** aggregate; median **115.16** |
+| Fresh logical 1,886-token prompt, 64-token reply, target-only, no prefix reuse; 512 prefill rows | Prefill **0.9786, 0.9848, 0.9795 seconds** |
+| Same prompt/reply with 2,048 prefill rows | Prefill **0.2413, 0.2341, 0.2355 seconds** |
+
+These are local client measurements with warmed kernels, one excluded warmup,
+temperature 0, top-k 1, top-p 1, min-p 0 and seed 777. Reply counts include
+reasoning tokens. Short prompt pairs alternate draft/serial order AB/BA/AB;
+they are not perfectly order balanced. Medium-prompt requests reported zero
+cached tokens; their prefill timings come from the engine. All tested
+draft/serial, concurrent and medium-prompt token hashes matched the corresponding
+same-format references, including the 512-row baseline. This bounded identity
+check does not establish general model-quality equivalence or BF16 equivalence.
+
+The original 512-row profile measured 114.23 aggregate tokens/s, and its repeat
+measured 116.10. Six MTP drafts and disabling copy mode did not show a repeatable
+short-decode improvement, so four drafts/copy mode were retained. The selected
+profile's short-decode throughput is comparable within that observed variation;
+the measured improvement is medium-prompt prefill. Small samples and one warm
+process per selected configuration do not establish sustained tail latency or
+performance for other workloads.
+
+The 114 GiB container memory limit, equal memory-plus-swap limit, mounts, host
+network/IPC, port and restart policy are retained. Unified GPU allocations are
+not completely charged to the container's memory cgroup: monitor **host
+MemAvailable**, not only Docker memory usage. Startup reported **28.8–29.1 GiB** of
+cache room and **8.94 GiB** per complete context window. Four configured slots
+do **not** guarantee four simultaneously full 524k windows; cache growth,
+eviction and admission remain active. The latest image's full-window stress
+test was **not run**. The earlier 523,882-token retrieval belongs to its original
+image and is described in the [deployment guide](deploy/gb10/README.md).
+Actual LAN generation, image/video input and media token counting, typed tool
+calls, and xgrammar constraints passed before and after a same-container
+restart. The deployed service is healthy; its old-image rollback remains
+stopped. The [deployment receipt](deploy/gb10/deployment-20261010.json) records
+the image, configuration, observations, sample results and evidence hashes.
+
 The principal separate-VRAM trials used **RTX PRO 2000 Blackwell (SM 120), nominal 16 GB VRAM / 64 GB system RAM**, on native AMD64 Linux. Observed physical GPU memory was 16,584,343,552 bytes; one intermediate-image startup probe reported 15,868,952,576 bytes available to the job. Available memory changes with other users and allocations.
 
 ### Full native context deployment

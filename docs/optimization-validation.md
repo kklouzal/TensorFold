@@ -18,6 +18,38 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## GB10 deployment selection, 2026-10-10
+
+The [current GB10 measurements](../README.md#gb10-deployment-with-yarn-2)
+use runtime image `5b6627ba…`, built from `5fe0e89d…`, with the unchanged
+Flash Next affine 4-bit/group-32 checkpoint at revision `2b170fa6…`, INT8 K/V,
+524,288-token YaRN-2 context, four slots, vision and thinking. The selected
+profile retains MTP-4/confidence 0.50/copy mode and increases prefill rows from
+512 to 2,048. Three fresh logical 1,886-token prompts with 64 generated tokens,
+target-only decoding and zero cached tokens measured 0.9786/0.9848/0.9795
+seconds of engine prefill with 512 rows versus 0.2413/0.2341/0.2355 with 2,048.
+All three same-format output token hashes matched. This is integrated
+medium-prompt evidence, not a general long-context throughput claim.
+
+Selected warm solo MTP/target-only medians were 57.40/36.21 client tokens/s;
+four simultaneous 128-token replies yielded 115.16/115.98/114.63 aggregate
+tokens/s over three measured batches. Counts include reasoning and timing
+includes whole HTTP/SSE consumption; one warmup was excluded. The original
+four-request profile and its repeat measured medians of 114.23 and 116.10.
+Six drafts and disabling copy mode did not demonstrate a repeatable short-decode
+gain. Retain the original draft/copy policy and attribute the selected
+improvement to the measured medium-prompt prefill region. Small samples, warm
+kernel caches and one selected process limit uncertainty claims. Greedy
+sample comparisons and concurrent references passed; they do not establish
+BF16 equivalence or general accuracy for this quantized model.
+
+The 114 GiB cgroup limit and equal memory-plus-swap limit remain unchanged.
+Unified GPU memory is not fully charged to the cgroup, so host MemAvailable is
+required for accounting. Four configured slots do not imply four full context
+windows fit. Latest-image full-524k stress was not run; the earlier retrieval
+retains its original image scope. Deployment restart and feature receipts are
+recorded with the [GB10 profile](../deploy/gb10/README.md).
+
 ## Acceptance
 
 Record complete requests, generated token IDs and the required intermediate

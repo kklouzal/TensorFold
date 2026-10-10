@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-10",
+  "endpoint": "http://192.168.1.50:8888/v1",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "sm": 121,
+    "architecture": "arm64",
+    "physical_RAM_bytes": 130594066432,
+    "host_driver": "580.178.04",
+    "NGC_compat_user_driver": "615.71.09"
+  },
+  "runtime": {
+    "source_commit": "5fe0e89d4697cf2c2f152a720df7de1c0d90ec8c",
+    "image": "sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec",
+    "wheel_sha256": "4ea0280726172616432a20f770ffd4fdbd98be7ceadf1d1915267ae2ebbae391",
+    "package_files_audited": 465,
+    "torch": "2.16.0.dev20261006+cu134",
+    "triton": "3.9.0+gitaad2a60d",
+    "cuda": "13.4.1",
+    "xgrammar": "0.2.8"
+  },
+  "model": {
+    "repo": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+    "revision": "2b170fa6309d5d1ee380b35636075fac7945f286",
+    "weight_format": "affine4/group32"
+  },
+  "configuration": {
+    "context": 524288,
+    "yarn_factor": 2,
+    "parallel": 4,
+    "kv_dtype": "int8",
+    "MTP_drafts": 4,
+    "MTP_confidence": 0.5,
+    "MTP_copy": true,
+    "prefill_rows": 2048,
+    "MAX_JOBS": 20,
+    "cpuset": "5-9,15-19",
+    "memory_limit_bytes": 122406567936,
+    "memory_plus_swap_limit_bytes": 122406567936,
+    "thinking": true,
+    "vision": true,
+    "video": true,
+    "ple_on_ssd": true,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "max_tokens": 32768,
+    "decode_share": 0.5,
+    "CUDA_architecture_selection": "Actual GPU capability selected automatically; former TORCH_CUDA_ARCH_LIST=12.1 override removed."
+  },
+  "measurements": {
+    "solo_MTP_client_median_tps": 57.40115171624616,
+    "solo_serial_client_median_tps": 36.20516754859553,
+    "four_concurrent_warm_median_tps": 115.16238006369655,
+    "four_concurrent_samples": [
+      115.16238006369655,
+      115.98332656132881,
+      114.6261669995389
+    ],
+    "fresh_1886_token_serial_prefill_s": [
+      0.2413,
+      0.2341,
+      0.2355
+    ],
+    "sample_output_identity": "three draft/serial pairs; four concurrent prompt references; medium prompt 64 generated tokens all unchanged against baseline"
+  },
+  "qualification": {
+    "health": {
+      "ok": true,
+      "backend": "tensorfold",
+      "busy": false,
+      "requests_running": 0,
+      "requests_total": 5,
+      "prompt_tokens_total": 868,
+      "completion_tokens_total": 138,
+      "prefill_seconds_total": 1.0172,
+      "decode_seconds_total": 1.8323,
+      "cached_tokens_total": 0,
+      "rounds_total": 37,
+      "drafted_total": 130,
+      "accepted_total": 96,
+      "streams": {
+        "decoding": 0,
+        "prefilling": 0,
+        "max": 4
+      },
+      "context_length": 524288
+    },
+    "same_container_restart": true,
+    "LAN_generation_before_and_after_restart": "37*24 -> 888, thinking defaults retained",
+    "features_before_and_after_restart": [
+      "image",
+      "image-tokenize",
+      "video",
+      "video-tokenize",
+      "typed-tool-0",
+      "guided-choice"
+    ],
+    "container_OOMKilled": false,
+    "container_swap_bytes": 0,
+    "host_MemAvailable_bytes": 35884113920,
+    "host_swap_used_bytes": 195543040,
+    "full_524288_context_stress": "not run on this image",
+    "four_simultaneous_full_context_fit": "not established",
+    "original_command_entrypoint_mounts_resource_settings_preserved": true
+  },
+  "rollback": {
+    "name": "qwen38-flash-next-tf-rollback-20261010",
+    "image": "sha256:089bfba448433506ec3e2fe6332848824c299e7358f76996af44e4e6b6df389f",
+    "state": "created, stopped; recreated from saved old Config/HostConfig minus Compose ownership labels"
+  },
+  "scope": {
+    "throughput": "local complete HTTP/SSE consumption, generated usage including reasoning; four concurrent batches512total tokens; first warmup excluded",
+    "sampling": "temperature0/topk1/topp1/minp0/seed777",
+    "sample_count": "Three 128-token solo pairs and three four-request batches; AB/BA/AB is not perfectly balanced; one warm process per selected configuration.",
+    "medium_prefill": "Three 1,886-prompt-token / 64-reply-token target-only trials with zero cached tokens; engine prefill timing.",
+    "comparison": "same-format token hashes matched; no general accuracy or BF16 equivalence claim",
+    "baseline_four_concurrent_median_tps": [
+      114.2327036308283,
+      116.09742457325599
+    ],
+    "baseline_512row_uncached_prefill_s": [
+      0.9786,
+      0.9848,
+      0.9795
+    ],
+    "rejected_options": "MTP 6 and MTP_COPY=0 did not show repeatable short-decode gains.",
+    "memory": "unified GPU allocations not fully charged to cgroup; host MemAvailable required"
+  },
+  "evidence": {
+    "selected-stream-comparison.json": "f18822b46a5422ce4def36cb8ebdc6a2332ffea547de29c56c6827fcf853eb91",
+    "selected-four-concurrent.json": "94ad0a5ef31c44a7a5cba2110c6136b1df156ba5fdbeb1289b62342d126cfd0d",
+    "selected-uncached-prefill.json": "9796222ba52d571f6645bc32bf2b63fb5b4fe7a1aceea4d7f0c496d187d84a7b",
+    "feature-smoke-prerestart.json": "71164425183647dba78094678f4438c0f3ccfb554cc07fa189e32d25a8d9c85c",
+    "feature-smoke.json": "def285f0a41798a8df656870e85f8ec9b7565f9b3b7000cbd8c858224d32045e",
+    "postrestart-ready.json": "20108d878b3452b7047499d2e71408972f161ca650c9a3e16545c99de23be375",
+    "package-audit.json": "818ee4426ec3642605f185ec725d1a05ec208af3a1bebd0486ceba7510186a45",
+    "original-vs-final-configuration.json": "f85caa3965d250b3f5927141cf1208b9b3c60e66875d7a670ff1fad6035a3fea"
+  }
+}

@@ -51,11 +51,18 @@ services:
       TENSORFOLD_NO_UPDATE_CHECK: '1'
       TENSORFOLD_SSD_NATIVE_THREADS: '32'
       TENSORFOLD_MTP_COPY: '1'
-      TENSORFOLD_PREFILL_ROWS: '512'
+      TENSORFOLD_PREFILL_ROWS: '2048'
+      MAX_JOBS: '20'
       TENSORFOLD_MEMORY_RESERVE_GIB: '6'
       TENSORFOLD_VISION_WORKSPACE_MIB: '0'
       TENSORFOLD_IMAGE_TOKENS: '16384'
       TENSORFOLD_VIDEO_TOKENS: '16384'
+      # Reuse this GB10's ARM64 caches for the unchanged, pinned runtime ABI.
+      TORCH_EXTENSIONS_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/torch_extensions
+      TRITON_CACHE_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/triton
+      CUDA_CACHE_PATH: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/cuda
+      TORCHINDUCTOR_CACHE_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/inductor
+      XDG_CACHE_HOME: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/xdg
     volumes:
       - type: bind
         source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
