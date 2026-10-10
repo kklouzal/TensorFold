@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import math
 import os
 import selectors
 import socket
@@ -14,6 +15,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from tensorfold.cleanup import raise_failures
 from tensorfold.engine import grammar
 from tensorfold.server import request_body, responses
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
@@ -54,13 +56,25 @@ class Server(ThreadingHTTPServer):
     Closing stops admission, cancels request work and interrupts socket IO. A
     failed or interrupted drain retains the journal for an explicit retry.
     Callers must retain the application until ``handlers_drained`` is true.
-    There is no implicit timeout or worker-count limit.
+    There is no implicit timeout or worker-count limit. ``max_connections``
+    optionally pauses acceptance while that many handler owners are retained;
+    unaccepted connections wait in the existing bounded listen backlog.
     """
 
     request_queue_size = 128
     daemon_threads = False
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, *args: Any, max_connections: int | None = None, **kwargs: Any) -> None:
+        if max_connections is not None and (type(max_connections) is not int or max_connections <= 0):
+            raise ValueError("max_connections must be a positive integer or None")
+        self.max_connections = max_connections
+        self._capacity_changed = threading.Event() if max_connections is not None else None
+        self._capacity_poll = 0.5
+        if max_connections is not None:
+            self._accept_gate = threading.Lock()
+            self._accept_without_limit = self._handle_request_noblock
+            self._handle_request_noblock = self._handle_request_with_capacity
+            self.service_actions = self._service_actions_bounded
         self._connections: dict[Any, dict[str, Any]] = {}
         self._connection_lock = threading.RLock()
         self._close_lock = threading.Lock()
@@ -72,6 +86,10 @@ class Server(ThreadingHTTPServer):
         super().__init__(*args, **kwargs)
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
+        if self.max_connections is not None:
+            if type(poll_interval) not in (int, float) or not math.isfinite(poll_interval) or poll_interval <= 0:
+                raise ValueError("bounded HTTP acceptance requires a positive finite poll_interval")
+            self._capacity_poll = float(poll_interval)
         lease = threading.Lock()
         with lease:
             try:
@@ -108,6 +126,8 @@ class Server(ThreadingHTTPServer):
             if serving is not None and serving[0] is threading.current_thread() and serving[1].locked():
                 raise RuntimeError("the server loop cannot join itself")
             self._serve_stop.set()
+            if self._capacity_changed is not None:
+                self._capacity_changed.set()
         if serving is not None:
             # Native with cleanup releases this even if Python finalization
             # was interrupted before it could publish loop completion.
@@ -129,6 +149,34 @@ class Server(ThreadingHTTPServer):
                 if primary is not None and primary is not cleanup:
                     raise primary from cleanup
                 raise
+
+    def _handle_request_with_capacity(self) -> None:
+        """Wait without accepting at capacity; reselect after an owner retires.
+
+        The connection lock linearizes full-state observation and clearing the
+        notification against handler completion and shutdown. The existing
+        poll interval also observes failed native handler/socket retirement.
+        Reselecting avoids accepting from stale readiness after this wait.
+        """
+        with self._accept_gate:
+            with self._connection_lock:
+                if self.stopping.is_set() or self._serve_stop.is_set():
+                    return
+                full = len(self._connections) >= self.max_connections
+                retired = full and any(j["closed"] or "close_error" in j for j in self._connections.values())
+                if full and not retired:
+                    self._capacity_changed.clear()
+            if full:
+                if not retired:
+                    self._capacity_changed.wait(self._capacity_poll)
+                self.service_actions()
+                return
+            self._accept_without_limit()
+
+    def connection_snapshot(self) -> dict[str, int | None]:
+        """Handler owners include sockets whose fallible retirement is pending."""
+        with self._connection_lock:
+            return {"in_use": len(self._connections), "limit": self.max_connections}
 
     @staticmethod
     def _interrupt(request: socket.socket) -> None:
@@ -191,10 +239,22 @@ class Server(ThreadingHTTPServer):
                 try:
                     super().shutdown_request(request)
                 except BaseException as error:
-                    journal["close_error"] = error
+                    with self._connection_lock:
+                        journal["close_error"] = error
                 else:
                     with self._connection_lock:
                         journal["closed"] = True
+                finally:
+                    if self._capacity_changed is not None:
+                        try:
+                            self._capacity_changed.set()
+                        except BaseException as error:
+                            with self._connection_lock:
+                                try:
+                                    raise_failures(self._handler_failure, [error])
+                                except BaseException as failure:
+                                    self._handler_failure = failure
+                                self.stopping.set()
 
     def service_actions(self) -> None:
         # Reap completed handlers at the server-loop control point. Retiring
@@ -211,6 +271,25 @@ class Server(ThreadingHTTPServer):
         if failure is not None:
             raise failure
 
+    def _service_actions_bounded(self) -> None:
+        # Closed socket publication precedes the wakeup. Wait for the native
+        # target scope outside the journal lock, including failed wakeup handling.
+        with self._connection_lock:
+            retired = [(request, journal) for request, journal in self._connections.items() if journal["closed"]]
+        for request, journal in retired:
+            with journal["lease"]:
+                pass
+            journal["thread"].join()
+            with self._connection_lock:
+                if self._connections.get(request) is journal:
+                    self._connections.pop(request)
+        with self._connection_lock:
+            failure = self._handler_failure
+            if failure is None:
+                failure = next((j["close_error"] for j in self._connections.values() if "close_error" in j), None)
+        if failure is not None:
+            raise failure
+
     def server_close(self) -> None:
         with self._connection_lock:
             current = threading.current_thread()
@@ -221,6 +300,8 @@ class Server(ThreadingHTTPServer):
         with self._close_lock:
             with self._connection_lock:
                 self.stopping.set()
+                if self._capacity_changed is not None:
+                    self._capacity_changed.set()
                 serving = self._serving_thread
                 journals = tuple(self._connections.items())
             if serving is not None:
@@ -289,6 +370,8 @@ def served_model_ids(served_name: str, aliases: list[str] | None = None) -> list
 
 
 def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
+    defer_headers = (getattr(app, "max_pending_requests", None) is not None
+                     or getattr(getattr(app, "scheduler", None), "max_engine_calls", None) is not None)
     class Handler(Rearming):              # USR1's stack dump armed again after each request
         protocol_version = "HTTP/1.1"
 
@@ -339,6 +422,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         "warming": bool(getattr(app, "warming", False)),
                         **({"warmup_error": f"saved-prefix warmup failed: {failure.error_type}"} if failure else {}),
                         "memory": _memory("reset_peak=1" in self.path, admission=getattr(app, "prompt_memory", None)),
+                        **({"admission": capacities} if (capacities := metrics.capacity_snapshot(app, server=self.server)) else {}),
                     }
                 )
                 return
@@ -528,13 +612,24 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
 
             try:
                 if stream:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/event-stream")
-                    self.send_header("Cache-Control", "no-cache")
-                    self.send_header("Connection", "close")
-                    self.end_headers()
+                    opened = False
+
+                    def open_stream() -> None:
+                        nonlocal opened
+                        if not opened:
+                            self.send_response(200)
+                            self.send_header("Content-Type", "text/event-stream")
+                            self.send_header("Cache-Control", "no-cache")
+                            self.send_header("Connection", "close")
+                            self.end_headers()
+                            opened = True
+
+                    if not defer_headers:
+                        open_stream()
 
                     def emit(payload: dict[str, Any]) -> None:
+                        if not opened:
+                            open_stream()
                         self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
                         self.wfile.flush()
 
@@ -558,6 +653,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         # Text completions carry content strings only, excluding reasoning deltas as non-streamed replies do.
                         if is_text_completion and not isinstance(delta, str):
                             return
+                        if defer_headers and is_chat_completion and not opened:
+                            emit(stream_chunk({"role": "assistant"}))
                         emit(stream_chunk(delta))
 
                     try:
@@ -603,7 +700,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                             elif reply.get("content") and not streamed[0]:
                                 emit(stream_chunk(str(reply["content"])))
                         else:
-                            if is_chat_completion:
+                            if is_chat_completion and not defer_headers:
                                 emit(stream_chunk({"role": "assistant"}))
                             reply = app.chat(
                                 messages,
@@ -618,6 +715,10 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                     except RequestCancelled:
                         return
                     except RequestError as exc:
+                        if not opened:
+                            self._send_json({"error": error_body(exc)},
+                                            status=503 if isinstance(exc, CapacityError) else 400)
+                            return
                         emit({"error": error_body(exc)})
                         self.wfile.write(b"data: [DONE]\n\n")
                         self.wfile.flush()
@@ -628,12 +729,17 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                             flush=True,
                         )
                         traceback.print_exc()
+                        if not opened:
+                            self._send_json({"error": {"message": str(exc), "type": "server_error"}}, status=500)
+                            return
                         try:
                             finish_stream(None, error=exc)
                         except BrokenPipeError:
                             pass
                         return
                     extras = response_extras(reply)
+                    if not opened and is_chat_completion:
+                        emit(stream_chunk({"role": "assistant"}))
                     if "prompt_tokens" in reply and "completion_tokens" in reply:
                         # Clients that time the stream count tokens from here.
                         extras["usage"] = usage_from_reply(

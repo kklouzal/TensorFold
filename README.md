@@ -207,6 +207,18 @@ with fitting guidance; an omitted reply limit is capped by the remaining context
 context refusal as HTTP 400 for a non-streamed request or as an error event after opening a stream.
 CUDA checks context before opening a stream.
 
+Admission caps are optional and preserve uncapped behavior when omitted.
+`--max-pending-requests N` bounds unfinished generation requests, including
+preparation, waiting and running work. Background replay and gated continuations
+keep their original admission; canceled callers keep their reservation until
+their queued or running engine work retires. Excess requests receive HTTP 503
+before a configured streaming reply opens. On MLX, direct scoring and cache-warm
+jobs also consume this budget; a multi-question scoring request may be refused
+when its jobs do not fit. `--max-engine-calls N` independently bounds queued and
+running MLX engine RPC callbacks, including callbacks retained after caller
+timeout. CUDA rejects that option before loading weights. Counts must be
+positive integers. The HTTP worker cap is `--max-http-connections N`.
+
 On MLX, streams that share rounds take memory as they grow. A stream beside others holds its next 2,048
 tokens of growth, not its whole reply, so `--parallel` streams are admitted while their real contexts fit.
 Before each round the server checks that the live streams' next growth fits. If it doesn't, it first frees

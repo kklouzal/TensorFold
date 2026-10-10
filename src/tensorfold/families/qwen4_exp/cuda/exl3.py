@@ -15,6 +15,7 @@ from tensorfold.cuda.exl3 import format as fmt
 
 from .exl3_mm import Scratch, f16, stack, x3
 from .exl3_pack import _DT, NgramTable, Pack, is_exl3
+from ..ple_lifetime import PLETables
 from ..rope import RopeParameters
 
 PREFILL_ROWS = 2048       # the prompt buffers' rows (``decode.PREFILL_ROWS``): the n-gram staging holds as many
@@ -140,6 +141,9 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
     cfg = Config.read(model_dir, rope=rope)
     ids = draft_token_ids(draft_vocab, cfg.vocab)
+    tables = PLETables()
+    if table_reads is not None:
+        tables.reads = table_reads
     cache = None
     if vram_experts is not None:
         from ..ram_experts import check, layout
@@ -153,7 +157,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         cache = Exl3HostExpertCache(plan.entry_bytes, plan.entry_bytes, device)
     try:
         weights = _load(model_dir, device, mtp=mtp, tp=tp, _config=cfg, _draft_ids=ids,
-                        table_reads=table_reads, rope=rope, expert_cache=cache)
+                        table_reads=table_reads, rope=rope, expert_cache=cache, _ple_tables=tables)
+        weights.meta["ple_tables"] = tables
         if cache is not None and not plan.automatic:
             # _load has sealed every registration, drained its read owner and
             # released Pack/load temporaries. Auto defers this same transition
@@ -161,18 +166,23 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             cache.configure_before_use(plan.gpu_bytes)
         return weights
     except BaseException as primary:
+        from tensorfold.cleanup import finish, rollback
+
+        # Failed load/configuration has the same drain/fence/table ownership as
+        # successful engine shutdown; unresolved owners stay with the failure.
+        def fence():
+            if torch.device(device).type == "cuda":
+                torch.cuda.synchronize(device)
+
+        close = [lambda: tables.close(fence)]
         if cache is not None:
-            try:
-                cache.close()
-            except BaseException as cleanup:
-                BaseException.add_note(primary, "EXL3 expert cache cleanup also failed; its owner remains retained")
-                raise primary from cleanup
-        raise
+            close.append(cache.close)
+        rollback((tables, cache), primary, lambda: finish(close))
 
 
 def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
           _config: object, _draft_ids: object, table_reads: list | None = None,
-          rope: RopeParameters | None = None, expert_cache=None):
+          rope: RopeParameters | None = None, expert_cache=None, _ple_tables: PLETables):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 
@@ -234,7 +244,7 @@ def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: 
 
     def ple_layer(name: str, ple_index: int) -> PLEW:
         ngram = cfg.ngram(ple_index)
-        table = NgramTable(pk, name + ".ple_embedding.ngram_embedding.", cfg.ngram_shards, device)
+        table = _ple_tables.acquire(NgramTable(pk, name + ".ple_embedding.ngram_embedding.", cfg.ngram_shards, device))
         ngram.check(table.multipliers, table.head_offsets, table.head_sizes)
         if table.rows != ngram.rows or table.dh != ngram.dims:
             raise ValueError(f"n-gram tables of {table.rows} rows of {table.dh} values; the config gives "

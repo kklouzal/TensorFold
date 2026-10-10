@@ -9,6 +9,21 @@ from __future__ import annotations
 
 import threading
 
+from tensorfold.cleanup import raise_failures
+
+
+def _failure_roots(error):
+    return (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+            BaseException.__suppress_context__.__get__(error))
+
+
+def _raise_failures(primary, errors, prior):
+    """Retire journals before reporting all concrete statuses and saved roots."""
+    BaseException.__cause__.__set__(primary, prior[0])
+    BaseException.__context__.__set__(primary, prior[1])
+    BaseException.__suppress_context__.__set__(primary, prior[2])
+    raise_failures(primary, errors)
+
 
 def _note(primary, message):
     """Keep the first failed annotation visible without replacing work failure."""
@@ -163,6 +178,7 @@ class TableLifetime:
                 future.result()
         except BaseException as error:
             primary = error
+            prior, errors = _failure_roots(primary), []
             with self.condition:
                 self.broken = error
                 self.reads[journal] = (terminal, error)
@@ -176,10 +192,10 @@ class TableLifetime:
                     break
                 except KeyboardInterrupt as interruption:
                     if interruption is not primary:
-                        _note(primary, "SSD worker drain was interrupted")
+                        errors.append(interruption)
                 except BaseException as cleanup:
-                    _note(primary, "SSD worker drain failed; terminal journal retained")
-                    raise primary from _cause(primary, cleanup)
+                    errors.append(cleanup)
+                    _raise_failures(primary, errors, prior)
             # Thread.join may be interrupted after consuming its state lock.
             # Only the actual callback journal proves that file users retired.
             while True:
@@ -187,15 +203,15 @@ class TableLifetime:
                     with self.condition:
                         self.condition.wait_for(lambda: not self.workers)
                     break
-                except KeyboardInterrupt:
-                    _note(primary, "SSD callback quiescence wait was interrupted")
+                except KeyboardInterrupt as interruption:
+                    errors.append(interruption)
         if primary is not None:
             for error in terminal:
                 if isinstance(error, BaseException) and error is not primary:
-                    _note(primary, "additional SSD read failed (" + type(error).__name__ + ")")
+                    errors.append(error)
             with self.condition:
                 self.reads.pop(journal)
-            raise primary
+            _raise_failures(primary, errors, prior)
         if any(value is not True for value in terminal):
             raise RuntimeError("SSD read pool completed without every terminal journal")
         with self.condition:
@@ -206,6 +222,7 @@ class TableLifetime:
         with lease:
             primary = None
             acquired = False
+            retained, errors = [], []
             try:
                 with self.condition:
                     current = threading.get_ident()
@@ -221,6 +238,11 @@ class TableLifetime:
                     self.closing = lease
                     acquired = True
                     self.condition.wait_for(lambda: not self.active)
+                # Snapshot failed dispatch roots before a pool callback can
+                # rewrite them. Live terminal journals remain authoritative
+                # until the pool and every actual worker have retired.
+                retained = [(original, _failure_roots(original))
+                            for _, original in self.reads.values() if original is not None]
                 interrupted = None
                 while True:
                     try:
@@ -237,11 +259,21 @@ class TableLifetime:
                 with self.condition:
                     self.condition.wait_for(lambda: not self.workers)
                 for terminal, original in self.reads.values():
+                    if original is not None:
+                        errors.append(original)
                     for error in terminal:
                         if isinstance(error, BaseException) and error is not original:
                             if original is None:
-                                raise error
-                            _note(original, "additional retained SSD read failed (" + type(error).__name__ + ")")
+                                # This journal never reported its failure to a
+                                # dispatch owner. Preserve fail-fast release
+                                # ordering and keep the journal for retry.
+                                _raise_failures(error, [item for item in terminal
+                                                       if isinstance(item, BaseException)], _failure_roots(error))
+                            errors.append(error)
+                for original, prior in retained:
+                    BaseException.__cause__.__set__(original, prior[0])
+                    BaseException.__context__.__set__(original, prior[1])
+                    BaseException.__suppress_context__.__set__(original, prior[2])
                 self.reads.clear()
                 while True:
                     try:
@@ -254,11 +286,33 @@ class TableLifetime:
                     self.closed = True
                     self.broken = None
                 if interrupted is not None:
+                    if errors:
+                        errors.append(interrupted)
+                        _raise_failures(errors[0], errors[1:], retained[0][1])
                     raise interrupted
+                if errors:
+                    _raise_failures(errors[0], errors[1:], retained[0][1])
             except BaseException as error:
                 primary = error
                 if acquired and not self.closed:
                     self.broken = error
+                if self.reads:
+                    # A failed drain retains journals for retry. Restore their
+                    # captured roots now, before the next close can snapshot
+                    # foreign cleanup's mutations as authoritative history.
+                    for original, prior in retained:
+                        BaseException.__cause__.__set__(original, prior[0])
+                        BaseException.__context__.__set__(original, prior[1])
+                        BaseException.__suppress_context__.__set__(original, prior[2])
+                if errors and error is not errors[0]:
+                    # Descriptor release may fail after journal retirement.
+                    # Keep the previously reported dispatch statuses together
+                    # with this new failure rather than losing cleared reads.
+                    errors.append(error)
+                    primary = errors[0]
+                    if acquired and not self.closed:
+                        self.broken = primary
+                    _raise_failures(primary, errors[1:], retained[0][1])
                 raise
             finally:
                 interrupted = None

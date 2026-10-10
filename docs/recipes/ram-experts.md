@@ -178,6 +178,20 @@ unified-memory GPU, host weights and GPU copies consume the same physical pool;
 the estimate accounts for both. Moving weights to RAM on that hardware does not
 create additional physical capacity.
 
+CUDA n-gram page locking is optional. Startup keeps its existing device-room
+check and independently checks available host RAM and each exposed cgroup
+limit. Anonymous expert copies, kernel storage and already pinned pages remain
+charged. Only an observed childless current cgroup with no protection along
+its visible ancestry supplies clean file-LRU credit; ancestors may use only
+that same leaf credit, capped by the selected payload. Unsupported counter or
+protection capabilities deny optional pins. The selected tables' complete
+page footprint is charged once. Shared-memory service growth and the
+existing host reserve retain their room. A denied admission or refused lock
+leaves the complete prefetch enabled and its mappings evictable. The startup
+capacity receipt records this decision under `ngram_pin_admission`; resource
+snapshots do not reserve memory against other processes.
+NVFP4 n-gram tables retain their existing `lock()` refusal and remain evictable.
+
 Misses transfer weights and synchronize the host plan. Large prompts commonly
 touch many experts, so a small cache can make prefill substantially slower.
 This feature adds capacity; it does not promise a throughput improvement over

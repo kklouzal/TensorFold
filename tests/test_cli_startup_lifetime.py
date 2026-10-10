@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from tensorfold import cli
 from tensorfold.serve_options import check_numbers
+from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server import live
 from tensorfold.thread_work import ThreadWork
 
@@ -91,6 +92,8 @@ class Ownership(unittest.TestCase):
                 "DEFAULT_LIMITS": object(),
                 "CheckpointStore": lambda *a, **k: SimpleNamespace(),
                 "concurrency": lambda *a, **k: None,
+                "RequestLimit": RequestLimit,
+                "optional_limit": optional_limit,
                 "Path": Path,
                 "time": __import__("time"),
             }
@@ -272,9 +275,11 @@ class Ownership(unittest.TestCase):
                     raise OpaqueFailure()
 
             server.App, server.serve = app, serve
-            server.Server = lambda *a: SimpleNamespace(
-                server_close=lambda: order.append("server-close"), handlers_drained=True
-            )
+            def http_server(*unused, **kwargs):
+                self.assertEqual(kwargs, {"max_connections": None})
+                return SimpleNamespace(server_close=lambda: order.append("server-close"), handlers_drained=True)
+
+            server.Server = http_server
             server.make_handler = lambda app: object()
             family = SimpleNamespace(
                 title="fixture", model_type="fixture", package=SimpleNamespace(cuda_engine=lambda *a, **k: engine)

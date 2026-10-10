@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import numpy as np
 
+from tensorfold.cleanup import raise_failures
 
 def row_ids(ids, rows, *, copy=False):
     """Validate external row IDs before narrowing; copied asynchronous IDs are owned."""
@@ -48,6 +49,7 @@ class ReadAhead:
         self._active = 0
         self._closing = self._closed = False
         self._cleanup_pending = False
+        self._close_statuses = []
 
     def __getattr__(self, name):
         if name == "table":
@@ -97,81 +99,127 @@ class ReadAhead:
                 self._condition.notify_all()
 
     def close(self):
-        with self._condition:
-            if threading.current_thread() is self._reader_thread:
-                raise RuntimeError("the n-gram read worker cannot join itself")
-            self._condition.wait_for(lambda: not self._closing or self._closed)
-            if self._closed:
-                if self._cleanup_pending:
-                    self.table.close()
-                    self._cleanup_pending = False
-                return
-            self._closing = True
-            self._condition.notify_all()
-            try:
-                self._condition.wait_for(lambda: self._active == 0)
-            except BaseException:
-                self._closing = False
-                self._condition.notify_all()
-                raise
-            futures = set(self._ahead.values()) | self._retired | self._outstanding
-            self._ahead.clear()
-            self._retired.clear()
-            self._outstanding.clear()
-        failure = cleanup_error = None
-        joined = False
+        marker, futures, observed = object(), None, []
         try:
-            # Interrupted joins must still complete before the table's FDs may close.
-            while True:
-                try:
-                    self._pool.shutdown(wait=True, cancel_futures=True)
-                    break
-                except KeyboardInterrupt as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
-            for future in futures:
-                if not future.cancelled():
-                    while True:
-                        try:
-                            future.result()
-                            break
-                        except KeyboardInterrupt as exc:
-                            if future.done():
-                                if failure is None:
-                                    failure = exc
-                                break
-                            if cleanup_error is None:
-                                cleanup_error = exc
-                        except BaseException as exc:
-                            if not future.done():
-                                raise
-                            if failure is None:
-                                failure = exc
-                            break
-            joined = True
-            self._shutdown_failure = None
-        except BaseException as shutdown_failure:
             with self._condition:
-                self._shutdown_failure = shutdown_failure
-                self._retired = futures
-                self._closing = False
+                if threading.current_thread() is self._reader_thread:
+                    raise RuntimeError("the n-gram read worker cannot join itself")
+                self._condition.wait_for(lambda: not self._closing or self._closed)
+                if self._closed:
+                    if self._cleanup_pending:
+                        self.table.close()
+                        self._cleanup_pending = False
+                    return
+                self._closing = marker
                 self._condition.notify_all()
-            raise
-        finally:
-            if joined:
                 try:
-                    self.table.close()
-                except BaseException as exc:
-                    self._cleanup_pending = True
-                    if cleanup_error is None:
-                        cleanup_error = exc
-                finally:
-                    with self._condition:
-                        self._closed = True
+                    self._condition.wait_for(lambda: self._active == 0)
+                except BaseException:
+                    self._closing = False
+                    self._condition.notify_all()
+                    raise
+                futures = set(self._ahead.values()) | self._retired | self._outstanding
+                self._ahead.clear()
+                self._retired.clear()
+                self._outstanding.clear()
+            failures = [row for row in self._close_statuses if row[2]]
+            cleanup_errors = [row for row in self._close_statuses if not row[2]]
+            observed.extend(failures + cleanup_errors)
+
+            def record(error, terminal):
+                if all(error is not row[0] for row in failures + cleanup_errors):
+                    prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                             BaseException.__suppress_context__.__get__(error))
+                    row = (error, prior, terminal)
+                    observed.append(row)
+                    (failures if terminal else cleanup_errors).append(row)
+
+            def restore():
+                for error, prior, _ in failures + cleanup_errors:
+                    BaseException.__cause__.__set__(error, prior[0])
+                    BaseException.__context__.__set__(error, prior[1])
+                    BaseException.__suppress_context__.__set__(error, prior[2])
+
+            joined = False
+            try:
+                # Interrupted joins must still complete before the table's FDs may close.
+                while True:
+                    try:
+                        self._pool.shutdown(wait=True, cancel_futures=True)
+                        break
+                    except KeyboardInterrupt as exc:
+                        record(exc, False)
+                for future in futures:
+                    if not future.cancelled():
+                        while True:
+                            try:
+                                future.result()
+                                break
+                            except KeyboardInterrupt as exc:
+                                if future.done():
+                                    record(exc, True)
+                                    break
+                                record(exc, False)
+                            except BaseException as exc:
+                                if not future.done():
+                                    raise
+                                record(exc, True)
+                                break
+                joined = True
+                self._shutdown_failure = None
+            except BaseException as shutdown_failure:
+                record(shutdown_failure, False)
+                pending_statuses = failures + cleanup_errors
+                with self._condition:
+                    restore()
+                    self._shutdown_failure = shutdown_failure
+                    self._retired = futures
+                    self._close_statuses = pending_statuses
+                    self._closing = False
+                    self._condition.notify_all()
+                raise_failures(shutdown_failure, [row[0] for row in pending_statuses])
+            finally:
+                if joined:
+                    try:
+                        self.table.close()
+                    except BaseException as exc:
+                        self._cleanup_pending = True
+                        record(exc, False)
+                    finally:
+                        with self._condition:
+                            self._closed = True
+                            self._condition.notify_all()
+            restore()
+            self._close_statuses = []
+            errors = [row[0] for row in failures + cleanup_errors]
+            if errors:
+                raise_failures(errors[0], errors[1:])
+        except BaseException as primary:
+            prior = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
+                     BaseException.__suppress_context__.__get__(primary))
+            secondary = []
+            for error, roots, _ in observed:
+                if error is not primary:
+                    BaseException.__cause__.__set__(error, roots[0])
+                    BaseException.__context__.__set__(error, roots[1])
+                    BaseException.__suppress_context__.__set__(error, roots[2])
+                    secondary.append(error)
+            try:
+                with self._condition:
+                    # Only this operation can repair its publication. The full
+                    # local journal exists before any authoritative set clears.
+                    if self._closing is marker and not self._closed:
+                        if futures is not None:
+                            self._retired = futures
+                            self._shutdown_failure = primary
+                        self._closing = False
                         self._condition.notify_all()
-        if failure is not None:
-            if cleanup_error is not None:
-                raise failure from cleanup_error
-            raise failure
-        if cleanup_error is not None:
-            raise cleanup_error
+            except BaseException as cleanup:
+                BaseException.__cause__.__set__(primary, prior[0])
+                BaseException.__context__.__set__(primary, prior[1])
+                BaseException.__suppress_context__.__set__(primary, prior[2])
+                raise_failures(primary, [*secondary, cleanup])
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
+            raise_failures(primary, secondary)

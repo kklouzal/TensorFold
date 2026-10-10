@@ -8,6 +8,9 @@ import queue
 import threading
 from typing import Any, Callable
 
+from tensorfold.cleanup import finish, raise_failures, rollback
+from tensorfold.server.request_limits import RequestLimit, optional_limit
+
 from .memory_gate import NoRoom
 from .streams import Stream
 
@@ -46,11 +49,16 @@ class Scheduler:
     an unresolved start remains owned for retry or process containment.
     """
 
-    def __init__(self, decoder: Any, *, max_streams: int = 4) -> None:
+    def __init__(self, decoder: Any, *, max_streams: int = 4,
+                 max_pending_requests: int | None = None) -> None:
         if type(max_streams) is not int or max_streams <= 0:
             raise ValueError("max_streams must be a positive integer")
         self.decoder = decoder
         self.max_streams = max_streams
+        self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
+        self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
+        self._request_boxes: set[queue.Queue] = set()
+        self._submitted = False
         self.waiting = Waiting()
         self.held: tuple | None = None               # a request waiting for memory, admitted before any other
         self.boxes: dict[int, queue.Queue] = {}
@@ -76,6 +84,38 @@ class Scheduler:
             self._has_arrival = True
         self.yields = 0                              # background streams that gave up their lane
         self.thread = threading.Thread(target=self._worker, daemon=True)
+
+    def configure_requests(self, limit: RequestLimit) -> None:
+        """Share the App's logical owner before the endpoint publishes any work."""
+        with self._state_lock:
+            if self._submitted or self._worker_done.is_set():
+                raise RuntimeError("request admission must be configured before the first submission")
+            if self._request_limit is not None:
+                raise RuntimeError("CUDA request admission was already configured")
+            self.max_pending_requests = limit.maximum
+            self._request_limit = limit
+
+    @property
+    def pending_requests(self) -> int | None:
+        """Configured logical ownership count; uncapped mode has no such registry."""
+        return self._request_limit.used if self._request_limit is not None else None
+
+    def _terminal(self, box: queue.Queue, kind: str, value: Any) -> None:
+        if self._request_limit is not None:
+            with self._state_lock:
+                self._request_limit.release(box)
+            # Keep the reply owner journaled through a fallible publication.
+            box.put((kind, value))
+            with self._state_lock:
+                self._request_boxes.discard(box)
+        else:
+            box.put((kind, value))
+
+    def _stop_requests(self) -> None:
+        """Caller holds the publication lock; wake a draining worker after closing admission."""
+        self._closing = True
+        self.waiting.stop()
+        self._stop_published = True
 
     def start(self) -> "Scheduler":
         """Start once, after the caller has journaled this scheduler.
@@ -116,6 +156,8 @@ class Scheduler:
             raise RuntimeError("the decoding worker cannot join itself")
         with self._state_lock:
             self._closing = True
+            if self._request_limit is not None:
+                self._request_limit.close()
             attempted = self._start_attempted
             if self._started_ok and not self._stop_published and not self._worker_done.is_set():
                 self.waiting.stop()
@@ -159,7 +201,24 @@ class Scheduler:
             with self._state_lock:
                 if self._closing:
                     raise RuntimeError("CUDA scheduler is closing; new requests are rejected")
-                self.waiting.put((stream, box))
+                if self._request_limit is not None:
+                    try:
+                        self._request_limit.borrow(box)
+                        self._request_boxes.add(box)
+                    except BaseException as primary:
+                        self._request_limit.rollback_registration(
+                            self, box, primary, lambda: self._request_boxes.discard(box), self._stop_requests)
+                self._submitted = True
+                try:
+                    self.waiting.put((stream, box))
+                except BaseException as error:
+                    if self._request_limit is not None:
+                        # Publication may have completed. Stop accepting new
+                        # owners, drain the worker, then retire the journal.
+                        self._closing = True
+                        self._failure = error
+                        rollback(self, error, lambda: finish((self._request_limit.close, self._stop_requests)))
+                    raise
             while True:
                 kind, value = box.get()
                 if kind == "tokens":
@@ -197,10 +256,17 @@ class Scheduler:
                 if self.decoder.live():              # waits, first in line, until a live stream finishes
                     self.held = (stream, box)
                     break
-                box.put(("error", exc))
+                if self._request_limit is None:
+                    box.put(("error", exc))
+                else:
+                    self._terminal(box, "error", exc)
                 continue
             except Exception as exc:                 # noqa: BLE001  (this request fails, the others go on)
-                self.boxes.pop(id(stream)).put(("error", exc))
+                box = self.boxes.pop(id(stream))
+                if self._request_limit is None:
+                    box.put(("error", exc))
+                else:
+                    self._terminal(box, "error", exc)
                 continue
             if stream.done:
                 done.append(stream)
@@ -225,7 +291,10 @@ class Scheduler:
     def _reply(self, s: Stream, kind: str, value: Any) -> None:
         box = self.boxes.pop(id(s), None)            # None: the stream's request has had its reply
         if box is not None:
-            box.put((kind, value))
+            if self._request_limit is None:
+                box.put((kind, value))
+            else:
+                self._terminal(box, kind, value)
 
     def _clear_failure_frames(self) -> None:
         """Keep failure objects/context without retaining foreign decoder frames.
@@ -255,19 +324,26 @@ class Scheduler:
                     return                      # an ambiguously launched actor aborts without decoder access
             self._run()
         except BaseException as exc:
+            prior = (BaseException.__cause__.__get__(exc), BaseException.__context__.__get__(exc),
+                     BaseException.__suppress_context__.__get__(exc))
+            errors = []
             # A worker failure must not strand accepted callers in box.get().
             # Closing excludes concurrent producers before queues are drained.
             with self._state_lock:
                 self._closing = True
                 self._failure = exc
+                if self._request_limit is not None:
+                    self._request_limit.close()
             if started:
                 try:
                     self.decoder.drop()
                 except BaseException as cleanup:
                     self._cleanup_failure = cleanup
-                    if cleanup is not exc:
-                        BaseException.add_note(exc, "scheduler decoder cleanup also failed; retained as _cleanup_failure")
+                    errors.append(cleanup)
             boxes = list(self.boxes.values())
+            if self._request_limit is not None:
+                with self._state_lock:
+                    boxes.extend(self._request_boxes)
             self.boxes.clear()
             if self.held is not None:
                 _, box = self.held
@@ -285,9 +361,58 @@ class Scheduler:
             # A put can enqueue before raising; interrupted background handoff
             # may therefore retain two ownership references to the same box.
             for box in dict.fromkeys(boxes):
-                box.put(("error", exc))
+                try:
+                    if self._request_limit is None:
+                        box.put(("error", exc))
+                    elif self._cleanup_failure is None:
+                        self._terminal(box, "error", exc)
+                    else:
+                        box.put(("error", exc))  # failed native cleanup keeps the admission owner retained
+                except BaseException as publication:
+                    errors.append(publication)
+            BaseException.__cause__.__set__(exc, prior[0])
+            BaseException.__context__.__set__(exc, prior[1])
+            BaseException.__suppress_context__.__set__(exc, prior[2])
+            if errors:
+                try:
+                    raise_failures(exc, errors)
+                except BaseException as reported:
+                    self._failure = reported     # every reply was attempted before diagnostic transport
         finally:
-            self._worker_done.set()
+            retirement_primary = self._failure if self._request_limit is not None else None
+            prior = (None if retirement_primary is None else (
+                BaseException.__cause__.__get__(retirement_primary), BaseException.__context__.__get__(retirement_primary),
+                BaseException.__suppress_context__.__get__(retirement_primary)))
+            try:
+                if self._request_limit is not None and self._cleanup_failure is None:
+                    with self._state_lock:
+                        remaining = tuple(self._request_boxes)
+                    publications = []
+                    for box in remaining:
+                        try:
+                            self._terminal(box, "error", RuntimeError("CUDA scheduler stopped before replying"))
+                        except BaseException as publication:
+                            publications.append(publication)
+                    raise_failures(None, publications)
+            except BaseException as cleanup:
+                self._cleanup_failure = cleanup
+                if retirement_primary is None:
+                    self._failure = cleanup
+                else:
+                    BaseException.__cause__.__set__(retirement_primary, prior[0])
+                    BaseException.__context__.__set__(retirement_primary, prior[1])
+                    BaseException.__suppress_context__.__set__(retirement_primary, prior[2])
+                    try:
+                        raise_failures(retirement_primary, [cleanup])
+                    except BaseException as reported:
+                        self._failure = reported   # close publishes this owned asynchronous failure
+            else:
+                if retirement_primary is not None:
+                    BaseException.__cause__.__set__(retirement_primary, prior[0])
+                    BaseException.__context__.__set__(retirement_primary, prior[1])
+                    BaseException.__suppress_context__.__set__(retirement_primary, prior[2])
+            finally:
+                self._worker_done.set()
 
     def _worker(self) -> None:
         with self._worker_lease:

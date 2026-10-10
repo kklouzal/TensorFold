@@ -102,6 +102,9 @@ def cache_fixture():
                             is_inference=lambda value: False)
     namespace = {"contextmanager": contextmanager, "torch": torch,
                  "_integer": lambda value, name, minimum: value}
+    cleanup = {}
+    exec(compile((ROOT / "src/tensorfold/cleanup.py").read_text(), "actual_cleanup", "exec"), cleanup)
+    namespace["raise_failures"] = cleanup["raise_failures"]
     cls = maintained_class("src/tensorfold/cuda/expert_cache.py", "HostExpertCache",
                            {"_usable", "lease", "close"}, namespace)
     cache = cls()

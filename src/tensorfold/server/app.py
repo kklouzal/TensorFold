@@ -12,6 +12,7 @@ import uuid
 from tensorfold.engine.lane_engine import LaneEngine, SuffixLookupProposer
 from tensorfold.engine import grammar
 from tensorfold.server.admission import concurrency
+from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.checkpoints import CheckpointStore, prune_conversations, save_conversations, spill_conversation
 from tensorfold.server.cancellation import Cancellation
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
@@ -99,10 +100,17 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         vision_max_images: int | None = None,
         startup_owner: Callable[[Any], None] | None = None,
         snapshot_registry: Any = None,
+        max_pending_requests: int | None = None,
+        max_engine_calls: int | None = None,
     ) -> None:
         self._startup_complete = False
         if startup_owner is not None:
             startup_owner(self)  # retain partial construction through failed cleanup
+        self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
+        self.max_engine_calls = optional_limit(max_engine_calls, "max_engine_calls")
+        self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
+        if self._request_limit is not None:
+            self.chat = self._request_limit.wrap(self.chat)
         # three candidate entries per conversation (history boundary, stable prefix, reply end)
         if checkpoint_slots is None:
             checkpoint_slots = max(3 * int(lanes), 8)
@@ -279,6 +287,9 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             decode_share=decode_share,
             snapshot_registry=self.snapshot_registry,
             snapshot_codec=self.snapshot_codec,
+            max_pending_requests=self.max_pending_requests,
+            max_engine_calls=self.max_engine_calls,
+            request_limit=self._request_limit,
         )
         # evicted conversations go to disk (``spill_bytes`` of this model's files at most) and come back on demand
         self.spill_bytes = int(spill_bytes) if self.checkpoints is not None and self.scheduler.session_dir else 0

@@ -38,6 +38,7 @@ def _log_error(exc: BaseException) -> None:
 
 
 def make_handler(app: App):
+    defer_headers = getattr(app, "max_pending_requests", None) is not None
     class Handler(Rearming):              # USR1's stack dump armed again after each request
         protocol_version = "HTTP/1.1"
 
@@ -87,7 +88,11 @@ def make_handler(app: App):
                 self._json(200, {"object": "list", "data": [{"id": model_id, "object": "model", "owned_by": "tensorfold"}
                                                             for model_id in app.model_ids]})
             elif self.path.rstrip("/") in ("/health", "/v1/health"):
-                self._json(200, health.of(app).snapshot(app))
+                snapshot = health.of(app).snapshot(app)
+                capacities = metrics.capacity_snapshot(app, server=self.server)
+                if capacities:
+                    snapshot["admission"] = capacities
+                self._json(200, snapshot)
             elif responses.route(self.path):
                 responses.get(self, app, responses.route(self.path))
             else:
@@ -116,7 +121,12 @@ def make_handler(app: App):
             except (json.JSONDecodeError, UnicodeDecodeError):
                 return self._json(400, {"error": {"message": "the request body is not JSON", "type": "invalid_request_error"}})
             try:
-                prepared = app.prepare(body, chat)
+                if defer_headers:
+                    if not isinstance(body, dict):
+                        raise RequestError("the request body must be a JSON object")
+                    prepared = None  # the configured App.run owner admits before preparation
+                else:
+                    prepared = app.prepare(body, chat)
             except RequestError as exc:
                 return self._json(503 if isinstance(exc, CapacityError) else 400,
                                   {"error": error_body(exc)})
@@ -139,21 +149,34 @@ def make_handler(app: App):
                         "choices": [{"index": 0, "text": delta.get("content", ""), "finish_reason": finish}]}
 
             if stream:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "close")
-                self.end_headers()
+                opened = False
+
+                def open_stream() -> None:
+                    nonlocal opened
+                    if not opened:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/event-stream")
+                        self.send_header("Cache-Control", "no-cache")
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        opened = True
+
+                if not defer_headers:
+                    open_stream()
 
                 def emit(delta: dict[str, Any]) -> bool:
                     try:
+                        if not opened:
+                            open_stream()
+                            if chat:
+                                self.wfile.write(f"data: {json.dumps(chunk({'role': 'assistant'}))}\n\n".encode())
                         self.wfile.write(f"data: {json.dumps(chunk(delta))}\n\n".encode())
                         self.wfile.flush()
                         return True
                     except OSError:             # reset, broken pipe, timed out, host unreachable: the client has gone
                         return False
 
-                if chat:
+                if chat and not defer_headers:
                     emit({"role": "assistant"})
                 try:
                     result = app.run(body, chat, emit, prepared=prepared, cancelled=cancelled)
@@ -161,10 +184,19 @@ def make_handler(app: App):
                     self.close_connection = True
                     return
                 except RequestError as exc:
+                    if not opened:
+                        return self._json(503 if isinstance(exc, CapacityError) else 400,
+                                          {"error": error_body(exc)})
                     return self._stream_error(error_body(exc))
                 except Exception as exc:
                     _log_error(exc)
+                    if not opened:
+                        return self._json(500, {"error": {"message": _error_message(exc), "type": "server_error"}})
                     return self._stream_error({"message": _error_message(exc), "type": "server_error"})
+                if not opened:
+                    open_stream()
+                    if chat:
+                        emit({"role": "assistant"})
                 if result["final"]:
                     emit(result["final"])
                 if result["calls"]:

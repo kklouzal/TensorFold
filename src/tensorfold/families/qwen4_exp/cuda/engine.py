@@ -294,14 +294,25 @@ class FlashNextEngine:
         started = time.perf_counter()
         locked = False
         if prefetch and not ple_on_ssd:               # the n-gram tables' pages, read now rather than by requests
+            from tensorfold.cuda.host_pin import admit as admit_pins, table_bytes
+            from tensorfold.cuda.capacity import unified
+
             tables = {id(layer.ple.table): layer.ple.table for layer in w.layers if layer.ple is not None}
-            size = sum(t.nbytes for t in tables.values())
-            # pinned pages are no longer reclaimable: lock only what the startup budget leaves room for
-            room = self.capacity_plan["budget_bytes"] - self.capacity_plan["total_bytes_estimate"]
             for table in tables.values():
                 if not tables_read:
-                    table.prefetch()                  # eight readers first: mlock alone faults the pages in one by one
-                locked = room >= size and table.lock()
+                    table.prefetch()                  # complete reads remain reclaimable before pin admission
+            room = self.capacity_plan["budget_bytes"] - self.capacity_plan["total_bytes_estimate"]
+            future = (max(0, self.capacity_plan["serving_peak_bytes_estimate"] - int(torch.cuda.memory_allocated()))
+                      if unified(torch) else 0)
+            pins = admit_pins(table_bytes(tables.values()), device_room_bytes=room, future_bytes=future)
+            self.capacity_plan["ngram_pin_admission"] = pins
+            locked = bool(tables) and pins["admitted"]
+            for table in tables.values():
+                if pins["admitted"]:
+                    # A refused lock rolls back this table's owned pages. Keep
+                    # every table result; the last table cannot mask a refusal.
+                    locked = table.lock() and locked
+            pins["all_selected_tables_locked"] = locked
         read_s = time.perf_counter() - started
         captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
         started = time.perf_counter()

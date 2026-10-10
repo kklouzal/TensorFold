@@ -46,6 +46,15 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint = serve.add_argument_group("endpoint")
     endpoint.add_argument("--host", default="127.0.0.1", help="address to listen on (0.0.0.0: every interface)")
     endpoint.add_argument("--port", type=int, default=8080)
+    endpoint.add_argument("--max-http-connections", type=int, default=None,
+                          help="optional positive cap on simultaneous HTTP connections; excess connections wait in the "
+                               "listen backlog until an owner retires (default: no worker cap)")
+    endpoint.add_argument("--max-pending-requests", type=int, default=None,
+                          help="optional positive cap on unfinished generation requests, including waiting, "
+                               "running and canceled engine work; excess requests receive HTTP 503 (default: uncapped)")
+    endpoint.add_argument("--max-engine-calls", type=int, default=None,
+                          help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
+                               "including timed-out callers (default: uncapped; unsupported on CUDA)")
     endpoint.add_argument("--name", default="", help="model id clients ask for (default: the model's name)")
     endpoint.add_argument("--alias", action="append", default=[], help="another model id to answer to")
     endpoint.add_argument("--vision", action="store_true",

@@ -355,6 +355,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             thinking_budget=int(args.thinking_budget),
             vision_max_images=getattr(args, "vision_max_images", None),
             aliases=list(args.alias),
+            max_pending_requests=getattr(args, "max_pending_requests", None),
         )
         shown = (
             "greedy"
@@ -371,7 +372,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             f"loaded in {time.perf_counter() - started:.1f}s)",
             flush=True,
         )
-        server = Server((args.host, int(args.port)), make_handler(app))
+        server = Server((args.host, int(args.port)), make_handler(app),
+                        max_connections=getattr(args, "max_http_connections", None))
         owners["server"] = server
         serve(app, args.host, int(args.port), server=server)
         return 0
@@ -805,6 +807,8 @@ def _serve_mlx_start(
         grow_checkpoints=args.prompt_cache_gib is None,
         vision_max_images=getattr(args, "vision_max_images", None),
         startup_owner=lambda partial: owners.update(app=partial),
+        max_pending_requests=getattr(args, "max_pending_requests", None),
+        max_engine_calls=getattr(args, "max_engine_calls", None),
     )
     owners["app"] = app
     if app.context_fitted:
@@ -825,7 +829,8 @@ def _serve_mlx_start(
     hook = getattr(family.package, "setup", None)
     if hook is not None:
         hook(app, model, **options)
-    server = Server((args.host, int(args.port)), make_handler(app))  # type: ignore[arg-type]
+    server = Server((args.host, int(args.port)), make_handler(app),
+                    max_connections=getattr(args, "max_http_connections", None))  # type: ignore[arg-type]
     owners["server"] = server
     shown = (
         "greedy"

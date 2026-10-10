@@ -36,7 +36,9 @@ def stdlib_module(name, relative):
     return module
 
 
-LIFE = stdlib_module("mapped_control_lifetime", "src/tensorfold/families/qwen4_exp/table_lifetime.py")
+CLEANUP = stdlib_module("mapped_control_cleanup", "src/tensorfold/cleanup.py")
+with patch.dict(sys.modules, {"tensorfold.cleanup": CLEANUP}):
+    LIFE = stdlib_module("mapped_control_lifetime", "src/tensorfold/families/qwen4_exp/table_lifetime.py")
 HEADER = stdlib_module("mapped_control_header", "src/tensorfold/cuda/tensor_file.py")
 CORE = stdlib_module("mapped_control_file_core", "src/tensorfold/file_io.py")
 CORE._owned_slot = TransportOwner  # explicitly labeled test substitute
@@ -45,13 +47,14 @@ KINDS = {"U32": 4, "BF16": 2, "U8": 1, "F8_E4M3": 1}
 
 def definitions(*names, extra=None):
     source = ast.parse(SOURCE.read_text())
-    nodes = [node for node in source.body if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
+    required = {*names, "_failure_roots", "_restore_failure_roots", "_cleanup_failed"}
+    nodes = [node for node in source.body if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in required]
     namespace = {"threading": threading, "weakref": weakref, "contextmanager": contextmanager,
                  "partial": partial, "TableLifetime": LIFE.TableLifetime, "PythonPool": LIFE.PythonPool,
                  "release_files": LIFE.release_files, "ThreadPoolExecutor": ThreadPoolExecutor,
                  "Path": Path, "os": os, "stat": stat, "SIZES": KINDS, "GATHER_THREADS": 2,
                  "PREFETCH_READ": 7, "read_header_stream": HEADER.read_header_stream, "_header": HEADER.read_header,
-                 "FileStreams": CORE.FileStreams}
+                 "FileStreams": CORE.FileStreams, "raise_failures": CLEANUP.raise_failures, "rollback": CLEANUP.rollback}
     # Fault adapters receive a borrowed descriptor; production always uses
     # actual unbuffered io.FileIO(closefd=False) under the native scope.
     namespace["io"] = SimpleNamespace(FileIO=lambda fd, mode, closefd: (
@@ -140,7 +143,16 @@ def prefetch_dual_failure(test, factory, patch_open):
                 test.assertIs(BaseException.__dict__["__dict__"].__get__(cleanup)["prefetch_lifetime"], owner)
                 test.assertFalse(owner.closed or actual.closed)
                 test.assertFalse(any(thread.is_alive() for thread in set(threading.enumerate()) - before))
-                test.assertIsInstance(primary.__cause__, TypeError if malformed else Cleanup)
+                pending, statuses = [BaseException.__cause__.__get__(primary)], []
+                while pending:
+                    status = pending.pop()
+                    if type(status) in (BaseExceptionGroup, ExceptionGroup):
+                        pending.extend(status.exceptions)
+                    elif status is not None:
+                        statuses.append(status)
+                test.assertIn(cleanup, statuses)
+                if malformed:
+                    test.assertTrue(any(isinstance(status, TypeError) for status in statuses))
                 file.fail = False
                 owner.close()
                 test.assertTrue(owner.closed and actual.closed)
@@ -201,6 +213,106 @@ def journaled_return_case(test, run, published, *, worker=False):
 
 
 class HostTableControl(unittest.TestCase):
+    def test_successful_foreign_prefetch_file_and_lifetime_closes_restore_work_roots(self):
+        for kind in ("file", "life"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                primary, native, context = OSError(), LookupError(), EOFError()
+                primary.__cause__, primary.__context__ = native, context
+                namespace = self.prefetch_namespace()
+                path = Path(directory) / "bytes"
+                path.write_bytes(b"abcdefgh")
+                if kind == "file":
+                    actual = namespace["_HostFile"]
+
+                    class MutatingClose(actual):
+                        def close(self):
+                            super().close()
+                            primary.__cause__ = primary.__context__ = None
+
+                    namespace["_HostFile"] = MutatingClose
+                    with self.assertRaises(OSError) as caught:
+                        with namespace["_prefetch_file"](path, [], threading.Lock(), [None]):
+                            raise primary
+                else:
+                    actual = namespace["TableLifetime"]
+
+                    class MutatingLife(actual):
+                        def close(self):
+                            super().close()
+                            primary.__cause__ = primary.__context__ = None
+
+                    def fail(*args):
+                        raise primary
+
+                    namespace["TableLifetime"], namespace["_joined_copy"] = MutatingLife, fail
+                    with self.assertRaises(OSError) as caught:
+                        namespace["_prefetch"]([SimpleNamespace(filename=path, offset=0, nbytes=8)], 1)
+                self.assertIs(caught.exception, primary)
+                self.assertIs(BaseException.__cause__.__get__(primary), native)
+                self.assertIs(BaseException.__context__.__get__(primary), context)
+
+    def test_constructor_cleanup_retains_owner_and_all_roots_under_foreign_mutation(self):
+        namespace = definitions("_MappedTable", "_release_mapped", "_unlock_pins", "_release_unpublished_file")
+        table = namespace["_MappedTable"]()
+        primary, native, context, cleanup = KeyboardInterrupt(), LookupError(), EOFError(), OSError()
+        primary.__cause__, primary.__context__ = native, context
+        BaseException.__dict__["__dict__"].__get__(primary)["__notes__"] = 123
+        original = table.close
+
+        def failed_close():
+            BaseException.__cause__.__set__(primary, None)
+            BaseException.__context__.__set__(primary, None)
+            raise cleanup
+
+        table.close = failed_close
+        try:
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                with table._construction():
+                    raise primary
+            self.assertIs(caught.exception, primary)
+            statuses = BaseException.__cause__.__get__(primary).exceptions
+            self.assertTrue(all(any(actual is expected for actual in statuses) for expected in (native, context, cleanup)))
+            self.assertIn(table, BaseException.__dict__["__dict__"].__get__(primary)["_tensorfold_retained_owners"])
+            self.assertFalse(table._life.closed)
+        finally:
+            table.close = original
+            table.close()
+
+    def test_two_actual_copy_failures_keep_both_identities_and_drained_owner_usable(self):
+        namespace = definitions("_joined_copy")
+        pool = ThreadPoolExecutor(2)
+        life = LIFE.TableLifetime(LIFE.PythonPool(pool), [], lambda _: None)
+        errors, barrier = [OSError("first row read"), EOFError("second row read")], threading.Barrier(2)
+
+        def copy(index):
+            barrier.wait(timeout=3)
+            raise errors[index]
+
+        try:
+            with self.assertRaises(OSError) as caught:
+                life.call(namespace["_joined_copy"], life, pool, copy, [0, 1], 2)
+            self.assertIs(caught.exception, errors[0])
+            self.assertIs(BaseException.__cause__.__get__(errors[0]), errors[1])
+            self.assertFalse(life.active or life.workers or life.reads)
+            self.assertIsNone(life.broken)
+            self.assertEqual(life.call(lambda: "still usable"), "still usable")
+        finally:
+            life.close()
+
+    def test_cleanup_annotation_and_actual_status_survive_prior_root_mutation(self):
+        namespace = definitions()
+        primary, native, context, cleanup = RuntimeError(), LookupError(), EOFError(), OSError()
+        primary.__cause__, primary.__context__ = native, context
+        prior = namespace["_failure_roots"](primary)
+        primary.__cause__ = primary.__context__ = None
+        BaseException.__dict__["__dict__"].__get__(primary)["__notes__"] = 123
+        with self.assertRaises(RuntimeError) as caught:
+            namespace["_cleanup_failed"](primary, cleanup, prior, "cleanup also failed")
+        self.assertIs(caught.exception, primary)
+        statuses = BaseException.__cause__.__get__(primary).exceptions
+        self.assertTrue(all(any(actual is expected for actual in statuses) for expected in (native, context, cleanup)))
+        self.assertTrue(any(isinstance(actual, TypeError) for actual in statuses))
+
     def setUp(self):
         substitute_owners(self)
 

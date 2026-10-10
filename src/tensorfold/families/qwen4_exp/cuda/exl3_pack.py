@@ -10,6 +10,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from ..host_table import _MappedTable
+
 from tensorfold.cuda.exl3.format import is_exl3  # noqa: F401  (exl3.py and engine.py import it from here)
 
 EXTRA_FILES = ("ngram_embedding.safetensors", "mtp_hyper_connection_mixer_patch.safetensors")
@@ -104,58 +106,68 @@ class Pack:
         return torch.from_numpy(fmt.unpack_signs(self.get(f"{prefix}.{packed}").numpy()))
 
 
-class NgramTable:
-    """The n-gram table in ExLlamaV3's row codec (one tensor or shards), memory-mapped; reads as ``HostTable``'s."""
+class NgramTable(_MappedTable):
+    """Original EXL3 row bytes with the shared mapped-table operation lifetime.
+
+    Gather, page prefetch and pinning borrow mappings until completion; close
+    drains borrowers and drops owned references while external views stay valid.
+    Checkpoint bytes must remain immutable while the table is open.
+    """
 
     def __init__(self, pk: Pack, base: str, shards: int, device) -> None:
-        starts, offsets, fidx, files, words = [0], [], [], [], None
-        maps: dict[str, int] = {}
-        self.words: list[np.ndarray] = []
-        self.scales: list[np.ndarray] = []
-        self.biases: list[np.ndarray] = []
-        try:
-            consolidated = pk.entry(base + "trellis")
-        except KeyError:
-            consolidated = None
-        if consolidated is None and shards < 1:
-            raise ValueError("n-gram table needs at least one shard")
-        entries = [consolidated] if consolidated is not None else [
-            pk.entry(f"{base}shard_{i}.trellis") for i in range(shards)]
-        for i, (file, begin, end, dtype, shape) in enumerate(entries):
-            if dtype != "I16" or len(shape) != 2 or shape[0] <= 0:
-                raise ValueError(f"n-gram shard {i}: expected int16 [rows, words], got {dtype} {shape}")
-            if words not in (None, shape[1]):
-                raise ValueError("n-gram shards of different widths")
-            if end - begin != 2 * shape[0] * shape[1]:
-                raise ValueError(f"n-gram segment {i}: byte range does not match its shape")
-            words = shape[1]
-            if file not in maps:
-                maps[file] = len(files)
-                files.append(file)
-            fidx.append(maps[file])
-            offsets.append(begin)
-            starts.append(starts[-1] + shape[0])
-            self.words.append(np.memmap(pk.dir / file, dtype=np.int16, mode="r", offset=begin, shape=tuple(shape)))
-        self.words_per_row = int(words)
-        self.dh = 160
-        self.bits = (self.words_per_row - 1) * 16 // self.dh
-        if self.bits not in range(2, 9) or 1 + self.dh * self.bits // 16 != self.words_per_row:
-            raise ValueError(f"n-gram rows of {self.words_per_row} words are not one scale plus 160 values")
-        self.maps = [np.memmap(pk.dir / f, dtype=np.uint8, mode="r") for f in files]
-        self.fidx = np.array(fidx, dtype=np.int64)
-        self.offsets = np.array(offsets, dtype=np.int64)
-        self.starts = np.array(starts, dtype=np.int64)
-        self.rows = int(self.starts[-1])
-        self.row_bytes = 2 * self.words_per_row
-        self.nbytes = sum(a.nbytes for a in self.words)      # what the startup prefetch sizes, as for every table
-        self.head_bias = pk.get(base + "head_bias").to(torch.float16).to(device).contiguous()
-        self.head_offsets = pk.get(base + "head_offsets").cpu().numpy()
-        self.head_sizes = pk.get(base + "head_vocab_sizes").cpu().numpy()
-        self.multipliers = pk.get(base + "layer_multipliers").cpu().numpy()
+        with self._construction():
+            starts, offsets, fidx, files, words = [0], [], [], [], None
+            maps: dict[str, int] = {}
+            self.words: list[np.ndarray] = self._arrays()
+            self.scales: list[np.ndarray] = self._arrays()
+            self.biases: list[np.ndarray] = self._arrays()
+            try:
+                consolidated = pk.entry(base + "trellis")
+            except KeyError:
+                consolidated = None
+            if consolidated is None and shards < 1:
+                raise ValueError("n-gram table needs at least one shard")
+            entries = [consolidated] if consolidated is not None else [
+                pk.entry(f"{base}shard_{i}.trellis") for i in range(shards)]
+            for i, (file, begin, end, dtype, shape) in enumerate(entries):
+                if dtype != "I16" or len(shape) != 2 or shape[0] <= 0:
+                    raise ValueError(f"n-gram shard {i}: expected int16 [rows, words], got {dtype} {shape}")
+                if words not in (None, shape[1]):
+                    raise ValueError("n-gram shards of different widths")
+                if end - begin != 2 * shape[0] * shape[1]:
+                    raise ValueError(f"n-gram segment {i}: byte range does not match its shape")
+                words = shape[1]
+                if file not in maps:
+                    maps[file] = len(files)
+                    files.append(file)
+                fidx.append(maps[file])
+                offsets.append(begin)
+                starts.append(starts[-1] + shape[0])
+                self.words.append(np.memmap(pk.dir / file, dtype=np.int16, mode="r", offset=begin, shape=tuple(shape)))
+            self.words_per_row = int(words)
+            self.dh = 160
+            self.bits = (self.words_per_row - 1) * 16 // self.dh
+            if self.bits not in range(2, 9) or 1 + self.dh * self.bits // 16 != self.words_per_row:
+                raise ValueError(f"n-gram rows of {self.words_per_row} words are not one scale plus 160 values")
+            self.maps = self._arrays()
+            self.maps.extend(np.memmap(pk.dir / f, dtype=np.uint8, mode="r") for f in files)
+            self.fidx = np.array(fidx, dtype=np.int64)
+            self.offsets = np.array(offsets, dtype=np.int64)
+            self.starts = np.array(starts, dtype=np.int64)
+            self.rows = int(self.starts[-1])
+            self.row_bytes = 2 * self.words_per_row
+            self.nbytes = sum(a.nbytes for a in self.words)      # what the startup prefetch sizes, as for every table
+            self.head_bias = pk.get(base + "head_bias").to(torch.float16).to(device).contiguous()
+            self.head_offsets = pk.get(base + "head_offsets").cpu().numpy()
+            self.head_sizes = pk.get(base + "head_vocab_sizes").cpu().numpy()
+            self.multipliers = pk.get(base + "layer_multipliers").cpu().numpy()
 
     def gather(self, ids: np.ndarray) -> np.ndarray:
-        """Rows ``ids`` (global) -> int16 [n, words]."""
+        """Rows ``ids`` (global) -> int16 [n, words]; refuse work after close."""
 
+        return self._life.call(self._gather_flat, ids)
+
+    def _gather_flat(self, ids: np.ndarray) -> np.ndarray:
         flat = np.asarray(ids, dtype=np.int64).reshape(-1)
         if np.any(flat < 0) or np.any(flat >= self.rows):
             raise IndexError(f"n-gram row outside [0, {self.rows})")

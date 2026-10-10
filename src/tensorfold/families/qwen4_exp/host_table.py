@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.families.qwen4_exp.ssd_table import SSDTable, _span
 from tensorfold.families.qwen4_exp.read_ahead import ReadAhead, row_ids
 from tensorfold.families.qwen4_exp.table_lifetime import PythonPool, TableLifetime, release_files
@@ -73,16 +74,37 @@ def _note(primary, message):
         raise primary from annotation
 
 
+def _failure_roots(primary):
+    return (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
+            BaseException.__suppress_context__.__get__(primary))
+
+
+def _restore_failure_roots(primary, prior):
+    BaseException.__cause__.__set__(primary, prior[0])
+    BaseException.__context__.__set__(primary, prior[1])
+    BaseException.__suppress_context__.__set__(primary, prior[2])
+
+
+def _cleanup_failed(primary, cleanup, prior, message, *secondary):
+    """Keep actual cleanup/annotation statuses and roots before foreign close."""
+    errors = [cleanup, *secondary]
+    try:
+        BaseException.add_note(primary, message)
+    except BaseException as annotation:
+        errors.append(annotation)
+    _restore_failure_roots(primary, prior)
+    raise_failures(primary, errors)
+
+
 def _retain_prefetch_lifetime(primary, cleanup, life) -> None:
     """Publish retry authority through BaseException's native instance dictionary."""
+    prior = _failure_roots(primary)
     for error in (primary, cleanup):
         try:
             dictionary = BaseException.__dict__["__dict__"].__get__(error)
             dict.__setitem__(dictionary, "prefetch_lifetime", life)
         except BaseException as publication:
-            if publication is primary:
-                raise primary
-            raise primary from publication
+            _cleanup_failed(primary, cleanup, prior, "prefetch lifetime publication also failed", publication)
 
 
 
@@ -110,13 +132,14 @@ def _retire_local_file(file, slot) -> None:
             if interrupted is None:
                 interrupted = error
     try:
+        prior = None if interrupted is None else _failure_roots(interrupted)
         _release_unpublished_file(slot)
     except BaseException as cleanup:
         if interrupted is not None:
-            _note(interrupted, "unpublished file close also failed; owner retained")
-            raise interrupted from cleanup
+            _cleanup_failed(interrupted, cleanup, prior, "unpublished file close also failed; owner retained")
         raise
     if interrupted is not None:
+        _restore_failure_roots(interrupted, prior)
         raise interrupted
 
 
@@ -170,14 +193,15 @@ def _joined_copy(life, pool, copy, jobs, workers) -> None:
         life.parallel(pool, run, [indexed[i::batches] for i in range(batches)])
     except BaseException as error:
         primary = error
+    errors = []
     for error in failures:
         if error is not None:
             if primary is None:
                 primary = error
             elif error is not primary:
-                _note(primary, "additional mapped table copy failed (" + type(error).__name__ + ")")
+                errors.append(error)
     if primary is not None:
-        raise primary
+        raise_failures(primary, errors)
 
 
 class _MappedTable:
@@ -206,7 +230,7 @@ class _MappedTable:
             release_files(self._fds, self._files)
             self._sources.clear()
         except BaseException as primary:
-            try:
+            def close():
                 if self._life is not None:
                     self.close()
                 else:
@@ -214,10 +238,7 @@ class _MappedTable:
                         self._pool.shutdown(wait=True)
                     _release_mapped(self._fds, files=self._files, lists=self._owned_lists, pins=self._pins,
                                     unpublished=self._unpublished_file)
-            except BaseException as cleanup:
-                _note(primary, "mapped table construction cleanup also failed; owner retained")
-                raise primary from cleanup
-            raise
+            rollback(self, primary, close)
 
     def _arrays(self):
         arrays = []
@@ -238,11 +259,12 @@ class _MappedTable:
                 self._fds.append(fd)
             except BaseException as primary:
                 if file is not None:
+                    prior = _failure_roots(primary)
                     try:
                         _retire_local_file(file, self._unpublished_file)
                     except BaseException as cleanup:
-                        _note(primary, "unpublished mapped file close failed; owner retained")
-                        raise primary from cleanup
+                        _cleanup_failed(primary, cleanup, prior, "unpublished mapped file close failed; owner retained")
+                    _restore_failure_roots(primary, prior)
                 raise
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise ValueError(f"{path.name}: the n-gram checkpoint must be a regular file")
@@ -297,11 +319,18 @@ class _MappedTable:
                     _unlock_pins(self._pins)
                     return False
         except BaseException as primary:
+            prior = _failure_roots(primary)
             try:
                 _unlock_pins(self._pins)
             except BaseException as cleanup:
-                _note(primary, "mapped table pin rollback also failed; pins retained")
-                raise primary from cleanup
+                statuses = []
+                try:
+                    with self._life.condition:
+                        self._life.broken = primary
+                except BaseException as publication:
+                    statuses.append(publication)
+                _cleanup_failed(primary, cleanup, prior, "mapped table pin rollback also failed; pins retained", *statuses)
+            _restore_failure_roots(primary, prior)
             raise
         return True
 
@@ -575,11 +604,12 @@ def open_table(model_dir: Path, shards: list[tuple[str, str]], scale, *, ssd: bo
         table.weight_scale = float(scale("weight_scale"))
         return table
     except BaseException as primary:
+        prior = _failure_roots(primary)
         try:
             table.close()
         except BaseException as cleanup:
-            _note(primary, "n-gram scale setup cleanup also failed")
-            raise primary from cleanup
+            _cleanup_failed(primary, cleanup, prior, "n-gram scale setup cleanup also failed")
+        _restore_failure_roots(primary, prior)
         raise
 
 
@@ -621,6 +651,7 @@ def _prefetch_file(path, files, guard, slot):
     """Retain a FileIO owner across fallible close; never retry a raw descriptor."""
     file = None
     primary = None
+    prior = None
     published = False
     try:
         file = _HostFile(path)
@@ -633,6 +664,7 @@ def _prefetch_file(path, files, guard, slot):
         yield file
     except BaseException as error:
         primary = error
+        prior = _failure_roots(error)
         raise
     finally:
         if file is not None:
@@ -643,13 +675,14 @@ def _prefetch_file(path, files, guard, slot):
                     _retire_local_file(file, slot)
             except BaseException as cleanup:
                 if primary is not None:
-                    _note(primary, "prefetch span file close also failed; owner retained")
-                    raise primary from cleanup
+                    _cleanup_failed(primary, cleanup, prior, "prefetch span file close also failed; owner retained")
                 raise
             finally:
                 if published and file.closed:
                     with guard:
                         files.remove(file)
+            if primary is not None:
+                _restore_failure_roots(primary, prior)
 
 
 def _prefetch(arrays: list[np.ndarray], workers: int = 8) -> float:
@@ -693,6 +726,7 @@ def _prefetch(arrays: list[np.ndarray], workers: int = 8) -> float:
 
     pool = life = None
     primary = None
+    prior = None
     t0 = time.perf_counter()
     try:
         pool = ThreadPoolExecutor(workers, thread_name_prefix="ngram-prefetch")
@@ -700,6 +734,7 @@ def _prefetch(arrays: list[np.ndarray], workers: int = 8) -> float:
         life.call(_joined_copy, life, pool, read, spans, workers)
     except BaseException as error:
         primary = error
+        prior = _failure_roots(error)
         raise
     finally:
         try:
@@ -709,12 +744,13 @@ def _prefetch(arrays: list[np.ndarray], workers: int = 8) -> float:
                 pool.shutdown(wait=True)
                 _release_prefetch_files([], files=files, slots=slots)
         except BaseException as cleanup:
-            primary = primary if primary is not None else cleanup
+            if primary is None:
+                primary, prior = cleanup, _failure_roots(cleanup)
+            _restore_failure_roots(primary, prior)
             _retain_prefetch_lifetime(primary, cleanup, life)
-            _note(primary, "n-gram prefetch cleanup also failed; owner retained")
-            if cleanup is primary:
-                raise primary
-            raise primary from cleanup
+            _cleanup_failed(primary, cleanup, prior, "n-gram prefetch cleanup also failed; owner retained")
+        if primary is not None:
+            _restore_failure_roots(primary, prior)
     return time.perf_counter() - t0
 
 
@@ -755,9 +791,10 @@ def _ssd_table(files, *, read_ahead=True):
     try:
         return wrap(table)
     except BaseException as primary:
+        prior = _failure_roots(primary)
         try:
             table.close()
         except BaseException as cleanup:
-            _note(primary, "n-gram read-ahead wrapper construction cleanup failed; table retained")
-            raise primary from cleanup
+            _cleanup_failed(primary, cleanup, prior, "n-gram read-ahead wrapper construction cleanup failed; table retained")
+        _restore_failure_roots(primary, prior)
         raise

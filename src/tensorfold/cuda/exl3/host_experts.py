@@ -27,6 +27,8 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cleanup import raise_failures
+
 from tensorfold.cuda.expert_cache import HostExpertCache, _Policy
 from .cache_layout import ExpertSpec, plan
 from tensorfold.cuda.direct_read import ReadAhead
@@ -441,6 +443,8 @@ class Exl3HostExpertCache(HostExpertCache):
                 yield (layer.views, mapping)
             except BaseException as error:
                 primary = error
+                prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                         BaseException.__suppress_context__.__get__(error))
                 raise
             finally:
                 try:
@@ -448,8 +452,16 @@ class Exl3HostExpertCache(HostExpertCache):
                 except BaseException as error:
                     self._failure = 'expert last-use event publication failed'
                     if primary is not None:
-                        raise primary from error
+                        BaseException.__cause__.__set__(primary, prior[0])
+                        BaseException.__context__.__set__(primary, prior[1])
+                        BaseException.__suppress_context__.__set__(primary, prior[2])
+                        raise_failures(primary, [error])
                     raise
+                else:
+                    if primary is not None:
+                        BaseException.__cause__.__set__(primary, prior[0])
+                        BaseException.__context__.__set__(primary, prior[1])
+                        BaseException.__suppress_context__.__set__(primary, prior[2])
                 finally:
                     self._last_stream, self._active = (stream, False)
 
@@ -561,34 +573,46 @@ def _finish_reads(ahead, queued, *, close=True):
     # A take interrupted while waiting has already removed its lookup key.
     # Retain every queued future until the entire window has been consumed.
     pending = dict.fromkeys((*queued, *ahead.ahead.values()))
-    errors = []
+    errors, prior = [], None
+
+    def record(error):
+        nonlocal prior
+        if not errors:
+            prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                     BaseException.__suppress_context__.__get__(error))
+        errors.append(error)
+
     for future in pending:
         try:
             future.cancel()
         except BaseException as error:
-            errors.append(error)
+            record(error)
     try:
         if close:
             ahead.close()
         else:
             ahead.ahead.clear()
     except BaseException as error:
-        errors.append(error)
+        record(error)
     remaining = {}
     for future in pending:
         try:
             if not future.cancelled():
                 future.result()  # also joins work if shutdown itself was interrupted
         except BaseException as error:
-            errors.append(error)
+            record(error)
             try:
                 if not future.done():
                     remaining[future] = None
             except BaseException as status_error:
-                errors.append(status_error)
+                record(status_error)
                 remaining[future] = None
     queued.clear()
     queued.update(remaining)  # interrupted waits remain owned through final shutdown
+    if errors:
+        BaseException.__cause__.__set__(errors[0], prior[0])
+        BaseException.__context__.__set__(errors[0], prior[1])
+        BaseException.__suppress_context__.__set__(errors[0], prior[2])
     return errors
 
 
@@ -622,15 +646,17 @@ class CompactReadSession:
             raise ValueError("EXL3 read session must borrow this checkpoint Pack")
 
     def __exit__(self, kind, primary, traceback):
+        prior = None if primary is None else (BaseException.__cause__.__get__(primary),
+            BaseException.__context__.__get__(primary), BaseException.__suppress_context__.__get__(primary))
         try:
             self.close()
         except BaseException as cleanup:
             if primary is None:
                 raise
-            if cleanup is not primary:
-                primary.add_note(f"EXL3 read session cleanup also failed: {cleanup!r}")
-                for note in getattr(cleanup, "__notes__", ()):
-                    primary.add_note(f"EXL3 read session cleanup detail: {note}")
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
+            raise_failures(primary, [cleanup])
 
     def close(self):
         if threading.current_thread() is not self.thread:
@@ -640,23 +666,33 @@ class CompactReadSession:
         if self.active:
             raise RuntimeError("cannot close EXL3 reader while a layer is consuming payloads")
         pending = tuple(dict.fromkeys((*self.queued, *self.ahead.ahead.values())))
-        errors = []
-        try:
-            errors.extend(_finish_reads(self.ahead, self.queued))
-        except BaseException as error:
+        errors, prior = [], None
+
+        def record(error):
+            nonlocal prior
+            if not errors:
+                prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                         BaseException.__suppress_context__.__get__(error))
             errors.append(error)
+
+        try:
+            for error in _finish_reads(self.ahead, self.queued):
+                record(error)
+        except BaseException as error:
+            record(error)
         # shutdown(wait=True) can be interrupted before returning. Retain the
         # owner and retry that supported shutdown once, preserving the failure.
         if self.ahead.pool is not None:
             try:
-                errors.extend(_finish_reads(self.ahead, self.queued))
+                for error in _finish_reads(self.ahead, self.queued):
+                    record(error)
             except BaseException as error:
-                errors.append(error)
+                record(error)
         if self.ahead.pool is not None:
             try:
                 self.ahead.close()  # joining cannot depend on a failed drain helper
             except BaseException as error:
-                errors.append(error)
+                record(error)
         # Joining is separate from observing asynchronous result statuses.
         # The original snapshot survives a failed helper and its partial clears.
         # A status observation failure leaves that future owned for retry; never
@@ -669,9 +705,9 @@ class CompactReadSession:
                 elif not future.cancelled():
                     failure = future.exception(timeout=0)
                     if failure is not None and not any(failure is error for error in errors):
-                        errors.append(failure)
+                        record(failure)
             except BaseException as error:
-                errors.append(error)
+                record(error)
                 remaining[future] = None
         self.queued.clear()
         self.queued.update(remaining)
@@ -683,13 +719,13 @@ class CompactReadSession:
             self.pk = None
             self.ahead.reader.pk = None
         if not self.closed:
-            errors.append(RuntimeError("EXL3 reader shutdown or future status observation is incomplete"))
+            record(RuntimeError("EXL3 reader shutdown or future status observation is incomplete"))
         if errors:
             primary = errors[0]
-            for secondary in errors[1:]:
-                if secondary is not primary:
-                    primary.add_note(f"secondary EXL3 read cleanup failure: {secondary!r}")
-            raise primary
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
+            raise_failures(primary, errors)
 
 
 def _payload_iterator(pk, metadata, ahead, queued):
@@ -791,35 +827,46 @@ def _joint_payloads(pk, metadata, reads=None):
         session.validate(pk)
         session.active = True
         iterator = _payload_iterator(pk, metadata, session.ahead, session.queued)
-        primary = None
+        primary, prior = None, None
         try:
             yield iterator
         except BaseException as error:
             primary = error
+            prior = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
+                     BaseException.__suppress_context__.__get__(primary))
             raise
         finally:
             errors = []
             try:
                 iterator.close()
             except BaseException as error:
+                if primary is None:
+                    primary = error
+                    prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                             BaseException.__suppress_context__.__get__(error))
                 errors.append(error)
             try:
-                errors.extend(_finish_reads(session.ahead, session.queued, close=False))
+                for error in _finish_reads(session.ahead, session.queued, close=False):
+                    if primary is None:
+                        primary = error
+                        prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                                 BaseException.__suppress_context__.__get__(error))
+                    errors.append(error)
             except BaseException as error:
+                if primary is None:
+                    primary = error
+                    prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                             BaseException.__suppress_context__.__get__(error))
                 errors.append(error)
             finally:
                 session.active = False
                 session.poisoned |= primary is not None or bool(errors)
             if errors:
-                if primary is None:
-                    primary = errors[0]
-                    for secondary in errors[1:]:
-                        if secondary is not primary:
-                            primary.add_note(f"secondary EXL3 read cleanup failure: {secondary!r}")
-                    raise primary
-                for secondary in errors:
-                    if secondary is not primary:
-                        primary.add_note(f"secondary EXL3 read cleanup failure: {secondary!r}")
+                if primary is not None:
+                    BaseException.__cause__.__set__(primary, prior[0])
+                    BaseException.__context__.__set__(primary, prior[1])
+                    BaseException.__suppress_context__.__set__(primary, prior[2])
+                raise_failures(primary, errors)
 
 
 def load_compact(pk, prefix, count, shared, *, device="cpu", keys=None, reads=None):

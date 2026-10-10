@@ -9,6 +9,8 @@ import threading
 
 import torch
 
+from tensorfold.cleanup import raise_failures
+
 from .tensor_file import byte_range
 
 PIECE = 64 << 20         # bytes a direct read fills: the size of each pinned staging piece
@@ -380,7 +382,15 @@ class ReadAhead:
             self._closing = self._shutdown_pending = True
             pool, stream, pending = self.pool, self.stream, tuple(self._owned)
             observed = frozenset(self._observed)
-        errors, remaining = [], set()
+        errors, remaining, prior = [], set(), None
+
+        def record(error):
+            nonlocal prior
+            if not errors:
+                prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                         BaseException.__suppress_context__.__get__(error))
+            errors.append(error)
+
         joined = pool is None
         try:
             if pool is not None:
@@ -388,23 +398,23 @@ class ReadAhead:
                     pool.shutdown(cancel_futures=True)
                     joined = True
                 except BaseException as error:
-                    errors.append(error)
+                    record(error)
             for future in pending:
                 try:
                     if not future.cancelled():
                         future.result()
                 except BaseException as error:
                     if future not in observed:
-                        errors.append(error)
+                        record(error)
                     try:
                         if not future.done():
                             remaining.add(future)
                         elif not future.cancelled():
                             actual = future.exception(timeout=0)
                             if actual is not None and actual is not error and future not in observed:
-                                errors.append(actual)
+                                record(actual)
                     except BaseException as status_error:
-                        errors.append(status_error)
+                        record(status_error)
                         remaining.add(future)
             synced = stream is None
             if joined and not remaining and stream is not None:
@@ -413,11 +423,11 @@ class ReadAhead:
                     synced = True
                     getattr(torch._C, "_host_emptyCache", lambda: None)()
                 except BaseException as error:
-                    errors.append(error)
+                    record(error)
             complete = joined and not remaining and synced
             with self._condition:
                 if self._discard_error is not None:
-                    errors.append(self._discard_error)
+                    record(self._discard_error)
                 if joined:
                     self.pool = None
                 if complete:
@@ -428,11 +438,13 @@ class ReadAhead:
                     self._discard_error = None
                     self._shutdown_pending = False
             if not complete and not errors:
-                errors.append(RuntimeError("read-ahead shutdown did not drain its owned work"))
+                record(RuntimeError("read-ahead shutdown did not drain its owned work"))
             if errors:
-                for _ in errors[1:]:
-                    BaseException.add_note(errors[0], "additional read-ahead shutdown failure; owners retained if incomplete")
-                raise errors[0]
+                primary = errors[0]
+                BaseException.__cause__.__set__(primary, prior[0])
+                BaseException.__context__.__set__(primary, prior[1])
+                BaseException.__suppress_context__.__set__(primary, prior[2])
+                raise_failures(primary, errors)
         finally:
             with self._condition:
                 self._closing = False
@@ -469,14 +481,23 @@ def in_background(job, futures: list) -> None:
         future = pool.submit(job)
         futures.append(future)
     except BaseException as primary:
+        prior = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
+                 BaseException.__suppress_context__.__get__(primary))
+        errors = []
         try:
             pool.shutdown(cancel_futures=True)
-            if future is not None and not future.cancelled():
-                future.result()
         except BaseException as cleanup:
-            BaseException.add_note(primary, "unpublished background read cleanup failed")
-            raise primary from cleanup
-        raise
+            errors.append(cleanup)
+        if future is not None:
+            try:
+                if not future.cancelled():
+                    future.result()
+            except BaseException as cleanup:
+                errors.append(cleanup)
+        BaseException.__cause__.__set__(primary, prior[0])
+        BaseException.__context__.__set__(primary, prior[1])
+        BaseException.__suppress_context__.__set__(primary, prior[2])
+        raise_failures(primary, errors)
     else:
         pool.shutdown(wait=False)                    # the thread ends with its one job
 
@@ -484,19 +505,37 @@ def in_background(job, futures: list) -> None:
 def wait_all(futures: list) -> None:
     """Wait for every future (none is left running), then raise the first one's error, if any."""
 
-    errors, remaining = [], []
+    errors, remaining, prior = [], [], None
+
+    def record(error):
+        nonlocal prior
+        if not errors:
+            prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                     BaseException.__suppress_context__.__get__(error))
+        errors.append(error)
+
     for future in futures:
         try:
             future.result()
         except BaseException as error:
-            errors.append(error)
-            if not future.done():
+            record(error)
+            try:
+                if not future.done():
+                    remaining.append(future)
+                elif not future.cancelled():
+                    actual = future.exception(timeout=0)
+                    if actual is not None and actual is not error:
+                        record(actual)
+            except BaseException as status:
+                record(status)
                 remaining.append(future)
     futures[:] = remaining
     if errors:
-        for _ in errors[1:]:
-            BaseException.add_note(errors[0], "additional background read failure")
-        raise errors[0]
+        primary = errors[0]
+        BaseException.__cause__.__set__(primary, prior[0])
+        BaseException.__context__.__set__(primary, prior[1])
+        BaseException.__suppress_context__.__set__(primary, prior[2])
+        raise_failures(primary, errors)
 
 
 __all__ = ["ALIGN", "DTYPES", "PIECE", "ReadAhead", "Reader", "SafeTensors", "in_background", "read_header", "wait_all"]

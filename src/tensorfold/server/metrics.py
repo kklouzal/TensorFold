@@ -135,7 +135,23 @@ def finish_request() -> None:
          latency=max(0.0, time.perf_counter() - _local.started), ttft=ttft)
 
 
-def render(app: Any) -> str:
+def capacity_snapshot(app: Any, *, server: Any = None) -> dict[str, dict[str, int]]:
+    """Configured policy counts; omit a policy whose ownership is unavailable."""
+    result = {}
+    request_owner = getattr(app, "_request_limit", None)
+    request_limit = getattr(app, "max_pending_requests", None)
+    if request_owner is not None and request_limit is not None:
+        result["requests"] = {"in_use": request_owner.used, "limit": request_limit}
+    scheduler = getattr(app, "scheduler", None)
+    engine_limit = getattr(scheduler, "max_engine_calls", None)
+    if engine_limit is not None:
+        result["engine_calls"] = {"in_use": scheduler.engine_calls, "limit": engine_limit}
+    if getattr(server, "max_connections", None) is not None:
+        result["http_connections"] = server.connection_snapshot()
+    return result
+
+
+def render(app: Any, *, server: Any = None) -> str:
     """The scrape body, ending in a newline."""
 
     metrics = of(app)
@@ -146,6 +162,22 @@ def render(app: Any) -> str:
     running, waiting = _requests(app)
     pools = _pools(app)
     lines: list[str] = []
+    if server is not None and hasattr(server, "connection_snapshot"):
+        transport = server.connection_snapshot()
+        _family(lines, "http_connections_in_use", "gauge", "Accepted HTTP handler owners, including retirement.",
+                [f"{PREFIX}http_connections_in_use {transport['in_use']}"])
+        if transport["limit"] is not None:
+            _family(lines, "http_connections_limit", "gauge", "Configured maximum accepted HTTP handler owners.",
+                    [f"{PREFIX}http_connections_limit {transport['limit']}"])
+    capacities = capacity_snapshot(app)
+    for key, label, help_text in (("requests", "request_admission", "Unfinished logical requests"),
+                                  ("engine_calls", "engine_calls", "Queued or running engine calls")):
+        if key in capacities:
+            values = capacities[key]
+            for field in ("in_use", "limit"):
+                name = label + "_" + field
+                _family(lines, name, "gauge", help_text + (" in use." if field == "in_use" else " configured limit."),
+                        [f"{PREFIX}{name} {values[field]}"])
     _family(lines, "requests_running", "gauge", "Requests in prefill or decode.",
             [f"{PREFIX}requests_running {running}"])
     _family(lines, "requests_waiting", "gauge", "Requests queued or held until a lane is free.",
@@ -195,7 +227,7 @@ def render(app: Any) -> str:
 def send(handler: Any, app: Any) -> None:
     """Write ``render`` as Prometheus text, version 0.0.4."""
 
-    body = render(app).encode()
+    body = render(app, server=getattr(handler, "server", None)).encode()
     handler.send_response(200)
     handler.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
@@ -346,5 +378,5 @@ def _edge(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
 
 
-__all__ = ["BUCKETS", "PREFIX", "Histogram", "Metrics", "begin", "bind", "finish_request", "note", "of", "render",
+__all__ = ["BUCKETS", "PREFIX", "Histogram", "Metrics", "begin", "bind", "capacity_snapshot", "finish_request", "note", "of", "render",
            "send", "tokens"]

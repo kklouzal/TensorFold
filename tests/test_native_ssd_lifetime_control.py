@@ -18,19 +18,25 @@ from types import SimpleNamespace
 import unittest
 import tempfile
 import weakref
+from unittest.mock import patch
 from snapshot_fd_transport import TransportOwner
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen4_exp/table_lifetime.py"
 spec = importlib.util.spec_from_file_location("ssd_lifetime_source_control", SOURCE)
 api = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(api)
+cleanup_spec = importlib.util.spec_from_file_location("ssd_cleanup_control", SOURCE.parents[2] / "cleanup.py")
+CLEANUP = importlib.util.module_from_spec(cleanup_spec)
+cleanup_spec.loader.exec_module(CLEANUP)
+with patch.dict(sys.modules, {"tensorfold.cleanup": CLEANUP}):
+    spec.loader.exec_module(api)
 
 
 def owner():
     node = next(
         n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.ClassDef) and n.name == "TableLifetime"
     )
-    namespace = {"threading": threading, "_note": api._note, "_cause": api._cause}
+    namespace = {"threading": threading, "_note": api._note, "_cause": api._cause,
+                 "_failure_roots": api._failure_roots, "_raise_failures": api._raise_failures}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), namespace)
     calls = []
     fds = [7]
@@ -105,6 +111,156 @@ def layout_api():
 
 
 class NativeLifetime(unittest.TestCase):
+    def test_parallel_preserves_all_terminal_identities_and_roots_after_foreign_drain(self):
+        life, _ = owner()
+        primary, second, third = OSError('first'), LookupError('second'), KeyboardInterrupt('third')
+        cause, context = ValueError('prior cause'), ArithmeticError('prior context')
+        primary.__cause__, primary.__context__, primary.__suppress_context__ = cause, context, False
+        barrier = threading.Barrier(3)
+
+        class Pool(ThreadPoolExecutor):
+            def shutdown(self, wait=True, **kwargs):
+                super().shutdown(wait=wait, **kwargs)
+                primary.__cause__ = primary.__context__ = None
+                primary.__suppress_context__ = True
+
+        def work(index):
+            barrier.wait(3)
+            raise (primary, second, third)[index]
+
+        pool = Pool(3)
+        life.pool = api.PythonPool(pool)
+        with self.assertRaises(OSError) as caught:
+            life.call(life.parallel, pool, work, [0, 1, 2])
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(primary.__cause__.exceptions, (cause, context, second, third))
+        self.assertFalse(life.active or life.workers or life.reads)
+        self.assertIs(life.broken, primary)
+
+    def test_close_retained_dispatch_reports_all_statuses_after_exact_release_order(self):
+        life, calls = owner()
+        primary, second, third = OSError('dispatch'), LookupError('read'), KeyboardInterrupt('read')
+        cause, context = ValueError('cause'), ArithmeticError('context')
+        primary.__cause__, primary.__context__ = cause, context
+        life.reads[object()] = ([primary, second, third, False, True], primary)
+
+        def pool_close():
+            calls.append('pool')
+            primary.__cause__ = primary.__context__ = None
+
+        life.pool.close = pool_close
+        with self.assertRaises(OSError) as caught:
+            life.close()
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(primary.__cause__.exceptions, (cause, context, second, third))
+        self.assertEqual(calls, ['pool', 'fds'])
+        self.assertTrue(life.closed)
+        self.assertFalse(life.reads or life.closing or life.broken)
+        life.close()
+        self.assertEqual(calls, ['pool', 'fds'])
+
+    def test_close_unowned_terminal_stops_release_and_preserves_every_read(self):
+        life, calls = owner()
+        first, second = OSError('unreported read'), LookupError('other read')
+        key = object()
+        terminal = [first, second, False, True]
+        life.reads[key] = (terminal, None)
+        with self.assertRaises(OSError) as caught:
+            life.close()
+        self.assertIs(caught.exception, first)
+        self.assertIs(first.__cause__, second)
+        self.assertEqual(calls, ['pool'])
+        self.assertEqual(life.fds, [7])
+        self.assertIs(life.reads[key][0], terminal)
+        self.assertIs(life.broken, first)
+        self.assertFalse(life.closed or life.closing)
+
+    def test_cleared_dispatch_journal_survives_descriptor_failure_and_root_mutation(self):
+        life, calls = owner()
+        primary, second, cleanup = OSError('dispatch'), LookupError('read'), RuntimeError('descriptor close')
+        cause = ValueError('prior cause')
+        primary.__cause__ = cause
+        life.reads[object()] = ([primary, second], primary)
+
+        def release(_):
+            calls.append('fds')
+            primary.__cause__ = None
+            raise cleanup
+
+        life.release_fds = release
+        with self.assertRaises(OSError) as caught:
+            life.close()
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(primary.__cause__.exceptions, (cause, second, cleanup))
+        self.assertEqual(calls, ['pool', 'fds'])
+        self.assertEqual(life.fds, [7])
+        self.assertFalse(life.closed or life.reads or life.closing)
+        self.assertIs(life.broken, primary)
+
+    def test_retained_journal_malformed_notes_keeps_concrete_statuses(self):
+        life, calls = owner()
+        primary, second = OSError('dispatch'), LookupError('read')
+        primary.__notes__ = object()
+        life.reads[object()] = ([primary, second], primary)
+        with self.assertRaises(OSError) as caught:
+            life.close()
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__.exceptions[0], second)
+        self.assertIsInstance(primary.__cause__.exceptions[1], TypeError)
+        self.assertEqual(calls, ['pool', 'fds'])
+        self.assertTrue(life.closed)
+
+    def test_retained_journal_group_allocation_failure_keeps_status_payload(self):
+        life, calls = owner()
+        primary, second, third = OSError('dispatch'), LookupError('read'), KeyboardInterrupt('read')
+        allocation = MemoryError('diagnostic group allocation')
+        life.reads[object()] = ([primary, second, third], primary)
+
+        def fail_group(*args):
+            raise allocation
+
+        with patch.dict(CLEANUP.__dict__, {'BaseExceptionGroup': fail_group}):
+            with self.assertRaises(OSError) as caught:
+                life.close()
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__, allocation)
+        self.assertEqual(primary.__dict__['_tensorfold_retained_failures'], [second, third])
+        self.assertEqual(calls, ['pool', 'fds'])
+        self.assertTrue(life.closed)
+
+    def test_failed_pool_drain_restores_retained_dispatch_roots_before_retry(self):
+        life, calls = owner()
+        primary, second, drain = OSError('dispatch'), LookupError('read'), RuntimeError('pool close')
+        cause, context = ValueError('cause'), ArithmeticError('context')
+        primary.__cause__, primary.__context__, primary.__suppress_context__ = cause, context, False
+        life.reads[object()] = ([primary, second], primary)
+        failed = False
+
+        def pool_close():
+            nonlocal failed
+            primary.__cause__ = primary.__context__ = None
+            primary.__suppress_context__ = True
+            if not failed:
+                failed = True
+                raise drain
+            calls.append('pool')
+
+        life.pool.close = pool_close
+        with self.assertRaises(RuntimeError) as caught:
+            life.close()
+        self.assertIs(caught.exception, drain)
+        self.assertIs(primary.__cause__, cause)
+        self.assertIs(primary.__context__, context)
+        self.assertFalse(primary.__suppress_context__)
+        self.assertEqual(life.fds, [7])
+        self.assertTrue(life.reads)
+        with self.assertRaises(OSError) as caught:
+            life.close()
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(primary.__cause__.exceptions, (cause, context, second))
+        self.assertEqual(calls, ['pool', 'fds'])
+        self.assertTrue(life.closed)
+
     def test_shared_native_open_failure_retains_published_SSD_owner_for_retry(self):
         namespace = layout_api()
         primary = KeyboardInterrupt("after labeled native acquisition")
@@ -605,7 +761,8 @@ class NativeLifetime(unittest.TestCase):
         self.assertEqual(set(completed), {0, 1})
         self.assertFalse(life.active or life.workers or life.reads)
         self.assertIsInstance(primary.__cause__, BaseExceptionGroup)
-        self.assertIsInstance(primary.__cause__.exceptions[0], TypeError)
+        self.assertIs(primary.__cause__.exceptions[0], secondary)
+        self.assertIsInstance(primary.__cause__.exceptions[1], TypeError)
         self.assertEqual(life.fds, [7])
         life.close()
         self.assertTrue(life.closed)

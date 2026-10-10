@@ -7,6 +7,8 @@ explicit retry; no mapped/pinned authority can retire before quiescence.
 """
 from __future__ import annotations
 
+from tensorfold.cleanup import raise_failures
+
 
 def _note(primary, message):
     """Diagnostics cannot replace an already established operation failure."""
@@ -44,16 +46,21 @@ class PLETables:
                 raise ValueError("the PLE table owner is closed")
             self.tables.append(table)
         except BaseException as primary:
+            prior = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
+                     BaseException.__suppress_context__.__get__(primary))
             try:
                 table.close()
                 if self.tables and self.tables[-1] is table:
                     self.tables.pop()
                 self.unpublished = None
             except BaseException as cleanup:
-                _note(primary, "unpublished PLE table cleanup failed; owner retained")
-                if cleanup is primary:
-                    raise primary
-                raise primary from cleanup
+                BaseException.__cause__.__set__(primary, prior[0])
+                BaseException.__context__.__set__(primary, prior[1])
+                BaseException.__suppress_context__.__set__(primary, prior[2])
+                raise_failures(primary, [cleanup])
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
             raise
         self.unpublished = None
         return table
@@ -64,33 +71,42 @@ class PLETables:
         A completed read error still permits resource cleanup and is surfaced
         after it. An interrupted/incomplete read or failed fence retains the
         journal and every table. Successful individual closes are consumed;
-        failed table closes remain retryable, with additional errors noted.
+        failed table closes remain retryable. Every distinct failure survives;
+        the first failure's native roots are captured before further callbacks.
         """
         if self.closed:
             return
-        errors, remaining = [], []
+        errors, remaining, prior = [], [], None
+
+        def record(error):
+            nonlocal prior
+            if not errors:
+                prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                         BaseException.__suppress_context__.__get__(error))
+            errors.append(error)
+
         for future in self.reads:
             try:
                 if not future.cancel():
                     future.result()
             except BaseException as error:
-                errors.append(error)
+                record(error)
                 try:
                     if not future.done():
                         remaining.append(future)
                     elif not future.cancelled():
                         actual = future.exception(timeout=0)
                         if actual is not None and actual is not error:
-                            errors.append(actual)
+                            record(actual)
                 except BaseException as status:
                     remaining.append(future)
-                    errors.append(status)
+                    record(status)
         self.reads[:] = remaining
         if not remaining:
             try:
                 fence()
             except BaseException as error:
-                errors.append(error)
+                record(error)
             else:
                 kept = []
                 for table in self.tables:
@@ -98,18 +114,19 @@ class PLETables:
                         table.close()
                     except BaseException as error:
                         kept.append(table)
-                        errors.append(error)
+                        record(error)
                 self.tables[:] = kept
                 if self.unpublished is not None:
                     try:
                         self.unpublished.close()
                         self.unpublished = None
                     except BaseException as error:
-                        errors.append(error)
+                        record(error)
                 if not self.tables and self.unpublished is None:
                     self.closed = True
         if errors:
             primary = errors[0]
-            for error in errors[1:]:
-                _note(primary, "additional PLE resource cleanup also failed")
-            raise primary
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
+            raise_failures(primary, errors[1:])

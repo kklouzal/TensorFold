@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 
 from tensorfold.cuda.capacity import SIZES
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, MAX_DIMENSION, byte_range, read_header, tensor_shape
 from snapshot_fd_transport import substitute_owners
 
@@ -25,7 +26,8 @@ def controls():
                 and node.name in ("ReadAhead", "Reader", "in_background", "wait_all")]
     body = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *selected]
     namespace = {"torch": SimpleNamespace(_C=SimpleNamespace()), "threading": threading,
-                 "Reader": object, "byte_range": byte_range, "os": os, "errno": errno, "PIECE": 64 << 20}
+                 "Reader": object, "byte_range": byte_range, "os": os, "errno": errno, "PIECE": 64 << 20,
+                 "raise_failures": raise_failures}
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
     return SimpleNamespace(**{name: namespace[name] for name in ("ReadAhead", "Reader", "in_background", "wait_all")})
 

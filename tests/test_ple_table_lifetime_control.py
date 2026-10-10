@@ -17,7 +17,19 @@ ROOT = Path(__file__).resolve().parents[1]
 FAMILY = ROOT / "src/tensorfold/families/qwen4_exp"
 spec = importlib.util.spec_from_file_location("ple_table_owner_control", FAMILY / "ple_lifetime.py")
 API = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(API)
+cleanup_spec = importlib.util.spec_from_file_location("ple_cleanup_source", ROOT / "src/tensorfold/cleanup.py")
+CLEANUP = importlib.util.module_from_spec(cleanup_spec)
+cleanup_spec.loader.exec_module(CLEANUP)
+with patch.dict(sys.modules, {"tensorfold.cleanup": CLEANUP}):
+    spec.loader.exec_module(API)
+
+
+def failures(error):
+    """Independent identity oracle for native cause groups, without foreign hooks."""
+    cause = BaseException.__cause__.__get__(error)
+    if type(cause) in (BaseExceptionGroup, ExceptionGroup):
+        return list(cause.exceptions)
+    return [] if cause is None else [cause]
 
 
 class Table:
@@ -234,7 +246,9 @@ class PLETableControl(unittest.TestCase):
         with self.assertRaises(OSError) as caught:
             owner.close(lambda: events.append("fence"))
         self.assertIs(caught.exception, primary)
-        self.assertIsInstance(caught.exception.__cause__, TypeError)
+        causes = failures(caught.exception)
+        self.assertIn(second.failure, causes)
+        self.assertTrue(any(type(error) is TypeError for error in causes))
         self.assertEqual(owner.tables, [first, second])
         self.assertEqual(events, ["fence", "first", "second"])
         first.failure = second.failure = None
@@ -259,7 +273,9 @@ class PLETableControl(unittest.TestCase):
         with self.assertRaises(Opaque) as caught:
             owner.acquire(table)
         self.assertIs(caught.exception, primary)
-        self.assertIsInstance(caught.exception.__cause__, LookupError)
+        causes = failures(caught.exception)
+        self.assertIn(table.failure, causes)
+        self.assertTrue(any(type(error) is LookupError for error in causes))
         self.assertIs(owner.unpublished, table)
         table.failure = None
         owner.close(lambda: None)
@@ -280,7 +296,9 @@ class PLETableControl(unittest.TestCase):
         with self.assertRaises(Opaque) as caught:
             owner.close(lambda: events.append("fence"))
         self.assertIs(caught.exception, primary)
-        self.assertIsInstance(caught.exception.__cause__, LookupError)
+        causes = failures(caught.exception)
+        self.assertIn(second.failure, causes)
+        self.assertTrue(any(type(error) is LookupError for error in causes))
         self.assertEqual(events, ["fence", "first", "second"])
         self.assertEqual(owner.tables, [first, second])
         first.failure = second.failure = None
@@ -300,7 +318,9 @@ class PLETableControl(unittest.TestCase):
         with self.assertRaises(MemoryError) as caught:
             owner.acquire(table)
         self.assertIs(caught.exception, primary)
-        self.assertIsInstance(caught.exception.__cause__, TypeError)
+        causes = failures(caught.exception)
+        self.assertIn(table.failure, causes)
+        self.assertTrue(any(type(error) is TypeError for error in causes))
         self.assertIs(owner.unpublished, table)
         table.failure = None
         owner.close(lambda: None)
@@ -324,6 +344,141 @@ class PLETableControl(unittest.TestCase):
         owner.close(lambda: events.append("fence"))
         self.assertTrue(owner.closed)
         self.assertIsNone(owner.unpublished)
+
+    def test_all_close_failures_and_first_native_roots_survive_foreign_mutation(self):
+        events = []
+        owner = API.PLETables()
+        first, second = owner.acquire(Table(events, "first")), owner.acquire(Table(events, "second"))
+        primary, cleanup = OSError("first close"), LookupError("second close")
+        cause, context = ValueError("prior cause"), RuntimeError("prior context")
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+        first.failure = primary
+
+        def mutate():
+            events.append("second")
+            BaseException.__cause__.__set__(primary, None)
+            BaseException.__context__.__set__(primary, None)
+            BaseException.__suppress_context__.__set__(primary, False)
+            raise cleanup
+
+        second.close = mutate
+        with self.assertRaises(OSError) as caught:
+            owner.close(lambda: events.append("fence"))
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(failures(primary), [cause, context, cleanup])
+        self.assertEqual(events, ["fence", "first", "second"])
+        self.assertEqual(owner.tables, [first, second])
+        self.assertFalse(owner.closed)
+        first.failure = None
+        second.close = lambda: events.append("second retry")
+        owner.close(lambda: events.append("fence retry"))
+        self.assertTrue(owner.closed)
+
+    def test_completed_future_failure_and_fence_error_keep_prior_roots_and_tables(self):
+        owner = API.PLETables()
+        table = owner.acquire(Table([]))
+        primary, cleanup = OSError("completed read"), LookupError("fence refused")
+        cause = ValueError("read prior cause")
+        BaseException.__cause__.__set__(primary, cause)
+        future = Future()
+        future.set_exception(primary)
+        owner.reads.append(future)
+
+        def fence():
+            BaseException.__cause__.__set__(primary, None)
+            raise cleanup
+
+        with self.assertRaises(OSError) as caught:
+            owner.close(fence)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(failures(primary), [cause, cleanup])
+        self.assertEqual(owner.tables, [table])
+        self.assertFalse(owner.closed)
+        self.assertEqual(owner.reads, [])
+        owner.close(lambda: None)
+        self.assertTrue(owner.closed)
+
+    def test_acquisition_cleanup_cannot_mutate_publication_native_roots(self):
+        owner = API.PLETables()
+        primary, cleanup = MemoryError("registry refused"), OSError("table close refused")
+        cause, context = ValueError("prior cause"), RuntimeError("prior context")
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+
+        class Broken(list):
+            def append(self, _):
+                raise primary
+
+        owner.tables = Broken()
+        table = Table([])
+
+        def close():
+            BaseException.__cause__.__set__(primary, None)
+            BaseException.__context__.__set__(primary, None)
+            raise cleanup
+
+        table.close = close
+        with self.assertRaises(MemoryError) as caught:
+            owner.acquire(table)
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(failures(primary), [cause, context, cleanup])
+        self.assertIs(owner.unpublished, table)
+        table.close = lambda: None
+        owner.close(lambda: None)
+        self.assertTrue(owner.closed)
+
+    def test_group_allocation_failure_preserves_primary_and_all_status_references(self):
+        owner = API.PLETables()
+        first, second = owner.acquire(Table([])), owner.acquire(Table([]))
+        primary, cleanup, cause = OSError("first"), LookupError("second"), ValueError("prior")
+        allocation = MemoryError("controlled group allocation")
+        first.failure, second.failure = primary, cleanup
+        BaseException.__cause__.__set__(primary, cause)
+
+        def fail(*args):
+            raise allocation
+
+        with patch.dict(CLEANUP.__dict__, {"BaseExceptionGroup": fail}), self.assertRaises(OSError) as caught:
+            owner.close(lambda: None)
+        self.assertIs(caught.exception, primary)
+        self.assertIs(BaseException.__cause__.__get__(primary), allocation)
+        dictionary = BaseException.__dict__["__dict__"].__get__(primary)
+        self.assertEqual(dictionary["_tensorfold_retained_failures"], [cause, cleanup])
+        self.assertEqual(owner.tables, [first, second])
+        first.failure = second.failure = None
+        owner.close(lambda: None)
+        self.assertTrue(owner.closed)
+
+    def test_successful_acquisition_cleanup_restores_original_native_roots(self):
+        owner = API.PLETables()
+        primary, cause, context = MemoryError("registry refused"), ValueError("cause"), RuntimeError("context")
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+        BaseException.__suppress_context__.__set__(primary, True)
+
+        class Broken(list):
+            def append(self, _):
+                raise primary
+
+        owner.tables = Broken()
+        table = Table([])
+
+        def close():
+            BaseException.__cause__.__set__(primary, None)
+            BaseException.__context__.__set__(primary, None)
+            BaseException.__suppress_context__.__set__(primary, False)
+
+        table.close = close
+        with self.assertRaises(MemoryError) as caught:
+            owner.acquire(table)
+        self.assertIs(caught.exception, primary)
+        self.assertIs(BaseException.__cause__.__get__(primary), cause)
+        self.assertIs(BaseException.__context__.__get__(primary), context)
+        self.assertTrue(BaseException.__suppress_context__.__get__(primary))
+        self.assertIsNone(owner.unpublished)
+        owner.close(lambda: None)
+        self.assertTrue(owner.closed)
 
     def test_both_real_loader_ple_functions_publish_before_row_and_projection_failures(self):
         tree = ast.parse((FAMILY / "cuda/weights.py").read_text())

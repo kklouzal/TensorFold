@@ -13,10 +13,12 @@ import time
 import traceback
 from typing import Any, Callable
 
+from tensorfold.cleanup import finish, raise_failures, rollback
 from tensorfold.engine.lane_engine import LaneStream
 from tensorfold.server.cancellation import Cancellation, RequestCancelled
 from tensorfold.server.checkpoints import CheckpointStore
-from tensorfold.server.errors import RequestError, RoundError
+from tensorfold.server.errors import CapacityError, RequestError, RoundError
+from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.live import ChunkRate, Meter
 from tensorfold.server.prompt_fill import Filling, PromptFill
 from tensorfold.server.stream_gate import StreamGate
@@ -113,7 +115,17 @@ class Scheduler(PromptFill):
         decode_share: float = 0.25,
         snapshot_registry: Any = None,
         snapshot_codec: Any = None,
+        max_pending_requests: int | None = None,
+        max_engine_calls: int | None = None,
+        request_limit: RequestLimit | None = None,
     ) -> None:
+        self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
+        self.max_engine_calls = optional_limit(max_engine_calls, "max_engine_calls")
+        if request_limit is not None and request_limit.maximum != self.max_pending_requests:
+            raise ValueError("scheduler and App request limits must match")
+        self._request_limit = request_limit or (
+            RequestLimit(max_pending_requests) if max_pending_requests is not None else None)
+        self._finalizing = False
         if lanes < 1:
             raise ValueError("lanes must be positive")
         if decode_share < 0:
@@ -274,8 +286,35 @@ class Scheduler(PromptFill):
                 raise RuntimeError("the scheduler is closed") from self._failure
             if job.done.is_set() or id(job) in self._accepted:
                 raise ValueError("a job may be submitted only once")
-            self._accepted[id(job)] = job
-            self._queue.put(job)
+            if self._request_limit is not None:
+                try:
+                    self._request_limit.borrow(id(job))
+                    self._accepted[id(job)] = job
+                except BaseException as primary:
+                    self._request_limit.rollback_registration(
+                        self, id(job), primary, lambda: self._accepted.pop(id(job), None), self._stop.set)
+            else:
+                self._accepted[id(job)] = job
+            try:
+                self._queue.put(job)
+            except BaseException as error:
+                if self._request_limit is not None:
+                    # A queue may enqueue before raising; only worker shutdown
+                    # and its drain can safely retire this acceptance journal.
+                    self._failure = error
+                    rollback(self, error, lambda: finish((self._request_limit.close, self._stop.set)))
+                raise
+
+    @property
+    def pending_requests(self) -> int | None:
+        """Configured logical callers, including canceled but unretired work."""
+        return self._request_limit.used if self._request_limit is not None else None
+
+    @property
+    def engine_calls(self) -> int:
+        """Queued and running RPCs, including callbacks whose callers timed out."""
+        with self._state_lock:
+            return len(self._engine_waiters)
 
     def on_engine(self, fn: Callable[[Any], Any], timeout: float = 600.0) -> Any:
         """Run ``fn`` on the engine thread once no stream is live and no prompt is open."""
@@ -284,8 +323,22 @@ class Scheduler(PromptFill):
         with self._state_lock:
             if self._stop.is_set():
                 raise RuntimeError("the scheduler is closed") from self._failure
-            self._engine_waiters[id(done)] = done
-            self._engine_calls.put((fn, done))
+            if self.max_engine_calls is not None and len(self._engine_waiters) >= self.max_engine_calls:
+                raise CapacityError(f"engine call capacity reached ({self.max_engine_calls} unfinished calls); retry later")
+            try:
+                self._engine_waiters[id(done)] = done
+            except BaseException:
+                self._engine_waiters.pop(id(done), None)
+                raise
+            try:
+                self._engine_calls.put((fn, done))
+            except BaseException as error:
+                if self.max_engine_calls is not None:
+                    self._failure = error
+                    operations = (self._stop.set,) if self._request_limit is None else (
+                        self._request_limit.close, self._stop.set)
+                    rollback(self, error, lambda: finish(operations))
+                raise
         try:
             result = done.get(timeout=timeout)
         except queue.Empty as exc:
@@ -310,18 +363,30 @@ class Scheduler(PromptFill):
 
     def _complete_call(self, done: queue.Queue[Any], result: Any) -> None:
         with self._state_lock:
-            if self._engine_waiters.pop(id(done), None) is not None:
-                done.put_nowait(result)
+            if id(done) in self._engine_waiters:
+                try:
+                    done.put_nowait(result)
+                except queue.Full:
+                    if not self._stop.is_set():
+                        raise
+                    # A prior publication enqueued before failing. The owned
+                    # one-item box already contains this callback's terminal
+                    # reply; shutdown must not overwrite or duplicate it.
+                self._engine_waiters.pop(id(done), None)
 
-    def _fail_engine_calls(self, error: BaseException) -> None:
+    def _fail_engine_calls(self, error: BaseException) -> list[BaseException]:
+        errors = []
         with self._state_lock:
             for done in tuple(self._engine_waiters.values()):
-                self._complete_call(done, error)
+                try:
+                    self._complete_call(done, error)
+                except BaseException as publication:
+                    errors.append(publication)
         while True:
             try:
                 self._engine_calls.get_nowait()
             except queue.Empty:
-                return
+                return errors
 
     def cancel(self, cancellation: Cancellation) -> None:
         cancellation.cancel()
@@ -389,7 +454,7 @@ class Scheduler(PromptFill):
         except BaseException as exc:
             failure = exc
         finally:
-            self._finalize(failure)
+            self._finalize(failure if failure is not None else self._failure)
 
     @staticmethod
     def _clear_failure_frames(error: BaseException) -> None:
@@ -420,6 +485,9 @@ class Scheduler(PromptFill):
         """Terminate accepted work; release array owners only after an explicit drain."""
         with self._state_lock:
             self._stop.set()
+            self._finalizing = True
+            if self._request_limit is not None:
+                self._request_limit.close()
             self._failure = failure
             jobs = tuple(self._accepted.values())
             fills = tuple(self._owned_fills.values())
@@ -431,7 +499,7 @@ class Scheduler(PromptFill):
                     if failure is None:
                         self.cancelled += 1
                     self._finish(job)
-            self._fail_engine_calls(self._terminal_error(failure))
+            rpc_errors = self._fail_engine_calls(self._terminal_error(failure))
         try:
             # CPU callbacks have ended on this worker. GPU work must also end
             # before generators, captured snapshots, and model rows are freed.
@@ -464,6 +532,7 @@ class Scheduler(PromptFill):
                 self._queue.get_nowait()
             if failure is None and self.on_stop is not None:
                 self.on_stop()
+            raise_failures(None, rpc_errors)
         except BaseException as cleanup:
             self._cleanup_failure = cleanup
             if failure is not None:
@@ -474,6 +543,9 @@ class Scheduler(PromptFill):
                         "scheduler cleanup and annotation failed", [cleanup, annotation]
                     )
         else:
+            if self._request_limit is not None:
+                for job in jobs:
+                    self._request_limit.release(id(job))
             self._shutdown_owners = ()
             if failure is not None:
                 self._clear_failure_frames(failure)
@@ -789,6 +861,8 @@ class Scheduler(PromptFill):
             if job.done.is_set():
                 return
             job.finished_at = time.perf_counter()
+            if self._request_limit is not None and not self._finalizing:
+                self._request_limit.release(id(job))
             job.chunks.put(None)
             job.done.set()
             self._accepted.pop(id(job), None)

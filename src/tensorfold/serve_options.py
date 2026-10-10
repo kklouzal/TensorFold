@@ -16,6 +16,10 @@ def check_numbers(args: argparse.Namespace) -> None:
     Integer clamping/default policies remain with their existing owners.
     """
 
+    from tensorfold.server.request_limits import optional_limit
+
+    for name in ("max_http_connections", "max_pending_requests", "max_engine_calls"):
+        optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
     for name in (*budgets, "temperature", "top_p", "min_p", "decode_share", "mtp_confidence", "yarn_factor"):
         value = getattr(args, name, None)
@@ -34,6 +38,8 @@ def check_numbers(args: argparse.Namespace) -> None:
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    if getattr(args, "max_engine_calls", None) is not None and backend != "mlx":
+        raise ValueError("--max-engine-calls bounds the MLX engine RPC queue and is supported on MLX only")
     if getattr(args, "trust_model_code", False):
         if backend != "mlx" or not getattr(family.package, "MLX_MODEL_FILE", False):
             raise ValueError("--trust-model-code requires an MLX family recipe that uses the provider's model_file")

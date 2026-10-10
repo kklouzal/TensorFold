@@ -16,6 +16,7 @@ import threading
 from typing import Iterator
 
 from .expert_rank import calibrate
+from tensorfold.cleanup import raise_failures
 
 import numpy as np
 import torch
@@ -469,6 +470,8 @@ class HostExpertCache:
                 yield layer.views, mapping
             except BaseException as error:
                 primary = error
+                prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                         BaseException.__suppress_context__.__get__(error))
                 raise
             finally:
                 try:
@@ -476,8 +479,16 @@ class HostExpertCache:
                 except BaseException as error:
                     self._failure = "expert last-use event publication failed"
                     if primary is not None:
-                        raise primary from error
+                        BaseException.__cause__.__set__(primary, prior[0])
+                        BaseException.__context__.__set__(primary, prior[1])
+                        BaseException.__suppress_context__.__set__(primary, prior[2])
+                        raise_failures(primary, [error])
                     raise
+                else:
+                    if primary is not None:
+                        BaseException.__cause__.__set__(primary, prior[0])
+                        BaseException.__context__.__set__(primary, prior[1])
+                        BaseException.__suppress_context__.__set__(primary, prior[2])
                 finally:
                     self._last_stream = stream
                     self._active = False

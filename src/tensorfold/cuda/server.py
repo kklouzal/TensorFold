@@ -16,6 +16,7 @@ from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
 from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_options import heard_effort, parse_numbers, thinking_fields
+from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.stopping import stop_options
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
@@ -69,7 +70,15 @@ class App:
     def __init__(self, engine, model_dir: Path, served: str, *, default_thinking: bool = False,
                  sampling: dict[str, Any] | None = None, max_tokens: int = 4096,
                  context_window: int | None = None, reasoning_effort: str | None = None, thinking_budget: int = 0,
-                 aliases: tuple[str, ...] | list[str] = (), vision_max_images: int | None = None):
+                 aliases: tuple[str, ...] | list[str] = (), vision_max_images: int | None = None,
+                 max_pending_requests: int | None = None):
+        self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
+        self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
+        if self._request_limit is not None:
+            scheduler = getattr(engine, "scheduler", None)
+            if scheduler is not None:
+                scheduler.configure_requests(self._request_limit)
+            self.run = self._request_limit.wrap(self.run)
         from tokenizers import Tokenizer
 
         self.engine = engine
@@ -89,6 +98,10 @@ class App:
         if self.context_window < 0:
             raise ValueError("context_window must be 0 or a positive token count")
         self.turns = Turns()                # one request at a time where the engine decodes one
+
+    @property
+    def pending_requests(self) -> int | None:
+        return self._request_limit.used if self._request_limit is not None else None
 
     @property
     def model_ids(self) -> list[str]:
