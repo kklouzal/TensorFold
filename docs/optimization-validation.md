@@ -28,26 +28,57 @@ policies are retained. New source corrections include defined EXL3 no-bias loads
 bounded HTTP framing, authentication file/counter ownership, and whole-request
 decision admission. Applicable gates must run on the combined source.
 
-The frozen combined source passed **7,332 Linux CPU checks**, with 172 explicit
-skips, no failures/errors, and two inherited pinned-Torch allocator deprecation
-warnings. The complete 1,204-record source manifests matched before and after
-the run. This execution used CPython 3.12, the recorded native ARM64 runtime,
-the optional TUI dependency closure, no GPU/network, UID 1000, and a 3 GiB
-memory limit with no extra swap. Maintained tests of unselected upstream GPU
-optimizations are preserved with those evaluation packets, rather than treated
-as shipping requirements.
-The existing no-GPU collection policy excludes CUDA test modules entirely;
-they are absent from both these pass counts and skip counts.
+Reviewed source `dfb4669d6b98f26de9ecfd75d3ccf7e90ec747bf` also aligns the
+Harness with installed TensorFold 0.6.6, binds its two HTTP factory exports, and
+validates label IDs before CUDA indexing. The ordinary probability arithmetic
+and kernels are retained. Native test corrections preserve collective startup
+and the fork's single shared EXL3 reader, with independent failure retirement.
 
-Actual bounded GB10 component runs passed 62 EXL3-linear, 31 attention and 28
-Flash Next multi-stream/state cases. They cover synthetic weights and buffers,
-including the attention cancellation counterexample and waiting recurrence
-ownership; they do not cover a full checkpoint or establish a speed gain.
-The pinned Triton teardown diagnostic was reproduced with identical counts on
-the unchanged fork and is retained without suppression. Installed-wheel/image,
-actual model/API and controlled performance gates remain pending at this
-source checkpoint. Native Apple execution is unavailable; CPU substitutes do
-not qualify Metal behavior or peak memory.
+The following locally built images use that exact committed archive:
+
+| Native target | Verification image | Serving image |
+| --- | --- | --- |
+| ARM64 / GB10 | `sha256:605b5b0282d39bbb1608f5dea48312d89dd0cc82f0ffb6e52e82fde1b4baf94d` | `sha256:fa86511d30356f5386b49c83c198403f924fd7a978a2a36edf67176a4837359d` |
+| AMD64 / RTX PRO 2000 Blackwell | `sha256:c8894f478938ef08ab105692b6d3b0d5f85a6bb55a9ca8961ad7e60f77bcb044` | `sha256:56a7fc80b0851b37847b8ed3703d5dbe0d092b78679aed9919587c31f1c3dae4` |
+
+Each fresh installed CPU suite passed **7,320 checks**, with 177 explicit skips,
+zero failures/errors and two inherited pinned-Torch allocator warnings. Each
+run used CPython 3.12, the architecture's hash-locked dependencies, UID 1000,
+no GPU/network, and 3 GiB with no extra swap. The 490 wheel files, 484 required
+package sources, 1,133 qualified source/baked-script records and 261 loaded
+module origins passed before/after checks. Imports resolved to the normal
+installation. Each serving image passed 13 CLI/Harness checks, including its
+actual baked launcher; the ordinary OCI entrypoint with its GPU also passed
+`serve --help`. This is startup qualification, not loaded-model generation.
+The no-GPU collection policy omits CUDA modules from both pass and skip counts.
+
+Each architecture separately passed the following current-image native gates:
+
+| Native module | Passed | Scope |
+| --- | --- | --- |
+| Tensor parallel | 22 | Two threads on one actual GPU; collective initialization, tokens and retirement. |
+| Probability capture | 38 | Existing probability controls and independent label/LSE, range and callback checks. |
+| Public label scoring | 2 | Synthetic model, retained prefix and following generation. |
+| Explicit memory limit | 2 | Derived real allocation bound, refusal below the bound, positive boundary and recovery. |
+| FP8 n-gram table | 7 | Admission, exact BF16 staging and full logits/serial/MTP tokens against converted BF16 weights. |
+| RAM EXL3 engine | 12 | Serialized synthetic checkpoint, cache behavior and two independent failed-load retirements. |
+
+Earlier integrated native packets also passed 173 numeric cases with one
+second-device skip per architecture; Flash forward 54, multistream 28,
+NVFP4 loader 40, YaRN 11, vision 23 and RAM affine 9 passed per architecture.
+Their source/image receipts remain separate; these counts are not combined
+with overlapping packets. All use synthetic weights/buffers and bounded
+resources. They do not establish pretrained-model quality or performance.
+Pinned Triton interpreter teardown diagnostics are retained and triaged using
+type names and matching dependency binaries. Printed function lists are
+truncated, so equal counts do not prove complete identity or absence of leaks.
+
+An earlier optional-TUI frozen-source snapshot passed 7,332 checks with 172
+skips; its source manifests matched before/after. It remains a distinct result.
+Maintained tests of unselected GPU optimizations are preserved with their
+evaluation packets. Actual pretrained-model/API and controlled performance
+comparisons remain pending. Apple execution, true multi-GPU NCCL and additional
+GPU architectures remain unrun where hardware is unavailable.
 
 Grouped attention is rejected under the existing numerical contract: a finite
 BF16 input produces different output under its changed reduction association.

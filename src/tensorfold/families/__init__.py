@@ -51,8 +51,8 @@ def read_config(model_dir: str | Path) -> dict[str, Any]:
     return json.loads((Path(model_dir) / "config.json").read_text())
 
 
-RECIPES_URL = "https://github.com/ashhart/TensorFold/blob/main/docs/recipes/README.md"
-RUNBOOK_URL = "https://github.com/ashhart/TensorFold/blob/main/RUNBOOK.md"
+RECIPES_URL = "https://github.com/kklouzal/TensorFold/blob/python-0.6/docs/recipes/README.md"
+RUNBOOK_URL = "https://github.com/kklouzal/TensorFold/blob/python-0.6/RUNBOOK.md"
 OWN_MODEL_HELP = (f"To run a model or checkpoint TensorFold has no recipe for, write one with the recipe book "
                   f"({RECIPES_URL}: adding a family on a Mac, adding a CUDA family on NVIDIA GPUs), and read the "
                   f"runbook first ({RUNBOOK_URL}).")
