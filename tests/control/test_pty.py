@@ -10,6 +10,8 @@ import pytest
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX pseudo-terminal check")
 def test_actual_terminal_entry_and_restoration():
+    pytest.importorskip("prompt_toolkit", reason="actual terminal rendering needs the declared [tui] extra")
+    pytest.importorskip("rich", reason="actual terminal rendering needs the declared [tui] extra")
     import fcntl
     import pty
     import struct
