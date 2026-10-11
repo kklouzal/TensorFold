@@ -1,10 +1,181 @@
 """Probability rows stay exact across batching and never alter target logits."""
 
+import struct
+
 import pytest
 import torch
 
 from tensorfold.cuda.logprobs import capture
-from tensorfold.engine.probabilities import Probabilities
+from tensorfold.engine.probabilities import LabelProbabilities, Probabilities
+
+
+def _dominant_normalizer(record, peak):
+    # Pinned Triton 3.9/CUDA log lowering uses libdevice's logf polynomial.
+    # At input 1 its exponent and mantissa residual are exactly zero, so its
+    # finite polynomial/FMA terms return zero. The rounded total is 1 below.
+    assert record.logsumexp == peak
+    assert record.rows[record.start]["logprob"] == 0.0
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("vocab", [31, 1024, 1025, 131073])
+def test_label_rows_have_analytic_full_vocabulary_scores_and_preserve_bits(dtype, vocab):
+    # All inputs are exact in BF16 and FP32. At most 2**18 other terms each
+    # have relative mass exp(-1024) < 2**-1477. Their combined mass is below
+    # half an FP32 subnormal. Approximate exp's bounded subnormal error is also
+    # far below half an ULP at a total mass of 1, which rounds exactly to 1.
+    # This oracle uses that bound, without reproducing the CUDA reduction.
+    peaks = [-1024.0, 0.0, 1024.0]
+    logits = torch.tensor(peaks, device="cuda", dtype=dtype)[:, None].expand(3, vocab).clone()
+    logits -= 1024.0
+    logits[:, -1] = torch.tensor(peaks, device="cuda", dtype=dtype)
+    logits[2, 0] = -0.0
+    saved = logits.view(torch.uint8).clone()
+    labels = [vocab - 1, 0, vocab - 1, vocab // 2]
+    sources, positions = [2, 0, 1], [30, 31, 32]
+    for source, position in zip(sources, positions, strict=True):
+        record = LabelProbabilities(labels, position)
+        capture(logits, [vocab - 1] * 3, positions, record, rows=sources)
+        expected = [peaks[source], -0.0 if source == 2 else peaks[source] - 1024.0,
+                    peaks[source], peaks[source] - 1024.0]
+        _dominant_normalizer(record, peaks[source])
+        assert struct.pack("<4f", *record.label_logits) == struct.pack("<4f", *expected)
+        assert record.rows[position]["top"] == []
+    assert torch.equal(logits.view(torch.uint8), saved)
+
+
+@pytest.mark.parametrize("labels", [[-1], [4], [True], [0.5], ["1"], 1, [0, 3, -1]])
+def test_mutated_label_ids_reject_before_cuda_allocation_or_submission(monkeypatch, labels):
+    import tensorfold.cuda.logprobs as module
+
+    logits = torch.zeros((1, 4), device="cuda")
+    record = LabelProbabilities([0], 5)
+    record.labels = labels
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid labels reached CUDA allocation or submission")
+
+    # These guards stop a broken validation path before it could poison the
+    # context with an invalid device index, while exercising real CUDA input.
+    with monkeypatch.context() as patch:
+        patch.setattr(module.torch, "empty", forbidden)
+        patch.setattr(module.torch, "tensor", forbidden)
+        patch.setattr(module, "_parts", forbidden)
+        with pytest.raises(ValueError, match="decision labels"):
+            capture(logits, [0], [5], record)
+    assert record.rows == {}
+    assert record.label_logits is None and record.logsumexp is None
+    good = LabelProbabilities([3, 0, 3], 5)
+    capture(logits, [0], [5], good)
+    assert good.label_logits == [0.0, 0.0, 0.0]
+
+
+def test_label_indexing_snapshot_rejects_mutation_before_publication(monkeypatch):
+    import tensorfold.cuda.logprobs as module
+
+    logits = torch.tensor([[0.0, -1024.0, -1024.0, -1024.0]], device="cuda")
+    record = LabelProbabilities([0, 3, 0], 5)
+    add_labels = record.add_labels
+    monkeypatch.setattr(record, "add_labels", lambda *args: add_labels(*args))
+    empty, tensor = torch.empty, torch.tensor
+
+    def mutate_after_validation(*args, **kwargs):
+        record.labels[:] = [-1]
+        return empty(*args, **kwargs)
+
+    def intercept_invalid_index(values, *args, **kwargs):
+        assert all(value >= 0 for value in values), "indexing reread the mutated label list"
+        return tensor(values, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module.torch, "empty", mutate_after_validation)
+        patch.setattr(module.torch, "tensor", intercept_invalid_index)
+        with pytest.raises(RuntimeError, match="labels changed during capture"):
+            capture(logits, [0], [5], record)
+    assert record.labels == [-1]
+    assert record.rows == {}
+    assert record.label_logits is None and record.logsumexp is None
+
+
+@pytest.mark.parametrize("mutate_callback", [False, True])
+def test_label_snapshot_spans_all_bounded_chunks(monkeypatch, mutate_callback):
+    import tensorfold.cuda.logprobs as module
+
+    # The declared 128 MiB / 48-bytes-per-value sorting bound gives one row
+    # per chunk here. This synthetic input needs no external model or budget.
+    vocab = (128 * 1024**2) // (2 * 48) + 1
+    logits = torch.full((3, vocab), -1024.0, device="cuda")
+    logits[:, -1] = 0.0
+    record = LabelProbabilities([vocab - 1, 0, vocab - 1], 2)
+    validate, add_labels = module._validate_capture, record.add_labels
+    validations, callbacks = [], []
+
+    def counted_validation(*args):
+        snapshot = validate(*args)
+        validations.append(snapshot)
+        return snapshot
+
+    def callback(position, values, normalizer):
+        callbacks.append(position)
+        add_labels(position, values, normalizer)
+        if mutate_callback and position == 0:
+            record.labels[:] = [-1]
+
+    monkeypatch.setattr(module, "_validate_capture", counted_validation)
+    monkeypatch.setattr(record, "add_labels", callback)
+    if mutate_callback:
+        with pytest.raises(RuntimeError, match="labels changed during capture"):
+            capture(logits, [vocab - 1] * 3, [0, 1, 2], record)
+        assert callbacks == [0]
+        assert record.label_logits is None and record.rows == {}
+    else:
+        capture(logits, [vocab - 1] * 3, [0, 1, 2], record)
+        assert callbacks == [0, 1, 2]
+        assert record.label_logits == [0.0, -1024.0, 0.0]
+        _dominant_normalizer(record, 0.0)
+    assert validations and all(snapshot is validations[0] for snapshot in validations)
+
+
+def test_concrete_private_label_callbacks_do_not_rescan_unchanged_metadata(monkeypatch):
+    import tensorfold.cuda.logprobs as module
+
+    logits = torch.tensor([[0.0, -1024.0, -1024.0, -1024.0]], device="cuda")
+    record = LabelProbabilities([0, 3, 0], 5)
+
+    def forbidden(*args):
+        raise AssertionError("unchanged private labels were rescanned")
+
+    monkeypatch.setattr(module, "_check_label_identity", forbidden)
+    capture(logits, [0], [5], record)
+    assert record.label_logits == [0.0, -1024.0, 0.0]
+    _dominant_normalizer(record, 0.0)
+
+
+def test_overridden_probability_callback_cannot_reconfigure_labels(monkeypatch):
+    logits = torch.tensor([[0.0, -1024.0, -1024.0, -1024.0]], device="cuda")
+    record = LabelProbabilities([0, 3, 0], 5)
+    add = record.add
+
+    def mutate_after_rows(*args):
+        add(*args)
+        record.labels[:] = [3, 0, 3]
+
+    monkeypatch.setattr(record, "add", mutate_after_rows)
+    with pytest.raises(RuntimeError, match="labels changed during capture"):
+        capture(logits, [0], [5], record)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_label_rows_refuse_and_the_context_remains_usable(value):
+    logits = torch.full((1, 4), value, device="cuda")
+    record = LabelProbabilities([0], 5)
+    with pytest.raises(RuntimeError, match="not finite"):
+        capture(logits, [0], [5], record)
+    assert record.rows == {}
+    good = LabelProbabilities([0], 5)
+    capture(torch.tensor([[0.0, -1024.0, -1024.0, -1024.0]], device="cuda"), [0], [5], good)
+    assert good.label_logits == [0.0]
+    _dominant_normalizer(good, 0.0)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])

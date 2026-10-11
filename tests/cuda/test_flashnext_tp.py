@@ -168,30 +168,115 @@ class _ThreadComm:
         self.hub.barrier.wait()
 
 
-def _run_ranks(fn, engines: list) -> list:
-    """fn(rank, engine) on every rank at once (threads); results in rank order."""
+def _run_ranks(fn, weights: list, **options) -> list:
+    """Construct and run every rank with one stable communicator, then retire its borrowers.
 
-    hub = _Hub(len(engines))
-    for r, e in enumerate(engines):
-        e.w.comm = _ThreadComm(hub, r)
-    results: list = [None] * len(engines)
-    errors: list = []
+    Sampler construction is collective. The startup gate admits workers only
+    after all thread starts acknowledge; a late unacknowledged actor sees
+    cancellation before it can borrow weights or issue CUDA work.
+    """
+    from tensorfold.cleanup import raise_failures, rollback
+
+    if any(w.comm is not None for w in weights):
+        raise RuntimeError("TP fixture weights still belong to another communicator run")
+    device = weights[0].device
+    assert all(w.device == device for w in weights)       # this fixture models ranks on one physical GPU
+    torch.cuda.synchronize(device)                      # load/preparation on the caller precedes every worker
+    hub = _Hub(len(weights))
+    gate, cancelled = threading.Event(), threading.Event()
+    engines, retired = [None] * len(weights), [False] * len(weights)
+    results: list = [None] * len(weights)
+    failures: list = []
+
+    def record(error):
+        failures.append((error, BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                      BaseException.__suppress_context__.__get__(error)))
+
+    def restore_roots():
+        for error, cause, context, suppress in reversed(failures):
+            BaseException.__cause__.__set__(error, cause)
+            BaseException.__context__.__set__(error, context)
+            BaseException.__suppress_context__.__set__(error, suppress)
 
     def body(r: int) -> None:
+        admitted = False
         try:
-            with torch.no_grad():
+            gate.wait()
+            if cancelled.is_set():
+                return
+            admitted = True
+            with torch.cuda.device(device), torch.cuda.stream(torch.cuda.default_stream(device)), torch.no_grad():
+                weights[r].comm = _ThreadComm(hub, r)
+                # Publish the constructor owner before collective initialization
+                # so an interrupted constructor leaves its scratch diagnosable.
+                engines[r] = Engine.__new__(Engine)
+                engines[r].__init__(weights[r], **options)
+                hub.barrier.wait()                     # all constructors finish before any request executes
                 results[r] = fn(r, engines[r])
-        except BaseException as exc:        # noqa: BLE001  (reported below; unblock the other rank)
-            errors.append(exc)
+                hub.barrier.wait()                     # every body finishes before any borrower is retired
+        except BaseException as error:
+            record(error)
+            cancelled.set()
             hub.barrier.abort()
+            gate.set()
+        finally:
+            if not admitted:
+                retired[r] = True                     # no model/device borrower was acquired
+            else:
+                try:
+                    # enroll disables HC plans whenever w.comm is present;
+                    # these TP buffers own no native plan handles to close.
+                    torch.cuda.synchronize(device)
+                    retired[r] = True
+                except BaseException as error:
+                    record(error)
+                    cancelled.set()
+                    hub.barrier.abort()
 
-    threads = [threading.Thread(target=body, args=(r,)) for r in range(len(engines))]
+    threads = [threading.Thread(target=body, args=(r,)) for r in range(len(weights))]
+    acknowledged = False
+    try:
+        for th in threads:
+            th.start()
+        acknowledged = True
+        gate.set()
+    except BaseException as error:
+        record(error)
+        cancelled.set()
+        hub.barrier.abort()
+        gate.set()
     for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
-    if errors:
-        raise errors[0]
+        if acknowledged or th.ident is not None:
+            try:
+                th.join(timeout=300)
+            except BaseException as error:
+                record(error)
+                cancelled.set()
+                hub.barrier.abort()
+                try:
+                    th.join(timeout=300)
+                except BaseException as error:
+                    record(error)
+    live = [th for th in threads if th.is_alive()]
+    unsafe = live or (acknowledged and not all(retired))
+    if unsafe:
+        primary = failures[0][0] if failures else RuntimeError("TP fixture workers did not retire")
+        journal = (threads, engines, weights, hub, gate, cancelled)
+        def retain():
+            raise RuntimeError("TP fixture quiescence is unresolved; test owners remain retained")
+        restore_roots()
+        try:
+            rollback(journal, primary, retain)
+        except BaseException as error:
+            raise_failures(error, [entry[0] for entry in failures[1:]])
+    # Unacknowledged starts were never admitted, so even a late bootstrap cannot
+    # touch these weights. Acknowledged actors and CUDA consumers have retired.
+    for w in weights:
+        w.comm = None
+    hub.slots[:] = [None] * len(weights)
+    if failures:
+        restore_roots()
+        raise_failures(failures[0][0], [entry[0] for entry in failures[1:]])
     return results
 
 
@@ -224,8 +309,8 @@ def test_tp_logits_agree_with_one_gpu_to_rounding(models):
     single, ranks, _ = models
     e1 = Engine(single, capacity=1024, max_rows=16, prefill_rows=16)
     ref = forward(single, e1.st, e1.buf, PROMPT)[:len(PROMPT)].float().clone()
-    engines = [Engine(w, capacity=1024, max_rows=16, prefill_rows=16) for w in ranks]
-    parts = _run_ranks(lambda r, e: forward(e.w, e.st, e.buf, PROMPT)[:len(PROMPT)].float().clone(), engines)
+    parts = _run_ranks(lambda r, e: forward(e.w, e.st, e.buf, PROMPT)[:len(PROMPT)].float().clone(), ranks,
+                       capacity=1024, max_rows=16, prefill_rows=16)
     got = torch.cat(parts, dim=1)
     cos = torch.nn.functional.cosine_similarity(got, ref, dim=1)
     assert float(cos.min()) > 0.999, cos
@@ -235,7 +320,6 @@ def test_tp_logits_agree_with_one_gpu_to_rounding(models):
 @pytest.mark.parametrize("kv_dtype", ["bf16", "int8", "int4"])
 def test_tp_windows_match_serial_steps_and_prefix_commits_continue(models, kv_dtype):
     _, ranks, _ = models
-    engines = [Engine(w, capacity=1024, max_rows=16, prefill_rows=16, kv_dtype=kv_dtype) for w in ranks]
     nxt = [401, 33, 2048, 5, 77, 1500, 9, 10, 11]
 
     def body(r, e):
@@ -258,7 +342,8 @@ def test_tp_windows_match_serial_steps_and_prefix_commits_continue(models, kv_dt
                     bad.append((R, "keep", keep))
         return bad
 
-    for r, bad in enumerate(_run_ranks(body, engines)):
+    for r, bad in enumerate(_run_ranks(body, ranks, capacity=1024, max_rows=16, prefill_rows=16,
+                                     kv_dtype=kv_dtype)):
         assert not bad, (r, bad)
 
 
@@ -284,8 +369,7 @@ def test_tp_mtp_drafts_give_serial_tokens_on_both_ranks(models, sampling, kv_dty
         return out
 
     for group in (ranks, drafts):
-        engines = [Engine(w, capacity=1024, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype) for w in group]
-        a, b = _run_ranks(body, engines)
+        a, b = _run_ranks(body, group, capacity=1024, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype)
         assert a == b
         for name in ("d1", "d3", "d5", "d5c", "d6c30", "d7c90"):
             assert a[name] == a["serial"], (name, group is drafts)
@@ -315,8 +399,7 @@ def test_tp_grammar_drafts_give_serial_tokens_on_both_ranks(models, sampling):
             out[depth] = mtp_decode(e, first, 24, sampling, depth=depth, confidence=0.0, constraint=c).tokens
         return out
 
-    engines = [Engine(w, capacity=1024, max_rows=8, prefill_rows=16) for w in ranks]
-    a, b = _run_ranks(body, engines)
+    a, b = _run_ranks(body, ranks, capacity=1024, max_rows=8, prefill_rows=16)
     assert a == b and all(a[d] == a["serial"] for d in (1, 3, 5))
     serial = a["serial"][:a["serial"].index(0) + 1] if 0 in a["serial"] else a["serial"]   # nothing after the end
     m = grammars.xgr.GrammarMatcher(compiled)
@@ -352,8 +435,7 @@ def test_tp_kept_drafts_give_serial_tokens(models, sampling, monkeypatch):
             out[name + "_keeps"] = got.keeps
         return out
 
-    engines = [Engine(w, capacity=1024, max_rows=16, prefill_rows=16) for w in ranks]
-    a, b = _run_ranks(body, engines)
+    a, b = _run_ranks(body, ranks, capacity=1024, max_rows=16, prefill_rows=16)
     assert a == b
     for name in ("d3", "d5", "d6"):
         assert a[name] == a["serial"], name
@@ -367,7 +449,6 @@ def test_tp_candidates_gathered_in_the_step_match_the_eager_gather(models):
     from tensorfold.families.qwen4_exp.cuda.decode import choose_gathered, tp_sample_rows
 
     _, _, drafts = models
-    engines = [Engine(w, capacity=1024, max_rows=16, prefill_rows=16) for w in drafts]
     samplings = (None, Sampling(seed=4321, top_k=20, top_p=0.95))
 
     def body(r, e):
@@ -377,12 +458,13 @@ def test_tp_candidates_gathered_in_the_step_match_the_eager_gather(models):
         positions = list(range(10, 10 + rows))
         out = []
         for s in samplings:
-            a = choose_gathered(w, e.buf.cand_all, rows, positions, s, with_prob=True)
-            b = tp_sample_rows(w, lg, positions, s, offset=w.meta["vocab_offset"], with_prob=True)
+            a = choose_gathered(w, e.buf.cand_all, rows, positions, s, with_prob=True, logits=lg,
+                                plan=e._sample_plan)
+            b = tp_sample_rows(w, lg, positions, s, offset=w.meta["vocab_offset"], with_prob=True, plan=e._sample_plan)
             out.append((a[0] == b[0], max(abs(x - y) for x, y in zip(a[1], b[1]))))
         return out
 
-    for r, res in enumerate(_run_ranks(body, engines)):
+    for r, res in enumerate(_run_ranks(body, drafts, capacity=1024, max_rows=16, prefill_rows=16)):
         for same, dp in res:
             assert same and dp < 1e-5, (r, same, dp)
 
@@ -486,8 +568,8 @@ def test_tp_server_ranks_share_requests_and_stream_serial_tokens(checkpoint, mod
 
     _, ranks, _ = models
     sampling = Sampling(seed=1234, top_k=20, top_p=0.95)
-    refs = _run_ranks(lambda r, e: serial_decode(e, prefill(e, PROMPT, sampling), 20, sampling).tokens,
-                      [Engine(w, capacity=512, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype) for w in ranks])
+    refs = _run_ranks(lambda r, e: serial_decode(e, prefill(e, PROMPT, sampling), 20, sampling).tokens, ranks,
+                      capacity=512, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype)
     hub = _Hub(2)
     owners = _fake_nccl(monkeypatch, hub)
     engines: list = [None, None]

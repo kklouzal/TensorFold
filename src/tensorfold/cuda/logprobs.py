@@ -6,6 +6,8 @@ import torch
 import triton as tr
 import triton.language as tl
 
+from tensorfold.engine.probabilities import LabelProbabilities
+
 
 @tr.jit
 def _parts(X, P, STRIDE: tl.constexpr, V: tl.constexpr, T: tl.constexpr, B: tl.constexpr, WIDE: tl.constexpr):
@@ -56,6 +58,19 @@ def _validate_capture(logits, tokens, positions, probabilities, rows):
         raise ValueError("accepted rows must be valid integer source row indices")
     if isinstance(probabilities.top, bool) or not isinstance(probabilities.top, Integral) or probabilities.top < 0:
         raise ValueError("the number of top probabilities must be a nonnegative integer")
+    labels = getattr(probabilities, "labels", None)
+    if labels is not None:
+        if type(probabilities) is _LabelCapture:
+            return labels                     # private, checked tuple; recursive chunks preserve vocabulary
+        # Request-owned labels are mutable; indexing uses this checked snapshot.
+        try:
+            labels = tuple(labels)
+        except TypeError as error:
+            raise ValueError("decision labels must be integer target vocabulary IDs") from error
+        if any(isinstance(label, bool) or not isinstance(label, Integral) or not 0 <= label < vocab
+               for label in labels):
+            raise ValueError("decision labels must be integer target vocabulary IDs")
+    return labels
 
 
 def _wide_offsets(rows, stride, tiles):
@@ -66,13 +81,57 @@ def _wide_offsets(rows, stride, tiles):
                (rows - 1) * tiles * 2 + (finish_lanes - 1) * 2 + 1) > 0x7FFFFFFF
 
 
+def _check_label_identity(probabilities, labels):
+    """Callbacks may not reconfigure the request whose label values are being published."""
+
+    try:
+        current = tuple(probabilities.labels)
+    except (AttributeError, TypeError) as error:
+        raise RuntimeError("decision labels changed during capture") from error
+    if (len(current) != len(labels)
+            or any(isinstance(value, bool) or not isinstance(value, Integral) or value != expected
+                   for value, expected in zip(current, labels))):
+        raise RuntimeError("decision labels changed during capture")
+
+
+class _LabelCapture:
+    """Bind checked labels and collector callbacks for one logical capture."""
+
+    def __init__(self, probabilities, labels):
+        self.labels, self.top = labels, probabilities.top
+        self._owner = probabilities
+        self._add, self._add_labels = probabilities.add, probabilities.add_labels
+        if (type(probabilities) is LabelProbabilities
+                and getattr(self._add, "__func__", None) is LabelProbabilities.add
+                and getattr(self._add_labels, "__func__", None) is LabelProbabilities.add_labels):
+            # These concrete callbacks only store the supplied values. Keep
+            # their direct calls; unchanged private metadata needs no rescan.
+            self.add, self.add_labels = self._add, self._add_labels
+
+    def add_labels(self, *args):
+        _check_label_identity(self._owner, self.labels)
+        self._add_labels(*args)
+        _check_label_identity(self._owner, self.labels)
+
+    def add(self, *args):
+        _check_label_identity(self._owner, self.labels)
+        self._add(*args)
+        _check_label_identity(self._owner, self.labels)
+
+
 @torch.no_grad()
 def capture(logits, tokens, positions, probabilities, rows=None):
-    """Collect accepted target rows; validate IDs before device reads and keep logits read-only."""
+    """Collect read-only target rows with request-exclusively owned collector metadata.
+
+    Labels may be configured between calls, but cannot change during a capture,
+    including its callbacks. One checked snapshot governs all bounded chunks.
+    """
 
     if probabilities is None or not tokens:
         return
-    _validate_capture(logits, tokens, positions, probabilities, rows)
+    labels = _validate_capture(logits, tokens, positions, probabilities, rows)
+    if labels and type(probabilities) is not _LabelCapture:
+        probabilities = _LabelCapture(probabilities, labels)
     # Bound all vocabulary-sized sorting temporaries, including selected source rows.
     width = max(1, (128 * 1024**2) // (48 * logits.shape[1]))
     if len(tokens) > width:
@@ -92,7 +151,6 @@ def capture(logits, tokens, positions, probabilities, rows=None):
     _finish[(n,)](parts, lse, tiles, tr.next_power_of_2(tiles), wide, num_warps=4)
     ids = torch.tensor(tokens, dtype=torch.long, device=logits.device)[:, None]
     chosen = (logits.gather(1, ids).float()[:, 0] - lse).cpu().tolist()
-    labels = getattr(probabilities, "labels", None)
     if labels:                                   # a decision: the label logits at the prompt's last position
         picked = logits.index_select(1, torch.tensor(labels, dtype=torch.long, device=logits.device)).float()
         for row, pos in enumerate(positions):

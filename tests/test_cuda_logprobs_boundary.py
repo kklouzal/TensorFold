@@ -36,10 +36,12 @@ def capture_without_device_work():
     torch = SimpleNamespace(Tensor=Tensor, tensor=forbidden, empty=forbidden,
                             long='long', float32='float32')
     namespace = {'torch': torch, 'Integral': Integral,
+                 'LabelProbabilities': object,
                  'tr': SimpleNamespace(cdiv=lambda a, b: (a + b - 1) // b)}
     tree = ast.parse(SOURCE.read_bytes())
-    nodes = [copy.deepcopy(n) for n in tree.body if isinstance(n, ast.FunctionDef)
-             and n.name in ('capture', '_validate_capture', '_wide_offsets')]
+    nodes = [copy.deepcopy(n) for n in tree.body
+             if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+             and n.name in ('capture', '_validate_capture', '_wide_offsets', '_check_label_identity', '_LabelCapture')]
     for node in nodes:
         node.decorator_list = []
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])),
@@ -48,6 +50,42 @@ def capture_without_device_work():
 
 
 class Boundary(unittest.TestCase):
+    def test_mutated_label_metadata_rejects_before_device_or_collector_work(self):
+        for labels in ([-1], [10], [True], [1.5], ['1'], 1,
+                       [0, 9, -1], [0, 9, 10]):
+            with self.subTest(labels=labels):
+                namespace, calls = capture_without_device_work()
+                record = collector()
+                record.labels = labels
+                with self.assertRaisesRegex(ValueError, 'decision labels'):
+                    namespace['capture'](Tensor(), [0, 1, 2], [4, 5, 6], record)
+                self.assertEqual(calls, [])
+                self.assertEqual(record.rows, {})
+
+    def test_valid_label_snapshot_preserves_duplicates_and_order(self):
+        namespace, calls = capture_without_device_work()
+        record = collector()
+        record.labels = [9, 0, 9, 3]
+        labels = namespace['_validate_capture'](Tensor(), [0, 1, 2], [4, 5, 6], record, None)
+        record.labels[:] = [-1]
+        self.assertEqual(labels, (9, 0, 9, 3))
+        record.labels = []
+        self.assertEqual(namespace['_validate_capture'](Tensor(), [0, 1, 2], [4, 5, 6], record, None), ())
+        self.assertEqual(calls, [])
+
+    def test_label_callback_cannot_reconfigure_a_capture(self):
+        namespace, calls = capture_without_device_work()
+        check = namespace['_check_label_identity']
+        record = collector()
+        record.labels = [9, 0, 9]
+        check(record, (9, 0, 9))
+        for labels in ([0, 9, 9], [9, False, 9], [9, 0, 9.0], [9], None, 1):
+            with self.subTest(labels=labels):
+                record.labels = labels
+                with self.assertRaisesRegex(RuntimeError, 'labels changed during capture'):
+                    check(record, (9, 0, 9))
+        self.assertEqual(calls, [])
+
     def test_malformed_metadata_rejected_before_device_or_collector_work(self):
         cases = []
 

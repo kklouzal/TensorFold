@@ -340,7 +340,7 @@ def test_failed_real_file_read_closes_cache_and_preserves_primary_exception(chec
     observer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(observer)
     TrackedReadAhead = observer.read_ahead_recorder(original_ahead,readers)
-    failure=OSError("injected original expert file read failure")
+    failure=None
     def failed_read(self,source,low,high):
         if source == file and low < end and begin < high:
             failed_threads.append(threading.current_thread().name)
@@ -353,12 +353,27 @@ def test_failed_real_file_read_closes_cache_and_preserves_primary_exception(chec
     monkeypatch.setattr(Pack,"read",failed_read)
     monkeypatch.setattr(host_experts,"ReadAhead",TrackedReadAhead)
     monkeypatch.setattr(Exl3HostExpertCache,"close",tracked_close)
-    with pytest.raises(OSError,match="original expert file read failure") as caught:
-        weights.load(directory,mtp=True,draft_vocab=None,vram_experts=budget(directory,1))
-    assert caught.value is failure
-    assert closed and all(cache._pool is None for cache in closed)
-    assert any("cleanup also failed" in note for note in getattr(failure,"__notes__",[]))
-    assert failed_threads and all(name.startswith("read-ahead") for name in failed_threads)
+    # One shared reader is the selected loader contract. Repeated independent
+    # failures must each retire that reader; no per-layer readers are created.
+    failures=[]
+    for _ in range(2):
+        failure=OSError("injected original expert file read failure")
+        failures.append(failure)
+        start_readers,start_closed,start_threads=len(readers),len(closed),len(failed_threads)
+        with pytest.raises(OSError,match="original expert file read failure") as caught:
+            weights.load(directory,mtp=True,draft_vocab=None,vram_experts=budget(directory,1))
+        assert caught.value is failure
+        acquired=readers[start_readers:]
+        assert len(acquired) == 1
+        retired=closed[start_closed:]
+        assert retired and all(cache._pool is None for cache in retired)
+        assert any("cleanup also failed" in note for note in getattr(failure,"__notes__",[]))
+        failed=failed_threads[start_threads:]
+        assert failed and all(name.startswith("read-ahead") for name in failed)
+        assert all(reader.observed_closed and reader.pool is None for reader in acquired)
+        assert all(future.done() for reader in acquired for future in reader.observed_futures)
+        assert all(not thread.is_alive() for reader in acquired for thread in reader.observed_threads)
+    assert failures[0] is not failures[1] and readers[0] is not readers[1]
     assert len(readers) >= 2 and all(reader.observed_closed and reader.pool is None for reader in readers)
     assert all(future.done() for reader in readers for future in reader.observed_futures)
     assert all(not thread.is_alive() for reader in readers for thread in reader.observed_threads)

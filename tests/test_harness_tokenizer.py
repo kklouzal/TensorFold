@@ -305,3 +305,168 @@ def test_harness_factory_requires_request_selected_thinking_budget(bridge, app):
     app.thinking_budget = 1
     with pytest.raises(ValueError, match="thinking-budget 0"):
         bridge.make_handler_factory(lambda ignored: object)(app)
+
+
+def test_launcher_pin_matches_owned_package_source(bridge):
+    import tensorfold
+    assert bridge.TENSORFOLD_VERSION == tensorfold.__version__ == '0.6.6'
+
+
+@pytest.fixture
+def matching_install(bridge):
+    import tensorfold
+    from importlib import metadata
+    try:
+        installed = metadata.version('tensorfold')
+    except metadata.PackageNotFoundError:
+        pytest.skip('launcher qualification needs an installed owned TensorFold distribution')
+    if installed != bridge.TENSORFOLD_VERSION or tensorfold.__version__ != bridge.TENSORFOLD_VERSION:
+        pytest.skip('launcher qualification needs matching installed/module TensorFold 0.6.6')
+    return installed
+
+
+@pytest.mark.parametrize('module_version,installed_version', [('0.6.1', '0.6.6'), ('0.6.6', '0.6.1'),
+                                                              ('0.6.7', '0.6.7')])
+def test_launcher_refuses_inexact_versions_before_cli_loading(bridge, monkeypatch, capsys,
+                                                              module_version, installed_version):
+    import tensorfold
+    from importlib import metadata
+    from tensorfold import cli
+    calls = []
+    monkeypatch.setattr(tensorfold, '__version__', module_version)
+    monkeypatch.setattr(metadata, 'version', lambda name: installed_version)
+    monkeypatch.setattr(cli, 'main', lambda args: calls.append(args))
+    assert bridge.main(['serve', 'controlled-model', '--backend', 'cuda', '--thinking-budget', '0']) == 2
+    assert calls == []
+    assert 'requires owned TensorFold 0.6.6' in capsys.readouterr().err
+
+
+def test_launcher_refuses_missing_installed_distribution(bridge, monkeypatch, capsys):
+    from importlib import metadata
+    def absent(name):
+        raise metadata.PackageNotFoundError(name)
+    monkeypatch.setattr(metadata, 'version', absent)
+    assert bridge.main(['serve', 'controlled-model']) == 2
+    assert 'requires installed TensorFold 0.6.6' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_launcher_binds_both_preimported_cli_factory_surfaces_and_restores_after_dispatch(
+        bridge, matching_install, app, monkeypatch, fail):
+    from tensorfold import cli
+    from tensorfold.cuda import http, server
+    native = http.make_handler
+    assert server.make_handler is native
+    primary = KeyboardInterrupt('controlled launcher dispatch interruption')
+    called = []
+    def dispatch(arguments):
+        called.append(arguments)
+        assert http.make_handler is server.make_handler
+        assert http.make_handler is not native
+        # Use the actual CLI import surface and patched handler, with generation forbidden.
+        patched = server.make_handler(app)
+        base = native(app)
+        assert patched.do_POST is not base.do_POST
+        if fail:
+            raise primary
+        return 17
+    monkeypatch.setattr(cli, 'main', dispatch)
+    arguments = ['serve', 'controlled-model', '--backend', 'cuda', '--thinking-budget', '0']
+    if fail:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            bridge.main(arguments)
+        assert caught.value is primary
+    else:
+        assert bridge.main(arguments) == 17
+    assert called == [arguments]
+    assert http.make_handler is server.make_handler is native
+
+
+@pytest.mark.parametrize('boundary', ['framing', 'cancellation', 'exports'])
+def test_launcher_refuses_incoherent_owned_interfaces_before_dispatch(
+        bridge, matching_install, monkeypatch, capsys, boundary):
+    from tensorfold import cli
+    from tensorfold.cuda import server
+    from tensorfold.server import request_body, cancellation
+    if boundary == 'framing':
+        monkeypatch.setattr(request_body, 'content_length', lambda handler, limit: 0)
+    elif boundary == 'cancellation':
+        monkeypatch.setattr(cancellation, 'socket_cancellation', lambda connection: None)
+    else:
+        monkeypatch.setattr(server, 'make_handler', lambda app: None)
+    calls = []
+    monkeypatch.setattr(cli, 'main', lambda arguments: calls.append(arguments))
+    assert bridge.main(['serve', 'controlled-model', '--backend', 'cuda']) == 2
+    assert calls == []
+    assert 'requires' in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('backend,arguments,message', [
+    ('cuda', ['models'], 'usage:'),
+    ('cuda', ['serve', 'controlled-model', '--thinking-budget', '1'], 'thinking-budget 0'),
+    ('mlx', ['serve', 'controlled-model', '--backend', 'mlx'], 'CUDA only'),
+])
+def test_exact_installed_launcher_preserves_supported_command_guards(
+        bridge, matching_install, monkeypatch, capsys, backend, arguments, message):
+    from tensorfold import cli
+    calls = []
+    monkeypatch.setattr(cli, 'main', lambda arguments: calls.append(arguments))
+    assert bridge.main(arguments) == 2
+    assert calls == []
+    assert message in capsys.readouterr().err
+
+
+def test_real_harness_token_route_keeps_authentication_rotation_and_reply_counts(bridge, app, tmp_path):
+    import http.client
+    from tensorfold.cuda.http import make_handler
+    from tensorfold.server.authentication import KeyStore
+    from tensorfold.server.http import Server
+    from tensorfold.server import metrics
+    key_file = tmp_path / 'keys'
+    key_file.write_text('first: controlled-first\n')
+    key_file.chmod(0o600)
+    app.auth = KeyStore(key_file=key_file)
+    from tensorfold.server.auth_http import Authenticated
+    selected = bridge.make_handler_factory(make_handler)(app)
+    assert issubclass(selected, Authenticated)
+    assert selected.auth is app.auth
+    server = Server(('127.0.0.1', 0), selected)
+    worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
+    worker.start()
+    body = json.dumps(request(20)).encode()
+    def post(key=None):
+        client = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+        try:
+            headers = {'Content-Type': 'application/json'}
+            if key:
+                headers['Authorization'] = 'Bearer ' + key
+            client.request('POST', '/v1/tokenize', body, headers)
+            response = client.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            client.close()
+    try:
+        assert post()[0] == 401
+        assert post('controlled-wrong')[0] == 401
+        status, counted = post('controlled-first')
+        assert status == 200 and counted['count'] == 21 and counted['context_length'] == 8
+        assert metrics.of(app).http_requests == {('unauthenticated', 401): 2, ('first', 200): 1}
+        key_file.write_text('second: controlled-second\n')
+        app.auth.request_reload()
+        assert post('controlled-first')[0] == 401
+        assert post('controlled-second')[0] == 200
+        assert metrics.of(app).http_requests == {('unauthenticated', 401): 3, ('second', 200): 1}
+        assert metrics.of(app).http_replies == {401: 3, 200: 2}
+        key_file.write_text('')
+        app.auth.request_reload()
+        assert post('controlled-second')[0] == 401
+        assert app.auth.enabled
+        assert metrics.of(app).http_requests == {('unauthenticated', 401): 4}
+        assert metrics.of(app).http_replies == {401: 4, 200: 2}
+        with pytest.raises(RequestError, match='context'):
+            app.prepare(request(20), True)
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(3)
+    assert not worker.is_alive()

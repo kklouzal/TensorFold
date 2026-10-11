@@ -23,6 +23,13 @@ prompt-plus-reply tokens, `rotorquant8-norm` K/V and four request slots. Caches 
 the global memory gate; four simultaneously full-size contexts are not assumed
 to fit the GB10.
 
+New builds from the maintained `python-0.6` integration use TensorFold **0.6.6**.
+The Harness checks both the installed package version and module version,
+validates its preparation interfaces, and binds the CUDA HTTP factory and its
+server export together. Native authentication also covers `/v1/tokenize`.
+The historical deployment receipts below identify their original images;
+qualify each new build's launcher, model behavior and performance separately.
+
 ## Current YaRN-4 / RotorQuant8-norm configuration
 
 The service at **192.168.1.50:8888** uses **YaRN factor 4**, a configured

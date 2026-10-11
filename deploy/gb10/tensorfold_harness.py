@@ -2,7 +2,7 @@
 """Run pinned TensorFold CUDA with exact, generation-free Harness token counting.
 
 Invocation: python3 tensorfold_harness.py serve MODEL [native TensorFold flags]
-Requires TensorFold 0.6.1 and --thinking-budget 0. Installed packages are unchanged.
+Requires installed owned TensorFold 0.6.6 and --thinking-budget 0. Installed packages are unchanged.
 The additional POST /v1/tokenize route accepts a native chat request and optional
 boolean return_tokens / return_prompt fields. It counts the generation prompt,
 including image expansion, even when that prompt exceeds the served context.
@@ -21,7 +21,7 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable
 
-TENSORFOLD_VERSION = "0.6.1"
+TENSORFOLD_VERSION = "0.6.6"
 BRIDGE_VERSION = 1
 MAX_BODY_BYTES = 96 * 1024**2
 MAX_RETURN_TOKENS = 16_384
@@ -188,11 +188,31 @@ def _invalid_json_number(value: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     import tensorfold
-    from tensorfold import cli
-    from tensorfold.cuda import http
+    from importlib import metadata
 
-    if tensorfold.__version__ != TENSORFOLD_VERSION:
-        print(f"Harness tokenizer requires TensorFold {TENSORFOLD_VERSION}; found {tensorfold.__version__}", file=sys.stderr)
+    try:
+        installed_version = metadata.version("tensorfold")
+    except metadata.PackageNotFoundError:
+        print(f"Harness tokenizer requires installed TensorFold {TENSORFOLD_VERSION}", file=sys.stderr)
+        return 2
+    if tensorfold.__version__ != TENSORFOLD_VERSION or installed_version != TENSORFOLD_VERSION:
+        print(f"Harness tokenizer requires owned TensorFold {TENSORFOLD_VERSION}; "
+              f"found module {tensorfold.__version__}, installed {installed_version}", file=sys.stderr)
+        return 2
+    from tensorfold import cli
+    from tensorfold.cuda import http, server
+    from tensorfold.server import request_body
+    from tensorfold.server.cancellation import socket_cancellation
+
+    try:
+        inspect.signature(request_body.content_length).bind(None, MAX_BODY_BYTES, require_nonempty=True)
+        inspect.signature(socket_cancellation).bind(None, stopping=None)
+        inspect.signature(server.App._prepare).bind(None, {}, True)
+    except (AttributeError, TypeError, ValueError):
+        print("Harness tokenizer requires the owned TensorFold request preparation/framing interfaces", file=sys.stderr)
+        return 2
+    if server.make_handler is not http.make_handler:
+        print("Harness tokenizer requires coherent native CUDA HTTP handler exports", file=sys.stderr)
         return 2
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0] != "serve":
@@ -205,8 +225,29 @@ def main(argv: list[str] | None = None) -> int:
     if args.backend == "mlx" or (args.backend == "auto" and sys.platform == "darwin"):
         print("Harness tokenizer launcher supports TensorFold CUDA only", file=sys.stderr)
         return 2
-    http.make_handler = make_handler_factory(http.make_handler)
-    return cli.main(arguments)
+    from tensorfold.cleanup import raise_failures
+
+    # CLI imports the server's reexport; bind both supported surfaces even if
+    # cuda.server was already imported. Export restoration changes future
+    # construction only; existing listeners retain their constructed handlers.
+    native_factory = http.make_handler
+    wrapped_factory = make_handler_factory(native_factory)
+    primary = None
+    try:
+        http.make_handler = server.make_handler = wrapped_factory
+        return cli.main(arguments)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        failures = []
+        for module in (http, server):
+            try:
+                module.make_handler = native_factory
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if failures:
+            raise_failures(primary, failures)
 
 
 if __name__ == "__main__":
