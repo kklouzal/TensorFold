@@ -69,6 +69,24 @@ def test_rings_before_rank1_waits_are_not_lost():
     assert r1._bell == 2
 
 
+def test_four_real_store_clients_keep_each_followers_bells_until_consumed():
+    port = _free_port()
+    master = TCPStore("127.0.0.1", port, 4, True, timeout=timedelta(seconds=30), wait_for_workers=False)
+    workers = [TCPStore("127.0.0.1", port, 4, False, timeout=timedelta(seconds=30)) for _ in range(3)]
+    ranks = [SimpleNamespace(rank=rank, world=4, comm=SimpleNamespace(store=store))
+             for rank, store in enumerate([master, *workers])]
+    for owner in ranks:
+        for name in ("_store", "_ring", "_await_bell"):
+            setattr(owner, name, getattr(GlmEngine, name).__get__(owner))
+    for _ in range(3):
+        ranks[0]._ring()
+    for rank in (2, 1, 3):
+        for sequence in range(1, 4):
+            ranks[rank]._await_bell()
+            assert ranks[rank]._bell == sequence
+    assert master.num_keys() <= 2
+
+
 def test_no_store_means_no_doorbell():
     r = SimpleNamespace(comm=SimpleNamespace())
     for name in ("_store", "_ring", "_await_bell"):

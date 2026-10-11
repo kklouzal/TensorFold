@@ -172,6 +172,12 @@ class Plan:
     width: int                  # W
 
 
+def slots(p: int, w: int) -> int:
+    """One fp32 partial per absolute-position chunk through the window's last key."""
+
+    return -(-(p + w) // CHUNK)
+
+
 def plan_host(parents: Sequence[Sequence[int]], lengths: Sequence[int], group: int) -> tuple[list[int], int, int]:
     """Host half of ``plan`` from window-local parents, committed key counts and ``group`` query heads a key head."""
 

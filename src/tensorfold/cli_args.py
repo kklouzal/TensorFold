@@ -57,13 +57,27 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")
     endpoint.add_argument("--name", default="", help="model id clients ask for (default: the model's name)")
     endpoint.add_argument("--alias", action="append", default=[], help="another model id to answer to")
+    endpoint.add_argument("--name-priority", action="append", default=[], metavar="ID=background",
+                          help="a request naming ID (--name or --alias) with no priority of its own is treated as "
+                               "priority: background; CUDA only, repeatable")
+    endpoint.add_argument("--api-key", action="append", default=[], help="require this API key; repeat for more keys")
+    endpoint.add_argument("--api-key-file", help="restricted key file, one key or label: key per line; # comments")
+    endpoint.add_argument("--metrics-open", action="store_true", help="allow metrics without an API key")
     endpoint.add_argument("--vision", action="store_true",
-                          help="enable image input for supported GLM and Qwen vision checkpoints")
+                          help="enable image input for supported GLM and Qwen vision checkpoints; "
+                               "Flash Next CUDA requires one GPU and --parallel 2 or more")
     endpoint.add_argument("--vision-urls", action="store_true",
                           help="with --vision, accept public HTTP(S) image URLs (default: data URLs only)")
+    endpoint.add_argument("--vision-offload", action="store_true",
+                          help="with --vision on CUDA, keep the image tower in host RAM and copy it to the GPU only "
+                               "while an image is encoded (frees about 5 GiB of the startup budget on a small card; "
+                               "each image pays the copy)")
     endpoint.add_argument("--vision-max-images", type=int, default=None,
                           help="with --vision, maximum images across the full request history (default: 4); "
                                "byte, pixel and visual-token limits still apply")
+    endpoint.add_argument("--vision-image-tokens", type=int, default=None,
+                          help="with --vision on CUDA Qwen checkpoints, the visual tokens a request's images share "
+                               "(default: 4096, at most 65536); each image keeps at most 4096")
 
     generation = serve.add_argument_group("generation (requests can override each of these)")
     generation.add_argument("--context", type=int, default=None,
@@ -100,10 +114,11 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter-bits", type=int, default=4, help="quantize the draft model's linears (0: bf16)")
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
-                            "confidence); 0: no MTP drafts (any family)")
+                            "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
+                            "an explicit value selects included MTP instead of default DFlash; 0: no MTP drafts")
     speed.add_argument("--mtp-confidence", type=float, default=None,
                        help="on CUDA, stop an MTP chain before a later draft under this probability "
-                            "(Flash Next default 0.70)")
+                            "(Flash Next default 0.70; Nemotron default 0.20)")
     speed.add_argument("--lane-kernels", choices=("auto", "on", "off"), default="auto",
                        help="lane kernels for Qwen3.8 dense (auto: on GPUs with tensor units)")
     speed.add_argument("--prompt-cache-gib", type=float, default=None,
@@ -123,7 +138,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--parallel", default="auto",
                        help="requests decoded together, their windows sharing each round's forward: a number, or "
                             "auto (Mac: up to 8, each started only while the projected memory fits the budget; "
-                            "CUDA: one at a time, the others waiting their turn)")
+                            "CUDA auto: one at a time; explicit shared rounds depend on the family; "
+                            "Flash Next sharing requires one GPU)")
     speed.add_argument("--decode-share", type=float, default=None, help="Mac: while prompts prefill, running replies "
                        "keep moving for this share of each chunk's time, and a new prompt starts at the next chunk "
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
@@ -152,15 +168,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda = serve.add_argument_group("NVIDIA GPUs (DGX Spark)")
     cuda.add_argument("--backend", choices=("auto", "mlx", "cuda"), default="auto",
                       help="auto: MLX on macOS, CUDA elsewhere")
-    cuda.add_argument("--tp", type=int, choices=(1, 2), default=1,
+    cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
                       help="GPUs (one per machine) the model is split over; run the same command on each")
-    cuda.add_argument("--rank", type=int, choices=(0, 1), default=0,
-                      help="with --tp 2: this machine's rank; rank 0 serves HTTP, rank 1 follows it")
-    cuda.add_argument("--master", default="", help="with --tp 2: rank 0's address on the link between the machines")
-    cuda.add_argument("--master-port", type=int, default=29551, help="with --tp 2: rank 0's rendezvous port")
+    cuda.add_argument("--rank", type=int, choices=(0, 1, 2, 3), default=0,
+                      help="with --tp 2/4: this machine's rank; rank 0 serves HTTP, others follow it")
+    cuda.add_argument("--master", default="", help="with --tp 2/4: rank 0's address on the link between the ranks")
+    cuda.add_argument("--master-port", type=int, default=29551,
+                      help="with --tp 2/4: rank 0's rendezvous port (1 to 65535, the same on every rank)")
     cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16",
                       help="KV cache: bf16 (the default), int8, int4, or a RotorQuant format. "
-                           "INT8/INT4 use one fp16 scale per32 values. RotorQuant uses packed Lloyd-Max codes and "
+                           "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
                            "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA only)")
     cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
@@ -183,7 +200,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     serve.set_defaults(func=handlers["serve"])
 
     pull = commands.add_parser("pull", help="download models (or draft models) from Hugging Face")
-    pull.add_argument("repos", nargs="+", help="repo ids, e.g. Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP")
+    pull.add_argument("repos", nargs="+", help="repo ids, e.g. TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP")
     pull.set_defaults(func=handlers["pull"])
 
     models = commands.add_parser("models", help="list the model families and the checkpoints they are tested with")
@@ -197,4 +214,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     info = commands.add_parser("info", help="show which family serves a model (reads its config.json only)")
     info.add_argument("model", help="a Hugging Face repo id or a model directory")
     info.set_defaults(func=handlers["info"])
+    from tensorfold.control.cli import register
+
+    register(commands)
+
+    plan = commands.add_parser("plan",
+                               help="estimate local checkpoint weights against MLX budgets without loading a model")
+    plan.add_argument("model", help="a local model directory or already cached Hugging Face repo id")
+    plan.add_argument("--memory-gb", type=float, default=None, metavar="GIB",
+                      help="also check this explicit budget, as TENSORFOLD_MEMORY_LIMIT_GB would set it")
+    plan.add_argument("--ram", type=int, action="append", default=[], metavar="GIB",
+                      help="also estimate this RAM class under the current GPU ceiling (repeatable)")
+    plan.set_defaults(func=handlers["plan"])
     return parser

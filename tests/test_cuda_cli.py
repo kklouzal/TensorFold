@@ -35,12 +35,24 @@ def test_two_gpus_need_a_master_before_anything_loads(tmp_path):
     args = argparse.Namespace(tp=2, rank=0, master="", master_port=29551, no_drafts=True, drafter="none",
                               mtp_drafts=None, name="", model=str(tmp_path))
     with pytest.raises(ValueError, match="--master"):
-        cli._serve_cuda(args, family, tmp_path)
+        cli._check_serve_options(args, family, "cuda")
     args.tp, args.rank = 1, 1
     with pytest.raises(ValueError, match="--rank 1 needs --tp 2"):
-        cli._serve_cuda(args, family, tmp_path)
+        cli._check_serve_options(args, family, "cuda")
     assert not called
 
+
+def test_four_gpus_only_for_a_family_that_splits_over_four(tmp_path):
+    called = []
+    family = _family(cuda_engine=lambda *a, **k: called.append(k))
+    args = argparse.Namespace(tp=4, rank=0, master="192.0.2.11", master_port=29551, no_drafts=True, drafter="none",
+                              mtp_drafts=None, name="", model=str(tmp_path))
+    with pytest.raises(ValueError, match="--tp 4: Test family runs on one or two GPUs"):
+        cli._check_serve_options(args, family, "cuda")
+    args.tp, args.rank = 2, 3
+    with pytest.raises(ValueError, match="--rank 3 needs --tp 4"):
+        cli._check_serve_options(args, family, "cuda")
+    assert not called
 
 def test_serve_parses_the_cuda_flags():
     args = cli.build_parser().parse_args(["serve", "owner/model", "--tp", "2", "--rank", "1", "--master", "192.0.2.11"])
@@ -202,7 +214,6 @@ def test_kv_dtype_reaches_only_the_families_that_declare_it(tmp_path, monkeypatc
     (["--kv-dtype", "int8"], "cuda", "nemotron_h", "KV cache, not --kv-dtype int8"),
     (["--mtp-confidence", "0.6"], "mlx", "qwen4_exp", "on MLX has no such rule"),
     (["--mtp-confidence", "0.6"], "cuda", "glm5_next", "on CUDA has no such rule"),
-    (["--mtp-confidence", "0.6"], "cuda", "nemotron_h", "on CUDA has no such rule"),
     (["--mtp-confidence", "1.5"], "cuda", "qwen4_exp", "--mtp-confidence must be between 0 and 1"),
     (["--mtp-confidence", "-0.1"], "cuda", "qwen4_exp", "--mtp-confidence must be between 0 and 1"),
     (["--prefill-fp8"], "mlx", "qwen3_5", "Qwen3.8 dense on MLX has none"),
@@ -392,3 +403,199 @@ def test_27b_cuda_engine_takes_the_checkpoint_slots_as_its_kept_states(tmp_path,
     options = {"parallel": 2} | ({"checkpoint_slots": slots} if slots is not None else {})
     qwen3_5.cuda_engine(tmp_path, drafter=str(tmp_path), **options)
     assert made[-1]["keep"] == keep and made[-1]["streams"] == 2
+
+
+@pytest.mark.parametrize("flags,backend,message", [
+    (["--vision-offload"], "cuda", "--vision-offload needs --vision"),
+    (["--vision", "--vision-offload"], "mlx", "--vision-offload is for the CUDA backend"),
+])
+def test_vision_offload_is_a_cuda_option_that_needs_vision(tmp_path, flags, backend, message):
+    from tensorfold.families import qwen3_5
+
+    args = cli.build_parser().parse_args(["serve", str(tmp_path)] + flags)
+    family = SimpleNamespace(title=qwen3_5.TITLE, package=qwen3_5, model_type="qwen3_5")
+    with pytest.raises(ValueError, match=message):
+        cli._check_serve_options(args, family, backend)
+
+
+@pytest.mark.parametrize("rank", [1, 2, 3])
+def test_four_rank_followers_retire_the_owned_engine_without_http(tmp_path, monkeypatch, rank):
+    events = []
+    engine = SimpleNamespace(follow=lambda: events.append("follow"), close=lambda: events.append("close"))
+    family = _family(CUDA_TP4=True, cuda_engine=lambda *a, **k: engine)
+    family.model_type = "test"
+    monkeypatch.setattr(cli.stacks, "arm", lambda: None)
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--tp", "4", "--rank", str(rank), "--master", "192.0.2.11", "--no-drafts",
+    ])
+    assert cli._serve_cuda(args, family, tmp_path) == 0
+    assert events == ["follow", "close"]
+
+
+def test_invalid_numeric_options_fail_before_auth_environment_or_file_access(tmp_path, monkeypatch):
+    from tensorfold.server import authentication
+
+    monkeypatch.setenv("TENSORFOLD_API_KEY", "fixture-key")
+    monkeypatch.setattr(authentication, "configure", lambda *a: pytest.fail("authentication acquired before refusal"))
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--decode-share", "nan", "--api-key-file", str(tmp_path / "missing-keys"),
+    ])
+    with pytest.raises(ValueError, match="--decode-share must be a finite number"):
+        cli.cmd_serve(args)
+    assert cli.os.environ["TENSORFOLD_API_KEY"] == "fixture-key"
+
+
+@pytest.mark.parametrize("tokens", [None, 16384])
+def test_auth_and_image_budget_reach_the_owned_cuda_listener(tmp_path, monkeypatch, request, tokens):
+    from tensorfold.cuda import server
+    from tensorfold.server.authentication import KeyStore
+
+    seen = []
+    engine = SimpleNamespace(max_len=8192)
+    family = _family(cuda_engine=lambda *a, **k: engine)
+    family.model_type = "test"
+
+    def app(*a, **kw):
+        value = SimpleNamespace(effective_context_window=8192)
+        seen.append((value, kw))
+        return value
+
+    def handler(app):
+        assert app.auth is keys
+        return object()
+
+    monkeypatch.setattr(server, "App", app)
+    monkeypatch.setattr(server, "make_handler", handler)
+    install_cli_server(monkeypatch, request, server)
+    flags = [] if tokens is None else ["--vision", "--vision-image-tokens", str(tokens)]
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--backend", "cuda", "--no-drafts", "--max-http-connections", "3",
+        "--max-pending-requests", "5", *flags,
+    ])
+    keys = args.auth = KeyStore(["fixture-key"])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert seen[0][1]["max_pending_requests"] == 5
+    if tokens is None:
+        assert "vision_image_tokens" not in seen[0][1]
+    else:
+        assert seen[0][1]["vision_image_tokens"] == tokens
+
+
+@pytest.mark.parametrize("flags, kind, message", [
+    (["--tp", "2"], "test", "needs --master"),
+    (["--rank", "1"], "test", "--rank 1 needs --tp 2"),
+    (["--tp", "2", "--rank", "2", "--master", "192.0.2.11"], "test", "--rank 2 needs --tp 3"),
+    (["--tp", "4", "--master", "192.0.2.11"], "test", "runs on one or two GPUs"),
+    (["--tp", "2", "--master", "192.0.2.11", "--master-port", "-1"], "test", "1 to 65535"),
+    (["--tp", "2", "--master", "192.0.2.11", "--master-port", "65536"], "test", "1 to 65535"),
+    (["--tp", "2", "--master", "192.0.2.11", "--parallel", "2"], "qwen4_exp", "one request at a time"),
+    (["--vision"], "qwen4_exp", "one GPU with --parallel 2 or more"),
+    (["--vision", "--tp", "2", "--master", "192.0.2.11"], "qwen4_exp", "one GPU with --parallel 2 or more"),
+])
+def test_unsupported_topology_is_refused_before_weight_download(tmp_path, monkeypatch, flags, kind, message):
+    from tensorfold import families, hub
+
+    family = _family(cuda_engine=lambda *a, **k: pytest.fail("engine acquired before refusal"))
+    family.model_type = kind
+    monkeypatch.setattr(families, "detect", lambda *a: family)
+    monkeypatch.setattr(hub, "resolve", lambda *a, **k: pytest.fail("weights resolved before refusal"))
+    monkeypatch.setattr(families, "require_readable", lambda *a: pytest.fail("checkpoint read before refusal"))
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-update-check", *flags])
+    with pytest.raises(ValueError, match=message):
+        cli.cmd_serve(args)
+
+
+@pytest.mark.parametrize("tp, rank, port", [(1, 0, 0), (1, 0, 29551), (2, 1, 1), (4, 0, 65535), (4, 3, 29551)])
+def test_declared_topologies_and_port_endpoints_pass_early_validation(tmp_path, tp, rank, port):
+    family = _family(cuda_engine=lambda *a, **k: None, CUDA_TP4=True)
+    family.model_type = "test"
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--tp", str(tp), "--rank", str(rank), "--master", "192.0.2.11",
+        "--master-port", str(port),
+    ])
+    assert cli._check_serve_options(args, family, "cuda") is None
+
+
+@pytest.mark.parametrize("kind, tp, rank", [("qwen3_5", 2, 0), ("qwen3_5", 2, 1),
+                                             ("glm5_next", 4, 0), ("glm5_next", 4, 3)])
+def test_multi_rank_port_zero_is_refused_before_any_weight_resolution(tmp_path, monkeypatch, kind, tp, rank):
+    import importlib
+    from tensorfold import families, hub
+
+    package = importlib.import_module(f"tensorfold.families.{kind}")
+    family = SimpleNamespace(title=package.TITLE, model_type=kind, package=package)
+    monkeypatch.setattr(families, "detect", lambda *a: family)
+    monkeypatch.setattr(hub, "resolve", lambda *a, **k: pytest.fail("weights resolved for an undiscoverable port"))
+    monkeypatch.setattr(package, "cuda_engine", lambda *a, **k: pytest.fail("engine acquired for port zero"))
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--backend", "cuda", "--no-update-check", "--tp", str(tp), "--rank", str(rank),
+        "--master", "192.0.2.11", "--master-port", "0",
+    ])
+    with pytest.raises(ValueError, match="1 to 65535 for multiple ranks"):
+        cli.cmd_serve(args)
+
+
+def test_mlx_keeps_an_unused_port_zero_option(tmp_path):
+    family = _family(load=lambda *a, **k: None)
+    family.model_type = "test"
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "mlx", "--master-port", "0"])
+    assert cli._check_serve_options(args, family, "mlx") is None
+
+
+@pytest.mark.parametrize("depth", [0, 4])
+@pytest.mark.parametrize("drafter", ["auto", "none"])
+def test_explicit_qwen_moe_mtp_does_not_resolve_the_implicit_external_drafter(monkeypatch, depth, drafter):
+    from tensorfold import hub
+
+    family = _family(DRAFTER="z-lab/Qwen3.6-35B-A3B-DFlash", CUDA_DRAFTER="")
+    family.model_type = "qwen3_5_moe"
+    monkeypatch.setattr(hub, "cached", lambda *a, **k: pytest.fail("implicit DFlash resolved for selected MTP"))
+    monkeypatch.setattr(hub, "resolve", lambda *a, **k: pytest.fail("external drafter resolved for selected MTP"))
+    assert cli._drafter(family, drafter, "mlx", mtp_drafts=depth) == ""
+
+
+@pytest.mark.parametrize("flags, refused", [
+    (["--mtp-drafts", "4", "--drafter", "z-lab/custom"], True),
+    (["--mtp-drafts", "0", "--drafter", "z-lab/custom"], True),
+    (["--mtp-drafts", "4", "--drafter", "z-lab/custom", "--no-drafts"], False),
+    (["--drafter", "z-lab/custom"], False),
+])
+def test_qwen_moe_mtp_rejects_only_an_active_conflicting_external_drafter(tmp_path, flags, refused):
+    family = _family(load=lambda *a, **k: None)
+    family.model_type = "qwen3_5_moe"
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), *flags])
+    if refused:
+        with pytest.raises(ValueError, match="cannot be combined"):
+            cli._check_serve_options(args, family, "mlx")
+    else:
+        assert cli._check_serve_options(args, family, "mlx") is None
+
+
+def test_qwen_moe_implicit_dflash_and_explicit_external_drafter_keep_their_paths(tmp_path, monkeypatch):
+    from tensorfold import hub
+
+    family = _family(DRAFTER="z-lab/Qwen3.6-35B-A3B-DFlash", CUDA_DRAFTER="")
+    family.model_type = "qwen3_5_moe"
+    cached, resolved = [], []
+    monkeypatch.setattr(hub, "cached", lambda repo: cached.append(repo) or tmp_path)
+    monkeypatch.setattr(hub, "_cached_weights_complete", lambda *a, **k: True)
+    monkeypatch.setattr(hub, "resolve", lambda repo: resolved.append(repo) or tmp_path)
+    assert cli._drafter(family, "auto", "mlx") == str(tmp_path)
+    assert cached == ["z-lab/Qwen3.6-35B-A3B-DFlash"]
+    assert cli._drafter(family, "z-lab/custom", "mlx") == str(tmp_path)
+    assert resolved == ["z-lab/custom"]
+    assert cli._drafter(family, "auto", "cuda") == ""
+
+
+def test_qwen_moe_invalid_mtp_cap_refuses_before_resolving_checkpoint_weights(tmp_path, monkeypatch):
+    from tensorfold import families, hub
+
+    family = _family(load=lambda *a, **k: pytest.fail("model loaded before invalid cap refusal"))
+    family.model_type = "qwen3_5_moe"
+    monkeypatch.setattr(families, "detect", lambda *a: family)
+    monkeypatch.setattr(hub, "resolve", lambda *a, **k: pytest.fail("weights resolved before invalid cap refusal"))
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--backend", "mlx", "--mtp-drafts", "-1", "--no-update-check",
+    ])
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        cli.cmd_serve(args)

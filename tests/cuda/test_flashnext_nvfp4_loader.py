@@ -235,6 +235,8 @@ def test_the_loader_reads_mxfp8_linears_and_an_nvfp4_table(tmp_path: Path) -> No
     assert len(serial_decode(e, first, 8, None).tokens) == 8
 
 
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the loader builds CUDA tensors")
 def test_the_loader_reads_block_fp8_linears(tmp_path: Path) -> None:
     """``FP8_PB_WO`` linears, the head's too, reach the lane matmul as stored beside their bf16 neighbours."""

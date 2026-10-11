@@ -402,22 +402,76 @@ def _fake_nccl(monkeypatch, hub):
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
 
+    from tensorfold.cleanup import rollback
+
+    owners = []
+
     class FakeNCCL:
-        def __init__(self, rank, world, master, port_):
-            self.rank, self.world = rank, world
-            self.store = TCPStore("127.0.0.1", port, 2, rank == 0, timeout=timedelta(seconds=120))
-            self.inner = _ThreadComm(hub, rank)
+        def __init__(self):
+            self.store = self.inner = None
+            self._lock = threading.Lock()
+            self._opened = self.closed = self.retired = False
+            owners.append(self)
+
+        def open(self, rank, world, master, port_):
+            acquiring = False
+            try:
+                with self._lock:
+                    if self.closed or self._opened:
+                        raise RuntimeError("communicator open is one-shot")
+                    acquiring = True
+                    if (type(world) is not int or world != hub.world or world != 2
+                            or type(rank) is not int or not 0 <= rank < world
+                            or not isinstance(master, str) or not master
+                            or type(port_) is not int or not 0 <= port_ <= 65535):
+                        raise ValueError("two-rank fixture requires valid rank/world/master/port")
+                    self.rank, self.world = rank, world
+                    self.store = TCPStore("127.0.0.1", port, world, rank == 0, timeout=timedelta(seconds=120))
+                    self.inner = _ThreadComm(hub, rank)
+                    self._opened = True
+            except BaseException as error:
+                if not acquiring:
+                    raise
+                rollback(self, error, lambda: self.close(abort=True))
+
+        def _admit(self):
+            if self.closed or not self._opened:
+                raise RuntimeError("communicator admission is closed")
 
         def all_gather(self, send, recv):
-            self.inner.all_gather(send, recv)
+            with self._lock:
+                self._admit()
+                self.inner.all_gather(send, recv)
 
         def barrier(self):
-            hub.barrier.wait()
+            with self._lock:
+                self._admit()
+                self.inner.barrier()
 
         def ready(self, label, **kwargs):
-            hub.barrier.wait()
+            with self._lock:
+                self._admit()
+                self.inner.ready(label, **kwargs)
+
+        def close(self, *, abort=False):
+            if type(abort) is not bool:
+                raise ValueError("typed communicator abort policy required")
+            with self._lock:
+                self.closed = True
+                if self.retired:
+                    return
+                # The thread transport has no native NCCL pointer to abort.
+                # Its accepted copies drain under the lock; store departure
+                # wakes an idle follower on abort, before the device fence.
+                if abort:
+                    self.store = None
+                if self.inner is not None:
+                    torch.cuda.synchronize(0)
+                self.store = self.inner = None
+                self.retired = True
 
     monkeypatch.setattr(comm_mod, "NCCL", FakeNCCL)
+    return owners
 
 
 @pytest.mark.parametrize("kv_dtype", ["bf16", "int8"])
@@ -433,7 +487,7 @@ def test_tp_server_ranks_share_requests_and_stream_serial_tokens(checkpoint, mod
     refs = _run_ranks(lambda r, e: serial_decode(e, prefill(e, PROMPT, sampling), 20, sampling).tokens,
                       [Engine(w, capacity=512, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype) for w in ranks])
     hub = _Hub(2)
-    _fake_nccl(monkeypatch, hub)
+    owners = _fake_nccl(monkeypatch, hub)
     engines: list = [None, None]
     errors: list = []
 
@@ -442,7 +496,19 @@ def test_tp_server_ranks_share_requests_and_stream_serial_tokens(checkpoint, mod
             engines[r] = FlashNextEngine(checkpoint, depth=4, confidence=0.001, draft_vocab=None, max_len=512, tp=2,
                                          rank=r, master="127.0.0.1", prefetch=False, graphs=False, kv_dtype=kv_dtype)
             if r == 1:
-                engines[1].follow()
+                primary = None
+                try:
+                    engines[1].follow()
+                except BaseException as error:
+                    primary = error
+                    raise
+                finally:
+                    try:
+                        engines[1].close(abort=primary is not None)
+                    except BaseException as cleanup:
+                        if primary is not None:
+                            raise primary from cleanup
+                        raise
         except BaseException as exc:            # noqa: BLE001
             errors.append(exc)
             hub.barrier.abort()
@@ -456,25 +522,48 @@ def test_tp_server_ranks_share_requests_and_stream_serial_tokens(checkpoint, mod
         stats = engines[0].generate(prompt, 20, samp, lambda new: got.extend(new), **kw)
         return got, stats
 
-    ends = tuple(engines[0].eos)                  # the checkpoint's end tokens, before the test sets its own
-    with torch.no_grad():
-        got, _ = ask(PROMPT, sampling)
-        serial, serial_stats = ask(PROMPT, sampling, draft=False)      # one token a round on both ranks
-        prompt2 = PROMPT + got + [7, 8, 9]
-        warm, warm_stats = ask(prompt2, sampling)                      # resumes from the prompt on both ranks
-        cold, _ = ask(prompt2, sampling, draft=False)
-        same, same_stats = ask(prompt2, sampling)                      # the same prompt again, on both ranks
-        third, third_stats = ask(prompt2, sampling)                    # and a third time: every resend hits
-        greedy, _ = ask(PROMPT, None)
-        end = refs[0][5]                         # both ranks stop at this token now; ignore_eos decodes past it
-        for e in engines:
-            e.eos, e.w.cfg = (end,), dataclasses.replace(e.w.cfg, eos=(end,))
-        stopped, _ = ask(PROMPT, sampling)
-        free, _ = ask(PROMPT, sampling, stop_eos=False)
-        free_serial, _ = ask(PROMPT, sampling, draft=False, stop_eos=False)
-    engines[0].shutdown()
+    from tensorfold.cleanup import raise_failures
+
+    primary = None
+    try:
+        ends = tuple(engines[0].eos)                  # the checkpoint's end tokens, before the test sets its own
+        with torch.no_grad():
+            got, _ = ask(PROMPT, sampling)
+            serial, serial_stats = ask(PROMPT, sampling, draft=False)      # one token a round on both ranks
+            prompt2 = PROMPT + got + [7, 8, 9]
+            warm, warm_stats = ask(prompt2, sampling)                      # resumes from the prompt on both ranks
+            cold, _ = ask(prompt2, sampling, draft=False)
+            same, same_stats = ask(prompt2, sampling)                      # the same prompt again, on both ranks
+            third, third_stats = ask(prompt2, sampling)                    # and a third time: every resend hits
+            greedy, _ = ask(PROMPT, None)
+            end = refs[0][5]                         # both ranks stop at this token now; ignore_eos decodes past it
+            for e in engines:
+                e.eos, e.w.cfg = (end,), dataclasses.replace(e.w.cfg, eos=(end,))
+            stopped, _ = ask(PROMPT, sampling)
+            free, _ = ask(PROMPT, sampling, stop_eos=False)
+            free_serial, _ = ask(PROMPT, sampling, draft=False, stop_eos=False)
+    except BaseException as error:
+        primary = error
+    cleanup = []
+    try:
+        if primary is None:
+            engines[0].shutdown()
+        else:
+            engines[0].close(abort=True)     # store departure wakes the idle follower
+    except BaseException as error:
+        cleanup.append(error)
+        try:
+            engines[0].close(abort=True)
+        except BaseException as error:
+            cleanup.append(error)
     follower.join(timeout=120)
+    try:
+        engines[0].close(abort=primary is not None or bool(cleanup) or follower.is_alive())
+    except BaseException as error:
+        cleanup.append(error)
+    raise_failures(primary, cleanup)
     assert not follower.is_alive() and not errors, errors
+    assert len(owners) == 2 and all(owner.closed and owner.retired and owner.store is None for owner in owners)
     ref = refs[0]
     eos = [i for i, t in enumerate(ref) if t in ends]
     assert got == (ref[:eos[0] + 1] if eos else ref)
@@ -493,7 +582,7 @@ def test_tp_ranks_started_with_different_settings_refuse_to_start(checkpoint, mo
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 
     hub = _Hub(2)
-    _fake_nccl(monkeypatch, hub)
+    owners = _fake_nccl(monkeypatch, hub)
     raised: list = [None, None]
 
     def build(r):
@@ -509,4 +598,6 @@ def test_tp_ranks_started_with_different_settings_refuse_to_start(checkpoint, mo
         th.start()
     for th in threads:
         th.join(timeout=120)
+    assert all(not th.is_alive() for th in threads)
     assert all(isinstance(x, RuntimeError) and "different settings" in str(x) for x in raised), raised
+    assert len(owners) == 2 and all(owner.closed and owner.retired and owner.store is None for owner in owners)

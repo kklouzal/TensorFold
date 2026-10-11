@@ -8,7 +8,7 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from tensorfold.cleanup import rollback
+from tensorfold.cleanup import rollback, raise_failures
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,17 +46,17 @@ class Provider:
 def source(raw=b"x" * 128):
     path = ROOT / "src/tensorfold/cuda/comm.py"
     tree = ast.parse(path.read_bytes())
-    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in ("_UniqueId", "NCCL")]
     lib = SimpleNamespace(**{name: Provider(name) for name in
                              ("ncclGetErrorString", "ncclGetUniqueId", "ncclCommInitRank", "ncclAllGather",
-                              "ncclCommDestroy", "ncclCommAbort")})
+                              "ncclCommDestroy", "ncclCommAbort", "ncclSend", "ncclRecv", "ncclGroupStart", "ncclGroupEnd")})
     streams = []
     runtime = SimpleNamespace(Tensor=Tensor, device=lambda kind, index: f"{kind}:{index}",
                               cuda=SimpleNamespace(current_device=lambda: 0,
                               synchronize=lambda device: None,
                               current_stream=lambda device: (streams.append(device) or SimpleNamespace(cuda_stream=123))))
     namespace = {"torch": runtime, "ctypes": ctypes, "_library": lambda: lib, "_DTYPES": {"F32": 7},
-                 "threading": threading, "rollback": rollback}
+                 "threading": threading, "rollback": rollback, "raise_failures": raise_failures}
     body = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0), *classes]
     exec(compile(ast.fix_missing_locations(ast.Module(body=body, type_ignores=[])), str(path), "exec"), namespace)
     distributed = ModuleType("torch.distributed")
@@ -113,6 +113,49 @@ class BufferBoundary(unittest.TestCase):
         self.assertFalse(lib.ncclAllGather.calls)
         owner.all_gather(Tensor(3, 1012), Tensor(6, 1000))  # valid rank1 in-place slice
         self.assertEqual(len(lib.ncclAllGather.calls), 1)
+    def test_exchange_validates_every_buffer_and_overlap_before_native_group(self):
+        cls, lib, _, distributed = source()
+        with patch.dict(sys.modules, {distributed.__name__: distributed}):
+            owner = cls()
+            owner.open(0, 2, "fixture", 1234)
+        for sends, recvs, peer in (([Tensor(2, 400)], [Tensor(2, 1000, dtype="F64")], 1),
+                                   ([Tensor(2, 400)], [Tensor(2, 1000, device="cuda:1")], 1),
+                                   ([Tensor(2, 400)], [Tensor(2, 1000, contiguous=False)], 1),
+                                   ([Tensor(2, 400)], [Tensor(2, 404)], 1),
+                                   ([Tensor(2, 400), Tensor(2, 500)], [Tensor(2, 1000), Tensor(2, 1004)], 1),
+                                   ([Tensor(2, 400)], [Tensor(2, 1000)], True),
+                                   ([Tensor(2, 400)], [], 1)):
+            with self.assertRaises(ValueError):
+                owner.exchange(sends, recvs, peer)
+        self.assertFalse(lib.ncclGroupStart.calls)
+        owner.exchange([Tensor(2, 400)], [Tensor(3, 1000)], 1)
+        self.assertEqual(len(lib.ncclGroupStart.calls), 1)
+        self.assertEqual(len(lib.ncclGroupEnd.calls), 1)
+        self.assertEqual(lib.ncclSend.calls[0][:4], (400, 2, 7, 1))
+        self.assertEqual(lib.ncclRecv.calls[0][:4], (1000, 3, 7, 1))
+        owner.close(abort=True)
+        with self.assertRaises(RuntimeError):
+            owner.exchange([], [], 1)
+
+    def test_exchange_preserves_send_error_and_group_cleanup_failure(self):
+        cls, lib, _, distributed = source()
+        with patch.dict(sys.modules, {distributed.__name__: distributed}):
+            owner = cls()
+            owner.open(0, 2, "fixture", 1234)
+        primary, cleanup = KeyboardInterrupt(), OSError("group end failed")
+        class Failure:
+            def __init__(self, error):
+                self.error, self.calls = error, 0
+            def __call__(self, *args):
+                self.calls += 1
+                raise self.error
+        lib.ncclSend, lib.ncclGroupEnd = Failure(primary), Failure(cleanup)
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            owner.exchange([Tensor(2, 400)], [Tensor(3, 1000)], 1)
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__, cleanup)
+        self.assertEqual(lib.ncclGroupEnd.calls, 1)
+
 
 
 if __name__ == "__main__":

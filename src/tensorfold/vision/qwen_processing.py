@@ -10,6 +10,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from tensorfold.server.errors import CONTEXT_LIMIT
+
 
 @dataclass(frozen=True)
 class PreparedVisionPrompt:
@@ -235,8 +237,9 @@ class QwenImageProcessor:
                 expanded.append(piece)
         encoded = self.tokenizer("".join(expanded), add_special_tokens=False, return_attention_mask=False)
         tokens = tuple(int(t) for t in encoded["input_ids"])
-        if max_prompt_tokens is not None and len(tokens) > max_prompt_tokens:
-            raise ValueError("The expanded image prompt exceeds the token budget; reduce image resolution or prompt length")
+        if max_prompt_tokens is not None and len(tokens) > max_prompt_tokens:   # OpenAI's context_length_exceeded
+            raise ValueError(f"{CONTEXT_LIMIT} {max_prompt_tokens} tokens: the expanded image prompt has {len(tokens)} "
+                             "tokens, which exceeds the context window; reduce image resolution or prompt length")
         video_grid = np.asarray([g for _, g in clips], dtype=np.int64).reshape(-1, 3) if videos else None
         positions, delta, spans, frames = media_positions(tokens, grid, video_grid, self.config)
         pixels = (np.concatenate(parts, axis=0) if parts else np.zeros((0, expected_width), dtype=np.float32))

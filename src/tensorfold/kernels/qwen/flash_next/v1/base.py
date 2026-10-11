@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import math
 from typing import Any
 
 import mlx.core as mx
 
-from tensorfold.kernels import threads
+from tensorfold.kernels import device, threads
 from tensorfold.kernels.inputs import ints, padded  # noqa: F401  (8+ elements, one source a kernel name)
 
 MAX_ROWS = 16
@@ -357,11 +356,8 @@ class _Kernel:
         return run(**kwargs)
 
 
-@functools.cache
 def _generation() -> int:
-    info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
-    digits = "".join(ch for ch in str(info.get("architecture", "")).removeprefix("applegpu_g") if ch.isdigit())
-    return int(digits) if digits else 0
+    return device.generation()
 
 
 def nib_rows() -> int:
@@ -441,8 +437,8 @@ class QWeights:
     def of(cls, *linears: Any) -> "QWeights":
         """One matrix from quantized linears' rows, stacked in order, widened exactly to one format if they differ."""
 
-        parts = [cls(l.weight, l.scales, l.biases, getattr(l, "bits", 4), getattr(l, "group_size", 32))
-                 for l in linears]
+        parts = [cls(projection.weight, projection.scales, projection.biases, getattr(projection, "bits", 4), getattr(projection, "group_size", 32))
+                 for projection in linears]
         for linear, part in zip(linears, parts):
             if getattr(linear, "mode", "affine") != "affine" or part.bits not in AFFINE_BITS or part.group % 32:
                 raise ValueError("expected MLX affine weights (2-8 bits, groups of 32, 64 or 128)")

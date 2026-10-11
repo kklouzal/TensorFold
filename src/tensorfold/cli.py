@@ -14,22 +14,23 @@ from typing import Any
 
 from tensorfold import __version__
 from tensorfold import cli_args
-from tensorfold.server import stacks
+from tensorfold.server import stacks, thinking_notes
 from tensorfold.server.memory_budget import MEMORY_FRACTION
 from tensorfold.serve_options import (
     check as _check_serve_options,
     check_numbers as _check_serve_numbers,
+    name_priority as _name_priority,
     vision_options as _vision_options,
 )
 
-COMMANDS = ("serve", "pull", "models", "info", "update")
+COMMANDS = ("serve", "pull", "models", "info", "update", "service", "tui", "plan")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``tensorfold`` parser with this module's subcommand handlers."""
 
     return cli_args.build_parser(
-        {"serve": cmd_serve, "pull": cmd_pull, "models": cmd_models, "update": cmd_update, "info": cmd_info}
+        {"serve": cmd_serve, "pull": cmd_pull, "models": cmd_models, "update": cmd_update, "info": cmd_info, "plan": cmd_plan}
     )
 
 
@@ -183,6 +184,14 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_plan(args: argparse.Namespace) -> int:
+    """Estimate local checkpoint weights without loading a model."""
+
+    from tensorfold.cli_plan import cmd_plan as plan
+
+    return plan(args)
+
+
 def _generation_config(model_dir: Path) -> dict[str, Any]:
     path = Path(model_dir) / "generation_config.json"
     config = json.loads(path.read_text()) if path.exists() else {}
@@ -207,13 +216,16 @@ def _model_context(model_dir: Path) -> int:
     return int(limit) if isinstance(limit, int) and limit > 0 else 0
 
 
-def _drafter(family: Any, choice: str, backend: str = "mlx") -> str:
+def _drafter(family: Any, choice: str, backend: str = "mlx", *, mtp_drafts: int | None = None) -> str:
     """The draft model directory for ``--drafter`` (auto: the family's draft model if it has been pulled)."""
 
     from tensorfold import hub
 
     if choice in ("", "none"):
         return ""
+    if (backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe"
+            and choice == "auto" and mtp_drafts is not None):
+        return ""  # explicit included-MTP selection must not resolve the implicit separate drafter
     if choice != "auto":
         return str(hub.resolve(choice))
     # a family that drafts otherwise on CUDA (Qwen3.6 MoE: its MTP layer) declares CUDA_DRAFTER = ""
@@ -258,15 +270,11 @@ def _backend(choice: str, family: Any) -> str:
 
 
 def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context: int | None = None) -> int:
-    """Serve with the family's CUDA engine (``cuda_engine``) behind ``tensorfold.cuda.server``."""
+    """Serve a CUDA configuration already validated by ``cmd_serve`` before its weight resolution."""
 
     from tensorfold import hub
 
     sampling = _generation_config(model_dir)  # refuse invalid defaults before acquiring the engine
-    if args.tp == 2 and not args.master:
-        raise ValueError("--tp 2 needs --master: rank 0's address on the link between the two machines")
-    if args.tp == 1 and args.rank != 0:
-        raise ValueError("--rank 1 needs --tp 2")
     started = time.perf_counter()
     drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda")
     options: dict[str, Any] = {
@@ -303,7 +311,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     if getattr(args, "checkpoint_slots", None) is not None and getattr(family.package, "CUDA_CHECKPOINT_SLOTS", False):
         options["checkpoint_slots"] = int(args.checkpoint_slots)
     served = args.name or (args.model.rstrip("/").split("/")[-1] if hub.is_repo_id(args.model) else model_dir.name)
-    where = f", rank {args.rank} of 2" if args.tp == 2 else ""
+    where = f", rank {args.rank} of {args.tp}" if args.tp > 1 else ""
     print(f"[tensorfold] loading {served}: {family.title} ({family.model_type}) on CUDA{where}", flush=True)
     from tensorfold.cuda import precision, prompt_precision
 
@@ -328,8 +336,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                 "other than Qwen's 4-bit g64, Flash Next without MXFP8 layers); drop the flag"
             )
         stacks.arm()  # its warmup may have loaded a compiler that took USR1
-        if args.tp == 2 and args.rank == 1:
-            print(f"[tensorfold] rank 1 ready in {time.perf_counter() - started:.1f}s, following rank 0", flush=True)
+        if args.tp > 1 and args.rank != 0:
+            print(f"[tensorfold] rank {args.rank} ready in {time.perf_counter() - started:.1f}s, following rank 0", flush=True)
             engine.follow()
             return 0
         from tensorfold.cuda.server import App, Server, make_handler, serve
@@ -354,7 +362,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             reasoning_effort=args.reasoning_effort,
             thinking_budget=int(args.thinking_budget),
             vision_max_images=getattr(args, "vision_max_images", None),
+            **({"vision_image_tokens": args.vision_image_tokens}
+               if getattr(args, "vision_image_tokens", None) is not None else {}),
             aliases=list(args.alias),
+            background_ids=frozenset(_name_priority(args)),
             max_pending_requests=getattr(args, "max_pending_requests", None),
         )
         shown = (
@@ -372,6 +383,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             f"loaded in {time.perf_counter() - started:.1f}s)",
             flush=True,
         )
+        app.auth = getattr(args, "auth", None)
+        note = thinking_notes.startup(model_dir, bool(args.thinking))
+        if note:
+            print(note, flush=True)
         server = Server((args.host, int(args.port)), make_handler(app),
                         max_connections=getattr(args, "max_http_connections", None))
         owners["server"] = server
@@ -400,9 +415,11 @@ def _parallel(value: Any) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    from tensorfold import families, hub
-
     _check_serve_numbers(args)
+    from tensorfold.server.authentication import configure
+
+    args.auth = configure(args)
+    from tensorfold import families, hub
     if not args.no_update_check:
         from tensorfold import update
 
@@ -591,7 +608,12 @@ def _serve_mlx_start(
 
     sampling = _generation_config(model_dir)  # before model loading or background workers
     started = time.perf_counter()
-    drafter = "" if args.no_drafts else _drafter(family, args.drafter)
+    if args.no_drafts:
+        drafter = ""
+    elif getattr(family, "model_type", "") == "qwen3_5_moe" and args.mtp_drafts is not None:
+        drafter = _drafter(family, args.drafter, mtp_drafts=args.mtp_drafts)
+    else:
+        drafter = _drafter(family, args.drafter)
     parallel = _parallel(args.parallel)
     options: dict[str, Any] = {
         "lane_kernels": args.lane_kernels,
@@ -604,6 +626,8 @@ def _serve_mlx_start(
         options["trust_model_code"] = bool(getattr(args, "trust_model_code", False))
     if args.mtp_drafts is not None:
         options["mtp_drafts"] = int(args.mtp_drafts)
+    if getattr(family.package, "__name__", "") == "tensorfold.families.qwen3_5_moe" and args.no_drafts:
+        options["mtp_drafts"] = 0  # the serial reference does not acquire an unused optional MTP head
     if args.ple_on_ssd:
         options["ple_on_ssd"] = True
     if args.ssd_experts is not None:
@@ -627,6 +651,14 @@ def _serve_mlx_start(
             if head is not None:
                 extra["nemotron-mtp"] = head
                 options["mtp_head"] = str(head)  # bind the selected external input at the execution boundary
+        if (getattr(family.package, "__name__", "") == "tensorfold.families.qwen3_5_moe"
+                and not drafter and options.get("mtp_drafts", 0) > 0):
+            from tensorfold.families.qwen3_5_moe import mtp_file
+
+            head = mtp_file(Path(model_dir))
+            options["mtp_head"] = "" if head is None else str(head)
+            if head is not None:
+                extra["qwen36-mtp"] = head
         data_closure = LoaderClosure(roots, extra_files=extra)
         data_identity = capture_model_identity(
             data_closure.files,
@@ -703,7 +735,7 @@ def _serve_mlx_start(
     engine_kwargs = dict(getattr(family.package, "engine_settings", lambda m: {})(model))
     if required_files:
         print(
-            f"[tensorfold] Nemotron MTP head: "
+            f"[tensorfold] {family.title} MTP head: "
             f"{'active' if not args.no_drafts and getattr(model, 'mtp', None) is not None else 'inactive'}",
             flush=True,
         )
@@ -829,6 +861,10 @@ def _serve_mlx_start(
     hook = getattr(family.package, "setup", None)
     if hook is not None:
         hook(app, model, **options)
+    app.auth = getattr(args, "auth", None)
+    note = thinking_notes.startup(model_dir, bool(args.thinking))
+    if note:
+        print(note, flush=True)
     server = Server((args.host, int(args.port)), make_handler(app),
                     max_connections=getattr(args, "max_http_connections", None))  # type: ignore[arg-type]
     owners["server"] = server
@@ -852,7 +888,9 @@ def _serve_mlx_start(
 
     owners["line"] = live.start(app)  # terminal-only throughput line
     try:
-        server.serve_forever()
+        from contextlib import nullcontext
+        with app.auth.signals() if app.auth is not None else nullcontext():
+            server.serve_forever()
     except KeyboardInterrupt:
         pass
     return 0

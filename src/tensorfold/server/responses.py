@@ -13,8 +13,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from tensorfold.server import request_body
 from tensorfold.server.errors import RequestError
+from tensorfold.server.request_body import read_body
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 
 LIMIT = 32 * 1024**2
@@ -191,7 +191,7 @@ def post(handler: Any, app: Any) -> None:
 
     store = store_for(app)
     try:
-        payload = request_body.read(handler, LIMIT)
+        payload = read_body(handler, limit=LIMIT)
         try:
             body = json.loads(payload or b"{}")
         except (ValueError, UnicodeDecodeError):

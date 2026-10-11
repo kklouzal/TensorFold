@@ -32,6 +32,7 @@ DECLARATIONS = {
     },
     "tensorfold.families.nemotron_h.state_cache": {"RowStateCache": ({}, {})},
     "tensorfold.families.nemotron_h.mtp": {"MTPCache": (KV, {"drafted": 0})},
+    "tensorfold.families.qwen3_5_moe.mtp": {"MTPCache": (KV, {})},
     "tensorfold.families.qwen4_exp.model_layers": {
         "LinearCache": ({"conv": None, "ssm": None, "ple_conv": None, "history": None}, {}),
         "AttentionCache": (ATTENTION, {}),
@@ -297,7 +298,14 @@ class Profile:
                 and path != "pooled"
                 and (path not in ("pool", "ipool") or (path == "pool" and "ik" in paths))
             )
-            auxiliary = "drafted" in fields and (self.main_layers is None or index >= self.main_layers)
+            qwen36_head = (type(prototype).__module__, type(prototype).__qualname__) == (
+                "tensorfold.families.qwen3_5_moe.mtp", "MTPCache"
+            )
+            # Qwen3.6 keeps chained rows only in transient side buffers, so its
+            # persisted auxiliary cache may be empty without a stored draft count.
+            auxiliary = ("drafted" in fields or qwen36_head) and (
+                self.main_layers is None or index >= self.main_layers
+            )
             conditional = required if auxiliary else frozenset()
             layers.append(
                 LayerSchema(

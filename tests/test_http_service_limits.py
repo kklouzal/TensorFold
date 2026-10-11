@@ -215,7 +215,9 @@ class HTTPServiceLimits(unittest.TestCase):
         app._request_limit = RequestLimit(3)
         app.max_batch_size = 4
         app.prompt_memory = SimpleNamespace(memory_snapshot=lambda reset: {})
-        app.scheduler = SimpleNamespace(max_engine_calls=2, engine_calls=1)
+        app.scheduler = SimpleNamespace(max_engine_calls=2, engine_calls=1, waiting=0, active=0, filling=[],
+                                        decoded=SimpleNamespace(rate=lambda: 0.0),
+                                        prefilled=SimpleNamespace(rate=lambda: 0.0))
         with app._request_limit.request():
             for handler in self.handlers(app):
                 with self.subTest(handler=handler.__module__), _running(handler, limit=2) as (server, failures):

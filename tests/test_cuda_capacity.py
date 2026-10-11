@@ -26,6 +26,29 @@ def checkpoint(path, config, tensors):
         stream.truncate(8 + len(raw) + offset)  # sparse, valid isolated payload; no model data is loaded
 
 
+@pytest.mark.parametrize("integrated", [False, True])
+def test_explicit_reserve_and_absolute_cap_apply_to_the_same_grant(monkeypatch, integrated):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+                              get_device_properties=lambda device: SimpleNamespace(is_integrated=integrated)))
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemTotal": 64 * gib, "MemAvailable": 26 * gib})
+    monkeypatch.setenv(capacity.LIMIT_ENV, "20")
+    assert capacity.available_bytes(runtime, reserve=2 * gib) == 20 * gib
+    monkeypatch.delenv(capacity.LIMIT_ENV)
+    assert capacity.available_bytes(runtime, reserve=2 * gib) == (24 if integrated else 22) * gib
+    for reserve in (True, -1, 33 * gib):
+        with pytest.raises(ValueError, match="reserve"):
+            capacity.available_bytes(runtime, reserve=reserve)
+
+
+def test_finite_large_absolute_caps_do_not_overflow_the_float_intermediate():
+    from tensorfold.cuda import capacity
+
+    assert capacity.cuda_limit_bytes({capacity.LIMIT_ENV: "1e300"}) == int(1e300) * capacity.GIB
+
+
 def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch, request):
     from tensorfold.cuda import server
 
@@ -127,6 +150,7 @@ class ConstructorComm:
         assert not self.opened and self.closed
         assert type(rank) is int and world == 2 and 0 <= rank < world
         assert master == "example" and type(port) is int and port > 0
+        self.rank, self.world = rank, world
         self.open_calls.append((rank, world, master, port))
         self.opened, self.closed = True, False
 
@@ -172,11 +196,12 @@ def fake_runtime(monkeypatch):
     def both(send, recv):
         recv.view(-1).copy_(torch.cat([send.view(-1), send.view(-1)]))
     comms = []
-    def comm_owner():
+    def comm_owner(*args, **kwargs):
         comm = ConstructorComm(both)
         comms.append(comm)
+        comm.open(*args, **kwargs)
         return comm
-    monkeypatch.setitem(sys.modules, "tensorfold.cuda.comm", SimpleNamespace(NCCL=comm_owner))
+    monkeypatch.setitem(sys.modules, "tensorfold.cuda.comm", SimpleNamespace(open_comm=comm_owner))
     for family in ("qwen3_5", "qwen4_exp", "glm5_next"):
         prefix = f"tensorfold.families.{family}.cuda"
         weights = SimpleNamespace(load=load, draft_token_ids=lambda *a: None,
@@ -200,15 +225,21 @@ def construct(family, path, requested, explicit, world, rank=0):
     if family == "linear":
         from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine
         obj = Qwen27Engine.__new__(Qwen27Engine)
-        start = lambda: obj.__init__(path, None, tp=world, rank=rank, master="example", context=requested, context_explicit=explicit)
+        def start():
+            return obj.__init__(path, None, tp=world, rank=rank, master="example", context=requested,
+                                context_explicit=explicit)
     elif family == "indexed":
         from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
         obj = FlashNextEngine.__new__(FlashNextEngine)
-        start = lambda: obj.__init__(path, tp=world, rank=rank, master="example", max_len=requested, context_explicit=explicit, depth=0)
+        def start():
+            return obj.__init__(path, tp=world, rank=rank, master="example", max_len=requested,
+                                context_explicit=explicit, depth=0)
     else:
         from tensorfold.families.glm5_next.cuda.engine import GlmEngine
         obj = GlmEngine.__new__(GlmEngine)
-        start = lambda: obj.__init__(path, rank=rank, master="example", port=29551, context=requested, context_explicit=explicit)
+        def start():
+            return obj.__init__(path, rank=rank, master="example", port=29551, context=requested,
+                                context_explicit=explicit)
     return obj, start
 
 
@@ -424,7 +455,8 @@ def test_a_4bit_drafter_is_admitted_at_its_packed_bytes(tmp_path):
                               ("layers.0.self_attn.k_proj.weight", "BF16", [1024, 5120], 2 * 1024 * 5120),
                               ("layers.0.input_layernorm.weight", "BF16", [5120], 2 * 5120),
                               ("layers.0.narrow.weight", "BF16", [5120, 64], 2 * 5120 * 64)])
-    q4 = lambda n: n // 2 + n // 64 * 4
+    def q4(n):
+        return n // 2 + n // 64 * 4
     assert estimate_weights(tmp_path, draft_bytes).resident == (q4(5120 * 5120) + 2 * q4(1024 * 5120) + 2 * 5120
                                                                 + 2 * 5120 * 64)
     assert packed_draft("a.weight", [5120, 5120]) and not packed_draft("a.weight", [5120, 64])

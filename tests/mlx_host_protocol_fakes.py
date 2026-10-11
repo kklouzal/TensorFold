@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from importlib import metadata
 from pathlib import Path
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -24,7 +24,8 @@ def _install_cli_protocol(monkeypatch, version='test-host-protocol'):
     core.clear_cache = lambda: None
     core.get_active_memory = lambda: 0
     core.set_wired_limit = lambda value: 0
-    core.device_info = lambda: {'max_recommended_working_set_size': 64 << 30, 'memory_size': 128 << 30}
+    core.device_info = lambda device=None: {'max_recommended_working_set_size': 64 << 30, 'memory_size': 128 << 30}
+    core.metal = SimpleNamespace(is_available=lambda: False)  # CPU metadata region, never native Metal
     mlx = ModuleType('mlx')
     mlx.core = core
     nn = ModuleType('mlx.nn')  # metadata imports only; no numerical methods or fake layers

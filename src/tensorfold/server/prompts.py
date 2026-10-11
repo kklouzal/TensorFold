@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 import threading
 from typing import Any
 
-from tensorfold.server.errors import CapacityError, RequestError
+from tensorfold.server.errors import CapacityError, RequestError, refusal
 from tensorfold.server.messages import _normalize_tool_call_arguments, normalize_messages
 from tensorfold.vision.images import DEFAULT_LIMITS, ImageLimits
 
@@ -43,17 +43,20 @@ def image_slot():
     return IMAGE_SLOTS
 
 
-def prepare_images(frontend, messages, render, *, context_limit=None, limits: ImageLimits = DEFAULT_LIMITS):
+def prepare_images(frontend, messages, render, *, context_limit=None, limits: ImageLimits = DEFAULT_LIMITS,
+                   max_visual_tokens: int | None = None):
     from tensorfold.vision.images import ImageInputError, ImageSource, load_images, split_images
 
     if frontend is None:
         raise RequestError('image input requires a supported vision checkpoint served with --vision')
     allow_urls = bool(getattr(frontend, 'allow_urls', False))
     videos = bool(getattr(frontend, 'videos', False))       # a frontend that encodes video frames too
-    # a frontend's own byte and pixel totals for many images; --vision-max-images still sets the count
+    # Preserve frontend byte/pixel limits while applying configured request counts and token budgets.
     own = getattr(frontend, 'image_limits', None)
     if own is not None:
-        limits = replace(own, max_images=limits.max_images if limits is not DEFAULT_LIMITS else own.max_images)
+        limits = replace(own, max_images=limits.max_images if limits is not DEFAULT_LIMITS else own.max_images,
+                         max_visual_tokens=limits.max_visual_tokens if limits.max_visual_tokens != DEFAULT_LIMITS.max_visual_tokens
+                         else own.max_visual_tokens)
     try:
         template, sources = split_images(messages, limits=limits, allow_urls=allow_urls, allow_videos=videos)
     except (ImageInputError, ValueError) as exc:
@@ -65,16 +68,16 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
         raise CapacityError('image processing capacity is busy; retry shortly')
     try:
         images = load_images([s for s in sources if isinstance(s, ImageSource)], limits=limits, allow_urls=allow_urls)
+        budget = {} if max_visual_tokens is None and limits.max_visual_tokens == DEFAULT_LIMITS.max_visual_tokens else \
+            {"max_visual_tokens": limits.max_visual_tokens if max_visual_tokens is None else max_visual_tokens}
         clips = [s for s in sources if not isinstance(s, ImageSource)]
         if clips:
             from tensorfold.vision.videos import load_videos
 
-            clips = load_videos(clips, frontend.video_size, allow_urls=allow_urls)
-            prepared = frontend.prepare(render(template), images, videos=clips, max_prompt_tokens=context_limit)
-        else:
-            prepared = frontend.prepare(render(template), images, max_prompt_tokens=context_limit)
+            budget["videos"] = load_videos(clips, frontend.video_size, allow_urls=allow_urls)
+        prepared = frontend.prepare(render(template), images, max_prompt_tokens=context_limit, **budget)
     except (ImageInputError, ValueError, ImportError) as exc:
-        raise RequestError(str(exc)) from exc
+        raise refusal(str(exc)) from exc                # an image prompt past the window: context_length_exceeded
     finally:
         if many:
             MANY_IMAGES.release()

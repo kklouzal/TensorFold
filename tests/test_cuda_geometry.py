@@ -81,6 +81,28 @@ def bytes_in(arrays):
     return sum(t.numel() * t.element_size() for t in arrays)
 
 
+@pytest.mark.parametrize("world", [1, 2])
+@pytest.mark.parametrize("mtp", [False, True])
+def test_indexed_stream_status_and_independent_kv_sides_remain_budgeted_per_rank(world, mtp):
+    text = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 64,
+            "num_hidden_layers": 4, "layer_types": ["linear_attention", "full_attention"] * 2,
+            "linear_num_key_heads": 2, "linear_num_value_heads": 4, "linear_key_head_dim": 128,
+            "linear_value_head_dim": 128, "linear_conv_kernel_dim": 4, "vocab_size": 1024, "hc_count": 4}
+    options = dict(streams=3, each=4, keep=8, mtp=mtp, world=world)
+    bf16 = geometry.indexed_stream_geometry(text, **options)
+    pair = ((16, 32, 2), (8, 32, 2))
+    mixed = geometry.indexed_stream_geometry(text, **options, kv_pair=pair)
+    checked = geometry.indexed_stream_geometry(text, **options, kv_pair=pair, kv_status=True)
+    for slots in (256, 4096, 65536):
+        rows = slots + 2 * 256  # the growing slot and the other slots' first allocation
+        heads = 2 // world
+        # One BF16 side replaces its 128-byte row and 2-byte dummy scale
+        # with a 68-byte INT8 row, independently of K's unchanged BF16 side.
+        difference = (2 + int(mtp)) * (rows * heads * (128 - 68) + 3 * 2)
+        assert bf16.bytes_at(slots) - mixed.bytes_at(slots) == difference
+        assert checked.bytes_at(slots) - mixed.bytes_at(slots) == 8 * 3 * (2 + int(mtp))
+
+
 @pytest.mark.torch
 @pytest.mark.parametrize("world", [1, 2])
 @pytest.mark.parametrize("mtp", [False, True])
@@ -241,6 +263,7 @@ def test_unified_available_memory_uses_reclaimable_host_pages(monkeypatch):
     fake = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (100 * capacity.GIB, 128 * capacity.GIB)))
     monkeypatch.setattr(Path, "read_text", lambda *a: "MemTotal: 134217728 kB\nMemAvailable: 62914560 kB\n")
     monkeypatch.setattr(capacity, "unified", lambda torch: True)
+    # the grant is the reclaimable pool less the floor the host keeps free: a tenth of its 128 GiB of RAM
     assert capacity.available_bytes(fake) == 60 * capacity.GIB - 128 * capacity.GIB // 10
 
 

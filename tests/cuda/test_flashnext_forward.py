@@ -407,6 +407,8 @@ def test_the_family_hook_serves_the_recipe(tmp_path, sampling):
         cuda_engine(tmp_path, drafter="some/draft-model")
 
 
+
+
 @pytest.mark.parametrize("sampling", [None, Sampling(seed=31, top_k=20, top_p=0.95)])
 def test_prefix_reuse_and_the_serial_switch(tmp_path, sampling):
     """Extending or repeating a prompt resumes as a fresh prefill; ``draft=False`` decodes the same, kept states intact."""

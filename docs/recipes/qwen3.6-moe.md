@@ -1,14 +1,16 @@
 # Qwen3.6-35B-A3B
 
-The `qwen3_5_moe` family serves Qwen3.6-35B-A3B on one NVIDIA GPU. Its layers are the 27B's (Gated DeltaNet
-and gated full attention, every fourth layer attention) with routed experts in place of the dense MLP, and it
-drafts with the checkpoint's own MTP layer.
+The `qwen3_5_moe` family serves Qwen3.6-35B-A3B on Apple Silicon and on one NVIDIA GPU. Its layers are the 27B's
+(Gated DeltaNet and gated full attention, every fourth layer attention) with routed experts in place of the dense
+MLP. CUDA drafts with the checkpoint's MTP layer. MLX preserves this fork's DFlash default;
+`--mtp-drafts N` explicitly selects the newly integrated MTP capability. Its actual Apple numerical,
+exactness and performance qualification remains pending.
 
 ## Checkpoint
 
 ```bash
-tensorfold pull Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP
-tensorfold serve Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP --name bench
+tensorfold pull TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP
+tensorfold serve TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP --name bench
 ```
 
 Tested revision: `81169a9bc511a27c1b4eedb77a2cd98ced431847` (20.9 GB). Its weights are
@@ -21,7 +23,58 @@ DeltaNet 63 MB a stream.
 
 `--no-drafts` or request field `"draft": false` selects serial decoding, the reference drafted output equals.
 
+## Mac execution
+
+Macs verify on the dense family's row decoder, with every verification width checked at load against
+one-row steps. The implicit drafter remains `z-lab/Qwen3.6-35B-A3B-DFlash`, as in fork
+`2f8089a7b59588875d639a7efa860117168a29d0`; upstream's MTP speed results have not qualified replacing it.
+
+Select the checkpoint's optional MTP head explicitly:
+
+```bash
+tensorfold serve TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP --mtp-drafts 4 --name bench
+```
+
+An explicit separate `--drafter` combined with active `--mtp-drafts` is refused before model downloads.
+`--no-drafts` disables drafting. The optional MTP path absorbs kept target rows and uses the target's keyed
+sampling rule for its proposals; the target still verifies committed tokens against its full vocabulary.
+The fork's existing measured-depth policy remains in place. Upstream's new plain-round guard, 5% margin
+and probing policy are isolated candidates, with actual Apple comparisons pending.
+
+`mlx-community/Qwen3.6-35B-A3B-4bit` has the same weights without the MTP file. For explicit MTP, download
+`mtp-4bit.safetensors` from the named TensorFold checkpoint, put it beside the model or use
+`TF_QWEN36_MTP=<file>`. Without the optional file, the selected MTP path reports the absence and decodes
+one token per round. `--mtp-drafts 0` explicitly selects a zero-draft path.
+
+The following table is historical upstream evidence from
+[`python-0.6` at ed78d6fc](https://github.com/ashhart/TensorFold/blob/ed78d6fc204d89d90b045bf033d6551e7714f3a1/docs/recipes/qwen3.6-moe.md).
+Its MTP row includes upstream policies that remain isolated here; it does not measure this integration or
+establish the fastest drafter for the current fork.
+
+On an M3 Ultra (60-core GPU, MLX 0.32.3), greedy, median of three after a warm-up. mlx-vlm 0.7.4 serves the same
+weights with `mlx-community/Qwen3.6-35B-A3B-MTP-4bit` (two drafts a round). The short prompts are about 85 tokens
+with 384 generated; the long one is 28,400 tokens of Python's `typing.py` with 128 generated.
+
+| tok/s | Short prose | Short code | Short, thinking on | 28,400-token prompt | First token at 28,400 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Upstream TensorFold, MTP | 173.4 | 244.7 | 196.4 | 124.0 | 15.9 s |
+| TensorFold, `--no-drafts` | 118.5 | 119.2 | 119.3 | 92.7 | 15.9 s |
+| TensorFold, `--drafter z-lab/Qwen3.6-35B-A3B-DFlash` | 156.1 | 288.2 | 183.1 | 87.5 | 15.7 s |
+| mlx-vlm 0.7.4, MTP | 111.9 | 141.8 | 120.7 | 85.6 | 14.8 s |
+| mlx-vlm 0.7.4 | 106.4 | 105.7 | 107.5 | 88.0 | 14.7 s |
+
+Upstream reports the same token SHA-256 in all three TensorFold modes in this trial. MTP rounds verify 4 to 5 rows and keep about
+three tokens. DFlash's 16-row blocks keep more on short code, and fall behind plain decoding at the long prompt.
+
+The chat template thinks by default, as on vLLM: replies reason in `reasoning_content` before the answer in
+`content`, and `max_tokens` counts both. The server says so at startup, and prints a warning when a reply reaches
+`max_tokens` before it leaves its think block (its `content` is empty). `--no-thinking`, or
+`"chat_template_kwargs": {"enable_thinking": false}` in a request, turns thinking off.
+
 ## CUDA execution
+
+The CUDA figures below are retained upstream historical measurements at the source above, not a new
+qualification of this fork or its pinned deployment environment.
 
 CUDA reads this model's MLX 4-bit checkpoint only; NVFP4 and EXL3 exports of it are not read yet. Prompts take bf16
 activations by default: 0.90-0.96x the FP8 prompt path from 2k to 128k, and 1.23-1.89x vLLM on NVIDIA's NVFP4 export
@@ -45,7 +98,7 @@ extending a conversation resumes there with a fresh prefill's bits.
 ### Concurrent requests
 
 ```bash
-tensorfold serve Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP --parallel 8 --name bench
+tensorfold serve TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP --parallel 8 --name bench
 ```
 
 `--parallel N` decodes up to N requests in shared rounds, and every reply equals the same request served alone

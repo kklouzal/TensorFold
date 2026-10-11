@@ -55,7 +55,8 @@ def sse(*events, done=True):
     (sse({"usage": {"completion_tokens": 17}}), "bounded positive"),
     (sse({}), "bounded positive"),
     (b"data: " + b"x" * 65536 + b"\n", "bounded size"),
-])
+], ids=["engine-error", "null-error", "non-object-event", "missing-done", "boolean-token-count",
+        "zero-token-count", "excess-token-count", "missing-token-count", "oversized-event"])
 def test_sse_error_incomplete_or_invalid_usage_is_a_failed_stream(bench, monkeypatch, payload, reason):
     monkeypatch.setattr(bench.urllib.request, "urlopen", lambda *a, **kw: Response(payload))
     row = bench.stream("http://unused", "fixture", bench.PROMPTS[0], 16, 0, 123)

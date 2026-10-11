@@ -19,7 +19,7 @@ SPLIT = ROOT / 'src/tensorfold/families/glm5_next/cuda/split.py'
 
 
 class Controls(unittest.TestCase):
-    def load(self, fault=None, cleanup=None):
+    def load(self, fault=None, cleanup=None, *, world=2):
         calls = []
         primary = KeyboardInterrupt('load interrupted')
         class Tensor:
@@ -33,7 +33,8 @@ class Controls(unittest.TestCase):
         tensor = Tensor()
         tensor.weight = tensor
         class Reader:
-            def __init__(self, *args):
+            def __init__(self, *args, ranks=2):
+                assert ranks == world
                 calls.append('acquired')
             def get(self, name):
                 calls.append(name)
@@ -44,11 +45,14 @@ class Controls(unittest.TestCase):
                 calls.append('closed')
                 if cleanup:
                     raise cleanup
-        class BadHeads:
+        class BadHeads(int):
+            # Pass the validated configuration boundary, then interrupt the
+            # post-acquisition geometry calculation whose reader must drain.
             def __floordiv__(self, value):
                 raise primary
-        config = SimpleNamespace(quant='exl3', heads=BadHeads() if fault == 'geometry' else 4,
-            lin_heads=4, layers=0, vocab=128, mtp_layers=0)
+        config = SimpleNamespace(quant='exl3', heads=BadHeads(4) if fault == 'geometry' else 4,
+            lin_heads=4, layers=0, vocab=128, mtp_layers=0, dense_width=128,
+            moe_width=128, shared_width=128)
         provider = ModuleType('owned_glm_load.split')
         provider.RankReader = Reader
         tree = ast.parse(WEIGHTS.read_bytes())
@@ -63,13 +67,13 @@ class Controls(unittest.TestCase):
         with patch.dict(sys.modules, {'owned_glm_load.split': provider}):
             if fault or cleanup:
                 with self.assertRaises(BaseException) as caught:
-                    namespace['load'](Path('owned'), rank=0)
+                    namespace['load'](Path('owned'), rank=0, world=world)
                 self.assertIs(caught.exception, primary if fault else cleanup)
                 if fault and cleanup:
                     self.assertIs(primary.__cause__, cleanup)
                     self.assertTrue(primary.__notes__)
             else:
-                namespace['load'](Path('owned'), rank=0)
+                namespace['load'](Path('owned'), rank=0, world=world)
         self.assertEqual(calls.count('closed'), 1)
         self.assertEqual(calls[0], 'acquired')
         if fault or cleanup:
@@ -78,16 +82,20 @@ class Controls(unittest.TestCase):
             self.assertEqual(calls[-2:], ['closed', 'cache'])
 
     def test_success_and_all_acquired_early_or_late_failures_close_once(self):
-        self.load()
-        for fault in ('geometry', 'embed_tokens', 'lm_head', 'norm.weight'):
-            with self.subTest(fault=fault):
-                self.load(fault)
+        for world in (2, 4):
+            with self.subTest(world=world):
+                self.load(world=world)
+            for fault in ('geometry', 'embed_tokens', 'lm_head', 'norm.weight'):
+                with self.subTest(world=world, fault=fault):
+                    self.load(fault, world=world)
 
     def test_primary_survives_reader_drain_and_success_drain_failure_propagates(self):
-        for fault in ('geometry', 'embed_tokens', 'lm_head'):
-            with self.subTest(fault=fault):
-                self.load(fault, OSError('reader drain failed'))
-        self.load(cleanup=OSError('reader drain failed'))
+        for world in (2, 4):
+            for fault in ('geometry', 'embed_tokens', 'lm_head'):
+                with self.subTest(world=world, fault=fault):
+                    self.load(fault, OSError('reader drain failed'), world=world)
+            with self.subTest(world=world):
+                self.load(cleanup=OSError('reader drain failed'), world=world)
 
     def split_module(self, calls, cleanup=None):
         class Reader:

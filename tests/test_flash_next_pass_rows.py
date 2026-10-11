@@ -13,6 +13,7 @@ pytestmark = pytest.mark.torch
 def test_a_rounds_pass_keeps_decoding_its_share(allocations):  # noqa: F811
     multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
     dec = multi.MultiDecoder.__new__(multi.MultiDecoder)
+    dec.streams = {0: SimpleNamespace(done=False)}
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 2048, 0.25, None, None
     dec.streams = {0: SimpleNamespace(done=False)}
     assert dec._pass_rows() == 2048                                   # nothing timed yet: whole passes

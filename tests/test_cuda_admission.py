@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("tokenizers")
 pytest.importorskip("jinja2")
 
-from tokenizers import Tokenizer, models, pre_tokenizers
+from cuda_http_fixtures import model_directory
 
 from tensorfold.cuda import server
 from tensorfold.families.glm5_next.cuda.app import GlmApp
@@ -44,15 +44,7 @@ class FlashEngine(Engine):
 
 @pytest.fixture
 def model_dir(tmp_path):
-    words = ["[UNK]", "answer", "header", "thinking", "tools", "extra"] + [f"w{i}" for i in range(40)]
-    tok = Tokenizer(models.WordLevel({word: i for i, word in enumerate(words)}, unk_token="[UNK]"))
-    tok.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
-    tok.save(str(tmp_path / "tokenizer.json"))
-    template = ("{% for m in messages %}{{ m.content }} {% endfor %}header"
-                "{% if enable_thinking %} thinking{% endif %}{% if tools %} tools{% endif %}"
-                "{% if suffix %} {{ suffix }}{% endif %}")
-    (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": template}))
-    return tmp_path
+    return model_directory(tmp_path)
 
 
 def words(count):
@@ -162,6 +154,7 @@ def test_native_boundary_refuses_explicit_completion_alias(model_dir, chat):
     assert "9 reply tokens" in error["message"] and "12-token context window" in error["message"]
     # OpenAI's code and wording, which clients match to compact instead of stopping
     assert error["code"] == "context_length_exceeded" and "exceeds the context window" in error["message"]
+    assert error["param"] == ("messages" if chat else "prompt")              # OpenAI's field, as clients read it
     assert re.search(r"maximum context length is \d+ tokens", error["message"])
     assert not engine.calls
 

@@ -258,18 +258,45 @@ class ConstructorLifecycleTests(unittest.TestCase):
         self.assertIs(caught.exception, primary)
         self.assertEqual(calls, ["cuda:0"])
 
-    def test_canonical_callers_publish_empty_communicator_before_open(self):
+    def test_canonical_callers_use_the_rollback_owning_factory(self):
         for relative in ("src/tensorfold/families/nemotron_h/cuda/app.py",
                          "src/tensorfold/families/glm5_next/cuda/engine.py",
                          "src/tensorfold/families/qwen4_exp/cuda/engine.py"):
             tree = ast.parse((ROOT / relative).read_bytes())
-            calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "NCCL"]
+            calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Name) and node.func.id == "open_comm"]
             self.assertEqual(len(calls), 1)
-            self.assertEqual((calls[0].args, calls[0].keywords), ([], []))
-            opens = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                     and node.func.attr == "open" and ast.unparse(node.func.value) == "self.comm"]
-            self.assertEqual(len(opens), 1)
-            self.assertGreater(opens[0].lineno, calls[0].lineno)
+            direct = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Name) and node.func.id == "NCCL"]
+            self.assertEqual(direct, [])
+
+    def test_factory_journals_open_before_backend_failure_and_preserves_failed_retirement(self):
+        path = ROOT / "src/tensorfold/cuda/comm.py"
+        tree = ast.parse(path.read_bytes())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "open_comm")
+        primary, cleanup = RuntimeError("backend wrapper failed"), OSError("native retirement failed")
+        calls = []
+        class Owner:
+            store = None
+            def open(self, *args, **kwargs):
+                calls.append("open")
+            def close(self, *, abort):
+                calls.append(("close", abort))
+                raise cleanup
+        owned = Owner()
+        def wrap(base):
+            self.assertIs(base, owned)
+            self.assertEqual(calls, ["open"])
+            raise primary
+        namespace = {"NCCL": lambda: owned, "BACKENDS": {"broken": wrap},
+                     "rollback": rollback, "BACKEND_ENV": "TF_COMM_BACKEND"}
+        exec(compile(ast.fix_missing_locations(ast.Module([ast.ImportFrom("__future__", [ast.alias("annotations")], 0), function], [])), str(path), "exec"), namespace)
+        with self.assertRaises(RuntimeError) as caught:
+            namespace["open_comm"](0, 2, "host", 1, backend="broken")
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(calls, ["open", ("close", True)])
+        self.assertIs(primary.__dict__["_tensorfold_retained_owners"][0], owned)
+        self.assertIs(primary.__cause__, cleanup)
 
 
 if __name__ == "__main__":

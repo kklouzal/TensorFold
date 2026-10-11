@@ -37,7 +37,9 @@ def test_serve_limits_memory_before_loading_without_changing_residency(monkeypat
     core.metal = SimpleNamespace(is_available=lambda: metal)
     monkeypatch.setattr(memory_budget, "physical_memory_bytes", lambda: 128 * GIB)     # the host's RAM plays no part
     core.set_wired_limit = lambda value: calls.append(("wired", value)) or 7 * GIB
-    core.synchronize = lambda: calls.append(("sync", None))
+    core.gpu, core.cpu = object(), object()
+    core.default_stream = lambda device: device
+    core.synchronize = lambda stream=None: calls.append(("sync", stream))
     mlx = ModuleType("mlx")
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
@@ -68,7 +70,9 @@ def test_serve_limits_memory_before_loading_without_changing_residency(monkeypat
         cli.cmd_serve(args)
     assert ("memory", 12 * GIB - PROCESS_BYTES) in calls
     assert calls.index(("memory", 12 * GIB - PROCESS_BYTES)) < calls.index(("load", None))
-    assert not any(kind in ("wired", "sync") for kind, _ in calls)
+    before_load = calls[:calls.index(("load", None))]
+    assert not any(kind in ("wired", "sync") for kind, _ in before_load)
+    assert calls[-4:] == [("sync", core.gpu), ("sync", core.cpu), ("sync", None), ("wired", 0)]
 
 
 def test_default_budget_respects_physical_and_recommended_memory():
@@ -437,6 +441,10 @@ def test_serve_applies_the_family_allowance_before_loading(monkeypatch, tmp_path
     core.set_cache_limit = lambda value: calls.append(("cache", value))
     core.set_memory_limit = lambda value: calls.append(("memory", value))
     core.device_info = lambda: {"max_recommended_working_set_size": 240 * GIB}
+    core.gpu, core.cpu = object(), object()
+    core.default_stream = lambda device: device
+    core.synchronize = lambda stream=None: calls.append(("sync", stream))
+    core.set_wired_limit = lambda value: calls.append(("wired", value))
     mlx = ModuleType("mlx")
     mlx.core = core
     monkeypatch.setitem(sys.modules, "mlx", mlx)
@@ -457,6 +465,7 @@ def test_serve_applies_the_family_allowance_before_loading(monkeypatch, tmp_path
         pass
 
     def load(*args, **kwargs):
+        calls.append(("load", None))
         raise LoadingReached
 
     package = SimpleNamespace(load=load, memory_fraction=lambda ram: 0.85)
@@ -464,3 +473,5 @@ def test_serve_applies_the_family_allowance_before_loading(monkeypatch, tmp_path
     with pytest.raises(LoadingReached):
         cli.cmd_serve(cli.build_parser().parse_args(["serve", str(tmp_path), "--no-update-check", "--snapshot-dir", "none"]))
     assert ("memory", int(0.85 * 256 * GIB) - memory_budget.PROCESS_BYTES) in calls      # MLX gets the rest
+    assert calls.index(("memory", int(0.85 * 256 * GIB) - memory_budget.PROCESS_BYTES)) < calls.index(("load", None))
+    assert calls[-4:] == [("sync", core.gpu), ("sync", core.cpu), ("sync", None), ("wired", 0)]

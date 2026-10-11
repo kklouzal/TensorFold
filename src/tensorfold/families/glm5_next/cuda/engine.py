@@ -1,4 +1,4 @@
-"""GLM-5.3-Flash on two NCCL ranks; both sample by one keyed rule from the same gathered candidates, so no broadcast."""
+"""GLM-5.3-Flash on two or four NCCL ranks; all sample by one keyed rule from the same gathered candidates, so no broadcast."""
 
 from __future__ import annotations
 
@@ -110,16 +110,16 @@ def without_mtp(transform, layers: int):
 
 
 class GlmEngine:
-    """Two ranks mirror one mutable request; close drains it before retirement.
+    """Two or four ranks mirror one mutable request; close drains it before retirement.
 
-    Failed accepted requests close admission. Both owned NCCL ranks close;
+    Failed accepted requests close admission. All owned NCCL ranks close;
     callers retain and retire an explicitly supplied borrowed communicator.
     Request sampling/policies and gathered arithmetic use the same rule as before.
     """
 
     def __init__(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str = DEFAULT_POLICY,
                  drafter: Path | None = None, context: int | None = None, context_explicit: bool | None = None, serial_only: bool = False, comm=None,
-                 prefill_rows: int | None = None) -> None:
+                 prefill_rows: int | None = None, world: int = 2) -> None:
         self._lifetime = EngineLifetime()
         self.torch = self.comm = self.w = self.e = self.drafter = None
         self._owns_comm = comm is None
@@ -128,18 +128,18 @@ class GlmEngine:
         try:
             self._initialize(model_dir, rank=rank, master=master, port=port, policy=policy, drafter=drafter,
                              context=context, context_explicit=context_explicit, serial_only=serial_only,
-                             comm=comm, prefill_rows=prefill_rows)
+                             comm=comm, prefill_rows=prefill_rows, world=world)
         except BaseException as error:
             rollback(self, error, lambda: self.close(abort=True))
 
     def _initialize(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str,
                     drafter: Path | None, context: int | None, context_explicit: bool | None,
-                    serial_only: bool, comm, prefill_rows: int | None) -> None:
+                    serial_only: bool, comm, prefill_rows: int | None, world: int) -> None:
         """``comm``: a communicator with ``all_gather`` and ``barrier`` instead of NCCL between two machines (tests)."""
 
         import torch
 
-        from tensorfold.cuda.comm import NCCL
+        from tensorfold.cuda.comm import open_comm
         from .decode import Engine
         from .weights import Config, load
         from .split import rule
@@ -148,16 +148,17 @@ class GlmEngine:
                                               split_weights)
 
         encode_policy(policy)                           # a bad default fails here, not in the first request
-        if type(rank) is not int or rank not in (0, 1):
-            raise ValueError("GLM requires integer rank zero or one")
+        world_ranks = getattr(comm, "world", world) if comm is not None else world
+        if (type(world_ranks) is not int or world_ranks not in (2, 4)
+                or type(rank) is not int or not 0 <= rank < world_ranks):
+            raise ValueError("GLM requires an integer rank within two or four ranks")
         torch.cuda.set_device(0)
         self.torch = torch
         self.rank = rank
         self.policy = "0" if serial_only else policy
         self.serial_only = serial_only
-        self.comm = comm if comm is not None else NCCL()
-        if comm is None:
-            self.comm.open(rank, 2, master, port)
+        self.comm = comm if comm is not None else open_comm(rank, world_ranks, master, port)
+        self.world = world_ranks
         self.comm.barrier()
         cfg = Config.read(model_dir)
         # Without --context the window stays dense, attending every key without indexer work.
@@ -166,15 +167,15 @@ class GlmEngine:
 
         # TF_GLM_MTP off: the MTP layer's tensors, caches and buffers are neither loaded nor estimated
         self.mtp_on = mtp_head(drafter is not None, serial_only, cfg.mtp_layers)
-        weights_estimate = split_weights(rule)
+        weights_estimate = split_weights(rule, self.world)
         if not self.mtp_on:
             weights_estimate = without_mtp(weights_estimate, cfg.layers)
         self.capacity_plan = admit(model_dir, context if explicit else cfg.dense_limit, explicit, torch,
-                                   lambda text: mla_geometry(text, 2, MAX_ROWS, minimum_slots=DENSE_CAPACITY,
+                                   lambda text: mla_geometry(text, self.world, MAX_ROWS, minimum_slots=DENSE_CAPACITY,
                                                              latent=LATENT, mtp=self.mtp_on),
-                                   weights_estimate, rank=rank, world=2, gather=self._gather_ints,
-                                   draft_dir=drafter, draft_weights=lambda d: dflash2_weights(d, 2),
-                                   draft_geometry=lambda text: dflash2_geometry(text, 2, MAX_ROWS, ring=DRAFT_RING))
+                                   weights_estimate, rank=rank, world=self.world, gather=self._gather_ints,
+                                   draft_dir=drafter, draft_weights=lambda d: dflash2_weights(d, self.world),
+                                   draft_geometry=lambda text: dflash2_geometry(text, self.world, MAX_ROWS, ring=DRAFT_RING))
         self.limit = self.capacity_plan["context_window"]
         capacity = self.capacity_plan["cache_slots"]
         long_context = self.limit > cfg.dense_limit
@@ -187,12 +188,12 @@ class GlmEngine:
         wanted = int(float(os.environ.get("TF_GLM_CACHE_GIB", "3")) * 2 ** 30)
         spare = max(0, min(wanted, plan["budget_bytes"] - plan["total_bytes_estimate"]))
         both = self._gather_ints(mine + [spare >> 20])
-        if both[0][:-1] != both[1][:-1]:
-            raise RuntimeError("the two ranks were started with different settings (draft model, context, drafts, "
+        if any(peer[:-1] != both[0][:-1] for peer in both[1:]):
+            raise RuntimeError("the ranks were started with different settings (draft model, context, drafts, "
                                "TF_GLM_LATENT, TF_GLM_MTP, TF_GLM_DRAFT_RING): "
-                               f"rank 0 {both[0][:-1]}, rank 1 {both[1][:-1]}; pull the draft model on both machines "
+                               f"rank settings {[peer[:-1] for peer in both]}; pull the draft model on every machine "
                                "(or pass --drafter none to both) and give both the same flags")
-        self.cache_bytes = min(both[0][-1], both[1][-1]) << 20
+        self.cache_bytes = min(peer[-1] for peer in both) << 20
         plan["kept_bytes"] = self.cache_bytes
         for key in ("serving_peak_bytes_estimate", "total_bytes_estimate"):
             plan[key] = plan[key] + self.cache_bytes
@@ -203,7 +204,7 @@ class GlmEngine:
             raise ValueError(("TF_GLM_MTP=0 leaves" if cfg.mtp_layers else "this checkpoint has") + " no MTP head and "
                              "no DFlash2 draft model was given, so every round would decode one token: pull the draft "
                              "model on both machines (--drafter), or pass --no-drafts to both for the serial reference")
-        w = load(model_dir, rank=rank, mtp=self.mtp_on)
+        w = load(model_dir, rank=rank, mtp=self.mtp_on, world=self.world)
         w.comm = self.comm
         self.comm.ready("loading")                   # a peer stuck loading is named, not waited on in NCCL
         self.comm.barrier()
@@ -329,9 +330,11 @@ class GlmEngine:
                 back()
         names = list(best)
         mine = torch.tensor([best[n] for n in names], dtype=torch.float32, device="cuda")
-        got = torch.empty((2 * mine.numel(),), dtype=torch.float32, device="cuda")
+        world = self.world
+        got = torch.empty((world * mine.numel(),), dtype=torch.float32, device="cuda")
         self.comm.all_gather(mine, got)
-        both = dict(zip(names, got.view(2, -1).max(dim=0).values.tolist()))
+        per = got.view(world, -1)
+        both = {name: per[:, j].max().item() for j, name in enumerate(names)}
         e.reset()
         if self.drafter is not None:
             self.drafter.reset()
@@ -349,9 +352,10 @@ class GlmEngine:
     def _gather_ints(self, values: list[int]) -> list[list[int]]:
         torch = self.torch
         mine = torch.tensor(values, dtype=torch.int32, device="cuda")
-        got = torch.empty((2 * len(values),), dtype=torch.int32, device="cuda")
+        world = self.world
+        got = torch.empty((world * len(values),), dtype=torch.int32, device="cuda")
         self.comm.all_gather(mine, got)
-        return [got[:len(values)].tolist(), got[len(values):].tolist()]
+        return [got[i * len(values):(i + 1) * len(values)].tolist() for i in range(world)]
 
     # the idle doorbell: rank 1 waits for each request on the rendezvous store (no store: no doorbell), not in NCCL
     def _store(self):
@@ -361,7 +365,11 @@ class GlmEngine:
         store = self._store()
         if store is not None:
             self._bell = getattr(self, "_bell", 0) + 1
-            store.set(f"tf_glm_request_{self._bell}", b"1")
+            if getattr(self, "world", 2) == 2:
+                store.set(f"tf_glm_request_{self._bell}", b"1")
+            else:
+                for rank in range(1, self.world):
+                    store.set(f"tf_glm_request_{self._bell}/{rank}", b"1")
 
     def _await_bell(self) -> None:
         store = self._store()
@@ -371,6 +379,8 @@ class GlmEngine:
         from tensorfold.cuda.store_wait import timed_out
 
         key = f"tf_glm_request_{getattr(self, '_bell', 0) + 1}"
+        if getattr(self, "world", 2) != 2:
+            key += f"/{self.rank}"
         timeout = timedelta(hours=1)
         while True:
             try:
@@ -391,14 +401,15 @@ class GlmEngine:
         if self.rank == 0:
             ints(values, maximum, lower=-(1 << 31), empty=True)
         n = torch.tensor([len(values) if self.rank == 0 else 0], dtype=torch.int32, device="cuda")
-        got = torch.empty((2,), dtype=torch.int32, device="cuda")
+        world = self.world
+        got = torch.empty((world,), dtype=torch.int32, device="cuda")
         self.comm.all_gather(n, got)
         count = int(got[0].item())
         if not 0 <= count <= maximum:
             raise ValueError("rank message count exceeds its role bound")
         buf = (torch.tensor(values, dtype=torch.int32, device="cuda") if self.rank == 0
                else torch.zeros((count,), dtype=torch.int32, device="cuda"))
-        allv = torch.empty((2 * count,), dtype=torch.int32, device="cuda")
+        allv = torch.empty((world * count,), dtype=torch.int32, device="cuda")
         self.comm.all_gather(buf, allv)
         return [int(v) for v in allv[:count].tolist()]
 
@@ -546,6 +557,8 @@ class GlmEngine:
                      sha256=hashlib.sha256(json.dumps(res.tokens).encode()).hexdigest()[:16])
         if res.arms:
             stats.update(drafters=res.arms, keeps=res.keeps)
+        if policy is not None:                   # the drafts' counts, which /health, /metrics and the reply report
+            stats.update(drafted=res.drafted, accepted=res.accepted)
         if res.stages:
             stats["stages_ms"] = {k: round(v * 1e3, 1) for k, v in res.stages.items()}
         return stats
@@ -638,10 +651,11 @@ class GlmEngine:
     def _gather_floats(self, values: list[float]) -> list[list[float]]:
         torch = self.torch
         mine = torch.tensor(values, dtype=torch.float32, device="cuda")
-        got = torch.empty((2 * len(values),), dtype=torch.float32, device="cuda")
+        world = self.world
+        got = torch.empty((world * len(values),), dtype=torch.float32, device="cuda")
         self.comm.all_gather(mine, got)
         width = len(values)
-        return [[float(item) for item in got[:width].tolist()], [float(item) for item in got[width:].tolist()]]
+        return [[float(item) for item in got[i * width:(i + 1) * width].tolist()] for i in range(world)]
 
     def follow(self) -> None:
         with self._lifetime.request():

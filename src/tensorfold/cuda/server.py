@@ -6,6 +6,7 @@ import inspect
 import json
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -17,7 +18,9 @@ from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_options import heard_effort, parse_numbers, thinking_fields
 from tensorfold.server.request_limits import RequestLimit, optional_limit
-from tensorfold.server.stopping import stop_options
+from tensorfold.server.stopping import matched_stop, stop_options
+from tensorfold.server.thinking_notes import unanswered
+from tensorfold.server.token_routes import flag, token_ids
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
 from tensorfold.engine.tool_draft import ToolCallStreamer
@@ -71,6 +74,8 @@ class App:
                  sampling: dict[str, Any] | None = None, max_tokens: int = 4096,
                  context_window: int | None = None, reasoning_effort: str | None = None, thinking_budget: int = 0,
                  aliases: tuple[str, ...] | list[str] = (), vision_max_images: int | None = None,
+                 vision_image_tokens: int | None = None,
+                 background_ids: tuple[str, ...] | frozenset[str] = (),
                  max_pending_requests: int | None = None):
         self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
         self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
@@ -79,13 +84,18 @@ class App:
             if scheduler is not None:
                 scheduler.configure_requests(self._request_limit)
             self.run = self._request_limit.wrap(self.run)
+            self.decisions = self._request_limit.wrap(self.decisions)
         from tokenizers import Tokenizer
 
         self.engine = engine
         self.vision = getattr(engine, "vision", None)
-        self.image_limits = DEFAULT_LIMITS if vision_max_images is None else ImageLimits(max_images=vision_max_images)
+        self.vision_image_tokens = vision_image_tokens
+        self.image_limits = DEFAULT_LIMITS if vision_max_images is None and vision_image_tokens is None else \
+            ImageLimits(**({} if vision_max_images is None else {"max_images": vision_max_images}),
+                        **({} if vision_image_tokens is None else {"max_visual_tokens": vision_image_tokens}))
         self.served = served
         self.aliases = tuple(str(alias).strip() for alias in aliases if str(alias).strip())
+        self.background_ids = frozenset(background_ids)   # --name-priority ID=background: a default for this id
         self.model_dir = Path(model_dir)
         self.tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
         self.template = ChatTemplate(model_dir)
@@ -136,6 +146,8 @@ class App:
         if problem is None and grammar.request_spec(body) and "constraint" not in inspect.signature(
                 self.engine.generate).parameters:
             problem = "this model's engine does not enforce structured output"
+        if problem is None and grammar.request_spec(body) and getattr(self.engine, "refuses_structured_output", None):
+            problem = self.engine.refuses_structured_output       # e.g. Flash Next on two ranks with --parallel
         return problem
 
     def _grammars(self) -> grammar.Grammars:
@@ -269,21 +281,68 @@ class App:
                 rendered = prepare_images(self.vision, body["messages"],
                                           lambda messages: render(messages, allow_images=True),
                                           context_limit=self._context_limit(),
-                                          limits=getattr(self, "image_limits", DEFAULT_LIMITS))
+                                          limits=getattr(self, "image_limits", DEFAULT_LIMITS),
+                                          max_visual_tokens=getattr(self, "vision_image_tokens", None))
                 return PreparedRequest(rendered.tokens, max_tokens, tools, thinking,
                                        self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
                                        vision=rendered.vision, grammar=compiled, think_budget=budget)
             text = render(body["messages"])
+            prompt = self.tok.encode(text, add_special_tokens=False).ids
+        elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
+            prompt = self.token_ids(body["prompt"])
         else:
             text = body.get("prompt")
             if not isinstance(text, str):
-                raise RequestError("prompt must be a string")
-        prompt = self.tok.encode(text, add_special_tokens=False).ids
+                raise RequestError("prompt must be a string or a list of token ids")
+            prompt = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False)).ids
         if not prompt:
             raise RequestError("rendered prompt is empty")
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
                                ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget)
+
+    def token_ids(self, value: Any, field: str = "prompt") -> list[int]:
+        """Token ids as a request gives them (a list, or a list holding one list); RequestError outside the
+        vocabulary."""
+
+        size = getattr(self.tok, "get_vocab_size", None)
+        return token_ids(value, size(with_added_tokens=True) if size is not None else None, field)
+
+    def tokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+        """vLLM's ``/tokenize`` (``server.token_routes``): a prompt's ids (``add_special_tokens``, default true, as
+        vLLM's), or ``messages``' as the chat route renders them (``add_generation_prompt``, default true)."""
+
+        if not isinstance(body, dict):
+            raise RequestError("the request body must be a JSON object")
+        strings = flag(body, "return_token_strs", False)
+        if "messages" in body:
+            fields = dict(body)
+            if "add_generation_prompt" in body:
+                kwargs = body.get("chat_template_kwargs")
+                kwargs = {} if kwargs is None else kwargs
+                if not isinstance(kwargs, dict):
+                    raise RequestError("chat_template_kwargs must be a JSON object or null")
+                fields["chat_template_kwargs"] = {**kwargs,
+                                                  "add_generation_prompt": flag(body, "add_generation_prompt", True)}
+            ids = self._prepare(fields, True).prompt
+        else:
+            text = body.get("prompt")
+            if not isinstance(text, str):
+                raise RequestError("prompt must be a string (or send messages)")
+            ids = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", True)).ids
+        limit = self._context_limit()
+        reply: dict[str, Any] = {"count": len(ids), "tokens": [int(t) for t in ids],
+                                 "max_model_len": limit if limit is not None else self.native_context_window}
+        if strings:
+            reply["token_strs"] = [self.tok.id_to_token(t) for t in reply["tokens"]]
+        return reply
+
+    def detokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+        """vLLM's ``/detokenize``: the text of ``tokens``, special tokens included."""
+
+        if not isinstance(body, dict):
+            raise RequestError("the request body must be a JSON object")
+        return {"prompt": self.tok.decode(self.token_ids(body.get("tokens"), "tokens"), skip_special_tokens=False)}
 
     def check(self, body: dict[str, Any], *, prepared: PreparedRequest | None = None) -> str | None:
         """Why the request cannot run, or None; rendered before a stream's headers are sent."""
@@ -437,8 +496,9 @@ class App:
         shaped = prepared.grammar is not None or prepared.think_budget > 0
         think_end = self.tok.token_to_id("</think>") if chat and thinking and shaped else None
         budget = self._think_budget(prepared, think_end)
-        # priority "background" (or a session-title request): after the others, as on the Mac
-        background = body.get("priority") == "background" or (chat and is_title_request(body.get("messages"), tools))
+        # background: the request's own priority, else --name-priority's default for its id; title requests always
+        by_name = "priority" not in body and self.reply_model(body) in getattr(self, "background_ids", ())
+        background = body.get("priority") == "background" or by_name or (chat and is_title_request(body.get("messages"), tools))
         concurrent = getattr(self.engine, "concurrent", False)
         turns = None if concurrent else self._turns()
         if concurrent and background and "background" in inspect.signature(self.engine.generate).parameters:
@@ -494,7 +554,8 @@ class App:
         final: dict[str, Any] = {}
         if len(reasoning) > sent["reasoning"]:
             final["reasoning_content"] = reasoning[sent["reasoning"]:]
-        text = stops.visible(self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False))
+        raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
+        text = stops.visible(raw_text)
         raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
         content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
         content = policy.content(content) if tools else content
@@ -502,6 +563,10 @@ class App:
         if tail:
             final["content"] = tail
         finish = "tool_calls" if calls else ("stop" if stopped["stop"] or (out and out[-1] in ends) else "length")
+        warning = unanswered(finish, chat and thinking, content, calls)
+        if warning:
+            print(warning, flush=True)
+        print_done(len(prompt), (cached or [0])[0], thinking, out, finish, stats, request)
         if body.get("return_token_ids"):              # the reply's ids in the "tensorfold" block, for exactness checks
             stats = {**(stats or {}), "token_ids": [int(t) for t in out]}
         logprobs = (self._probability_decoder.format(probabilities.emitted(out), ends)
@@ -509,6 +574,7 @@ class App:
         # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
         streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
         return {"final": final, "calls": calls, "finish": finish, "content": content, "reasoning": reasoning,
+                "stop_sequence": matched_stop(raw_text, stops.strings),
                 **({"logprobs": logprobs} if logprobs is not None else {}),
                 "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
                 "reasoning_tokens": reasoning_count(out, self.tok.token_to_id("</think>") if chat and thinking else None),
@@ -565,6 +631,21 @@ def token_sha(tokens: list[int]) -> str:
     """A reply's token ids, hashed as the Mac server does: drafted and ``"draft": false`` replies must match."""
 
     return hashlib.sha256(",".join(str(int(t)) for t in tokens).encode()).hexdigest()[:12]
+
+
+def print_done(prompt: int, cached: int, thinking: bool, out: list[int], finish: str, stats: dict[str, Any],
+               request: Any) -> None:
+    """The Mac server's ``done`` line for a finished reply; tok/s runs from the first token to the last."""
+
+    ended = time.perf_counter()
+    first, started = getattr(request, "first", None), getattr(request, "started", ended)
+    decode = ended - first if first is not None else 0.0
+    rate = (len(out) - 1) / decode if decode > 0 and len(out) > 1 else 0.0
+    print(f"[tensorfold] done req-{uuid.uuid4().hex[:12]} prompt={prompt} cached={cached} thinking={thinking} "
+          f"tokens={len(out)} sha={token_sha(out)} finish={finish} tok/s={rate:.1f} "
+          f"ttft={(first - started) if first is not None else -1:.2f}s prefill={stats.get('prefill_s', -1):.2f}s "
+          f"rounds={stats.get('rounds', 0)} accepted={stats.get('accepted', 0)}/{stats.get('drafted', 0)}",
+          flush=True)
 
 
 from tensorfold.cuda.http import Server, make_handler, serve, usage_of  # noqa: E402,F401  (the HTTP side)

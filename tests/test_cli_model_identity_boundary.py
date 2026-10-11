@@ -26,7 +26,8 @@ class IdentityStartup(unittest.TestCase):
         substitution.start()
         self.addCleanup(substitution.stop)
 
-    def execute(self, base, *, loader=None, trust=False, persistence=True, head=None, owner_journal=None):
+    def execute(self, base, *, loader=None, trust=False, persistence=True, head=None, owner_journal=None,
+                mtp_family=None, mtp_drafts=None, no_drafts=True, head_resolver=None, drafter_choice="auto"):
         model_dir, runtime_dir = Path(base) / "model", Path(base) / "runtime"
         model_dir.mkdir(exist_ok=True)
         runtime_dir.mkdir(exist_ok=True)
@@ -42,7 +43,7 @@ class IdentityStartup(unittest.TestCase):
             [
                 "serve",
                 str(model_dir),
-                "--no-drafts",
+                *(["--no-drafts"] if no_drafts else []),
                 "--prompt-cache-gib",
                 "0",
                 "--snapshot-dir",
@@ -50,6 +51,8 @@ class IdentityStartup(unittest.TestCase):
             ]
         )
         args.trust_model_code = trust
+        args.mtp_drafts = mtp_drafts
+        args.drafter = drafter_choice
         model = SimpleNamespace(layers=[], release_rounds=lambda: None)
         options_seen, ids = [], []
         owners = {} if owner_journal is None else owner_journal
@@ -61,13 +64,15 @@ class IdentityStartup(unittest.TestCase):
             return model, SimpleNamespace()
 
         package = SimpleNamespace(load=load, MLX_MODEL_FILE=True, __name__="owned.family")
-        if head is not None:
+        if mtp_family == "qwen3_5_moe":
+            package.__name__ = "tensorfold.families.qwen3_5_moe"
+        elif head is not None:
             package.__name__ = "tensorfold.families.nemotron_h"
-        family = SimpleNamespace(title="owned metadata", model_type="owned", package=package)
+        family = SimpleNamespace(title="owned metadata", model_type=mtp_family or "owned", package=package)
         core, mlx = ModuleType("mlx.core"), ModuleType("mlx")
         core.__version__ = "owned-host-1"
         mlx.core = core
-        lane, plan, choose, prompt, residency, app, nemotron = [
+        lane, plan, choose, prompt, residency, app, nemotron, qwen = [
             ModuleType(name)
             for name in (
                 "tensorfold.engine.lane_engine",
@@ -77,6 +82,7 @@ class IdentityStartup(unittest.TestCase):
                 "tensorfold.server.residency",
                 "tensorfold.server.app",
                 "tensorfold.families.nemotron_h.model",
+                "tensorfold.families.qwen3_5_moe",
             )
         ]
 
@@ -96,8 +102,9 @@ class IdentityStartup(unittest.TestCase):
 
         app.ChatApp = capture
         nemotron.find_mtp_head = lambda directory: head
+        qwen.mtp_file = head_resolver or (lambda directory: head)
         replacements = {
-            module.__name__: module for module in (core, mlx, lane, plan, choose, prompt, residency, app, nemotron)
+            module.__name__: module for module in (core, mlx, lane, plan, choose, prompt, residency, app, nemotron, qwen)
         }
         output = io.StringIO()
         with (
@@ -176,6 +183,77 @@ class IdentityStartup(unittest.TestCase):
             head.write_bytes(b"owned head 2")
             second = self.execute(base, head=head)[0]
             self.assertNotEqual(first[0].split("|", 1)[0], second[0].split("|", 1)[0])
+
+    def test_qwen_external_mtp_is_resolved_once_bound_and_content_hashed(self):
+        with tempfile.TemporaryDirectory() as base:
+            head = Path(base) / "external-qwen-mtp.safetensors"
+            head.write_bytes(b"qwen head 1")
+            resolutions = []
+
+            def resolve(directory):
+                resolutions.append(directory)
+                return head
+
+            first, _, options, _, _ = self.execute(
+                base, mtp_family="qwen3_5_moe", mtp_drafts=4, no_drafts=False, head_resolver=resolve,
+            )
+            self.assertEqual(options[0]["mtp_head"], str(head))
+            self.assertEqual(resolutions, [Path(base) / "model"])
+            head.write_bytes(b"qwen head 2")
+            second = self.execute(
+                base, mtp_family="qwen3_5_moe", mtp_drafts=4, no_drafts=False, head_resolver=resolve,
+            )[0]
+            self.assertNotEqual(first[0].split("|", 1)[0], second[0].split("|", 1)[0])
+            self.assertEqual(len(resolutions), 2)
+
+    def test_qwen_mtp_mutation_refuses_after_model_ownership_is_journaled(self):
+        with tempfile.TemporaryDirectory() as base:
+            head = Path(base) / "external-qwen-mtp.safetensors"
+            head.write_bytes(b"qwen selected bytes")
+            owners = {}
+
+            def mutate(path, runtime):
+                head.write_bytes(b"qwen changed bytes")
+
+            with self.assertRaises(ValueError):
+                self.execute(base, mtp_family="qwen3_5_moe", mtp_drafts=4, no_drafts=False,
+                             head=head, loader=mutate, owner_journal=owners)
+            self.assertIn("model", owners)
+
+    def test_qwen_mtp_absence_is_bound_before_a_late_optional_file_appears(self):
+        with tempfile.TemporaryDirectory() as base:
+            late = Path(base) / "late-qwen-mtp.safetensors"
+
+            def generated(path, runtime):
+                late.write_bytes(b"not a selected loader input")
+
+            _, _, options, _, _ = self.execute(base, mtp_family="qwen3_5_moe", mtp_drafts=4, no_drafts=False,
+                                               loader=generated, head_resolver=lambda directory: None)
+            self.assertEqual(options[0]["mtp_head"], "")
+
+    def test_qwen_serial_and_zero_depth_do_not_resolve_an_unused_mtp_head(self):
+        for no_drafts, depth in ((True, None), (True, 4), (False, 0)):
+            with self.subTest(no_drafts=no_drafts, depth=depth), tempfile.TemporaryDirectory() as base:
+
+                def forbidden(directory):
+                    self.fail("an unused MTP head was resolved")
+
+                _, _, options, _, _ = self.execute(base, mtp_family="qwen3_5_moe", mtp_drafts=depth,
+                                                   no_drafts=no_drafts, head_resolver=forbidden)
+                self.assertNotIn("mtp_head", options[0])
+                self.assertEqual(options[0]["mtp_drafts"], 0)
+
+    def test_qwen_omitted_mtp_cap_keeps_baseline_load_options_and_no_optional_head(self):
+        for choice in ("auto", "none"):
+            with self.subTest(drafter=choice), tempfile.TemporaryDirectory() as base:
+
+                def forbidden(directory):
+                    self.fail("an unselected optional MTP head was resolved")
+
+                _, _, options, _, _ = self.execute(base, mtp_family="qwen3_5_moe", no_drafts=False,
+                                                   head_resolver=forbidden, drafter_choice=choice)
+                self.assertNotIn("mtp_head", options[0])
+                self.assertNotIn("mtp_drafts", options[0])
 
     def test_persistence_disabled_keeps_existing_no_hash_load_path(self):
         with tempfile.TemporaryDirectory() as base:

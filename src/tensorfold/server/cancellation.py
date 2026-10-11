@@ -27,17 +27,25 @@ class Cancellation:
             raise RequestCancelled("request cancelled")
 
 
+def _readable(connection: socket.socket) -> bool:
+    """Use poll where supported so cancellation also works above descriptor 1023."""
+    if hasattr(select, "poll"):
+        poll = select.poll()
+        poll.register(connection, select.POLLIN | select.POLLPRI)
+        return bool(poll.poll(0))
+    ready, _, _ = select.select([connection], [], [], 0)
+    return bool(ready)
+
+
 def socket_cancellation(connection: socket.socket, *, stopping: threading.Event | None = None) -> Cancellation:
     """Cancel on peer disconnect or the owning server's explicit shutdown."""
-
     def disconnected() -> bool:
         if stopping is not None and stopping.is_set():
             return True
         try:
             if connection.fileno() < 0:
                 return True
-            ready, _, _ = select.select([connection], [], [], 0)
-            if not ready:
+            if not _readable(connection):
                 return False
             return connection.recv(1, socket.MSG_PEEK | getattr(socket, "MSG_DONTWAIT", 0)) == b""
         except BlockingIOError:

@@ -102,7 +102,8 @@ class Controls(unittest.TestCase):
                         raise primary
                 class Comm:
                     def open(owner, *args):
-                        self.assertIs(owners[0].comm, owner)
+                        self.assertIsNone(owners[0].comm)
+                        self.assertIn(owner, factory_owners)
                         stage('open')
                     def barrier(owner):
                         stage('barrier')
@@ -110,6 +111,16 @@ class Controls(unittest.TestCase):
                         events.append(('close', abort))
                     def all_gather(owner, *args):
                         self.fail('unexpected native gather in opaque startup fixture')
+                factory_owners = []
+                factory_rollback = cls.__init__.__globals__["rollback"]
+                def open_comm(*args):
+                    comm = Comm()
+                    factory_owners.append(comm)
+                    try:
+                        comm.open(*args)
+                    except BaseException as error:
+                        factory_rollback(comm, error, lambda: comm.close(abort=True))
+                    return comm
                 def admitted(*args, **kwargs):
                     stage('admit')
                     return {'cache_slots': 32, 'budget_bytes': 100000, 'total_bytes_estimate': 1000}
@@ -134,7 +145,7 @@ class Controls(unittest.TestCase):
                     'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda: 16,
                         gdn_geometry=lambda *args, **kwargs: None, indexed_stream_geometry=lambda *args, **kwargs: None,
                         indexed_weights=lambda *args, **kwargs: None),
-                    'tensorfold.cuda.comm': NS(NCCL=Comm),
+                    'tensorfold.cuda.comm': NS(open_comm=open_comm),
                     'tensorfold.vision.qwen_cuda': NS(capacity_geometry=lambda value, *args: value,
                         weight_transform=lambda value, *args: value),
                 }

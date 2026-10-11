@@ -14,7 +14,7 @@ from typing import Any
 
 from tensorfold import __version__
 
-REPO = "ashhart/TensorFold"
+REPO = "kklouzal/TensorFold"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 REPO_URL = f"https://github.com/{REPO}.git"
 CACHE = Path.home() / ".cache" / "tensorfold" / "update-check.json"
@@ -39,14 +39,26 @@ def newer(latest: str, current: str = __version__) -> bool:
         return False
 
 
+def _release_tag(value: Any) -> str:
+    """A version-prefixed single Git ref component, also safe inside a pip VCS URL."""
+
+    if (not isinstance(value, str)
+            or re.fullmatch(r"v?[0-9]+(?:\.[0-9]+)*(?:[A-Za-z_+\-][A-Za-z0-9_+\-]*(?:\.[A-Za-z0-9_+\-]+)*)?", value) is None
+            or value.endswith(".lock")):
+        raise ValueError("release tag must be a version without Git or URL expressions")
+    parse_version(value)
+    return value
+
+
 def latest_release(timeout: float = 3.0, *, use_cache: bool = True) -> str | None:
-    """The newest release tag on GitHub (``v0.3.1``), from the day's cache when there is one; None offline."""
+    """The owned fork's release tag, from its day's cache; None without a resolvable published release."""
 
     if use_cache:
         try:
             cached = json.loads(CACHE.read_text())
-            if time.time() - float(cached["checked"]) < CACHE_SECONDS and cached.get("tag"):
-                return str(cached["tag"])
+            if (isinstance(cached, dict) and cached.get("repo") == REPO
+                    and 0 <= time.time() - float(cached["checked"]) < CACHE_SECONDS):
+                return _release_tag(cached["tag"])
         except (OSError, ValueError, KeyError, TypeError):
             pass
     import urllib.request
@@ -55,19 +67,23 @@ def latest_release(timeout: float = 3.0, *, use_cache: bool = True) -> str | Non
                                                             "User-Agent": f"tensorfold/{__version__}"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            tag = str(json.loads(response.read())["tag_name"])
+            tag = _release_tag(json.loads(response.read())["tag_name"])
     except Exception:                  # offline, rate-limited or blocked: no answer is fine
         return None
     try:
         CACHE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE.write_text(json.dumps({"tag": tag, "checked": time.time()}))
+        CACHE.write_text(json.dumps({"repo": REPO, "tag": tag, "checked": time.time()}))
     except OSError:
         pass
     return tag
 
 
 def notice(tag: str | None) -> str | None:
-    if tag and newer(tag):
+    try:
+        tag = _release_tag(tag)
+    except ValueError:
+        return None
+    if newer(tag):
         return (f"[tensorfold] TensorFold {tag.lstrip('v')} is available (this is {__version__}): run "
                 f"`tensorfold update`, then restart the server")
     return None
@@ -95,6 +111,7 @@ def whats_new(text: str, since: str, upto: str) -> str:
 def changelog(tag: str, clone: Path | None = None) -> str | None:
     """CHANGELOG.md at ``tag``: the clone's copy when there is one, else GitHub's; None when unreachable."""
 
+    tag = _release_tag(tag)
     if clone is not None:
         try:
             return (clone / CHANGELOG).read_text()
@@ -188,12 +205,105 @@ def _run(command: list[str], **kwargs: Any) -> int:
     return subprocess.call(command, **kwargs)
 
 
+def _git_oid(clone: Path, expression: str) -> str | None:
+    """Resolve a complete SHA-1/SHA-256 object name; malformed or failed Git output cannot select a revision."""
+
+    result = subprocess.run(["git", "-C", str(clone), "rev-parse", "--verify", expression],
+                            capture_output=True, text=True)
+    oid = result.stdout.strip()
+    if result.returncode != 0 or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid) is None:
+        print(f"[tensorfold] could not resolve updater object {expression}", file=sys.stderr)
+        return None
+    return oid
+
+
+def _failure_report(message: str) -> BaseException | None:
+    """Diagnostic output is observational; transport its failure with the operation's owned status."""
+
+    try:
+        print(f"[tensorfold] {message}", file=sys.stderr)
+    except BaseException as error:
+        return error
+    return None
+
+
+def _update_editable(clone: Path, tag: str) -> int:
+    """Own a validated release's private ref through immutable commit selection and retirement."""
+
+    from uuid import uuid4
+    from tensorfold.cleanup import raise_failures
+
+    base = _git_oid(clone, "HEAD^{commit}")
+    if base is None:
+        return 1
+    private = f"refs/tensorfold/update/{uuid4().hex}"
+    # Journal possible ownership before any mutation; only an acknowledged successful claim permits deletion.
+    claimed, owned_oid, code, primary, prior = None, base, 1, None, None
+    cleanup, cleanup_failure, cleanup_prior = 0, None, None
+    try:
+        claimed = _run(["git", "-C", str(clone), "update-ref", "--no-deref", private, base, ""])
+        if claimed == 0:
+            fetched = _run(["git", "-C", str(clone), "fetch", "--no-tags", REPO_URL, f"refs/tags/{tag}:{private}"])
+            raw = _git_oid(clone, private)
+            if raw is not None:
+                owned_oid = raw
+            if fetched == 0 and raw is not None:
+                commit = _git_oid(clone, f"{raw}^{{commit}}")
+                if commit is not None:
+                    code = _run(["git", "-C", str(clone), "merge", "--ff-only", commit])
+                    if code != 0:
+                        message = f"{clone} could not fast-forward to {tag} (Git status {code}): update it yourself"
+                        diagnostic = _failure_report(message)
+                        if diagnostic is not None:
+                            raise_failures(diagnostic, [RuntimeError(message)])
+    except BaseException as error:
+        primary = error
+        prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                 BaseException.__suppress_context__.__get__(error))
+        raise
+    finally:
+        message = None
+        if claimed == 0:
+            try:
+                cleanup = _run(["git", "-C", str(clone), "update-ref", "--no-deref", "-d", private, owned_oid])
+            except BaseException as error:
+                cleanup_failure, cleanup = error, 1
+                cleanup_prior = (BaseException.__cause__.__get__(error), BaseException.__context__.__get__(error),
+                                 BaseException.__suppress_context__.__get__(error))
+            if cleanup != 0:
+                message = f"temporary updater ref cleanup failed: {private} (Git status {cleanup}); retained for inspection"
+        elif claimed is None:
+            message = f"private updater ref claim outcome is unknown: {private}; retained for inspection if present"
+        else:
+            message = f"could not claim private updater ref {private} (Git status {claimed}); existing state retained"
+        context = RuntimeError(message) if message is not None else None
+        diagnostic = _failure_report(message) if message is not None else None
+        if cleanup_failure is not None:
+            BaseException.__cause__.__set__(cleanup_failure, cleanup_prior[0])
+            BaseException.__context__.__set__(cleanup_failure, cleanup_prior[1])
+            BaseException.__suppress_context__.__set__(cleanup_failure, cleanup_prior[2])
+        if primary is not None:
+            BaseException.__cause__.__set__(primary, prior[0])
+            BaseException.__context__.__set__(primary, prior[1])
+            BaseException.__suppress_context__.__set__(primary, prior[2])
+            raise_failures(primary, [error for error in (cleanup_failure, context, diagnostic) if error is not None])
+        if cleanup_failure is not None:
+            raise_failures(cleanup_failure, [error for error in (context, diagnostic) if error is not None])
+        if diagnostic is not None:
+            raise_failures(diagnostic, [context])
+    if code == 0 and cleanup != 0:
+        return 1
+    if code == 0:
+        show_whats_new(__version__, tag, clone)
+    return code
+
+
 def update(*, check_only: bool = False, force: bool = False) -> int:
     """``tensorfold update``: install the newest release (or say this one is current)."""
 
     tag = latest_release(timeout=10.0, use_cache=False)
     if tag is None:
-        print(f"[tensorfold] could not reach GitHub to look for releases ({RELEASES_API})", file=sys.stderr)
+        print(f"[tensorfold] could not resolve a published release for {REPO} ({RELEASES_API})", file=sys.stderr)
         return 1
     if not newer(tag) and not force:
         print(f"[tensorfold] TensorFold {__version__} is the latest release")
@@ -206,16 +316,9 @@ def update(*, check_only: bool = False, force: bool = False) -> int:
         dirty = subprocess.run(["git", "-C", str(clone), "status", "--porcelain"], capture_output=True, text=True)
         if dirty.returncode != 0 or dirty.stdout.strip():
             print(f"[tensorfold] this is an editable install from {clone}, which has local changes: update it "
-                  f"yourself (git fetch --tags, then check out {tag})", file=sys.stderr)
+                  f"yourself (review the owned fork's release {tag})", file=sys.stderr)
             return 1
-        if _run(["git", "-C", str(clone), "fetch", "--tags", "origin"]) != 0:
-            return 1
-        code = _run(["git", "-C", str(clone), "merge", "--ff-only", tag])
-        if code != 0:
-            print(f"[tensorfold] {clone} could not fast-forward to {tag}: update it yourself", file=sys.stderr)
-        else:
-            show_whats_new(__version__, tag, clone)
-        return code
+        return _update_editable(clone, tag)
     # Upgrade dependencies only when the new release requires different versions.
     code = _run([sys.executable, "-m", "pip", "install", "--upgrade", f"git+{REPO_URL}@{tag}"])
     if code == 0:

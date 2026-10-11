@@ -44,7 +44,7 @@ def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, al
     scratch = SimpleNamespace(qsa=True, nch=(slots+511)//512, nb=(slots+3)//4, budget=2048, ratio=4,
                               idw=2052, ids=None, nk=None, sparse=None, scores=None, po=None, pm=None, pl=None, out=tensor)
     buffers = SimpleNamespace(attn=scratch, mixed=tensor, xs_mixed=tensor, pa=tensor, q=tensor, iq=tensor,
-                              gated=tensor, xs_gated=tensor, prefill=False)
+                              gated=tensor, xs_gated=tensor, prefill=False, rotor_lookup=False)
     monkeypatch.setattr(mod, "_mm", lambda *a, **kw: None)
     monkeypatch.setattr(mod, "_out_proj", lambda *a, **kw: None)
     monkeypatch.setattr(mod.glue, "attn_prep", lambda *a, **kw: None)
@@ -126,7 +126,7 @@ def test_prompt_blocks_bound_their_launches_by_their_own_rows(monkeypatch, alloc
                               idw=2052, ids=None, nk=None, sparse=None, scores=None, po=None, pm=None, pl=None,
                               out=tensor)
     buffers = SimpleNamespace(attn=scratch, mixed=tensor, xs_mixed=tensor, pa=tensor, q=tensor, iq=tensor,
-                              gated=tensor, xs_gated=tensor, attn_o=tensor, prefill=True,
+                              gated=tensor, xs_gated=tensor, attn_o=tensor, prefill=True, rotor_lookup=False,
                               pos_blk=SimpleNamespace(fill_=lambda v: None))
     for name in ("_mm", "_out_proj"):
         monkeypatch.setattr(mod, name, lambda *a, **kw: None)

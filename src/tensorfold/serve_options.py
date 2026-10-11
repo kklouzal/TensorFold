@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import math
+from pathlib import Path
 from typing import Any
 
 
@@ -35,9 +36,42 @@ def check_numbers(args: argparse.Namespace) -> None:
             raise ValueError(f"{flag} must be between 0 and 1")
 
 
+def _served_name(args: argparse.Namespace) -> str:
+    """``--name``, else a repo id's last segment or the model path's name; no I/O (matches ``cli._serve_cuda``)."""
+
+    if getattr(args, "name", ""):
+        return args.name
+    from tensorfold import hub
+
+    model = str(args.model).rstrip("/")
+    return model.split("/")[-1] if hub.is_repo_id(str(args.model)) else Path(model).expanduser().resolve().name
+
+
+def name_priority(args: argparse.Namespace) -> dict[str, str]:
+    """``--name-priority ID=background`` parsed: the id and the priority word it defaults to. No I/O."""
+
+    parsed: dict[str, str] = {}
+    for entry in getattr(args, "name_priority", None) or []:
+        model_id, sep, priority = str(entry).partition("=")
+        if not sep or not model_id.strip() or priority.strip().lower() != "background":
+            raise ValueError(f"--name-priority takes ID=background, not {entry!r}")
+        parsed[model_id.strip()] = "background"
+    return parsed
+
+
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    if backend == "cuda":
+        _cuda_topology(args, family)
+    if backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe" and not getattr(args, "no_drafts", False):
+        cap = getattr(args, "mtp_drafts", None)
+        if cap is not None:
+            if type(cap) is not int or cap < 0:
+                raise ValueError("Qwen3.6 MoE --mtp-drafts must be a nonnegative integer")
+            if getattr(args, "drafter", "auto") not in ("auto", "none", ""):
+                raise ValueError("Qwen3.6 MoE --mtp-drafts selects its included MTP layer; it cannot be combined with "
+                                 "an explicit separate --drafter")
     if getattr(args, "max_engine_calls", None) is not None and backend != "mlx":
         raise ValueError("--max-engine-calls bounds the MLX engine RPC queue and is supported on MLX only")
     if getattr(args, "trust_model_code", False):
@@ -68,6 +102,20 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("--vision-max-images must be a positive integer")
         if not getattr(args, "vision", False):
             raise ValueError("--vision-max-images needs --vision")
+    tokens = getattr(args, "vision_image_tokens", None)
+    if tokens is not None:
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or not 1 <= tokens <= 65536:
+            raise ValueError("--vision-image-tokens is a number of tokens from 1 to 65,536")
+        if not getattr(args, "vision", False):
+            raise ValueError("--vision-image-tokens needs --vision")
+        if backend != "cuda":
+            raise ValueError("--vision-image-tokens sets the CUDA Qwen image budget; the MLX towers size their "
+                             "workspace for 4,096 visual tokens")
+    if getattr(args, "vision_offload", False):
+        if not getattr(args, "vision", False):
+            raise ValueError("--vision-offload needs --vision")
+        if backend != "cuda":
+            raise ValueError("--vision-offload is for the CUDA backend; the Mac's image tower already shares host memory")
     if getattr(args, "vision", False):             # only --vision reads the config here
         if family.model_type == "glm5_next" and backend != "mlx":
             raise ValueError("GLM-5.3-Flash image input is currently MLX-only")
@@ -109,6 +157,16 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     if getattr(args, "prefill_fp8", None) and not fp8:              # asked for by name, not a default
         raise ValueError(f"--prefill-fp8 picks FP8 prompt kernels on CUDA; {family.title} on "
                          f"{'CUDA' if backend == 'cuda' else 'MLX'} has none (its prompts run bf16 activations)")
+    priorities = name_priority(args)
+    if priorities and backend != "cuda":
+        raise ValueError("--name-priority is a CUDA server option: the MLX server has its own background rule")
+    if priorities:
+        served = _served_name(args)
+        ids = {served, *(str(a).strip() for a in getattr(args, "alias", None) or () if str(a).strip())}
+        bad = sorted(set(priorities) - ids)
+        if bad:
+            raise ValueError(f"--name-priority names {', '.join(bad)}, not --name or an --alias "
+                             f"({', '.join(sorted(ids))})")
     confidence = getattr(args, "mtp_confidence", None)
     if confidence is None:
         return
@@ -118,6 +176,33 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                          f"{'CUDA' if backend == 'cuda' else 'MLX'} has no such rule")
     if not 0.0 <= confidence <= 1.0:
         raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
+
+
+def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
+    """Validate rank topology and the selected Flash Next execution envelope before weights are resolved."""
+
+    tp, rank = getattr(args, "tp", 1), getattr(args, "rank", 0)
+    if type(tp) is not int or tp not in (1, 2, 4):
+        raise ValueError("--tp must be 1, 2 or 4")
+    if type(rank) is not int or rank < 0:
+        raise ValueError("--rank must be a nonnegative integer")
+    if tp > 1 and not getattr(args, "master", ""):
+        raise ValueError("--tp 2/4 needs --master: rank 0's address on the link between the ranks")
+    if rank >= tp:
+        raise ValueError(f"--rank {rank} needs --tp {rank + 1} or more")
+    if tp == 4 and not getattr(family.package, "CUDA_TP4", False):
+        raise ValueError(f"--tp 4: {family.title} runs on one or two GPUs on CUDA")
+    port = getattr(args, "master_port", 29551)
+    # Every follower connects to this same CLI value; no channel advertises a leader's ephemeral port.
+    if tp > 1 and (type(port) is not int or not 1 <= port <= 65535):
+        raise ValueError("--master-port must be an integer from 1 to 65535 for multiple ranks")
+    if getattr(family, "model_type", "") == "qwen4_exp":
+        streams = _cuda_streams(getattr(args, "parallel", "auto"))
+        if tp > 1 and streams > 1:
+            raise ValueError("--parallel decodes several Flash Next requests together on one GPU; with --tp 2 it "
+                             "serves one request at a time for now, so drop --parallel")
+        if getattr(args, "vision", False) and (streams < 2 or tp != 1):
+            raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
 
 
 def _cuda_streams(value: Any) -> int:
@@ -133,11 +218,12 @@ def _cuda_streams(value: Any) -> int:
 
 
 def vision_options(args: argparse.Namespace) -> dict[str, Any]:
-    """``--vision`` and ``--vision-urls`` as a family's load options."""
+    """``--vision``, ``--vision-urls`` and ``--vision-offload`` as a family's load options."""
 
     if not getattr(args, "vision", False):
         return {}
-    return {"vision": True, "vision_urls": bool(getattr(args, "vision_urls", False))}
+    return {"vision": True, "vision_urls": bool(getattr(args, "vision_urls", False)),
+            "vision_offload": bool(getattr(args, "vision_offload", False))}
 
 
-__all__ = ["check", "check_numbers", "vision_options"]
+__all__ = ["check", "check_numbers", "name_priority", "vision_options"]

@@ -66,7 +66,7 @@ class FlashNextEngine:
         exl3 = is_exl3(model_dir)
         if (exl3 or quant_method(read_config(model_dir)) == "modelopt") and tp != 1:
             raise ValueError(f"{'EXL3 packs' if exl3 else 'NVFP4 checkpoints'} of Flash Next run on one GPU: drop --tp "
-                             "2, or serve the MLX checkpoint (Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP) on two")
+                             "2, or serve the MLX checkpoint (TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP) on two")
         if vision and (streams < 2 or tp != 1):
             raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
         if exl3 and ple_on_ssd:
@@ -99,15 +99,15 @@ class FlashNextEngine:
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
         torch.cuda.set_device(0)
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
+        self.streams, self.graphs_enabled = int(streams), bool(graphs)
         self.comm = None
         self.vision = None                   # the image tower (``QwenCudaVision``) with --vision
         if tp == 2:
-            from tensorfold.cuda.comm import NCCL
+            from tensorfold.cuda.comm import open_comm
 
             if not master:
                 raise ValueError("two ranks need rank 0's address (master)")
-            self.comm = NCCL()
-            self.comm.open(rank, 2, master, port)
+            self.comm = open_comm(rank, 2, master, port)
             self.comm.barrier()
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None
         each, mtp = self.depth + 1, self.depth > 0
@@ -531,12 +531,15 @@ class FlashNextEngine:
         """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
 
         import hashlib
+        import struct
 
         total = int(ids.sum()) if ids is not None else -1
         rope_digest = int.from_bytes(hashlib.sha256(json.dumps(self.rope.metadata(), sort_keys=True).encode()).digest()[:8],
                                      "big") & (2**63 - 1)
         policy_digest = int.from_bytes(hashlib.sha256(b"stored-basis-native64-v1").digest()[:8], "big") & (2**63 - 1)
-        mine = torch.tensor([self.depth, round(self.confidence * 1e6), self.max_len,
+        confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
+        mine = torch.tensor([self.depth, confidence_bits, self.max_len,
+                             self.streams, int(self.graphs_enabled), self.prefill_rows,
                              len(ids) if ids is not None else -1, total, self.kv_pair.handshake, policy_digest,
                              rope_digest, int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
         both = torch.empty((2 * mine.numel(),), dtype=torch.int64, device="cuda")
@@ -545,7 +548,8 @@ class FlashNextEngine:
         prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
         if not torch.equal(both[0], both[1]):
             raise RuntimeError(f"the two ranks were started with different settings (drafts, confidence, context, "
-                               f"draft vocabulary, KV cache, RoPE): rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}")
+                               f"parallel streams, graphs, prompt rows, draft vocabulary, KV cache, RoPE): "
+                               f"rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}")
 
     def _key(self, n: int) -> str:
         return f"tensorfold/flashnext/request/{n}"
@@ -895,6 +899,45 @@ class FlashNextEngine:
                 raise
             finally:
                 self._retire_request(request, primary)
+
+    def score_labels(self, prompt_ids, label_ids) -> tuple[list[float], float]:
+        """Score caller-prepared token sequences through a fresh, journaled one-token generation."""
+
+        import math
+        import operator
+
+        from tensorfold.engine.exact_sampling import Sampling
+        from tensorfold.engine.probabilities import LabelProbabilities
+
+        if not self.supports_logprobs:
+            raise ValueError("decision labels are scored on one GPU only")
+        def token_ids(values, name):
+            result = []
+            for token in values:
+                if isinstance(token, bool):
+                    raise ValueError(f"{name} requires integer token IDs")
+                try:
+                    value = operator.index(token)
+                except TypeError as error:
+                    raise ValueError(f"{name} requires integer token IDs") from error
+                if not 0 <= value < self.w.cfg.vocab:
+                    raise ValueError(f"{name} is outside the vocabulary")
+                result.append(value)
+            if not result:
+                raise ValueError(f"empty {name}")
+            return result
+
+        prompt = token_ids(prompt_ids, "prompt")
+        labels = token_ids(label_ids, "decision label")
+        self._limit(prompt, 1)
+        probe = LabelProbabilities(labels, start=len(prompt))
+        self.generate(prompt, 1, Sampling(seed=0, temperature=0.0), lambda new: None, draft=False,
+                      probabilities=probe)
+        if probe.label_logits is None or probe.logsumexp is None:
+            raise ValueError("the prompt's last position was not scored")
+        if not math.isfinite(probe.logsumexp) or not all(math.isfinite(value) for value in probe.label_logits):
+            raise ValueError("label scoring produced a non-finite logit")
+        return probe.label_logits, probe.logsumexp
 
     def follow(self) -> None:
         """Rank 1: decode every request rank 0 serves, until rank 0 stops."""

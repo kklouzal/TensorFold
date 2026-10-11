@@ -22,6 +22,8 @@ def arch_flags(need: tuple[int, int] = MIN_CAPABILITY, arch_specific: bool = Fal
 
     import torch
 
+    if arch_specific and need < CLUSTERS:
+        need = CLUSTERS  # The architecture-specific target requires the cluster-generation toolchain contract.
     major, minor = torch.cuda.get_device_capability()
     if (major, minor) < need:
         why = "thread-block clusters" if need >= CLUSTERS else "FP8 MMA"

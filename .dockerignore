@@ -2,6 +2,8 @@
 **/__pycache__
 **/.pytest_cache
 **/*.pyc
+**/*.so
+**/*.pyd
 task-state.json
 task-artifacts
 *.egg-info

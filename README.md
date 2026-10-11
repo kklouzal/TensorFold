@@ -2,9 +2,9 @@
 
 This fork of [TensorFold](https://github.com/ashhart/TensorFold) serves language models on Apple Silicon and NVIDIA GPUs through an OpenAI-compatible API. It retains the upstream model families, family-specific kernels, exact speculative decoding, prompt reuse, tools, reasoning and vision support, and adds a reproducible NVIDIA container, Flash Next YaRN context extension, RAM-backed expert caching, optional RotorQuant KV formats, and service admission controls.
 
-The maintained fork is [kklouzal/TensorFold](https://github.com/kklouzal/TensorFold), branch **`gb10-flash-next`**. The source shipped before this documentation refresh was `75dba8bb496477b5ebb4313e93bb18d7d9bf83b1`. Record the commit you actually clone: branch heads move. The fork is kept as a branch over upstream so upstream changes can be reviewed and merged.
+The maintained fork is [kklouzal/TensorFold](https://github.com/kklouzal/TensorFold), branch **`python-0.6`**. The Python integration joins fork baseline `2f8089a7b59588875d639a7efa860117168a29d0` with upstream Python `ed78d6fc204d89d90b045bf033d6551e7714f3a1`. Record the commit you actually clone: branch heads move. Upstream Python history remains part of the fork so later changes can be reviewed and merged.
 
-**Validation status:** the performance results below describe completed, identified trials. The latest source has retained correctness fixes and configuration controls; fresh qualification of its final container, normal installed package and complete API is still in progress. Historical images and component/source checks do not establish that final qualification. Private performance experiments are not advertised as features.
+**Validation status:** the Python integration passed 7,332 checks in the frozen-source Linux CPU suite, with 172 explicit skips and no failures or errors. Bounded native GB10 component checks also passed; installed-image, full-model and performance qualification of this integration remain separate gates. No Apple Silicon test host is available. The performance results below retain their identified historical sources, images and workloads. Unqualified optimization candidates are kept outside production paths.
 
 ## Start here
 
@@ -52,7 +52,7 @@ The following example is for a **native AMD64 Linux host with a separate 16 GB G
 ### 1. Clone and build
 
 ```bash
-git clone --branch gb10-flash-next https://github.com/kklouzal/TensorFold.git
+git clone --branch python-0.6 https://github.com/kklouzal/TensorFold.git
 cd TensorFold
 git rev-parse HEAD
 
@@ -156,7 +156,7 @@ Four slots share weights and an expert cache; they do not guarantee four simulta
 Install **this fork**, rather than an upstream wheel or Homebrew release, to obtain its changes. On Apple Silicon, use a virtual environment with Python 3.11 or newer:
 
 ```bash
-git clone --branch gb10-flash-next https://github.com/kklouzal/TensorFold.git
+git clone --branch python-0.6 https://github.com/kklouzal/TensorFold.git
 cd TensorFold
 python3 -m venv .venv
 . .venv/bin/activate
@@ -171,6 +171,22 @@ tensorfold serve Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit --no-upda
 The native extension requires a working platform compiler. Add the `vision` extra for image input, or `ssd` for the supported SSD expert path, for example `python -m pip install -e '.[grammar,vision,ssd]'`. The grammar extra installs xgrammar; the pinned Docker runtime already includes it. On CUDA, use the container's matching Torch, Triton and extension compiler; the package has no `cuda` installation extra.
 
 `tensorfold models` lists registered families/checkpoints. `info MODEL` checks configuration without fetching weights. `pull MODEL [DRAFTER ...]` downloads ahead of time; `serve` can download a missing checkpoint. The CLI download uses repository defaults; the revision-pinned API download above is preferable for reproducible deployments. See the [runbook](RUNBOOK.md) and [recipes](docs/recipes/README.md) for family-specific setup.
+
+## Python-line integration
+
+This fork follows upstream's `python-0.6` line. The integration source is
+`ed78d6fc204d89d90b045bf033d6551e7714f3a1`; upstream `main` is the separate
+native Zig engine. Fork changes retain their Git history and selected numerical,
+resource ownership, cache and serving contracts. New arithmetic or scheduling
+alternatives require same-region correctness and complete-workload evidence
+before replacing a selected implementation.
+
+The Python integration adds API-key authentication, bounded chunked requests,
+Anthropic Messages and token-counting routes, configured background model IDs,
+and offline planning/service tools. The running images and historical performance
+results below keep their recorded source identities. Integration CPU, installed
+package, native device and full-model qualification have separate scopes; an
+upstream measurement does not qualify the combined fork automatically.
 
 ## Supported models and formats
 
@@ -214,6 +230,10 @@ Use `tensorfold serve --help` from your checkout for the authoritative parser. A
 | `-h`, `--help` | Show serve help. |
 | `--backend auto\|mlx\|cuda` | `auto`: MLX on macOS, CUDA elsewhere. |
 | `--host`, `--port` | `127.0.0.1`, `8080`; container port publication needs `--host 0.0.0.0` inside. |
+| `--api-key KEY`, `--api-key-file FILE` | Require bearer authentication; repeat static keys or load a restricted-permission key file. Configuration is bound at startup; key-file contents reload during operation and invalid configuration refuses authenticated routes. Both backends. |
+| `--metrics-open` | Permit unauthenticated `/metrics` when keys are configured. |
+| `--name-priority ID=background` | Give CUDA requests for that served model ID background priority by default. |
+| `--vision-image-tokens N` | Explicit CUDA Qwen visual-token budget, 1 through 65,536; frontend image/resource limits remain active. Flash Next retains its 16,384-token default. |
 | `--name`, `--alias` | Model's own name; aliases are repeatable additional IDs on both backends. |
 | `--max-http-connections N` | Unset: uncapped workers. Positive cap includes active/idle keepalive connections; at capacity acceptance pauses and connections wait in the existing listen backlog. |
 | `--max-pending-requests N` | Unset: uncapped. Positive cap counts unfinished logical generation requests, including preparation, queued/running work and work retained after cancellation. Excess receives HTTP 503 before a configured stream opens. |
@@ -710,20 +730,170 @@ This ordinary command exercises the configured source tests; it is not an instal
 
 ### Keep the fork and upstream changes manageable
 
-The built-in `tensorfold update` targets upstream releases. Manage this fork through Git and rebuild its image instead; disable automatic startup update checks in deployed examples.
+The built-in `tensorfold update` checks this fork's published releases; it never selects upstream native releases. An unavailable fork release is an explicit failure. Manage this fork through Git and rebuild its image instead; disable automatic startup update checks in deployed examples.
 
 ```bash
 git remote add upstream https://github.com/ashhart/TensorFold.git
 git fetch upstream
-git switch gb10-flash-next
+git switch python-0.6
 git switch -c integrate-upstream
-git merge upstream/main
+git merge upstream/python-0.6
 ```
 
-Add the remote only once; check `git remote show upstream` for its default branch and replace `main` if needed. Resolve conflicts while preserving fork contracts, update all affected help/tests/docs, run the applicable gates and review the merge before pushing. Rebuild a new image tag and record its source/image IDs. Preserve the previous image and configuration, stop the old service, and start the new image on the intended port. Confirm health and complete generations before removing the old container; restore the previous image/configuration if validation fails. Do not patch installed dependency trees inside a running image.
+Add the remote only once; merge `upstream/python-0.6`; upstream `main` is a different native engine. Resolve conflicts while preserving fork contracts, update all affected help/tests/docs, run the applicable gates and review the merge before pushing. Rebuild a new image tag and record its source/image IDs. Preserve the previous image and configuration, stop the old service, and start the new image on the intended port. Confirm health and complete generations before removing the old container; restore the previous image/configuration if validation fails. Do not patch installed dependency trees inside a running image.
 
 ## Documentation upkeep and license
 
 **Maintainers and agents must update this README in the same change** when public capabilities, supported models or tested hardware, flags/defaults, build/deployment commands, qualified performance or validation status change. Update the affected CLI help, API, recipes, deployment guide and [CONTRIBUTING.md](CONTRIBUTING.md) coherently. Every measured claim needs its actual source/image, hardware, workload and quality settings. Keep private experiments separate from maintained examples, and leave unrun gates explicit. Repository guidance is in [AGENTS.md](AGENTS.md).
 
 TensorFold is Apache-2.0 from 0.6.0; see [LICENSE](LICENSE), [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md). Earlier code retains its [MIT notice](LICENSES/MIT.txt). Model weights, draft models and third-party components keep their own license terms.
+
+## Contributors
+
+Thank you to everyone who has sent TensorFold a pull request, a measurement or a bug report:
+
+[@0mao0](https://github.com/0mao0),
+[@321sssrt-bit](https://github.com/321sssrt-bit),
+[@aditya1503](https://github.com/aditya1503),
+[@AdrianBinDC](https://github.com/AdrianBinDC),
+[@akol1](https://github.com/akol1),
+[@Alexbob0](https://github.com/Alexbob0),
+[@anvilsong](https://github.com/anvilsong),
+[@Arminova](https://github.com/Arminova),
+[@b-ostrov](https://github.com/b-ostrov),
+[@barelyworkingcode](https://github.com/barelyworkingcode),
+[@Benjamin-Wegener](https://github.com/Benjamin-Wegener),
+[@benthecarman](https://github.com/benthecarman),
+[@benwilson](https://github.com/benwilson),
+[@BHCC2025](https://github.com/BHCC2025),
+[@Bizuayeu](https://github.com/Bizuayeu),
+[@BlivionIaG](https://github.com/BlivionIaG),
+[@BobClawblaw](https://github.com/BobClawblaw),
+[@borodach23](https://github.com/borodach23),
+[@Boscoeuk](https://github.com/Boscoeuk),
+[@boxabirds](https://github.com/boxabirds),
+[@brandonmmusic-max](https://github.com/brandonmmusic-max),
+[@bunnyfu](https://github.com/bunnyfu),
+[@CerebralCoding](https://github.com/CerebralCoding),
+[@cesarswong](https://github.com/cesarswong),
+[@chadhurley25075-png](https://github.com/chadhurley25075-png),
+[@chaog992](https://github.com/chaog992),
+[@Charlie-Louis](https://github.com/Charlie-Louis),
+[@Chedrian07](https://github.com/Chedrian07),
+[@chris247474](https://github.com/chris247474),
+[@christrade215](https://github.com/christrade215),
+[@crescit](https://github.com/crescit),
+[@cshintov](https://github.com/cshintov),
+[@cwschroeder](https://github.com/cwschroeder),
+[@DakotaTexas](https://github.com/DakotaTexas),
+[@danyo1399](https://github.com/danyo1399),
+[@Deesha08](https://github.com/Deesha08),
+[@Defilan](https://github.com/Defilan),
+[@DevRico003](https://github.com/DevRico003),
+[@di37](https://github.com/di37),
+[@drowzeys](https://github.com/drowzeys),
+[@ecohash-co](https://github.com/ecohash-co),
+[@edurdias](https://github.com/edurdias),
+[@eleqtrizit](https://github.com/eleqtrizit),
+[@ericlsimplifi](https://github.com/ericlsimplifi),
+[@EugeneClaw](https://github.com/EugeneClaw),
+[@feni6](https://github.com/feni6),
+[@gbgbgbg](https://github.com/gbgbgbg),
+[@GDACONSULT](https://github.com/GDACONSULT),
+[@gecobattya](https://github.com/gecobattya),
+[@gilby](https://github.com/gilby),
+[@Gogo6969](https://github.com/Gogo6969),
+[@gprot42](https://github.com/gprot42),
+[@GraithSecurity](https://github.com/GraithSecurity),
+[@grantoverton](https://github.com/grantoverton),
+[@grearjake-star](https://github.com/grearjake-star),
+[@greatyingzi](https://github.com/greatyingzi),
+[@harrisonfriia](https://github.com/harrisonfriia),
+[@haxudev](https://github.com/haxudev),
+[@heitke](https://github.com/heitke),
+[@hichaiuse](https://github.com/hichaiuse),
+[@ivanfioravanti](https://github.com/ivanfioravanti),
+[@jasontitus](https://github.com/jasontitus),
+[@jayleaton](https://github.com/jayleaton),
+[@jeffpeng3](https://github.com/jeffpeng3),
+[@jeidbugs404](https://github.com/jeidbugs404),
+[@jetnet](https://github.com/jetnet),
+[@jkuepker](https://github.com/jkuepker),
+[@johnymoo](https://github.com/johnymoo),
+[@JordiPosthumus](https://github.com/JordiPosthumus),
+[@JRaxworthy](https://github.com/JRaxworthy),
+[@jregan-beasley-smc](https://github.com/jregan-beasley-smc),
+[@jschmied](https://github.com/jschmied),
+[@juliankang4](https://github.com/juliankang4),
+[@kingjamez](https://github.com/kingjamez),
+[@kky42](https://github.com/kky42),
+[@lcgutierrez](https://github.com/lcgutierrez),
+[@LECYWZA](https://github.com/LECYWZA),
+[@lijian1999](https://github.com/lijian1999),
+[@liumorrisclaw](https://github.com/liumorrisclaw),
+[@LXD-8](https://github.com/LXD-8),
+[@m-naoki-m](https://github.com/m-naoki-m),
+[@mapamalu](https://github.com/mapamalu),
+[@mcclanahanaman](https://github.com/mcclanahanaman),
+[@MESevenJourney](https://github.com/MESevenJourney),
+[@mgoldwasser](https://github.com/mgoldwasser),
+[@MiaAI-Lab](https://github.com/MiaAI-Lab),
+[@mikolaj92](https://github.com/mikolaj92),
+[@millaguie](https://github.com/millaguie),
+[@Mirrdhyn](https://github.com/Mirrdhyn),
+[@Moutonc](https://github.com/Moutonc),
+[@MovieMaker93](https://github.com/MovieMaker93),
+[@mrpmorris](https://github.com/mrpmorris),
+[@MV10](https://github.com/MV10),
+[@NeoAiLabs](https://github.com/NeoAiLabs),
+[@Nipale-ai](https://github.com/Nipale-ai),
+[@nood-co1](https://github.com/nood-co1),
+[@nullburn](https://github.com/nullburn),
+[@olexale](https://github.com/olexale),
+[@omar16100](https://github.com/omar16100),
+[@optimisme](https://github.com/optimisme),
+[@outcastofmusic](https://github.com/outcastofmusic),
+[@paragontasx](https://github.com/paragontasx),
+[@peacockesq](https://github.com/peacockesq),
+[@philip-pentatonic](https://github.com/philip-pentatonic),
+[@plotarmordev](https://github.com/plotarmordev),
+[@pmeenan](https://github.com/pmeenan),
+[@pulseandthread](https://github.com/pulseandthread),
+[@quigles1977](https://github.com/quigles1977),
+[@rafafortes](https://github.com/rafafortes),
+[@raymondkpwong](https://github.com/raymondkpwong),
+[@robertpitt](https://github.com/robertpitt),
+[@RoscoeTT](https://github.com/RoscoeTT),
+[@salmanarshad321](https://github.com/salmanarshad321),
+[@samwang0041-star](https://github.com/samwang0041-star),
+[@sanjaibalajee](https://github.com/sanjaibalajee),
+[@satindergrewal](https://github.com/satindergrewal),
+[@scottleimroth](https://github.com/scottleimroth),
+[@sethforprivacy](https://github.com/sethforprivacy),
+[@sfxnz](https://github.com/sfxnz),
+[@shantanugoel](https://github.com/shantanugoel),
+[@simon-lin88](https://github.com/simon-lin88),
+[@simonmd](https://github.com/simonmd),
+[@spenchey](https://github.com/spenchey),
+[@squarrier](https://github.com/squarrier),
+[@ss-cong](https://github.com/ss-cong),
+[@styles01](https://github.com/styles01),
+[@SxMShaDoW](https://github.com/SxMShaDoW),
+[@sxuff](https://github.com/sxuff),
+[@taussoe](https://github.com/taussoe),
+[@tfolkman](https://github.com/tfolkman),
+[@ThinkOffApp](https://github.com/ThinkOffApp),
+[@Thotheris](https://github.com/Thotheris),
+[@tinyapps](https://github.com/tinyapps),
+[@tolewis](https://github.com/tolewis),
+[@tomByrer](https://github.com/tomByrer),
+[@tonydehnke](https://github.com/tonydehnke),
+[@tournierjc](https://github.com/tournierjc),
+[@tpischke](https://github.com/tpischke),
+[@urtho](https://github.com/urtho),
+[@vcruz305](https://github.com/vcruz305),
+[@vinicius-symetrix](https://github.com/vinicius-symetrix),
+[@wojo](https://github.com/wojo),
+[@xjqx2z](https://github.com/xjqx2z),
+[@Yuepixel](https://github.com/Yuepixel),
+[@YvesLaRose](https://github.com/YvesLaRose).

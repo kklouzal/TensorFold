@@ -101,15 +101,19 @@ class RankProtocolTests(unittest.TestCase):
         def gather(send, got):
             got.values[0] = 100
         share = actual_function("src/tensorfold/families/glm5_next/cuda/engine.py", "_share", {"ints": protocol.ints}, owner="GlmEngine")
-        owner = SimpleNamespace(rank=1, torch=runtime, comm=SimpleNamespace(all_gather=gather))
-        with self.assertRaises(ValueError):
-            share(owner, None, maximum=19)
-        self.assertEqual(allocations, [(2,)])
-        owner.rank = 0
-        allocations.clear()
-        with self.assertRaises(ValueError):
-            share(owner, [1 << 31], maximum=19)
-        self.assertEqual(allocations, [])
+        for world in (2, 4):
+            with self.subTest(world=world):
+                allocations.clear()
+                owner = SimpleNamespace(rank=1, world=world, torch=runtime,
+                                        comm=SimpleNamespace(all_gather=gather))
+                with self.assertRaises(ValueError):
+                    share(owner, None, maximum=19)
+                self.assertEqual(allocations, [(world,)])
+                owner.rank = 0
+                allocations.clear()
+                with self.assertRaises(ValueError):
+                    share(owner, [1 << 31], maximum=19)
+                self.assertEqual(allocations, [])
 
     def test_glm_sampling_refused_before_follower_wakeup_or_mutation(self):
         generate = actual_function("src/tensorfold/families/glm5_next/cuda/engine.py", "_generate",

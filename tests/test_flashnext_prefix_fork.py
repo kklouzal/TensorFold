@@ -27,6 +27,7 @@ def slot():
 
 def decoder(*, busy=False, room=True):
     dec = object.__new__(MultiDecoder)
+    dec.w = SimpleNamespace(comm=None)
     source, spare = slot(), slot()
     prefix = list(range(300))
     snap = {"pos": 300, "mtp_len": 299, **source.kv_snapshot_metadata()}
@@ -67,7 +68,7 @@ def test_source_protection_excludes_it_from_growth_eviction():
     other = slot()
     dec.kept.append(([9], other, {}, None))
     shrunk = []
-    dec._shrink = shrunk.append
+    dec._shrink = lambda st, **kwargs: shrunk.append(st)
     assert dec._evict_kept(spare, protect=source)
     assert shrunk == [other] and all(k[1] is source for k in dec.kept)
 

@@ -48,7 +48,7 @@ def test_quantized_caches_admit_longer_windows_on_the_same_budget(tmp_path, monk
     calls, capacity = fake_runtime
     text = small_config()
     bf16 = gdn_geometry(text, 1, 4, indexed=True, mtp=True, kept=KEEP_SERIAL + 1) if streams == 1 else \
-        indexed_stream_geometry(text, streams, 4, KEEP, mtp=True)
+        indexed_stream_geometry(text, streams + 1, 4, KEEP, mtp=True)
     budget = bf16.needed(12000) + 32768                      # bf16 fits about 12,000 tokens
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     windows = {}
@@ -112,6 +112,8 @@ def test_two_ranks_with_different_caches_refuse_to_start(fake_runtime, peer):  #
         obj.rope = RopeParameters.from_config(small_config())
         obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
         obj.kv_pair = get_pair(kv_dtype)
+        obj.prefill_rows = 2048
+        obj.streams, obj.graphs_enabled = 1, True
         return obj
 
     theirs = Comm()
@@ -138,6 +140,8 @@ def test_two_ranks_with_different_prompt_precision_refuse_to_start(fake_runtime)
         obj.rope = RopeParameters.from_config(small_config())
         obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
         obj.kv_pair = get_pair("bf16")
+        obj.prefill_rows = 2048
+        obj.streams, obj.graphs_enabled = 1, True
         return obj
 
     theirs = Comm()

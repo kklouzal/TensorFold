@@ -76,7 +76,7 @@ to edit inside the container.
 
 `TF_BIND_IP` defaults to `127.0.0.1`, and `TF_PORT` defaults to `8080`. For remote
 clients, set a specific trusted host interface and apply the service's access
-controls. TensorFold's HTTP listener does not provide authentication itself.
+controls. API-key authentication is available through the serving flags; configure it when exposing the endpoint.
 The default bridge networking needs no host IPC, host network or Docker socket.
 
 ```bash

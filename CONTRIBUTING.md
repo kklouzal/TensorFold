@@ -1,7 +1,7 @@
 # Maintaining this fork
 
 The maintained fork is `https://github.com/kklouzal/TensorFold`, on
-`gb10-flash-next`; upstream is `https://github.com/ashhart/TensorFold`.
+`python-0.6`; upstream is `https://github.com/ashhart/TensorFold`.
 Start with the [README](README.md), the model's [recipe](docs/recipes/README.md),
 and the [container guide](deploy/gb10/README.md). Read applicable `AGENTS.md`
 instructions before changing code. Keep unrelated working-tree changes intact.
@@ -63,18 +63,31 @@ Keep fork changes on the maintained branch and merge upstream into a reviewable
 integration branch:
 
 ```bash
-git switch gb10-flash-next
+git switch python-0.6
 git fetch origin
-git pull --ff-only origin gb10-flash-next
+git pull --ff-only origin python-0.6
 git remote add upstream https://github.com/ashhart/TensorFold.git
 git fetch upstream
 git switch -c integrate-upstream-YYYYMMDD
-git merge upstream/main
+git merge upstream/python-0.6
 ```
 
-The `remote add` command is needed only once. Check `git remote show upstream`
-for its current default branch and replace `main` if it differs. Resolve changes
+The `remote add` command is needed only once. Use `upstream/python-0.6` explicitly. Upstream `main` is the native Zig engine
+and does not define this fork's Python model, runtime or deployment contracts. Resolve changes
 against the fork's current contracts, update generated inputs and documentation,
 and run the affected checks before merging the integration branch into
-`gb10-flash-next`. Build a new image from the resulting commit; update deployed
+`python-0.6`. Build a new image from the resulting commit; update deployed
 containers by replacing the image rather than modifying their installed code.
+
+## Owned Python release and review boundaries
+
+The fork's default branch follows the upstream Python lineage. Keep upstream
+contributors' authorship and license notices when merging or porting their work.
+Archive former branch tips before removing branch names. Point installation and
+update examples at the owned Python branch or a recorded owned release tag.
+
+Use separate reviewers for cleanup and policy remediation. A clean textual merge
+is insufficient: inspect automatically merged callers, tests and generated inputs.
+Retain valid selected fork implementations and independent oracles. Isolate
+unverified alternatives in evidence packets, with their source identities and
+required target gates, rather than adding production investigation switches.

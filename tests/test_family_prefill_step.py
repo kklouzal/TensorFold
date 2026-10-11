@@ -4,14 +4,38 @@ import json
 import struct
 from types import SimpleNamespace
 
+import numpy as np
+
 import pytest
 
 
-from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+from tests.mlx_host_protocol_fakes import cli_protocol, mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
 
 from tensorfold import cli
 from tensorfold.engine import memory
 from tensorfold.engine.prefill_plan import PrefillPlan
+
+
+class CPUCache:
+    """KV shape/byte contract only; no native numerical kernel is simulated."""
+
+    def update_and_fetch(self, keys, values):
+        self.keys, self.values, self.state = keys, values, (keys, values)
+        return keys, values
+
+    def memory_growth(self):
+        return 0, (self.keys.nbytes + self.values.nbytes) // self.keys.shape[2]
+
+
+@pytest.fixture(autouse=True)
+def cpu_memory_runtime(monkeypatch):
+    with cli_protocol(monkeypatch, "host-memory-protocol") as core:
+        core.zeros = lambda shape: np.zeros(shape, dtype=np.float32)
+        core.eval = lambda *arrays: None
+        core.synchronize = core.clear_cache = core.reset_peak_memory = lambda: None
+        core.get_active_memory = core.get_peak_memory = core.get_cache_memory = lambda: 0
+        core.device_info = lambda device=None: {"max_recommended_working_set_size": 0}
+        yield
 
 
 def parse(model, *extra):
@@ -67,7 +91,7 @@ def test_the_memory_probe_ends_on_full_chunks_of_the_plan_step(monkeypatch):
 
 def test_the_largest_step_that_leaves_the_context_floor_is_chosen(monkeypatch):
     mx = pytest.importorskip("mlx.core")
-    from mlx_lm.models.cache import KVCache
+    KVCache = CPUCache
 
     from tensorfold.engine import prefill_step
 
@@ -94,7 +118,7 @@ def test_the_largest_step_that_leaves_the_context_floor_is_chosen(monkeypatch):
 
     monkeypatch.setattr(prefill_step, "CONTEXT_FLOOR", 1000)
     assert prefill_step.choose(make, (2048,), 1 << 40, []) == 2048 and made == []
-    assert prefill_step.choose(make, (8192, 4096, 2048), 1 << 40, list(range(50))) == 8192 and made == [2048]
+    assert prefill_step.choose(make, (8192, 4096, 2048), 1 << 40, list(range(50))) == 8192 and made == [2048, 4096, 8192]
     assert prefill_step.choose(make, (8192, 4096, 2048), 0, []) == 2048 and Engine.model.tightened == 2
 
 
@@ -103,7 +127,7 @@ def test_a_probe_whose_peak_varies_run_to_run_gives_the_same_step(monkeypatch, n
     """#95: a streamed-expert probe's peak moves between runs; the worst of three decides, wherever the high one falls."""
 
     mx = pytest.importorskip("mlx.core")
-    from mlx_lm.models.cache import KVCache
+    KVCache = CPUCache
 
     from tensorfold.engine import prefill_step
 
@@ -111,20 +135,22 @@ def test_a_probe_whose_peak_varies_run_to_run_gives_the_same_step(monkeypatch, n
         model = SimpleNamespace()
 
         def prefill_prefix(self, tokens, cache=None, cached_tokens=0):
+            chunks.append(len(tokens) - 64)
             kv = KVCache()
             kv.update_and_fetch(mx.zeros((1, 1, len(tokens), 8)), mx.zeros((1, 1, len(tokens), 8)))
             return [kv]
 
-    runs = []
-    mib = 1 << 20
+    chunks, runs = [], []
+    gib = 1 << 30
     monkeypatch.setattr(prefill_step, "CONTEXT_FLOOR", 1000)
     monkeypatch.setattr(mx, "get_active_memory", lambda: 1 << 30)
     monkeypatch.setattr(mx, "reset_peak_memory", lambda: runs.append(len(runs)))
-    monkeypatch.setattr(mx, "get_peak_memory", lambda: (1 << 30) + (1 + noise[runs[-1]]) * mib)
-    # 8,192 rows take 4x the 2,048-row probe's work: 12 MiB at the high peak, 4 at the low; 4,096 take 6 or 2
-    budget = (1 << 30) + 7 * mib + 1000 * 32
-    assert prefill_step.choose(lambda grid: Engine(), (8192, 4096, 2048), budget, list(range(50))) == 4096
-    assert len(runs) == 3
+    monkeypatch.setattr(mx, "get_peak_memory", lambda: gib + chunks[-1] // 2048 * (1 + noise[runs[-1] % 3]) * gib)
+    # The measured high samples are 3 GiB at 2,048 and 6 GiB at 4,096,
+    # independent of where the noise lands. An 8,192 probe would exceed its
+    # conservative eligibility bound; a single low sample must not admit it.
+    assert prefill_step.choose(lambda grid: Engine(), (8192, 4096, 2048), 14 * gib, list(range(50))) == 4096
+    assert chunks == [2048] * 3 + [4096] * 3
 
 
 def test_nemotron_offers_8192_token_prompt_chunks_with_tensor_units(monkeypatch):

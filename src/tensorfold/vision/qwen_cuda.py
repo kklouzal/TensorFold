@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import json
+import threading
 import math
 import os
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 MAX_PATCHES = 16384                  # an image request's patches, and a video's per tower call
+MAX_REQUEST_PATCHES = 16 * MAX_PATCHES
 MAX_VIDEO_PATCHES = 16 * 16384       # a request's video patches (~65k tokens), encoded MAX_PATCHES at a time
 WORKSPACE_BYTES = 4 * 1024**3
 # Flash Next's image requests (a chat's images, every turn's): up to 50 images (--vision-max-images sets the count)
 # sharing TENSORFOLD_IMAGE_TOKENS tokens, each at most TOKENS_PER_IMAGE (one image as before); the tower encodes runs
 # of whole images of at most MAX_PATCHES patches, so its scratch stays what one 4,096-token image measured
 MAX_IMAGES, IMAGE_TOKENS, TOKENS_PER_IMAGE = 50, 16384, 4096
+OFFLOAD_WORKSPACE_BYTES = int(2.25 * 1024**3)
 
 
 def image_setting(name: str, default: int, low: int, high: int) -> int:
@@ -122,13 +124,13 @@ def checkpoint_vision(model_dir: str | Path) -> tuple[dict, int]:
     return config, sum(math.prod(v["shape"]) * max(2, SIZES[v["dtype"]]) for v in tensors.values())
 
 
-def weight_transform(base, enabled: bool, rank: int):
+def weight_transform(base, enabled: bool, rank: int, offload: bool = False):
     def transform(name, info):
         from .qwen_checkpoint import vision_key
 
         if enabled and vision_key(name) is not None:
-            if rank != 0 or os.environ.get("TENSORFOLD_VISION_WEIGHTS"):
-                return 0, 0
+            if rank != 0 or offload or os.environ.get("TENSORFOLD_VISION_WEIGHTS"):
+                return 0, 0                     # offloaded: resident in host RAM between images
             from tensorfold.cuda.capacity import SIZES
 
             return math.prod(info["shape"]) * max(2, SIZES[info["dtype"]]), 0
@@ -136,7 +138,8 @@ def weight_transform(base, enabled: bool, rank: int):
     return transform
 
 
-def capacity_geometry(base, model_dir, enabled: bool, rank: int, workspace: int = WORKSPACE_BYTES):
+def capacity_geometry(base, model_dir, enabled: bool, rank: int, workspace: int = WORKSPACE_BYTES,
+                      offload: bool = False):
     def geometry(text):
         from tensorfold.cuda.capacity import Geometry
 
@@ -146,19 +149,22 @@ def capacity_geometry(base, model_dir, enabled: bool, rank: int, workspace: int 
         external_weights = 0
         if rank == 0:
             _, tower_bytes = checkpoint_vision(model_dir)
-            if os.environ.get("TENSORFOLD_VISION_WEIGHTS"):
+            if os.environ.get("TENSORFOLD_VISION_WEIGHTS") and not offload:
                 external_weights = tower_bytes
-        reserve = workspace if rank == 0 else 128 * 1024**2
+        reserve = (OFFLOAD_WORKSPACE_BYTES if offload else workspace) if rank == 0 else 128 * 1024**2
         return Geometry(lambda slots: result.bytes_at(slots) + reserve + external_weights,
                         result.reserve, result.minimum_slots)
     return geometry
 
 
 class QwenCudaVision:
-    """Only the image tower is loaded; the CUDA family retains all language computation."""
+    """The CUDA family owns text computation; encoding validates media before moving the tower."""
 
-    def __init__(self, model_dir, device, allow_urls: bool = False):
+    def __init__(self, model_dir, device, allow_urls: bool = False, offload: bool = False):
         self.allow_urls = allow_urls
+        self.offload = offload
+        self._lock = threading.Lock()   # one image on the GPU at a time when the tower is offloaded
+        resident = "cpu" if offload else device
         import torch
         from transformers.models.qwen3_5.configuration_qwen3_5 import Qwen3_5VisionConfig
         from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5VisionModel
@@ -181,7 +187,7 @@ class QwenCudaVision:
             self.image_limits = replace(DEFAULT_LIMITS, max_images=MAX_IMAGES,
                                         max_total_encoded_bytes=64 * 1024 * 1024,
                                         max_total_pixels=128 * 1024 * 1024)
-            self.image_tokens = image_setting("TENSORFOLD_IMAGE_TOKENS", IMAGE_TOKENS, TOKENS_PER_IMAGE, IMAGE_TOKENS)
+            self.image_tokens = image_setting("TENSORFOLD_IMAGE_TOKENS", IMAGE_TOKENS, TOKENS_PER_IMAGE, MAX_REQUEST_PATCHES // 4)
         self.device = device
         config = Qwen3_5VisionConfig(**{k: v for k, v in self.config.items()
                                       if k not in ("model_type", "deepstack_visual_indexes")})
@@ -199,9 +205,9 @@ class QwenCudaVision:
                     value = source.get_tensor(names[key])
                     if key == "patch_embed.proj.weight" and value.shape[-1] == self.config["in_channels"]:
                         value = value.permute(0, 4, 1, 2, 3).contiguous()
-                    tensors[key] = value.to(device=device, dtype=torch.bfloat16)
+                    tensors[key] = value.to(device=resident, dtype=torch.bfloat16)
         tower.load_state_dict(tensors, strict=True, assign=True)
-        rotary_frequencies(tower.rotary_pos_emb, self.config, device)
+        rotary_frequencies(tower.rotary_pos_emb, self.config, resident)
         self.tower = tower.eval()
 
     def warm(self):
@@ -211,26 +217,54 @@ class QwenCudaVision:
         merge = self.config["spatial_merge_size"]
         patches = merge * merge
         width = self.config["in_channels"] * self.config["temporal_patch_size"] * self.config["patch_size"]**2
-        with torch.inference_mode():
+        with self._on_gpu(), torch.inference_mode():
             self.tower(torch.zeros((patches, width), dtype=torch.bfloat16, device=self.device),
                        grid_thw=torch.tensor([[1, merge, merge]], device=self.device), return_dict=True)
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
 
     def prepare(self, *args, **kwargs):
-        if not self.videos:
-            return self.frontend.prepare(*args, **kwargs)
         import torch
 
         kwargs.setdefault("max_visual_tokens", self.image_tokens)
         kwargs.setdefault("max_image_tokens", TOKENS_PER_IMAGE)
         prepared = self.frontend.prepare(*args, **kwargs)
-        # the patches wait for their turn as the bf16 the tower reads (the same cast), half the host memory
+        if not self.videos:
+            return prepared
+        # Same bf16 input cast before storing the request, reducing retained host memory.
         return replace(prepared, pixel_values=torch.tensor(prepared.pixel_values, dtype=torch.bfloat16))
 
     def video_size(self, frames: int, height: int, width: int) -> tuple[int, int]:
         return self.frontend.video_size(frames, height, width)
 
+    @contextmanager
+    def _on_gpu(self):
+        """The tower on the GPU for the block; when offloaded, one caller at a time, and back to host RAM after."""
+        if not self.offload:
+            yield
+            return
+        import torch
+
+        with self._lock:
+            primary = None
+            try:
+                self.tower.to(self.device)
+                yield
+            except BaseException as error:
+                primary = error
+                raise
+            finally:
+                try:
+                    self.tower.to("cpu")
+                    torch.cuda.empty_cache()
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise primary from cleanup
+                    raise
+
     def encode(self, prepared, prompt) -> EncodedVision:
+        return self._encode(prepared, prompt)
+
+    def _encode(self, prepared, prompt) -> EncodedVision:
         import torch
         from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -247,11 +281,12 @@ class QwenCudaVision:
         if any(int(value) != value or value <= 0 for row in every for value in row) or any(
                 int(h) % merge or int(w) % merge for _, h, w in every):
             raise ValueError("image grids must contain positive merge-aligned dimensions")
-        patches = sum(int(t) * int(h) * int(w) for t, h, w in grid)
+        sizes = [int(t) * int(h) * int(w) for t, h, w in grid]
+        patches = sum(sizes)
         clips = 0 if videos is None else sum(int(t) * int(h) * int(w) for t, h, w in videos)
-        budget = self.image_tokens * merge**2 if self.videos else MAX_PATCHES
-        if patches > budget or (patches <= 0 and clips <= 0):
-            raise ValueError(f"image request exceeds the CUDA vision budget of {budget} patches")
+        if patches > MAX_REQUEST_PATCHES or max(sizes, default=0) > MAX_PATCHES or (patches <= 0 and clips <= 0):
+            raise ValueError(f"image request exceeds the CUDA vision budget of {MAX_PATCHES} patches an image and "
+                             f"{MAX_REQUEST_PATCHES} a request")
         if clips > MAX_VIDEO_PATCHES:
             raise ValueError(f"video request exceeds the CUDA vision budget of {MAX_VIDEO_PATCHES} patches")
         patch_width = (self.config["in_channels"] * self.config["temporal_patch_size"] * self.config["patch_size"]**2)
@@ -267,42 +302,23 @@ class QwenCudaVision:
         validate_encoded(rows, positions, prepared.rope_delta, prompt, self.media_tokens,
                          ((patches + clips) // merge**2, self.config["out_hidden_size"]),
                          self.config["out_hidden_size"])
-        with torch.inference_mode(), sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+        with self._on_gpu(), torch.inference_mode(), sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
             blocks = {}                                  # span start -> its features, in the tower's order
-            if patches and not torch.is_tensor(prepared.pixel_values):
+            starts = iter(start for start, _ in prepared.image_spans)
+            # images never attend to one another: runs of whole images, at most MAX_PATCHES a tower call (one call,
+            # as before, whenever the request fits it), so the scratch stays what one full-size image needs
+            for begin, end in image_runs(sizes, MAX_PATCHES):
+                done = sum(sizes[:begin])
                 # a copy: the prepared arrays are read-only, and a tensor may not share them
-                pixels = torch.tensor(prepared.pixel_values, dtype=torch.bfloat16, device=self.device)
-                grids = torch.tensor(grid, dtype=torch.int64, device=self.device)
+                selected = prepared.pixel_values[done:done + sum(sizes[begin:end])]
+                pixels = (selected.to(device=self.device, dtype=torch.bfloat16) if torch.is_tensor(selected) else
+                          torch.tensor(selected, dtype=torch.bfloat16, device=self.device))
+                grids = torch.tensor(grid[begin:end], dtype=torch.int64, device=self.device)
                 features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
-                features = features.to(dtype=torch.bfloat16)
-                for (start, end), part in zip(prepared.image_spans, features.split([e - s for s, e in
-                                                                                    prepared.image_spans])):
-                    blocks[start] = part
-            elif patches:
-                # Flash Next: images never attend to one another; runs of whole images, MAX_PATCHES a tower call
-                runs, done, spans_left = [[]], 0, iter(prepared.image_spans)
-                run_size = 0
-                for row in grid:
-                    size = int(row[0]) * int(row[1]) * int(row[2])
-                    if runs[-1] and run_size + size > MAX_PATCHES:
-                        runs.append([])
-                        run_size = 0
-                    runs[-1].append(row)
-                    run_size += size
-                for run in runs:
-                    size = sum(int(t) * int(h) * int(w) for t, h, w in run)
-                    pixels = prepared.pixel_values[done:done + size].to(self.device)
-                    grids = torch.tensor(np.asarray(run), dtype=torch.int64, device=self.device)
-                    features = self.tower(pixels, grid_thw=grids, return_dict=True).pooler_output
-                    for row, part in zip(run, features.to(dtype=torch.bfloat16).split(
-                            [int(t) * int(h) * int(w) // merge**2 for t, h, w in run])):
-                        start, end = next(spans_left)
-                        if end - start != part.shape[0]:
-                            raise ValueError("image features do not match their placeholders")
-                        blocks[start] = part
-                    done += size
+                for part in features.to(dtype=torch.bfloat16).split([s // merge**2 for s in sizes[begin:end]]):
+                    blocks[next(starts)] = part
             if clips:
-                # frame groups never attend to one another: a video encodes a bounded run of them at a time
+                # frame groups never attend to one another either: a video encodes a bounded run of them at a time
                 done, spans_left = 0, iter(frames)
                 for t, h, w in videos:
                     t, h, w = int(t), int(h), int(w)
@@ -324,6 +340,19 @@ class QwenCudaVision:
             raise ValueError("vision tower returned a different number of image features")
         return EncodedVision(rows, features, torch.tensor(positions, dtype=torch.int32, device=self.device),
                              prepared.rope_delta)
+
+
+def image_runs(sizes, limit: int) -> list[tuple[int, int]]:
+    """Consecutive [begin, end) runs of images whose patches fit ``limit`` together (an image alone always fits)."""
+    runs, begin, total = [], 0, 0
+    for i, size in enumerate(sizes):
+        if i > begin and total + size > limit:
+            runs.append((begin, i))
+            begin, total = i, 0
+        total += size
+    if sizes:
+        runs.append((begin, len(sizes)))
+    return runs
 
 
 def validate_encoded(rows, positions, delta: int, prompt, image_token, feature_shape, hidden: int) -> None:

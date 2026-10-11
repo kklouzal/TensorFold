@@ -18,9 +18,51 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Python-line integration, 2026-10-11
+
+The integration joins fork `2f8089a7b59588875d639a7efa860117168a29d0` with
+upstream Python `ed78d6fc204d89d90b045bf033d6551e7714f3a1`. This records Git
+lineage, not a new performance result. The selected fork cache geometry, sampler,
+attention ordering, eager shared rounds, CUDA support floor and relevant memory
+policies are retained. New source corrections include defined EXL3 no-bias loads,
+bounded HTTP framing, authentication file/counter ownership, and whole-request
+decision admission. Applicable gates must run on the combined source.
+
+The frozen combined source passed **7,332 Linux CPU checks**, with 172 explicit
+skips, no failures/errors, and two inherited pinned-Torch allocator deprecation
+warnings. The complete 1,204-record source manifests matched before and after
+the run. This execution used CPython 3.12, the recorded native ARM64 runtime,
+the optional TUI dependency closure, no GPU/network, UID 1000, and a 3 GiB
+memory limit with no extra swap. Maintained tests of unselected upstream GPU
+optimizations are preserved with those evaluation packets, rather than treated
+as shipping requirements.
+The existing no-GPU collection policy excludes CUDA test modules entirely;
+they are absent from both these pass counts and skip counts.
+
+Actual bounded GB10 component runs passed 62 EXL3-linear, 31 attention and 28
+Flash Next multi-stream/state cases. They cover synthetic weights and buffers,
+including the attention cancellation counterexample and waiting recurrence
+ownership; they do not cover a full checkpoint or establish a speed gain.
+The pinned Triton teardown diagnostic was reproduced with identical counts on
+the unchanged fork and is retained without suppression. Installed-wheel/image,
+actual model/API and controlled performance gates remain pending at this
+source checkpoint. Native Apple execution is unavailable; CPU substitutes do
+not qualify Metal behavior or peak memory.
+
+Grouped attention is rejected under the existing numerical contract: a finite
+BF16 input produces different output under its changed reduction association.
+Other unverified CUDA/MLX kernel, scheduling, prebuild, pinning and distributed
+Flash Next alternatives remain isolated evaluation packets. Source-only
+operation-order reasoning does not establish their integrated performance.
+
+Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
+EXL3, startup and transport comparisons keep their original image, target and
+workload scope. Actual integrated native/device/model/performance qualification
+is reported separately; CPU or fake controls do not certify missing targets.
+
 ## GB10 deployment selection, 2026-10-10
 
-The [current GB10 measurements](../README.md#gb10-deployment-with-yarn-2)
+The [earlier GB10 measurements](../README.md#earlier-gb10-deployment-with-yarn-2)
 use runtime image `5b6627ba…`, built from `5fe0e89d…`, with the unchanged
 Flash Next affine 4-bit/group-32 checkpoint at revision `2b170fa6…`, INT8 K/V,
 524,288-token YaRN-2 context, four slots, vision and thinking. The selected

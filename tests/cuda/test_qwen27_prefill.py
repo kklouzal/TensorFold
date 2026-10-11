@@ -147,6 +147,26 @@ def test_a_cache_limit_changes_no_bits(length, limit, fp8):
     assert max(kv[0].shape[0] for kv in replied[1].kv if kv is not None) <= limit
 
 
+def test_a_long_prompt_tree_window_equals_serial_on_every_path():
+    """A 16-row draft tree after a 9,000-key prompt equals serial decoding along every leaf's path."""
+    w = _model()
+    prompt = _prompt(9000, seed=11)
+    st, first = prefill(w, prompt, None)
+    parents = [-1, 0, 0, 1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    tokens = torch.randint(1, V, (16,), generator=torch.Generator().manual_seed(3)).to(torch.int32).cuda()
+    tokens[0] = first
+    logits, _ = tree_forward(w, tokens, parents, clone_state(st))
+    for leaf in (11, 12, 13, 14, 15):
+        path = [leaf]
+        while parents[path[-1]] >= 0:
+            path.append(parents[path[-1]])
+        serial = clone_state(st)
+        for row in reversed(path):
+            out, record = tree_forward(w, tokens[row:row + 1], [-1], serial)
+            assert torch.equal(out[0], logits[row]), f"row {row} on the path to {leaf}"
+            commit(serial, record, [0])
+
+
 def test_bf16_prompts_track_decode_closer_than_fp8():
     """bf16 prompt rows sit nearer decode's arithmetic than FP8 rows do (this model, 300 rows: 0.26% against 0.57%)."""
 

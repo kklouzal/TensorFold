@@ -20,6 +20,8 @@ import gc
 from tensorfold.server.cancellation import Cancellation
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
 from tensorfold.server.http import Server, make_handler
+from tensorfold.server.stopping import matched_stop
+from tensorfold.server.thinking_notes import unanswered
 from tensorfold.server.text import (CHANNEL_MARKERS, IncrementalText, is_title_request, parse_harmony_output,
                                     reasoning_count, split_thinking, streaming_visible_text, strip_trailing_stops)
 
@@ -82,7 +84,7 @@ def maintained():
                      is_title_request=is_title_request, IncrementalText=IncrementalText, CHANNEL_MARKERS=CHANNEL_MARKERS,
                      split_thinking=split_thinking, parse_harmony_output=parse_harmony_output,
                      strip_trailing_stops=strip_trailing_stops, reasoning_count=reasoning_count,
-                     streaming_visible_text=streaming_visible_text,
+                     streaming_visible_text=streaming_visible_text, matched_stop=matched_stop, unanswered=unanswered,
                      _token_sha=lambda ids: hashlib.sha256(",".join(str(t) for t in ids).encode()).hexdigest()[:12],
                      grammar=SimpleNamespace(FIELDS=(), request_constraint=lambda *a: None))
     exec(compile(source, str(path), "exec"), namespace)

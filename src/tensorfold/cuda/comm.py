@@ -7,12 +7,31 @@ import ctypes.util
 import glob
 import os
 import threading
+from collections.abc import Callable
+from typing import Protocol
 
 import torch
 
-from tensorfold.cleanup import rollback
+from tensorfold.cleanup import rollback, raise_failures
 
-_DTYPES = {torch.float32: 7, torch.bfloat16: 9, torch.int32: 2, torch.int64: 4}
+_DTYPES = {torch.float32: 7, torch.bfloat16: 9, torch.int32: 2, torch.int64: 4,
+           torch.uint8: 1, torch.int8: 0, torch.float16: 6}
+BACKEND_ENV = "TF_COMM_BACKEND"
+
+
+class Comm(Protocol):
+    """What every engine assumes; ``all_gather_fast``, ``exchange``, ``check`` (and NCCL's ``store``) are optional."""
+
+    rank: int
+    world: int
+
+    def all_gather(self, send: torch.Tensor, recv: torch.Tensor) -> None: ...
+
+    def barrier(self) -> None: ...
+
+    def ready(self, label: str, *, every: float = 60.0, timeout: float = 3600.0) -> None: ...
+
+    def close(self, *, abort: bool = False) -> None: ...
 
 
 class _UniqueId(ctypes.Structure):
@@ -49,7 +68,8 @@ class NCCL:
         self._release_error = None
         self._opened = False
 
-    def open(self, rank: int, world: int, master: str, port: int) -> None:
+    def open(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
+             key: str = "tf_nccl_uid") -> None:
         """Acquire into a published slot; failure closes or retains that slot.
 
         Native init writes directly into ``comm`` before Python regains control.
@@ -62,20 +82,26 @@ class NCCL:
                 if self.closed or self._opened:
                     raise RuntimeError("communicator open is one-shot")
                 acquiring = True
-                self._initialize(rank, world, master, port)
+                self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key)
                 self._opened = True
         except BaseException as error:
             if not acquiring:
                 raise
             rollback(self, error, lambda: self.close(abort=True))
 
-    def _initialize(self, rank: int, world: int, master: str, port: int) -> None:
+    def _initialize(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
+                    key: str = "tf_nccl_uid") -> None:
         from datetime import timedelta
+        from math import isfinite
 
         if (type(world) is not int or not 1 <= world <= 2**31 - 1
                 or type(rank) is not int or not 0 <= rank < world
                 or type(port) is not int or not 0 <= port <= 65535 or not isinstance(master, str)):
             raise ValueError("NCCL requires integer world/rank/port ranges and a master hostname")
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not isfinite(timeout_s) or timeout_s <= 0
+                or not isinstance(key, str) or not key):
+            raise ValueError("NCCL requires a positive finite timeout and nonempty rendezvous key")
         from torch.distributed import TCPStore
 
         self.rank, self.world = rank, world
@@ -90,13 +116,13 @@ class NCCL:
         for function in (lib.ncclCommDestroy, lib.ncclCommAbort):
             function.argtypes = [ctypes.c_void_p]
             function.restype = ctypes.c_int
-        self.store = TCPStore(master, port, world, rank == 0, timeout=timedelta(seconds=600))
+        self.store = TCPStore(master, port, world, rank == 0, timeout=timedelta(seconds=timeout_s))
         uid = _UniqueId()
         if rank == 0:
             self._check(self.lib.ncclGetUniqueId(ctypes.byref(uid)))
-            self.store.set("tf_nccl_uid", bytes(uid.internal))
+            self.store.set(key, bytes(uid.internal))
         else:
-            raw = self.store.get("tf_nccl_uid")
+            raw = self.store.get(key)
             if not isinstance(raw, bytes) or len(raw) != ctypes.sizeof(_UniqueId):
                 raise ValueError("NCCL rendezvous unique ID must contain exactly 128 bytes")
             ctypes.memmove(ctypes.addressof(uid), raw, 128)
@@ -220,6 +246,57 @@ class NCCL:
             print(f"[tensorfold] rank {self.rank} finished {label}; waiting for rank {missing} ({waited:.0f} s)",
                   flush=True)
 
+    def exchange(self, sends: list[torch.Tensor], recvs: list[torch.Tensor], peer: int) -> None:
+        """Submit borrowed contiguous CUDA buffers; their storage survives current-stream completion.
+
+        Admission and group submission share the communicator lifetime lease.
+        Validate every buffer before entering the native group; closing may only
+        retire it after caller graph/buffer borrowers have stopped.
+        """
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("exchange: communicator admission is closed")
+            if (len(sends) != len(recvs) or type(peer) is not int
+                    or peer == self.rank or not 0 <= peer < self.world):
+                raise ValueError("exchange: one receive per send, with another rank")
+            for tensor in (*sends, *recvs):
+                if (not isinstance(tensor, torch.Tensor) or tensor.dtype not in _DTYPES
+                        or tensor.device != self.device or not tensor.is_contiguous()):
+                    raise ValueError("exchange: supported contiguous tensors on the communicator's CUDA device required")
+            reads = [(tensor.data_ptr(), tensor.numel() * tensor.element_size()) for tensor in sends]
+            writes = [(tensor.data_ptr(), tensor.numel() * tensor.element_size()) for tensor in recvs]
+            for index, (begin, size) in enumerate(writes):
+                if any(size and extent and begin < other + extent and other < begin + size
+                       for other, extent in [*reads, *writes[:index]]):
+                    raise ValueError("exchange: receive storage must not overlap sends or other receives")
+            lib = self.lib
+            if not getattr(self, "_p2p", False):
+                for name in ("ncclSend", "ncclRecv"):
+                    getattr(lib, name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                                                   ctypes.c_void_p, ctypes.c_void_p]
+                    getattr(lib, name).restype = ctypes.c_int
+                lib.ncclGroupStart.argtypes = []
+                lib.ncclGroupEnd.argtypes = []
+                lib.ncclGroupStart.restype = lib.ncclGroupEnd.restype = ctypes.c_int
+                self._p2p = True
+            stream = torch.cuda.current_stream(self.device).cuda_stream
+            self._check(lib.ncclGroupStart())
+            primary = None
+            try:
+                for send, recv in zip(sends, recvs):
+                    if send.numel():
+                        self._check(lib.ncclSend(send.data_ptr(), send.numel(), _DTYPES[send.dtype], peer, self.comm, stream))
+                    if recv.numel():
+                        self._check(lib.ncclRecv(recv.data_ptr(), recv.numel(), _DTYPES[recv.dtype], peer, self.comm, stream))
+            except BaseException as error:
+                primary = error
+            errors = []
+            try:
+                self._check(lib.ncclGroupEnd())
+            except BaseException as error:
+                errors.append(error)
+            raise_failures(primary, errors)
+
     def barrier(self) -> None:
         with self._close_lock:
             if self.closed or not self._opened:
@@ -228,3 +305,92 @@ class NCCL:
             y = torch.zeros((self.world,), dtype=torch.float32, device="cuda")
             self._all_gather(x, y)
             torch.cuda.synchronize()
+
+
+def fast_gather(comm: Comm, send: torch.Tensor, recv: torch.Tensor) -> None:
+    """A model exchange: the communicator's faster ``all_gather_fast`` if it has one, else ``all_gather``."""
+
+    fast = getattr(comm, "all_gather_fast", None)
+    if fast is None:
+        comm.all_gather(send, recv)
+    else:
+        fast(send, recv)
+
+
+def check(comm: Comm) -> None:
+    """Raise a failure the communicator's transport recorded (call it after a synchronizing exchange)."""
+
+    found = getattr(comm, "check", None)
+    if found is not None:
+        found()
+
+
+def exchange(comm: Comm, sends: list[torch.Tensor], recvs: list[torch.Tensor], peer: int | None = None) -> None:
+    """``comm.exchange`` when it has one, else (two ranks) each pair traded as bytes through the all-gather."""
+
+    peer = 1 - comm.rank if peer is None else peer
+    if len(sends) != len(recvs):
+        raise ValueError("exchange: one receive per send")
+    fn = getattr(comm, "exchange", None)
+    if fn is not None:
+        fn(sends, recvs, peer)
+        return
+    if comm.world != 2:
+        raise ValueError("exchange: a communicator without exchange trades through its all-gather, two ranks only")
+    if peer == comm.rank or not 0 <= peer < comm.world:
+        raise ValueError("exchange: the peer must be another rank")
+    for s, r in zip(sends, recvs):
+        sb, rb = s.contiguous().view(-1).view(torch.uint8), r.view(-1).view(torch.uint8)
+        n = max(sb.numel(), rb.numel())
+        if n == 0:
+            continue
+        pad = torch.zeros((n,), dtype=torch.uint8, device=s.device)
+        pad[:sb.numel()].copy_(sb)
+        both = torch.empty((2 * n,), dtype=torch.uint8, device=s.device)
+        comm.all_gather(pad, both)
+        rb.copy_(both[peer * n:peer * n + rb.numel()])
+
+
+class Transport:
+    """A base for transports: whatever a subclass does not define (``store``, ``ready``, ...) is the wrapped NCCL's."""
+
+    def __init__(self, base: Comm) -> None:
+        self.base, self.rank, self.world = base, base.rank, base.world
+
+    def __getattr__(self, name: str):
+        if name == "base":                          # not set yet (a copy): no recursion
+            raise AttributeError(name)
+        return getattr(self.base, name)
+
+
+# Process-owned transport registrations are written during single-threaded
+# startup, before any communicator is opened, and stay stable while engines
+# borrow their transports. A wrapper owns its extra resources and close/abort
+# drains them before retiring base; bare Transport owns only base.
+BACKENDS: dict[str, Callable[[Comm], Comm]] = {}
+
+
+def register_backend(name: str, wrap: Callable[[Comm], Comm]) -> None:
+    """Register before engine startup; wrap runs on all ranks and owns close/abort of its transport."""
+
+    BACKENDS[name] = wrap
+
+
+def open_comm(rank: int, world: int, master: str, port: int, *, backend: str | None = None, **nccl) -> Comm:
+    """NCCL, wrapped by ``backend`` (default TF_COMM_BACKEND, else none); the ranks check they named the same one."""
+
+    name = (backend if backend is not None else os.environ.get(BACKEND_ENV, "")).strip().lower() or "nccl"
+    if name != "nccl" and name not in BACKENDS:
+        raise ValueError(f"{BACKEND_ENV}={name!r}: expected nccl{''.join(', ' + b for b in sorted(BACKENDS))}")
+    base = NCCL()
+    base.open(rank, world, master, port, **nccl)     # open owns rollback of partial native acquisition
+    try:
+        store = getattr(base, "store", None)
+        if store is not None and world > 1:          # every rank selects the same transport before its first exchange
+            store.set(f"tf_comm_backend/{rank}", name)
+            names = [store.get(f"tf_comm_backend/{r}").decode() for r in range(world)]
+            if len(set(names)) > 1:
+                raise RuntimeError(f"the ranks were started with different {BACKEND_ENV}: {', '.join(names)} (rank order)")
+        return base if name == "nccl" else BACKENDS[name](base)
+    except BaseException as error:
+        rollback(base, error, lambda: base.close(abort=True))

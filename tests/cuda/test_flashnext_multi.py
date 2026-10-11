@@ -353,3 +353,36 @@ def test_packed_prompt_passes_keep_each_prompt_its_solo_run(kv_dtype, decoding):
         dec.finish(dec.round())
     assert [s.out for s in streams] == refs
     assert max(ends) >= 2                                             # a pass that ended two prompts at once
+
+
+def test_waiting_stream_keeps_its_recurrence_when_other_rounds_reuse_shared_scratch(monkeypatch):
+    from test_flashnext_forward import _model
+    from tensorfold.families.qwen4_exp.cuda import multi
+
+    monkeypatch.setattr(multi, "FIRST", 8)
+    monkeypatch.setattr(multi, "STEP", 16)
+    real = MultiDecoder._grow
+    def grow(dec, st, rows, *, alone=False):
+        blocked = dec.streams.get(1)
+        if (getattr(dec, "test_wait", False) and blocked is not None and st is blocked.st
+                and rows > st.capacity and not alone):
+            return False
+        return real(dec, st, rows, alone=alone)
+    monkeypatch.setattr(MultiDecoder, "_grow", grow)
+    w = _model()
+    dec = MultiDecoder(w, slots=3, capacity=1024, depth=3, prefill_rows=64)
+    dec.test_wait = True
+    streams = [Stream(PROMPTS[0], 60, stop_eos=False), Stream(PROMPTS[1], 20, stop_eos=False)]
+    for s in streams:
+        dec.admit(s)
+    waits = 0
+    while dec.live():
+        dec.finish(dec.round())
+        if streams[1].waiting:
+            waits += 1
+        if waits >= 4:
+            dec.test_wait = False
+    assert waits >= 4
+    for s in streams:
+        e = Engine(w, capacity=1024, max_rows=8, prefill_rows=64)
+        assert s.out == serial_decode(e, prefill(e, s.prompt, None), s.count, None).tokens

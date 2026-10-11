@@ -255,9 +255,11 @@ def test_geometry_format_difference_equals_measured_live_cache_difference(
     else:
         candidate = geometry.indexed_stream_geometry(text, 4, 4, 8, **params)
         legacy = geometry.indexed_stream_geometry(text, 4, 4, 8, mtp=True, kv_bits=4)
-        # Exercise actual main/MTP Step serialization. Only the transport is
-        # replaced with a CPU copy; the pointer schema/allocation remains native.
+        # Exercise real host pointer serialization/allocation without executing
+        # kernels; the allocation fixture uses opaque Triton type tags.
         module = importlib.import_module("tensorfold.families.qwen4_exp.cuda.attn_multi")
+        byte_type = object()
+        monkeypatch.setattr(module.tl, "uint8", byte_type, raising=False)
         monkeypatch.setattr(module.shared, "to_device", lambda values, dtype, device:
                             torch.tensor(values, dtype=dtype, device=device))
         model = weights()
@@ -267,6 +269,7 @@ def test_geometry_format_difference_equals_measured_live_cache_difference(
             segments = [(state, i, i + 1) for i, state in enumerate(states)]
             for mtp in (False, True):
                 step = module.Step(model, segments, mtp)
+                assert step.kt is step.vt is byte_type
                 if states is rotor_states:
                     assert step.status_ptrs.dtype == torch.int64 and step.status_ptrs.shape == (streams,)
                     assert step.status_ptrs.tolist() == [st.kv_status.data_ptr() for st in states]
@@ -376,6 +379,7 @@ def test_two_ranks_reject_same_bits_with_different_codec_identity(fake_runtime, 
         engine = FlashNextEngine.__new__(FlashNextEngine)
         engine.rope = RopeParameters.from_config(small_config())
         engine.depth, engine.confidence, engine.max_len = 3, 0.5, 8192
+        engine.streams, engine.graphs_enabled, engine.prefill_rows = 1, True, 2048
         engine.comm = exchange
         engine.kv_pair = kv_formats.get_pair(cache)
         return engine
@@ -385,6 +389,10 @@ def test_two_ranks_reject_same_bits_with_different_codec_identity(fake_runtime, 
     second = Exchange(first.sent)
     with pytest.raises(RuntimeError, match="different settings"):
         rank(dtype, second)._same_settings(torch, None)
-    assert second.sent[5] == kv_formats.get(dtype).handshake
-    assert first.sent[5] == kv_formats.get(peer).handshake
-    assert second.sent[5] != first.sent[5]
+    # Complete execution settings precede the draft vocabulary and ordered KV identity.
+    import struct
+    expected_prefix = [3, struct.unpack("<q", struct.pack("<d", 0.5))[0], 8192, 1, 1, 2048, -1, -1]
+    assert second.sent[:8].tolist() == first.sent[:8].tolist() == expected_prefix
+    assert second.sent[8] == kv_formats.get(dtype).handshake
+    assert first.sent[8] == kv_formats.get(peer).handshake
+    assert second.sent[8] != first.sent[8]
