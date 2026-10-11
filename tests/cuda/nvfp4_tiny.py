@@ -16,7 +16,7 @@ import torch
 from tensorfold.families.qwen4_exp.cuda import nvfp4
 from tensorfold.families.qwen4_exp.cuda.ngram import NGram
 
-DTYPE_NAMES = {torch.bfloat16: "BF16", torch.float32: "F32", torch.uint8: "U8", torch.int32: "I32",
+DTYPE_NAMES = {torch.bfloat16: "BF16", torch.float32: "F32", torch.uint8: "U8", torch.int32: "I32", torch.uint32: "U32",
                torch.float8_e4m3fn: "F8_E4M3", torch.int64: "I64"}
 
 
@@ -164,13 +164,12 @@ def write(dir: Path, *, layers: int = 2, experts: int = 2, vocab: int = 256, hid
                     s8.view(torch.uint8).view(torch.float8_e4m3fn))
                 add(f"{b}.ple.ple_embedding.ngram_embedding.weight_scale_2", torch.tensor([s2]))
             else:
-                # a shard row is one head's embedding at ``dims`` 4-bit values: dims/8 int32 words and
-                # dims/32 fp16 scales/biases (``host_table.HostTable`` reads the words as int32 and the
-                # scales as int16, and the engine's PLE buffer row is the same width)
+                # The MLX affine table stores U32 packed words and BF16 scales/biases.
+                # Keep the seeded signed generator's payload; only its storage view changes.
                 words = torch.randint(0, 256, (heads_rows, dims // 8), generator=rng, dtype=torch.int32)
                 scales = rand(heads_rows, dims // 32)
                 biases = rand(heads_rows, dims // 32)
-                add(f"{b}.ple.ple_embedding.ngram_embedding.shard_0.weight", words)
+                add(f"{b}.ple.ple_embedding.ngram_embedding.shard_0.weight", words.view(torch.uint32))
                 add(f"{b}.ple.ple_embedding.ngram_embedding.shard_0.scales", scales)
                 add(f"{b}.ple.ple_embedding.ngram_embedding.shard_0.biases", biases)
     linear("model.hyper_connection_mixer.input_mix_weight_down", low, streams * hidden, fp4=False)

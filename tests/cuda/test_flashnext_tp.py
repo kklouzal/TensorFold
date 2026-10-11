@@ -146,18 +146,19 @@ class _ThreadComm:
 
     def __init__(self, hub: _Hub, rank: int) -> None:
         self.hub, self.rank, self.world = hub, rank, hub.world
+        self.device = torch.device("cuda", torch.cuda.current_device())
 
     def all_gather(self, send: torch.Tensor, recv: torch.Tensor) -> None:
         if recv.numel() != send.numel() * self.world or send.dtype != recv.dtype:
             raise ValueError("all_gather: recv must hold world x send of the same dtype")
-        torch.cuda.current_stream().synchronize()
+        torch.cuda.current_stream(self.device).synchronize()
         self.hub.slots[self.rank] = send
         self.hub.barrier.wait()
         n = send.numel()
         flat = recv.view(-1)
         for r in range(self.world):
             flat[r * n:(r + 1) * n].copy_(self.hub.slots[r].reshape(-1))
-        torch.cuda.current_stream().synchronize()
+        torch.cuda.current_stream(self.device).synchronize()
         self.hub.barrier.wait()
 
     def barrier(self) -> None:
@@ -408,7 +409,7 @@ def _fake_nccl(monkeypatch, hub):
 
     class FakeNCCL:
         def __init__(self):
-            self.store = self.inner = None
+            self.store = self.inner = self.device = None
             self._lock = threading.Lock()
             self._opened = self.closed = self.retired = False
             owners.append(self)
@@ -427,6 +428,7 @@ def _fake_nccl(monkeypatch, hub):
                         raise ValueError("two-rank fixture requires valid rank/world/master/port")
                     self.rank, self.world = rank, world
                     self.store = TCPStore("127.0.0.1", port, world, rank == 0, timeout=timedelta(seconds=120))
+                    self.device = torch.device("cuda", torch.cuda.current_device())
                     self.inner = _ThreadComm(hub, rank)
                     self._opened = True
             except BaseException as error:
@@ -465,8 +467,8 @@ def _fake_nccl(monkeypatch, hub):
                 # wakes an idle follower on abort, before the device fence.
                 if abort:
                     self.store = None
-                if self.inner is not None:
-                    torch.cuda.synchronize(0)
+                if self.device is not None:
+                    torch.cuda.synchronize(self.device)
                 self.store = self.inner = None
                 self.retired = True
 
