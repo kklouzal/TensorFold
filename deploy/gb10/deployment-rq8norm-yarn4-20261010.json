@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-10",
+  "host": "192.168.1.50",
+  "port": 8888,
+  "status": "deployed_and_functionally_verified",
+  "model": "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+  "model_revision": "2b170fa6309d5d1ee380b35636075fac7945f286",
+  "weight_format": "affine4-bit/group32",
+  "runtime_image": "sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec",
+  "built_source": "5fe0e89d4697cf2c2f152a720df7de1c0d90ec8c",
+  "container_id": "6e7f4d85c476e9f8713b1cdc8eecb234d329ddb87ef11bae199666fa33dd7055",
+  "compose_project": "tensorfold-gb10-yarn2",
+  "configuration": {
+    "context": 1048576,
+    "yarn_factor": 4,
+    "rotary_amplitude": 1.1386294,
+    "kv_key_dtype": "rotorquant8-norm",
+    "kv_value_dtype": "rotorquant8-norm",
+    "slots": 4,
+    "mtp_drafts": 4,
+    "mtp_confidence": 0.5,
+    "copy_drafts": true,
+    "vision": true,
+    "thinking": true,
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "max_reply_tokens": 32768,
+    "prefill_rows": 2048,
+    "memory_limit_GiB": 114,
+    "extra_swap_GiB": 0,
+    "cpuset": "5-9,15-19"
+  },
+  "canonical_compose_sha256": "907ba0a7c350b0f8fd5744b86ea5eace84179237f7f9897ed5920c0667fd0460",
+  "authorization": "User approved RQ8-norm K/V and4xYaRN together immediately, explicitly allowing active request interruption.",
+  "changed_values": [
+    "--context524288 to1048576",
+    "--yarn-factor2 to4",
+    "--kv-dtypeint8 torotorquant8-norm"
+  ],
+  "completed_checks": [
+    "Installed CPU staticYaRN frequency/amplitude/admission oracle:18checks passed",
+    "Installed CPU-only codec/head geometry support check passed; eight relevant source files matched",
+    "Docker Compose configuration valid",
+    "Exact image/args/project/mount/resource identity after cutover",
+    "Short consumed draft/serial/SSE arithmetic and token-ID identity under new policy",
+    "Positive prefix repeat/extension reuse with matching fresh serial reference",
+    "Same-container restart:exactID/image/args retained, start time changed, healthy1M/four-slot service",
+    "After-restart shared-service six retained feature groups passed",
+    "Four synchronized short SSE clients consumed complete correct responses",
+    "Final exact image/flags/limits/process and LAN health verified; no new resource failure in snapshots",
+    "17 maintained deployment contract tests passed; diff whitespace check passed; unrelated user files retained byte-for-byte"
+  ],
+  "short_before_restart": {
+    "passed": false,
+    "passed_case_count": 12,
+    "failure": "ValueError: image failed: ValueError: RemoteDisconnected: Remote end closed connection without response",
+    "elapsed_seconds": 68.71290889300872
+  },
+  "restart": {
+    "status": "same_container_restart_passed",
+    "elapsed_seconds": 35.55913201201474,
+    "loaded_seconds_from_log": 26.0
+  },
+  "operational_events": [
+    {
+      "event": "First candidate passed startup; exact configuration verification rejected incidental Docker array ordering, triggering a successful rollback. Comparison corrected to preserve destination/name identity; changed values and duplicate identities remain rejected.",
+      "receipt": "task-artifacts/gb10-yarn4-20261010/cutover-attempt1.json"
+    },
+    {
+      "event": "First image fixture reached client60-second watchdog under shared service traffic; remote disconnect alone does not establish a server error. Other generation scopes were observed. Failed receipt preserved.",
+      "receipt": "task-artifacts/gb10-yarn4-20261010/rq8norm-yarn4-short-before-restart.json"
+    },
+    {
+      "event": "Strict post-restart suite required global idle; external request arrived between health snapshots, so it stopped before generation. Remaining features use shared-service checks.",
+      "receipt": "task-artifacts/gb10-yarn4-20261010/rq8norm-yarn4-short-after-restart.json"
+    }
+  ],
+  "memory_forecast": {
+    "scope": "One complete growing cache at context+5speculative rows; includesK/V payload/scales,BF16 indexer/pooled state,MTP; excludesweights,recurrentstate,snapshots,promptworkspace. Source forecast, not measured peak.",
+    "cache_GiB": 17.46883562207222,
+    "same_context_int8_cache_GiB": 17.875087559223175,
+    "saving_percent": 2.2727269771684986,
+    "startup_estimate_GiB_from_log": 98.21,
+    "cache_room_GiB_from_log": 29.5,
+    "four_full_windows_fit_claim": false
+  },
+  "unrun": [
+    "Filled1M-token capacity/retrieval/stress/general quality",
+    "Matched current-image INT8 versus RQ8norm throughput/latency/quality comparison",
+    "Individual cancellation retirement under shared traffic; aggregate health cannot attribute owner identity"
+  ],
+  "evidence_directory": "task-artifacts/gb10-yarn4-20261010",
+  "evidence": [
+    "cutover.json",
+    "cutover-attempt1.json",
+    "same-container-restart.json",
+    "rq8norm-yarn4-short-before-restart.json",
+    "rq8norm-yarn4-short-after-restart.json",
+    "rq8norm-yarn4-features-shared-after-restart.json",
+    "final-state.json"
+  ],
+  "preserved_baseline_receipt": "deployment-20261010.json",
+  "completed_utc": "2026-10-10T21:22:30.258098+00:00",
+  "shared_feature_checks": {
+    "passed": true,
+    "six_feature_groups": true,
+    "case_count": 12,
+    "concurrent_client_count": 4,
+    "elapsed_seconds": 40.652655685000354,
+    "nonexclusive": true,
+    "other_work_observed_at_start": false,
+    "cancellation_retirement_qualified": false,
+    "performance_comparison": false
+  },
+  "final_state": {
+    "Docker_health": "healthy",
+    "OOMKilled": false,
+    "restart_count": 0,
+    "host_MemAvailable_GiB": 32.50705337524414,
+    "host_swap_used_bytes": 341868544,
+    "container_swap_bytes": 0,
+    "LAN_health": {
+      "ok": true,
+      "backend": "tensorfold",
+      "busy": true,
+      "requests_running": 1,
+      "requests_total": 11,
+      "prompt_tokens_total": 14244,
+      "completion_tokens_total": 870,
+      "prefill_seconds_total": 9.9531,
+      "decode_seconds_total": 86.7813,
+      "cached_tokens_total": 2027,
+      "rounds_total": 223,
+      "drafted_total": 795,
+      "accepted_total": 636,
+      "streams": {
+        "decoding": 0,
+        "prefilling": 1,
+        "max": 4
+      },
+      "context_length": 1048576
+    }
+  },
+  "deployment_contract_tests": {
+    "passed": 17,
+    "failed": 0,
+    "command": "python3 -m pytest tests/test_deployment_pins.py tests/test_verification_public_permissions.py -q"
+  }
+}

@@ -17,11 +17,11 @@ services:
       - --parallel
       - '4'
       - --context
-      - '524288'
+      - '1048576'
       - --yarn-factor
-      - '2'
+      - '4'
       - --kv-dtype
-      - int8
+      - rotorquant8-norm
       - --mtp-drafts
       - '4'
       - --mtp-confidence

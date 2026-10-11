@@ -18,12 +18,45 @@ generations ran on the 16 GB Blackwell test host. Those results belong to their
 recorded image/source identities. The current ARM64 deployment is recorded below;
 the separate AMD64 shipping checks retain their own scope in
 [optimization validation](../../docs/optimization-validation.md).
-The current Compose profile enables YaRN factor 2 with 524,288
-prompt-plus-reply tokens and four request slots. Caches grow on demand within
+The current Compose profile enables YaRN factor 4 with 1,048,576
+prompt-plus-reply tokens, `rotorquant8-norm` K/V and four request slots. Caches grow on demand within
 the global memory gate; four simultaneously full-size contexts are not assumed
 to fit the GB10.
 
-## Current ARM64 redeployment
+## Current YaRN-4 / RotorQuant8-norm configuration
+
+The service at **192.168.1.50:8888** uses **YaRN factor 4**, a configured
+**1,048,576-token prompt-plus-reply limit**, and **`rotorquant8-norm` for both
+keys and values**. The model revision, immutable image, four slots, sampler,
+MTP/copy, SSD reads, vision/video, thinking and resource limits remain those
+identified in the earlier deployment below. Only the three corresponding
+Compose argument values changed. The existing Compose project name
+`tensorfold-gb10-yarn2` is retained to preserve service ownership.
+
+Startup identifies the two effective KV formats and **1.1386294** rotary
+amplitude. The runtime reports **17.47 GiB** for one complete full-window growing
+cache, versus the calculated INT8 forecast of 17.88 GiB at the same new context.
+This forecast includes scales, BF16 indexer/pooled state and MTP; it excludes
+weights, recurrent state, snapshots and transient prompt workspace. It is not
+observed peak memory. Four slots do not imply four full windows fit.
+
+See [the configuration-change receipt](deployment-rq8norm-yarn4-20261010.json)
+for bounded functional/restart results, the initial verification rollback,
+cold media timeout and remaining qualification limits. No matched current-image
+INT8/RotorQuant speed comparison or filled-million-token quality claim is made.
+Consumed JSON/SSE, same-policy draft/serial identity and positive prefix reuse
+with a matching fresh reference passed before restart. The same-container
+restart retained its ID/image/arguments, changed the process start and returned
+healthy. After restart, shared-service validation passed image/video recognition
+and counting, the typed `add_tags` call, xgrammar `TFOK` and four synchronized
+short SSE arithmetic clients. The first image trial reached a 60-second client
+watchdog; subsequent media checks used 180-second deadlines and retained exact
+output oracles. No new resource failure was observed in the captured snapshots.
+Individual cancellation retirement could not be attributed under shared traffic
+and remains unqualified; no global-idle or four full-window claim follows.
+The prior INT8/YaRN-2 qualification below retains its original scope.
+
+## Earlier ARM64 redeployment with INT8 and YaRN-2
 
 On **2026-10-10**, the GB10 at **192.168.1.50:8888** was redeployed from the
 maintained fork with the same affine **4-bit/group-32** Flash Next checkpoint,
@@ -43,7 +76,7 @@ build rather than a later documentation commit or rebuild.
 The maintained [deployment receipt](deployment-20261010.json) records the exact
 configuration, measurements, completed checks and evidence identities.
 
-The plain Compose deployment preserves **four slots**, **524,288 configured
+That earlier plain Compose deployment preserved **four slots**, **524,288 configured
 prompt-plus-reply tokens**, **YaRN-2**, INT8 K/V, MTP-4/confidence 0.5,
 `TENSORFOLD_MTP_COPY=1`, SSD n-gram reads, vision/video, thinking and the existing
 sampler defaults. The memory and swap limits remain **114 GiB** with no extra

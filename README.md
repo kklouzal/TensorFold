@@ -140,7 +140,7 @@ A healthy listener alone is insufficient: consume a complete generation. Check r
 
 ### GB10 Compose profile
 
-[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 profile: a captured model path, 114 GiB memory, host CPU affinity, four slots and a 524,288-token YaRN-2 context. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. See the [deployment guide](deploy/gb10/README.md).
+[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 profile: a captured model path, 114 GiB memory, host CPU affinity, four slots, a 1,048,576-token YaRN-4 context and `rotorquant8-norm` for both K and V. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. See the [deployment guide](deploy/gb10/README.md).
 
 ```bash
 docker compose -f deploy/gb10/compose.yaml config --quiet
@@ -390,7 +390,36 @@ On Linux, the measured transport policy enables TCP_NODELAY once a connection su
 
 ## Measured performance and tested hardware
 
-### GB10 deployment with YaRN 2×
+### Current GB10 configuration: YaRN 4× and RotorQuant8-norm
+
+The GB10 service at **`http://192.168.1.50:8888/v1`** now selects
+**1,048,576 prompt-plus-reply tokens, YaRN factor 4, four request slots and
+`rotorquant8-norm` for both keys and values**. This uses the same pinned ARM64
+image and affine 4-bit/group-32 checkpoint identified below. The canonical
+Compose profile changes only context, YaRN factor and KV format. Existing
+MTP/copy, sampler, SSD, vision/video, thinking and resource settings are retained.
+
+Fresh startup logs identify both effective KV formats and rotary amplitude
+**1.1386294**. Both native INT8 and RotorQuant reconstruct BF16 operands for
+attention; selecting the cache format does not select native INT8/FP8 attention
+arithmetic. The growing cache forecast is **17.47 GiB for one full window**,
+including scales and unchanged indexer/pooled state. It does not establish that
+four full windows fit or qualify filled-window quality/performance.
+
+The [configuration-change receipt](deploy/gb10/deployment-rq8norm-yarn4-20261010.json)
+records actual startup, functional checks, restart and their limitations.
+Consumed JSON/SSE arithmetic, same-policy draft/serial token identity and prefix
+reuse passed. After a same-container restart, all six retained feature groups
+(image/video recognition and counting, typed tool arguments and xgrammar `TFOK`)
+and four synchronized short SSE arithmetic clients passed. The first cold image
+trial reached its 60-second client watchdog under shared traffic; the subsequent
+shared-service checks used 180-second media deadlines. No resource failure was
+observed in their snapshots. Filled-million-token capacity/quality and individual
+cancellation retirement under shared traffic remain unqualified.
+The INT8/YaRN-2 results below remain historical baseline measurements, not
+performance or quality results for the new configuration.
+
+### Earlier GB10 deployment with YaRN 2×
 
 On **2026-10-10**, the ARM64 **NVIDIA GB10 / 128 GB unified-memory** host
 redeployed the latest runtime at **`http://192.168.1.50:8888/v1`** using the
