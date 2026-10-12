@@ -1,12 +1,15 @@
 """Harness token counting uses native CPU preparation and preserves admission limits."""
 
 import base64
+import hashlib
 import importlib.util
 from http.client import HTTPMessage
 from io import BytesIO
 import json
+import marshal
 from pathlib import Path
 import socket
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -44,19 +47,32 @@ class NoGenerationEngine:
         raise AssertionError("token counting must not prefill")
 
 
-@pytest.fixture
-def app(tmp_path):
+TEMPLATE = ("{% for m in messages %}{{ m.content }} {% endfor %}header"
+            "{% if enable_thinking %} thinking{% endif %}{% if tools %} tools{% endif %}")
+
+
+def served_app(directory, template=TEMPLATE, *, separate_template=None, **options):
+    """A real App over a small tokenizer; ``separate_template`` writes chat_template.jinja."""
     vocabulary = {"[UNK]": 0, "header": 1, "thinking": 2, "tools": 3, "w": 4}
     tokenizer = Tokenizer(models.WordLevel(vocabulary, unk_token="[UNK]"))
     tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
-    tokenizer.save(str(tmp_path / "tokenizer.json"))
-    template = ("{% for m in messages %}{{ m.content }} {% endfor %}header"
-                "{% if enable_thinking %} thinking{% endif %}{% if tools %} tools{% endif %}")
-    (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": template}))
-    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 8}))
-    return App(NoGenerationEngine(), tmp_path, "served", aliases=("alias",),
+    tokenizer.save(str(directory / "tokenizer.json"))
+    (directory / "tokenizer_config.json").write_text(json.dumps({"chat_template": template}))
+    if separate_template is not None:
+        (directory / "chat_template.jinja").write_text(separate_template)
+    (directory / "config.json").write_text(json.dumps({"max_position_embeddings": 8}))
+    return App(NoGenerationEngine(), directory, "served", aliases=("alias",),
                context_window=8, max_tokens=2, thinking_budget=0,
-               sampling={"temperature": 0})
+               sampling={"temperature": 0}, **options)
+
+
+@pytest.fixture
+def app(tmp_path):
+    return served_app(tmp_path)
+
+
+def sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def request(count=3, **options):
@@ -246,15 +262,122 @@ def test_preparation_gate_serializes_concurrent_preparation(bridge):
     assert_gate_resources_released(gate)
 
 
-def handler_post(bridge, app, payload, headers, path="/v1/tokenize"):
-    class NativeHandler:
-        def do_POST(self):
-            return "native route"
+def test_metadata_identifies_the_active_template_and_canonical_efforts(bridge, tmp_path):
+    template = TEMPLATE + ("{% if reasoning_effort in ['low', 'medium'] %} brief"
+                           "{% elif reasoning_effort == 'xhigh' %} deep{% endif %}")
+    app = served_app(tmp_path, template, reasoning_effort="high")
+    capabilities, fingerprint, provenance = bridge.capability_metadata(app)
+    # Exact: thinking-control, default-thinking and reasoning-replay facts stay absent.
+    assert capabilities == {
+        "structured_output": importlib.util.find_spec("xgrammar") is not None,
+        "vision": False, "video": False,
+        "reasoning_efforts": ["low", "medium", "xhigh"],
+        "default_reasoning_effort": "xhigh",            # the template's nearest named level, ties upward
+    }
+    assert fingerprint == sha256(template)
 
-        def _json(self, status, result):
-            return status, result
+    def code_sha256(function):
+        return hashlib.sha256(marshal.dumps(function.__code__)).hexdigest()
 
-    handler_type = bridge.make_handler_factory(lambda ignored: NativeHandler)(app)
+    assert provenance == {
+        "server_version": "0.6.6", "bridge_version": bridge.BRIDGE_VERSION,
+        "server_type": "tensorfold.cuda.server.App",
+        "engine_type": f"{NoGenerationEngine.__module__}.NoGenerationEngine",
+        "tokenizer_type": f"{Tokenizer.__module__}.{Tokenizer.__qualname__}",
+        "server_prepare_sha256": code_sha256(App._prepare),
+        "server_check_fields_sha256": code_sha256(app._check_fields),
+        "engine_generate_sha256": code_sha256(NoGenerationEngine.generate),
+        "code_identity": "python_runtime_bytecode",
+        "python_version": sys.version.split()[0], "marshal_version": marshal.version,
+        "tokenizer_sha256": sha256(app.tok.to_str()), "tokenizer_identity": "runtime_serialization",
+        "template_source": "tokenizer_config.chat_template",
+        "template_identity": "equivalent_active_compilation",
+    }
+
+
+@pytest.mark.parametrize("template, effort, efforts", [
+    (TEMPLATE, None, []),
+    (TEMPLATE, "high", []),                                             # no named levels: high resolves to xhigh
+    (TEMPLATE + "{% if reasoning_effort == 'low' %} brief{% endif %}", "xhigh", ["low"]),  # xhigh stays xhigh
+    (TEMPLATE + "{% if reasoning_effort == 'low' %} brief{% endif %}", "none", ["low"]),   # none is never canonical
+])
+def test_default_effort_is_omitted_when_unset_or_not_named_by_the_template(bridge, tmp_path, template, effort, efforts):
+    capabilities, _, _ = bridge.capability_metadata(served_app(tmp_path, template, reasoning_effort=effort))
+    assert capabilities["reasoning_efforts"] == efforts
+    assert "default_reasoning_effort" not in capabilities
+
+
+def test_separate_template_file_takes_precedence_and_exact_source_is_hashed(bridge, tmp_path):
+    source = "  café {{ messages }}\n"
+    app = served_app(tmp_path, "different {{ messages }}", separate_template=source)
+    _, fingerprint, provenance = bridge.capability_metadata(app)
+    assert fingerprint == sha256(source)
+    assert provenance["template_source"] == "chat_template.jinja"
+
+
+@pytest.mark.parametrize("config", [
+    json.dumps({"chat_template": "changed {{ messages }}{% if reasoning_effort == 'low' %} brief{% endif %}"}),
+    json.dumps({"chat_template": "{% if"}),
+    json.dumps({"chat_template": [{"name": "default", "template": TEMPLATE}]}),
+    json.dumps({}), "[]", "{", b"\xff", None,
+], ids=["changed", "invalid_jinja", "template_list", "no_template", "json_array", "malformed_json", "undecodable",
+        "missing"])
+def test_changed_or_unusable_source_is_not_claimed_as_active(bridge, tmp_path, config):
+    app = served_app(tmp_path, TEMPLATE + "{% if reasoning_effort == 'medium' %} more{% endif %}")
+    path = tmp_path / "tokenizer_config.json"
+    if config is None:
+        path.unlink()
+    elif isinstance(config, bytes):
+        path.write_bytes(config)
+    else:
+        path.write_text(config)
+    capabilities, fingerprint, provenance = bridge.capability_metadata(app)
+    assert fingerprint is None
+    assert "template_identity" not in provenance and "template_source" not in provenance
+    assert capabilities["reasoning_efforts"] == ["medium"]                  # the initialized template's, not the file's
+
+
+def test_changed_block_is_rejected_even_when_root_code_is_unchanged(bridge, tmp_path):
+    app = served_app(tmp_path, "{% block result %}active{% endblock %}")
+    replacement = "{% block result %}changed{% endblock %}"
+    candidate = app.template.template.environment.from_string(replacement)
+    assert candidate.root_render_func.__code__ == app.template.template.root_render_func.__code__
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": replacement}))
+    assert bridge.capability_metadata(app)[1] is None
+
+
+def test_changed_generated_binding_or_default_is_not_equivalent(bridge, tmp_path):
+    app = served_app(tmp_path)
+    root = app.template.template.root_render_func
+    name = next(name for name in root.__code__.co_names if name in root.__globals__)
+    root.__globals__[name] = object()
+    assert bridge.capability_metadata(app)[1] is None
+    app = served_app(tmp_path)
+    root = app.template.template.root_render_func
+    root.__defaults__ = (*root.__defaults__[:-1], object())
+    assert bridge.capability_metadata(app)[1] is None
+
+
+def test_loaded_code_provenance_distinguishes_implementations_and_omits_unknown_code(bridge, app):
+    initial = bridge.capability_metadata(app)[2]
+    app.engine.generate = lambda *args, constraint=None, **kwargs: None
+    changed = bridge.capability_metadata(app)[2]
+    assert changed["engine_generate_sha256"] != initial["engine_generate_sha256"]
+    assert changed["server_prepare_sha256"] == initial["server_prepare_sha256"]
+    app.engine.generate = len
+    assert "engine_generate_sha256" not in bridge.capability_metadata(app)[2]
+
+
+class NativeHandler:
+    def do_POST(self):
+        return "native route"
+
+    def _json(self, status, result):
+        return status, result
+
+
+def handler_post(bridge, app, payload, headers, path="/v1/tokenize", handler_type=None):
+    handler_type = handler_type or bridge.make_handler_factory(lambda ignored: NativeHandler)(app)
     handler = handler_type()
     parsed_headers = HTTPMessage()
     for name, value in headers.items():
@@ -280,7 +403,20 @@ def test_tokenize_route_and_native_route_delegation(bridge, app):
                                  "/v1/tokenize/?probe=1")
     assert status == 200 and result["count"] == 4
     assert result["capabilities"]["vision"] is False
+    assert result["capabilities"]["reasoning_efforts"] == []
+    assert result["chat_template_sha256"] == sha256(TEMPLATE)
+    assert result["provenance"]["template_identity"] == "equivalent_active_compilation"
     assert handler_post(bridge, app, payload, {}, "/v1/chat/completions") == "native route"
+
+
+def test_tokenize_metadata_keeps_the_initialized_template_identity_after_file_changes(bridge, app):
+    handler_type = bridge.make_handler_factory(lambda ignored: NativeHandler)(app)
+    (app.model_dir / "tokenizer_config.json").write_text(json.dumps({"chat_template": "changed"}))
+    payload = json.dumps(request()).encode()
+    status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))},
+                                  handler_type=handler_type)
+    assert status == 200
+    assert result["chat_template_sha256"] == sha256(TEMPLATE)
 
 
 @pytest.mark.parametrize("payload, headers, problem", [

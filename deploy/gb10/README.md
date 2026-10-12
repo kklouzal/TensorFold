@@ -333,6 +333,29 @@ It requires `--thinking-budget 0`; callers select budgets per request. Returned
 token/prompt inspection is capped at 16,384 tokens, and count-only responses
 support larger histories. HTTP preparation has a bounded queue and cancellation.
 
+Each successful counting reply also carries the metadata Harness discovers
+models from, resolved once when the handler is built; changing the template or
+model state requires a restart. `capabilities.reasoning_efforts` lists the
+efforts the initialized template names, and `default_reasoning_effort` appears
+only when `--reasoning-effort` resolves to one of them. `chat_template_sha256`
+hashes the UTF-8 encoding of the template source, read with ChatTemplate's own
+precedence (`chat_template.jinja`, then `tokenizer_config.json`) and text
+decoding. It is reported only when that source compiles, in the active Jinja
+environment, to the active root and block code with the same defaults and
+referenced bindings; changed, invalid or unreadable source omits it.
+`provenance` labels that identity `equivalent_active_compilation` and records
+the server, engine and tokenizer types, loaded tokenizer serialization and
+Python bytecode hashes with their Python and marshal versions. The bytecode
+hashes distinguish installed Python implementations; they do not identify engine
+state or non-Python code. Thinking controls, default-thinking and
+reasoning-replay facts stay absent: forwarding a keyword to Jinja proves neither
+that the template consumes it nor that it can turn thinking off. Harness obtains
+those from the contract it pins for the fingerprinted template. Without a
+fingerprint Harness has pinned, Harness establishes no thinking control and
+refuses requests that select thinking on or off, including its compaction,
+memory, goal-ledger and skill-learning requests. The contract follows Harness's
+`deploy/tensorfold/README.md`.
+
 YaRN is an optional CUDA text-RoPE policy for Flash Next. The CLI option
 `--yarn-factor 2 --context 524288` requests a 2× window without modifying the
 shared model snapshot. Native operation omits that option. A full 512k validation
@@ -365,7 +388,9 @@ docker run --rm --network none --memory 3g --memory-swap 3g --pids-limit 512 \
 The native SSD tests use synthetic, isolated files and an independent byte
 oracle. Harness tests use the native request preparation with a small tokenizer,
 including oversized counts, image expansion, validation, framing, and bounded
-preparation. YaRN tests compare frequencies against the pinned Transformers
+preparation, plus discovery metadata: template fingerprint precedence;
+rejection of changed, invalid, unreadable or missing source and of changed
+blocks or bindings; effort defaults; and code provenance. YaRN tests compare frequencies against the pinned Transformers
 reference and test context/memory admission.
 
 Synthetic CUDA verification uses the NGC entrypoint to enable the same driver
