@@ -1,0 +1,41 @@
+{
+ "date": "2026-10-12T14:34:35Z",
+ "status": "deploymentverified",
+ "change": "Harness /v1/tokenize bridge emits discovery metadata (chat_template_sha256, provenance, capabilities.reasoning_efforts); TensorFold package, model, settings and resources unchanged",
+ "image": "sha256:55a38d8985529e21370a6fd2acd4b7f8c88106661c01b7224f41e671d502d71f",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-9acb28c3",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "9acb28c395683a7b2fddc70904942396f902c7ca",
+ "version": "0.6.6",
+ "container": "d58000d027c802b00cca345b24022cf0e7eb40ff2bde7e56ed0305a9c7146847",
+ "started_at": "2026-10-12T14:32:32.273502135Z",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-2edfaa51",
+ "rollback": {
+  "id": "2b231fb623a43c436c7d86767e0ab4b7a6360835e224616b9fdb486970102aa4",
+  "name": "/qwen38-flash-next-tf-rollback-bridge-20261012",
+  "image": "sha256:8e1fe707502d99e8565af2900bd862847141a9da30779b208c239cbb21ee44be",
+  "state": "created/stopped",
+  "creation": "Engine API clone of the replaced container's Config/HostConfig; Compose labels removed, image pinned by ID, original container ID recorded in a label"
+ },
+ "changed_configuration": "Image only; Compose arguments, environment, binds, limits and health check unchanged (docker compose up -d from this checkout).",
+ "image_identity": "Installed tensorfold package files, /opt/harness entrypoint/cuDNN scripts and pip freeze byte-identical to sha256:8e1fe707...; only /opt/harness/tensorfold_harness.py differs (sha256 1b6e78011a9835b64bfa4fa93898064298b11c6d6984394a1be47124c42fb7ed = source).",
+ "validation": {
+  "installed_package_tests_verification_image_9acb28c3": "85 passed (tests/test_harness_tokenizer.py 68, test_deployment_pins.py + test_verification_public_permissions.py 17) with -o pythonpath=tests",
+  "ruff": "clean (0.15.13)",
+  "real_checkpoint_cpu_probe": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041 (chat_template.jinja); reasoning_efforts low,medium,xhigh; default render equal to the previous live service tokens (55/55); thinking on/off renders distinct and stable",
+  "local_health_after_swap_seconds": 110,
+  "startup_log_reported_load_seconds_first_start": "CUDA extensions rebuilt on first start",
+  "live_tokenize_metadata": true,
+  "live_tokenize_tokens_equal_previous_service": true,
+  "arithmetic_expected391": true,
+  "harness_thinking_profile": "native-metadata, off,low,medium,xhigh (Harness log 14:34:35Z, no Harness restart)",
+  "downstream_compaction": "Harness compactions 14:34-14:42Z and 16:38-16:44Z succeeded through this service",
+  "filled1M_quality_capacity": "unrun",
+  "controlled_baseline_performance_comparison": "unrun"
+ }
+}

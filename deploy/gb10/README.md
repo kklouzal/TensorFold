@@ -40,9 +40,27 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## Harness discovery bridge deployment, 2026-10-12
+
+The service now runs source `9acb28c395683a7b2fddc70904942396f902c7ca` in ARM64
+image `sha256:55a38d8985529e21370a6fd2acd4b7f8c88106661c01b7224f41e671d502d71f`
+(`tensorfold-gb10-fork:local`), container
+`d58000d027c802b00cca345b24022cf0e7eb40ff2bde7e56ed0305a9c7146847`. It changes
+only the Harness launcher: `/v1/tokenize` replies now carry the discovery
+metadata described below. The installed TensorFold package, entrypoint scripts,
+dependencies, Compose arguments, environment, binds and limits are unchanged.
+Live tokenization returned the fingerprint of the served template and its
+reasoning efforts, with tokens identical to the previous service; a complete
+generation passed, and Harness resolved its thinking profile from the metadata.
+The replaced container's exact configuration is retained, stopped and outside
+Compose ownership, as `qwen38-flash-next-tf-rollback-bridge-20261012` (image
+`sha256:8e1fe707…`); that image lacks the metadata, so Harness refuses its
+thinking-off maintenance against it. See
+[the deployment receipt](deployment-harness-bridge-20261012.json).
+
 ## Python integration deployment, 2026-10-12
 
-The service now runs **TensorFold 0.6.6**, source
+The service ran **TensorFold 0.6.6**, source
 `2edfaa515d85ca48a57365552f38a97a17123c3c`, in qualified ARM64 image
 `sha256:8e1fe707502d99e8565af2900bd862847141a9da30779b208c239cbb21ee44be`.
 Later qualification-only documentation does not substitute a different image.
@@ -72,9 +90,9 @@ The exact previous image/configuration/cache is retained in
 Compose ownership. Its immutable image is
 `sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec`.
 Stop and verify retirement of the active service before starting that rollback
-on the same port. Manage the new service through this maintained Python
-checkout's Compose file; the default `tensorfold-gb10-fork:local` tag points to
-the qualified image above. Keep both image IDs and cache directories.
+on the same port. Manage the service through this maintained Python
+checkout's Compose file; the default `tensorfold-gb10-fork:local` tag now points
+to the bridge image above. Keep both image IDs and cache directories.
 See [the deployment receipt](deployment-python-20261012.json) for exact identities,
 settings, successful checks and coverage limits.
 
