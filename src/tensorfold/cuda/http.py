@@ -189,8 +189,14 @@ def make_handler(app: App):
                 if not defer_headers:
                     open_stream()
 
-                def emit(delta: dict[str, Any]) -> bool:
+                def emit(delta: dict[str, Any] | None) -> bool:
+                    """Write one delta (None: an SSE comment that keeps an open stream's connection alive)."""
                     try:
+                        if delta is None:
+                            if opened:                   # deferred headers stay deferred: a refusal can still be a 503
+                                self.wfile.write(b": keepalive\n\n")
+                                self.wfile.flush()
+                            return True
                         if not opened:
                             open_stream()
                             if chat:

@@ -284,6 +284,10 @@ class ToolCallStreamer:
                 self.pos += j + len(_OPEN)
                 self.state = "call"
             elif self.state == "call":
+                doubled = re.match(r"\s*<tool_call>", rest)
+                if doubled is not None:              # a doubled opener, which the end parser also collapses
+                    self.pos += doubled.end()
+                    continue
                 m = re.match(r"\s*<function=([^>\n]+)>\n?", rest)
                 if m is None:
                     if len(rest) > 256 or (rest.strip() and not rest.strip().startswith("<")):
@@ -353,6 +357,9 @@ class ToolCallStreamer:
             elif self.state == "closing":
                 m = re.match(r"\s*</tool_call>", rest)
                 if m is None:
+                    if re.match(r"\s*<function=", rest):   # another function in the same envelope: its own call
+                        self.state = "call"
+                        continue
                     break
                 self.pos += m.end()
                 self.state = "outside"

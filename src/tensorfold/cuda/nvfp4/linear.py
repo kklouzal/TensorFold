@@ -462,18 +462,18 @@ class Concat:
 
 def _matmul(mode: int, w: torch.Tensor, bs: torch.Tensor | None, scale: float, n: int, k: int, npad: int,
             x: torch.Tensor, out: torch.Tensor | None) -> torch.Tensor:
-    """x (M, K) bf16 -> (M, n) bf16; K slices from the shape alone, so a row's bits never depend on M."""
+    """x (M, K) bf16 -> (M, n) bf16, or the fp32 sums into an fp32 ``out`` (the head's logits); K slices from the
+    shape alone, so a row's bits never depend on M."""
 
     from tensorfold.cuda.kernels import qmm
 
     if x.dtype != torch.bfloat16 or x.stride(-1) != 1:
         x = x.to(torch.bfloat16).contiguous()
     m = x.shape[0]
-    y = out if out is not None and out.is_contiguous() and out.dtype == torch.bfloat16 else \
-        torch.empty((m, n), dtype=torch.bfloat16, device=x.device)
+    f32 = out is not None and out.dtype == torch.float32          # fp32 sums, through a scratch copy when strided
+    y = out if out is not None and out.is_contiguous() and out.dtype in (torch.bfloat16, torch.float32) else \
+        torch.empty((m, n), dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
     sk = qmm.split_k(n, k)
     part = torch.empty((sk, m, n), dtype=torch.float32, device=x.device) if sk > 8 else None
-    _ext().qmmf(x, w, bs, scale, y, part, mode, n, sk, npad, qmm.bucket(m), False)
-    if out is not None and y is not out:
-        out.copy_(y)
-    return y
+    _ext().qmmf(x, w, bs, scale, y, part, mode, n, sk, npad, qmm.bucket(m), f32)
+    return y if out is None or y is out else out.copy_(y)

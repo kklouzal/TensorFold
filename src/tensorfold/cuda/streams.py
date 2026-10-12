@@ -33,6 +33,7 @@ class Stream:
     carry: dict | None = None                             # the stats of the stream this one continues
     owed: list[int] = field(default_factory=list)         # a replay's tokens sent before it gave way: checked, not resent
     error: Exception | None = None                        # why a stream ended without finishing
+    cancel: Any = None                                    # the request's threading.Event, set once its client leaves
     waiting: bool = False                                 # held out of rounds until its caches can grow
     done: bool = False
     rounds: int = 0
@@ -88,7 +89,7 @@ class Stream:
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
                       background=self.background, probabilities=self.probabilities,
-                      carry=self.stats(), owed=[*self.out, *self.owed])
+                      carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)
 
 
 def next_fill(filling: list[Stream]) -> Stream:

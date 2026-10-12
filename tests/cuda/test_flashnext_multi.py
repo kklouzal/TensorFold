@@ -386,3 +386,45 @@ def test_waiting_stream_keeps_its_recurrence_when_other_rounds_reuse_shared_scra
     for s in streams:
         e = Engine(w, capacity=1024, max_rows=8, prefill_rows=64)
         assert s.out == serial_decode(e, prefill(e, s.prompt, None), s.count, None).tokens
+
+
+@pytest.mark.parametrize("kv_dtype", ["bf16", "int8"])
+def test_several_kept_points_in_one_pass_each_keep_a_fresh_prefills_state(kv_dtype):
+    """A pass may hold up to CUTS kept points (message starts, the prompt end): each keeps the state a fresh prefill of
+    the prompt up to it leaves, the reply is the one decoded alone, and a prompt diverging after a point resumes there.
+    A point past CUTS ends the pass instead (one 128-row piece here holds four)."""
+
+    from tensorfold.families.qwen4_exp.cuda.prompt_plan import CUTS
+
+    w = _model(5)
+    g = torch.Generator().manual_seed(17)
+    prompt = torch.randint(1, V, (700,), generator=g).tolist()
+    marks = [300, 310, 333, 350]                             # inside the piece [256, 384), one past CUTS
+    assert CUTS == 3
+    sampling = Sampling(seed=4, top_k=20, top_p=0.95)
+
+    def fresh(p, count=12):
+        e = Engine(w, capacity=1024, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype)
+        return serial_decode(e, prefill(e, p, sampling), count, sampling).tokens
+
+    dec = MultiDecoder(w, slots=2, capacity=1024, depth=3, confidence=0.3, kv_dtype=kv_dtype, prefill_rows=128,
+                       points=lambda ids: [p for p in marks if p < len(ids)])
+    s = Stream(list(prompt), 12, sampling)
+    dec.admit(s)
+    while dec.live():
+        dec.finish(dec.round())
+    assert s.out == fresh(prompt)
+    for p in marks + [len(prompt) - 1]:                      # the prompt end: kept one token early
+        e = Engine(w, capacity=1024, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype)
+        prefill(e, prompt[:p], None)
+        want = e.st.snapshot()
+        _, _, snap, tail = next(k for k in dec.kept if k[0] == prompt[:p])
+        assert all(torch.equal(snap[k], want[k]) for k in ("rec", "conv", "ple_tail")), p
+        assert (snap["pos"], snap["mtp_len"]) == (want["pos"], want["mtp_len"]), p
+        assert torch.equal(tail, e.last_streams), p
+    branch = prompt[:333] + [271, 77, 5]                     # diverges right after a point inside the pass
+    t = Stream(list(branch), 12, sampling)
+    dec.admit(t)
+    while dec.live():
+        dec.finish(dec.round())
+    assert t.cached == 333 and t.out == fresh(branch)

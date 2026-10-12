@@ -112,6 +112,7 @@ def test_the_mac_app_resolves_min_p_into_the_draw():
     options.default_sampling = {"temperature": 0.7, "top_k": 20, "top_p": 0.95, "min_p": 0.01}
     assert options._resolve_sampling({"seed": 4}, 0.7, [1, 2]) == Sampling(4, 0.7, 20, 0.95, 0.01)
     assert options._resolve_sampling({"seed": 4, "min_p": 0.3}, 0.7, [1, 2]).min_p == 0.3
+    assert options._resolve_sampling({"seed": 4, "top_p": 0}, 0.7, [1, 2]) is None     # the likeliest token only
 
 
 def test_two_ranks_read_the_sampling_rank_zero_sent():

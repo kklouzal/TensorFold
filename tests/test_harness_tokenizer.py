@@ -606,3 +606,16 @@ def test_real_harness_token_route_keeps_authentication_rotation_and_reply_counts
         server.server_close()
         worker.join(3)
     assert not worker.is_alive()
+
+
+def test_a_count_checks_sampling_without_keying_a_seed_to_the_prompt(bridge, app, monkeypatch):
+    """Counting samples nothing: the native checks run, but no seed is hashed over the whole history."""
+    from tensorfold.engine import exact_sampling
+
+    hashed = []
+    real = exact_sampling.seed_for
+    monkeypatch.setattr(exact_sampling, "seed_for", lambda tokens, salt=None: hashed.append(len(tokens)) or real(tokens))
+    assert bridge.count_request(app, request(20, temperature=0.7), RequestError)["count"] == 21
+    assert hashed == [0]
+    with pytest.raises(RequestError, match="top_p"):
+        bridge.count_request(app, request(temperature=0.7, top_p=1.5), RequestError)

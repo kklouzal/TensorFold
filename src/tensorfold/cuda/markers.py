@@ -25,8 +25,14 @@ class TemplateTokens:
         return self.tok.encode(text, add_special_tokens=False).ids if tokenize else text
 
 
-def snapshot_points(openers: Sequence[int], assistant: Sequence[int]) -> Callable[[Sequence[int]], list[int]]:
-    """Where a prefill keeps states: the second message's start (a shared system block) and the last assistant start."""
+def snapshot_points(openers: Sequence[int], assistant: Sequence[int], *,
+                    turn: bool = False) -> Callable[[Sequence[int]], list[int]]:
+    """Where a prefill keeps states: the second message's start (a shared system block) and the last assistant start;
+    with ``turn`` also the last message that is not the assistant's (the user's turn, a tool result, a late system note:
+    a client that rewrites it next time, as Harness does its per-run status block, still resumes before it).
+
+    A point ends a prefill chunk unless the engine's passes hold several (Flash Next's concurrent decoder, up to
+    ``prompt_plan.CUTS`` a piece), so only that decoder asks for ``turn``: elsewhere it adds a chunk to every turn."""
 
     from tensorfold.engine.prefill_plan import PrefillPlan
 
@@ -34,9 +40,12 @@ def snapshot_points(openers: Sequence[int], assistant: Sequence[int]) -> Callabl
 
     def points(ids: Sequence[int]) -> list[int]:
         arr = np.asarray(ids, dtype=np.int64)
-        found = plan.points(arr)
+        found = plan.points(arr)                     # assistant starts and the second message's
         starts = np.flatnonzero(np.isin(arr, plan.openers)) if plan.openers else []
         wanted = ([int(starts[1])] if len(starts) > 1 else []) + ([found[-1]] if found else [])
+        if turn:
+            taken = set(found)
+            wanted += [int(p) for p in starts if int(p) not in taken][-1:]
         out: list[int] = []
         for p in sorted(set(wanted)):
             if MIN_GAP <= p < len(arr) and (not out or p - out[-1] >= MIN_GAP):
@@ -46,8 +55,9 @@ def snapshot_points(openers: Sequence[int], assistant: Sequence[int]) -> Callabl
     return points
 
 
-def resume_points(model_dir: str | Path) -> Callable[[Sequence[int]], list[int]] | None:
-    """``snapshot_points`` for this checkpoint's chat template, or None when it marks no message starts."""
+def resume_points(model_dir: str | Path, *, turn: bool = False) -> Callable[[Sequence[int]], list[int]] | None:
+    """``snapshot_points`` (``turn`` as there) for this checkpoint's chat template, or None when it marks no message
+    starts."""
 
     from tokenizers import Tokenizer
 
@@ -63,4 +73,4 @@ def resume_points(model_dir: str | Path) -> Callable[[Sequence[int]], list[int]]
         openers, assistant = message_markers(tokens)
     except (OSError, ValueError, KeyError):
         return None
-    return snapshot_points(openers, assistant) if openers or assistant else None
+    return snapshot_points(openers, assistant, turn=turn) if openers or assistant else None

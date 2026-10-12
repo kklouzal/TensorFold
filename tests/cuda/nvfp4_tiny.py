@@ -278,6 +278,7 @@ def _config(layers, experts, vocab, hidden, heads, kv_heads, hd, nk, nv, dk, dv,
             "ngram_vocab_size_base": vocab, "make_ngram_vocab_size_divisible_by": 1, "split_ngram_parts": 1,
             "seed": 1234, "dtype": "bfloat16",
             "bos_token_id": 0, "eos_token_id": [0],
+            "hidden_act": "silu", "output_gate_type": "sigmoid",     # as the checkpoint: sigmoid DeltaNet gate
         },
         "quantization": {"quant_method": "modelopt", "quant_algo": "NVFP4", "group_size": 16,
                          "config_groups": {"group_0": {"weights": {"num_bits": 4, "group_size": 16}}},

@@ -114,19 +114,47 @@ def serial_decode(w: Weights, st: State, pending: int, count: int,
 
 
 class CopyIndex:
-    """Index earlier suffix matches and propose the longest continuation, breaking ties by latest occurrence and requiring ``min_match`` tokens."""
+    """Index earlier suffix matches and propose the longest continuation, breaking ties by latest occurrence and requiring ``min_match`` tokens.
+
+    A first update past BULK grams indexes them at once: a 64-bit hash of each, sorted (numpy; the sort leaves the GIL
+    free), each candidate checked token by token, so a collision is never proposed. Later grams go to a dict. A long
+    prompt's index costs about half the time and a twentieth of the memory of a dict of every gram."""
+
+    BULK = 4096
 
     def __init__(self, min_match: int = 8):
         self.n = min_match
+        self.hashes = self.starts = None      # the bulk: sorted gram hashes, and their starts (ascending within a hash)
         self.positions: dict[tuple[int, ...], list[int]] = {}
         self.indexed = 0            # grams starting before this position are in the index
+
+    @staticmethod
+    def _hashes(tokens: Sequence[int], n: int):
+        """A wrapping 64-bit polynomial hash of every n-gram of ``tokens``."""
+
+        import numpy as np
+
+        t = np.asarray(tokens, dtype=np.int64).astype(np.uint64)
+        count = len(t) - n + 1
+        h = np.zeros(count, dtype=np.uint64)
+        with np.errstate(over="ignore"):
+            for j in range(n):
+                h = h * np.uint64(0x9E3779B97F4A7C15) + t[j:j + count] + np.uint64(1)
+        return h
 
     def update(self, context: Sequence[int]) -> None:
         n = self.n
         # Index complete grams except the trailing query itself so matches always refer to earlier occurrences.
         last = len(context) - n
-        for start in range(self.indexed, last):
-            self.positions.setdefault(tuple(context[start:start + n]), []).append(start)
+        if self.indexed == 0 and last > self.BULK:
+            import numpy as np
+
+            h = self._hashes(context[:last + n - 1], n)            # the grams starting before ``last``
+            order = np.argsort(h, kind="stable")
+            self.hashes, self.starts = h[order], order
+        else:
+            for start in range(self.indexed, last):
+                self.positions.setdefault(tuple(context[start:start + n]), []).append(start)
         self.indexed = max(self.indexed, last)
 
     def propose(self, context: Sequence[int], max_nodes: int = 127) -> list[int]:
@@ -134,7 +162,15 @@ class CopyIndex:
         if len(context) < 2 * n:
             return []
         self.update(context)
-        starts = self.positions.get(tuple(context[-n:]))
+        query = tuple(context[-n:])
+        starts: list[int] = []
+        if self.hashes is not None:
+            import numpy as np
+
+            q = self._hashes(query, n)[0]
+            lo, hi = np.searchsorted(self.hashes, q, "left"), np.searchsorted(self.hashes, q, "right")
+            starts = [int(at) for at in self.starts[lo:hi] if tuple(context[at:at + n]) == query]
+        starts += self.positions.get(query, [])                   # ascending: dict grams start after the bulk's
         if not starts:
             return []
         best: list[int] = []

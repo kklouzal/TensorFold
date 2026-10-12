@@ -45,10 +45,12 @@ class Tokenizer:
 
 
 class ImageProcessor:
-    max_pixels, min_pixels = 1024**2, 32**2
-
     def __init__(self, **kwargs):
         self.options, self.calls = kwargs, []
+        self.size = {"shortest_edge": 32**2, "longest_edge": 1024**2}   # transformers 5's pixel range
+
+    def get_number_of_image_patches(self, height, width, kwargs):  # 16-pixel patches within the cap
+        return min(height * width, kwargs["max_pixels"]) // 16**2
 
     def __call__(self, *, images, **kwargs):
         self.calls.append((images, kwargs))
@@ -56,7 +58,7 @@ class ImageProcessor:
 
 
 def image(name="one", detail="auto"):
-    return SimpleNamespace(content_hash=name, detail=detail, to_pil=lambda: "PIL:" + name)
+    return SimpleNamespace(content_hash=name, detail=detail, width=512, height=512, to_pil=lambda: "PIL:" + name)
 
 
 def write_shard(path: Path, tensors: dict):

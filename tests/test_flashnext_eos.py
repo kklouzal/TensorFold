@@ -15,8 +15,9 @@ TEXT = {
     "vocab_size": 248320, "rms_norm_eps": 1e-6, "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 16,
     "linear_num_key_heads": 2, "linear_num_value_heads": 4, "linear_key_head_dim": 16, "linear_value_head_dim": 16,
     "linear_conv_kernel_dim": 4, "num_experts": 8, "num_experts_per_tok": 2, "moe_intermediate_size": 32,
-    "shared_expert_intermediate_size": 32,
+    "shared_expert_intermediate_size": 32, "hidden_act": "silu", "output_gate_type": "sigmoid",
 }
+GATELESS = {k: v for k, v in TEXT.items() if k not in ("hidden_act", "output_gate_type")}
 
 
 def checkpoint(tmp_path, config, generation=None):
@@ -56,3 +57,22 @@ def test_scalar_and_missing_values(tmp_path):
     assert stop_ids([ENDOFTEXT], gen) == (ENDOFTEXT,)
     with pytest.raises(ValueError, match="eos_token_id"):
         stop_ids(None, tmp_path / "absent.json")
+
+
+# transformers' Qwen4ExpConfig: an unset output_gate_type is hidden_act, whose own default is "silu"
+@pytest.mark.parametrize("gate", [{"hidden_act": "silu", "output_gate_type": "sigmoid"},
+                                  {"output_gate_type": "sigmoid"}, {"hidden_act": "sigmoid"}],
+                         ids=["checkpoint", "gate_only", "unset_gate_is_hidden_act"])
+def test_the_sigmoid_output_gate_loads(tmp_path, gate):
+    text = {**GATELESS, "eos_token_id": ENDOFTEXT, **gate}
+    assert Config.read(checkpoint(tmp_path, {"model_type": "qwen4_exp", "text_config": text})).eos == (ENDOFTEXT,)
+
+
+@pytest.mark.parametrize("gate", [{"hidden_act": "silu", "output_gate_type": "silu"}, {"hidden_act": "silu"}, {}],
+                         ids=["silu", "unset_gate_is_hidden_act", "both_unset_are_silu"])
+def test_an_output_gate_the_kernels_lack_is_refused(tmp_path, gate):
+    # the MLX layers also apply SiLU; the CUDA DeltaNet kernels apply a sigmoid only, so loading would compute wrong
+    text = {**GATELESS, "eos_token_id": ENDOFTEXT, **gate}
+    d = checkpoint(tmp_path, {"model_type": "qwen4_exp", "text_config": text})
+    with pytest.raises(ValueError, match="output_gate_type 'silu'"):
+        Config.read(d)

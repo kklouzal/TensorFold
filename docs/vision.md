@@ -104,7 +104,12 @@ the server with a larger count limit. The server does not discard images automat
 
 A request's images share 4,096 visual tokens, so a higher count makes each image smaller: eight images get about
 512 tokens each. On CUDA Qwen checkpoints (Qwen3.5/3.8 dense and Flash Next), `--vision-image-tokens N` raises
-that shared budget, up to 65,536, while each image keeps at most 4,096, so one image is sized as before. The tower
+that shared budget, up to 65,536, while each image keeps at most 4,096, so one image is sized as before. Qwen
+checkpoints (MLX and CUDA) share the budget by one token level: an image smaller than an even share keeps its full
+size and leaves the rest to larger ones, equal images get equal sizes, and no image's size depends on the order of
+the others. Each image is sized as Transformers' processor sizes it, within the checkpoint's own pixel range (for
+Qwen3.8, 64 to 16,384 tokens) as capped above, so a small image is enlarged to the checkpoint's minimum while the
+budget allows. GLM-5.3-Flash splits its budget evenly by count. The tower
 encodes runs of whole images of at most 16,384 patches, the scratch one full-size image already needs; a request
 that fits one run is encoded in one call, as before. The byte and pixel limits still apply, and the longer prompt
 counts against the context window.

@@ -72,6 +72,10 @@ def post(handler: Any, app: Any) -> None:
         handler.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
         handler.wfile.flush()
 
+    def comment(line: bytes) -> None:
+        handler.wfile.write(line + b"\n\n")
+        handler.wfile.flush()
+
     reply = Reply(reply_model(app, body), send)
 
     def opened() -> None:
@@ -83,7 +87,7 @@ def post(handler: Any, app: Any) -> None:
         handler.close_connection = True
         reply.start()
 
-    wire = Wire(opened, reply.chunk)
+    wire = Wire(opened, reply.chunk, comment)
     try:
         _run_chat(handler, chat, wire)
         if wire.stream or wire.status is None:

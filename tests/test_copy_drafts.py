@@ -58,3 +58,39 @@ def test_incremental_updates_equal_rebuilding_and_full_scan():
         prefix = ctx[:length]
         assert grown.propose(prefix, 15) == CopyIndex().propose(prefix, 15) == copy_chain(prefix, 15)
     assert grown.propose(ctx, 15) == A[COPY_MATCH + 4:COPY_MATCH + 4 + 15]
+
+
+def _grown(rng, vocab, size):
+    context = [rng.randrange(vocab) for _ in range(size)]
+    for _ in range(40):                                      # repeated stretches, so matches exist
+        at = rng.randrange(len(context) - 300)
+        context += context[at:at + rng.randint(8, 300)]
+    return context
+
+
+def test_a_long_prompts_bulk_index_proposes_what_the_full_scan_does_as_it_grows():
+    import random
+
+    rng = random.Random(9)
+    for vocab, size in ((6, 6_000), (50, 9_000), (248_000, 20_000)):
+        context, index = _grown(rng, vocab, size), CopyIndex()
+        assert len(context) - COPY_MATCH > CopyIndex.BULK
+        for step in range(60):                               # the first propose builds the bulk; later grams join
+            assert index.propose(context, 64) == copy_chain(context, 64), (vocab, step)
+            context += context[-rng.randint(1, 40):] if rng.random() < 0.5 else [rng.randrange(vocab)]
+        assert index.hashes is not None and index.positions
+
+
+def test_hash_collisions_are_never_proposed():
+    import random
+
+    class Colliding(CopyIndex):                              # a hash with few values: almost every gram collides
+        @staticmethod
+        def _hashes(tokens, n):
+            return CopyIndex._hashes(tokens, n) % 5
+
+    rng = random.Random(3)
+    context, index = _grown(rng, 40, 6_000), Colliding()
+    for step in range(40):
+        assert index.propose(context, 64) == copy_chain(context, 64), step
+        context += [rng.randrange(40) for _ in range(rng.randint(1, 5))]

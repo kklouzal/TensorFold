@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
@@ -13,6 +14,8 @@ CHANNEL_MARKERS = ("<|channel>thought", "<channel|>")
 # (opener, closer) of a tool call's markup: Qwen's, Gemma 4's, DeepSeek-V4's DSML block
 _CALLS = (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>"),
           ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"))
+# Qwen closers doubled after a call: markup the end parser collapses (``normalize_qwen_tool_markup``), never text
+_STRAY_QWEN_CLOSES_RE = re.compile(r"(?:\s*</tool_call>)*")
 
 
 def _partial_tag(text: str, tag: str) -> int:
@@ -95,6 +98,10 @@ def hide_tool_calls(text: str, *, finished: bool) -> str:
         if end < 0:
             return "".join(out)
         pos = end + len(closer)
+        if closer == _CALLS[0][1]:
+            pos = _STRAY_QWEN_CLOSES_RE.match(text, pos).end()
+            if not finished and closer.startswith(text[pos:].lstrip()):
+                return "".join(out)          # a doubled closer may still be arriving: hold the whitespace before it
 
 
 def render_prompt_ids(

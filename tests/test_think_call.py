@@ -140,7 +140,10 @@ def test_the_mac_server_returns_the_call(draft):
 
 # -- the CUDA server: an engine that writes the same reply ------------------------------------------------------------
 
-def test_the_cuda_server_returns_the_call(tmp_path):
+# the call as written, and missing only its final closer (the end parser closes it): either way the reasoning ends
+# where the call starts, and its markup is never reasoning_content
+@pytest.mark.parametrize("call", [CALL, CALL[:-len("</tool_call>")]], ids=["closed", "closer_missing"])
+def test_the_cuda_server_returns_the_call(tmp_path, call):
     import re
 
     from tensorfold.cuda import server
@@ -165,7 +168,7 @@ def test_the_cuda_server_returns_the_call(tmp_path):
         eos = (0,)
 
         def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True):
-            reply = Tokens().encode(REASONING + CALL).ids + [0]
+            reply = Tokens().encode(REASONING + call).ids + [0]
             for at in range(0, len(reply), 4):
                 on_tokens(reply[at:at + 4])
             return {"rounds": 1}
@@ -196,7 +199,7 @@ def test_the_cuda_server_returns_the_call(tmp_path):
         else:
             choice = json.loads(body)["choices"][0]
             assert choice["finish_reason"] == "tool_calls" and choice["message"]["reasoning_content"] == REASONING
-            assert choice["message"]["tool_calls"][0]["function"]["name"] == "terminal"
+            assert choice["message"]["tool_calls"][0]["function"]["name"] == "terminal" and "<tool_call>" not in body
     assert server.split_thinking is split_thinking
 
 

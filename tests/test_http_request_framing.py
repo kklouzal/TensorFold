@@ -59,6 +59,11 @@ def exchange(factory, first, *, decisions=True):
         vision = None
         effective_context_window = 2048
         engine = SimpleNamespace(generate=lambda *, constraint=None: None)
+        # what the GB10 bridge's discovery metadata reads from a served App (no template files: no fingerprint)
+        template = SimpleNamespace(efforts=frozenset(), template=None)
+        reasoning_effort = None
+        model_dir = Path(__file__).parent / 'no-such-checkpoint'
+        tok = SimpleNamespace(to_str=lambda: '{}')
 
         def _check_fields(self, body):
             return None

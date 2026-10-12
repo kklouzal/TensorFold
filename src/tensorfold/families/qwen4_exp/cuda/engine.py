@@ -78,7 +78,7 @@ class FlashNextEngine:
 
             check(model_dir, vram_experts, tp=tp)
         from .decode import Engine
-        from .prompt_plan import choose as prompt_plan
+        from .prompt_plan import POINTS, choose as prompt_plan
         from .weights import draft_token_ids, load
         from tensorfold.cuda.capacity import admit, config, gather_ints
         from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
@@ -117,7 +117,7 @@ class FlashNextEngine:
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
-        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp,
+        geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, points=POINTS,
                                                           kv_pair=kv_geometry,
                                                           prefill_rows=rows0, kv_status=kv_status))
                     if streams > 1 else
@@ -259,7 +259,9 @@ class FlashNextEngine:
                              "that has it, or --no-drafts for the serial reference (one token a round)")
         from tensorfold.cuda.markers import resume_points
 
-        self.points = resume_points(model_dir)          # a prompt's message starts to keep states at, or None
+        # a prompt's message starts to keep states at, or None; the concurrent decoder's passes hold several kept
+        # points at no extra pass, so it also keeps the last turn's start (the serial prefill would add a chunk)
+        self.points = resume_points(model_dir, turn=streams > 1)
         if vision:
             from tensorfold.vision.qwen_cuda import QwenCudaVision
 
@@ -434,6 +436,7 @@ class FlashNextEngine:
         snapshot remain available; the cache is fixed throughout serving.
         """
         from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes
+        from .prompt_plan import POINTS
         from tensorfold.cuda.capacity import available_bytes
 
         cache = self.w.meta["expert_cache"]
@@ -446,10 +449,11 @@ class FlashNextEngine:
         snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
         snapshot += state.ple_tail.numel() * state.ple_tail.element_size()
         snapshot += wide * 2 if self.w.mtp is not None else 0
-        retained = (self.multi.keep + streams) if streams > 1 else KEEP_SERIAL + 1
+        # kept states, plus the POINTS (CUTS inside a piece, one at its end) a filling stream's pass copies out first
+        retained = (self.multi.keep + streams * POINTS) if streams > 1 else KEEP_SERIAL + 1
         snapshots = retained * snapshot
-        # Heads and final hidden rows are cloned once for each filling stream.
-        transient = streams * (self.w.head.n * 2 + wide * 2) + vision_workspace_bytes
+        # Heads (fp32 logits) and final hidden rows (bf16) are cloned once for each filling stream.
+        transient = streams * (self.w.head.n * 4 + wide * 2) + vision_workspace_bytes
         if self.w.x3 is not None:
             from .exl3_mm import X3
 

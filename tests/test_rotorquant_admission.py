@@ -311,13 +311,14 @@ def test_production_format_requires_power_of_two_heads_without_restricting_legac
 def test_actual_engine_uses_format_layout_for_window_admission(tmp_path, monkeypatch, fake_runtime, fmt, streams):  # noqa: F811
     from tensorfold.cuda import geometry
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine, KEEP, KEEP_SERIAL
+    from tensorfold.families.qwen4_exp.cuda.prompt_plan import POINTS
 
     text = dict(small_config(), head_dim=256)
     checkpoint(tmp_path, text, HEAD)
     calls, capacity = fake_runtime
     params = dict(mtp=True, kv_pair=((fmt.bits, fmt.group, fmt.scale_bytes),) * 2, kv_status=True)
     plan = (geometry.gdn_geometry(text, 1, 4, indexed=True, kept=KEEP_SERIAL + 1, **params) if streams == 1 else
-            geometry.indexed_stream_geometry(text, streams, 4, KEEP, **params))
+            geometry.indexed_stream_geometry(text, streams, 4, KEEP, points=POINTS, **params))
     budget = plan.needed(12000) + 32768
     monkeypatch.setattr(capacity, "available_bytes", lambda _: budget)
     engine = FlashNextEngine.__new__(FlashNextEngine)

@@ -153,8 +153,8 @@ def cut_model():
 
     real = W.Config.read
 
-    def cut(d):
-        c = real(d)
+    def cut(d, *, rope=None):                # the loader passes its RoPE policy through
+        c = real(d, rope=rope)
         c.layers = LAYERS
         c.ple_layers = [i for i in c.ple_layers if i < LAYERS]
         return c

@@ -368,12 +368,12 @@ class Ownership(unittest.TestCase):
 
 
 class Numbers(unittest.TestCase):
-    def test_valid_values_and_existing_off_range_sampling_preserved(self):
+    def test_valid_values_and_existing_greedy_temperature_preserved(self):
         args = cli.build_parser().parse_args(["serve", "unused"])
         for name, value in (
             ("temperature", -1.0),
-            ("top_p", -1.0),
-            ("top_p", 2.0),
+            ("top_p", 0.0),
+            ("top_p", 1.0),
             ("prompt_cache_gib", 0.0),
             ("decode_share", 0.0),
             ("ssd_experts", 0.25),
@@ -404,9 +404,11 @@ class Numbers(unittest.TestCase):
         for name in ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts", "decode_share"):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 check_numbers(SimpleNamespace(**{name: -1}))
-        for name in ("min_p", "mtp_confidence"):
-            for value in (-0.1, 1.1):
-                with self.assertRaises(ValueError):
+        # top-p as min-p: requests and both servers' samplers take [0, 1] only, so a default outside it is refused
+        # at startup rather than failing every request that inherits it
+        for name in ("top_p", "min_p", "mtp_confidence"):
+            for value in (-0.1, 1.1, -1.0, 2.0):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     check_numbers(SimpleNamespace(**{name: value}))
 
     def test_invalid_numbers_fail_before_download_or_background_update(self):
@@ -418,7 +420,7 @@ class Numbers(unittest.TestCase):
     def test_generation_config_validation_and_do_sample_precedence(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "generation_config.json"
-            for value in ([], {"temperature": float("nan")}, {"min_p": 2}, {"top_k": True}):
+            for value in ([], {"temperature": float("nan")}, {"min_p": 2}, {"top_p": 1.5}, {"top_k": True}):
                 path.write_text(json.dumps(value))
                 with self.assertRaises(ValueError):
                     cli._generation_config(Path(tmp))

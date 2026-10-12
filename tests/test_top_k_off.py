@@ -117,9 +117,13 @@ def test_fractional_integer_controls_are_refused(field):
 def test_numeric_strings_are_parsed_and_explicit_zero_is_preserved():
     app = SamplingApp()
     status, response = post(app, {"messages": [{"role": "user", "content": "hi"}], "temperature": "1",
-                                 "top_k": "-1", "top_p": "0", "seed": "7", "max_tokens": "4"})
+                                 "top_k": "-1", "top_p": "0.5", "seed": "7", "max_tokens": "4"})
     assert status == 200, response
-    assert (app.resolved.temperature, app.resolved.top_k, app.resolved.top_p, app.resolved.seed) == (1.0, 0, 0, 7)
+    assert (app.resolved.temperature, app.resolved.top_k, app.resolved.top_p, app.resolved.seed) == (1.0, 0, 0.5, 7)
+    # an explicit top_p 0 is not the default either: it keeps only the likeliest token, so the draw is greedy
+    status, response = post(app, {"messages": [{"role": "user", "content": "hi"}], "temperature": "1",
+                                 "top_p": "0", "seed": "7", "max_tokens": "4"})
+    assert status == 200 and app.resolved is None, response
 
 
 def test_invalid_sampling_is_refused_even_when_greedy():

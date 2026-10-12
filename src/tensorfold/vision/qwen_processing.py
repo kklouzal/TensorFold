@@ -162,6 +162,8 @@ class QwenImageProcessor:
                 tokenizer.convert_ids_to_tokens(int(config[key]))
                 for key in ("video_token_id", "vision_start_token_id", "vision_end_token_id"))
             self.video_marker = f"{self.vision_start}{self.video_token}{self.vision_end}"
+        # transformers 5 keeps the checkpoint's pixel range in ``size`` (there is no min_pixels/max_pixels attribute)
+        self.min_pixels, self.max_pixels = int(processor.size["shortest_edge"]), int(processor.size["longest_edge"])
 
     @classmethod
     def from_directory(cls, model_dir: str | Path) -> "QwenImageProcessor":
@@ -200,15 +202,9 @@ class QwenImageProcessor:
         expected_width = (int(vision.get("in_channels", 3)) * int(vision["temporal_patch_size"])
                           * int(vision["patch_size"])**2)
         parts, grids = [], []
-        if images:
-            limit = max_visual_tokens // len(images)
-            if max_image_tokens:             # each image at most this many, however few share the budget
-                limit = min(limit, max_image_tokens)
-            per_image = min(int(getattr(self.processor, "max_pixels", limit * factor**2)), limit * factor**2)
-        for image in images:
-            cap = min(per_image, 256 * factor**2) if getattr(image, "detail", "auto") == "low" else per_image
-            result = self.processor(images=[image.to_pil()], max_pixels=cap,
-                                    min_pixels=min(int(getattr(self.processor, "min_pixels", factor**2)), cap))
+        caps = self._image_caps(images, max_visual_tokens, max_image_tokens, factor, merge)
+        for image, cap in zip(images, caps):
+            result = self.processor(images=[image.to_pil()], max_pixels=cap, min_pixels=min(self.min_pixels, cap))
             pixels, grid = np.asarray(result["pixel_values"]), np.asarray(result["image_grid_thw"], dtype=np.int64)
             if grid.shape != (1, 3) or pixels.ndim != 2:
                 raise ValueError("The image processor returned an invalid patch/grid shape")
@@ -250,6 +246,33 @@ class QwenImageProcessor:
         return PreparedVisionPrompt(tokens, pixels, grid, positions, delta, spans,
                                     tuple(image.content_hash for image in images), video_pixels, video_grid, frames,
                                     tuple(video.content_hash for video in videos))
+
+    def _image_caps(self, images: Sequence[Any], budget: int, max_image_tokens: int | None, factor: int,
+                    merge: int) -> list[int]:
+        """Each image's max_pixels: its own ceiling (the checkpoint's range, ``max_image_tokens``, 256 tokens at low
+        detail), lowered to one shared token level, the highest whose processed images fit the budget. A small image
+        keeps its full size and leaves the rest of an even share to the larger ones (water-filling), and an image's
+        size depends on the others only through that level, not on their order."""
+        unit = factor * factor
+        most = min(self.max_pixels, max_image_tokens * unit) if max_image_tokens else self.max_pixels
+        ceilings = [min(most, 256 * unit) if getattr(image, "detail", "auto") == "low" else most for image in images]
+
+        def caps(level: int) -> list[int]:
+            return [min(ceiling, level * unit) for ceiling in ceilings]
+
+        def tokens(level: int) -> int:          # the processor's own sizing rule (smart_resize), without resizing
+            return sum(self.processor.get_number_of_image_patches(
+                image.height, image.width, {"min_pixels": min(self.min_pixels, cap), "max_pixels": cap}) // merge**2
+                for image, cap in zip(images, caps(level)))
+
+        # high rounds up: when everything fits, each image keeps its exact ceiling (a range not in whole tokens too)
+        low, high = 1, max(1, -(-max(ceilings, default=unit) // unit))
+        if tokens(high) <= budget:
+            return caps(high)
+        while high - low > 1:                   # tokens(level) never falls as the level rises: bisect the last fit
+            mid = (low + high) // 2
+            low, high = (mid, high) if tokens(mid) <= budget else (low, mid)
+        return caps(low)                        # a level-1 overflow is refused by the budget check after processing
 
     def video_size(self, frames: int, height: int, width: int) -> tuple[int, int]:
         """A video's frame size for the tower: Qwen3-VL's ``smart_resize`` with its per-frame cap (at most 768 tokens a

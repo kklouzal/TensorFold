@@ -290,7 +290,7 @@ def test_filling_requests_do_not_retain_evicted_snapshot_references(w):
     dec.admit(stream)
     dec._pass()
     assert stream in dec.filling and len(dec.kept) == 1
-    assert dec.fills[stream.sid][3] is None
+    assert dec.fills[stream.sid][3] == []             # no pending kept state holds a snapshot
     while dec.live():
         dec.finish(dec.round())
     assert len(dec.kept) == 1

@@ -8,10 +8,11 @@ import uuid
 from typing import Any
 
 from tensorfold.server.stopping import StopPolicy
-from tensorfold.server.tools import parse_glm_tool_call_block
+from tensorfold.server.tools import normalize_qwen_tool_markup, parse_glm_tool_call_block
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
 
 _CALL_OPEN, _CALL_CLOSE = "<tool_call>", "</tool_call>"
+_STRAY_CLOSES_RE = re.compile(r"(?:\s*</tool_call>)*")
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _TOOL_FUNCTION_BLOCK_RE = re.compile(r"^\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*$", re.IGNORECASE | re.DOTALL)
 _TOOL_PARAMETER_BLOCK_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.IGNORECASE | re.DOTALL)
@@ -89,7 +90,10 @@ def hide_tool_calls(text: str, *, finished: bool) -> str:
         end = text.find(_CALL_CLOSE, start)
         if end < 0:
             return "".join(out)
-        pos = end + len(_CALL_CLOSE)
+        # a doubled closer after a call is part of its markup (the end parser collapses it), not visible text
+        pos = _STRAY_CLOSES_RE.match(text, end + len(_CALL_CLOSE)).end()
+        if not finished and _CALL_CLOSE.startswith(text[pos:].lstrip()):
+            return "".join(out)          # a doubled closer may still be arriving: hold the whitespace before it too
 
 
 def _tool_name(tool: dict[str, Any]) -> str:
@@ -104,6 +108,7 @@ def parse_tool_calls(text: str, tools: list[dict[str, Any]], *, max_calls: int |
         return text, None
     known = {_tool_name(t).lower(): _tool_name(t) for t in tools}
     schemas = parameter_schemas(tools)
+    text = normalize_qwen_tool_markup(text)
     calls: list[dict[str, Any]] = []
     residue: list[str] = []
     cursor = 0
@@ -111,7 +116,7 @@ def parse_tool_calls(text: str, tools: list[dict[str, Any]], *, max_calls: int |
         residue.append(text[cursor:match.start()])
         cursor = match.end()
         if max_calls is not None and len(calls) >= max_calls:
-            continue
+            continue                                  # a one-call request drops the calls past its first
         block = match.group(1).strip()
         name, args = None, {}
         try:
@@ -126,6 +131,7 @@ def parse_tool_calls(text: str, tools: list[dict[str, Any]], *, max_calls: int |
             m = _TOOL_FUNCTION_BLOCK_RE.match(block)
             if m:
                 if max_calls is not None and _TOOL_PARAMETER_BLOCK_RE.sub("", m.group(2)).strip():
+                    residue.append(match.group(0))
                     continue
                 name = m.group(1).strip()
                 # typed parameters (array, object, number...) decode per the tool's schema, as the Mac server does
@@ -137,16 +143,18 @@ def parse_tool_calls(text: str, tools: list[dict[str, Any]], *, max_calls: int |
                 glm = parse_glm_tool_call_block(block, tools, complete=max_calls is not None)
                 if glm is not None:
                     name, args = glm
+        # a block that is not a call of an offered tool stays text, in either mode; a one-call request's content
+        # filter hides tool markup, and the server shows this text only when nothing else would answer
         if not name or str(name).lower() not in known:
-            if max_calls is None:
-                residue.append(match.group(0))
+            residue.append(match.group(0))
             continue
         if max_calls is not None:
             try:
                 if not isinstance(args, dict):
-                    continue
+                    raise TypeError("arguments are not an object")
                 json.dumps(args, allow_nan=False)
             except (ValueError, TypeError):
+                residue.append(match.group(0))
                 continue
         calls.append({"id": f"call_{uuid.uuid4().hex[:24]}", "type": "function",
                       "function": {"name": known[str(name).lower()],

@@ -25,7 +25,8 @@ inline float tf_uniform(ulong seed, uint pos, uint id) {
   ulong x = tf_mix(seed + 0x9E3779B97F4A7C15UL);
   x = tf_mix(x ^ (ulong(pos) * 0xD1B54A32D192ED03UL));
   x = tf_mix(x ^ ulong(id));
-  return (float(uint(x >> 40)) + 0.5f) * (1.0f / 16777216.0f);
+  // 23 bits: each (n + 0.5) / 2^23 is an exact fp32 inside (0, 1); 24 bits rounded the top one to 1.0 (draw +inf)
+  return (float(uint(x >> 41)) + 0.5f) * (1.0f / 8388608.0f);
 }
 """
 
@@ -360,7 +361,7 @@ def reference(values: Any, sampling: Any, position: int) -> int:
         x = mix(x ^ (np.uint64(position) * np.uint64(0xD1B54A32D192ED03)))
         x = mix(x ^ kept.astype(np.uint64))
     del mask
-    u = ((x >> np.uint64(40)).astype(np.float32) + np.float32(0.5)) * np.float32(1.0 / 16777216.0)
+    u = ((x >> np.uint64(41)).astype(np.float32) + np.float32(0.5)) * np.float32(1.0 / 8388608.0)
     score = v[kept] - np.log(-np.log(u))
     return int(kept[int(np.argmax(score))])
 

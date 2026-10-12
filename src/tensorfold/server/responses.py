@@ -134,10 +134,13 @@ def _refuse(handler: Any, message: str, status: int = 400, param: str | None = N
 
 
 class Wire:
-    """The chat handler's side of its socket: the status and headers, then the JSON body or each stream event."""
+    """The chat handler's side of its socket: the status and headers, then the JSON body or each stream event. A
+    stream's SSE comment lines (the CUDA server's keepalive while a prompt waits or fills) go to ``comment``, so the
+    client of the translated stream hears them too."""
 
-    def __init__(self, opened: Callable[[], None], event: Callable[[dict[str, Any] | None], None]) -> None:
-        self.opened, self.event = opened, event
+    def __init__(self, opened: Callable[[], None], event: Callable[[dict[str, Any] | None], None],
+                 comment: Callable[[bytes], None]) -> None:
+        self.opened, self.event, self.comment = opened, event, comment
         self.status: int | None = None
         self.stream = False
         self.data = bytearray()
@@ -159,9 +162,12 @@ class Wire:
             block = bytes(self.data[:end])
             del self.data[:end + 2]
             for line in block.split(b"\n"):
-                if line.startswith(b"data: "):
+                if line.startswith(b"data: ") or line.startswith(b":"):
                     try:
-                        self.event(None if line[6:] == b"[DONE]" else json.loads(line[6:]))
+                        if line.startswith(b":"):
+                            self.comment(line)
+                        else:
+                            self.event(None if line[6:] == b"[DONE]" else json.loads(line[6:]))
                     except OSError as exc:           # our client has gone: the chat handler's write fails
                         raise BrokenPipeError(str(exc)) from exc
         return len(data)
@@ -207,6 +213,10 @@ def post(handler: Any, app: Any) -> None:
         handler.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
         handler.wfile.flush()
 
+    def comment(line: bytes) -> None:
+        handler.wfile.write(line + b"\n\n")
+        handler.wfile.flush()
+
     reply = Reply(base, send if request.stream else None,
                   (lambda final: store.put(final, request.added)) if request.store else None)
 
@@ -219,7 +229,7 @@ def post(handler: Any, app: Any) -> None:
         handler.close_connection = True
         reply.start()
 
-    wire = Wire(opened, reply.chunk)
+    wire = Wire(opened, reply.chunk, comment)
     try:
         _run_chat(handler, request.chat, wire)
     except OSError:                                   # the client left while the reply was written

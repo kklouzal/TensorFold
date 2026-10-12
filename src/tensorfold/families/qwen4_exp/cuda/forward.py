@@ -35,12 +35,13 @@ def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: i
 
 
 def _mm(x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, out: torch.Tensor, b: Buffers, **kw) -> torch.Tensor:
+    f32 = out.dtype == torch.float32              # unrounded sums: tensor-parallel partials and the head's logits
     if getattr(q, "kernel", "qmm") == "b16":      # an NVFP4 checkpoint's BF16 linear (non-experts)
-        return bf16.matmul(x, q, out=out)
-    if not isinstance(q, qmm.Q4):                 # an EXL3 pack's matrix (``exl3_mm``): prompts on its prompt path
+        return bf16.matmul(x, q, out=out, f32=f32)
+    if not isinstance(q, qmm.Q4):                 # EXL3 (``exl3_mm``) and FP8 matrices write out's dtype
         return q.prefill(x, out) if b.prefill else q(x, out)
     mm = qmm.prefill_matmul if b.prefill else qmm.matmul
-    return mm(x, q, xs, out=out, part=b.part, **kw)
+    return mm(x, q, xs, out=out, part=b.part, f32=f32, **kw)
 
 
 def _embed(w: Weights, ids: torch.Tensor, copies: int, out: torch.Tensor) -> torch.Tensor:
@@ -157,9 +158,11 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
     li = segs[0][0].lin_index[layer.index]
     if b.prefill:
         _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[0, :R], b)
-        at = {cut.at: cut for cut in cuts}
+        at: dict[int, list[Cut]] = {}
+        for cut in sorted(cuts, key=lambda cut: cut.row):
+            at.setdefault(cut.at, []).append(cut)
         for st, a0, a1 in segs:
-            _prefill_chain(g, st, li, b, a0, a1, c, at.get(a0))
+            _prefill_chain(g, st, li, b, a0, a1, c, at.get(a0, ()))
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
     tables = getattr(b, "gdn_tables", None)           # a concurrent round: every stream in one launch a step
@@ -173,28 +176,28 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
     return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
 
 
-def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cut: Cut | None = None) -> None:
-    """A prompt chunk's DeltaNet; the layer commits at once (a chunk keeps every row)."""
+def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts: Sequence[Cut] = ()) -> None:
+    """A prompt chunk's DeltaNet; the layer commits at once (a chunk keeps every row). Each kept point (rows strictly
+    inside, ascending) splits the chain: the rows before it, its state copied out, then on from it."""
 
     n, p, cur = a1 - a0, b.proj[0, a0:a1], st.cur[li]
     b.conv_ptr.fill_(st.conv[li].data_ptr())
     q, k, v, gt, beta = gdn_io.front(p, b.conv_ptr, b.sid[:n], b.windows[:n], g.conv, g.a_log, g.dt_bias, c.nk)
-    if cut is None:
-        y = shared_gdn.chain(q, k, v, gt, beta, st.rec[cur, li], st.rec[1 - cur, li])
-        gdn_io.back(y, p, g.norm, c.eps, b.gout[a0:a1], b.gxs[a0:a1])
-    else:                                        # the rows before the kept point, its state, then the rest from it
-        m, mid = cut.row, st.rec[1 - cur, li]
-        y = shared_gdn.chain(q[:m], k[:m], v[:m], gt[:m], beta[:m], st.rec[cur, li], mid)
-        gdn_io.back(y, p[:m], g.norm, c.eps, b.gout[a0:a0 + m], b.gxs[a0:a0 + m])
-        if cut.rec is None:
-            cut.rec, cut.conv = torch.empty_like(st.rec[0]), torch.empty_like(st.conv)
-        cut.rec[li].copy_(mid)
-        cut.conv[li].copy_(st.conv[li])
-        shift_windows(cut.conv[li:li + 1], b.proj[0:1, a0:a0 + m], m, c.conv_dim)
-        y = shared_gdn.chain(q[m:], k[m:], v[m:], gt[m:], beta[m:], mid, st.rec[cur, li])
-        gdn_io.back(y, p[m:], g.norm, c.eps, b.gout[a0 + m:a1], b.gxs[a0 + m:a1])
-        cur = 1 - cur                            # the second launch wrote the state back where the first read it
-    st.cur[li] = 1 - cur
+    start = 0
+    for cut in (*cuts, None):                    # the launches alternate the state's two buffers
+        end = n if cut is None else cut.row
+        y = shared_gdn.chain(q[start:end], k[start:end], v[start:end], gt[start:end], beta[start:end],
+                             st.rec[cur, li], st.rec[1 - cur, li])
+        gdn_io.back(y, p[start:end], g.norm, c.eps, b.gout[a0 + start:a0 + end], b.gxs[a0 + start:a0 + end])
+        cur = 1 - cur
+        if cut is not None:
+            if cut.rec is None:
+                cut.rec, cut.conv = torch.empty_like(st.rec[0]), torch.empty_like(st.conv)
+            cut.rec[li].copy_(st.rec[cur, li])
+            cut.conv[li].copy_(st.conv[li])
+            shift_windows(cut.conv[li:li + 1], b.proj[0:1, a0:a0 + end], end, c.conv_dim)
+            start = end
+    st.cur[li] = cur
     shift_windows(st.conv[li:li + 1], b.proj[0:1, a0:a1], n, c.conv_dim)
 
 
@@ -208,7 +211,7 @@ def _out_proj(w: Weights, b: Buffers, x: torch.Tensor, q: qmm.Q4, xs: torch.Tens
         if got.dim() == 3:
             return 4, got            # K slices: the write-back sums them in order (the bits of reduce, then round)
         return 1, got
-    _mm(x, q, xs, b.part_branch[:R], b, f32=True)
+    _mm(x, q, xs, b.part_branch[:R], b)
     return 3, _gather(w, b, b.part_branch, b.g_branch, R)
 
 
@@ -680,7 +683,7 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
 @torch.no_grad()
 def forward(w: Weights, st: State, b: Buffers, tokens: Sequence[int], *, logits: bool = True,
             cut: Cut | None = None, features=None):
-    """Rows for ``tokens`` at positions st.pos .. st.pos + R - 1: logits [R, V] bf16 (a view of b.logits) and the residual streams b.streams[:R]. The committed state is unchanged until ``commit``; ``cut`` (a prompt chunk): keeps each DeltaNet layer's state at its row."""
+    """Rows for ``tokens`` at positions st.pos .. st.pos + R - 1: logits [R, V] fp32 (a view of b.logits) and the residual streams b.streams[:R]. The committed state is unchanged until ``commit``; ``cut`` (a prompt chunk): keeps each DeltaNet layer's state at its row."""
 
     if cut is not None and not (b.prefill and cut.at == 0 and 0 < cut.row < len(tokens)):
         raise ValueError(f"a prompt chunk of {len(tokens)} rows has no kept point at row {cut.row}")

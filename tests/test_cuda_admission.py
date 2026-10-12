@@ -331,3 +331,27 @@ def test_unrelated_engine_error_is_not_request_error(model_dir, error_type):
     with pytest.raises(error_type, match="engine math failed") as error:
         app.run(request(2, False), False, lambda delta: True)
     assert not isinstance(error.value, server.RequestError)
+
+
+def test_unset_sampling_falls_back_as_documented(model_dir):
+    """What generation_config.json and the flags leave unset falls back as on the Mac and in the README: greedy, and
+    top-k and top-p off; the CUDA server once sampled top-20 / top-p 0.95 for checkpoints that name neither."""
+    from tensorfold.engine.exact_sampling import Sampling
+
+    bare = server.App(Engine(), model_dir, "test")
+    assert bare.sampling_for({}, [1, 2]) is None                                     # temperature 0: greedy
+    chosen = server.App(Engine(), model_dir, "test", sampling={"temperature": 0.7})  # a config that sets only that
+    assert chosen.sampling_for({"seed": 5}, [1, 2]) == Sampling(5, 0.7, 0, 1.0)
+    named = server.App(Engine(), model_dir, "test", sampling={"temperature": 1.0, "top_k": 20, "top_p": 0.95})
+    assert named.sampling_for({"seed": 5}, [1, 2]) == Sampling(5, 1.0, 20, 0.95)
+
+
+def test_a_server_top_k_below_zero_turns_top_k_off(model_dir):
+    """docs/api.md: top_k at zero or below disables top-k filtering, a server default (--top-k) as a request's."""
+    from tensorfold.cuda.sampling import validate_policy
+    from tensorfold.engine.exact_sampling import Sampling
+
+    app = server.App(Engine(), model_dir, "test", sampling={"temperature": 1.0, "top_k": -1, "top_p": 0.9})
+    sampling = app.sampling_for({"seed": 5}, [1, 2])
+    assert sampling == Sampling(5, 1.0, 0, 0.9)
+    validate_policy([2], sampling)                                    # the CUDA sampler takes it

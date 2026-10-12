@@ -76,7 +76,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `tool_choice` | `none` hides tools from the template; `required` or a named function makes the reply call a tool | Both |
 | `parallel_tool_calls` | False returns at most one completed call | Both |
 | `max_tokens`, `max_completion_tokens` | Explicit reply limit; rejected if prompt plus reply exceeds the window | Both |
-| `temperature`, `top_p`, `top_k`, `min_p` | Sampling overrides; zero temperature is greedy | Both |
+| `temperature`, `top_p`, `top_k`, `min_p` | Sampling overrides; zero `temperature` or zero `top_p` is greedy | Both |
 | `seed` | Sampling key; otherwise derived from the prompt (and `TENSORFOLD_SEED_SALT`) | Both |
 | `stream` | Server-sent events; the last event carries usage | Both |
 | `stream_options.include_usage` | Usage in its own final event with `"choices": []`, not on the finish event | Both |
@@ -100,9 +100,12 @@ Unsupported backends, engines and request modes return HTTP 400 when probabiliti
 `ignore_eos: true` keeps user-supplied `stop` strings active, including when a stop string spans streamed chunks.
 Both backends reject a non-boolean `ignore_eos` or a malformed `stop` with HTTP 400 before a stream opens.
 Both backends reject malformed `temperature`, `top_p`, `top_k` and `seed` values with HTTP 400, whether or not
-the request samples: booleans, non-finite numbers, non-numeric strings, and non-integral `top_k` or `seed`.
-MLX also rejects its other malformed numeric controls and out-of-vocabulary raw prompt IDs.
-`top_k` at zero or below disables top-k filtering, and null sampling fields retain server defaults.
+the request samples: booleans, non-finite numbers, non-numeric strings, non-integral `top_k` or `seed`, and a
+`top_p` outside 0 to 1. MLX also rejects its other malformed numeric controls and out-of-vocabulary raw prompt IDs.
+`top_k` at zero or below disables top-k filtering, and null sampling fields retain server defaults. `top_p` 1
+disables the nucleus cut; `top_p` 0 keeps only the likeliest token, as Transformers' top-p filter always keeps one,
+so the reply is greedy. Fields that the request, the server flags and `generation_config.json` all leave unset
+fall back alike on both backends: temperature 0 (greedy), and top-k, top-p and min-p off.
 With top-k off, a CUDA draw cuts the top-p nucleus by each token's probability mass in 40-bit fixed point, so one GPU
 and two GPUs holding halves of the vocabulary draw the same token: each GPU reads its 1,024 best candidates, and its
 whole vocabulary shard when a row's nucleus runs past them (or with `top_p` 1 and no `min_p`).
@@ -132,16 +135,20 @@ On CUDA, `--parallel auto` serves one request at a time. An explicit `--parallel
 for Qwen3.8-27B on one or two ranks and for Flash Next and Qwen3.6 on one rank; GLM and Nemotron stay serialized.
 When a client disconnects, its CUDA request stops at the next round, and a request still waiting behind
 another in one-at-a-time serving does not start; two-rank Flash Next, Nemotron and GLM requests finish on
-both ranks. A background request (`priority: background`, or a session-title request) waits behind foreground
-ones. One decoding yields to a foreground request that waits (between rounds when one request runs at a time; its lane
-under `--parallel` when every lane is taken), then replays from its prompt later, as the Mac does: the tokens
-it already sent come again and are checked, not sent twice, so its reply equals its solo run; a foreground
-prompt prefills before a background one. Under `--parallel`, the 27B and Qwen3.6 prefill a background prompt 1,024
-rows a step, so a foreground prompt arriving meanwhile waits less: on one Spark, a short foreground request 0.3 s into
-a background prompt's ~1 s prefill waited 0.57 s on Qwen3.6, against 0.70 s without the priority and 0.04 s alone
-(the 27B: 0.69-0.89 s against 2.98-3.66 s). Flash Next, and an engine serving one request at a time, finish a
-background prompt's prefill once it has started. Two-rank engines serving one request at a time
-only order the queue.
+both ranks. Under an explicit `--parallel N`, a request that has no tokens yet (queued, or its prompt prefilling) is
+checked every 15 s: a stream whose headers are sent gets an SSE comment line (`: keepalive`), which Messages and
+Responses streams pass on, so a client with an inactivity timeout keeps a long prefill; a queued request whose client
+left is never admitted; and a Flash Next prompt still prefilling stops before its next pass, keeping the state its
+passes committed, so the same prompt sent again resumes there. A background request (`priority: background`, or a
+session-title request) waits behind foreground ones. One decoding yields to a foreground request that waits (between
+rounds when one request runs at a time; its lane under `--parallel` when every lane is taken), then replays from its
+prompt later, as the Mac does: the tokens it already sent come again and are checked, not sent twice, so its reply
+equals its solo run; a foreground prompt prefills before a background one. Under `--parallel`, the 27B and Qwen3.6
+prefill a background prompt 1,024 rows a step, so a foreground prompt arriving meanwhile waits less: on one Spark, a
+short foreground request 0.3 s into a background prompt's ~1 s prefill waited 0.57 s on Qwen3.6, against 0.70 s
+without the priority and 0.04 s alone (the 27B: 0.69-0.89 s against 2.98-3.66 s). Flash Next, and an engine serving
+one request at a time, finish a background prompt's prefill once it has started. Two-rank engines serving one request
+at a time only order the queue.
 
 `--name-priority ID=background` gives one served id (`--name` or an `--alias`) a default priority: a request that
 asks for it and sends no `priority` of its own is treated as `priority: "background"`. The request's own `priority`
@@ -162,9 +169,13 @@ remain strings for the client to validate. Union types and schema references are
 
 A reply that is not a call returns as content, never an error: prose, JSON that names no offered tool
 (a structured answer), and malformed or unoffered `<tool_call>` blocks, which keep their text.
+Both backends repair Qwen envelope slips before parsing, streamed or not: a doubled `<tool_call>` opener or
+`</tool_call>` closer counts once, each complete `<function=…>` block of an envelope holding several is its own call,
+and a finished reply whose last envelope holds only complete functions is read as if it had written the closer.
 
 With `parallel_tool_calls: false`, the server buffers tool deltas until it can return the first valid
-completed call. Prose and reasoning can still stream. Usage counts the entire decoded reply, including
+completed call. Prose and reasoning can still stream. On CUDA, a reply whose block is malformed or unoffered and
+that has no other text returns the block's text as its content rather than an empty reply. Usage counts the entire decoded reply, including
 additional calls omitted from the response. Otherwise both servers stream each Qwen XML call as it is written: a
 delta with the call's id and name, then its arguments in pieces; a call the streamer can't follow arrives whole at
 the end.

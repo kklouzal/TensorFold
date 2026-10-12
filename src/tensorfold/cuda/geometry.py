@@ -438,8 +438,9 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             first: int = 256, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                             kv_scale_bytes: int = 2, kv_status: bool = False,
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
-                            world: int = 1) -> Geometry:
-    """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots."""
+                            world: int = 1, points: int = 1) -> Geometry:
+    """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
+    the ``points`` each stream's prompt piece copies out before they are kept)."""
 
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
@@ -450,7 +451,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     conv = linear * (int(t["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2
     tail = (int(t.get("ple_conv_kernel_size", 4)) - 1) * int(t.get("ngram_size", 3)) * hc * d * 2
     fixed = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
-    fixed += (keep + streams) * (rec + conv + tail + int(mtp) * hc * d * 2)  # retained plus this pass's cuts
+    fixed += (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1
     moe = int(t.get("moe_intermediate_size", t.get("intermediate_size", d))) // world
     extent = d * hc + int(t["vocab_size"]) // world + slots * (moe + d) + width + h * hd

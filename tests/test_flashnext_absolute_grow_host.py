@@ -132,6 +132,7 @@ class AbsoluteGrowthTests(unittest.TestCase):
         self.dec.free, self.dec.kept, self.dec.streams, self.dec.filling = [first, second], [], {}, []
         self.dec.fills, self.dec.held = {}, {}
         self.dec.next_id, self.dec.keep = 0, 8
+        self.dec.used, self.dec.clock = {}, 0
         self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None), None, None, None
         self.dec._draft_map = None
         self.dec.copy = False

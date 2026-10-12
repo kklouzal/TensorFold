@@ -14,6 +14,8 @@ from tensorfold.server.request_limits import RequestLimit, optional_limit
 from .memory_gate import NoRoom
 from .streams import Stream
 
+TICK_S = 15.0           # a request waiting this long for tokens (queued or prefilling) ticks ``emit([])``: a keepalive
+
 
 class Waiting(queue.PriorityQueue):
     """(stream, box) pairs in arrival order, background streams after every other."""
@@ -187,12 +189,14 @@ class Scheduler:
     def submit(self, prompt: list[int], count: int, sampling: Any, draft: bool,
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
                constraint: Any = None, background: bool = False, probabilities: Any = None) -> dict:
-        """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats."""
+        """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
+        While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
+        connection alive and says whether its client left, and a request whose client left stops even mid-prompt."""
 
         box: queue.Queue = queue.Queue()
-        stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
-                        constraint=constraint, background=background, probabilities=probabilities)
         cancel = threading.Event()
+        stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
+                        constraint=constraint, background=background, probabilities=probabilities, cancel=cancel)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
         try:
             # Publication can succeed before an interrupt is delivered. Own
@@ -220,7 +224,12 @@ class Scheduler:
                         rollback(self, error, lambda: finish((self._request_limit.close, self._stop_requests)))
                     raise
             while True:
-                kind, value = box.get()
+                try:
+                    kind, value = box.get(timeout=TICK_S)
+                except queue.Empty:
+                    if not cancel.is_set() and emit([]):
+                        cancel.set()                # the client left: the worker drops the request at its next step
+                    continue
                 if kind == "tokens":
                     if not cancel.is_set() and emit(value):
                         cancel.set()                # the client left: the stream ends after its next round
@@ -249,6 +258,9 @@ class Scheduler:
                     break
                 stream, box = item
             self.boxes[id(stream)] = box
+            if stream.cancel is not None and stream.cancel.is_set():
+                self._reply(stream, "done", stream.stats())     # its client left while it waited: nothing to fill
+                continue
             try:
                 self.decoder.admit(stream)
             except NoRoom as exc:
@@ -287,6 +299,13 @@ class Scheduler:
         self.waiting.put((stream.continued(), box))
         self.boxes.pop(id(stream))
         self.yields += 1
+
+    def _cancelled(self) -> list[Stream]:
+        """Prompts still filling whose clients left: a decoder that can drops them, keeping the state they reached."""
+
+        drop = getattr(self.decoder, "cancel", None)
+        gone = [s for s in getattr(self.decoder, "filling", ()) if s.cancel is not None and s.cancel.is_set()]
+        return drop(gone) if drop is not None and gone else []
 
     def _reply(self, s: Stream, kind: str, value: Any) -> None:
         box = self.boxes.pop(id(s), None)            # None: the stream's request has had its reply
@@ -430,6 +449,7 @@ class Scheduler:
                 return                                                                # close()
             done = self._admit(first)
             try:
+                done += self._cancelled()
                 done += self.decoder.round()
             except Exception as exc:                 # noqa: BLE001  (the live requests fail)
                 for s in self.decoder.drop():

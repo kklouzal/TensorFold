@@ -84,7 +84,8 @@ class Config:
             linear_key_head_dim=int(t["linear_key_head_dim"]),
             linear_value_head_dim=int(t["linear_value_head_dim"]),
             linear_conv_kernel_dim=int(t["linear_conv_kernel_dim"]),
-            output_gate_type=str(t.get("output_gate_type") or "sigmoid"),
+            # unset, the gate is hidden_act (itself "silu" when unset), as transformers' Qwen4ExpConfig resolves it
+            output_gate_type=str(t.get("output_gate_type") or t.get("hidden_act") or "silu"),
             num_experts=int(t["num_experts"]),
             num_experts_per_tok=int(t["num_experts_per_tok"]),
             moe_intermediate_size=int(t["moe_intermediate_size"]),

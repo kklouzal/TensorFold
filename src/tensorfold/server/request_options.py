@@ -32,8 +32,8 @@ def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
         except (ValueError, TypeError, OverflowError) as exc:
             kind = "an integer" if integer else "a finite number"
             raise RequestError(f"{name} must be {kind} or null") from exc
-        if name == "min_p" and not 0.0 <= number <= 1.0:
-            raise RequestError("min_p must be between 0 and 1, or null")
+        if name in ("top_p", "min_p") and not 0.0 <= number <= 1.0:
+            raise RequestError(f"{name} must be between 0 and 1, or null")
         parsed[name] = max(0, number) if name == "top_k" else number
     return parsed
 
@@ -148,7 +148,7 @@ class RequestOptions:
         options = {k: v for k, v in parse_numbers(self.default_sampling or {}).items() if v is not None}
         options.update({k: v for k, v in parse_numbers(fields or {}).items() if v is not None})
         temp = options.get("temperature", 0.0)
-        if temp <= 0.0:
+        if temp <= 0.0 or options.get("top_p") == 0:     # top_p 0 keeps only the likeliest token (HF): greedy
             return None
         seed = options["seed"] if "seed" in options else seed_for(prompt_ids)
         return Sampling(seed=seed, temperature=temp,

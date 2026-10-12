@@ -23,7 +23,7 @@ from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_b
 from . import attn_multi, gdn_multi, image_rows, prefixes
 from .forward import Cut, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
-from .prompt_plan import pass_limit
+from .prompt_plan import CUTS, pass_limit
 from .state import ENDS, Buffers, KVNumericError, State
 from ..cuda import CONFIDENCE, DEPTH
 
@@ -88,7 +88,8 @@ class MultiDecoder:
                                       reserve=max(2 * GIB, workspace_bytes), live=live)
         self.streams: dict[int, Stream] = {}
         self.filling: list[Stream] = []                  # admitted, prompts still prefilling (oldest first)
-        self.fills: dict[int, list] = {}                 # stream id -> [its engine, drafts?, next row, kept state]
+        # stream id -> [its engine, drafts?, next row, kept states, the streams row before the next (its MTP tail)]
+        self.fills: dict[int, list] = {}
         self.passed: dict[int, int] = {}                 # stream id -> prompt passes since its last rows
         self.arrived = lambda: False                     # a request waits to be admitted (the scheduler sets this)
         self.next_id = 0
@@ -97,6 +98,8 @@ class MultiDecoder:
         self.draft_host = self._draft_map.ids(int(w.draft_ids.numel())) if self._draft_map is not None else None
         self.kept: list[tuple[list[int], State, dict, torch.Tensor | None]] = []   # (ids, slot, snapshot, tail)
         self.keep = keep
+        self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
+        self.clock = 0
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -151,17 +154,15 @@ class MultiDecoder:
             self.memory_gate.give(-st.resize(min(FIRST, st.limit)))
 
     def _evict_kept(self, keep: State, *, protect: State | None = None) -> bool:
-        """Free the oldest idle kept prompt end (never ``keep``); False when none is left."""
+        """Free the least valuable idle kept chain (never ``keep`` or ``protect``); False when none is left."""
 
-        busy = self._busy()
-        for ids, st, _, _ in self.kept:
-            if st is not keep and st is not protect and id(st) not in busy:
-                self._drop_kept(st)
-                self._shrink(st)
-                if all(f is not st for f in self.free):
-                    self.free.append(st)
-                return True
-        return False
+        st = prefixes.evict(self, keep, protect)
+        if st is None:
+            return False
+        self._shrink(st)
+        if all(f is not st for f in self.free):
+            self.free.append(st)
+        return True
 
     def _flush(self, s) -> None:
         """Materialize deferred recurrent rows before waiting releases the shared scratch."""
@@ -301,17 +302,19 @@ class MultiDecoder:
 
             s.copies = CopyIndex(COPY_MATCH)
         s.prefill_s = time.perf_counter() - t0
-        same = resume is not None and self._keep_at(s) == begin         # the same prompt again: its own point
-        self.fills[s.sid] = [e, mtp, begin, (resume["state"], resume["tail"]) if same else None]
+        # the resumed point stays kept (slot_for keeps it in place, or a fork's source holds it): no fill re-keeps it
+        self.fills[s.sid] = [e, mtp, begin, [], None]
         self.filling.append(s)
 
     def _fill(self) -> list[Stream]:
-        """Fill ordered prompt pieces until a stream decodes or a waiting request needs admission."""
+        """Fill ordered prompt pieces until a stream decodes, a waiting request needs admission or a filling prompt's
+        client has left (the scheduler then calls ``cancel`` before the next round)."""
 
         ended: list[Stream] = []
         while self.filling:
             ended += self._pass()
-            if any(not x.done and not x.waiting for x in self.streams.values()) or self.arrived():
+            if any(not x.done and not x.waiting for x in self.streams.values()) or self.arrived() or \
+                    any(s.cancel is not None and s.cancel.is_set() for s in self.filling):
                 break
         return ended
 
@@ -345,8 +348,11 @@ class MultiDecoder:
 
         pieces, room = [], self._pass_rows() if rows is None else rows
         for s in self._order():
-            e, mtp, start, _ = self.fills[s.sid]
-            n = min(next((p for p in e.stops if p > start), len(s.prompt)) - start, room)
+            start = self.fills[s.sid][2]
+            n = min(len(s.prompt) - start, room)
+            inside = [p for p in self._points(s, start, n) if p < start + n]
+            if len(inside) > CUTS:                       # a piece holds CUTS kept states at most: the next one ends it
+                n = inside[CUTS] - start
             ends = sum(1 for x, a, k in pieces if a + k == len(x.prompt))
             if n == 0 or (start + n == len(s.prompt) and ends == ENDS):
                 break
@@ -404,35 +410,34 @@ class MultiDecoder:
 
         return entry_end(s.prompt) if s.draft and s.st.image_positions is None else None
 
-    def _point(self, s: Stream, start: int) -> int | None:
-        """The next message-start or prompt-end snapshot this prompt piece can reach."""
+    def _points(self, s: Stream, start: int, n: int) -> list[int]:
+        """The message-start and prompt-end snapshots in rows ``start`` + 1 .. ``start`` + ``n``, ascending."""
 
         if not s.draft or s.st.image_positions is not None:
-            return None
-        return next((p for p in self.fills[s.sid][0].stops if p > start), self._keep_at(s))
+            return []
+        return [p for p in (*self.fills[s.sid][0].stops, self._keep_at(s)) if start < p <= start + n]
 
     def _cuts(self, pieces, segs) -> list[Cut]:
         """The kept points strictly inside the pass's pieces, where their DeltaNet chains split."""
 
         return [Cut(k - a, at=a0) for (s, a, n), (_, a0, _) in zip(pieces, segs)
-                if (k := self._point(s, a)) is not None and a < k < a + n]
+                for k in self._points(s, a, n) if k < a + n]
 
     def _absorb(self, pieces, segs, cuts=()) -> list[torch.Tensor]:
         """After a pass's forward: each prompt's last row and kept point, the MTP head's absorb, the commits."""
 
         _kv_check(segs)
         lasts = [self.pbuf.streams[a1 - 1:a1].clone() for _, _, a1 in segs]
-        at, points = {cut.at: cut for cut in cuts}, []
+        at, points = {(cut.at, cut.row): cut for cut in cuts}, []
         for (s, a, n), (st, a0, _) in zip(pieces, segs):      # before the MTP head writes the pass's streams
-            k = self._point(s, a)
-            if k is None or not a < k <= a + n:
-                continue
-            row, mtp = k - a, self.fills[s.sid][1]
-            mtp_len = st.mtp_len + row - 1 if mtp else st.mtp_len       # every row but the point's last
-            tail = self.pbuf.streams[a0 + row - 1:a0 + row].clone() if mtp else None
-            cut = at.get(a0)
-            snap = None if cut is None else cut_snapshot(self.w, st, self.pbuf, cut, mtp_len)
-            points.append((s, mtp_len, tail, snap))
+            mtp = self.fills[s.sid][1]
+            for k in self._points(s, a, n):
+                row = k - a
+                mtp_len = st.mtp_len + row - 1 if mtp else st.mtp_len   # every row but the point's last
+                tail = self.pbuf.streams[a0 + row - 1:a0 + row].clone() if mtp else None
+                cut = at.get((a0, row))
+                snap = None if cut is None else cut_snapshot(self.w, st, self.pbuf, cut, mtp_len)
+                points.append((s, mtp_len, tail, snap))
         absorb = [(s.st, s.prompt[a + 1:a + n + 1], self.pbuf.streams[a0:a0 + n])
                   for (s, a, n), (_, a0, _) in zip(pieces, segs) if self.fills[s.sid][1] and a + 1 < len(s.prompt)]
         if absorb:                   # the MTP head absorbs each prompt's rows (its cache in position order)
@@ -443,7 +448,7 @@ class MultiDecoder:
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
             commit(self.w, st, self.pbuf, n, n, at=a0)
         for s, mtp_len, tail, snap in points:            # a point that ends its piece: the state as committed
-            self.fills[s.sid][3] = (snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}, tail)
+            self.fills[s.sid][3].append((snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}, tail))
         return lasts
 
     def _failed(self, pieces, exc: Exception) -> list[Stream]:
@@ -462,31 +467,38 @@ class MultiDecoder:
         joined, head = [], 0
         for (s, a, n), last in zip(pieces, lasts):
             s.prefill_s += spent
-            e, mtp, _, kept = self.fills[s.sid]
-            self.fills[s.sid][2] = a + n
-            if kept is not None and a < kept[0]["pos"] <= a + n:
-                self._remember(list(s.prompt[:kept[0]["pos"]]), s.st, *kept)
-            self.fills[s.sid][3] = None                    # only the bounded cache owns a stored snapshot
+            fill = self.fills[s.sid]
+            e, mtp, _, kept, _ = fill
+            fill[2], fill[4] = a + n, last if mtp else None
+            for snap, tail in kept:
+                if a < snap["pos"] <= a + n:
+                    self._remember(list(s.prompt[:snap["pos"]]), s.st, snap, tail)
+            fill[3] = []                                   # only the bounded cache owns a stored snapshot
             if a + n < len(s.prompt):
                 continue
             self.filling.remove(s)
             self.fills.pop(s.sid)
             st, e.last_streams = s.st, last
             logits = heads[head:head + 1]
-            if s.constraint is not None:                 # a reply's grammar: the first token too
-                logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
-            first = e.sample(logits, [len(s.prompt)], s.sampling)[0]
-            if s.probabilities is not None:
-                capture(logits, [first], [len(s.prompt)], s.probabilities)
-            if s.constraint is not None:
-                s.constraint.advance([first])
             head += 1
             image_rows.finish(st)
+            try:                                             # this request's own policy, grammar and capture
+                if s.constraint is not None:                 # a reply's grammar: the first token too
+                    logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
+                first = e.sample(logits, [len(s.prompt)], s.sampling)[0]
+                if s.probabilities is not None:
+                    capture(logits, [first], [len(s.prompt)], s.probabilities)
+                if s.constraint is not None:
+                    s.constraint.advance([first])
+            except Exception as exc:                         # noqa: BLE001  it fails alone; the others go on
+                s.error, s.done = exc, True                  # returned, so its reply is the error and finish() frees it
+                joined.append(s)
+                continue
             s.context = list(s.prompt)
             s.drafts = []
             s.started = time.perf_counter()
             self.streams[s.sid] = s
-            s.take([first], self._ends(s))               # the first token goes out before the next draft
+            s.take([first], self._ends(s))                   # the first token goes out before the next draft
             e.buf.rotor_lookup = self._rotor_lookup(s)
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
@@ -496,6 +508,28 @@ class MultiDecoder:
             if s.done:
                 joined.append(s)
         return joined
+
+    def cancel(self, streams: list[Stream]) -> list[Stream]:
+        """Filling prompts whose clients left stop; each keeps the state its passes committed, so a retry of the same
+        prompt resumes there rather than from its last message start. Returns them, done, for ``finish``. A state that
+        fails its checks (``snapshot``, ``kv_validate_snapshot``) is not kept: that stream ends with the error and its
+        slot keeps nothing, so ``finish`` frees it; the others still stop."""
+
+        for s in streams:
+            self.filling.remove(s)
+            self.passed.pop(s.sid, None)
+            _, mtp, at, _, tail = self.fills.pop(s.sid)
+            s.done, s.finished = True, time.perf_counter()
+            # only rows a pass committed past the resume point: before any pass the kept entry it resumed (its slot's,
+            # with its MTP tail) already holds this state, and remembering it again would displace that entry
+            if self._keep_at(s) is not None and max(MIN_GAP, s.cached + 1) <= at < len(s.prompt):
+                mtp_len = s.st.mtp_len - 1 if mtp else s.st.mtp_len        # as a point ending a piece keeps it
+                try:
+                    self._remember(list(s.prompt[:at]), s.st, {**s.st.snapshot(), "mtp_len": mtp_len}, tail)
+                except Exception as exc:                 # noqa: BLE001  its reply is the error; its slot holds nothing
+                    s.error = exc
+                    self._drop_kept(s.st)
+        return streams
 
     def _ends(self, s: Stream) -> tuple[int, ...]:
         """The end tokens that end this stream: none when its request ignores them (``ignore_eos``)."""

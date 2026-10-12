@@ -103,6 +103,35 @@ _TOOL_PARAMETER_BLOCK_RE = re.compile(
     r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>",
     re.IGNORECASE | re.DOTALL,
 )
+_REPEATED_CALL_OPEN_RE = re.compile(r"<tool_call>(?:\s*<tool_call>)+", re.IGNORECASE)
+_REPEATED_CALL_CLOSE_RE = re.compile(r"</tool_call>(?:\s*</tool_call>)+", re.IGNORECASE)
+_QWEN_ENVELOPE_RE = re.compile(r"<tool_call>.*?</tool_call>", re.IGNORECASE | re.DOTALL)
+_FUNCTION_BOUNDARY_RE = re.compile(r"(</function>)\s*(?=<function=)", re.IGNORECASE)
+# complete functions and whitespace only: a function body never runs past its own closer
+_COMPLETE_FUNCTIONS_RE = re.compile(r"(?:\s*<function=[^>\s]+>(?:(?!</function>).)*</function>)+\s*",
+                                    re.IGNORECASE | re.DOTALL)
+_LAST_CALL_OPEN_RE = re.compile(r".*<tool_call>", re.IGNORECASE | re.DOTALL)    # greedy: through the last opener
+
+
+def normalize_qwen_tool_markup(text: str) -> str:
+    """Repair the Qwen tool-call envelope slips a model writes, so a call it meant is parsed rather than shown as text.
+
+    A doubled ``<tool_call>`` opener or ``</tool_call>`` closer collapses to one; an envelope holding several
+    complete ``<function=…>…</function>`` blocks becomes one envelope per function (one call each, as vLLM's
+    qwen3_coder parser reads them); and a reply (callers pass finished ones) whose last envelope holds only complete
+    functions gains the closer it left out. Text without an opener is returned unchanged.
+    """
+    if "<tool_call>" not in text.lower():
+        return text
+    text = _REPEATED_CALL_CLOSE_RE.sub("</tool_call>", _REPEATED_CALL_OPEN_RE.sub("<tool_call>", text))
+    last = _LAST_CALL_OPEN_RE.match(text)            # on the text itself: lower() may change its length (U+0130)
+    body = last.end() if last is not None else len(text)
+    if "</tool_call>" not in text[body:].lower() and _COMPLETE_FUNCTIONS_RE.fullmatch(text, body):
+        text = text.rstrip() + "\n</tool_call>"
+    return _QWEN_ENVELOPE_RE.sub(
+        lambda m: _FUNCTION_BOUNDARY_RE.sub(r"\1\n</tool_call>\n<tool_call>\n", m.group(0)), text)
+
+
 # Gemma 4: <|tool_call>call:NAME{key:value,...}<tool_call|>, and the 26B's bare :NAME{...}. Keys bare, strings between <|"|>.
 _GEMMA_TOOL_CALL_BLOCK_RE = re.compile(r"<\|tool_call>\s*(.*?)\s*<tool_call\|>", re.DOTALL)
 _GEMMA_CALL_RE = re.compile(r"^(?:call)?:([\w.-]+)\s*(\{.*\})$", re.DOTALL)
@@ -353,6 +382,7 @@ def parse_tool_calls_from_content(
         return text, None
     known = {tool_spec_name(tool).lower(): tool_spec_name(tool) for tool in tools}
     schemas = parameter_schemas(tools)
+    text = normalize_qwen_tool_markup(text)
     envelopes = _envelopes(text)
     if not envelopes:
         bare_calls = _parse_bare_json_tool_calls(text, known, max_calls=max_calls)

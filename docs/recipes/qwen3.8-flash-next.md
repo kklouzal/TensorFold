@@ -314,7 +314,15 @@ isolated candidates until protocol, ownership and actual-target gates pass.
 For prefix reuse, the single-request engine and concurrent decoder keep prompt
 states; a follow-up prefills the reply again. A kept state stops one token before its prompt's end, so the
 same prompt sent again resumes, and so does a next chat turn that renders the generation prompt's `<think>`
-and newline as `<think>` and two newlines. Stream caches grow within the startup window as memory allows;
+and newline as `<think>` and two newlines. Both also keep states at the second message's start (a shared system
+block) and the last assistant turn's start; the concurrent decoder adds the last other message's start (a user turn
+or tool result that a client may rewrite next time), and its prompt passes hold up to three such points without an
+extra pass (a fourth ends the pass); in the single-request engine each point ends a prefill chunk. Past its eight kept
+states, the concurrent decoder first drops the points a conversation's ladder does not need (it keeps the chain's
+end, its first point and one point a doubling of distance from the end, from 4,096 tokens), then the least valuable:
+a slot is worth the clock at its last use plus the tokens a state saves (GreedyDual-Size), so a long conversation
+outlives short side requests while an unused one still ages out. A prompt whose client leaves while it prefills keeps
+the state its passes committed. Stream caches grow within the startup window as memory allows;
 inspect the reported capacity.
 
 With `--parallel N`, a prompt prefills inside the rounds: each round runs the live replies' windows and the next

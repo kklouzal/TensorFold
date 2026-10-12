@@ -11,15 +11,16 @@ def _decoder():
     root = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen4_exp/cuda"
     plan = ast.parse((root / "prompt_plan.py").read_text())
     source = ast.parse((root / "multi.py").read_text())
-    methods = {"_pass_rows", "_pieces", "_timed", "_pass"}
+    methods = {"_pass_rows", "_pieces", "_points", "_keep_at", "_timed", "_pass"}
     nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
-    nodes.extend(node for node in plan.body if isinstance(node, ast.FunctionDef) and node.name == "pass_limit")
+    nodes.extend(node for node in plan.body if isinstance(node, ast.FunctionDef) and node.name == "pass_limit"
+                 or isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "CUTS" for t in node.targets))
     nodes.extend(node for node in source.body if isinstance(node, ast.Assign) and any(
         isinstance(target, ast.Name) and target.id == "PASS_MIN" for target in node.targets))
     owner = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "MultiDecoder")
     body = [node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name in methods]
     nodes.append(ast.ClassDef(name="Decoder", bases=[], keywords=[], body=body, decorator_list=[], type_params=[]))
-    namespace = {"PREFILL_ROWS": 2048, "ENDS": 16}
+    namespace = {"PREFILL_ROWS": 2048, "ENDS": 16, "entry_end": lambda prompt: max(1, len(prompt) - 1)}
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(root / "multi.py"), "exec"), namespace)
     dec = namespace["Decoder"]()
     dec.streams = {0: SimpleNamespace(done=False)}
@@ -49,15 +50,16 @@ def test_floor_preserves_calibration_and_workspace_ceiling(rows, live, share, ro
 def test_actual_piece_rows_use_the_floor_without_turning_it_into_a_ceiling(round_s, row_s, width):
     dec, _ = _decoder()
     dec.round_s, dec.row_s = round_s, row_s
-    streams = [SimpleNamespace(sid=1, prompt=list(range(100))), SimpleNamespace(sid=2, prompt=list(range(4096)))]
+    streams = [SimpleNamespace(sid=i, prompt=list(range(n)), draft=True, st=SimpleNamespace(image_positions=None))
+               for i, n in ((1, 100), (2, 4096))]
     dec._order = lambda: streams
-    dec.fills = {stream.sid: [SimpleNamespace(stops=[]), False, 0, None] for stream in streams}
+    dec.fills = {stream.sid: [SimpleNamespace(stops=[]), False, 0, []] for stream in streams}
     pieces = dec._pieces()
     assert [(stream.sid, start, rows) for stream, start, rows in pieces] == [(1, 0, 100), (2, 0, width - 100)]
     assert sum(rows for _, _, rows in pieces) == width
-    dec.fills[2][0].stops = [200]
+    dec.fills[2][0].stops = [200]                       # a message start inside the pass is a cut: it ends no piece
     pieces = dec._pieces()
-    assert sum(rows for _, _, rows in pieces) == min(300, width)
+    assert sum(rows for _, _, rows in pieces) == width
 
 
 def test_shared_prompt_row_floors_host():

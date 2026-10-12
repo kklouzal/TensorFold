@@ -27,6 +27,7 @@ def slot():
 
 def decoder(*, busy=False, room=True):
     dec = object.__new__(MultiDecoder)
+    dec.used, dec.clock = {}, 0
     dec.w = SimpleNamespace(comm=None)
     source, spare = slot(), slot()
     prefix = list(range(300))

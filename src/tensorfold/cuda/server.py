@@ -18,13 +18,14 @@ from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_options import heard_effort, parse_numbers, thinking_fields
 from tensorfold.server.request_limits import RequestLimit, optional_limit
+from tensorfold.server.segments import SegmentEncoder
 from tensorfold.server.stopping import matched_stop, stop_options
 from tensorfold.server.thinking_notes import unanswered
 from tensorfold.server.token_routes import flag, token_ids
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
 from tensorfold.engine.tool_draft import ToolCallStreamer
-from tensorfold.server.tools import active_tool_specs, tool_choice_requires_call
+from tensorfold.server.tools import active_tool_specs, normalize_qwen_tool_markup, tool_choice_requires_call
 
 from tensorfold.cuda import health
 from tensorfold.cuda.chat_template import ChatTemplate
@@ -65,10 +66,23 @@ def _native_context(model_dir: Path) -> int:
     return int(limit) if isinstance(limit, int) and limit > 0 else 0
 
 
+def _segment_encoder(tok, template) -> SegmentEncoder | None:
+    """A message-at-a-time encoder when the chat template opens every message with one token the tokenizer splits its
+    input on exactly (Qwen's ``<|im_start|>``), else None."""
+
+    from tensorfold.cuda.markers import TemplateTokens
+    from tensorfold.engine.prefill_plan import message_markers
+
+    openers, _ = message_markers(TemplateTokens(tok, template))
+    opener = tok.id_to_token(int(openers[0])) if len(openers) == 1 else None
+    return SegmentEncoder(tok, opener) if opener is not None and SegmentEncoder.qualifies(tok, opener) else None
+
+
 class App:
     """Serve one engine with sampling and reply-length defaults for requests that omit them."""
 
     reads_ignore_eos = False            # True where the engine reads ``ignore_eos`` itself; a ``stop_eos`` engine is given it
+    segments: SegmentEncoder | None = None   # chat prompts a message at a time (None: encoded whole)
 
     def __init__(self, engine, model_dir: Path, served: str, *, default_thinking: bool = False,
                  sampling: dict[str, Any] | None = None, max_tokens: int = 4096,
@@ -99,9 +113,11 @@ class App:
         self.model_dir = Path(model_dir)
         self.tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
         self.template = ChatTemplate(model_dir)
+        self.segments = _segment_encoder(self.tok, self.template)
         self.default_thinking = default_thinking
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
-        self.sampling = {"temperature": 1.0, "top_k": 20, "top_p": 0.95, **(sampling or {})}
+        # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
+        self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
         self.max_tokens = int(max_tokens)
         self.native_context_window = _native_context(model_dir)
         self.context_window = self.native_context_window if context_window is None else int(context_window)
@@ -287,7 +303,8 @@ class App:
                                        self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
                                        vision=rendered.vision, grammar=compiled, think_budget=budget)
             text = render(body["messages"])
-            prompt = self.tok.encode(text, add_special_tokens=False).ids
+            prompt = (self.segments.encode(text) if self.segments is not None
+                      else self.tok.encode(text, add_special_tokens=False).ids)
         elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
             prompt = self.token_ids(body["prompt"])
         else:
@@ -394,9 +411,11 @@ class App:
         temp = float(fields.get("temperature", self.sampling["temperature"]))
         if temp <= 0:
             return None
+        top_p = fields.get("top_p", self.sampling["top_p"])
+        if top_p == 0:                                  # top_p 0 keeps only the likeliest token (HF): greedy
+            return None
         seed = fields.get("seed")
         top_k = fields.get("top_k", self.sampling["top_k"])
-        top_p = fields.get("top_p", self.sampling["top_p"])
         min_p = fields.get("min_p", self.sampling.get("min_p", 0.0))
         return Sampling(int(seed) if seed is not None else seed_for(prompt), temp, int(top_k), float(top_p),
                         float(min_p))
@@ -420,8 +439,8 @@ class App:
         stopped = {"client": False, "stop": False}
         failed: list[Exception] = []
         stream = StreamDecoder(self.tok, ends)
-        # calls stream as argument deltas while written (as on the Mac); one-call requests keep the end parser
-        calls_stream = ToolCallStreamer(tools) if tools and not policy.single else None
+        # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
+        calls_stream = ToolCallStreamer(tools) if tools and not policy.single and body.get("stream") else None
         answer_raw = [""]
 
         def visible(finished: bool) -> tuple[str, str]:
@@ -430,6 +449,12 @@ class App:
             raw = stops.visible(raw, partial=not finished) if stops.strings else raw
             if chat and thinking:
                 reasoning, answer = split_thinking(raw, finished=finished)
+                if finished and tools and not answer:
+                    # the end parser's split (below): a call missing only its closer, in a block that never closed,
+                    # ends the reasoning where it starts, so its markup is the call and never reasoning_content
+                    fixed = split_thinking(normalize_qwen_tool_markup(raw), finished=True)
+                    if fixed[1]:
+                        reasoning, answer = fixed
             else:
                 reasoning, answer = "", raw
             answer_raw[0] = answer
@@ -445,6 +470,10 @@ class App:
             if stopped["client"] or stopped["stop"] or failed:
                 return True
             try:
+                if not new:                # a tick while the request waits or its prompt fills: keepalive, client check
+                    if not emit(None) or (cancelled is not None and cancelled()):
+                        stopped["client"] = True
+                    return stopped["client"]
                 if stops.strings:
                     kept = []
                     for token in new:             # token by token: the round's width cannot move the cut
@@ -556,13 +585,26 @@ class App:
             final["reasoning_content"] = reasoning[sent["reasoning"]:]
         raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
         text = stops.visible(raw_text)
+        if tools:                   # a call missing only its closer is a call before the think split decides
+            text = normalize_qwen_tool_markup(text)
         raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
         content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
-        content = policy.content(content) if tools else content
-        tail = content[sent["content"]:] if content.startswith(answer[:sent["content"]]) else ""
+        if tools:
+            shown = policy.content(content)
+            # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
+            content = shown if calls or shown.strip() else content
+        # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
+        streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
+        if streamed > len(calls or ()):
+            content = hide_tool_calls(content, finished=True).strip()   # those calls are the streamed deltas
+        sent_text = answer[:sent["content"]]
+        lead = sent_text if content.startswith(sent_text) else sent_text.lstrip()
+        tail = content[len(lead):] if content.startswith(lead) else ""
         if tail:
             final["content"] = tail
-        finish = "tool_calls" if calls else ("stop" if stopped["stop"] or (out and out[-1] in ends) else "length")
+        ended = stopped["stop"] or bool(out and out[-1] in ends)
+        # calls already streamed as deltas make a finished reply a tool-call turn, as the client has received them
+        finish = "tool_calls" if calls or (streamed and ended) else ("stop" if ended else "length")
         warning = unanswered(finish, chat and thinking, content, calls)
         if warning:
             print(warning, flush=True)
@@ -571,8 +613,6 @@ class App:
             stats = {**(stats or {}), "token_ids": [int(t) for t in out]}
         logprobs = (self._probability_decoder.format(probabilities.emitted(out), ends)
                     if probabilities is not None else None)
-        # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
-        streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
         return {"final": final, "calls": calls, "finish": finish, "content": content, "reasoning": reasoning,
                 "stop_sequence": matched_stop(raw_text, stops.strings),
                 **({"logprobs": logprobs} if logprobs is not None else {}),

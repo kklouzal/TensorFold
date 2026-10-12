@@ -139,7 +139,7 @@ class Controls(unittest.TestCase):
                     'torch': NS(cuda=NS(set_device=lambda value: None)),
                     'exl3_pack': NS(admission=lambda value: value, extra_files=lambda *args: (), is_exl3=lambda *args: False),
                     'tensorfold.families': NS(quant_method=lambda value: None, read_config=lambda *args: {}),
-                    'decode': NS(Engine=object), 'prompt_plan': NS(choose=lambda *args, **kwargs: (16, 0)),
+                    'decode': NS(Engine=object), 'prompt_plan': NS(choose=lambda *args, **kwargs: (16, 0), POINTS=4),
                     'weights': NS(draft_token_ids=lambda *args: self.fail('depth0 draft allocation'), load=loaded),
                     'tensorfold.cuda.capacity': NS(admit=admitted, config=lambda *args: text, gather_ints=lambda *args: None),
                     'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda: 16,

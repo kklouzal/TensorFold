@@ -90,6 +90,10 @@ class Config:
         raw = json.loads((Path(model_dir) / "config.json").read_text())
         policy = rope if rope is not None else RopeParameters.from_config(raw)
         t = dict(raw.get("text_config") or raw)
+        # unset, the gate is hidden_act (itself "silu" when unset), as transformers' Qwen4ExpConfig resolves it
+        gate = str(t.get("output_gate_type") or t.get("hidden_act") or "silu")
+        if gate != "sigmoid":                  # the DeltaNet kernels (gdn.cu) gate their output with a sigmoid only
+            raise ValueError(f"output_gate_type {gate!r}: the CUDA backend's DeltaNet kernels support 'sigmoid' only")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
         teos = t.get("eos_token_id")
         eos = stop_ids(raw.get("eos_token_id", teos), Path(model_dir) / "generation_config.json")

@@ -131,6 +131,30 @@ def test_moe_matches_fp32():
             assert err <= y.abs().max().item() * 2 ** -5 + 1e-3, (r, k, err)
 
 
+def test_moe_rows_with_few_finite_logits_pick_distinct_experts():
+    """A row with fewer finite router logits than top_k picks each expert once, the -inf ones at weight 0; it once
+    picked the lowest -inf expert again for every slot past its finite ones."""
+
+    experts, top_k = 64, 10
+    cfg = type("C", (), {"num_experts_per_tok": top_k, "num_experts": experts, "moe_intermediate_size": 640,
+                         "hidden_size": 2560})()
+    b = moe.MoEBuffers(4, cfg, DEV)
+    logits = torch.full((4, experts + 1), float("-inf"), device=DEV)
+    logits[0, [7, 3, 40]] = torch.tensor([2.0, 1.0, 0.5], device=DEV)  # 3 finite
+    logits[1, 5] = 1.0                                                  # 1 finite
+    logits[2, :experts] = torch.randn(experts, device=DEV)              # all finite: unchanged order
+    logits[3, [9, 11]] = 3.0                                            # a tie: the lower id first
+    logits[:, experts] = 0.0                                            # the shared expert's gate
+    moe.select_rows(logits, b, top_k, experts)
+    pick, wts = b.pick[:4].tolist(), b.wts[:4].float()
+    for r in range(4):
+        routed = pick[r][:top_k]
+        assert len(set(routed)) == top_k and all(0 <= e < experts for e in routed) and pick[r][top_k] == experts
+    assert pick[0][:3] == [7, 3, 40] and pick[1][0] == 5 and pick[3][:2] == [9, 11]
+    assert (wts[0, 3:top_k] == 0).all() and (wts[1, 1:top_k] == 0).all() and wts[1, 0] == 1
+    assert pick[2][:top_k] == sorted(range(experts), key=lambda e: (-logits[2, e].item(), e))[:top_k]
+
+
 def _gdn_inputs(rows: int, seed: int):
     g = torch.Generator(device=DEV).manual_seed(seed)
     p = (torch.randn((rows, gdn.PW), generator=g, device=DEV) * 0.5).to(torch.bfloat16)

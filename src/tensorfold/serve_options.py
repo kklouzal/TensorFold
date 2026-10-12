@@ -12,7 +12,8 @@ from typing import Any
 def check_numbers(args: argparse.Namespace) -> None:
     """Validate CLI floats before downloads or accelerator/resource acquisition.
 
-    Finite temperature/top-p retain their existing greedy/off-range policies;
+    A finite temperature at or below 0 stays greedy; top-p, like min-p, must lie in [0, 1], the range every request
+    and both servers' samplers require (a default outside it would fail each request that inherits it);
     memory budgets and decode-share have nonnegative units, SSD pools positive.
     Integer clamping/default policies remain with their existing owners.
     """
@@ -32,7 +33,7 @@ def check_numbers(args: argparse.Namespace) -> None:
         if name in budgets or name == "decode_share":
             if value < 0 or (name == "ssd_experts" and value == 0):
                 raise ValueError(f"{flag} must be {'positive' if name == 'ssd_experts' else 'nonnegative'}")
-        if name in ("min_p", "mtp_confidence") and not 0 <= value <= 1:
+        if name in ("top_p", "min_p", "mtp_confidence") and not 0 <= value <= 1:
             raise ValueError(f"{flag} must be between 0 and 1")
 
 

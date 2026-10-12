@@ -54,7 +54,8 @@ class Opaque:
 def namespace():
     scope = mapped.definitions('_MappedTable', 'HostTable', '_release_mapped', '_unlock_pins', '_note',
                                '_retain_prefetch_lifetime', '_release_unpublished_file', '_retire_local_file',
-                               '_release_prefetch_files', '_joined_copy', '_prefetch_file', '_prefetch')
+                               '_release_prefetch_files', '_joined_copy', '_prefetch_file', '_prefetch',
+                               '_random_access')
     scope.update(__name__='tensorfold.families.qwen4_exp.cuda.exl3_pack_source',
                  __package__='tensorfold.families.qwen4_exp.cuda',
                  np=SimpleNamespace(ndarray=object, int16=2, uint8=1, int64=8, memmap=Mapping,

@@ -94,9 +94,9 @@ def test_both_planner_paths_bound_live_pieces_and_restore_idle_width():
     dec = object.__new__(MultiDecoder)
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 4096, 0.0, None, None
     dec.streams, dec.passed = {}, {}
-    prompt = SimpleNamespace(sid=1, prompt=[1] * 9000, background=False)
+    prompt = SimpleNamespace(sid=1, prompt=[1] * 9000, background=False, draft=False)   # no kept points
     dec.filling = [prompt]
-    dec.fills = {1: [SimpleNamespace(stops=[]), False, 0, None]}
+    dec.fills = {1: [SimpleNamespace(stops=[]), False, 0, []]}
     assert dec._pieces() == [(prompt, 0, 4096)]
     reply = SimpleNamespace(done=False)
     dec.streams[2] = reply

@@ -1,4 +1,5 @@
-"""CUDA snapshot points: the second message's start and the last assistant start, spaced by MIN_GAP."""
+"""CUDA snapshot points: the second message's start and the last assistant start (with ``turn``, Flash Next's
+concurrent decoder, also the last other message's start), spaced by MIN_GAP."""
 
 import pytest
 
@@ -19,15 +20,28 @@ def test_system_block_end_and_last_reply_start():
     ids = _prompt(3 * MIN_GAP, 2 * MIN_GAP)
     assert points(ids) == [3 * MIN_GAP + 1, len(ids) - 3]
     chat = _prompt(3 * MIN_GAP, MIN_GAP, history=2 * MIN_GAP)
-    assert points(chat) == [3 * MIN_GAP + 1, len(chat) - 3]
+    assert points(chat) == [3 * MIN_GAP + 1, len(chat) - 3]            # no chunk ends at the last user turn
 
 
-def test_points_too_close_are_dropped():
-    points = snapshot_points((OPEN,), (OPEN, ASSISTANT))
+def test_with_turn_also_the_last_user_start():
+    points = snapshot_points((OPEN,), (OPEN, ASSISTANT), turn=True)
+    ids = _prompt(3 * MIN_GAP, 2 * MIN_GAP)
+    assert points(ids) == [3 * MIN_GAP + 1, len(ids) - 3]               # the user's start is the second message's
+    chat = _prompt(3 * MIN_GAP, MIN_GAP, history=2 * MIN_GAP)
+    last_user = len(chat) - 3 - MIN_GAP - 1
+    assert chat[last_user] == OPEN and chat[last_user + 1] != ASSISTANT
+    assert points(chat) == [3 * MIN_GAP + 1, last_user, len(chat) - 3]  # a rewritten last turn resumes before it
+
+
+@pytest.mark.parametrize("turn", [False, True])
+def test_points_too_close_are_dropped(turn):
+    points = snapshot_points((OPEN,), (OPEN, ASSISTANT), turn=turn)
     assert points(_prompt(10, 3 * MIN_GAP)) == [len(_prompt(10, 3 * MIN_GAP)) - 3]      # system block under MIN_GAP
     ids = _prompt(3 * MIN_GAP, 10)
     assert points(ids) == [3 * MIN_GAP + 1]                                              # reply start too close
     assert points([5] * 4 * MIN_GAP) == []
+    chat = _prompt(3 * MIN_GAP, 10, history=2 * MIN_GAP)       # the last user turn 11 tokens before the reply start
+    assert points(chat) == [3 * MIN_GAP + 1, len(chat) - 3 - (10 + 1 if turn else 0)]    # the earlier of the two
 
 
 # Qwen3.6's chat template, cut to its roles: a reply after the last user message keeps a think block that history
@@ -80,8 +94,8 @@ def test_a_template_that_drops_history_think_blocks_keeps_states_at_message_star
     opener = tok.token_to_id("<|im_start|>")
     assert message_markers(TemplateTokens(tok, ChatTemplate(tmp_path))) == ((opener,), (opener, chars.index("a")))
 
-    points, template = resume_points(tmp_path), ChatTemplate(tmp_path)
-    assert points is not None
+    points, turns, template = resume_points(tmp_path), resume_points(tmp_path, turn=True), ChatTemplate(tmp_path)
+    assert points is not None and turns is not None
 
     def ids(messages):
         return tok.encode(template.render(messages, tools=None, enable_thinking=False), add_special_tokens=False).ids
@@ -91,8 +105,9 @@ def test_a_template_that_drops_history_think_blocks_keeps_states_at_message_star
 
     talk = [{"role": "system", "content": "s" * 3 * MIN_GAP}, {"role": "user", "content": "u" * 2 * MIN_GAP}]
     first = ids(talk)
-    assert points(first) == starts(first)[1:3]                   # the system block's end and the reply's start
+    assert points(first) == turns(first) == starts(first)[1:3]   # the system block's end and the reply's start
     follow = ids([*talk, {"role": "assistant", "content": "r" * MIN_GAP}, {"role": "user", "content": "v" * MIN_GAP}])
     reply = starts(first)[2]
     assert follow[:reply] == first[:reply]                       # a follow-up resumes where the last reply began
     assert points(follow) == [starts(follow)[1], starts(follow)[-1]]
+    assert turns(follow) == [starts(follow)[1], starts(follow)[3], starts(follow)[-1]]   # + the last user turn

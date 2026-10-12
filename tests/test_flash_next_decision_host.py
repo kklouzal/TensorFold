@@ -124,7 +124,7 @@ class DecisionHostTests(unittest.TestCase):
 
     def test_fresh_score_can_reclaim_an_idle_kept_slot(self):
         idle = object()
-        owner = types.SimpleNamespace(kept=[([1], idle, {}, None)], free=[], depth=6,
+        owner = types.SimpleNamespace(kept=[([1], idle, {}, None)], free=[], depth=6, used={}, clock=0,
                                       _busy=lambda: set())
         owner._drop_kept = lambda state: setattr(owner, 'kept', [k for k in owner.kept if k[1] is not state])
         state, hit, cached = prefixes.slot_for(owner, [2], False)

@@ -53,6 +53,11 @@ its tokenizer, its engine, or any independent image safety limit.
     def _context_limit(self) -> None:
         return None
 
+    def sampling_for(self, body: dict[str, Any], prompt: list[int]) -> Any:
+        """The native sampling checks, without keying a seed to the whole prompt: a count samples nothing, and that
+        hash held the GIL for about 0.15 s a million tokens."""
+        return self._app.sampling_for(body, [])
+
 
 class PreparationGate:
     """One preparation at a time, sixteen bounded waiters, owned by one App."""

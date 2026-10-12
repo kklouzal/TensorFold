@@ -38,11 +38,12 @@ def test_parallel_startup_is_admitted_before_any_load(tmp_path, fake_runtime, fa
 def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(tmp_path, monkeypatch, fake_runtime,  # noqa: F811
                                                                                 family, world):
     from tensorfold.cuda.geometry import indexed_stream_geometry, stream_geometry
+    from tensorfold.families.qwen4_exp.cuda.prompt_plan import POINTS
     checkpoint(tmp_path, small_config(), WEIGHTS)
     calls, capacity = fake_runtime
     # one GPU: the window is what one stream reaches beside the others' first rows; two ranks: every stream's
     four = (stream_geometry(small_config(), world, 4, 8, first=256 if world == 1 else None) if family == "linear"
-            else indexed_stream_geometry(small_config(), 4, 4, 8, mtp=True))
+            else indexed_stream_geometry(small_config(), 4, 4, 8, mtp=True, points=POINTS))
     budget = four.needed(12000) + 32768                   # the streams fit 12,000 tokens, not 60,000
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     _, go = start(family, tmp_path, 60000, True, world, 4)
@@ -103,6 +104,8 @@ def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocation
                               draft_ids=None, x3=None)  # grouped Q4 weights: no EXL3 scratch or compiled HC owners
     slots, depth, keep = 65536, 3, 8
     from tensorfold.cuda.geometry import indexed_prompt_bytes, indexed_stream_geometry, kv_bytes
+    from tensorfold.families.qwen4_exp.cuda.prompt_plan import CUTS, POINTS
+    assert POINTS == CUTS + 1                    # a piece ends at the point past CUTS, kept too
     workspace = indexed_prompt_bytes(text, prefill_rows)
     dec = multi.MultiDecoder(weights, slots=streams, capacity=slots, depth=depth, keep=keep,
                              kv_dtype=kv_dtype, prefill_rows=prefill_rows, workspace_bytes=workspace)
@@ -122,9 +125,10 @@ def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocation
     assert len(dec.free) == streams and all(st.kv_dtype == kv_dtype for st in dec.free)
     assert bytes_in(first) == streams * 3 * 2 * multi.FIRST * cfg.kv_heads * kv_bytes(cfg.head_dim, bits)
     # one stream grown to the window beside the others' first rows
-    used = bytes_in(arrays) - one.cache_bytes(multi.FIRST) + one.cache_bytes(slots) + (min(keep, streams) + 1) * snapshot
+    used = (bytes_in(arrays) - one.cache_bytes(multi.FIRST) + one.cache_bytes(slots)
+            + (keep + streams * POINTS) * snapshot)      # kept, and every filling stream's piece copies (CUTS + end)
     estimated = indexed_stream_geometry(text, streams, depth + 1, keep, mtp=True, kv_bits=bits,
-                                        prefill_rows=prefill_rows).bytes_at(slots)
+                                        prefill_rows=prefill_rows, points=POINTS).bytes_at(slots)
     assert used <= estimated
 
 

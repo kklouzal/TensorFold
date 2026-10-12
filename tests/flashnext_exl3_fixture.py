@@ -31,6 +31,7 @@ def write_checkpoint(path: Path, *, seed=731, mtp=True):
             "moe_intermediate_size": 128, "shared_expert_intermediate_size": 128, "hc_count": 4,
             "hc_lowrank": 128, "indexer_n_heads": 4, "indexer_head_dim": 128, "indexer_budget": 2048,
             "indexer_compress_ratio": 4, "ple_layer_ids": [], "eos_token_id": 255,
+            "hidden_act": "silu", "output_gate_type": "sigmoid",     # as the checkpoint: sigmoid DeltaNet gate
             "rope_parameters": {"rope_type": "default", "rope_theta": 10000000,
                                 "partial_rotary_factor": .25, "mrope_section": [11, 11, 10]}}
     config = {"model_type": "qwen4_exp", "architectures": ["Qwen4ExpForConditionalGeneration"],

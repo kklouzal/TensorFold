@@ -91,8 +91,11 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="reply tokens when a request does not say")
     generation.add_argument("--temperature", type=float, default=None,
                             help="0 decodes greedily (default: the model's generation_config.json, else 0)")
-    generation.add_argument("--top-p", type=float, default=None, help="(default: the model's generation config)")
-    generation.add_argument("--top-k", type=int, default=None, help="(default: the model's generation config)")
+    generation.add_argument("--top-p", type=float, default=None,
+                            help="0 to 1; 0 keeps only the likeliest token (greedy) (default: the model's generation "
+                                 "config, else 1: off)")
+    generation.add_argument("--top-k", type=int, default=None,
+                            help="0: off (default: the model's generation config, else 0)")
     generation.add_argument("--min-p", type=float, default=None,
                             help="keep tokens at least this share of the likeliest one's probability (default: the "
                                  "model's generation config, else 0: off)")

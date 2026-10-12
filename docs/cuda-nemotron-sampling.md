@@ -22,7 +22,9 @@ eligible ID. Strict-score inputs keep original output and confidence bytes.
 Nucleus orders original FP64 values before temperature, resolving equal values
 by global ID, before its unchanged exponent, sum,
 and cumulative mass operations. Top-p zero or one disables the nucleus cut,
-as in the declared keyed sampling policy. No host score readback or graph
+as in the declared keyed sampling policy; the servers resolve a request's
+top-p zero to greedy decoding first, so from HTTP only one reaches it.
+No host score readback or graph
 capture synchronization is introduced.
 
 The split target and split MTP head share exact candidate-word exchange: FP32

@@ -68,14 +68,16 @@ def _topk_rows(L, PICK, WTS, NE: tl.constexpr, NL: tl.constexpr, TOPK: tl.conste
     total = 0.0
     picks = tl.zeros((SLOTP,), dtype=tl.int32)
     exs = tl.zeros((SLOTP,), dtype=tl.float32)
-    for k in tl.static_range(TOPK):
-        m = tl.max(v, axis=0)
-        idx = tl.min(tl.where(v == m, ar, BLOCK), axis=0)
+    alive = ar < NE                    # experts not yet picked: a row with fewer finite logits than TOPK still picks
+    for k in tl.static_range(TOPK):    # distinct ids (its -inf experts at weight 0), never a repeat or BLOCK
+        m = tl.max(tl.where(alive, v, float("-inf")), axis=0)
+        idx = tl.min(tl.where(alive & (v == m), ar, BLOCK), axis=0)
+        idx = tl.where(idx == BLOCK, tl.min(tl.where(alive, ar, BLOCK), axis=0), idx)   # no equal (NaN): a fresh id
         ex = tl.exp(m - top)
         picks = tl.where(ak == k, idx, picks)
         exs = tl.where(ak == k, ex, exs)
         total += ex
-        v = tl.where(ar == idx, float("-inf"), v)
+        alive = alive & (ar != idx)
     w = (exs / total).to(tl.bfloat16).to(tl.float32)
     sg = tl.load(L + r * NL + NE).to(tl.bfloat16).to(tl.float32)
     sgw = (1.0 / (1.0 + tl.exp(-sg))).to(tl.bfloat16).to(tl.float32)

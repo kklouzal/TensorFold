@@ -3,6 +3,8 @@
 from tensorfold.cuda.geometry import PREFILL_ROWS, indexed_prompt_bytes
 
 IDLE_ROWS = 4096
+CUTS = 3               # kept points strictly inside one prompt piece (each splits its DeltaNet chain); a next ends it
+POINTS = CUTS + 1      # kept states one piece copies out before they are kept: CUTS inside it and one at its end
 
 
 def choose(receipt: dict, text: dict, capability: tuple[int, int], *, world: int = 1,

@@ -126,6 +126,9 @@ MALFORMED = {
     "temperature true": ({"messages": HI, "temperature": True}, "temperature must be a finite number or null"),
     "temperature NaN": ({"messages": HI, "temperature": math.nan}, "temperature must be a finite number or null"),
     "top_p 'inf'": ({"messages": HI, "top_p": "inf"}, "top_p must be a finite number or null"),
+    "top_p 1.5": ({"messages": HI, "top_p": 1.5}, "top_p must be between 0 and 1, or null"),
+    "top_p -0.25": ({"messages": HI, "top_p": -0.25}, "top_p must be between 0 and 1, or null"),
+    "completion, top_p 2": ({"prompt": "Hi", "top_p": 2}, "top_p must be between 0 and 1, or null"),
     "top_k 2.5": ({"messages": HI, "top_k": 2.5}, "top_k must be an integer or null"),
     "top_k a list": ({"messages": HI, "top_k": [20]}, "top_k must be an integer or null"),
     "seed 'abc'": ({"messages": HI, "temperature": 0.7, "seed": "abc"}, "seed must be an integer or null"),
@@ -316,6 +319,18 @@ def test_prepare_resolves_the_same_sampling(tmp_path, fields, defaults):
     expected = sampling_before(defaults, body, prepared.prompt)
     assert prepared.sampling == expected
     assert app.sampling_for(body, prepared.prompt) == expected
+
+
+@pytest.mark.parametrize("top_p", [0, 0.0, "0"])
+def test_top_p_zero_keeps_only_the_likeliest_token(tmp_path, top_p):
+    """HF's top-p warper always keeps the likeliest token, so top_p 0 is greedy; it used to turn top-p off."""
+
+    app = app_for(tmp_path)
+    body = {"messages": HI, "temperature": 0.7, "top_p": top_p, "seed": 3}
+    with http_server(app) as port:
+        assert request(port, body)[0] == 200
+    assert app.engine.calls[-1]["sampling"] is None
+    assert app.sampling_for({**body, "top_p": 1e-9}, [1]) == Sampling(3, 0.7, DEFAULTS["top_k"], 1e-9)
 
 
 def test_run_uses_the_prepared_sampling(tmp_path):

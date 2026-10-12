@@ -1,9 +1,12 @@
 """Scheduler.close: the worker stops once idle and lets go of its decoder, so an engine's GPU memory can be freed."""
 
 import gc
+import time
 import weakref
 import threading
 from unittest.mock import patch
+
+import pytest
 
 from tensorfold.cuda.memory_gate import NoRoom
 
@@ -426,20 +429,43 @@ def test_interrupted_emitter_cancels_at_next_round_and_close_still_drains():
     assert decoder.calls == 2
 
 
-def test_interrupted_accepted_publication_cancels_before_caller_waits():
+@pytest.mark.parametrize("taken", ["before", "after"])
+def test_interrupted_accepted_publication_cancels_before_caller_waits(taken):
+    """The stop signal reaches an accepted request either way the race goes: taken before the caller's cancellation,
+    it stops at its first round; taken after, it is never admitted, as a queued request whose client left
+    (``Scheduler._admit``). Each order is forced here."""
+
+    accepted = threading.Event()
+
     class Accepted(Controlled):
         def admit(self, stream):
             self.accepted_stream = stream
             super().admit(stream)
+            accepted.set()
 
     decoder = Accepted()
     scheduler = Scheduler(decoder)
+    original_get, idle = scheduler.waiting.get, threading.Event()
+
+    def get(*args, **kwargs):
+        idle.set()                                     # the worker is past its start, waiting for a request
+        item = original_get(*args, **kwargs)
+        deadline = time.monotonic() + 5
+        while taken == "after" and item is not None and not item[0].cancel.is_set():
+            assert time.monotonic() < deadline, "the caller never cancelled"      # held until its caller cancels
+            time.sleep(0.001)
+        return item
+
+    scheduler.waiting.get = get
     scheduler.start()
+    assert idle.wait(5)
     original = scheduler.waiting.put
     primary = KeyboardInterrupt("interrupted after accepted publication")
 
     def published_then_interrupted(item, *args, **kwargs):
         original(item, *args, **kwargs)
+        if taken == "before":
+            assert accepted.wait(5)                 # admitted (its first round held) before the caller cancels
         raise primary
 
     scheduler.waiting.put = published_then_interrupted
@@ -452,8 +478,10 @@ def test_interrupted_accepted_publication_cancels_before_caller_waits():
         decoder.release.set()
         scheduler.close()
     assert caught is primary
-    assert decoder.admitted == [71]
-    assert len(decoder.accepted_stream.out) == 1
+    if taken == "before":
+        assert decoder.admitted == [71] and len(decoder.accepted_stream.out) == 1
+    else:
+        assert decoder.admitted == [] and not accepted.is_set()
     assert not scheduler.thread.is_alive() and not decoder.streams
 
 

@@ -126,6 +126,7 @@ def _checkpoint(root) -> None:
         "rope_parameters": {"rope_theta": 1e7, "partial_rotary_factor": 0.25},
         "linear_num_key_heads": NK, "linear_num_value_heads": NV, "linear_key_head_dim": DK,
         "linear_value_head_dim": DV, "linear_conv_kernel_dim": 4, "num_experts": E, "num_experts_per_tok": 10,
+        "hidden_act": "silu", "output_gate_type": "sigmoid",           # as the Qwen3.8 checkpoint names its gate
         "moe_intermediate_size": W, "shared_expert_intermediate_size": W, "hc_count": S, "hc_lowrank": LOW,
         "indexer_n_heads": IH, "indexer_head_dim": ID, "indexer_budget": 2048, "indexer_compress_ratio": 4,
         "eos_token_id": 0, "quantization": {"group_size": 32, "bits": 4},

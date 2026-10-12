@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from ..host_table import _MappedTable
+from ..host_table import _MappedTable, _random_access
 
 from tensorfold.cuda.exl3.format import is_exl3  # noqa: F401  (exl3.py and engine.py import it from here)
 
@@ -144,6 +144,7 @@ class NgramTable(_MappedTable):
                 offsets.append(begin)
                 starts.append(starts[-1] + shape[0])
                 self.words.append(np.memmap(pk.dir / file, dtype=np.int16, mode="r", offset=begin, shape=tuple(shape)))
+                _random_access(self.words[-1])
             self.words_per_row = int(words)
             self.dh = 160
             self.bits = (self.words_per_row - 1) * 16 // self.dh
@@ -151,6 +152,8 @@ class NgramTable(_MappedTable):
                 raise ValueError(f"n-gram rows of {self.words_per_row} words are not one scale plus 160 values")
             self.maps = self._arrays()
             self.maps.extend(np.memmap(pk.dir / f, dtype=np.uint8, mode="r") for f in files)
+            for view in self.maps:                  # gathers read through these: a fault reads its page alone
+                _random_access(view)
             self.fidx = np.array(fidx, dtype=np.int64)
             self.offsets = np.array(offsets, dtype=np.int64)
             self.starts = np.array(starts, dtype=np.int64)
