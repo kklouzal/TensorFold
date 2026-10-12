@@ -175,6 +175,26 @@ EXL3, startup and transport comparisons keep their original image, target and
 workload scope. Actual integrated native/device/model/performance qualification
 is reported separately; CPU or fake controls do not certify missing targets.
 
+## GB10 Python deployment, 2026-10-12
+
+The user authorized permanent replacement based on the completed source/native
+qualification. ARM64 runtime `8e1fe707…`, source `2edfaa51…`, now serves the
+unchanged pinned Flash Next model and 1M/YaRN-4/RQ8-norm/four-slot configuration.
+It uses a new derived cache host directory; the old image's full configuration
+and old cache are retained in an independent stopped rollback container.
+
+Actual local/LAN health, model identity, package/module 0.6.6, Unicode
+`/v1/tokenize`, independent arithmetic, full HTTP/SSE consumption and complete
+returned token arrays passed. Target-only/MTP/warmed MTP match for all 64 IDs;
+four concurrent replies and their warmed repeats match at their fixed seeds.
+All 12 requests across six batches completed, yielding 718 output tokens. The
+process remained healthy, with zero restarts and observed `OOMKilled=false`.
+First-use MTP/shared delays and repeated requests remain separate observations;
+there is no controlled baseline or population performance conclusion. Filled
+1M quality/capacity and live image/video/tool/grammar queries remain outside this
+finite deployment batch. Exact source/image/settings and rollout scope are in
+[the deployment receipt](../deploy/gb10/deployment-python-20261012.json).
+
 ## GB10 deployment selection, 2026-10-10
 
 The [earlier GB10 measurements](../README.md#earlier-gb10-deployment-with-yarn-2)

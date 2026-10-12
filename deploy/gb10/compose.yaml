@@ -57,7 +57,7 @@ services:
       TENSORFOLD_VISION_WORKSPACE_MIB: '0'
       TENSORFOLD_IMAGE_TOKENS: '16384'
       TENSORFOLD_VIDEO_TOKENS: '16384'
-      # Reuse this GB10's ARM64 caches for the unchanged, pinned runtime ABI.
+      # This image's host cache is separate from the retained rollback cache.
       TORCH_EXTENSIONS_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/torch_extensions
       TRITON_CACHE_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/triton
       CUDA_CACHE_PATH: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/cuda
@@ -68,7 +68,7 @@ services:
         source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
         target: /root/.cache/huggingface
       - type: bind
-        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache}
+        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-2edfaa51}
         target: /cache
     network_mode: host
     ipc: host

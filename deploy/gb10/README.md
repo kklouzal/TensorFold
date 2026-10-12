@@ -34,20 +34,59 @@ The Python integration has passed native installed-package, launcher and
 synthetic CUDA checks, including all 256 ordered KV-format pairs on both GB10
 and RTX PRO 2000 Blackwell, with complete receipt and retirement reinspection.
 Isolated GDN candidates also passed native correctness checks at SM 121;
-full-model performance selection remains pending. These results have not
-replaced the deployed container. An isolated full-model comparison requires
-temporarily releasing its GB10 memory and restoring the same original container;
-that maintenance window has not been authorized. See the
+full-model performance selection remains pending. The user authorized deployment
+of the qualified Python image on 2026-10-12, based on these completed gates.
+The live deployment and rollback details are recorded below. Controlled
+baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
+
+## Python integration deployment, 2026-10-12
+
+The service now runs **TensorFold 0.6.6**, source
+`2edfaa515d85ca48a57365552f38a97a17123c3c`, in qualified ARM64 image
+`sha256:8e1fe707502d99e8565af2900bd862847141a9da30779b208c239cbb21ee44be`.
+Later qualification-only documentation does not substitute a different image.
+Container `612a761a5b98d8fab842cdb0b05c6a8d04edbfd33527ede6e3471cc64fc1f2f6`
+serves the same model at `http://192.168.1.50:8888/v1`.
+
+The replacement preserves the model revision, 1,048,576 context, YaRN-4,
+RQ8-norm K/V, four slots, MTP-4/confidence 0.5/copy mode, 2,048 prefill rows,
+vision/thinking, 114 GiB/no-extra-swap, CPU set, PID limits, health check and
+all 81 effective environment values. The derived kernel-cache host bind is
+isolated as described below. Local and LAN health/model identity, the installed
+module/package version, Unicode tokenization, the independent answer 391 for
+23 × 17, complete HTTP/SSE bodies and full token-ID sequences passed. Target-only,
+MTP and warmed MTP produced the same 64 tokens; four concurrent 64-token requests
+and their warmed repeats passed with exact fixed-seed sequences.
+
+First-use MTP/shared batches were slow; their raw observations are retained.
+Warmed functional repeats completed in approximately 1.00 s for one 64-token
+reply and 2.03 s for four 64-token replies. These are finite functional
+observations, not a controlled baseline comparison, statistical throughput gain
+or full-window quality/capacity result. The same process stayed healthy with
+zero restarts and the observed container flag `OOMKilled=false`. Image/video/tool/grammar
+queries and filled-1M stress were not part of this deployment batch.
+
+The exact previous image/configuration/cache is retained in
+`qwen38-flash-next-tf-rollback-python-20261012`, created and stopped, outside
+Compose ownership. Its immutable image is
+`sha256:5b6627ba69d9cd7107016b55e37503a356e108a1ef5ec91bf6ce7740b478efec`.
+Stop and verify retirement of the active service before starting that rollback
+on the same port. Manage the new service through this maintained Python
+checkout's Compose file; the default `tensorfold-gb10-fork:local` tag points to
+the qualified image above. Keep both image IDs and cache directories.
+See [the deployment receipt](deployment-python-20261012.json) for exact identities,
+settings, successful checks and coverage limits.
 
 ## Current YaRN-4 / RotorQuant8-norm configuration
 
 The service at **192.168.1.50:8888** uses **YaRN factor 4**, a configured
 **1,048,576-token prompt-plus-reply limit**, and **`rotorquant8-norm` for both
-keys and values**. The model revision, immutable image, four slots, sampler,
-MTP/copy, SSD reads, vision/video, thinking and resource limits remain those
-identified in the earlier deployment below. Only the three corresponding
-Compose argument values changed. The existing Compose project name
+keys and values**. The model revision, four slots, sampler, MTP/copy, SSD reads,
+vision/video, thinking and resource limits are preserved. The current image is
+the qualified Python deployment above. This configuration was introduced by
+three Compose argument changes on 2026-10-10; the Python image replacement on
+2026-10-12 retains those values. The existing Compose project name
 `tensorfold-gb10-yarn2` is retained to preserve service ownership.
 
 Startup identifies the two effective KV formats and **1.1386294** rotary
@@ -207,10 +246,14 @@ Neither dependency tree is modified.
 Generic image defaults put compiled artifacts under
 `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/` or the sibling
 `/amd64/`, separate from each other and older Torch/CUDA caches. This GB10's
-Compose profile explicitly reuses its existing **ARM64-only, unsuffixed**
+Compose profile retains **ARM64-only, unsuffixed**
 `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/` directories for Torch
-extensions, Triton, CUDA, Inductor and XDG caches. The pinned runtime ABI is
-unchanged; source-aware rebuilds still apply. These deployment overrides do not
+extensions, Triton, CUDA, Inductor and XDG caches. Its default host bind is now
+`/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-2edfaa51`, separate
+from the former image's `/home/kklouzal/services/qwen3.8-flash-next/cache` bind.
+Retain that old directory for rollback. Use a new `KERNEL_CACHE` directory for
+each subsequent image replacement; matching ABI or module names alone do not
+establish native artifact compatibility. These deployment overrides do not
 change the generic image defaults or authorize sharing native caches with AMD64.
 The Dockerfile defaults `MAX_JOBS` to eight. Set `--build-arg MAX_JOBS=N` when
 building or `-e MAX_JOBS=N` when running to choose a bounded compiler worker
@@ -267,7 +310,8 @@ cutover, manage it from this repository with
 `docker compose -f deploy/gb10/compose.yaml up -d`, or restart the existing
 container with `docker restart qwen38-flash-next-tf`. A simple rename of a
 Compose-owned old container is not safe rollback preservation: its Compose
-ownership labels can still cause replacement or removal. During this cutover,
+ownership labels can still cause replacement or removal. During the historical
+2026-10-10 cutover,
 the old container was renamed and then removed by that label match. The saved
 old image `sha256:089bfba448433506ec3e2fe6332848824c299e7358f76996af44e4e6b6df389f`
 and exact saved container/host configuration were used to recreate
@@ -276,6 +320,9 @@ removed. It is retained in **Created/stopped** state. Stop the current service
 before starting a rollback on the same ports; validate its health and complete
 generations. Capture the previous configuration before future replacements,
 and keep rollback containers outside the active Compose ownership labels.
+For the current Python deployment, use the old `5b6627ba…` image and
+`qwen38-flash-next-tf-rollback-python-20261012` identified in
+[the 2026-10-12 deployment section](#python-integration-deployment-2026-10-12).
 The earlier recipe and Harness launch scripts manage their captured images;
 use this fork's Compose configuration for the new deployment.
 
