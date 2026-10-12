@@ -449,7 +449,8 @@ def test_host_table_gathers_the_rows_across_shards_and_files(tmp_path):
         header, blobs, at = {"__metadata__": {}}, [], 0
         for name, arr in tensors.items():
             raw = arr.tobytes()
-            header[name] = {"dtype": "U32" if arr.dtype == np.uint32 else "U16", "shape": list(arr.shape),
+            # words as U32; scales and biases as the bf16 bit patterns the loader requires
+            header[name] = {"dtype": "U32" if arr.dtype == np.uint32 else "BF16", "shape": list(arr.shape),
                             "data_offsets": [at, at + len(raw)]}
             blobs.append(raw)
             at += len(raw)
@@ -526,7 +527,8 @@ def test_hc_readout_fused_gives_the_separate_kernels_bits(rows, inject):
                             mixed=torch.empty((rows, D), dtype=bf, device=DEV),
                             xs_mixed=torch.empty((rows, D // 32), dtype=f32, device=DEV),
                             part=torch.empty((32 * 16 * 2560,), dtype=f32, device=DEV),
-                            inj=torch.empty((rows, S), dtype=bf, device=DEV), prefill=False)
+                            inj=torch.empty((rows, S), dtype=bf, device=DEV), prefill=False,
+                            hc_plans=None)                    # no compiled read-out plans: the kernels themselves
         glue.hc_writeback(h, h, b.pss, S, 0)
         return b
 
@@ -547,7 +549,7 @@ def test_the_packaged_draft_vocabulary():
 
     from tensorfold.families.qwen4_exp.cuda.weights import draft_token_ids
 
-    ids = draft_token_ids("default")
+    ids = draft_token_ids("default", 248_320)
     assert np.all(np.diff(ids) > 0) and ids[0] == 0 and ids[-1] < 248_320 and 65_536 < len(ids) < 100_000
     assert np.array_equal(ids[:65_536], np.arange(65_536))
     assert {248_044, 248_045, 248_046, 248_068, 248_069} <= set(ids.tolist())     # end of text, im, think tags

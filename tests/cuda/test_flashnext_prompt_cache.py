@@ -1,5 +1,7 @@
 """Flash Next message-start snapshots and fork lanes preserve fresh-prefill and serial bits."""
 
+import threading
+
 import pytest
 import torch
 
@@ -155,6 +157,11 @@ def _engine_shim(w, points=None) -> FlashNextEngine:
     """Build a serial engine over toy weights without loading a checkpoint."""
 
     engine = object.__new__(FlashNextEngine)
+    # the request lifecycle FlashNextEngine.__init__ sets before loading (generate admits each call through it)
+    engine._lifecycle, engine._calls = threading.Condition(), {}
+    engine._closing = engine._closed = engine._close_running = False
+    engine._abort_comm = engine._receiving = engine._shutdown_sent = False
+    engine.comm = engine.vision = None
     engine.tp, engine.rank, engine.depth, engine.confidence = 1, 0, 1, 0.3
     engine.max_len, engine.eos = 1024, tuple(w.cfg.eos)
     engine.concurrent, engine.multi, engine.scheduler = False, None, None
