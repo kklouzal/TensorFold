@@ -4,7 +4,14 @@ This fork of [TensorFold](https://github.com/ashhart/TensorFold) serves language
 
 The maintained fork is [kklouzal/TensorFold](https://github.com/kklouzal/TensorFold), branch **`python-0.6`**. The Python integration joins fork baseline `2f8089a7b59588875d639a7efa860117168a29d0` with upstream Python `ed78d6fc204d89d90b045bf033d6551e7714f3a1`. Record the commit you actually clone: branch heads move. Upstream Python history remains part of the fork so later changes can be reviewed and merged.
 
-**Validation status:** source `dfb4669d6b98f26de9ecfd75d3ccf7e90ec747bf` passed the full installed Linux CPU suite on both native ARM64 and AMD64: **7,320 passed, 177 skipped, no failures or errors per host**. Both serving images passed installed package, CLI, Harness and GPU startup checks. Native CUDA component and synthetic model checks passed on GB10 and RTX PRO 2000 Blackwell. [Detailed qualification](docs/optimization-validation.md#python-line-integration-2026-10-11) identifies the images, workloads and limits. Full pretrained-model and performance comparisons remain pending; no Apple Silicon host is available. Historical performance results retain their original scope, and unqualified optimization candidates remain outside production paths.
+The Python branch and an archive of the former `main` tip have been published.
+GitHub's default branch is still `main`: the repository-settings update returned
+HTTP 403 with the configured token. The old branch remains until the default
+change can be verified.
+
+**Validation status:** source `dfb4669d6b98f26de9ecfd75d3ccf7e90ec747bf` passed the full installed Linux CPU suite on both native ARM64 and AMD64: **7,320 passed, 177 skipped, no failures or errors per host**. Source `2edfaa515d85ca48a57365552f38a97a17123c3c` subsequently passed affected installed-package, CLI, Harness and actual GPU startup checks on both hosts; unchanged runtime/build/test bytes support scoped reuse of the earlier results. Native CUDA component and synthetic model checks passed on GB10 and RTX PRO 2000 Blackwell.
+
+All **256 ordered KV-format pairs passed on both GB10 and RTX PRO 2000 Blackwell**, with completed-run receipt and container-retirement checks. Isolated GDN candidates passed fresh native checks on GB10 and remain unselected pending full-model performance evidence. [Detailed qualification](docs/optimization-validation.md#python-line-integration-2026-10-11) identifies the images, workloads and limits. Full pretrained-model and performance comparisons remain pending; no Apple Silicon host is available. Historical performance results retain their original scope. The production service has not been replaced.
 
 ## Start here
 

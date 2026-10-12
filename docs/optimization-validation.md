@@ -52,7 +52,28 @@ actual baked launcher; the ordinary OCI entrypoint with its GPU also passed
 `serve --help`. This is startup qualification, not loaded-model generation.
 The no-GPU collection policy omits CUDA modules from both pass and skip counts.
 
-Each architecture separately passed the following current-image native gates:
+Follow-up source `2edfaa515d85ca48a57365552f38a97a17123c3c` changes four
+documents and two family-error diagnostic URL constants. All other family AST
+nodes, runtime sources, build/pin/launcher inputs and maintained tests match
+`dfb4669d…`. Its own normal installed images passed 36 affected maintained
+checks per host, 13 standard CLI/Harness checks and one owned-link diagnostic,
+without failures or skips. Both ordinary GPU-bearing OCI launchers passed
+`serve --help`. The full CPU suite was not rerun at this revision; the recorded
+structural proof bounds reuse of the earlier full-suite/native evidence.
+
+| Native target | `2edfaa51…` verification image | `2edfaa51…` serving image |
+| --- | --- | --- |
+| ARM64 / GB10 | `sha256:3bf2b74adf623afa61fd496aa63157fc5a0c9b2c9bec03ecb091610b04c576cd` | `sha256:8e1fe707502d99e8565af2900bd862847141a9da30779b208c239cbb21ee44be` |
+| AMD64 / RTX PRO 2000 Blackwell | `sha256:fb50d549a8758cf109e2b0fbc5ab48649428325d7900b7f28feb55772b67f835` | `sha256:aaa93b1ee89b0faff53d4d6c99dea18399bf08b3f8ddeaa44d572faddf9721a7` |
+
+The owned Python branch and `archive/main-before-python-20261011` are published;
+the archive preserves `cb2ebf0540f42604e2759b2ddef497861e928248`. GitHub still
+uses `main` as default because the settings API returned HTTP 403. Removing the
+old branch remains pending that settings change and guarded ref verification.
+
+Each architecture separately passed the following native gates in its
+`dfb4669d…` verification image. Source `2edfaa51…` reuses this evidence only
+for the unchanged native/runtime contracts within their recorded region:
 
 | Native module | Passed | Scope |
 | --- | --- | --- |
@@ -62,6 +83,69 @@ Each architecture separately passed the following current-image native gates:
 | Explicit memory limit | 2 | Derived real allocation bound, refusal below the bound, positive boundary and recovery. |
 | FP8 n-gram table | 7 | Admission, exact BF16 staging and full logits/serial/MTP tokens against converted BF16 weights. |
 | RAM EXL3 engine | 12 | Serialized synthetic checkpoint, cache behavior and two independent failed-load retirements. |
+
+The exhaustive composed KV gate at `dfb4669d…` passed **all 256 ordered pairs
+on each host**, with exact coverage and completed-run retirement reinspection. The maintained test compares each
+pair's sparse multistream execution with its same-pair solo contract, including
+YaRN and vision inputs. It retains all 16 formats, assertions, seeds and quality
+settings. The GB10 run uses 64 processes with four cases each. Both hosts retain
+UID 1000, 4 GiB/no extra swap, two CPUs and one compiler job. Original combined
+processes were killed by the 4 GiB cgroup OOM limit and remain failed evidence.
+The AMD64 four-case run completed 184 cases before a later process exceeded its
+900-second diagnostic client bound. Independent Docker logs, wait and daemon
+events proved all four cases passed (pytest reported 1,040.28 seconds), followed
+by actual exit 0 and retirement; its original timed-out producer remains failed.
+The reviewed recovery reused only the 184 completed producer successes and
+passed the remaining 72 cases in 36 two-case processes with the same 900-second
+bound. Exact mixed coverage, producer receipts and actual retirement passed
+completed-only reinspection, without rerunning GPU work. Each case reconstructs
+its model with a local seed-72 generator, vision with a separate seed-41
+generator and stateless seed-59 sampling keys; grouping preserves its inputs.
+Partitioning changes process lifetime and cache/resource state, not the cases
+or their numerical contracts. This synthetic
+comparison does not establish BF16 equivalence, pretrained-model quality,
+filled-context capacity or performance.
+
+### Isolated GDN candidates on GB10
+
+The shared-GDN representation candidate `a2fe672cec14653eee1c55aca2808accbf44da7e`
+and Flash history/read-ahead candidate `2905dfde32b834f03a253443115348a92bc5dbcd`
+each use `2edfaa51…` as parent and change one CUDA source file. They remain on
+separate evaluation branches and are not selected in the maintained runtime.
+Their normal ARM64 package/launcher audits and ordinary GPU OCI startup passed;
+each passed **56 fresh synthetic native checks**, with 46 unrelated cases
+deselected. The verification images are respectively
+`sha256:659d40ab9dc9b1263be9c0c880cb24ea7c04dd25151e63f00cf95d17fee29c6e`
+and `sha256:0ea65811f9c8fafd427d7082d1ee5ef29e45530afefe58ec1023bf49a8c4444c`.
+The corresponding serving images are
+`sha256:6e265f880754377dcd38971153d1514b1b734cff9412928122d2639f55594cf6`
+and `sha256:281578a6539bd943dd0b8066cf8fa5bd0151df7565f76542b917a2e998bacd90`.
+
+At the actual automatic SM 121 target, pinned CUDA 13.4 compiler and supported
+`-O3 --fmad=false` flags, all six compiled providers match their earlier
+candidate or baseline references in 58 kernels' GPU instruction words, resources
+and recognized argument layouts.
+The Flash candidate's monolithic family provider is byte-identical. The other
+five providers differ only
+in two or three nonallocated temporary-filename metadata bytes; executable and
+loaded bytes match. The CUDA 13.1 inspection tool leaves newer metadata fields
+undecoded, although the opaque GPU ELF bytes also match. An older IO cache lacks
+an original recorded binary hash; its current sealed bytes are compared without
+retroactively claiming that identity for earlier runs. Fresh native checks
+independently qualify the current IO path.
+
+Earlier donor packets retain their own sources: 428 finite tensors and 5,294
+exceptional tensors matched their reference under the independent controls.
+Source/header/compiler closure and compiled-provider comparisons support scoped
+reuse; they do not establish whole-model or runtime performance equivalence.
+The deployed four-slot/vision decode uses shared GDN. Flash read-ahead applies
+to a separate supported one-slot, text-only region; the engine requires at
+least two slots for vision. The wide upstream specialization needs SM 12.0
+and at least 96 SMs: neither GB10 SM 12.1 nor the available SM 12.0/34-SM RTX
+PRO 2000 meets that gate. Full-model quality and performance selection for
+applicable candidates remain pending.
+
+### Remaining qualification and retained policies
 
 Earlier integrated native packets also passed 173 numeric cases with one
 second-device skip per architecture; Flash forward 54, multistream 28,

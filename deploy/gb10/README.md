@@ -30,6 +30,16 @@ server export together. Native authentication also covers `/v1/tokenize`.
 The historical deployment receipts below identify their original images;
 qualify each new build's launcher, model behavior and performance separately.
 
+The Python integration has passed native installed-package, launcher and
+synthetic CUDA checks, including all 256 ordered KV-format pairs on both GB10
+and RTX PRO 2000 Blackwell, with complete receipt and retirement reinspection.
+Isolated GDN candidates also passed native correctness checks at SM 121;
+full-model performance selection remains pending. These results have not
+replaced the deployed container. An isolated full-model comparison requires
+temporarily releasing its GB10 memory and restoring the same original container;
+that maintenance window has not been authorized. See the
+[source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
+
 ## Current YaRN-4 / RotorQuant8-norm configuration
 
 The service at **192.168.1.50:8888** uses **YaRN factor 4**, a configured
