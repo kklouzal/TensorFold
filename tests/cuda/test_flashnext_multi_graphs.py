@@ -263,7 +263,8 @@ def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
     refs = _solo(w, prompts, samplings, 40, RQ, capacity=1024, prefill_rows=64)
     outs, dec = _decode(w, prompts, samplings, 40, graphs=True, capacity=1024, prefill_rows=64, later=[(2, 1), (4, 3)])
     assert outs == refs and dec.total_replays > 0
-    assert max(st.version for st in dec.free) >= 1                  # a slot grew past its first 256 rows
+    slots = dec.free + [k[1] for k in dec.kept]                     # kept prompt ends hold their slots
+    assert max(st.version for st in slots) >= 1                     # a slot grew past its first 256 rows
 
 
 def test_switching_graphs_every_round_keeps_the_bits(monkeypatch, tmp_path):
