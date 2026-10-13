@@ -265,7 +265,8 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                 attn_mod.attention(b.q[r0:r0 + n], cache.k, cache.v, b.pos_blk, b.attn, n, scale,
                                    out=b.attn_o[r0:r0 + n], context=ends, ks=cache.ks, vs=cache.vs,
                                    k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
-                                   v_bits=st.kv_value_bits, v_codec=st.kv_value_codec, rotor_lookup=b.rotor_lookup)
+                                   v_bits=st.kv_value_bits, v_codec=st.kv_value_codec, rotor_lookup=b.rotor_lookup,
+                                   prompt=True)
             continue
         if b.attn.qsa:
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
