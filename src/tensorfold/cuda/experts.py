@@ -8,6 +8,8 @@ from pathlib import Path
 
 import torch
 
+from . import pdl
+
 NTW = 4                  # n8 tiles a warp
 COLS = 8 * NTW           # output columns a warp
 TILE = 16                # pairs an item holds (decode form), and the narrowest a prompt plan's consumer may take
@@ -20,7 +22,7 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_experts_v7", sources=[str(here / "experts.cpp"), str(here / "experts.cu"),
+    return load(name="tensorfold_experts_v8", sources=[str(here / "experts.cpp"), str(here / "experts.cu"),
                                                         str(here / "experts_prefill.cu"), str(here / "experts_pack.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
 
@@ -122,7 +124,7 @@ def route(picks: torch.Tensor, plan: Plan, tile: int = PREFILL_TILE) -> None:
         raise ValueError(f"picks {tuple(picks.shape)} do not fit a plan of {plan.rows} x {plan.slots}")
     plan.tile = tile if plan.prefill else TILE
     _ext().plan(picks, rows * slots, plan.experts, plan.tile, plan.members, plan.items, plan.counts, plan.rank,
-                plan.hist)
+                plan.hist, pdl.ON)
 
 
 def gate_up(x: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: int) -> None:
@@ -132,10 +134,10 @@ def gate_up(x: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: i
     epi = 2 if ex.swiglu else 1
     if plan.prefill:
         _ext().prefill(ex.gs, epi, x, plan.slots, ex.up, ex.dims // ex.gs, ex.width // COLS, plan.items, plan.counts,
-                       plan.members, out, ex.width, ex.limit, items)
+                       plan.members, out, ex.width, ex.limit, items, pdl.ON)
     else:
         _ext().run(ex.gs, epi, x, plan.slots, ex.up, ex.dims // ex.gs, ex.width // COLS, plan.items, plan.counts,
-                   plan.members, out, ex.width, ex.limit, items * (ex.width // COLS))
+                   plan.members, out, ex.width, ex.limit, items * (ex.width // COLS), pdl.ON)
 
 
 def down(act: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: int) -> None:
@@ -144,7 +146,7 @@ def down(act: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: in
     items = max_items(rows * plan.slots, plan.experts, plan.tile)
     if plan.prefill:
         _ext().prefill(ex.gs, 3 if out.dtype == torch.bfloat16 else 0, act, 0, ex.down, ex.width // ex.gs,
-                       ex.dims // COLS, plan.items, plan.counts, plan.members, out, ex.dims, 0.0, items)
+                       ex.dims // COLS, plan.items, plan.counts, plan.members, out, ex.dims, 0.0, items, pdl.ON)
     else:
         _ext().run(ex.gs, 0, act, 0, ex.down, ex.width // ex.gs, ex.dims // COLS, plan.items, plan.counts,
-                   plan.members, out, ex.dims, 0.0, items * (ex.dims // COLS))
+                   plan.members, out, ex.dims, 0.0, items * (ex.dims // COLS), pdl.ON)

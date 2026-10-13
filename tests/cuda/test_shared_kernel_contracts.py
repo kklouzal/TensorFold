@@ -34,7 +34,7 @@ def _weight(n=128, k=512, gs=32):
 def _raw_qmm(x, weight, out, *, sk=1, part=None, reduce=True, f32=False, xs=None):
     xs = qmm.group_sums(x, weight.gs) if xs is None else xs
     qmm._ext().qmm(x, xs, weight.weight, weight.scales, weight.biases, out, part, weight.n, sk,
-                   weight.gs, qmm.bucket(x.shape[0]), f32, reduce)
+                   weight.gs, qmm.bucket(x.shape[0]), f32, reduce, False)
 
 
 def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
@@ -43,7 +43,7 @@ def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
     for hk in (0, 4):
         bad_q = torch.empty((7, hk, 128), dtype=q.dtype, device='cuda')
         with pytest.raises(RuntimeError):
-            gdn._ext().tree(bad_q, bad_q, v, gates, beta, state, None, None, p.entries, 0, 7, None, None)
+            gdn._ext().tree(bad_q, bad_q, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, False)
     table = gdn.to_device(gdn.replay_table([k], [v], [gates], [beta], [[state]]), torch.int64, 'cuda')
     rows = torch.zeros((1, 7), dtype=torch.int32, device='cuda')
     counts = torch.zeros((1,), dtype=torch.int32, device='cuda')
@@ -51,11 +51,11 @@ def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
                      (1, 1, 4, 6, 128), (1, 1, 2, 6, 0), (2**63 - 1, 1, 2, 6, 128)):
         layers, streams, hk, hv, dv = geometry
         with pytest.raises(RuntimeError):
-            gdn._ext().replay(table, layers, streams, rows, counts, hk, hv, dv, True, False)
+            gdn._ext().replay(table, layers, streams, rows, counts, hk, hv, dv, True, False, False)
     with pytest.raises(RuntimeError):
-        gdn._ext().replay(table, 1, 1, rows.cpu(), counts, 2, 6, 128, True, False)
+        gdn._ext().replay(table, 1, 1, rows.cpu(), counts, 2, 6, 128, True, False, False)
     with pytest.raises(RuntimeError):
-        gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 2**63 - 1, None, None)
+        gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 2**63 - 1, None, None, False)
     torch.cuda.synchronize()
 
 
@@ -238,11 +238,11 @@ def test_qmm_raw_staging_alignment_and_scalar_output_exceptions():
         inputs = [weight.weight, weight.scales, weight.biases]
         inputs[('weight', 'scales', 'biases').index(component)] = shifted
         with pytest.raises(RuntimeError):
-            qmm._ext().qmm(x, sums, *inputs, output, None, 128, 1, 32, 16, False, True)
+            qmm._ext().qmm(x, sums, *inputs, output, None, 128, 1, 32, 16, False, True, False)
     rows = torch.empty((16, 129), dtype=torch.bfloat16, device='cuda')
     with pytest.raises(RuntimeError):
         qmm._ext().qmm(x, sums, weight.weight, rows[:, :128], torch.empty_like(rows)[:, :128],
-                       output, None, 128, 1, 32, 16, False, True)
+                       output, None, 128, 1, 32, 16, False, True, False)
     shifted_out = torch.empty(129, dtype=torch.bfloat16, device='cuda')[1:].view(1, 128)
     with pytest.raises(RuntimeError):
         _raw_qmm(x, weight, shifted_out)

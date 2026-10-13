@@ -8,6 +8,9 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+from tensorfold.cuda.pdl import wait as pdl_wait
+
 from tensorfold.cuda.kernels import qmm as shared
 
 BN = 64                   # columns per stored tile
@@ -131,7 +134,8 @@ def bucket(m: int) -> int:
 
 
 @triton.jit
-def _group_sums(X, XS, x_stride, K: tl.constexpr, GB: tl.constexpr):
+def _group_sums(X, XS, x_stride, K: tl.constexpr, GB: tl.constexpr, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     m = tl.program_id(0)
     gb = tl.program_id(1)
     KG: tl.constexpr = K // 32
@@ -149,14 +153,15 @@ def group_sums(x: torch.Tensor) -> torch.Tensor:
     kg = k // GS
     xs = torch.empty((m, kg), dtype=torch.float32, device=x.device)
     gb = 32
-    _group_sums[(m, triton.cdiv(kg, gb))](x, xs, x.stride(0), K=k, GB=gb, num_warps=2)
+    _group_sums[(m, triton.cdiv(kg, gb))](x, xs, x.stride(0), K=k, GB=gb, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
     return xs
 
 
 @triton.jit
 def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
          N: tl.constexpr, K: tl.constexpr, SK: tl.constexpr, BM: tl.constexpr,
-         BLOCK_N: tl.constexpr, GPI: tl.constexpr, F32: tl.constexpr, SBN: tl.constexpr):
+         BLOCK_N: tl.constexpr, GPI: tl.constexpr, F32: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     KG: tl.constexpr = K // 32
     PER: tl.constexpr = KG // SK
     pid_n = tl.program_id(1)
@@ -194,7 +199,8 @@ def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
 
 
 @triton.jit
-def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.constexpr):
+def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.constexpr, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     ok = offs < total
     acc = tl.load(PART + offs, mask=ok, other=0.0)
@@ -265,10 +271,11 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     grid = (triton.cdiv(m, bm), triton.cdiv(q.n, bn), sk)
     _qmm[grid](x, xs, q.weight, q.scales, q.biases, out, part if sk > 1 else out, m, x.stride(0),
                N=q.n, K=k, SK=sk, BM=bm, BLOCK_N=bn, GPI=g, F32=f32, SBN=BN,
-               num_warps=num_warps or c_warps, num_stages=num_stages or c_stages)
+               num_warps=num_warps or c_warps, num_stages=num_stages or c_stages, PDL=pdl.ON, launch_pdl=pdl.ON)
     if sk > 1 and reduce:
         total = m * q.n
-        _reduce[(triton.cdiv(total, 1024),)](part, out, total, SK=sk, BLOCK=1024, F32=f32, num_warps=4)
+        _reduce[(triton.cdiv(total, 1024),)](part, out, total, SK=sk, BLOCK=1024, F32=f32, num_warps=4,
+                                             PDL=pdl.ON, launch_pdl=pdl.ON)
     return out if (sk == 1 or reduce) else part[:sk * m * q.n].view(sk, m, q.n)
 
 
@@ -289,9 +296,11 @@ def _bsig(x):
 @triton.jit
 def _qmm_hcdown(H, PSS, SCALE, NORMED, W, S, B, OUT, PART, M, eps,
                 N: tl.constexpr, K: tl.constexpr, D: tl.constexpr, NC: tl.constexpr, SS: tl.constexpr,
-                SK: tl.constexpr, BM: tl.constexpr, BLOCK_N: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr):
+                SK: tl.constexpr, BM: tl.constexpr, BLOCK_N: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr,
+                PDL: tl.constexpr = False):
     """Compute the down projection with glue.hc_normed's bf16 rounding and ordered partial sums, keeping each K slice within one stream and writing normed values once for the up mix."""
 
+    pdl_wait(PDL)
     KG: tl.constexpr = K // 32
     PER: tl.constexpr = KG // SK
     pid_n = tl.program_id(1)
@@ -350,16 +359,17 @@ def hc_down(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: tor
     grid = (triton.cdiv(m, 16), triton.cdiv(q.n, bn), sk)
     _qmm_hcdown[grid](h, pss, scale, normed, q.weight, q.scales, q.biases, out, part, m, eps, N=q.n, K=k, D=d,
                       NC=pss.shape[1], SS=streams, SK=sk, BM=16, BLOCK_N=bn, GPI=gpi_for(per, gpi), SBN=BN,
-                      num_warps=warps, num_stages=stages)
+                      num_warps=warps, num_stages=stages, PDL=pdl.ON, launch_pdl=pdl.ON)
     return out if sk == 1 else part[:sk * m * q.n].view(sk, m, q.n)
 
 
 @triton.jit
 def _qmm_upmix(X, XS, W, S, B, NORMED, MIXED, XSM, M,
                N: tl.constexpr, K: tl.constexpr, D: tl.constexpr, SS: tl.constexpr, BM: tl.constexpr,
-               DB: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr):
+               DB: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
     """The up projection for dims [DB j, DB (j + 1)) of every stream, then the mix: mixed = bf16(sum over streams in order of bf16(bf16(sigmoid(bf16(up_s))) * normed_s) / S) (glue.hc_mix's bits) and its group sum."""
 
+    pdl_wait(PDL)
     KG: tl.constexpr = K // 32
     j = tl.program_id(1)
     rm = tl.program_id(0) * BM + tl.arange(0, BM)
@@ -410,4 +420,5 @@ def hc_upmix(act: torch.Tensor, xs_act: torch.Tensor, q: Q4, normed: torch.Tenso
     db = 32
     grid = (triton.cdiv(m, 16), d // db)
     _qmm_upmix[grid](act, xs_act, q.weight, q.scales, q.biases, normed, mixed, xs_mixed, m, N=q.n, K=k, D=d,
-                     SS=streams, BM=16, DB=db, GPI=gpi_for(k // GS, 2), SBN=BN, num_warps=4, num_stages=3)
+                     SS=streams, BM=16, DB=db, GPI=gpi_for(k // GS, 2), SBN=BN, num_warps=4, num_stages=3,
+                     PDL=pdl.ON, launch_pdl=pdl.ON)

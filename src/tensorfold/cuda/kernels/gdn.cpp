@@ -7,9 +7,9 @@
 void gdn_tree_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                    const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, int, int, int,
                    at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-                   const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&);
+                   const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, bool);
 void gdn_replay_cuda(const at::Tensor&, int, int, const at::Tensor&, const at::Tensor&, const at::Tensor&, int, int,
-                     int, bool);
+                     int, bool, bool);
 void gdn_prefill_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                       const at::Tensor&, at::Tensor&, at::Tensor&, int);
 
@@ -60,7 +60,8 @@ at::Tensor tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, c
                 const at::Tensor& beta, const c10::optional<at::Tensor>& state,
                 const c10::optional<at::Tensor>& table, const c10::optional<at::Tensor>& starts,
                 const at::Tensor& plan, int64_t slots, int64_t max_rows,
-                const c10::optional<std::vector<at::Tensor>>& pending, const c10::optional<at::Tensor>& final) {
+                const c10::optional<std::vector<at::Tensor>>& pending, const c10::optional<at::Tensor>& final,
+                bool pdl) {
     check_rows(q, k, v, g, beta);
     TORCH_CHECK(state.has_value() != table.has_value() && (state.has_value() ? !starts.has_value() : starts.has_value()),
                 "pass one state, or a table and starts");
@@ -133,13 +134,14 @@ at::Tensor tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, c
     c10::cuda::CUDAGuard guard(q.device());
     auto y = at::empty({q.size(0), v.size(1), v.size(2)}, v.options());
     gdn_tree_cuda(q, k, v, g, beta, s, t, st, plan, static_cast<int>(slots), streams, static_cast<int>(max_rows), y,
-                  pk, pv, pg, pb, prows, pcounts, fstate, ftable);
+                  pk, pv, pg, pb, prows, pcounts, fstate, ftable, pdl);
     return y;
 }
 
 // Commit: states after the accepted rows, new or in place; the table holds k, v, g, beta a layer, then the states.
 at::Tensor replay(const at::Tensor& table, int64_t layers, int64_t streams, const at::Tensor& rows,
-                  const at::Tensor& counts, int64_t hk, int64_t hv, int64_t dv, bool fp32_keys, bool in_place) {
+                  const at::Tensor& counts, int64_t hk, int64_t hv, int64_t dv, bool fp32_keys, bool in_place,
+                  bool pdl) {
     constexpr int64_t maximum = std::numeric_limits<int>::max();
     TORCH_CHECK(layers >= 1 && layers <= maximum && streams >= 1 && streams <= maximum &&
                 hk >= 1 && hk <= maximum && hv >= 1 && hv <= maximum && dv >= 1 && dv <= maximum - 31 &&
@@ -161,7 +163,7 @@ at::Tensor replay(const at::Tensor& table, int64_t layers, int64_t streams, cons
     at::Tensor out;
     if (!in_place) out = at::empty({streams, layers, hv, dv, 128}, table.options().dtype(at::kFloat));
     gdn_replay_cuda(table, static_cast<int>(layers), static_cast<int>(streams), rows, counts, out,
-                    static_cast<int>(hk), static_cast<int>(hv), static_cast<int>(dv), fp32_keys);
+                    static_cast<int>(hk), static_cast<int>(hv), static_cast<int>(dv), fp32_keys, pdl);
     return in_place ? at::empty({0}, table.options().dtype(at::kFloat)) : out;
 }
 

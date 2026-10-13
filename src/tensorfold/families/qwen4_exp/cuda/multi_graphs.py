@@ -23,6 +23,7 @@ import time
 
 import torch
 
+from tensorfold.cuda import ab_switch, pdl
 from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_bytes as budget_bytes  # noqa: F401
 
 from . import attn_multi, gdn_multi
@@ -72,8 +73,8 @@ class RoundGraphs:
         self.dec, self.budget = dec, int(budget)
         self.pool = torch.cuda.graph_pool_handle()
         self.side = torch.cuda.Stream()
-        self.verify: dict[tuple[int, int, int], Pieces] = {}
-        self.mtp: dict[tuple[int, int], Pieces] = {}
+        self.verify: dict[tuple[bool, int, int, int], Pieces] = {}    # (PDL, streams, rows, DeltaNet parity)
+        self.mtp: dict[tuple[bool, int, int], Pieces] = {}             # (PDL, streams, rows)
         self.bytes = 0
         self.capture_s = 0.0
         self.measured: list[dict] = []                   # per key: bytes, pieces, capture seconds (startup record)
@@ -87,7 +88,7 @@ class RoundGraphs:
         step = b.attn_step
         if b.rotor_lookup or step.vision or not step.fixed:
             return None
-        pieces = self.verify.get((len(segs), segs[-1][2], self.dec.gdn.parity))
+        pieces = self.verify.get((pdl.ON, len(segs), segs[-1][2], self.dec.gdn.parity))
         if pieces is None:
             return None
         self._replay(pieces, segs, b)
@@ -98,7 +99,7 @@ class RoundGraphs:
         step = b.attn_step
         if b.rotor_lookup or step.vision or not step.fixed:
             return None
-        pieces = self.mtp.get((len(segs), segs[-1][2]))
+        pieces = self.mtp.get((pdl.ON, len(segs), segs[-1][2]))
         if pieces is None:
             return None
         self._replay(pieces, segs, b)
@@ -150,12 +151,16 @@ class RoundGraphs:
     def capture(self) -> None:
         """Capture every key in order (streams 1, 2, ...: verify at both parities, then the MTP step) on the free
         slots while the memory they take (``free_bytes``: the private pool's blocks and the driver's graph memory)
-        stays within the budget; a key past it is dropped and capture stops. The slots are reset afterwards."""
+        stays within the budget; a key past it is dropped and capture stops. The slots are reset afterwards.
+
+        Keys are captured with the chip's PDL policy (``dec.pdl``); during a benchmark A/B (TENSORFOLD_AB_CONTROL,
+        switch "pdl") on a PDL chip, every key is then captured once more without it, budget permitting."""
 
         dec = self.dec
         w, slots, width = dec.w, len(dec.free), dec.depth + 1
         states = list(dec.free)
-        parity = dec.gdn.parity
+        parity, launch = dec.gdn.parity, pdl.ON
+        variants = [dec.pdl] + ([False] if dec.pdl and ab_switch.active() else [])     # A/B baseline: remove
         started = time.perf_counter()
         torch.cuda.synchronize()
         gc.collect()
@@ -164,26 +169,34 @@ class RoundGraphs:
         enabled = gc.isenabled()
         gc.disable()                                     # collecting a graph's exec invalidates an active capture
         try:
-            for n in range(1, slots + 1):
-                for rows in range(n, n * width + 1):
-                    keys = [("verify", rows, p) for p in (0, 1)] + ([("mtp", rows, 0)] if dec.mbuf is not None else [])
-                    for kind, R, p in keys:
-                        t0 = time.perf_counter()
-                        pieces = self._key(kind, states[:n], R, p)
-                        torch.cuda.synchronize()
-                        used = before - free_bytes()
-                        if used > self.budget:
-                            del pieces                   # this key's graphs go; the earlier keys stay
-                            self.stopped = f"{used / MIB:.0f} MiB with the next key exceeds the {self.budget // MIB} MiB budget"
-                            return
-                        (self.verify if kind == "verify" else self.mtp)[(n, R, p) if kind == "verify" else (n, R)] = \
-                            pieces
-                        self.measured.append({"key": [kind, n, R, p], "pieces": len(pieces.graphs),
-                                              "bytes": used - self.bytes, "s": round(time.perf_counter() - t0, 4)})
-                        self.bytes = used
+            for variant in variants:
+                pdl.ON = variant
+                for n in range(1, slots + 1):
+                    for rows in range(n, n * width + 1):
+                        keys = [("verify", rows, p) for p in (0, 1)] + \
+                            ([("mtp", rows, 0)] if dec.mbuf is not None else [])
+                        for kind, R, p in keys:
+                            t0 = time.perf_counter()
+                            pieces = self._key(kind, states[:n], R, p)
+                            torch.cuda.synchronize()
+                            used = before - free_bytes()
+                            if used > self.budget:
+                                del pieces               # this key's graphs go; the earlier keys stay
+                                self.stopped = (f"{used / MIB:.0f} MiB with the next key exceeds the "
+                                                f"{self.budget // MIB} MiB budget")
+                                return
+                            if kind == "verify":
+                                self.verify[(variant, n, R, p)] = pieces
+                            else:
+                                self.mtp[(variant, n, R)] = pieces
+                            self.measured.append({"key": [kind, variant, n, R, p], "pieces": len(pieces.graphs),
+                                                  "bytes": used - self.bytes,
+                                                  "s": round(time.perf_counter() - t0, 4)})
+                            self.bytes = used
         finally:
             if enabled:
                 gc.enable()
+            pdl.ON = launch
             dec.gdn.parity = parity
             dec.buf.gdn_tables = dec.buf.attn_step = None
             if dec.mbuf is not None:

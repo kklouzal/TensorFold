@@ -12,6 +12,9 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+from tensorfold.cuda.pdl import wait as pdl_wait
+
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda import experts as grouped
 from tensorfold.cuda.expert_cache import CachedExperts
@@ -786,9 +789,10 @@ def forward(w: Weights, st: State, b: Buffers, tokens: Sequence[int], *, logits:
 
 @triton.jit
 def _shift_windows(OLD, NEW, keep, OLD_L, NEW_L, NEW_ROW, C: tl.constexpr, T: tl.constexpr, TP: tl.constexpr,
-                   BLOCK: tl.constexpr):
+                   BLOCK: tl.constexpr, PDL: tl.constexpr = False):
     """Program (layer, channel block): window rows j < T become rows keep + j of [old (T rows); new rows]."""
 
+    pdl_wait(PDL)
     li = tl.program_id(0).to(tl.int64)
     cb = tl.program_id(1)
     ch = cb * BLOCK + tl.arange(0, BLOCK)
@@ -812,7 +816,7 @@ def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int
     block = 256
     _shift_windows[(layers, triton.cdiv(channels, block))](
         old, new, keep, old.stride(0), new.stride(0), new.stride(1), C=channels, T=taps,
-        TP=triton.next_power_of_2(taps), BLOCK=block, num_warps=4)
+        TP=triton.next_power_of_2(taps), BLOCK=block, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @torch.no_grad()

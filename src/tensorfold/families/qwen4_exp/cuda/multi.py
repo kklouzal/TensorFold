@@ -11,7 +11,7 @@ import torch
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.kernels import gdn
 
-from tensorfold.cuda import ab_switch
+from tensorfold.cuda import ab_switch, pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
 from tensorfold.cuda.draft_log import DraftWatch
 from tensorfold.cuda.markers import MIN_GAP
@@ -100,6 +100,9 @@ class MultiDecoder:
         self.graph_budget = budget if reason is None else 0
         self.graph_record: dict = {"captured": False, "reason": reason}
         self.replays = 0                                 # profiling: this round's replayed forwards
+        # programmatic dependent launch of the decode kernels: this chip's policy, once (pdl.ON is set each round)
+        self.pdl = pdl.select(w.device.index or 0) if torch.cuda.is_available() else False
+        pdl.ON = self.pdl
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
         # slots start small and grow with their stream's context, up to the window, while the gate has room
         self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
@@ -607,6 +610,7 @@ class MultiDecoder:
         ab_switch.refresh()
         self.b1 = b1 = ab_switch.new("b1")               # "old": A/B baseline, remove after selection
         self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
+        pdl.ON = self.pdl and ab_switch.new("pdl")       # "old": A/B baseline, remove after selection
         self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:

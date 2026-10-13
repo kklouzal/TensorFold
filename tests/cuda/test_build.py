@@ -5,7 +5,7 @@ import select
 import subprocess
 import sys
 
-NAME = "tensorfold_qwen4_exp_gdn_io"
+NAME = "tensorfold_qwen4_exp_gdn_io_v2"
 START = "from tensorfold.families.qwen4_exp.cuda import gdn_io; gdn_io._ext()"
 
 

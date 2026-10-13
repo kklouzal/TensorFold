@@ -10,6 +10,8 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+
 from .qmm_tiles import group_tile
 
 
@@ -18,7 +20,7 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_qmm_v5", sources=[str(here / "qmm.cpp"), str(here / "qmm.cu"),
+    return load(name="tensorfold_qmm_v6", sources=[str(here / "qmm.cpp"), str(here / "qmm.cu"),
                                                    str(here / "qmm_group.cu"), str(here / "qmm_prefill.cu"),
                                                    str(here / "qmm_prefill8.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
@@ -184,7 +186,7 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, sk: int | 
         return out
     if sk > 1 and not reduce and part is None:
         part = torch.empty((sk, m, q.n), dtype=torch.float32, device=x.device)
-    _ext().qmm(x, xs, q.weight, q.scales, q.biases, out, part, q.n, sk, q.gs, bucket(m), f32, reduce)
+    _ext().qmm(x, xs, q.weight, q.scales, q.biases, out, part, q.n, sk, q.gs, bucket(m), f32, reduce, pdl.ON)
     return out if sk == 1 or reduce else part.reshape(-1)[:sk * m * q.n].view(sk, m, q.n)
 
 

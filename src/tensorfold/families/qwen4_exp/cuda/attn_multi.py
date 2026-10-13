@@ -10,6 +10,9 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+from tensorfold.cuda.pdl import wait as pdl_wait
+
 from tensorfold.cuda.kernels import gdn as shared
 
 from . import attention as attn_mod, glue
@@ -30,7 +33,9 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
                 S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
                 CODEC: tl.constexpr = 0, STATUS=None, LAYER: tl.constexpr = 0,
                 K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-                V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None):
+                V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
+                PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     r = tl.program_id(0)
     s = tl.load(SID + r)
     rope, delta, length = CP, CP, 0
@@ -53,7 +58,8 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
 @triton.jit
 def _pool_multi(CP, VP, P0, RS, W, INV, eps, N, DI: tl.constexpr, HALF: tl.constexpr, RATIO: tl.constexpr,
                 VISION: tl.constexpr, S1: tl.constexpr = 11, S2: tl.constexpr = 10,
-                ROPE_SCALE: tl.constexpr = 1.0):
+                ROPE_SCALE: tl.constexpr = 1.0, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     s = tl.program_id(0)
     rope, delta, length = CP, CP, 0
     if VISION:
@@ -67,9 +73,10 @@ def _pool_multi(CP, VP, P0, RS, W, INV, eps, N, DI: tl.constexpr, HALF: tl.const
 
 @triton.jit
 def _scores_multi(IQ, CP, POSR, SID, SC, NB, N, HI: tl.constexpr, DI: tl.constexpr, RATIO: tl.constexpr,
-                  TOP: tl.constexpr, BB: tl.constexpr):
+                  TOP: tl.constexpr, BB: tl.constexpr, PDL: tl.constexpr = False):
     """Every sparse row's block scores, each from its own stream's pooled keys: ``_scores``' bits."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     _score_rows(IQ, _ptr(CP + 5 * N, tl.load(SID + r), tl.bfloat16), SC, NB, r, tl.program_id(1),
                 (tl.load(POSR + r) + 1) // RATIO, HI, DI, TOP, BB)
@@ -81,7 +88,8 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, N, H: tl.constexpr, HK
                   QSA: tl.constexpr, BITS: tl.constexpr, KT: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
                   CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                   V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
-                  ROTOR_LOOKUP: tl.constexpr = False):
+                  ROTOR_LOOKUP: tl.constexpr = False, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     r = tl.program_id(0)
     s = tl.load(SID + r)
     n = tl.load(POSR + r) + 1
@@ -106,7 +114,8 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, N, H: tl.constexpr, HK
 def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
                  CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, RATIO: tl.constexpr,
                  TOP: tl.constexpr, CODEC: tl.constexpr = 0,
-                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
+                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     r = tl.program_id(0)
     n = tl.load(POSR + r) + 1
     if QSA:
@@ -260,7 +269,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                VISION=step.vision, S1=sections[1], S2=sections[2],
                                ROPE_SCALE=c.rope_attention_factor, CODEC=0, STATUS=step.status_ptrs,
                                LAYER=layer.index, **pair,
-                               num_warps=2)
+                               num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
     top = sc.budget // sc.ratio
     if sc.qsa:
         pool = step.pool_blocks if step.fixed else step.most // sc.ratio + 2     # else: A/B baseline, remove
@@ -269,7 +278,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
                                VISION=step.vision, S1=sections[1], S2=sections[2],
                                ROPE_SCALE=c.rope_attention_factor,
-                               num_warps=1)
+                               num_warps=1, PDL=pdl.ON, launch_pdl=pdl.ON)
         if b.split is not None:                      # a captured forward: this step's selection runs between pieces
             b.split(("select", layer, mtp))
         else:
@@ -286,10 +295,10 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
     _chunks_multi[(rows, hk, chunks)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n, H=c.heads,
                                       HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch, SCALE=scale, IDW=sc.idw,
                                       QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top, CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4,
-                                      num_stages=1)
+                                      num_stages=1, PDL=pdl.ON, launch_pdl=pdl.ON)
     _merge_multi[(rows, hk)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, HK=hk, D=c.head_dim, G=g,
                              CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
-                             num_warps=4)
+                             num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
     return b.attn_o[:rows]
 
 
@@ -307,7 +316,7 @@ def select(layer, w, b, step: Step, mtp: bool) -> None:
                 raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
             _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
                                                            HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
-                                                           TOP=top, BB=64, num_warps=4)
+                                                           TOP=top, BB=64, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
             attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)
     else:                                            # A/B baseline: remove after selection
         for (st, a0, a1), end in zip(step.segs, step.ends):

@@ -10,13 +10,15 @@ from typing import Sequence
 
 import torch
 
+from tensorfold.cuda import pdl
+
 
 @lru_cache(maxsize=1)
 def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_gdn_v2", sources=[str(here / "gdn.cpp"), str(here / "gdn.cu"),
+    return load(name="tensorfold_gdn_v3", sources=[str(here / "gdn.cpp"), str(here / "gdn.cu"),
                                                    str(here / "gdn_prefill.cu")],
                 extra_cuda_cflags=["-O3", "--fmad=false"], verbose=False)
 
@@ -205,7 +207,7 @@ def tree(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, bet
         if finals:
             _check_state_writes(finals, inputs + list(owners) + ([] if pending is None else list(pending)))
     return _ext().tree(q, k, v, g, beta, state, table, None if table is None else p.starts, p.entries, p.slots,
-                       p.max_rows, None if pending is None else list(pending), final)
+                       p.max_rows, None if pending is None else list(pending), final, pdl.ON)
 
 
 def pointers(tensors: Sequence[torch.Tensor]) -> list[int]:
@@ -289,7 +291,7 @@ def replay(table: torch.Tensor, layers: int, streams: int, rows: torch.Tensor, c
     if in_place and owners:
         _check_state_writes(owners[4 * layers:], list(owners[:4 * layers]) + [table, rows, counts])
     out = _ext().replay(table, layers, streams, rows, counts, k0.shape[1], v0.shape[1], v0.shape[2],
-                        k0.dtype == torch.float32, in_place)
+                        k0.dtype == torch.float32, in_place, pdl.ON)
     return None if in_place else out
 
 

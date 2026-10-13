@@ -8,6 +8,9 @@ import torch
 import triton
 import triton.language as tl
 
+from . import pdl
+from .pdl import wait as pdl_wait
+
 from . import experts as grouped
 
 
@@ -22,9 +25,10 @@ def _tile(m: int) -> int:
 
 @triton.jit
 def _router(X, W, OUT, M, x_stride, D: tl.constexpr, NE: tl.constexpr, BM: tl.constexpr,
-            BLOCK_E: tl.constexpr, BK: tl.constexpr):
+            BLOCK_E: tl.constexpr, BK: tl.constexpr, PDL: tl.constexpr = False):
     """OUT[m, e] = fp32 x[m] . w[e] (bf16 inputs, tensor cores, K in BK steps in order)."""
 
+    pdl_wait(PDL)
     rm = tl.program_id(0) * BM + tl.arange(0, BM)
     re = tl.program_id(1) * BLOCK_E + tl.arange(0, BLOCK_E)
     rk = tl.arange(0, BK)
@@ -51,15 +55,17 @@ def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None)
     else:
         be, bk, stages = 64, 64, 3               # Smaller K tiles keep prefill within shared-memory limits.
     grid = (triton.cdiv(m, bm), triton.cdiv(ne, be))
-    _router[grid](x, rows, out, m, x.stride(0), D=d, NE=ne, BM=bm, BLOCK_E=be, BK=bk, num_warps=4, num_stages=stages)
+    _router[grid](x, rows, out, m, x.stride(0), D=d, NE=ne, BM=bm, BLOCK_E=be, BK=bk, num_warps=4, num_stages=stages,
+                  PDL=pdl.ON, launch_pdl=pdl.ON)
     return out
 
 
 @triton.jit
 def _topk_rows(L, PICK, WTS, NE: tl.constexpr, NL: tl.constexpr, TOPK: tl.constexpr, SLOTS: tl.constexpr,
-               BLOCK: tl.constexpr, SLOTP: tl.constexpr):
+               BLOCK: tl.constexpr, SLOTP: tl.constexpr, PDL: tl.constexpr = False):
     """Program r: row r's TOPK experts by fp32 logit (largest first, the lower id among equal logits), weights exp(l_k - l_0) / sum (fp32, rounded to bf16), then the shared expert (id NE) as slot TOPK with weight bf16(sigmoid(bf16(shared gate logit)))."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     ar = tl.arange(0, BLOCK)
     ak = tl.arange(0, SLOTP)
@@ -107,7 +113,8 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
 
     rows = logits.shape[0]
     _topk_rows[(rows,)](logits, buf.pick, buf.wts, NE=experts, NL=logits.shape[1], TOPK=top_k, SLOTS=top_k + 1,
-                        BLOCK=triton.next_power_of_2(experts + 1), SLOTP=triton.next_power_of_2(top_k + 1), num_warps=4)
+                        BLOCK=triton.next_power_of_2(experts + 1), SLOTP=triton.next_power_of_2(top_k + 1), num_warps=4,
+                        PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 def select(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int,

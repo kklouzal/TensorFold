@@ -1,14 +1,15 @@
 #include <torch/extension.h>
 
 void experts_plan_cuda(const at::Tensor& picks, int64_t pairs, int64_t experts, int64_t tile, at::Tensor& members,
-                       at::Tensor& items, at::Tensor& counts, at::Tensor& rank, at::Tensor& hist);
+                       at::Tensor& items, at::Tensor& counts, at::Tensor& rank, at::Tensor& hist, bool pdl);
 void experts_run_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_stride, int64_t slots,
                       const at::Tensor& w, int64_t kg, int64_t nb, const at::Tensor& items, const at::Tensor& counts,
-                      const at::Tensor& members, at::Tensor& out, int64_t n, double limit, int64_t max_units);
+                      const at::Tensor& members, at::Tensor& out, int64_t n, double limit, int64_t max_units,
+                      bool pdl);
 void experts_prefill_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_stride, int64_t slots,
                           const at::Tensor& w, int64_t kg, int64_t nb, const at::Tensor& items,
                           const at::Tensor& counts, const at::Tensor& members, at::Tensor& out, int64_t n,
-                          double limit, int64_t max_items);
+                          double limit, int64_t max_items, bool pdl);
 
 void experts_pack_cuda(const at::Tensor& words, const at::Tensor& scales, const at::Tensor& biases, int64_t gs,
                        at::Tensor& out);
@@ -31,27 +32,28 @@ static void check_call(const at::Tensor& x, int64_t k, const at::Tensor& w, cons
 }
 
 void plan(const at::Tensor& picks, int64_t pairs, int64_t experts, int64_t tile, at::Tensor members,
-          at::Tensor items, at::Tensor counts, at::Tensor rank, at::Tensor hist) {
+          at::Tensor items, at::Tensor counts, at::Tensor rank, at::Tensor hist, bool pdl) {
   check(picks, "picks", at::kInt);
   TORCH_CHECK(picks.is_contiguous() && picks.numel() >= pairs, "picks: contiguous, one id a pair");
   for (const auto* t : {&members, &items, &counts, &rank, &hist}) check(*t, "plan buffer", at::kInt);
   TORCH_CHECK(members.numel() >= pairs && counts.numel() >= 2, "plan buffers too small");
   TORCH_CHECK(tile == 16 || tile == 64, "items hold 16 pairs (decode) or 64 (prefill)");
-  experts_plan_cuda(picks, pairs, experts, tile, members, items, counts, rank, hist);
+  experts_plan_cuda(picks, pairs, experts, tile, members, items, counts, rank, hist, pdl);
 }
 
 void run(int64_t gs, int64_t epi, const at::Tensor& x, int64_t slots, const at::Tensor& w, int64_t kg, int64_t nb,
          const at::Tensor& items, const at::Tensor& counts, const at::Tensor& members, at::Tensor out, int64_t n,
-         double limit, int64_t max_units) {
+         double limit, int64_t max_units, bool pdl) {
   check_call(x, kg * gs, w, out, n, nb, epi);
-  experts_run_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_units);
+  experts_run_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_units, pdl);
 }
 
 void prefill(int64_t gs, int64_t epi, const at::Tensor& x, int64_t slots, const at::Tensor& w, int64_t kg,
              int64_t nb, const at::Tensor& items, const at::Tensor& counts, const at::Tensor& members, at::Tensor out,
-             int64_t n, double limit, int64_t max_items) {
+             int64_t n, double limit, int64_t max_items, bool pdl) {
   check_call(x, kg * gs, w, out, n, nb, epi);
-  experts_prefill_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_items);
+  experts_prefill_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_items,
+                       pdl);
 }
 
 // MLX words [E, N, K/8] (32-bit), scales and biases [E, N, K/gs] (2-byte) -> int32 blocks [E, N/32, K/gs, 32 * gs / 8 + 32]

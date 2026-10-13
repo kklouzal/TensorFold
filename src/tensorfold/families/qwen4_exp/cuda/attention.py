@@ -6,6 +6,9 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+from tensorfold.cuda.pdl import wait as pdl_wait
+
 from tensorfold.cuda import ab_switch  # A/B baseline: remove after selection
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
@@ -51,7 +54,9 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
             NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
             CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, ROTOR_LOOKUP: tl.constexpr = False):
+            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, ROTOR_LOOKUP: tl.constexpr = False,
+            PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     r = tl.program_id(0)
     hk = tl.program_id(1)
     c = tl.program_id(2)
@@ -215,7 +220,8 @@ def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
 @triton.jit
 def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
            CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0,
-           V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
+           V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
+    pdl_wait(PDL)
     r = tl.program_id(0)
     hk = tl.program_id(1)
     n = tl.load(POS0) + r + 1
@@ -326,18 +332,21 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     out = scratch.out if out is None else out
     _chunks[(rows, hk, chunks)](q, kc, vc, ks, vs, pos0, scratch.po, scratch.pm, scratch.pl, scratch.ids, scratch.nk,
                              scratch.sparse, H=h, HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, SCALE=scale,
-                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, ROTOR_LOOKUP=rotor_lookup, **pair, num_warps=4, num_stages=1)
+                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, ROTOR_LOOKUP=rotor_lookup, **pair,
+                             num_warps=4, num_stages=1, PDL=pdl.ON, launch_pdl=pdl.ON)
     _merge[(rows, hk)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h,
-                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=4)
+                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=4,
+                       PDL=pdl.ON, launch_pdl=pdl.ON)
     return out
 
 
 @triton.jit
 def _pool(IKC, POOLED, POS0, W, INV, eps, R, DI: tl.constexpr, HALF: tl.constexpr, RATIO: tl.constexpr,
           ROPE=None, DELTA=None, length=0, MODE: tl.constexpr = 0, S1: tl.constexpr = 11, S2: tl.constexpr = 10,
-          ROPE_SCALE: tl.constexpr = 1.0):
+          ROPE_SCALE: tl.constexpr = 1.0, PDL: tl.constexpr = False):
     """Pool each complete RATIO-key block in fp32 order, then bf16 RMSNorm and rotate-half RoPE at its first position; recomputing a block preserves its bits."""
 
+    pdl_wait(PDL)
     _pool_block(IKC, POOLED, tl.load(POS0), tl.program_id(0), W, INV, eps, R, DI, HALF, RATIO,
                 ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE)
 
@@ -375,9 +384,10 @@ def _pool_block(IKC, POOLED, p0, i, W, INV, eps, R, DI: tl.constexpr, HALF: tl.c
 
 @triton.jit
 def _scores(IQ, POOLED, POS0, SC, NB, HI: tl.constexpr, DI: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
-            BB: tl.constexpr):
+            BB: tl.constexpr, PDL: tl.constexpr = False):
     """Score each sparse row's complete blocks with the fp32 indexer-head sum, in order, of relu(q . k) / sqrt(DI)."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     _score_rows(IQ, POOLED, SC, NB, r, tl.program_id(1), (tl.load(POS0) + r + 1) // RATIO, HI, DI, TOP, BB)
 
@@ -410,9 +420,10 @@ def _row_end(POS, r, PER_ROW: tl.constexpr):
 
 @triton.jit
 def _select(SC, POS0, IDS, NKR, SPR, NB, RATIO: tl.constexpr, TOP: tl.constexpr, IDW: tl.constexpr,
-            BLOCK: tl.constexpr, PER_ROW: tl.constexpr = False):
+            BLOCK: tl.constexpr, PER_ROW: tl.constexpr = False, PDL: tl.constexpr = False):
     """List each sparse row's TOP blocks in block order, breaking score ties by lower block id, followed by the unfinished tail; dense rows retain only their length."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     end = _row_end(POS0, r, PER_ROW)
     complete = end // RATIO
@@ -463,9 +474,10 @@ def _block_keys(ROW, b, ok):
 
 @triton.jit
 def _select_tiles(SC, POS0, IDS, NKR, SPR, NB, RATIO: tl.constexpr, TOP: tl.constexpr, IDW: tl.constexpr,
-                  TB: tl.constexpr, PER_ROW: tl.constexpr = False):
+                  TB: tl.constexpr, PER_ROW: tl.constexpr = False, PDL: tl.constexpr = False):
     """``_select``'s lists for rows with more blocks than its registers hold, reading the row in TB-block tiles: the same cut (the TOP-th largest key) by radix select, one byte a pass from the top, then the same blocks placed tile by tile."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     end = _row_end(POS0, r, PER_ROW)
     complete = end // RATIO
@@ -545,12 +557,13 @@ def _resolve(H, PASSES: tl.constexpr, TOP: tl.constexpr):
 
 @triton.jit
 def _select_pass(SC, POS, HIST, SUF, NB, SL, PASS: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
-                 CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr):
+                 CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr, PDL: tl.constexpr = False):
     """Radix pass PASS over slice s (program 0) of row r (program 1): the histogram of byte 3 - PASS of the slice's
     keys that share the cut's leading bytes, added into the row's (integer atomics: any order, the same sums). The
     last pass also keeps the slice's counts for placement: SUF[r, s, x] = its keys above the cut's leading three
     bytes plus those sharing them with a last byte >= x (x = 256: the former alone)."""
 
+    pdl_wait(PDL)
     s = tl.program_id(0)
     r = tl.program_id(1)
     complete = _row_end(POS, r, PER_ROW) // RATIO
@@ -583,11 +596,13 @@ def _select_pass(SC, POS, HIST, SUF, NB, SL, PASS: tl.constexpr, RATIO: tl.const
 
 @triton.jit
 def _select_emit(SC, POS, HIST, SUF, IDS, NKR, SPR, NB, SL, RATIO: tl.constexpr, TOP: tl.constexpr,
-                 IDW: tl.constexpr, CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr):
+                 IDW: tl.constexpr, CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr,
+                 PDL: tl.constexpr = False):
     """``_select_tiles``' placement of slice s of row r, its running counts seeded by the slices before it, so each
     chosen block lands where the one-CTA scan puts it; slice 0 writes the tail, length and flag (a dense row's
     length alone)."""
 
+    pdl_wait(PDL)
     tl.static_assert(TB < 32768)                            # a tile's two counts (<= TB each) share one int32 sum
     s = tl.program_id(0)
     r = tl.program_id(1)
@@ -660,9 +675,10 @@ def _select_multi(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: in
                   PER_ROW=per_row, num_warps=SELECT_TB // 512)
     scratch.hist.zero_()                     # every call: a dirty histogram would move the cut silently
     for p in range(4):
-        _select_pass[(n, rows)](scratch.scores, pos, scratch.hist, scratch.suf, scratch.nb, sl, PASS=p, **common)
+        _select_pass[(n, rows)](scratch.scores, pos, scratch.hist, scratch.suf, scratch.nb, sl, PASS=p, **common,
+                                PDL=pdl.ON, launch_pdl=pdl.ON)
     _select_emit[(n, rows)](scratch.scores, pos, scratch.hist, scratch.suf, scratch.ids, scratch.nk, scratch.sparse,
-                            scratch.nb, sl, IDW=scratch.idw, **common)
+                            scratch.nb, sl, IDW=scratch.idw, **common, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 def qsa_new() -> bool:
@@ -690,11 +706,13 @@ def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: i
     width = triton.next_power_of_2(blocks)
     if width <= SELECT_REGS:
         _select[(rows,)](scratch.scores, pos, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
-                         RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, BLOCK=width, PER_ROW=per_row, num_warps=16)
+                         RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, BLOCK=width, PER_ROW=per_row, num_warps=16,
+                         PDL=pdl.ON, launch_pdl=pdl.ON)
         return
     tb, warps = (4096, 8) if rows >= 64 else (8192, 16)      # a prompt's row blocks, a decode window
     _select_tiles[(rows,)](scratch.scores, pos, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
-                           RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, TB=tb, PER_ROW=per_row, num_warps=warps)
+                           RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, TB=tb, PER_ROW=per_row, num_warps=warps,
+                           PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 def qsa_select(iq: torch.Tensor, ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
@@ -717,7 +735,8 @@ def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_sca
     _pool[(rows // scratch.ratio + 2,)](ikc, pooled, pos0, ik_scale, inv_freq, eps, rows,
                                         DI=ikc.shape[1], HALF=inv_freq.numel(), RATIO=scratch.ratio,
                                         ROPE=rope, DELTA=delta, length=length,
-                                        MODE=mode, S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, num_warps=1)
+                                        MODE=mode, S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, num_warps=1,
+                                        PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 def qsa_rows(iq: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch, rows: int, *,
@@ -729,5 +748,6 @@ def qsa_rows(iq: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, scratch
     bb = 64
     blocks = scratch.nb if context is None else min(scratch.nb, max(1, triton.cdiv(context, ratio)))
     _scores[(rows, triton.cdiv(blocks, bb))](iq, pooled, pos0, scratch.scores, scratch.nb, HI=iq.shape[1],
-                                                 DI=di, RATIO=ratio, TOP=top, BB=bb, num_warps=4)
+                                                 DI=di, RATIO=ratio, TOP=top, BB=bb, num_warps=4,
+                                                 PDL=pdl.ON, launch_pdl=pdl.ON)
     _launch_select(scratch, pos0, rows, blocks)

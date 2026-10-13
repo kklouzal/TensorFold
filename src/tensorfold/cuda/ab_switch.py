@@ -37,6 +37,12 @@ def get(key: str, default):
     return _values.get(key, default) if _path else default
 
 
+def active() -> bool:
+    """Whether a benchmark control file is configured (an A/B run): variants may need both sides prepared."""
+
+    return bool(_path)
+
+
 def new(key: str) -> bool:
     """A stage's switch: ``"new"`` (the default, the stage's behaviour) or ``"old"`` (the exact path it replaces)."""
 

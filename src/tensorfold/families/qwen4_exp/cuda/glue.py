@@ -6,6 +6,9 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import pdl
+from tensorfold.cuda.pdl import wait as pdl_wait
+
 from .image_rows import rope_axis
 from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage
 
@@ -51,9 +54,10 @@ def _bsilu(x):
 
 
 @triton.jit
-def _embed(IDS, W, S, B, OUT, D: tl.constexpr, S_COPIES: tl.constexpr):
+def _embed(IDS, W, S, B, OUT, D: tl.constexpr, S_COPIES: tl.constexpr, PDL: tl.constexpr = False):
     """Row r, group g: dequantize 32 values of token IDS[r]'s row (MLX layout), bf16, into S_COPIES streams."""
 
+    pdl_wait(PDL)
     row = tl.program_id(0)
     g = tl.program_id(1)
     tok = tl.load(IDS + row).to(tl.int64)
@@ -74,16 +78,18 @@ def embed(ids: torch.Tensor, weight: torch.Tensor, scales: torch.Tensor, biases:
     rows = ids.shape[0]
     if out is None:
         out = torch.empty((rows, copies * dims), dtype=torch.bfloat16, device=ids.device)
-    _embed[(rows, dims // 32)](ids, weight, scales, biases, out, D=dims, S_COPIES=copies, num_warps=1)
+    _embed[(rows, dims // 32)](ids, weight, scales, biases, out, D=dims, S_COPIES=copies, num_warps=1,
+                               PDL=pdl.ON, launch_pdl=pdl.ON)
     return out
 
 
 @triton.jit
 def _hc_writeback(H, HOUT, PSS, BR, INJ, Y, WTS, RS,
                   D: tl.constexpr, S: tl.constexpr, MODE: tl.constexpr, TOPK: tl.constexpr, SLOTS: tl.constexpr,
-                  BLOCK: tl.constexpr, WORLD: tl.constexpr):
+                  BLOCK: tl.constexpr, WORLD: tl.constexpr, PDL: tl.constexpr = False):
     """MODE 0 none, 1 branch, 2 MoE slots, 3 rank partials, 4 K slices; fp32 sums in fixed order, rounded once."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     c = tl.program_id(1)
     NC: tl.constexpr = D // BLOCK
@@ -113,9 +119,10 @@ def _hc_writeback(H, HOUT, PSS, BR, INJ, Y, WTS, RS,
 
 @triton.jit
 def _hc_normed(H, PSS, SCALE, NORMED, XS, eps,
-               D: tl.constexpr, S: tl.constexpr, NC: tl.constexpr, BLOCK: tl.constexpr):
+               D: tl.constexpr, S: tl.constexpr, NC: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):
     """Program (r, j): elements [j BLOCK, (j + 1) BLOCK) of row r's S*D streams (inside one stream): bf16(h * rinv_s * scale), and its 32-group sums. rinv_s from the stream's NC partial sums in order."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     j = tl.program_id(1)
     e = j * BLOCK + tl.arange(0, BLOCK)
@@ -147,7 +154,7 @@ def hc_writeback(h: torch.Tensor, hout: torch.Tensor, pss: torch.Tensor, streams
     _hc_writeback[(rows, d // block)](h, hout, pss, branch if branch is not None else dummy,
                                       inject if inject is not None else dummy, y if y is not None else dummy,
                                       wts if wts is not None else dummy, rs, D=d, S=streams, MODE=mode, TOPK=top,
-                                      SLOTS=slots, BLOCK=block, WORLD=world, num_warps=2)
+                                      SLOTS=slots, BLOCK=block, WORLD=world, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
@@ -174,14 +181,15 @@ def hc_normed(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: t
     rows, wide = h.shape
     d = wide // streams
     _hc_normed[(rows, wide // block)](h, pss, scale, normed, xs, eps, D=d, S=streams, NC=pss.shape[1],
-                                      BLOCK=block, num_warps=4)
+                                      BLOCK=block, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
 def _hc_act(DN, ACT, XS, INJ, S: tl.constexpr, LOW: tl.constexpr, LOWP: tl.constexpr, HAS_INJ: tl.constexpr,
-            NDN: tl.constexpr):
+            NDN: tl.constexpr, PDL: tl.constexpr = False):
     """Row r of the down projection [low | inject]: act = bf16(silu(bf16(v / S))) and its 32-group sums; inject gates bf16(2 bf16(sigmoid(bf16(v / S))))."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     i = tl.arange(0, LOWP)
     ok = i < LOW
@@ -202,9 +210,10 @@ def _hc_act(DN, ACT, XS, INJ, S: tl.constexpr, LOW: tl.constexpr, LOWP: tl.const
 
 @triton.jit
 def _hc_reduce_act(PART, ACT, XS, INJ, SK: tl.constexpr, M, S: tl.constexpr, LOW: tl.constexpr,
-                   LOWP: tl.constexpr, HAS_INJ: tl.constexpr, NDN: tl.constexpr):
+                   LOWP: tl.constexpr, HAS_INJ: tl.constexpr, NDN: tl.constexpr, PDL: tl.constexpr = False):
     """``qmm``'s split-K sum (slices in order, one bf16 rounding) fused with ``hc_act``: the same bits."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     i = tl.arange(0, LOWP)
     ok = i < LOW
@@ -235,20 +244,23 @@ def hc_reduce_act(part: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: 
 
     sk, rows, ndn = part.shape
     _hc_reduce_act[(rows,)](part, act, xs, inj if inj is not None else act, SK=sk, M=rows, S=streams, LOW=low,
-                            LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4)
+                            LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4,
+                            PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 def hc_act(dn: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Tensor | None, streams: int,
            low: int) -> None:
     rows, ndn = dn.shape
     _hc_act[(rows,)](dn, act, xs, inj if inj is not None else act, S=streams, LOW=low,
-                     LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4)
+                     LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4,
+                     PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr):
+def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):
     """Program (r, c): mixed[d] = bf16((sum over streams, in order, of bf16(bf16(sigmoid(up_s)) * normed_s)) / S) for dims [c BLOCK, (c + 1) BLOCK), and its 32-group sums."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     c = tl.program_id(1)
     d = c * BLOCK + tl.arange(0, BLOCK)
@@ -267,13 +279,16 @@ def hc_mix(up: torch.Tensor, normed: torch.Tensor, mixed: torch.Tensor, xs: torc
            block: int = 256) -> None:
     rows, wide = up.shape
     d = wide // streams
-    _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, num_warps=2)
+    _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, num_warps=2,
+                                PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _rmsnorm(X, W, OUT, XS, eps, x_stride, D: tl.constexpr, G: tl.constexpr, BLOCK: tl.constexpr):
+def _rmsnorm(X, W, OUT, XS, eps, x_stride, D: tl.constexpr, G: tl.constexpr, BLOCK: tl.constexpr,
+             PDL: tl.constexpr = False):
     """Program (r, grp): RMSNorm of each run of G features on its own (G = D: one norm), scale W, bf16 out, and 32-group sums. BLOCK >= G."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     grp = tl.program_id(1)
     i = tl.arange(0, BLOCK)
@@ -297,7 +312,7 @@ def rmsnorm(x: torch.Tensor, w: torch.Tensor, eps: float, group: int | None = No
     if xs is None:
         xs = torch.empty((rows, d // 32), dtype=torch.float32, device=x.device)
     _rmsnorm[(rows, d // g)](x, w, out, xs, eps, x.stride(0), D=d, G=g, BLOCK=triton.next_power_of_2(g),
-                             num_warps=8 if g > 4096 else 4)
+                             num_warps=8 if g > 4096 else 4, PDL=pdl.ON, launch_pdl=pdl.ON)
     return out, xs
 
 
@@ -308,9 +323,10 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
                S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
                CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
                K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
+               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
     """Normalize stacked q/k/indexer heads in fp32, round to bf16, apply rotate-half RoPE and round again; store keys, values and raw indexer keys at POS0 + r; BITS 8 or 4 quantize keys and values and rotate q alike (q . Hk = Hq . k)."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     _prep_row(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW, NQ,
               NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE, CODEC=CODEC,
@@ -528,13 +544,14 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
         rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
         NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), BITS=kb, MODE=mode,
         S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, CODEC=kf if native else 0, STATUS=status,
-        VALIDATE=status is not None, LAYER=layer, **pair, num_warps=2)
+        VALIDATE=status is not None, LAYER=layer, **pair, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _attn_gate(O, P, OUT, XS, PW: tl.constexpr, NQ: tl.constexpr, HD: tl.constexpr):
+def _attn_gate(O, P, OUT, XS, PW: tl.constexpr, NQ: tl.constexpr, HD: tl.constexpr, PDL: tl.constexpr = False):
     """Program (r, h): bf16(o * sigmoid(gate)) (fp32 math), gate from the [q | gate] pairs, and group sums."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     h = tl.program_id(1)
     d = tl.arange(0, HD)
@@ -549,13 +566,15 @@ def _attn_gate(O, P, OUT, XS, PW: tl.constexpr, NQ: tl.constexpr, HD: tl.constex
 def attn_gate(o: torch.Tensor, p: torch.Tensor, out: torch.Tensor, xs: torch.Tensor, *, q_heads: int,
               head_dim: int) -> None:
     rows = o.shape[0]
-    _attn_gate[(rows, q_heads)](o, p, out, xs, PW=p.shape[1], NQ=q_heads, HD=head_dim, num_warps=2)
+    _attn_gate[(rows, q_heads)](o, p, out, xs, PW=p.shape[1], NQ=q_heads, HD=head_dim, num_warps=2,
+                                PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _ple_embed(W, S, B, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl.constexpr):
+def _ple_embed(W, S, B, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl.constexpr, PDL: tl.constexpr = False):
     """Program (r, h): gathered n-gram row r * HEADS + h (DH values, MLX layout, group 32) -> OUT[r, h DH: (h + 1) DH] bf16 and its group sums."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     h = tl.program_id(1)
     G: tl.constexpr = DH // 32
@@ -579,13 +598,15 @@ def ple_embed(rows: int, weight: torch.Tensor, scales: torch.Tensor, biases: tor
               out: torch.Tensor, xs: torch.Tensor, *, scale: float = 1.0) -> None:
     """Gathered rows (``weights.HostTable.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
 
-    _ple_embed[(rows, heads)](weight, scales, biases, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1)
+    _ple_embed[(rows, heads)](weight, scales, biases, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
+                              PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _ple_embed_bf16(V, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl.constexpr):
+def _ple_embed_bf16(V, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl.constexpr, PDL: tl.constexpr = False):
     """Program (r, h): gathered row r * HEADS + h (DH bf16 values) -> OUT[r, h DH:(h + 1) DH] and its group sums."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     h = tl.program_id(1)
     G: tl.constexpr = DH // 32
@@ -605,14 +626,16 @@ def ple_embed_bf16(rows: int, values: torch.Tensor, heads: int, dh: int, out: to
                    xs: torch.Tensor, *, scale: float = 1.0) -> None:
     """A bf16 table's gathered rows (``BF16Table.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
 
-    _ple_embed_bf16[(rows, heads)](values, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1)
+    _ple_embed_bf16[(rows, heads)](values, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
+                                   PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
 def _ple_gate(KEYS, VALS, H, NK, NQ, GATED, PSS, eps,
-              D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr):
+              D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):
     """Normalize key and query streams to bf16, apply signed sqrt and sigmoid to their scaled fp32 dot product, then store bf16 gated values and their squared sums for norm_conv."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     NCH: tl.constexpr = D // BLOCK
     for s in tl.static_range(S):
@@ -653,14 +676,16 @@ def _ple_gate(KEYS, VALS, H, NK, NQ, GATED, PSS, eps,
 def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps: float, streams: int) -> None:
     rows, wide = h.shape
     _ple_gate[(rows,)](keys, vals, h, norm_key, norm_query, gated, pss, eps, D=wide // streams, S=streams,
-                       BLOCK=512, num_warps=4)
+                       BLOCK=512, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
 def _ple_conv(GATED, PSS, NC, TAIL, CW, H, HOUT, NROW, eps, R,
-              D: tl.constexpr, S: tl.constexpr, TAPS: tl.constexpr, DIL: tl.constexpr, BLOCK: tl.constexpr):
+              D: tl.constexpr, S: tl.constexpr, TAPS: tl.constexpr, DIL: tl.constexpr, BLOCK: tl.constexpr,
+              PDL: tl.constexpr = False):
     """Convolve bf16 normed rows over [TAIL; current rows] in fp32 with TAPS taps DIL apart, apply bf16 SiLU and residual additions, and retain normed rows in NROW."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     c = tl.program_id(1)
     W: tl.constexpr = S * D
@@ -693,13 +718,15 @@ def ple_conv(gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps: float, str
     rows, wide = h.shape
     taps = conv_w.shape[1]
     _ple_conv[(rows, wide // 512)](gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps, rows,
-                                   D=wide // streams, S=streams, TAPS=taps, DIL=dilation, BLOCK=512, num_warps=4)
+                                   D=wide // streams, S=streams, TAPS=taps, DIL=dilation, BLOCK=512, num_warps=4,
+                                   PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit
-def _add_streams(E, HS, OUT, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr):
+def _add_streams(E, HS, OUT, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):
     """out[r, s, :] = bf16(e[r] + hs[r, s]) (the MTP input: the embedding branch added to each stream)."""
 
+    pdl_wait(PDL)
     r = tl.program_id(0)
     c = tl.program_id(1)
     d = c * BLOCK + tl.arange(0, BLOCK)
@@ -711,4 +738,4 @@ def _add_streams(E, HS, OUT, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constex
 
 def add_streams(e: torch.Tensor, hs: torch.Tensor, out: torch.Tensor, streams: int) -> None:
     rows, d = e.shape
-    _add_streams[(rows, d // 256)](e, hs, out, D=d, S=streams, BLOCK=256, num_warps=2)
+    _add_streams[(rows, d // 256)](e, hs, out, D=d, S=streams, BLOCK=256, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)

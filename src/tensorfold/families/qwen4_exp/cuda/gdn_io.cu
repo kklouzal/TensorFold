@@ -5,6 +5,8 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include "../../../cuda/kernels/pdl.cuh"
+
 namespace {
 
 constexpr int DK = 128, DV = 128, TAPS = 4;
@@ -41,6 +43,7 @@ __global__ void __launch_bounds__(128) front_kernel(
         const int* __restrict__ win, const __nv_bfloat16* __restrict__ cw, const float* __restrict__ a_log,
         const float* __restrict__ dt_bias, float* __restrict__ q, float* __restrict__ k,
         __nv_bfloat16* __restrict__ v, float* __restrict__ g, float* __restrict__ beta) {
+    tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
     constexpr int C = 2 * NK * DK + NV * DV, PW = C + NV * DV + 2 * NV;
     const int r = blockIdx.x, head = blockIdx.y, t = threadIdx.x, warp = t >> 5, lane = t & 31;
     const auto* cs = reinterpret_cast<const __nv_bfloat16*>(conv_ptrs[sid[r]]);
@@ -79,6 +82,7 @@ __global__ void __launch_bounds__(128) back_kernel(
         const __nv_bfloat16* __restrict__ y, const __nv_bfloat16* __restrict__ P,
         const __nv_bfloat16* __restrict__ norm_w, float eps, __nv_bfloat16* __restrict__ out,
         float* __restrict__ xs) {
+    tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
     constexpr int C = 2 * NK * DK + NV * DV, PW = C + NV * DV + 2 * NV;
     const int r = blockIdx.x, hv = blockIdx.y, t = threadIdx.x, warp = t >> 5, lane = t & 31;
     __shared__ float ys[DV];
@@ -105,11 +109,10 @@ __global__ void __launch_bounds__(128) back_kernel(
 
 void gdn_front_cuda(const at::Tensor& P, const at::Tensor& conv_ptrs, const at::Tensor& sid, const at::Tensor& win,
                     const at::Tensor& cw, const at::Tensor& a_log, const at::Tensor& dt_bias, at::Tensor& q,
-                    at::Tensor& k, at::Tensor& v, at::Tensor& g, at::Tensor& beta) {
-    auto stream = at::cuda::getCurrentCUDAStream();
+                    at::Tensor& k, at::Tensor& v, at::Tensor& g, at::Tensor& beta, bool pdl) {
     const int rows = (int)win.size(0), nv = (int)a_log.numel();
     auto launch = [&](auto kernel, int nk) {
-        kernel<<<dim3(rows, nk + nv), 128, 0, stream>>>(
+        tensorfold::launch(kernel, dim3(rows, nk + nv), dim3(128), 0, pdl,
             (const __nv_bfloat16*)P.data_ptr(), (const long long*)conv_ptrs.data_ptr(), sid.data_ptr<int>(),
             win.data_ptr<int>(), (const __nv_bfloat16*)cw.data_ptr(), a_log.data_ptr<float>(),
             dt_bias.data_ptr<float>(), q.data_ptr<float>(), k.data_ptr<float>(), (__nv_bfloat16*)v.data_ptr(),
@@ -118,20 +121,17 @@ void gdn_front_cuda(const at::Tensor& P, const at::Tensor& conv_ptrs, const at::
     if (nv == 48) launch(front_kernel<16, 48>, 16);
     else if (nv == 24) launch(front_kernel<8, 24>, 8);
     else TORCH_CHECK(false, "gdn front: 48 or 24 value heads");
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void gdn_back_cuda(const at::Tensor& y, const at::Tensor& P, const at::Tensor& norm_w, double eps, at::Tensor& out,
-                   at::Tensor& xs) {
-    auto stream = at::cuda::getCurrentCUDAStream();
+                   at::Tensor& xs, bool pdl) {
     const int rows = (int)y.size(0), nv = (int)y.size(1);
     auto launch = [&](auto kernel) {
-        kernel<<<dim3(rows, nv), 128, 0, stream>>>(
+        tensorfold::launch(kernel, dim3(rows, nv), dim3(128), 0, pdl,
             (const __nv_bfloat16*)y.data_ptr(), (const __nv_bfloat16*)P.data_ptr(),
             (const __nv_bfloat16*)norm_w.data_ptr(), (float)eps, (__nv_bfloat16*)out.data_ptr(), xs.data_ptr<float>());
     };
     if (nv == 48) launch(back_kernel<16, 48>);
     else if (nv == 24) launch(back_kernel<8, 24>);
     else TORCH_CHECK(false, "gdn back: 48 or 24 value heads");
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

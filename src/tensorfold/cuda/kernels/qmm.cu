@@ -14,7 +14,10 @@ namespace {
 
 using namespace qmm_frag;
 
-template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PIPE = false>
+// PDL: launched with programmatic dependent launch (weights staged before the dependency wait); else the plain
+// launch's original prologue, unchanged.
+template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PIPE = false,
+          bool PDL = false>
 __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
         const __nv_bfloat16* __restrict__ x, const float* __restrict__ xs, const uint32_t* __restrict__ w,
         const __nv_bfloat16* __restrict__ scales, const __nv_bfloat16* __restrict__ biases,
@@ -54,6 +57,35 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
         for (int r = tid; r < BM; r += T::THREADS)
             cp4(px + r, xs + static_cast<size_t>(min(m0 + r, M - 1)) * KG + g);
     };
+    // PDL's prologue halves of ``load``: a group's inputs and input sums (the previous kernel's outputs) ...
+    auto load_x = [&](int s, int g) {
+        unsigned char* p = stage(s);
+        for (int c = tid; c < BM * T::CHUNKS; c += T::THREADS) {
+            const int r = c / T::CHUNKS, ch = c % T::CHUNKS;
+            const int row = min(m0 + r, M - 1);
+            cp16z(p + r * T::ROW + swz<T::CHUNKS>(r, ch) * 16, x + static_cast<size_t>(row) * ldx + g * GS + ch * 8,
+                  m0 + r < M);
+        }
+        float* px = reinterpret_cast<float*>(p + T::X + T::W + 2 * T::S);
+        for (int r = tid; r < BM; r += T::THREADS)
+            cp4(px + r, xs + static_cast<size_t>(min(m0 + r, M - 1)) * KG + g);
+    };
+    // ... and its weights, scales and biases (constant: loadable before the previous kernel ends)
+    auto load_w = [&](int s, int g) {
+        unsigned char* pw = stage(s) + T::X;
+        constexpr int TILE_BYTES = 64 * GS / 2;           // one stored 64-column tile's group block
+        for (int c = tid; c < T::W / 16; c += T::THREADS) {
+            const int t = c / (TILE_BYTES / 16), off = c % (TILE_BYTES / 16);
+            const size_t tile = static_cast<size_t>(n0 / 64 + t) * KG + g;
+            cp16(pw + c * 16, reinterpret_cast<const unsigned char*>(w) + tile * TILE_BYTES + off * 16);
+        }
+        unsigned char* ps = pw + T::W;
+        for (int c = tid; c < 2 * (T::S / 16); c += T::THREADS) {
+            const int which = c / (T::S / 16), off = c % (T::S / 16);
+            const __nv_bfloat16* src = (which ? biases : scales) + static_cast<size_t>(g) * npad + n0 + off * 8;
+            cp16(ps + which * T::S + off * 16, src);
+        }
+    };
 
     {
         float acc[T::MT][T::NT][4];
@@ -76,10 +108,28 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
                                                                                        acc_[i][j][e]));
         };
         float dp[T::MT][T::NT][4], sp[T::NT][2], bp[T::NT][2], xp[T::MT][2];
+        if constexpr (PDL) {
+            // weights before the previous kernel ends, inputs after its writes are visible: every block of every
+            // path waits here, before reading x or xs and before writing anything; each stage's two commit groups
+            // keep wait_group's count finding stages whole (as the grouped kernel's prologue)
 #pragma unroll
-        for (int s = 0; s < STAGES - 1; ++s) {
-            if (s < per) load(s, g0 + s, m0);
-            commit();
+            for (int s = 0; s < STAGES - 1; ++s) {
+                if (s < per) load_w(s, g0 + s);
+                commit();
+            }
+            grid_wait();
+#pragma unroll
+            for (int s = 0; s < STAGES - 1; ++s) {
+                if (s < per) load_x(s, g0 + s);
+                commit();
+            }
+            grid_launch();
+        } else {
+#pragma unroll
+            for (int s = 0; s < STAGES - 1; ++s) {
+                if (s < per) load(s, g0 + s, m0);
+                commit();
+            }
         }
         for (int it = 0; it < per; ++it) {
             wait<STAGES - 2>();
@@ -220,8 +270,12 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
 }
 
 // The K slices' partial sums added in slice order, then rounded once.
-template <bool F32>
+template <bool F32, bool PDL = false>
 __global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__ out, long long total, int SK) {
+    if constexpr (PDL) {
+        grid_wait();                                      // every thread, before reading the producer's slices
+        grid_launch();
+    }
     const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= total) return;
     float acc = part[i];
@@ -232,12 +286,13 @@ __global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__
 
 template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PIPE = false>
 void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
-            const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK) {
+            const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK, bool pdl) {
     using T = LaneTile<GS, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
-    auto kernel = qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE>;
-    static tensorfold::KernelConfiguration configured;
-    configured.configure(kernel, T::SMEM, x.get_device());
+    auto kernel = pdl ? qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE, true>
+                      : qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE, false>;
+    static tensorfold::KernelConfiguration configured, configured_pdl;
+    (pdl ? configured_pdl : configured).configure(kernel, T::SMEM, x.get_device());
     cudaLaunchConfig_t config = {};
     const int rows_t = (M + BM - 1) / BM;
     // a group's inputs stay near 12 MB of L2 while its blocks sweep the column tiles
@@ -246,15 +301,22 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
     config.blockDim = dim3(T::THREADS);
     config.dynamicSmemBytes = T::SMEM;
     config.stream = at::cuda::getCurrentCUDAStream();
-    cudaLaunchAttribute attr[1];
+    cudaLaunchAttribute attr[2];
+    int attrs = 0;
     if (CLUSTER) {
-        attr[0].id = cudaLaunchAttributeClusterDimension;
-        attr[0].val.clusterDim.x = 1;   // a tile's K slices share blockIdx.x
-        attr[0].val.clusterDim.y = 1;
-        attr[0].val.clusterDim.z = SK;
-        config.attrs = attr;
-        config.numAttrs = 1;
+        attr[attrs].id = cudaLaunchAttributeClusterDimension;
+        attr[attrs].val.clusterDim.x = 1;   // a tile's K slices share blockIdx.x
+        attr[attrs].val.clusterDim.y = 1;
+        attr[attrs].val.clusterDim.z = SK;
+        ++attrs;
     }
+    if (pdl) {                          // may start while the previous kernel finishes: grid_wait guards x and out
+        attr[attrs].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        attr[attrs].val.programmaticStreamSerializationAllowed = 1;
+        ++attrs;
+    }
+    config.attrs = attr;
+    config.numAttrs = attrs;
     C10_CUDA_CHECK(cudaLaunchKernelEx(&config, kernel,
         reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), xs.data_ptr<float>(),
         reinterpret_cast<const uint32_t*>(w.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(scales.data_ptr()),
@@ -265,12 +327,28 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
 
 template <int GS, bool F32, bool CLUSTER>
 void dispatch(int bm, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& s,
-              const at::Tensor& b, at::Tensor& out, const at::Tensor& part, int N, int SK) {
+              const at::Tensor& b, at::Tensor& out, const at::Tensor& part, int N, int SK, bool pdl) {
     switch (bm) {
-        case 16: launch<GS, 16, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK); break;
-        case 32: launch<GS, 32, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK); break;
-        default: launch<GS, 64, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK); break;
+        case 16: launch<GS, 16, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
+        case 32: launch<GS, 32, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
+        default: launch<GS, 64, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
     }
+}
+
+template <bool F32>
+void reduce_slices(const at::Tensor& part, at::Tensor& out, long long total, int SK, bool pdl) {
+    const int threads = 256;
+    cudaLaunchConfig_t config = {};
+    config.gridDim = dim3(static_cast<unsigned>((total + threads - 1) / threads));
+    config.blockDim = dim3(threads);
+    config.stream = at::cuda::getCurrentCUDAStream();
+    cudaLaunchAttribute attr[1];
+    attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
+    attr[0].val.programmaticStreamSerializationAllowed = 1;
+    config.attrs = attr;
+    config.numAttrs = pdl ? 1 : 0;
+    C10_CUDA_CHECK(cudaLaunchKernelEx(&config, pdl ? reduce_kernel<F32, true> : reduce_kernel<F32, false>,
+                                      static_cast<const float*>(part.data_ptr<float>()), out.data_ptr(), total, SK));
 }
 
 } // namespace
@@ -282,10 +360,10 @@ bool qmm_clusters(int SK, bool reduce) {
 
 void qmm_cuda(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
               const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK, int gs, int bm,
-              bool f32, bool reduce) {
+              bool f32, bool reduce, bool pdl) {
     const int M = x.size(0);
     const bool cluster = qmm_clusters(SK, reduce);
-#define GO(G, F, C) dispatch<G, F, C>(bm, x, xs, w, scales, biases, out, part, N, SK)
+#define GO(G, F, C) dispatch<G, F, C>(bm, x, xs, w, scales, biases, out, part, N, SK, pdl)
     if (gs == 64) {
         if (f32) { if (cluster) GO(64, true, true); else GO(64, true, false); }
         else { if (cluster) GO(64, false, true); else GO(64, false, false); }
@@ -296,11 +374,7 @@ void qmm_cuda(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, co
 #undef GO
     if (SK > 1 && reduce && !cluster) {
         const long long total = static_cast<long long>(M) * N;
-        const int threads = 256;
-        const int blocks = static_cast<int>((total + threads - 1) / threads);
-        auto stream = at::cuda::getCurrentCUDAStream();
-        if (f32) reduce_kernel<true><<<blocks, threads, 0, stream>>>(part.data_ptr<float>(), out.data_ptr(), total, SK);
-        else reduce_kernel<false><<<blocks, threads, 0, stream>>>(part.data_ptr<float>(), out.data_ptr(), total, SK);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        if (f32) reduce_slices<true>(part, out, total, SK, pdl);
+        else reduce_slices<false>(part, out, total, SK, pdl);
     }
 }

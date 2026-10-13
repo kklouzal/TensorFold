@@ -48,7 +48,7 @@ static void check_packed_reads(const at::Tensor& write, const at::Tensor& w, con
 
 bool qmm_clusters(int, bool);
 void qmm_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-              at::Tensor&, const at::Tensor&, int, int, int, int, bool, bool);
+              at::Tensor&, const at::Tensor&, int, int, int, int, bool, bool, bool);
 void qmm_group_cuda(const at::Tensor&, const at::Tensor&, const std::vector<at::Tensor>&,
                     const std::vector<at::Tensor>&, const std::vector<at::Tensor>&, std::vector<at::Tensor>&,
                     const std::vector<int64_t>&, const std::vector<int64_t>&, bool, int, int);
@@ -60,9 +60,10 @@ void qmm_prefill8_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, 
                        const at::Tensor&, at::Tensor&, int, int, bool, int);
 
 // x (M, K) bf16 times a packed 4-bit weight; ``reduce`` false leaves the K slices unadded in ``part`` (SK, M, n).
+// ``pdl``: programmatic dependent launch (the kernels wait for their predecessor before reading x or writing).
 void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
          const at::Tensor& biases, at::Tensor& out, const c10::optional<at::Tensor>& part, int64_t n, int64_t sk,
-         int64_t gs, int64_t bm, bool f32, bool reduce) {
+         int64_t gs, int64_t bm, bool f32, bool reduce, bool pdl) {
     TORCH_CHECK(gs == 32 || gs == 64, "groups of 32 or 64");
     TORCH_CHECK(bm == 16 || bm == 32 || bm == 64, "row tile 16, 32 or 64");
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.size(0) >= 1 &&
@@ -113,7 +114,7 @@ void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const a
         check_packed_reads(out, w, scales, biases, columns, k);
     }
     qmm_cuda(x, xs, w, scales, biases, out, p, static_cast<int>(n), static_cast<int>(sk), static_cast<int>(gs),
-             static_cast<int>(bm), f32, reduce);
+             static_cast<int>(bm), f32, reduce, pdl);
 }
 
 // Up to four packed 4-bit weights against one x in one sm_12x launch, each with its own K split (its own bits).

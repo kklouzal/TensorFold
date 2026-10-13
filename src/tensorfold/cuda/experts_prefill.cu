@@ -7,6 +7,7 @@
 #include <torch/extension.h>
 
 #include "experts.cuh"
+#include "kernels/pdl.cuh"
 
 namespace {
 
@@ -33,6 +34,7 @@ __global__ void __launch_bounds__(WM * WN * 32)
     prefill_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W,
                    int KG, int NB, const int* __restrict__ items, const int* __restrict__ counts,
                    const int* __restrict__ members, void* __restrict__ out, int N, float limit) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   using G = Geo<GS>;
   using P = Pre<GS, M, RT, WM, WN>;
   constexpr int STAGES = P::STAGES;
@@ -154,7 +156,7 @@ __global__ void __launch_bounds__(WM * WN * 32)
 template <int GS, int M, int EPI, int RT, int WM, int WN>
 void launch_prefill(const at::Tensor& x, int x_stride, int slots, const at::Tensor& w, int kg, int nb,
                     const at::Tensor& items, const at::Tensor& counts, const at::Tensor& members, at::Tensor& out,
-                    int n, float limit, int64_t max_items) {
+                    int n, float limit, int64_t max_items, bool pdl) {
   using P = Pre<GS, M, RT, WM, WN>;
   constexpr int SMEM = P::STAGES * P::STAGE_BYTES;
   auto* kern = prefill_kernel<GS, M, EPI, RT, WM, WN>;
@@ -165,11 +167,11 @@ void launch_prefill(const at::Tensor& x, int x_stride, int slots, const at::Tens
   }
   const int64_t grid = max_items * ((nb + WN - 1) / WN);
   if (grid < 1) return;
-  kern<<<static_cast<unsigned>(grid), P::THREADS, SMEM, at::cuda::getCurrentCUDAStream()>>>(
+  tensorfold::launch(kern, dim3(static_cast<unsigned>(grid)), dim3(P::THREADS), SMEM, pdl,
       reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), x_stride, slots,
-      reinterpret_cast<const uint4*>(w.data_ptr()), kg, nb, items.data_ptr<int>(), counts.data_ptr<int>(),
-      members.data_ptr<int>(), out.data_ptr(), n, limit);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+      reinterpret_cast<const uint4*>(w.data_ptr()), kg, nb, static_cast<const int*>(items.data_ptr<int>()),
+      static_cast<const int*>(counts.data_ptr<int>()), static_cast<const int*>(members.data_ptr<int>()),
+      out.data_ptr(), n, limit);
 }
 
 }  // namespace
@@ -177,7 +179,7 @@ void launch_prefill(const at::Tensor& x, int x_stride, int slots, const at::Tens
 void experts_prefill_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_stride, int64_t slots,
                           const at::Tensor& w, int64_t kg, int64_t nb, const at::Tensor& items,
                           const at::Tensor& counts, const at::Tensor& members, at::Tensor& out, int64_t n,
-                          double limit, int64_t max_items) {
+                          double limit, int64_t max_items, bool pdl) {
   const c10::cuda::CUDAGuard guard(x.device());
   const int xs = static_cast<int>(x_stride), sl = static_cast<int>(slots), k = static_cast<int>(kg);
   const int b = static_cast<int>(nb), nn = static_cast<int>(n);
@@ -185,7 +187,8 @@ void experts_prefill_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t 
   // 8 warps a CTA, 64 pairs x 128 columns: two row tiles a warp, two warps down, four across
 #define TF_PRE(GS_, M_, EPI_)                                                                                  \
   if (gs == GS_ && epi == EPI_) {                                                                              \
-    launch_prefill<GS_, M_, EPI_, 2, 2, 4>(x, xs, sl, w, k, b, items, counts, members, out, nn, lim, max_items); \
+    launch_prefill<GS_, M_, EPI_, 2, 2, 4>(x, xs, sl, w, k, b, items, counts, members, out, nn, lim, max_items, \
+                                           pdl);                                                               \
     return;                                                                                                    \
   }
   TF_PRE(32, 1, 0) TF_PRE(32, 1, 3) TF_PRE(32, 2, 2) TF_PRE(64, 1, 0) TF_PRE(64, 1, 3) TF_PRE(64, 1, 1)

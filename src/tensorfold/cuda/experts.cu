@@ -7,6 +7,7 @@
 #include <torch/extension.h>
 
 #include "experts.cuh"
+#include "kernels/pdl.cuh"
 
 namespace {
 
@@ -132,6 +133,7 @@ __global__ void __launch_bounds__(WARPS * 32)
     expert_kernel(const __nv_bfloat16* __restrict__ X, int x_stride, int slots, const uint4* __restrict__ W, int KG,
                   int NB, const int* __restrict__ items, const int* __restrict__ counts,
                   const int* __restrict__ members, void* __restrict__ out, int N, float limit) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   const int lane = threadIdx.x & 31, gq = lane >> 2, t = lane & 3;
   const int units = __ldg(counts) * NB;
   for (int unit = blockIdx.x * WARPS + (threadIdx.x >> 5); unit < units; unit += gridDim.x * WARPS) {
@@ -213,6 +215,7 @@ __device__ int place_items(int c, int E, int T, int* __restrict__ items, int* __
 __global__ void __launch_bounds__(PLAN_THREADS)
     plan_kernel(const int* __restrict__ picks, int P, int E, int T, int* __restrict__ members,
                 int* __restrict__ items, int* __restrict__ counts) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   __shared__ int pk[PSMALL];
   __shared__ int cnt[EMAX];
   __shared__ int off[EMAX];
@@ -239,6 +242,7 @@ __global__ void __launch_bounds__(PLAN_THREADS)
 // Wide calls, pass 1: block b ranks its pairs within each expert in pair order and writes its counts to hist[b][e].
 __global__ void __launch_bounds__(PLAN_THREADS)
     plan_rank(const int* __restrict__ picks, int P, int E, int* __restrict__ rank, int* __restrict__ hist) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   __shared__ int cnt[EMAX];
   const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
   for (int e = tid; e < E; e += PLAN_THREADS) cnt[e] = 0;
@@ -263,6 +267,7 @@ __global__ void __launch_bounds__(PLAN_THREADS)
 // Pass 2, one block: each block's first member for each expert in place of its count, and the items.
 __global__ void __launch_bounds__(PLAN_THREADS)
     plan_offsets(int nblk, int E, int T, int* __restrict__ hist, int* __restrict__ items, int* __restrict__ counts) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   const int tid = threadIdx.x;
   int c = 0;
   if (tid < E)
@@ -280,6 +285,7 @@ __global__ void __launch_bounds__(PLAN_THREADS)
 // Pass 3: every pair to its place.
 __global__ void plan_scatter(const int* __restrict__ picks, int P, int E, const int* __restrict__ rank,
                              const int* __restrict__ hist, int* __restrict__ members) {
+  tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
   const int p = blockIdx.x * blockDim.x + threadIdx.x;
   if (p < P) members[hist[(size_t)(p / PLAN_THREADS) * E + picks[p]] + rank[p]] = p;
 }
@@ -287,7 +293,7 @@ __global__ void plan_scatter(const int* __restrict__ picks, int P, int E, const 
 template <int GS, int M, int EPI>
 void launch(const at::Tensor& x, int x_stride, int slots, const at::Tensor& w, int kg, int nb, const at::Tensor& items,
             const at::Tensor& counts, const at::Tensor& members, at::Tensor& out, int n, float limit,
-            int64_t max_units) {
+            int64_t max_units, bool pdl) {
   constexpr int D = 2, WARPS = 4;
   static int per_sm = 0;
   static int sms = 0;
@@ -299,50 +305,48 @@ void launch(const at::Tensor& x, int x_stride, int slots, const at::Tensor& w, i
   const int64_t need = (max_units + WARPS - 1) / WARPS;
   const int grid = static_cast<int>(need < (int64_t)per_sm * sms ? need : (int64_t)per_sm * sms);
   if (grid < 1) return;
-  expert_kernel<GS, M, EPI, D, WARPS><<<grid, WARPS * 32, 0, at::cuda::getCurrentCUDAStream()>>>(
+  tensorfold::launch(expert_kernel<GS, M, EPI, D, WARPS>, dim3(grid), dim3(WARPS * 32), 0, pdl,
       reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), x_stride, slots,
-      reinterpret_cast<const uint4*>(w.data_ptr()), kg, nb, items.data_ptr<int>(), counts.data_ptr<int>(),
-      members.data_ptr<int>(), out.data_ptr(), n, limit);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+      reinterpret_cast<const uint4*>(w.data_ptr()), kg, nb, static_cast<const int*>(items.data_ptr<int>()),
+      static_cast<const int*>(counts.data_ptr<int>()), static_cast<const int*>(members.data_ptr<int>()),
+      out.data_ptr(), n, limit);
 }
 
 }  // namespace
 
 void experts_plan_cuda(const at::Tensor& picks, int64_t pairs, int64_t experts, int64_t tile, at::Tensor& members,
-                       at::Tensor& items, at::Tensor& counts, at::Tensor& rank, at::Tensor& hist) {
+                       at::Tensor& items, at::Tensor& counts, at::Tensor& rank, at::Tensor& hist, bool pdl) {
   const c10::cuda::CUDAGuard guard(picks.device());
   TORCH_CHECK(experts <= EMAX, "experts: at most ", EMAX, " experts");
-  const auto stream = at::cuda::getCurrentCUDAStream();
   const int P = static_cast<int>(pairs), E = static_cast<int>(experts), T = static_cast<int>(tile);
+  const int* pk = picks.data_ptr<int>();
   if (P <= PSMALL) {
-    plan_kernel<<<1, PLAN_THREADS, 0, stream>>>(picks.data_ptr<int>(), P, E, T, members.data_ptr<int>(),
-                                                 items.data_ptr<int>(), counts.data_ptr<int>());
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    tensorfold::launch(plan_kernel, dim3(1), dim3(PLAN_THREADS), 0, pdl, pk, P, E, T, members.data_ptr<int>(),
+                       items.data_ptr<int>(), counts.data_ptr<int>());
     return;
   }
   const int nblk = (P + PLAN_THREADS - 1) / PLAN_THREADS;
   TORCH_CHECK(rank.numel() >= P && hist.numel() >= (int64_t)nblk * E, "experts: plan scratch too small");
-  plan_rank<<<nblk, PLAN_THREADS, 0, stream>>>(picks.data_ptr<int>(), P, E, rank.data_ptr<int>(),
-                                               hist.data_ptr<int>());
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  plan_offsets<<<1, PLAN_THREADS, 0, stream>>>(nblk, E, T, hist.data_ptr<int>(), items.data_ptr<int>(),
-                                               counts.data_ptr<int>());
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-  plan_scatter<<<(P + 255) / 256, 256, 0, stream>>>(picks.data_ptr<int>(), P, E, rank.data_ptr<int>(),
-                                                    hist.data_ptr<int>(), members.data_ptr<int>());
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  tensorfold::launch(plan_rank, dim3(nblk), dim3(PLAN_THREADS), 0, pdl, pk, P, E, rank.data_ptr<int>(),
+                     hist.data_ptr<int>());
+  tensorfold::launch(plan_offsets, dim3(1), dim3(PLAN_THREADS), 0, pdl, nblk, E, T, hist.data_ptr<int>(),
+                     items.data_ptr<int>(), counts.data_ptr<int>());
+  tensorfold::launch(plan_scatter, dim3((P + 255) / 256), dim3(256), 0, pdl, pk, P, E,
+                     static_cast<const int*>(rank.data_ptr<int>()), static_cast<const int*>(hist.data_ptr<int>()),
+                     members.data_ptr<int>());
 }
 
 void experts_run_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_stride, int64_t slots,
                       const at::Tensor& w, int64_t kg, int64_t nb, const at::Tensor& items, const at::Tensor& counts,
-                      const at::Tensor& members, at::Tensor& out, int64_t n, double limit, int64_t max_units) {
+                      const at::Tensor& members, at::Tensor& out, int64_t n, double limit, int64_t max_units,
+                      bool pdl) {
   const c10::cuda::CUDAGuard guard(x.device());
   const int xs = static_cast<int>(x_stride), sl = static_cast<int>(slots), k = static_cast<int>(kg);
   const int b = static_cast<int>(nb), nn = static_cast<int>(n);
   const float lim = static_cast<float>(limit);
 #define TF_RUN(GS_, M_, EPI_)                                                                        \
   if (gs == GS_ && epi == EPI_) {                                                                    \
-    launch<GS_, M_, EPI_>(x, xs, sl, w, k, b, items, counts, members, out, nn, lim, max_units);     \
+    launch<GS_, M_, EPI_>(x, xs, sl, w, k, b, items, counts, members, out, nn, lim, max_units, pdl); \
     return;                                                                                          \
   }
   TF_RUN(32, 1, 0) TF_RUN(32, 2, 2) TF_RUN(64, 1, 0) TF_RUN(64, 1, 1) TF_RUN(64, 2, 2)

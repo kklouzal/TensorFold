@@ -7,6 +7,8 @@ from pathlib import Path
 
 import torch
 
+from tensorfold.cuda import pdl
+
 from .gdn import DK, DV
 
 
@@ -15,7 +17,7 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_qwen4_exp_gdn_io", sources=[str(here / "gdn_io.cpp"), str(here / "gdn_io.cu")],
+    return load(name="tensorfold_qwen4_exp_gdn_io_v2", sources=[str(here / "gdn_io.cpp"), str(here / "gdn_io.cu")],
                 extra_cuda_cflags=["-O3", "--fmad=false"], verbose=False)
 
 
@@ -30,7 +32,7 @@ def front(p: torch.Tensor, conv_ptrs: torch.Tensor, sid: torch.Tensor, windows: 
         v = torch.empty((rows, nv, DV), dtype=torch.bfloat16, device=dev)
         g = torch.empty((rows, nv), dtype=torch.float32, device=dev)
         out = (q, torch.empty_like(q), v, g, torch.empty_like(g))
-    _ext().front(p, conv_ptrs, sid, windows, conv_w, a_log, dt_bias, *out)
+    _ext().front(p, conv_ptrs, sid, windows, conv_w, a_log, dt_bias, *out, pdl.ON)
     return out
 
 
@@ -38,4 +40,4 @@ def back(y: torch.Tensor, p: torch.Tensor, norm_w: torch.Tensor, eps: float, out
          xs: torch.Tensor) -> None:
     """Gated RMSNorm of the read-out ``y`` (z from ``p``) into bf16 ``out`` and its 32-channel group sums ``xs``."""
 
-    _ext().back(y, p, norm_w, float(eps), out, xs)
+    _ext().back(y, p, norm_w, float(eps), out, xs, pdl.ON)

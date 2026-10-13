@@ -5,6 +5,8 @@
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
+#include "pdl.cuh"
+
 namespace {
 
 constexpr int DK = 128;
@@ -92,6 +94,7 @@ __global__ void __launch_bounds__(32 * WARPS) tree_kernel(
         const long long* __restrict__ table, const int* __restrict__ starts, const int* __restrict__ plan,
         int nodes, __nv_bfloat16* __restrict__ y, int hk, int hv, int dv, Pending<QK> pending, float* final_state,
         const long long* __restrict__ final_table) {
+    tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
     extern __shared__ float4 smem[];
     int* order = reinterpret_cast<int*>(smem + WARPS * SLOTS * R * 32);
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
@@ -214,6 +217,7 @@ template <typename QK, int R, int WARPS>
 __global__ void __launch_bounds__(32 * WARPS) replay_kernel(
         const long long* __restrict__ table, int layers, const int* __restrict__ rows, int row_stride,
         const int* __restrict__ counts, int count_stride, float* __restrict__ out, int hk, int hv, int dv) {
+    tensorfold::pdl_wait();                            // every block, before its first read (a PDL launch)
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int head = blockIdx.y, stream = blockIdx.z / layers, layer = blockIdx.z % layers;
     const int value0 = (blockIdx.x * WARPS + warp) * R;
@@ -255,19 +259,18 @@ template <typename QK, int SLOTS, int R, int WARPS, bool CHAIN>
 void launch_tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const at::Tensor& g,
                  const at::Tensor& beta, const float* state, const long long* table, const int* starts,
                  const at::Tensor& plan, int nodes, int streams, int max_rows, at::Tensor& y, Pending<QK> pend,
-                 float* final_state, const long long* final_table) {
+                 float* final_state, const long long* final_table, bool pdl) {
     const int hk = q.size(1), hv = v.size(1), dv = v.size(2);
     const dim3 grid((dv + R * WARPS - 1) / (R * WARPS), hv, streams);
     const size_t shared = sizeof(float4) * WARPS * SLOTS * R * 32 + (CHAIN ? 0 : sizeof(int) * 3 * max_rows);
     auto kernel = tree_kernel<QK, SLOTS, R, WARPS, CHAIN>;
     if (shared > 48 * 1024)
         C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared));
-    kernel<<<grid, 32 * WARPS, shared, at::cuda::getCurrentCUDAStream()>>>(
+    tensorfold::launch(kernel, grid, dim3(32 * WARPS), shared, pdl,
         reinterpret_cast<const QK*>(q.data_ptr()), reinterpret_cast<const QK*>(k.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()), g.data_ptr<float>(), beta.data_ptr<float>(),
         state, table, starts, plan.data_ptr<int>(), nodes,
         reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), hk, hv, dv, pend, final_state, final_table);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <typename QK>
@@ -284,10 +287,10 @@ template <typename QK>
 void dispatch_tree(int slots, const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const at::Tensor& g,
                    const at::Tensor& beta, const float* state, const long long* table, const int* starts,
                    const at::Tensor& plan, int nodes, int streams, int max_rows, at::Tensor& y, Pending<QK> pend,
-                   float* final_state, const long long* final_table) {
+                   float* final_state, const long long* final_table, bool pdl) {
     // no slots: every window is a chain in row order, no plan to read; more slots, fewer rows a warp to cap memory
 #define TREE(S, R, W, C) launch_tree<QK, S, R, W, C>(q, k, v, g, beta, state, table, starts, plan, nodes, streams, \
-                                                     max_rows, y, pend, final_state, final_table)
+                                                     max_rows, y, pend, final_state, final_table, pdl)
 #define TREE_(S, R, W) TREE(S, R, W, false)
     if (slots == 0) TREE(0, 8, 4, true);
     else if (slots <= 2) TREE_(2, 4, 4);
@@ -305,7 +308,7 @@ void gdn_tree_cuda(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v
                    const at::Tensor& beta, const at::Tensor& state, const at::Tensor& table, const at::Tensor& starts,
                    const at::Tensor& plan, int slots, int streams, int max_rows, at::Tensor& y, const at::Tensor& pk,
                    const at::Tensor& pv, const at::Tensor& pg, const at::Tensor& pb, const at::Tensor& prows,
-                   const at::Tensor& pcounts, const at::Tensor& fstate, const at::Tensor& ftable) {
+                   const at::Tensor& pcounts, const at::Tensor& fstate, const at::Tensor& ftable, bool pdl) {
     const float* s = state.defined() ? state.data_ptr<float>() : nullptr;
     const long long* t = table.defined() ? reinterpret_cast<const long long*>(table.data_ptr<int64_t>()) : nullptr;
     const int* st = starts.defined() ? starts.data_ptr<int>() : nullptr;
@@ -314,26 +317,27 @@ void gdn_tree_cuda(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v
     const long long* ft = ftable.defined() ? reinterpret_cast<const long long*>(ftable.data_ptr<int64_t>()) : nullptr;
     if (q.scalar_type() == at::kFloat)
         dispatch_tree<float>(slots, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
-                             pending_of<float>(pk, pv, pg, pb, prows, pcounts), fs, ft);
+                             pending_of<float>(pk, pv, pg, pb, prows, pcounts), fs, ft, pdl);
     else
         dispatch_tree<__nv_bfloat16>(slots, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
-                                     pending_of<__nv_bfloat16>(pk, pv, pg, pb, prows, pcounts), fs, ft);
+                                     pending_of<__nv_bfloat16>(pk, pv, pg, pb, prows, pcounts), fs, ft, pdl);
 }
 
 void gdn_replay_cuda(const at::Tensor& table, int layers, int streams, const at::Tensor& rows,
-                     const at::Tensor& counts, const at::Tensor& out, int hk, int hv, int dv, bool fp32_keys) {
+                     const at::Tensor& counts, const at::Tensor& out, int hk, int hv, int dv, bool fp32_keys,
+                     bool pdl) {
     constexpr int R = 8, WARPS = 4;
     const dim3 grid((dv + R * WARPS - 1) / (R * WARPS), hv, layers * streams);
-    auto stream = at::cuda::getCurrentCUDAStream();
     const auto* t = reinterpret_cast<const long long*>(table.data_ptr<int64_t>());
     const int rs = rows.size(0) <= 1 ? 0 : static_cast<int>(rows.stride(0));
     const int cs = counts.size(0) <= 1 ? 0 : static_cast<int>(counts.stride(0));
     float* dst = out.defined() ? out.data_ptr<float>() : nullptr;
     if (fp32_keys)
-        replay_kernel<float, R, WARPS><<<grid, 32 * WARPS, 0, stream>>>(
-            t, layers, rows.data_ptr<int>(), rs, counts.data_ptr<int>(), cs, dst, hk, hv, dv);
+        tensorfold::launch(replay_kernel<float, R, WARPS>, grid, dim3(32 * WARPS), 0, pdl,
+                           t, layers, static_cast<const int*>(rows.data_ptr<int>()), rs,
+                           static_cast<const int*>(counts.data_ptr<int>()), cs, dst, hk, hv, dv);
     else
-        replay_kernel<__nv_bfloat16, R, WARPS><<<grid, 32 * WARPS, 0, stream>>>(
-            t, layers, rows.data_ptr<int>(), rs, counts.data_ptr<int>(), cs, dst, hk, hv, dv);
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+        tensorfold::launch(replay_kernel<__nv_bfloat16, R, WARPS>, grid, dim3(32 * WARPS), 0, pdl,
+                           t, layers, static_cast<const int*>(rows.data_ptr<int>()), rs,
+                           static_cast<const int*>(counts.data_ptr<int>()), cs, dst, hk, hv, dv);
 }
