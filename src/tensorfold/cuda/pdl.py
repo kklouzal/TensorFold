@@ -13,15 +13,13 @@ policy; other chips off until measured; ``TENSORFOLD_PDL`` = 1 or 0 forces it on
 every launch site passes (its kernels' ``PDL`` constexpr and Triton's ``launch_pdl``, the extensions' attribute). It
 is one process global, with this contract:
 
-- Writers: only the Flash Next concurrent decoder. ``MultiDecoder.__init__`` sets the chip's policy,
-  ``MultiDecoder.round`` sets it at each round's start (the policy and the benchmark switch "pdl"), and
-  ``RoundGraphs.capture`` sets each captured variant and restores the value it found. The initial value (False)
-  launches every site's original code.
+- Writers: only the Flash Next concurrent decoder. ``MultiDecoder.__init__`` and ``MultiDecoder.round`` (at each
+  round's start) set the decoder's policy, and ``RoundGraphs.capture`` sets it for the captured keys and restores
+  the value it found. The initial value (False) launches every site's original code.
 - Readers: every launch of a converted kernel in the process follows its current value: the rounds, and also the
   prompt passes run between rounds, warm-up and capture forwards, and other engines' launches of the shared kernels
   (``tensorfold.cuda.kernels.qmm``/``gdn``, ``tensorfold.cuda.moe``/``experts``). Either value gives the same results,
-  so it changes launch overlap only; the "pdl" switch measures the rounds, and passes between rounds keep the last
-  round's value.
+  so it changes launch overlap only; passes between rounds keep the last round's value.
 - Threads: a launch site reads ``ON`` twice (the kernel's constexpr and the launch attribute); a change between the
   reads could launch a kernel compiled without its wait with the attribute. It is therefore written only on the
   thread that launches the decode kernels and never while a launch is being built: the constructing thread through

@@ -1,4 +1,4 @@
-"""Time Flash Next's QSA block selection: today's one-CTA-a-row kernels ("old": ``_select`` within its registers,
+"""Time Flash Next's QSA block selection: the one-CTA-a-row kernels ("old": ``_select`` within its registers,
 ``_select_tiles`` past them) against the multi-CTA select ("T", ``attention._select_multi``) and the launcher's policy
 ("policy"), and, for several streams, each stream's own select ("old") against one select over every stream's rows
 ("new": the policy with per-row positions). With --unit each call scores the blocks first (several streams: each
@@ -34,7 +34,7 @@ import numpy as np
 import torch
 import triton
 
-from tensorfold.cuda import ab_switch, geometry
+from tensorfold.cuda import geometry
 from tensorfold.families.qwen4_exp.cuda import attention as att
 from tensorfold.families.qwen4_exp.cuda import attn_multi
 
@@ -88,8 +88,8 @@ class Case:
                                                              TOP=TOP, BB=64, num_warps=4)
 
     def select_old(self, s: int) -> None:
-        """Today's kernel choice for one stream's rows (``_launch_select`` before T): one stream launches on the
-        scratch itself (``qsa_rows``), several each on their rows' views (``attn_multi._rows_from``)."""
+        """The kernel choice before T for one stream's rows (``_launch_select`` then; concurrent steps ran one a
+        stream): one stream launches on the scratch itself (``qsa_rows``), several each on their rows' views."""
 
         a0, sc, n = s * self.each, self.sc, self.each
         width = triton.next_power_of_2(self.blocks)
@@ -196,9 +196,9 @@ def revision() -> dict:
 
 def environment(args) -> dict:
     p = torch.cuda.get_device_properties(torch.cuda.current_device())
-    # every file whose bytes define what is measured: the kernels and their launchers, the scratch's constants, the
-    # A/B switch the policy reads, and this tool
-    files = [att.__file__, attn_multi.__file__, geometry.__file__, ab_switch.__file__, __file__]
+    # every file whose bytes define what is measured: the kernels and their launchers, the scratch's constants and
+    # this tool
+    files = [att.__file__, attn_multi.__file__, geometry.__file__, __file__]
     return {"device": p.name, "sms": p.multi_processor_count, "l2_bytes": p.L2_cache_size,
             "capability": list(torch.cuda.get_device_capability()), "torch": torch.__version__,
             "triton": triton.__version__, "cuda": torch.version.cuda, "python": platform.python_version(),
@@ -207,8 +207,7 @@ def environment(args) -> dict:
             "revision": revision(), "source_rev": args.source_rev, "argv": sys.argv, "before": conditions(),
             "policy": {"MULTI_ROWS": att.MULTI_ROWS, "MULTI_MIN_BLOCKS": att.MULTI_MIN_BLOCKS,
                        "SELECT_TB": att.SELECT_TB, "SELECT_FILL": att.SELECT_FILL,
-                       "SELECT_SLICES": att.SELECT_SLICES, "SELECT_SPAN": att.SELECT_SPAN,
-                       "qsa": "new" if att.qsa_new() else "old"}}
+                       "SELECT_SLICES": att.SELECT_SLICES, "SELECT_SPAN": att.SELECT_SPAN}}
 
 
 def run_case(case: Case, names: list[str], args, flush: torch.Tensor | None, rng) -> dict:

@@ -11,15 +11,15 @@ import torch
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.kernels import gdn
 
-from tensorfold.cuda import ab_switch, pdl
+from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
 from tensorfold.cuda.draft_log import DraftWatch
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
 from tensorfold.cuda.record_writer import close_all
 from tensorfold.cuda.round_profile import RoundProfile
-from tensorfold.cuda.sampling import (TokenMap, collect_streams, launch_streams, repaired_choose, sample_streams,
-                                     validate_policy, validate_rows)
+from tensorfold.cuda.sampling import (TokenMap, collect_streams, launch_streams, repaired_choose, validate_policy,
+                                     validate_rows)
 from tensorfold.cuda.streams import Stream, accept
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows, keyed_margins, value_gap
 from tensorfold.engine.grammar import GrammarError
@@ -83,12 +83,10 @@ class MultiDecoder:
         self.gdn = gdn_multi.Scratch(w, rows)            # every stream's DeltaNet rows, one launch a step
         # a frame's codec status words, read back with its sampling packet (KVWords): one host wait a step
         self.kv_host = torch.zeros((slots, 2), dtype=torch.int32, pin_memory=torch.cuda.is_available())
-        self.b1 = True                                   # benchmark switch "b1" (round()): one readback a step
         # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
         self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
         self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
         self.mtp_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=True) if w.mtp is not None else None
-        self.static = True                               # benchmark switch "graphs" (round()): the above, replays
         # captured rounds (multi_graphs; ``capture_graphs`` at warm-up): None until then, or when not captured
         self.graphs: multi_graphs.RoundGraphs | None = None
         reason = None if graphs else "not requested"
@@ -607,10 +605,7 @@ class MultiDecoder:
     def round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
-        ab_switch.refresh()
-        self.b1 = b1 = ab_switch.new("b1")               # "old": A/B baseline, remove after selection
-        self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
-        pdl.ON = self.pdl and ab_switch.new("pdl")       # "old": A/B baseline, remove after selection
+        pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
         self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:
@@ -649,8 +644,8 @@ class MultiDecoder:
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
-        # "b2" (default): the n-gram rows are read once the forward reaches their layer, behind the layers before it
-        segs = stage(self.w, self.buf, windows, late=ab_switch.new("b2"))    # "old": A/B baseline, remove
+        # the n-gram rows are read once the forward reaches their layer, behind the layers before it
+        segs = stage(self.w, self.buf, windows, late=True)
         if prof is not None:
             prof.mark("stage")
             self.buf.late_s = 0.0
@@ -667,10 +662,9 @@ class MultiDecoder:
                 ended += self._failed(pieces, exc)
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
-        tables = self.buf.gdn_tables = gdn_multi.Tables(self.w, self.gdn, segs, held,
-                                                        static=self.round_tables if static else None)
-        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, rotor_lookup=self.buf.rotor_lookup,
-                                             tables=self.step_tables if static else None)
+        tables = self.buf.gdn_tables = gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
+        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, tables=self.step_tables,
+                                             rotor_lookup=self.buf.rotor_lookup)
         if prof is not None:
             prof.mark("tables", gpu=True)
         try:
@@ -679,7 +673,7 @@ class MultiDecoder:
                 logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts)
                 heads = heads[:len(pends)].clone() if pends else None
             else:                                      # a captured forward when one serves this round, else eager
-                logits = self.graphs.verify_forward(segs) if static and self.graphs is not None else None
+                logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
                 if logits is None:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
                 else:
@@ -689,37 +683,26 @@ class MultiDecoder:
         if prof is not None:
             prof.mark("verify_enq", gpu=True)            # host: the enqueue (a mixed round: its drain too)
             ple_ms, self.buf.late_s = round(1e3 * self.buf.late_s, 4), None   # the late n-gram reads, inside it
-        if not b1:                                       # A/B baseline: remove after selection
-            _kv_check(segs)                              # A/B baseline: remove after selection
-            if prof is not None:                         # A/B baseline: remove after selection
-                prof.mark("kv_wait")                     # A/B baseline: remove after selection
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
         if prof is not None and pieces:
             prof.mark("absorb", gpu=True)
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         samplings = [s.sampling for s in live]
-        if b1:
-            # one host wait for the packets and the frame's status words, latched before any score is used; a
-            # failure before that wait reports a failed frame first, as the check right after the forward did
-            words = KVWords(segs, self.kv_host)
-            try:
-                for s, (_, a0, a1) in zip(live, segs):
-                    if s.sid in grammars:
-                        s.constraint.mask(logits[a0:a1], grammars[s.sid])
-                launched = launch_streams(logits, starts, positions, samplings)
-            except BaseException:
-                words.settle()
-                raise
-            if prof is not None:
-                prof.mark("sample_enq", gpu=True)
-            sampled = collect_streams(launched, words, (lambda: prof.mark("sample_wait")) if prof is not None
-                                      else None)
-        else:                                            # A/B baseline: remove after selection
-            for s, (_, a0, a1) in zip(live, segs):       # A/B baseline: remove after selection
-                if s.sid in grammars:                    # A/B baseline: remove after selection
-                    s.constraint.mask(logits[a0:a1], grammars[s.sid])   # A/B baseline: remove after selection
-            sampled = sample_streams(logits, starts, positions, samplings)   # A/B baseline: remove after selection
+        # one host wait for the packets and the frame's status words, latched before any score is used; a failure
+        # before that wait reports a failed frame first, as a check right after the forward would
+        words = KVWords(segs, self.kv_host)
+        try:
+            for s, (_, a0, a1) in zip(live, segs):
+                if s.sid in grammars:
+                    s.constraint.mask(logits[a0:a1], grammars[s.sid])
+            launched = launch_streams(logits, starts, positions, samplings)
+        except BaseException:
+            words.settle()
+            raise
+        if prof is not None:
+            prof.mark("sample_enq", gpu=True)
+        sampled = collect_streams(launched, words, (lambda: prof.mark("sample_wait")) if prof is not None else None)
         if prof is not None:
             prof.mark("sample", gpu=True)
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
@@ -765,7 +748,7 @@ class MultiDecoder:
             prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
                      window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
                      pass_rows=passed, chained=self.chained, ple_ms=ple_ms, replays=self.replays,
-                     source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
+                     source=[self.sources.get(s.sid, "") for s in live])
             self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
                             for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
         self._timed(spent, passed)
@@ -807,14 +790,7 @@ class MultiDecoder:
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
                 st.set_mtp_len(st.mtp_len + len(keep))
 
-        if self.b1:                                      # its status words join the first draft's readback
-            words = KVWords(segs, self.kv_host, absorbed)
-        else:                                            # A/B baseline: remove after selection
-            words = None                                 # A/B baseline: remove after selection
-            _kv_check(segs)                              # A/B baseline: remove after selection
-            if prof is not None:                         # A/B baseline: remove after selection
-                prof.mark("mtp_absorb_wait")             # A/B baseline: remove after selection
-            absorbed()                                   # A/B baseline: remove after selection
+        words = KVWords(segs, self.kv_host, absorbed)    # its status words join the first draft's readback
         # the reply index of each stream's first draft: its new tokens are not taken yet
         base = {s.sid: len(s.out) + len(keep) for s, _, keep in todo} if watch is not None else None
         active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
@@ -837,18 +813,15 @@ class MultiDecoder:
                     logits = logits[keep_rows]
                 active = [active[i] for i in keep_rows]
             except BaseException:
-                if words is not None:
-                    words.settle()
+                words.settle()
                 raise
             if not active:                               # every stream copies: no draft readback checks the absorb
-                if words is not None:
-                    words.settle()
+                words.settle()
                 return 1
         self._chain(active, logits, room, base, words)
         return 1 + self.chained                          # the absorb, then the chain (round() zeroed it)
 
-    def _chain(self, active: list, logits: torch.Tensor, room: dict, base: dict | None,
-               words: KVWords | None = None) -> None:
+    def _chain(self, active: list, logits: torch.Tensor, room: dict, base: dict | None, words: KVWords) -> None:
         """Chain MTP drafts from the absorb's logits, all streams in one step a depth (``self.chained`` steps).
 
         Draft j is keyed at its verify row's position. A draft below the confidence ends its stream's chain; the first
@@ -862,7 +835,7 @@ class MultiDecoder:
         shadow: set[int] = set()                         # probe rounds: streams the rule stopped, chained for labels
         for j in range(self.depth):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
-                                margins, words, f"pick{j}_wait" if prof is not None else None)
+                                words, margins, f"pick{j}_wait" if prof is not None else None)
             if prof is not None:
                 prof.mark(f"pick{j}", gpu=True)
             nxt = []
@@ -893,14 +866,7 @@ class MultiDecoder:
                     s.st.set_mtp_len(s.st.mtp_len + 1)
                     s.st.mtp_drafted += 1
 
-            if self.b1:                                  # the next pick's readback checks them (a step always has one)
-                words = KVWords(segs, self.kv_host, chained)
-            else:                                        # A/B baseline: remove after selection
-                words = None                             # A/B baseline: remove after selection
-                _kv_check(segs)                          # A/B baseline: remove after selection
-                if prof is not None:                     # A/B baseline: remove after selection
-                    prof.mark(f"chain{j + 1}_wait")      # A/B baseline: remove after selection
-                chained()                                # A/B baseline: remove after selection
+            words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
         if items is not None:
             for sid, (s, drafted) in items.items():
@@ -913,10 +879,10 @@ class MultiDecoder:
         if self.live() == 1:
             request = next(iter(self.streams.values())) if self.streams else self.filling[0]
             self.mbuf.rotor_lookup = self._rotor_lookup(request, len(segs))
-        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, rotor_lookup=self.mbuf.rotor_lookup,
-                                              tables=self.mtp_tables if self.static else None)
+        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, tables=self.mtp_tables,
+                                              rotor_lookup=self.mbuf.rotor_lookup)
         try:                                             # the caller checks the step's status
-            out = self.graphs.mtp_step(segs) if self.static and self.graphs is not None else None
+            out = self.graphs.mtp_step(segs) if self.graphs is not None else None
             if out is None:
                 return mtp_compute(self.w, segs, self.mbuf, check=False)
             self.replays += 1
@@ -924,8 +890,8 @@ class MultiDecoder:
         finally:
             self.mbuf.attn_step = None
 
-    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list, margins: bool = False,
-               words: KVWords | None = None, wait: str | None = None) -> list[tuple[int, float, dict | None]]:
+    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list, words: KVWords,
+               margins: bool = False, wait: str | None = None) -> list[tuple[int, float, dict | None]]:
         """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
         Positive keyed policies use global-ID ties. Borrow full rows only to
@@ -952,12 +918,10 @@ class MultiDecoder:
             if self._draft_map is not None:
                 self._draft_map.ids(logits.shape[1])
         except BaseException:
-            if words is not None:
-                words.settle()
+            words.settle()
             raise
         if not positions:
-            if words is not None:
-                words.settle()
+            words.settle()
             return []
         try:                                             # a failure before the words' check settles them first
             row = logits.float()
@@ -977,21 +941,16 @@ class MultiDecoder:
             lse = torch.logsumexp(row, dim=-1, keepdim=True)
             got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
                              lse.view(torch.int32).to(torch.int64)], dim=1)
-            if words is None:                            # A/B baseline: remove after selection
-                got = got.cpu().numpy()                  # A/B baseline: remove after selection
-            else:
-                words.queue()
-                got = got.to("cpu", non_blocking=True)
-                torch.cuda.current_stream(logits.device).synchronize()
+            words.queue()
+            got = got.to("cpu", non_blocking=True)
+            torch.cuda.current_stream(logits.device).synchronize()
             if wait is not None:
                 self.prof.mark(wait)
         except BaseException:
-            if words is not None:
-                words.settle()
+            words.settle()
             raise
-        if words is not None:
-            words.check()
-            got = got.numpy()
+        words.check()
+        got = got.numpy()
         normalizers = got[:, 2 * k + 2].astype(np.int32).view(np.float32)
         if not np.isfinite(normalizers).all():
             raise ValueError("FP32 draft confidence normalization is nonfinite")

@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import gc
 import time
+from functools import partial
 
 import torch
 
 from tensorfold.cleanup import raise_failures
-from tensorfold.cuda import ab_switch, pdl
+from tensorfold.cuda import pdl
+# re-exported for the decoder (multi.py): the captured rounds' budget, geometry's variable and parser (one source)
 from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_bytes as budget_bytes  # noqa: F401
 
 from . import attn_multi, gdn_multi
@@ -59,7 +61,7 @@ def capturable(w) -> str | None:
 
 
 class Pieces:
-    """One key's captured pieces, the inserts between them (``(kind, layer, mtp)``) and its output view."""
+    """One key's captured pieces, the inserts between them (``(kind, layer)``) and its output view."""
 
     __slots__ = ("graphs", "inserts", "out")
 
@@ -90,8 +92,7 @@ class RoundGraphs:
         """The round's verify logits from its captured key (its tables written), or None: this round runs eagerly."""
 
         b = self.dec.buf
-        step = b.attn_step
-        if b.rotor_lookup or step.vision or not step.fixed:
+        if b.rotor_lookup or b.attn_step.vision:
             return None
         pieces = self.verify.get((pdl.ON, len(segs), segs[-1][2], self.dec.gdn.parity))
         if pieces is None:
@@ -101,8 +102,7 @@ class RoundGraphs:
 
     def mtp_step(self, segs) -> torch.Tensor | None:
         b = self.dec.mbuf
-        step = b.attn_step
-        if b.rotor_lookup or step.vision or not step.fixed:
+        if b.rotor_lookup or b.attn_step.vision:
             return None
         pieces = self.mtp.get((pdl.ON, len(segs), segs[-1][2]))
         if pieces is None:
@@ -117,9 +117,9 @@ class RoundGraphs:
             graph.replay()
             if insert is None:
                 continue
-            kind, layer, mtp = insert
+            kind, layer = insert
             if kind == "select":
-                attn_multi.select(layer, w, b, b.attn_step, mtp)
+                attn_multi.select(layer, w, b, b.attn_step)
             elif kind == "ple_conv":
                 ple_conv_streams(layer, w, segs, b)
             elif b.ple_late is not None:                 # "ple_stage": the late n-gram reads (stage(late=True))
@@ -175,14 +175,12 @@ class RoundGraphs:
         slots are reset afterwards; the settled drop of the whole capture (after ``empty_cache``) is recorded, and
         the stream caches' room loses the larger of it and the keys' sum (``room_bytes``).
 
-        Keys are captured with the chip's PDL policy (``dec.pdl``); during a benchmark A/B (TENSORFOLD_AB_CONTROL,
-        switch "pdl") on a PDL chip, every key is then captured once more without it, budget permitting. A failure
-        stays the raised error; a failed restore of the slots afterwards is attached to it."""
+        Keys are captured with the decoder's PDL policy (``dec.pdl``, which its rounds launch with). A failure stays
+        the raised error; a failed restore of the slots afterwards is attached to it."""
 
         dec = self.dec
         states = list(dec.free)
         parity, launch = dec.gdn.parity, pdl.ON
-        variants = [dec.pdl] + ([False] if dec.pdl and ab_switch.active() else [])     # A/B baseline: remove
         started = time.perf_counter()
         torch.cuda.synchronize()
         gc.collect()
@@ -192,7 +190,7 @@ class RoundGraphs:
         gc.disable()                                     # collecting a graph's exec invalidates an active capture
         primary = None
         try:
-            self._keys(variants, states)
+            self._keys(states)
         except BaseException as error:
             primary = error
         finally:
@@ -220,37 +218,35 @@ class RoundGraphs:
         self.room_bytes = max(self.bytes, self.settled_bytes)
         self.capture_s = time.perf_counter() - started
 
-    def _keys(self, variants: list[bool], states) -> None:
+    def _keys(self, states) -> None:
         dec = self.dec
-        slots, width = len(states), dec.depth + 1
-        for variant in variants:
-            pdl.ON = variant
-            for n in range(1, slots + 1):
-                for rows in range(n, n * width + 1):
-                    keys = [("verify", rows, p) for p in (0, 1)] + \
-                        ([("mtp", rows, 0)] if dec.mbuf is not None else [])
-                    for kind, R, p in keys:
-                        t0 = time.perf_counter()
-                        run, b = self._warm(kind, states[:n], R, p)
-                        # the warm-up's allocator blocks and module loads are taken as it is enqueued: no wait
-                        free = free_bytes()
-                        pieces = self._pieces(run, b)
-                        torch.cuda.synchronize()
-                        took = free - free_bytes()
-                        if pieces.out is None:
-                            raise RuntimeError(f"a captured {kind} step returned no logits")
-                        if self.bytes + max(0, took) > self.budget:
-                            del pieces                   # this key's graphs go; the earlier keys stay
-                            self.stopped = (f"{(self.bytes + took) / MIB:.0f} MiB with the next key exceeds the "
-                                            f"{self.budget // MIB} MiB budget")
-                            return
-                        if kind == "verify":
-                            self.verify[(variant, n, R, p)] = pieces
-                        else:
-                            self.mtp[(variant, n, R)] = pieces
-                        self.measured.append({"key": [kind, variant, n, R, p], "pieces": len(pieces.graphs),
-                                              "bytes": took, "s": round(time.perf_counter() - t0, 4)})
-                        self.bytes += max(0, took)
+        slots, width, launch = len(states), dec.depth + 1, dec.pdl
+        pdl.ON = launch
+        for n in range(1, slots + 1):
+            for rows in range(n, n * width + 1):
+                keys = [("verify", rows, p) for p in (0, 1)] + ([("mtp", rows, 0)] if dec.mbuf is not None else [])
+                for kind, R, p in keys:
+                    t0 = time.perf_counter()
+                    run, b = self._warm(kind, states[:n], R, p)
+                    # the warm-up's allocator blocks and module loads are taken as it is enqueued: no wait
+                    free = free_bytes()
+                    pieces = self._pieces(run, b)
+                    torch.cuda.synchronize()
+                    took = free - free_bytes()
+                    if pieces.out is None:
+                        raise RuntimeError(f"a captured {kind} step returned no logits")
+                    if self.bytes + max(0, took) > self.budget:
+                        del pieces                       # this key's graphs go; the earlier keys stay
+                        self.stopped = (f"{(self.bytes + took) / MIB:.0f} MiB with the next key exceeds the "
+                                        f"{self.budget // MIB} MiB budget")
+                        return
+                    if kind == "verify":
+                        self.verify[(launch, n, R, p)] = pieces
+                    else:
+                        self.mtp[(launch, n, R)] = pieces
+                    self.measured.append({"key": [kind, launch, n, R, p], "pieces": len(pieces.graphs),
+                                          "bytes": took, "s": round(time.perf_counter() - t0, 4)})
+                    self.bytes += max(0, took)
 
     def _warm(self, kind: str, states, R: int, parity: int):
         """One key's eager warm-up forward (compiles and configures its kernels) on its tables; returns the forward
@@ -263,9 +259,9 @@ class RoundGraphs:
             b = dec.buf
             segs = stage(w, b, [(st, [0] * c) for st, c in zip(states, counts)])
             dec.gdn.parity = parity
-            b.gdn_tables = gdn_multi.Tables(w, dec.gdn, segs, [[] for _ in states], static=dec.round_tables)
+            b.gdn_tables = gdn_multi.Tables(dec.gdn, segs, [[] for _ in states], static=dec.round_tables)
             b.attn_step = attn_multi.Step(w, segs, mtp=False, tables=dec.step_tables)
-            run = lambda: compute(w, segs, b, check=False)                   # noqa: E731
+            run = partial(compute, w, segs, b, check=False)
         else:
             b = dec.mbuf
             at, windows, zeros = 0, [], torch.zeros_like(dec.buf.streams[:R])      # defined input streams
@@ -274,7 +270,7 @@ class RoundGraphs:
                 at += c
             segs = mtp_stage(w, b, windows)
             b.attn_step = attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables)
-            run = lambda: mtp_compute(w, segs, b, check=False)               # noqa: E731
+            run = partial(mtp_compute, w, segs, b, check=False)
         b.rotor_lookup = False
         run()
         _kv_check(segs)

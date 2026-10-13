@@ -306,8 +306,11 @@ The default CUDA cap is six MTP drafts, with chains stopping below the configure
 Single-request serving uses CUDA graphs for verify windows and draft steps. Two-rank reductions add
 gathered partials in rank order.
 
-On one GPU, `--parallel N` shares eager forwards across up to N requests;
-`--parallel auto` selects one request. Two-rank Flash Next retains serial text
+On one GPU, `--parallel N` shares forwards across up to N requests: pure
+decode rounds replay CUDA graphs captured at startup within
+`TENSORFOLD_MULTI_GRAPH_MIB` (default 512 MiB; `0` disables capture) and the
+other rounds run eagerly, with the same bits. `--parallel auto` selects one
+request. Two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
 two-rank/media expansion and persistent lone-stream graph selection remain
 isolated candidates until protocol, ownership and actual-target gates pass.

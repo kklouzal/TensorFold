@@ -240,7 +240,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     sections = getattr(c, "mrope_section", (11, 11, 10))
     step = None if b.prefill else getattr(b, "attn_step", None)     # a concurrent step: every stream at once
     if step is not None:
-        o = attn_multi.layer(layer, w, b, step, mtp, scale)
+        o = attn_multi.layer(layer, w, b, step, scale)
         glue.attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     for st, a0, a1 in segs:
@@ -312,7 +312,7 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
     glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
                   b.ple_pss[:R], c.eps, c.streams)
     if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
-        b.split(("ple_conv", layer, False))
+        b.split(("ple_conv", layer))
     else:
         ple_conv_streams(layer, w, segs, b)
 
@@ -485,7 +485,7 @@ def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int,
     h = b.h
     if layer.ple is not None:
         if b.split is not None:                      # a captured forward: the late n-gram rows go between pieces
-            b.split(("ple_stage", layer, False))
+            b.split(("ple_stage", layer))
         elif b.ple_late is not None:                 # the window's n-gram rows (stage(late=True)): read, copied
             stage_late(w, b)
         if pending is not None:
@@ -561,7 +561,7 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
 def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
     """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment.
 
-    ``late`` (benchmark switch "b2"): the rows' n-gram ids are found now, but their table reads (an SSD read with
+    ``late`` (a concurrent round's window): the rows' n-gram ids are found now, but their table reads (an SSD read with
     --ple-on-ssd) and copies wait for ``stage_late``, which the forward calls when it reaches the first n-gram layer:
     the reads overlap the GPU work of the layers before it, and the copies still precede every read of the rows."""
 

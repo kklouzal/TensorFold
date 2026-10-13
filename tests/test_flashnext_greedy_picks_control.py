@@ -33,6 +33,7 @@ class Tensor:
     def __init__(self, name, state):
         self.name, self.state = name, state
         self.shape = (len(state['samplings']), state['width'])
+        self.device = 'cuda'
     def float(self):
         return self
     def contiguous(self):
@@ -40,7 +41,11 @@ class Tensor:
     def view(self, dtype):
         self.state['word_views'].append((self.name, dtype))
         return self
-    def to(self, dtype):
+    def to(self, dtype, non_blocking=False):
+        if dtype == 'cpu':                       # the packet's one readback, queued behind the status words
+            self.state['host_reads'] += 1
+            self.state['readback'].append('read')
+            return self
         self.state['word_storage'].append((self.name, dtype))
         return self
     def __getitem__(self, key):
@@ -71,7 +76,7 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
     picks = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_picks')
     state = dict(samplings=samplings, topk=[], host_reads=0, k=0, repairs=0,
                  full_choices=0, word_views=[], word_storage=[], normalizer=normalizer, exp_inputs=[], width=width, column=column,
-                 margin_sources=[], gaps=[])
+                 margin_sources=[], gaps=[], readback=[])
     def topk(row, k, **kw):
         state['topk'].append((k, kw))
         state['k'] = k
@@ -103,8 +108,13 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
     def exponential(value):
         state['exp_inputs'].append(value)
         return .25
+    stream = SimpleNamespace(synchronize=lambda: state['readback'].append('wait'))
     torch = SimpleNamespace(topk=topk, cat=cat, int32='i32', int64='i64',
-                            logsumexp=lambda row, **kw: Tensor('lse', state))
+                            logsumexp=lambda row, **kw: Tensor('lse', state),
+                            cuda=SimpleNamespace(current_stream=lambda device: stream))
+    words = SimpleNamespace(queue=lambda: state['readback'].append('queue'),
+                            check=lambda: state['readback'].append('check'),
+                            settle=lambda: state['readback'].append('settle'))
     np = SimpleNamespace(exp=exponential, int32='i32', int64='i64', float32='f32', uint64=uint64,
         nonzero=lambda value: (value.hits,), isfinite=lambda values: SimpleNamespace(all=lambda: all(
             value == value and value not in (float('inf'), -float('inf')) for value in values))
@@ -118,7 +128,7 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
     host = Row(mapping) if mapping is not None else None
     owner = SimpleNamespace(draft_host=host, _draft_map=SimpleNamespace(ids=lambda width: host) if host is not None else None)
     values = namespace['_picks'](owner, Tensor('logits', state), [(1 << 64) - 1] * len(samplings), samplings,
-                                 margins)
+                                 words, margins)
     return state, values
 
 
@@ -129,6 +139,7 @@ class Controls(unittest.TestCase):
             self.assertEqual(state['topk'], [])
             self.assertEqual(state['payload'], ['top', 'column', 'lse'])
             self.assertEqual(state['host_reads'], 1)
+            self.assertEqual(state['readback'], ['queue', 'read', 'wait', 'check'])    # the status words ride it
             self.assertEqual(state['repairs'], 0)
             self.assertEqual(state['exp_inputs'], [3. - 4.] * 4)
             self.assertEqual(values, [(5, .25, None)] * 4)

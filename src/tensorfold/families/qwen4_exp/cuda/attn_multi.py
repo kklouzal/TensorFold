@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Sequence
 
 import numpy as np
@@ -12,8 +11,6 @@ import triton.language as tl
 
 from tensorfold.cuda import pdl
 from tensorfold.cuda.pdl import wait as pdl_wait
-
-from tensorfold.cuda.kernels import gdn as shared
 
 from . import attention as attn_mod, glue
 from .attention import CHUNK, _chunk, _chunk_pair, _merge_row, _pool_block, _score_rows
@@ -161,13 +158,11 @@ class StepTables:
 class Step:
     """A step's row, stream and cache-pointer tables (the MTP head's with ``mtp``), read now: caches may move.
 
-    ``tables`` (the buffer's ``StepTables``; benchmark switch "graphs"): written there, viewed at addresses fixed for
-    the step's stream and row counts, and ``layer`` launches a fixed geometry (``fixed``): pool programs for
-    ``tables.width`` rows a stream, every chunk. The extra programs write nothing (bit-equal), so a captured forward
-    serves every step of its stream and row counts. Else (A/B baseline) fresh uploads and the step's own geometry."""
+    Written to ``tables`` (the buffer's ``StepTables``) and viewed at addresses fixed for the step's stream and row
+    counts; ``layer`` launches a fixed geometry: pool programs for ``tables.width`` rows a stream, every chunk. The
+    extra programs write nothing (bit-equal), so a captured forward serves every step of its stream and row counts."""
 
-    def __init__(self, w, segs: Sequence, mtp: bool, *, rotor_lookup: bool = False,
-                 tables: StepTables | None = None) -> None:
+    def __init__(self, w, segs: Sequence, mtp: bool, tables: StepTables, *, rotor_lookup: bool = False) -> None:
         self.rotor_lookup = rotor_lookup
         n, rows = len(segs), segs[-1][2]
         self.identity = segs[0][0].kv_identity
@@ -197,23 +192,14 @@ class Step:
                     raise ValueError("a concurrent attention step needs matching ordered cache format pairs")
                 ptrs[i, :, s] = [kc.k.data_ptr(), kc.v.data_ptr(), kc.ks.data_ptr(), kc.vs.data_ptr(),
                                  ikc.data_ptr(), pooled.data_ptr()]
-        dev = w.device
-        self.fixed = tables is not None
-        if tables is not None:
-            t = tables
-            if n > t.slots or rows > t.rows or max(counts) > t.width or len(layers) != t.layers:
-                raise ValueError(f"a step of {n} streams and {rows} rows exceeds the static tables' {t.slots} x "
-                                 f"{t.width}")
-            h32, h64 = t.mirror()
-            h32[:rows], h32[t.rows:t.rows + rows] = posr, sid
-            h32[2 * t.rows:2 * t.rows + n], h32[2 * t.rows + t.slots:2 * t.rows + t.slots + n] = first, counts
-            h64[:len(layers) * PTRS * t.slots].reshape(len(layers), PTRS * t.slots)[:, :PTRS * n] = \
-                ptrs.reshape(len(layers), PTRS * n)
-        else:                                            # A/B baseline: remove after selection
-            ints = shared.to_device(np.concatenate([posr, sid, first, counts]).tolist(), torch.int32, dev)
-            self.posr, self.sid = ints[:rows], ints[rows:2 * rows]
-            self.first, self.counts = ints[2 * rows:2 * rows + n], ints[2 * rows + n:]
-            self.ptrs = shared.to_device(ptrs.ravel().tolist(), torch.int64, dev).view(len(layers), PTRS * n)
+        t = tables
+        if n > t.slots or rows > t.rows or max(counts) > t.width or len(layers) != t.layers:
+            raise ValueError(f"a step of {n} streams and {rows} rows exceeds the static tables' {t.slots} x {t.width}")
+        h32, h64 = t.mirror()
+        h32[:rows], h32[t.rows:t.rows + rows] = posr, sid
+        h32[2 * t.rows:2 * t.rows + n], h32[2 * t.rows + t.slots:2 * t.rows + t.slots + n] = first, counts
+        h64[:len(layers) * PTRS * t.slots].reshape(len(layers), PTRS * t.slots)[:, :PTRS * n] = \
+            ptrs.reshape(len(layers), PTRS * n)
         key, value = self.pair.key, self.pair.value
         self.k_bits, self.v_bits = (0 if key.bits == 16 else key.bits), (0 if value.bits == 16 else value.bits)
         self.native = self.pair.symmetric and key.codec == 0
@@ -224,36 +210,28 @@ class Step:
         self.merge_shader_args = ({} if self.native else dict(V_BITS=self.v_bits, V_CODEC=value.codec))
         if not self.native and any(st.kv_status is None for st, _, _ in segs):
             raise ValueError("mixed or RotorQuant Multi steps require each owning State status")
-        self.n, self.rows, self.segs = n, rows, list(segs)
+        self.n, self.rows = n, rows
         self.ends = [p0 + c for p0, c in zip(first, counts)]
-        self.most = max(counts)
         self.vision = any(st.image_positions is not None for st, _, _ in segs)
         vp = ([[st.image_positions.data_ptr() if st.image_positions is not None else st.pos_dev.data_ptr(),
                 st.rope_delta_dev.data_ptr(), 0 if st.image_positions is None else st.image_positions.shape[0]]
                for st, _, _ in segs] if self.vision else None)
-        if tables is not None:
-            t, at = tables, len(layers) * PTRS * tables.slots
-            if not self.native:
-                h64[at:at + n] = [st.kv_status.data_ptr() for st, _, _ in segs]
-            if vp is not None:
-                h64[at + t.slots:at + t.slots + 3 * n] = np.asarray(vp, dtype=np.int64).T.ravel()
-            t.upload()
-            self.posr, self.sid = t.i32[:rows], t.i32[t.rows:t.rows + rows]
-            self.first = t.i32[2 * t.rows:2 * t.rows + n]
-            self.counts = t.i32[2 * t.rows + t.slots:2 * t.rows + t.slots + n]
-            self.ptrs = t.i64[:at].view(len(layers), PTRS * t.slots)[:, :PTRS * n]
-            self.status_ptrs = None if self.native else t.i64[at:at + n]
-            self.vision_ptrs = t.i64[at + t.slots:at + t.slots + 3 * n] if vp is not None else self.ptrs[0]
-            self.pool_blocks = t.width // w.cfg.index_ratio + 2
-            return
-        self.status_ptrs = (shared.to_device([st.kv_status.data_ptr() for st, _, _ in segs], torch.int64, dev)   # A/B
-                            if not self.native else None)                                          # baseline: remove
-        self.vision_ptrs = self.ptrs[0]                                                     # A/B baseline: remove
-        if self.vision:                                                                    # A/B baseline: remove
-            self.vision_ptrs = shared.to_device(np.asarray(vp, dtype=np.int64).T.ravel().tolist(), torch.int64, dev)
+        at = len(layers) * PTRS * t.slots
+        if not self.native:
+            h64[at:at + n] = [st.kv_status.data_ptr() for st, _, _ in segs]
+        if vp is not None:
+            h64[at + t.slots:at + t.slots + 3 * n] = np.asarray(vp, dtype=np.int64).T.ravel()
+        t.upload()
+        self.posr, self.sid = t.i32[:rows], t.i32[t.rows:t.rows + rows]
+        self.first = t.i32[2 * t.rows:2 * t.rows + n]
+        self.counts = t.i32[2 * t.rows + t.slots:2 * t.rows + t.slots + n]
+        self.ptrs = t.i64[:at].view(len(layers), PTRS * t.slots)[:, :PTRS * n]
+        self.status_ptrs = None if self.native else t.i64[at:at + n]
+        self.vision_ptrs = t.i64[at + t.slots:at + t.slots + 3 * n] if vp is not None else self.ptrs[0]
+        self.pool_blocks = t.width // w.cfg.index_ratio + 2
 
 
-def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
+def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
     """Every stream's ``layer`` attention: prep, pool, all rows' scores and select, chunks, merge -> b.attn_o[:R]."""
 
     c, a, sc = w.cfg, layer.attn, b.attn
@@ -272,27 +250,20 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
     top = sc.budget // sc.ratio
     if sc.qsa:
-        pool = step.pool_blocks if step.fixed else step.most // sc.ratio + 2     # else: A/B baseline, remove
-        _pool_multi[(n, pool)](cp, step.vision_ptrs, step.first, step.counts,
+        _pool_multi[(n, step.pool_blocks)](cp, step.vision_ptrs, step.first, step.counts,
                                a.ik_scale, w.inv_freq, c.eps, n,
                                DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
                                VISION=step.vision, S1=sections[1], S2=sections[2],
                                ROPE_SCALE=c.rope_attention_factor,
                                num_warps=1, PDL=pdl.ON, launch_pdl=pdl.ON)
         if b.split is not None:                      # a captured forward: this step's selection runs between pieces
-            b.split(("select", layer, mtp))
+            b.split(("select", layer))
         else:
-            select(layer, w, b, step, mtp)
-    if step.fixed:                                   # every chunk: one past a row's keys writes nothing (start < n)
-        chunks = sc.nch
-    else:                                            # A/B baseline: remove after selection
-        keys = max(step.ends)                        # A/B baseline: remove after selection
-        if sc.qsa:                                   # A/B baseline: remove after selection
-            keys = min(keys, (top + 1) * sc.ratio - 1)   # A/B baseline: remove after selection
-        chunks = min(sc.nch, triton.cdiv(keys, CHUNK))   # A/B baseline: remove after selection
+            select(layer, w, b, step)
     hk = c.kv_heads
     g = c.heads // hk
-    _chunks_multi[(rows, hk, chunks)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n, H=c.heads,
+    # every chunk (a fixed geometry): one past a row's keys writes nothing (start < n)
+    _chunks_multi[(rows, hk, sc.nch)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n, H=c.heads,
                                       HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch, SCALE=scale, IDW=sc.idw,
                                       QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top, CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4,
                                       num_stages=1, PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -302,38 +273,18 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
     return b.attn_o[:rows]
 
 
-def select(layer, w, b, step: Step, mtp: bool) -> None:
+def select(layer, w, b, step: Step) -> None:
     """The step's sparse rows' block scores and selection (scratch ids, lengths, flags) from this step's contexts: its
     launches' extent follows the longest context, so a captured forward runs it between its pieces."""
 
     c, sc = w.cfg, b.attn
     n, rows, cp = step.n, step.rows, step.ptrs[step.index[layer.index]]
     top = sc.budget // sc.ratio
-    if attn_mod.qsa_new():                           # A/B baseline: remove the test after selection, keep the branch
-        if max(step.ends) // sc.ratio > top:         # some stream has sparse rows: every row scored and selected
-            blocks = triton.cdiv(max(step.ends), sc.ratio)
-            if blocks > sc.nb:                       # before any launch: the scores' rows hold nb blocks
-                raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
-            _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
-                                                           HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
-                                                           TOP=top, BB=64, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
-            attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)
-    else:                                            # A/B baseline: remove after selection
-        for (st, a0, a1), end in zip(step.segs, step.ends):
-            if end // sc.ratio > top:                # this stream has sparse rows: its own select
-                _, _, pooled, pos, _ = _caches(layer, st, mtp)
-                attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
-
-
-def _caches(layer, st, mtp: bool) -> tuple:              # A/B baseline: remove after selection
-    if mtp:
-        return st.mtp_kc, st.mtp_ikc, st.mtp_pooled, st.mtp_pos, st.mtp_len
-    ai = st.att_index[layer.index]
-    return st.kc[ai], st.ikc[ai], st.pooled[ai], st.pos_dev, st.pos
-
-
-def _rows_from(sc, a0: int) -> SimpleNamespace:         # A/B baseline: remove after selection
-    """The scratch as seen by a launch whose row 0 is window row ``a0``."""
-
-    return SimpleNamespace(ratio=sc.ratio, budget=sc.budget, nb=sc.nb, idw=sc.idw, scores=sc.scores[a0:],
-                           ids=sc.ids[a0:], nk=sc.nk[a0:], sparse=sc.sparse[a0:])
+    if max(step.ends) // sc.ratio > top:             # some stream has sparse rows: every row scored and selected
+        blocks = triton.cdiv(max(step.ends), sc.ratio)
+        if blocks > sc.nb:                           # before any launch: the scores' rows hold nb blocks
+            raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
+        _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
+                                                       HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
+                                                       TOP=top, BB=64, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
+        attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)

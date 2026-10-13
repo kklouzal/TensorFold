@@ -81,9 +81,9 @@ def test_everything_off_creates_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(draft_log.DraftWatch, "__init__", lambda *a, **k: created.append(1))
     real = MultiDecoder._picks
 
-    def picks(self, logits, positions, samplings, margins_on=False, *readback):
+    def picks(self, logits, positions, samplings, words, margins_on=False, *rest):
         margins.append(margins_on)
-        return real(self, logits, positions, samplings, margins_on, *readback)
+        return real(self, logits, positions, samplings, words, margins_on, *rest)
 
     monkeypatch.setattr(MultiDecoder, "_picks", picks)
     before = {t.name for t in threading.enumerate()}
@@ -180,8 +180,6 @@ def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tm
         return [scripted(sampling.seed, int(p)) for p in positions]
 
     monkeypatch.setattr(Engine, "sample", first)
-    monkeypatch.setattr(multi_module, "sample_streams", lambda logits, starts_, positions, smps: [
-        [scripted(smp.seed, int(p)) for p in pos] for pos, smp in zip(positions, smps)])
     real_collect = multi_module.collect_streams
 
     def collect(packets, readback=None, waited=None):     # the round's packets and status words, then the script

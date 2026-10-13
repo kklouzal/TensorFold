@@ -1,9 +1,6 @@
-"""Programmatic dependent launch of Flash Next's decode kernels (benchmark switch "pdl"): every PDL-launched kernel
-waits for its producer before reading, so results equal the plain launches bit for bit, eager and in captured graphs,
-under back-to-back producers and over many replays."""
-
-import json
-import os
+"""Programmatic dependent launch of Flash Next's decode kernels: every PDL-launched kernel waits for its producer
+before reading, so results equal the plain launches bit for bit, eager and in captured graphs, under back-to-back
+producers and over many replays."""
 
 import pytest
 import torch
@@ -12,7 +9,7 @@ if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
     pytest.skip("PDL needs CUDA sm_90 or later", allow_module_level=True)
 
 from test_flashnext_forward import V, _model  # noqa: E402
-from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _solo, _switch, _verify  # noqa: E402
+from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _solo, _verify  # noqa: E402
 
 from tensorfold.cuda import pdl  # noqa: E402
 from tensorfold.cuda.kernels import qmm as shared  # noqa: E402
@@ -69,31 +66,28 @@ def test_lane_matmul_reads_its_producers_rows_under_pdl(n, k, rows):
 
 
 @pytest.mark.parametrize("graphs", [False, True])
-def test_decode_with_pdl_emits_each_streams_solo_tokens(monkeypatch, tmp_path, graphs):
-    """C: rounds launched with PDL (eager, or replaying graphs captured with PDL edges) emit the solo runs' tokens,
-    switching between "pdl" new and old every round (graphs: both variants captured, as an A/B run does)."""
+def test_decode_with_pdl_emits_each_streams_solo_tokens(monkeypatch, graphs):
+    """C: rounds launched with PDL (eager, or replaying graphs captured with PDL edges, the decoder's policy only)
+    emit the solo runs' tokens, which the plain launches emit."""
 
     monkeypatch.setenv(pdl.ENV, "1")
     w = _model(7)
     refs = _solo(w, PROMPTS, SAMPLINGS, 20, RQ)
-    _switch(monkeypatch, tmp_path)                   # an A/B run: ab_switch.active(), both PDL variants captured
-    control = tmp_path / "ab.json"
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, prefill_rows=256,
                        graphs=graphs)
     assert dec.pdl
     if graphs:
         dec.capture_graphs()
-        assert any(key[0] for key in dec.graphs.verify) and any(not key[0] for key in dec.graphs.verify)
+        keys = [*dec.graphs.verify, *dec.graphs.mtp]
+        assert keys and all(key[0] for key in keys)
     streams = [Stream(list(p), 20, smp, draft=i != 3) for i, (p, smp) in enumerate(zip(PROMPTS, SAMPLINGS))]
     for s in streams:
         dec.admit(s)
-    rounds, replays = 0, 0
+    replays = 0
     while dec.live():
-        control.write_text(json.dumps({"pdl": "old" if rounds % 2 else "new"}))
-        os.utime(control, ns=(rounds * 10**9 + 7, rounds * 10**9 + 7))
         dec.finish(dec.round())
+        assert pdl.ON
         replays += dec.replays
-        rounds += 1
     assert [s.out for s in streams] == refs
     assert (replays > 0) == graphs
 
@@ -107,7 +101,7 @@ def test_replayed_pdl_graphs_keep_their_bits_over_many_replays(monkeypatch):
     w = _model(7)
     dec = MultiDecoder(w, slots=3, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, graphs=True)
     dec.capture_graphs()
-    assert all(key[0] for key in dec.graphs.verify)                  # no A/B run: the chip's PDL variant only
+    assert all(key[0] for key in dec.graphs.verify)                  # the decoder's PDL policy only
     g = torch.Generator().manual_seed(9)
     long = torch.randint(1, V, (2400,), generator=g).tolist()
     states = _prefilled(w, [long, PROMPTS[0], PROMPTS[1]], RQ, 4096)

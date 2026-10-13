@@ -15,7 +15,6 @@ import triton.language as tl  # noqa: E402
 
 from qsa_select_oracle import qsa_select_reference  # noqa: E402
 
-from tensorfold.cuda import ab_switch  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import attention as att  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import attn_multi  # noqa: E402
 
@@ -315,9 +314,9 @@ def test_batched_scores_are_the_one_stream_kernels_bits(blocks):
     assert torch.equal(batched, sc.scores), blocks
 
 
-def test_the_launcher_picks_each_kernel_by_its_thresholds(monkeypatch, tmp_path):
+def test_the_launcher_picks_each_kernel_by_its_thresholds(monkeypatch):
     """G8: ``_select`` up to MULTI_MIN_BLOCKS and for row blocks of MULTI_ROWS or more within its registers,
-    ``_select_tiles`` past them, T otherwise; the A/B baseline never T; too many blocks or too small a scratch fail."""
+    ``_select_tiles`` past them, T otherwise; too many blocks or too small a scratch fail."""
 
     calls = []
     monkeypatch.setattr(att, "_select_multi", lambda sc, pos, rows, blocks, per_row: calls.append(("T", rows)))
@@ -341,23 +340,6 @@ def test_the_launcher_picks_each_kernel_by_its_thresholds(monkeypatch, tmp_path)
         assert calls == [(want, rows)], (rows, blocks)
     with pytest.raises(ValueError):
         att._launch_select(sc, pos, 1, sc.nb + 1)
-    control = tmp_path / "ab.json"                   # A/B baseline: remove through the ValueError after selection
-    for name, value in (("_path", str(control)), ("_values", {}), ("_stamp", None)):   # all restored by undo
-        monkeypatch.setattr(ab_switch, name, value)
-
-    def switch(value: str) -> None:
-        control.write_text(f'{{"qsa": "{value}"}}')
-        ab_switch._stamp = None                      # re-read even within one modification-time tick
-        ab_switch.refresh()
-
-    for value, want in (("old", "tiles"), ("new", "T")):
-        switch(value)
-        calls.clear()
-        att._launch_select(sc, pos, 5, 262_146)
-        assert calls == [(want, 5)], value
-    switch("fast")
-    with pytest.raises(ValueError):
-        att._launch_select(sc, pos, 5, 262_146)
     monkeypatch.undo()
     small = _scratch(3)
     with pytest.raises(ValueError):                  # the T scratch holds three rows

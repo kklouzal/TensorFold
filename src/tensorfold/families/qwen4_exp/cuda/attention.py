@@ -8,8 +8,6 @@ import triton.language as tl
 
 from tensorfold.cuda import pdl
 from tensorfold.cuda.pdl import wait as pdl_wait
-
-from tensorfold.cuda import ab_switch  # A/B baseline: remove after selection
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
 from .image_rows import rope_axis
@@ -687,17 +685,6 @@ def _select_multi(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: in
                             scratch.nb, sl, IDW=scratch.idw, **common, PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
-def qsa_new() -> bool:
-    """A/B baseline: remove after selection. The benchmark switch "qsa": "new" (batched streams, T) or "old". Read
-    at every launch from the values ``ab_switch.refresh`` loads once a ``MultiDecoder`` round (a process without
-    one keeps "new"); a captured CUDA graph keeps the variant it was captured with."""
-
-    variant = ab_switch.get("qsa", "new")
-    if variant not in ("new", "old"):
-        raise ValueError(f'ab_switch "qsa" must be "new" or "old", not {variant!r}')
-    return variant == "new"
-
-
 def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: int, *,
                    per_row: bool = False) -> None:
     """List each row's blocks from ``scratch.scores``: T for windows of long rows, else ``_select`` while ``blocks``
@@ -705,7 +692,7 @@ def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: i
 
     if blocks > scratch.nb:
         raise ValueError(f"{blocks} blocks exceed the scratch's {scratch.nb}")
-    if rows < MULTI_ROWS and blocks > MULTI_MIN_BLOCKS and qsa_new():   # qsa_new(): A/B baseline, remove
+    if rows < MULTI_ROWS and blocks > MULTI_MIN_BLOCKS:
         _select_multi(scratch, pos, rows, blocks, per_row)
         return
     top = scratch.budget // scratch.ratio

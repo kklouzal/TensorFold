@@ -1,5 +1,6 @@
-"""Flash Next concurrent-round paths behind the benchmark switches (A/B baseline: the "old" values are removed after
-selection): every value emits each stream's solo tokens, and a failed frame's codec status still wins."""
+"""Flash Next concurrent rounds' host overlap: one host wait a step reads the sampling packet and the frame's codec
+status words together (B1), and a window's n-gram rows are read behind the layers before their layer (B2). Rounds
+emit each stream's solo tokens, and a failed frame's codec status still wins."""
 
 import json
 
@@ -11,7 +12,6 @@ if not torch.cuda.is_available():
 
 from test_flashnext_forward import _model  # noqa: E402
 
-from tensorfold.cuda import ab_switch  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_decode  # noqa: E402
@@ -21,16 +21,6 @@ from tensorfold.families.qwen4_exp.cuda.state import KVNumericError, State  # no
 PROMPTS = [[5, 17, 99, 250], [1023, 7, 64, 300, 11, 12], [13], [8, 8, 9, 2000, 31]]
 SAMPLINGS = [None, Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=0.95), None]
 RQ = "rotorquant6-norm"                                   # the production cache format: a status word a stream
-
-
-def _switch(monkeypatch, tmp_path, **values) -> None:
-    """The benchmark switches a test's rounds read (``ab_switch.refresh`` once a round)."""
-
-    control = tmp_path / "ab.json"
-    control.write_text(json.dumps(values))
-    monkeypatch.setattr(ab_switch, "_path", str(control))
-    monkeypatch.setattr(ab_switch, "_values", {})
-    monkeypatch.setattr(ab_switch, "_stamp", None)
 
 
 def _solo(w, prompts, samplings, count, kv_dtype, capacity=1024):
@@ -57,14 +47,12 @@ def _status_reads(monkeypatch) -> list:
 
 
 @pytest.mark.parametrize("kv_dtype", ["bf16", RQ])
-@pytest.mark.parametrize("b1", ["new", "old"])
-def test_b1_rounds_emit_each_streams_solo_tokens(monkeypatch, tmp_path, kv_dtype, b1):
-    """B1: a step's codec status words are read back in its sampling packet's wait; tokens equal the solo runs in
-    both values; the new value never reads a status word on its own once the streams decode."""
+def test_b1_rounds_emit_each_streams_solo_tokens(monkeypatch, kv_dtype):
+    """B1: a step's codec status words are read back in its sampling packet's wait; tokens equal the solo runs, and
+    no status word is read on its own once the streams decode."""
 
     w = _model()
     refs = _solo(w, PROMPTS, SAMPLINGS, 20, kv_dtype)
-    _switch(monkeypatch, tmp_path, b1=b1)
     dec = MultiDecoder(w, slots=4, capacity=1024, depth=3, confidence=0.3, kv_dtype=kv_dtype)
     streams = [Stream(list(p), 20, smp, draft=i != 3) for i, (p, smp) in enumerate(zip(PROMPTS, SAMPLINGS))]
     for s in streams:
@@ -77,19 +65,16 @@ def test_b1_rounds_emit_each_streams_solo_tokens(monkeypatch, tmp_path, kv_dtype
         rounds += 1
     assert [s.out for s in streams] == refs
     assert rounds > 3
-    if kv_dtype == RQ:
-        assert (len(reads) == 0) == (b1 == "new"), len(reads)
+    assert not reads, len(reads)
 
 
-@pytest.mark.parametrize("b1", ["new", "old"])
 @pytest.mark.parametrize("where", ["verify", "mtp"])
-def test_b1_failed_status_wins_over_nonfinite_scores_and_publishes_nothing(monkeypatch, tmp_path, b1, where):
+def test_b1_failed_status_wins_over_nonfinite_scores_and_publishes_nothing(where):
     """A NaN query scale fails the step's status and makes its scores NaN: the round raises the codec failure (not the
     sampler's or the draft confidence's), nothing of the frame is emitted, the stream's state stays poisoned until
     reset, and its slot serves again."""
 
     w = _model()
-    _switch(monkeypatch, tmp_path, b1=b1)
     emitted = [[], []]
     dec = MultiDecoder(w, slots=2, capacity=256, depth=3, confidence=0.0, kv_dtype=RQ)
     streams = [Stream(list(PROMPTS[0]), 12, SAMPLINGS[1], emit=lambda new: emitted[0].extend(new)),
@@ -150,7 +135,7 @@ def _raise(error):
 def test_b1_a_failure_before_the_status_check_reports_the_failed_frame_first(monkeypatch):
     """KVWords' precedence past validation: a failure of the draft picks' device work, of their readback's wait, or
     of the sampler's readback wait settles the frame's words first, so its codec failure is the error raised (the
-    other failure is its context), as the check right after the forward did before B1."""
+    other failure is its context), as a check right after the forward would."""
 
     from tensorfold.cuda.sampling import collect_streams, launch_streams
 
@@ -163,7 +148,7 @@ def test_b1_a_failure_before_the_status_check_reports_the_failed_frame_first(mon
         with monkeypatch.context() as patched:
             patched.setattr(target, name, _raise(error))
             with pytest.raises(KVNumericError) as caught:
-                dec._picks(logits, [5, 6], [None, SAMPLINGS[1]], False, words, None)
+                dec._picks(logits, [5, 6], [None, SAMPLINGS[1]], words, False, None)
         assert words.calls == calls and caught.value.__context__ is error
     packets = launch_streams(logits, [0, 1, 2], [[5], [6]], [None, SAMPLINGS[1]])
     words, error = _FailedFrame(), RuntimeError("wait")
@@ -241,12 +226,11 @@ def _ssd_ngram_model(tmp_path, monkeypatch):
     return _model(ple=_ple(c, table, _Rand(3))), table
 
 
-@pytest.mark.parametrize("b2,profiled", [("new", False), ("new", True), ("old", False)])
-def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_tokens(monkeypatch, tmp_path, b2,
-                                                                                    profiled):
+@pytest.mark.parametrize("profiled", [False, True])
+def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_tokens(monkeypatch, tmp_path, profiled):
     """B2: a round's n-gram rows (read through the production SSD reader) are read and copied when the forward
-    reaches the n-gram layer, after the layers before it are queued; tokens equal the solo runs either way, also
-    with the round profile timing the late reads (ple_ms)."""
+    reaches the n-gram layer, after the layers before it are queued; tokens equal the solo runs, also with the round
+    profile timing the late reads (ple_ms)."""
 
     from tensorfold.cuda import round_profile
     from tensorfold.families.qwen4_exp.cuda import forward as fwd
@@ -261,7 +245,6 @@ def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_token
         prompts = PROMPTS[:3]
         samplings = SAMPLINGS[:3]
         refs = _solo(w, prompts, samplings, 16, RQ)
-        _switch(monkeypatch, tmp_path, b2=b2)
         order, real_late, real_embed = [], fwd.stage_late, fwd._embed
         monkeypatch.setattr(fwd, "stage_late", lambda *a: order.append("late") or real_late(*a))
         monkeypatch.setattr(fwd, "_embed", lambda *a: order.append("embed") or real_embed(*a))
@@ -272,10 +255,8 @@ def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_token
         while dec.live():
             dec.finish(dec.round())
         assert [s.out for s in streams] == refs
-        lates = order.count("late")
-        assert (lates > 3) == (b2 == "new") and (lates == 0) == (b2 == "old")
-        if b2 == "new":                                  # each late read follows its own forward's embedding
-            assert all(order[i - 1] == "embed" for i, x in enumerate(order) if x == "late")
+        assert order.count("late") > 3                   # each late read follows its own forward's embedding
+        assert all(order[i - 1] == "embed" for i, x in enumerate(order) if x == "late")
         if profiled:
             dec.close_telemetry()
             records = [json.loads(line) for line in path.read_text().splitlines()]

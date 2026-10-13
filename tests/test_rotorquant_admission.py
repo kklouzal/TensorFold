@@ -260,24 +260,24 @@ def test_geometry_format_difference_equals_measured_live_cache_difference(
         module = importlib.import_module("tensorfold.families.qwen4_exp.cuda.attn_multi")
         byte_type = object()
         monkeypatch.setattr(module.tl, "uint8", byte_type, raising=False)
-        monkeypatch.setattr(module.shared, "to_device", lambda values, dtype, device:
-                            torch.tensor(values, dtype=dtype, device=device))
         model = weights()
         model.meta = {"world": 1}
         model.mtp.layer = SimpleNamespace(index=len(model.layers), linear=False)
         for states in (rotor_states, legacy_states):
             segments = [(state, i, i + 1) for i, state in enumerate(states)]
             for mtp in (False, True):
-                step = module.Step(model, segments, mtp)
+                tables = module.StepTables(model, len(states), 1, mtp=mtp)
+                step = module.Step(model, segments, mtp, tables)
                 assert step.kt is step.vt is byte_type
                 if states is rotor_states:
+                    # the status pointers are the static step tables' (planned for every format), not an allocation
                     assert step.status_ptrs.dtype == torch.int64 and step.status_ptrs.shape == (streams,)
                     assert step.status_ptrs.tolist() == [st.kv_status.data_ptr() for st in states]
-                    status_bytes += step.status_ptrs.nbytes
+                    assert step.status_ptrs.untyped_storage().data_ptr() == tables.i64.untyped_storage().data_ptr()
                 else:
                     assert step.status_ptrs is None
-    # Actual payload/scales plus the fixed two-int32 status wire and measured
-    # concurrent pointer tables account for the full admission delta.
+    # Actual payload/scales plus the fixed two-int32 status wire account for
+    # the full admission delta.
     assert candidate.bytes_at(513) - legacy.bytes_at(513) == count * (rotor_bytes - legacy_bytes) + status_bytes
 
 

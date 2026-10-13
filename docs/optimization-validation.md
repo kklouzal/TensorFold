@@ -170,14 +170,66 @@ Other unverified CUDA/MLX kernel, scheduling, prebuild, pinning and distributed
 Flash Next alternatives remain isolated evaluation packets. Source-only
 operation-order reasoning does not establish their integrated performance.
 
-On the `perf-idea2-round` branch, Flash Next's concurrent rounds add one host
-wait a step, late n-gram reads, lean sampling packets, static round tables,
-captured CUDA graphs within `TENSORFOLD_MULTI_GRAPH_MIB` and programmatic
-dependent launch, each behind a benchmark-only `TENSORFOLD_AB_CONTROL` switch
-(`b1`, `b2`, `b3`, `graphs`, `pdl`) that is removed after selection. Their
-evidence is synthetic-model GPU tests (identical tokens and bits in every switch
-value) on an RTX PRO 2000 Blackwell (sm_120); the GB10 A/B, full-model and
-installed-image qualification remain pending.
+Flash Next's concurrent rounds read a step's codec status words in its sampling
+packet's host wait, read a window's n-gram rows behind the layers before their
+layer, run on static round tables at a fixed launch geometry, replay CUDA graphs
+captured within `TENSORFOLD_MULTI_GRAPH_MIB`, launch their decode kernels with
+programmatic dependent launch on GB10, and score and select every stream's
+sparse-attention blocks in one launch, long contexts' with an exact multi-CTA
+select. A GB10 A/B selected them on 2026-10-13: image `arm64-runtime-263d7203`
+served the deployed Flash Next snapshot (`2b170fa6…`) with the production flags
+(`rotorquant6-norm`, `--parallel 4`, MTP depth 4 at confidence 0.5, copy drafts)
+except `TENSORFOLD_MULTI_GRAPH_MIB=1024` (keys captured with and without PDL;
+the default is 512 MiB), each alternative behind a benchmark-only switch in that
+one container. A cell ran every arm in mirrored order on one resumed
+(prefix-cached; at 300k each cell's first arm prefilled ~43k tokens first)
+public-text prompt of ~30k, ~150k, ~300k or ~650k tokens (explain and rewrite
+tasks, 650k explain only; seeds 11/22/33; up to 1,536 tokens at reasoning effort
+low), one stream at a time (6 cells a context, 3 at 650k) or in two four-stream
+mixes (12 streams in 3 groups each); a 650k rerun (seeds 44/55/66, 10 GiB memory
+reserve) repeated the host-wait, n-gram, packet, PDL and suffix arms. Every
+arm's tokens were identical. Each figure below is the removed path's decode
+tok/s against the kept one (mean paired log-ratio, 95% bootstrap CI; negative:
+the removed path was slower):
+
+- one-launch and multi-CTA select: one stream +0.48% [-0.26, +1.24] at 30k,
+  below the multi-CTA threshold, -1.54% [-2.01, -1.04] at 150k, -4.16%
+  [-4.76, -3.47] at 300k and -7.99% [-8.77, -6.57] at 650k; per stream in the
+  mixes -3.77% [-4.96, -2.79] and -4.76% [-5.44, -4.04].
+- captured rounds on static tables: one stream -2.15% [-2.62, -1.54], -1.73%
+  [-2.39, -1.01] and -2.30% [-3.02, -1.10] at 150k, 300k and 650k, and -1.59%
+  [-2.18, -0.92] per stream in the second mix; at 30k (-12.20%) and in the
+  first mix (-16.70%) the removed path's first requests also compiled its
+  kernels within their decode.
+- late n-gram reads: one stream pooled over 30k to 300k -0.35% [-0.79, +0.10];
+  650k -0.36% [-1.17, +0.85], in the rerun -1.00% [-1.71, -0.27].
+- one host wait a step: one stream pooled -0.02% [-0.43, +0.43]; the second
+  mix's aggregate +0.99% [+0.12, +1.63] (3 groups; per stream +0.08%
+  [-0.54, +0.68]).
+- PDL: one stream pooled -0.01% [-0.62, +0.60]; per stream in the mixes -0.59%
+  [-1.54, +0.24] and +0.64% [-0.01, +1.29] (the second mix's 150k streams
+  +0.88% [+0.05, +1.76]).
+
+The host-wait and PDL intervals above zero are single unreplicated exclusions
+among many comparisons; the predeclared independent rerun of such a bucket did
+not run before testing closed. Both stages are kept under the owner's rule
+(keep unless a measured regression), without an established gain. Lean
+sampling packets were rejected: the original path was faster, one stream
+pooled +0.41% [+0.07, +0.77] and per stream in the second mix +0.74%
+[+0.07, +1.45]. The A/B's base arm also ran a cost-aware draft rule and a
+session suffix drafter; both were rejected, so drafting keeps the confidence
+rule, and this combination of kept stages is not itself measured. Prompt
+passes also launch with the decoder's PDL policy; prompt throughput under the
+kept round stages was not A/B-measured. Captured keys' memory is measured from
+host available memory, which moves with page-cache state on unified memory, so
+the captured set can differ between starts; which keys the default 512 MiB
+captures on GB10 is unmeasured. RotorQuant 6 prompt passes decode centroids by
+register gather: a separate GB10 container A/B (`5e81802c` against
+`32b4ab99`, two starts each, ABBA, cold ~30k and ~150k prompts) measured
+prompt throughput +33.8 to +37.7% (95% bootstrap CIs within +32.1 and +38.8%)
+with identical tokens; decode kernels are unchanged. The switches are removed
+from this source; its own installed-image GB10 qualification and full-model
+quality comparison remain pending.
 
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and

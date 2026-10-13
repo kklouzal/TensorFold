@@ -1,10 +1,9 @@
-"""Flash Next concurrent rounds through captured CUDA graphs (benchmark switch "graphs"): the static tables and fixed
-launch geometry give the old eager bits, every captured key replays them, and decoding emits each stream's solo run
+"""Flash Next concurrent rounds through captured CUDA graphs: the static tables and fixed launch geometry give each
+stream's own per-stream forward bits, every captured key replays them, and decoding emits each stream's solo run
 through every round shape (joins, finishes, copy drafts, sparse rows, prompt passes, growth, failures)."""
 
 import gc
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +14,7 @@ if not torch.cuda.is_available():
 
 from test_flashnext_forward import V, _model  # noqa: E402
 
-from tensorfold.cuda import ab_switch, pdl  # noqa: E402
+from tensorfold.cuda import pdl  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import attn_multi, gdn_multi, multi_graphs  # noqa: E402
@@ -28,14 +27,6 @@ from tensorfold.families.qwen4_exp.cuda.state import KVNumericError  # noqa: E40
 RQ = "rotorquant6-norm"
 PROMPTS = [[5, 17, 99, 250], [1023, 7, 64, 300, 11, 12], [13], [8, 8, 9, 2000, 31]]
 SAMPLINGS = [None, Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=0.95), None]
-
-
-def _switch(monkeypatch, tmp_path, **values) -> None:
-    control = tmp_path / "ab.json"
-    control.write_text(json.dumps(values))
-    monkeypatch.setattr(ab_switch, "_path", str(control))
-    monkeypatch.setattr(ab_switch, "_values", {})
-    monkeypatch.setattr(ab_switch, "_stamp", None)
 
 
 def _solo(w, prompts, samplings, count, kv_dtype, capacity=4096, prefill_rows=256):
@@ -57,8 +48,9 @@ def _prefilled(w, prompts, kv_dtype, capacity):
     return states
 
 
-def _frame(states, segs, mtp: bool):
-    """What a forward wrote of each stream's frame: its cache rows (and scales), index keys, pooled blocks, status."""
+def _frame(segs, mtp: bool, recurrent: bool = True):
+    """What a forward wrote of each stream's frame: its cache rows (and scales), index keys, pooled blocks, status and
+    (``recurrent``) its committed DeltaNet states."""
 
     got = []
     for st, a0, a1 in segs:
@@ -70,21 +62,47 @@ def _frame(states, segs, mtp: bool):
                     pooled[p0 // 4:(p0 + n) // 4 + 1]]
         if st.kv_status is not None:
             got.append(st.kv_status)
-        got.append(st.rec)
+        if recurrent:
+            got.append(st.rec)
     return [t.clone() for t in got]
 
 
+def _alone(w, b, states, windows):
+    """The oracle of a verify forward: each stream's rows through the per-stream path (no round tables: its own
+    attention and DeltaNet launches, which commit its recurrent state at once) over clones of ``states``; its
+    logits, streams and frames without the recurrent states."""
+
+    sts = [st.clone() for st in states]
+    segs = stage(w, b, list(zip(sts, windows)))
+    logits = compute(w, segs, b, check=False)
+    _kv_check(segs)
+    R = segs[-1][2]
+    return [logits[:R].clone(), b.streams[:R].clone(), *_frame(segs, False, recurrent=False)]
+
+
+def _flushed(dec, states, held, parity):
+    """Clones of ``states`` with each stream's ``held`` rows (last round's, in the DeltaNet scratch's other parity)
+    replayed into its recurrent state as the decoder flushes a waiting stream's rows (``_flush``: the replay kernel,
+    not the trees' fold), for ``_alone`` to run the window from."""
+
+    sts = [st.clone() for st in states]
+    dec.gdn.parity = parity                              # this round's parity: the held rows sit in the other one
+    for i, (st, rows) in enumerate(zip(sts, held)):
+        dec.held[-1 - i] = list(rows)                    # an id no stream has; _flush pops it
+        dec._flush(SimpleNamespace(sid=-1 - i, st=st))
+    return sts
+
+
 def _verify(dec, w, states, windows, held, parity, mode):
-    """One verify forward over clones of ``states``: "old" (fresh tables, the step's geometry), "eager" (static
-    tables, fixed geometry) or "graph" (the captured key replayed); its logits, streams, frames and DeltaNet rows."""
+    """One verify forward over clones of ``states``: "eager" (static tables, fixed geometry) or "graph" (the captured
+    key replayed); its logits, streams, frames (``_alone``'s first) and DeltaNet rows."""
 
     sts = [st.clone() for st in states]
     b = dec.buf
     segs = stage(w, b, list(zip(sts, windows)))
     dec.gdn.parity = parity
-    static = mode != "old"
-    b.gdn_tables = gdn_multi.Tables(w, dec.gdn, segs, held, static=dec.round_tables if static else None)
-    b.attn_step = attn_multi.Step(w, segs, mtp=False, tables=dec.step_tables if static else None)
+    b.gdn_tables = gdn_multi.Tables(dec.gdn, segs, held, static=dec.round_tables)
+    b.attn_step = attn_multi.Step(w, segs, mtp=False, tables=dec.step_tables)
     try:
         if mode == "graph":
             logits = dec.graphs.verify_forward(segs)
@@ -97,7 +115,8 @@ def _verify(dec, w, states, windows, held, parity, mode):
     R = segs[-1][2]
     sc = dec.gdn
     rows = [sc.k[parity, :, :R], sc.v[parity, :, :R], sc.g[parity, :, :R], sc.beta[parity, :, :R]]
-    return [logits[:R].clone(), b.streams[:R].clone(), *_frame(sts, segs, False), *[t.clone() for t in rows]]
+    return [logits[:R].clone(), b.streams[:R].clone(), *_frame(segs, False, recurrent=False),
+            *[st.rec.clone() for st in sts], *[t.clone() for t in rows]]
 
 
 def _equal(a, b, what):
@@ -123,21 +142,31 @@ def captured():
 @pytest.mark.parametrize("parity", [0, 1])
 @pytest.mark.parametrize("n,split", [(1, [1]), (1, [4]), (2, [1, 4]), (2, [4, 3]), (3, [1, 1, 1]), (3, [4, 2, 4]),
                                      (3, [4, 4, 4])])
-def test_static_tables_and_fixed_geometry_and_replays_give_the_old_bits(captured, n, split, parity):
-    """T1/T4: per key, the eager forward on static tables at the fixed geometry, and its captured replay, write the
-    old path's logits, streams, cache rows, scales, index keys, pooled blocks, status words, committed recurrent
-    states (after folding the last round's kept rows) and DeltaNet rows, sparse (2,400-row) and dense streams."""
+def test_static_tables_and_fixed_geometry_and_replays_give_each_streams_own_bits(captured, n, split, parity):
+    """T1/T4: per key, the eager forward on static tables at the fixed geometry writes each stream's own per-stream
+    forward's logits, streams, cache rows, scales, index keys, pooled blocks and status words (``_alone``), sparse
+    (2,400-row) and dense streams. Folding the last round's kept rows first, it writes what the per-stream forward
+    writes once those rows are replayed into each recurrent state (``_flushed``), and the same committed recurrent
+    states. Its captured replay writes the eager forward's logits, streams, frames, committed recurrent states and
+    DeltaNet rows, either way."""
 
     w, dec, states = captured
     order = [states[i] for i in ((0, 1, 2) if parity == 0 else (2, 0, 1))][:n]
     g = torch.Generator().manual_seed(100 * n + parity)
     windows = [torch.randint(1, V, (k,), generator=g).tolist() for k in split]
+    none = [[] for _ in order]
+    alone = _alone(w, dec.buf, order, windows)
+    eager = _verify(dec, w, order, windows, none, parity, "eager")
+    _equal(eager[:len(alone)], alone, "alone")
+    _equal(_verify(dec, w, order, windows, none, parity, "graph"), eager, "graph")
     # last round's rows in the other parity's scratch: a forward there, then kept rows to fold first
-    _verify(dec, w, order, windows, [[] for _ in order], 1 - parity, "eager")
+    _verify(dec, w, order, windows, none, 1 - parity, "eager")
     held = [list(range(min(2, k))) if i % 2 == 0 else [] for i, k in enumerate(split)]
-    want = _verify(dec, w, order, windows, held, parity, "old")
-    _equal(_verify(dec, w, order, windows, held, parity, "eager"), want, "eager")
-    _equal(_verify(dec, w, order, windows, held, parity, "graph"), want, "graph")
+    want = _verify(dec, w, order, windows, held, parity, "eager")
+    _equal(_verify(dec, w, order, windows, held, parity, "graph"), want, "graph, folded")
+    flushed = _flushed(dec, order, held, parity)          # the fold's oracle: replayed rows, then the per-stream path
+    alone = _alone(w, dec.buf, flushed, windows) + [st.rec.clone() for st in flushed]
+    _equal(want[:len(alone)], alone, "alone, folded")
 
 
 def test_static_chain_entries_equal_the_plan_builder():
@@ -166,7 +195,8 @@ def test_static_chain_entries_equal_the_plan_builder():
 
 @pytest.mark.parametrize("n,split", [(1, [1]), (1, [4]), (2, [2, 3]), (3, [4, 1, 4]), (3, [1, 1, 1])])
 def test_mtp_steps_replay_the_eager_bits(captured, n, split):
-    """T4 (MTP): absorb and chain steps of every row count replay the eager static step's logits and frames."""
+    """T4 (MTP): absorb and chain steps of every row count, eager on the static step tables and replayed, write each
+    stream's own per-stream step's logits and frames."""
 
     w, dec, states = captured
     g = torch.Generator().manual_seed(7 * n + len(split))
@@ -174,27 +204,27 @@ def test_mtp_steps_replay_the_eager_bits(captured, n, split):
     streams = torch.randn((sum(split), dec.buf.streams.shape[1]), generator=torch.Generator().manual_seed(3)) \
         .to(torch.bfloat16).cuda() * 0.1
     got = {}
-    for mode in ("old", "eager", "graph"):
+    for mode in ("alone", "eager", "graph"):
         sts = [st.clone() for st in states[:n]]
         b, at, windows = dec.mbuf, 0, []
         for st, k, tok in zip(sts, split, tokens):
             windows.append((st, tok, streams[at:at + k]))
             at += k
         segs = mtp_stage(w, b, windows)
-        b.attn_step = attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables if mode != "old" else None)
+        b.attn_step = None if mode == "alone" else attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables)
         try:
             out = dec.graphs.mtp_step(segs) if mode == "graph" else mtp_compute(w, segs, b, check=False)
             assert out is not None
             _kv_check(segs)
         finally:
             b.attn_step = None
-        got[mode] = [out.clone(), b.streams[:sum(split)].clone(), *_frame(sts, segs, True)]
-    _equal(got["eager"], got["old"], "eager")
-    _equal(got["graph"], got["old"], "graph")
+        got[mode] = [out.clone(), b.streams[:sum(split)].clone(), *_frame(segs, True)]
+    _equal(got["eager"], got["alone"], "eager")
+    _equal(got["graph"], got["alone"], "graph")
 
 
 def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096, depth=3, confidence=0.3,
-            prefill_rows=256, draft=None, later=(), each_round=None):
+            prefill_rows=256, draft=None, later=()):
     """Decode ``prompts`` together (``later``: (round, prompt index) admitted mid-run); each stream's tokens and the
     decoder (its replay count over the run in ``dec.total_replays``)."""
 
@@ -214,8 +244,6 @@ def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096,
             if rounds >= r:
                 dec.admit(streams[i])
                 del pending[i]
-        if each_round is not None:
-            each_round(rounds)
         dec.finish(dec.round())
         dec.total_replays += dec.replays
         rounds += 1
@@ -270,25 +298,8 @@ def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
     assert max(st.version for st in slots) >= 1                     # a slot grew past its first 256 rows
 
 
-def test_switching_graphs_every_round_keeps_the_bits(monkeypatch, tmp_path):
-    """The A/B switch flips between replays on static tables and the old eager path each round (kept rows folded
-    across the two): every stream still emits its solo run."""
-
-    w = _model(7)
-    refs = _solo(w, PROMPTS, SAMPLINGS, 24, RQ)
-    control = tmp_path / "ab.json"
-    _switch(monkeypatch, tmp_path, graphs="new")
-
-    def flip(r):
-        control.write_text(json.dumps({"graphs": "old" if r % 2 else "new", "b1": "old" if r % 3 == 1 else "new"}))
-        os.utime(control, ns=(r * 10**9 + 1, r * 10**9 + 1))
-
-    outs, dec = _decode(w, PROMPTS, SAMPLINGS, 24, graphs=True, each_round=flip)
-    assert outs == refs and dec.total_replays > 0
-
-
 @pytest.mark.parametrize("where", ["verify", "mtp"])
-def test_failed_status_in_a_replayed_step_raises_and_recovers(monkeypatch, where):
+def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
     """T10: a NaN query scale fails a replayed step's status: the round raises the codec failure (not the sampler's or
     the draft confidence's), nothing is published, no capture happens again, and reset slots serve again."""
 
@@ -358,7 +369,7 @@ def test_a_budget_too_small_stops_capture_and_rounds_run_eagerly(monkeypatch):
     assert [s.out for s in streams] == refs
 
 
-def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room(tmp_path):
+def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
     """T13: every key of 4 slots at depth 4 is captured within the default budget; each key's capture is measured
     alone (raw), the kept keys' sum is bounded by the budget, and the larger of it and the settled drop of the whole
     capture comes off the memory gate's room; all recorded (logged here for the GB10 budget calibration)."""
@@ -445,7 +456,7 @@ def test_capture_pieces_end_only_begun_captures_and_keep_the_first_failure(monke
 
     def failing():
         x.add_(1)
-        b.split(("select", None, False))
+        b.split(("select", None))
         x.mul_(2)
         raise ValueError("the forward failed mid-capture")
 
@@ -469,7 +480,7 @@ def test_capture_pieces_end_only_begun_captures_and_keep_the_first_failure(monke
     with monkeypatch.context() as patched:
         patched.setattr(torch.cuda, "CUDAGraph", Graph)
         with pytest.raises(RuntimeError, match="cannot begin") as caught:
-            graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None, False)), x.mul_(2)), b)
+            graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None)), x.mul_(2)), b)
     assert caught.value.__cause__ is None and ended == begun and len(begun) == 1 and not _side_capturing(graphs)
 
     def invalidating():
@@ -484,8 +495,8 @@ def test_capture_pieces_end_only_begun_captures_and_keep_the_first_failure(monke
     assert not _side_capturing(graphs)
     torch.cuda.synchronize()
 
-    pieces = graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None, False)), x.mul_(3)), b)
-    assert len(pieces.graphs) == 2 and pieces.inserts == [("ple_conv", None, False)]
+    pieces = graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None)), x.mul_(3)), b)
+    assert len(pieces.graphs) == 2 and pieces.inserts == [("ple_conv", None)]
     x.zero_()
     for graph in pieces.graphs:
         graph.replay()

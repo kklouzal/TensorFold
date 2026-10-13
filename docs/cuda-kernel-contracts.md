@@ -179,9 +179,9 @@ Startup admission plans the budget only where capture can happen: experts that r
 stays the raised error; a failed end of its open capture or a failed restore of the slots is attached to it.
 
 `tensorfold.cuda.pdl.ON`, the launch policy every converted kernel's launch reads, is a process global with an
-explicit contract in `pdl.py`: only the concurrent decoder writes it (construction, each round, each captured
-variant), on the one thread launching the decode kernels and never while a launch is being built; every launch in
-the process follows its current value, which never changes results.
+explicit contract in `pdl.py`: only the concurrent decoder writes it (construction, each round and capture, each
+time its own policy), on the one thread launching the decode kernels and never while a launch is being built; every
+launch in the process follows its current value, which never changes results.
 
 Programmatic dependent launch (`tensorfold/cuda/pdl.py`, `kernels/pdl.cuh`): a kernel launched with the attribute
 may be scheduled while its predecessor finishes. Every such kernel calls `griddepcontrol.wait` as its first

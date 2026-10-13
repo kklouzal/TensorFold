@@ -88,58 +88,23 @@ class RoundTables:
 
 
 class Tables:
-    """A round's device tables: rows' streams and conv taps, layers' conv and state pointers, chains, pending rows.
+    """A round's device tables, viewed in the decoder's ``RoundTables`` (``static``, written now) at addresses fixed
+    for a round's stream and row counts: rows' streams and conv taps, layers' conv and state pointers, chains, pending
+    rows. The trees always fold the pending rows (a zero count is the documented no-op), so a captured forward reads
+    every round's."""
 
-    ``static`` (a decoder's ``RoundTables``; benchmark switch "graphs"): written there, viewed at addresses fixed for
-    a round's stream and row counts, and the trees always fold the pending rows (a zero count is the documented
-    no-op), so a captured forward reads every round's. Else (A/B baseline) a fresh upload a round."""
-
-    def __init__(self, w, scratch: Scratch, segs: Sequence, pending: Sequence[Sequence[int]],
-                 static: RoundTables | None = None) -> None:
+    def __init__(self, scratch: Scratch, segs: Sequence, pending: Sequence[Sequence[int]], static: RoundTables) -> None:
         self.scratch, self.segs, self.cur = scratch, list(segs), scratch.parity
-        if static is not None:
-            n, R, at, t = len(segs), segs[-1][2], static.at, static
-            static.write(segs, pending)
-            self.sid, self.win = t.i32[:R], t.i32[at["win"]:at["win"] + 4 * R].view(R, 4)
-            most = max(a1 - a0 for _, a0, a1 in segs)
-            self.plan = shared.Plan(t.i32[at["entries"]:at["entries"] + 3 * R].view(R, 3),
-                                    t.i32[at["starts"]:at["starts"] + n + 1], 0, most)
-            self.held = t.i32[at["held"]:at["held"] + n * t.width].view(n, t.width)
-            self.held_counts = t.i32[at["counts"]:at["counts"] + n]
-            self.folds = True
-            ptrs = t.i64.view(2, t.lin, t.slots)[:, :, :n]
-            self.conv, self.state = ptrs[0], ptrs[1]
-            return
-        n, rows = len(segs), segs[-1][2]                 # A/B baseline: remove after selection (to the end)
-        lin = scratch.lin
-        taps = np.arange(4)[None, :]
-        win = np.empty((rows, 4), dtype=np.int32)
-        sid = np.empty((rows,), dtype=np.int32)
-        for s, (_, a0, a1) in enumerate(segs):
-            j = np.arange(a1 - a0)[:, None] + taps
-            win[a0:a1] = np.where(j < 3, j, a0 + j)            # < 3: a conv state row, else window row tap - 3
-            sid[a0:a1] = s
-        entries, starts, slots, most = shared.plan_host([list(range(-1, a1 - a0 - 1)) for _, a0, a1 in segs])
-        width = max([len(rows_) for rows_ in pending] + [1])
-        held = np.zeros((n, width), dtype=np.int32)             # each stream's last-round kept rows, not yet folded
-        for s, rows_ in enumerate(pending):
-            held[s, :len(rows_)] = rows_
-        counts = np.asarray([len(rows_) for rows_ in pending], dtype=np.int32)
-        ints = np.concatenate([sid, win.ravel(), np.asarray(entries + starts, dtype=np.int32), held.ravel(), counts])
-        ptrs = np.empty((2, lin, n), dtype=np.int64)
-        for s, (st, _, _) in enumerate(segs):
-            for li in range(lin):
-                ptrs[0, li, s] = st.conv[li].data_ptr()
-                ptrs[1, li, s] = st.rec[st.cur[li], li].data_ptr()
-        dev = w.device
-        i32 = shared.to_device(ints.tolist(), torch.int32, dev)
-        i64 = shared.to_device(ptrs.ravel().tolist(), torch.int64, dev)
-        self.sid, self.win = i32[:rows], i32[rows:5 * rows].view(rows, 4)
-        at = 8 * rows + n + 1
-        self.plan = shared.Plan(i32[5 * rows:8 * rows].view(rows, 3), i32[8 * rows:at], slots, most)
-        self.held, self.held_counts = i32[at:at + n * width].view(n, width), i32[at + n * width:]
-        self.folds = bool(counts.any())
-        self.conv, self.state = i64[:lin * n].view(lin, n), i64[lin * n:].view(lin, n)
+        n, R, at, t = len(segs), segs[-1][2], static.at, static
+        static.write(segs, pending)
+        self.sid, self.win = t.i32[:R], t.i32[at["win"]:at["win"] + 4 * R].view(R, 4)
+        most = max(a1 - a0 for _, a0, a1 in segs)
+        self.plan = shared.Plan(t.i32[at["entries"]:at["entries"] + 3 * R].view(R, 3),
+                                t.i32[at["starts"]:at["starts"] + n + 1], 0, most)
+        self.held = t.i32[at["held"]:at["held"] + n * t.width].view(n, t.width)
+        self.held_counts = t.i32[at["counts"]:at["counts"] + n]
+        ptrs = t.i64.view(2, t.lin, t.slots)[:, :, :n]
+        self.conv, self.state = ptrs[0], ptrs[1]
 
 
 def block(g, li: int, t: Tables, p: torch.Tensor, eps: float, out: torch.Tensor, xs: torch.Tensor, nk: int) -> None:
@@ -150,8 +115,7 @@ def block(g, li: int, t: Tables, p: torch.Tensor, eps: float, out: torch.Tensor,
                          sc.beta[cur, li, :rows])
     gdn_io.front(p, t.conv[li], t.sid, t.win, g.conv, g.a_log, g.dt_bias, nk, out=(q, k, v, gt, beta))
     last = 1 - cur
-    pending = ([sc.k[last, li], sc.v[last, li], sc.g[last, li], sc.beta[last, li], t.held, t.held_counts]
-               if t.folds else None)
+    pending = [sc.k[last, li], sc.v[last, li], sc.g[last, li], sc.beta[last, li], t.held, t.held_counts]
     y = shared.tree(q, k, v, gt, beta, t.plan, table=t.state[li], pending=pending)
     gdn_io.back(y, p, g.norm, eps, out, xs)
 
