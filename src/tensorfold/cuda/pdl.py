@@ -9,9 +9,9 @@ and copies between them launch normally, which is a full dependency. CUDA graphs
 as programmatic edges.
 
 ``select`` resolves the chip's policy once per decoder (GB10, compute capability 12.1, on: grouped QMM's measured
-policy; other chips off until measured; ``TENSORFOLD_PDL`` = 1 or 0 forces it on PDL-capable chips). ``ON`` is what
-every launch site passes (its kernels' ``PDL`` constexpr and Triton's ``launch_pdl``, the extensions' attribute). It
-is one process global, with this contract:
+policy and the decode A/B's; other chips off until measured there). ``ON`` is what every launch site passes (its
+kernels' ``PDL`` constexpr and Triton's ``launch_pdl``, the extensions' attribute). It is one process global, with
+this contract:
 
 - Writers: only the Flash Next concurrent decoder. ``MultiDecoder.__init__`` and ``MultiDecoder.round`` (at each
   round's start) set the decoder's policy, and ``RoundGraphs.capture`` sets it for the captured keys and restores
@@ -30,27 +30,18 @@ is one process global, with this contract:
 
 from __future__ import annotations
 
-import os
-
 import triton
 import triton.language as tl
 
-ENV = "TENSORFOLD_PDL"
 ON = False
 
 
 def select(device: int = 0) -> bool:
-    """This chip's PDL policy (sm_90 and later only): TENSORFOLD_PDL 1/0, else on for GB10 (12.1)."""
+    """This chip's PDL policy: on for GB10 (compute capability 12.1), where it was measured; off elsewhere."""
 
     import torch
 
-    value = os.environ.get(ENV, "").strip()
-    if value not in ("", "0", "1"):
-        raise ValueError(f"{ENV} must be 0 or 1, not {value!r}")
-    capability = torch.cuda.get_device_capability(device)
-    if capability[0] < 9:
-        return False
-    return value == "1" if value else capability == (12, 1)
+    return torch.cuda.get_device_capability(device) == (12, 1)
 
 
 @triton.jit

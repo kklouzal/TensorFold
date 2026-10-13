@@ -19,15 +19,14 @@ from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 
 # tests/cuda/conftest.py restores the process-wide launch policy (pdl.ON) after each test
 
-def test_selection_is_per_chip_and_overridable(monkeypatch):
-    monkeypatch.delenv(pdl.ENV, raising=False)
-    assert pdl.select() == (torch.cuda.get_device_capability() == (12, 1))
-    for value, want in (("1", True), ("0", False)):
-        monkeypatch.setenv(pdl.ENV, value)
-        assert pdl.select() is want
-    monkeypatch.setenv(pdl.ENV, "yes")
-    with pytest.raises(ValueError, match=pdl.ENV):
-        pdl.select()
+def _forced(monkeypatch) -> None:
+    """Decoders built here launch with PDL, whatever this test GPU's policy (GB10's alone is on)."""
+
+    monkeypatch.setattr(pdl, "select", lambda device=0: True)
+
+
+def test_selection_is_per_chip():
+    assert pdl.select() is (torch.cuda.get_device_capability() == (12, 1))
 
 
 @pytest.mark.parametrize("n,k", [(2560, 6144), (13952, 2560), (4096, 1024), (320, 10240)])
@@ -70,7 +69,7 @@ def test_decode_with_pdl_emits_each_streams_solo_tokens(monkeypatch, graphs):
     """C: rounds launched with PDL (eager, or replaying graphs captured with PDL edges, the decoder's policy only)
     emit the solo runs' tokens, which the plain launches emit."""
 
-    monkeypatch.setenv(pdl.ENV, "1")
+    _forced(monkeypatch)
     w = _model(7)
     refs = _solo(w, PROMPTS, SAMPLINGS, 20, RQ)
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, prefill_rows=256,
@@ -97,7 +96,7 @@ def test_replayed_pdl_graphs_keep_their_bits_over_many_replays(monkeypatch):
     with the last round's rows folded first, writes the plain eager forward's logits, streams, caches and states every
     time."""
 
-    monkeypatch.setenv(pdl.ENV, "1")
+    _forced(monkeypatch)
     w = _model(7)
     dec = MultiDecoder(w, slots=3, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, graphs=True)
     dec.capture_graphs()
