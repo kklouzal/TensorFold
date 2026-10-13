@@ -860,6 +860,9 @@ class FlashNextEngine:
         tables = None if weights is None else weights.meta.get('ple_tables')
         if tables is not None:
             tables.close(lambda: torch.cuda.synchronize(weights.device))
+        multi = getattr(self, 'multi', None)
+        if multi is not None:                      # opt-in telemetry: its queued records written, then it stops
+            multi.close_telemetry()
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,

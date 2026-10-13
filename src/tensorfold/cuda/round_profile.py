@@ -3,8 +3,8 @@
 Off (unset), callers hold ``None`` and each mark costs one ``is not None`` test: no events, allocation or I/O.
 On, a mark records the host time and, where the GPU timeline matters, a CUDA event from a preallocated ring.
 A round's events are read at the next round's start, after that round's own host waits, so profiling adds no
-synchronization. Records leave the engine thread through a bounded queue (the oldest record is dropped, and
-counted, when the writer falls behind); a daemon thread writes them.
+synchronization. Records leave the engine thread through ``record_writer.JsonLines``'s bounded queue (the oldest
+record is dropped, and counted, when the writer falls behind); a daemon thread writes them.
 
 A record's ``phases`` are ``[name, host_ms, gpu_ms]`` from the previous mark: ``gpu_ms`` is the GPU timeline's
 progress between consecutive event marks (busy plus idle), ``null`` for host-only marks.
@@ -12,13 +12,12 @@ progress between consecutive event marks (busy plus idle), ``null`` for host-onl
 
 from __future__ import annotations
 
-import json
 import os
-import queue
-import threading
 import time
 
 import torch
+
+from tensorfold.cuda.record_writer import JsonLines
 
 ENV = "TENSORFOLD_ROUND_PROFILE"
 EVENTS = 96            # event marks a round may record; later marks in the round keep host time only
@@ -27,17 +26,13 @@ IN_FLIGHT = 4          # rounds whose events may still be pending when the next 
 
 class RoundProfile:
     def __init__(self, path: str, *, queue_size: int = 4096) -> None:
-        self.path = path
         self.ring = [torch.cuda.Event(enable_timing=True) for _ in range(EVENTS * IN_FLIGHT)]
         self.slot = 0                      # the ring segment this round records into
         self.used = 0                      # events this round used in its segment
         self.marks: list[tuple[str, int, int]] = []
         self.pending: list[tuple[dict, list[tuple[str, int, int]]]] = []
-        self.records: queue.Queue = queue.Queue(maxsize=queue_size)
-        self.dropped = 0
         self.unresolved = 0                # rounds written without GPU times (events not ready in time)
-        self.thread = threading.Thread(target=self._write, name="tensorfold-round-profile", daemon=True)
-        self.thread.start()
+        self.writer = JsonLines(path, name="tensorfold-round-profile", stamp=self._stamp, queue_size=queue_size)
 
     @classmethod
     def from_env(cls) -> RoundProfile | None:
@@ -89,28 +84,8 @@ class RoundProfile:
                 self.unresolved += 1
             fields["wall_ms"] = round((marks[-1][1] - marks[0][1]) / 1e6, 4)
             fields["phases"] = phases
-            self._put(fields)
+            self.writer.put(fields)
 
-    def _put(self, record: dict) -> None:
-        try:
-            self.records.put_nowait(record)
-        except queue.Full:
-            try:
-                self.records.get_nowait()
-            except queue.Empty:
-                pass
-            self.dropped += 1
-            try:
-                self.records.put_nowait(record)
-            except queue.Full:
-                self.dropped += 1
-
-    def _write(self) -> None:
-        with open(self.path, "a", encoding="utf-8") as out:
-            while True:
-                record = self.records.get()
-                record["dropped"] = self.dropped
-                record["unresolved"] = self.unresolved
-                out.write(json.dumps(record, separators=(",", ":")) + "\n")
-                if self.records.empty():
-                    out.flush()
+    def _stamp(self, record: dict) -> None:
+        record["dropped"] = self.writer.dropped
+        record["unresolved"] = self.unresolved

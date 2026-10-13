@@ -13,12 +13,14 @@ from tensorfold.cuda.kernels import gdn
 
 from tensorfold.cuda import ab_switch
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
+from tensorfold.cuda.draft_log import DraftWatch
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
+from tensorfold.cuda.record_writer import close_all
 from tensorfold.cuda.round_profile import RoundProfile
 from tensorfold.cuda.sampling import TokenMap, repaired_choose, sample_streams, validate_policy, validate_rows
 from tensorfold.cuda.streams import Stream, accept
-from tensorfold.engine.exact_sampling import MARGIN, choose_rows
+from tensorfold.engine.exact_sampling import MARGIN, choose_rows, keyed_margins, value_gap
 from tensorfold.engine.grammar import GrammarError
 
 from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
@@ -106,6 +108,18 @@ class MultiDecoder:
         self.chained = 0                                 # the last round's MTP chain steps (profile field)
         self.sources: dict[int, str] = {}                # profiling only: stream id -> its pending drafts' source
         self.copying: set[int] = set()                   # profiling only: streams this round's _draft_all copied for
+        # opt-in draft log, probes and benchmark trace (None: off, one test a hook)
+        self.watch = DraftWatch.from_env({"depth": depth, "confidence": confidence, "copy": self.copy,
+                                          "copy_match": COPY_MATCH})
+
+    def close_telemetry(self, timeout: float = 10.0) -> None:
+        """At shutdown: write the opt-in round profile's and draft telemetry's queued records and stop every writer;
+        their failures raise together, once (the decoder lets go of them first, so a retried close finds none)."""
+
+        writers = ([self.prof.writer] if self.prof is not None else []) + \
+            (self.watch.writers() if self.watch is not None else [])
+        self.prof = self.watch = None
+        close_all(writers, timeout)
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -255,9 +269,13 @@ class MultiDecoder:
         """A synthetic greedy request through prefill (a full chunk, then a partial one cut at the kept point), its drafts and one round, then forgotten, so no request compiles or loads a kernel."""
 
         s = Stream([0] * min(self.prefill_rows + WARM_TAIL + 1, self.capacity - self.depth - 2), 2)
-        self.admit(s)
-        if not s.done:
-            self.round()                                 # the whole prompt (nothing else decodes), then a round
+        watch, self.watch = self.watch, None             # the synthetic request is not drafting telemetry
+        try:
+            self.admit(s)
+            if not s.done:
+                self.round()                             # the whole prompt (nothing else decodes), then a round
+        finally:
+            self.watch = watch
         self.streams.pop(s.sid, None)
         self._drop_kept(s.st)
         self._shrink(s.st)
@@ -511,6 +529,8 @@ class MultiDecoder:
             if mtp and not s.done and s.count > 1:
                 s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
                                  self.confidence)
+            if self.watch is not None and not s.done:
+                self.watch.joined(s)
             if s.done:
                 joined.append(s)
         return joined
@@ -547,14 +567,18 @@ class MultiDecoder:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
         ab_switch.refresh()
-        prof = self.prof
+        prof, watch = self.prof, self.watch
         if prof is not None:
             prof.begin()
+        if watch is not None:
+            watch.begin()
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if self.filling and (not live or not self.converged):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
             live = [s for s in self.streams.values() if not s.done and not s.waiting]
+            if watch is not None:
+                watch.begin()                          # the passes alone are not the round's time
         if not live:
             return ended
         if prof is not None:
@@ -635,6 +659,8 @@ class MultiDecoder:
             self.held[s.sid] = rows                      # the next round's trees fold these rows in first
         kept = []
         for s, (_, tokens), (st, a0, a1), rows, (path, end) in zip(live, windows, segs, sampled, paths):
+            if watch is not None:
+                watch.verified(s, st.pos, a1 - a0, len(path) - 1)
             commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False)
             s.committed.extend(tokens[:len(path)])
             s.counted(len(tokens))
@@ -651,46 +677,51 @@ class MultiDecoder:
         self.chained = 0
         if prof is not None:
             self.copying = set()
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
-                        {s.sid: fresh for s, _, _, fresh, last in kept if getattr(s, "copies", None) is not None and not last})
+        steps = self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
+                                {s.sid: fresh for s, _, _, fresh, last in kept
+                                 if getattr(s, "copies", None) is not None and not last})
         for s, _, _, new, _ in kept:
             if s.error is not None:
                 s.done = True
                 continue
             s.take(new, self._ends(s))
         spent = time.perf_counter() - t0
+        passed = sum(n for _, _, n in pieces)
         if prof is not None:
             prof.mark("take")
             prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
                      window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
-                     pass_rows=sum(n for _, _, n in pieces), chained=self.chained,
+                     pass_rows=passed, chained=self.chained,
                      source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
             self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
                             for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
-        self._timed(spent, sum(n for _, _, n in pieces))
+        self._timed(spent, passed)
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
+        if watch is not None:
+            watch.round_end(live, rows=segs[-1][2], mixed=bool(pieces), pass_rows=passed, steps=steps)
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
             self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list, new: dict | None = None) -> None:
-        """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
-        A stream whose context repeats earlier text drafts that continuation instead of an MTP row."""
+    def _draft_all(self, streams: list, new: dict | None = None) -> int:
+        """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth; returns
+        the MTP head steps run. A stream whose context repeats earlier text drafts that continuation instead of an
+        MTP row."""
 
         for s, _, _ in streams:
             s.drafts = []
         room = {s.sid: min(self.depth, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
         todo = [(s, a0, keep) for s, a0, keep in streams if room[s.sid] > 0 and self.mbuf is not None]
         if not todo:
-            return
+            return 0
         for s, _, _ in todo:
             st = s.st
             if st.mtp_drafted:
                 st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                 st.mtp_drafted = 0
-        prof = self.prof
+        prof, watch = self.prof, self.watch
         windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
         segs = mtp_stage(self.w, self.mbuf, windows)
         if prof is not None:
@@ -700,6 +731,8 @@ class MultiDecoder:
             prof.mark("mtp_absorb", gpu=True)
         for (s, _, keep), (st, a0, a1) in zip(todo, segs):
             st.set_mtp_len(st.mtp_len + len(keep))
+        # the reply index of each stream's first draft: its new tokens are not taken yet
+        base = {s.sid: len(s.out) + len(keep) for s, _, keep in todo} if watch is not None else None
         active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
         if new:
             for s, _ in active:
@@ -709,6 +742,9 @@ class MultiDecoder:
                     del s.context[len(s.context) - len(new[s.sid]):]
                     if prof is not None and s.drafts:
                         self.copying.add(s.sid)
+                    if watch is not None and s.drafts:
+                        watch.drafted(s, base[s.sid], "copy",
+                                      [(d, j, None, None) for j, d in enumerate(s.drafts)])
             if prof is not None:
                 prof.mark("copy")
             keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
@@ -716,21 +752,43 @@ class MultiDecoder:
                 logits = logits[keep_rows]
             active = [active[i] for i in keep_rows]
             if not active:
-                return
+                return 1
+        self._chain(active, logits, room, base)
+        return 1 + self.chained                          # the absorb, then the chain (round() zeroed it)
+
+    def _chain(self, active: list, logits: torch.Tensor, room: dict, base: dict | None) -> None:
+        """Chain MTP drafts from the absorb's logits, all streams in one step a depth (``self.chained`` steps).
+
+        Draft j is keyed at its verify row's position. A draft below the confidence ends its stream's chain; the first
+        is kept regardless. A probe round (the draft log's) chains every stream on to its room; the drafts past the
+        rule are labelled in the log, never verified, and their MTP entries go with the stream's next absorb."""
+
+        prof, watch = self.prof, self.watch
+        probe = watch is not None and watch.probing()
+        margins = watch is not None and watch.margins
+        items = {s.sid: (s, []) for s, _ in active} if watch is not None else None
+        shadow: set[int] = set()                         # probe rounds: streams the rule stopped, chained for labels
         for j in range(self.depth):
-            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active])
+            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
+                                margins)
             if prof is not None:
                 prof.mark(f"pick{j}", gpu=True)
             nxt = []
-            for (s, row), (d, p) in zip(active, picks):
-                low = self.confidence > 0 and p < self.confidence
-                if low and j > 0:
-                    continue
-                s.drafts.append(d)
-                if not low and j + 1 < room[s.sid]:
+            for (s, row), (d, p, scores) in zip(active, picks):
+                if items is not None:
+                    items[s.sid][1].append((d, j, p, scores))
+                if s.sid not in shadow:
+                    low = self.confidence > 0 and p < self.confidence
+                    if not low or j == 0:                # the first draft is kept even when low
+                        s.drafts.append(d)
+                    if low:                              # the rule ends this chain; a probe goes on unverified
+                        if not probe:
+                            continue
+                        shadow.add(s.sid)
+                if j + 1 < room[s.sid]:
                     nxt.append((s, row, d))
             if not nxt:
-                return
+                break
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.w, self.mbuf, windows)
             logits = self._mtp(segs)
@@ -741,6 +799,9 @@ class MultiDecoder:
                 s.st.set_mtp_len(s.st.mtp_len + 1)
                 s.st.mtp_drafted += 1
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
+        if items is not None:
+            for sid, (s, drafted) in items.items():
+                watch.drafted(s, base[sid], "mtp", drafted, probe=probe)
 
     def _mtp(self, segs: list) -> torch.Tensor:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
@@ -755,11 +816,19 @@ class MultiDecoder:
         finally:
             self.mbuf.attn_step = None
 
-    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list) -> list[tuple[int, float]]:
+    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list,
+               margins: bool = False) -> list[tuple[int, float, dict | None]]:
         """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
         Positive keyed policies use global-ID ties. Borrow full rows only to
         repair truncation or apply the complete-vocabulary top-k-off rule.
+        Each pick is (draft, probability, margins). ``margins`` (the draft log)
+        adds a dict: ``m`` the keyed margin and ``e`` the edge margin of
+        ``keyed_margins`` over the candidates the draft was chosen from
+        (greedy: ``m`` is the top-two logit gap, ``e`` None), ``g`` the top-two
+        logit gap and ``z`` the log-sum-exp minus the top logit. Every row's top
+        two values join the same single readback; drafts and probabilities are
+        those of ``margins`` off, which returns None for them.
         """
 
         if len(samplings) != len(positions):
@@ -777,6 +846,9 @@ class MultiDecoder:
         k, candidates = 0, []
         if not all(s is None or s.temperature <= 0 for s in samplings):
             k = max([int(s.top_k) + MARGIN for s in samplings if s is not None and s.temperature > 0 and s.top_k] or [1])
+        if margins:
+            k = max(k, 2)                                # every row's top two values: greedy's gap
+        if k:
             k = min(k, row.shape[1])
             vals, idx = torch.topk(row, k, dim=-1, sorted=False)
             candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
@@ -793,8 +865,13 @@ class MultiDecoder:
             lse_i = float(normalizers[i])
             if smp is None or smp.temperature <= 0:
                 c = int(g[2 * k + 1])
+                top = float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0])
+                scores = None
+                if margins:
+                    gap = value_gap(g[:k].astype(np.int32).view(np.float32))
+                    scores = {"m": gap, "e": None, "g": gap, "z": lse_i - top}
                 out.append((int(self.draft_host[c]) if self.draft_host is not None else c,
-                            float(np.exp(float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0]) - lse_i))))
+                            float(np.exp(top - lse_i)), scores))
                 continue
             values = g[:k].astype(np.int32).view(np.float32)
             cols = g[k:2 * k]
@@ -810,23 +887,33 @@ class MultiDecoder:
                         complete_ids = np.arange(row.shape[1], dtype=np.int64)
                 return complete, complete_ids
 
+            drawn = [] if margins else None              # (margin, edge) over the candidates the draft came from
             if smp.top_k:
-                tok = repaired_choose(values[None], ids[None], [pos], smp, row.shape[1], full_row)[0]
+                tok = repaired_choose(values[None], ids[None], [pos], smp, row.shape[1], full_row, drawn)[0]
             else:
                 full_values, full_ids = full_row(0)
-                tok = choose_rows(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64), smp)[0]
+                if margins:                              # keyed_margins draws as choose_rows does
+                    tok, m, e = keyed_margins(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64),
+                                              smp)[0]
+                    drawn.append((m, e))
+                else:
+                    tok = choose_rows(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64), smp)[0]
             hit = np.nonzero(ids == tok)[0]
             value = values[hit[0]] if len(hit) else complete[int(np.nonzero(complete_ids == tok)[0][0])]
             probability = float(np.exp(float(value) - lse_i))
             if not np.isfinite(probability):
                 raise ValueError("FP32 draft confidence produced a nonfinite probability")
-            out.append((int(tok), probability))
+            out.append((int(tok), probability, None if drawn is None else {
+                "m": drawn[0][0], "e": drawn[0][1], "g": value_gap(values),
+                "z": lse_i - float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0])}))
         return out
 
     def finish(self, done: list[Stream]) -> None:
         """Drop finished streams; a slot whose prompt state is kept stays with it, the rest are free again."""
 
         for s in done:
+            if self.watch is not None:
+                self.watch.finished(s)
             self.streams.pop(s.sid, None)
             if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
                 self._shrink(s.st)
@@ -836,6 +923,8 @@ class MultiDecoder:
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.filling, self.fills = [], {}
         for s in live:
+            if self.watch is not None:
+                self.watch.finished(s)
             self.streams.pop(s.sid, None)
             self.held.pop(s.sid, None)
             self._drop_kept(s.st)

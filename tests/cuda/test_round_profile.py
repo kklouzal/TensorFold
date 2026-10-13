@@ -1,7 +1,6 @@
 """The opt-in round profile: off creates nothing; on writes one record a round and never changes the tokens."""
 
 import json
-import time
 
 import pytest
 import torch
@@ -48,11 +47,8 @@ def test_profile_records_rounds_without_changing_tokens(monkeypatch, tmp_path):
     monkeypatch.setenv(round_profile.ENV, str(path))
     dec, profiled = _decode(w)
     assert profiled == plain
-    deadline = time.monotonic() + 10
-    while dec.prof.records.qsize() or not path.exists():
-        assert time.monotonic() < deadline
-        time.sleep(0.05)
-    time.sleep(0.2)
+    dec.prof.writer.close()                                  # every queued record written
+    assert dec.prof.writer.failed is None
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert records and all(r["n"] >= 1 and r["rows"] >= r["n"] and r["wall_ms"] > 0 for r in records)
     names = [p[0] for p in records[-1]["phases"]]
