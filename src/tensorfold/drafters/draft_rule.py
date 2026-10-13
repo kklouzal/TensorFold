@@ -22,7 +22,7 @@ lambda* * (step_ms + step_stream_ms * (|P| - 1))``: each member adds ``v_s - lam
 step's fixed ``lambda* * (step_ms - step_stream_ms)``, so the best set takes exactly the streams with ``v_s >= lambda*
 * step_stream_ms`` (and ``v_s > 0``), and the step runs when their gains pay the fixed part (``joint_step``)::
 
-    the step runs  <=>  sum over those streams of (v_s - lambda* * step_stream_ms) >= lambda* * (step_ms - step_stream_ms)
+    the step runs  <=>  sum over its members of (v_s - lambda* * step_stream_ms) >= lambda* * (step_ms - step_stream_ms)
 
 Alone (one stream) that is ``v_s >= lambda* * step_ms``: the step pays for itself (with the prior's tables, ``c_j *
 abar[j + 1] >= lambda* * (row_ms + step_ms)``). With more streams, a step that no single stream pays for runs when its
@@ -354,15 +354,6 @@ class Predictor:
             out["cost"] = self.cost
         return out
 
-    def mtp(self, is_greedy: bool, depth: int, p: float, m: float | None) -> float:
-        """An MTP draft's chance given the drafts before it were kept."""
-
-        table = self.mtp_tables[bool(is_greedy)]
-        score = p if table.feature == "p" else m
-        if score is None:
-            raise ValueError(f"an MTP draft's chance needs its {table.feature!r}")
-        return table.chance(depth, score)
-
     def suffix(self, is_greedy: bool, k: int, length: int) -> float:
         """A suffix token's chance (the ``k``-th of a match of ``length`` tokens) given the ones before it."""
 
@@ -576,9 +567,7 @@ def joint_step(values: Sequence[float], step: float, extra: float) -> list[bool]
         members.append(joins)
         if joins:
             gain += v - extra
-    if gain >= step - extra and any(members):
-        return members
-    return [False] * len(members)
+    return members if gain >= step - extra else [False] * len(members)     # no member: members is all False
 
 
 def suffix_plan(chances: Sequence[float], row: float) -> tuple[list[float], float]:

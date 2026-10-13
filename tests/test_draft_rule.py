@@ -242,9 +242,9 @@ def test_a_calibration_file_round_trips_and_is_validated(tmp_path, monkeypatch):
     margins = json.loads(json.dumps(data))
     margins["tables"]["mtp"]["sampled"].update(feature="m", score_edges=[0.5, 2.0], table=[[0.2, 0.5, 0.9]] * 2)
     pred = dr.Predictor.from_dict(margins)
-    assert pred.needs_margins and pred.mtp(False, 0, 0.01, math.inf) == 0.9 and pred.mtp(False, 1, 0.9, 0.1) == 0.2
-    with pytest.raises(ValueError, match="needs its 'm'"):
-        pred.mtp(False, 0, 0.5, None)
+    sampled = pred.mtp_tables[False]
+    assert pred.needs_margins and sampled.feature == "m" and pred.mtp_tables[True].feature == "p"
+    assert sampled.chance(0, math.inf) == 0.9 and sampled.chance(1, 0.1) == 0.2
 
     def bad(change, match):
         broken = json.loads(json.dumps(data))

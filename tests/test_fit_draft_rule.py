@@ -100,9 +100,9 @@ def test_a_fit_selects_the_informative_feature_and_writes_a_valid_contentless_fi
         assert mtp["selected"] == "m" and mtp["m"]["held_out"]["log_loss"] < mtp["p"]["held_out"]["log_loss"]
         assert mtp["m"]["held_out"]["log_loss"] < mtp["prior"]["log_loss"]
         table = pred.tables["mtp", policy]
-        assert table.feature == "m" and pred.needs_margins
-        assert pred.mtp(policy == "greedy", 0, 0.5, 3.5) > 0.8 > 0.2 > pred.mtp(policy == "greedy", 0, 0.5, -2.5)
-        assert pred.mtp(policy == "greedy", 0, 0.5, math.inf) > 0.8     # beyond every bin: the last
+        assert table.feature == "m" and pred.needs_margins and pred.mtp_tables[policy == "greedy"] is table
+        assert table.chance(0, 3.5) > 0.8 > 0.2 > table.chance(0, -2.5)
+        assert table.chance(0, math.inf) > 0.8                     # beyond every bin: the last
         assert all(sum(row) > 0 for row in table.count[:3])
         suffix = pred.tables["suffix", policy]
         assert report["suffix"][policy]["fit"]["samples"] > 1000 and suffix.feature == "L"
@@ -150,8 +150,7 @@ def test_too_few_samples_keep_the_prior_and_say_so(tmp_path):
         source = tmp_path / "source.json"
         source.write_text(json.dumps(bad))
         with pytest.raises(ValueError, match="--source"):
-            fit.run(type("Args", (), dict(log=[str(log)], traces=[], output="", source=str(source), confidence=0.5,
-                                          suffix_depth=8, fit_half=None))())
+            fit.run(_args(log, source=str(source)))
 
 
 def test_the_cost_fit_bounds_paused_rounds_and_steps_as_the_online_model_does():
