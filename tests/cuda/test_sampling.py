@@ -44,7 +44,7 @@ def test_streams_match_their_own_calls():
         assert got[s] == want, s
 
 
-def test_queued_streams_match_sample_streams():
+def test_queued_streams_match_sample_streams(monkeypatch):
     """``launch_streams`` then ``collect_streams`` (one host wait, top_k-off streams drawn after it) choose what
     ``sample_streams`` does, ties and top_k-off rows included; a readback's check runs after the wait, first."""
 
@@ -70,9 +70,20 @@ def test_queued_streams_match_sample_streams():
         def check(self):
             order.append("check")
 
+    class Waited:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def synchronize(self):
+            self.stream.synchronize()
+            order.append("waited")
+
     want = sample_streams(logits, starts, positions, samplings)
-    got = collect_streams(launch_streams(logits, starts, positions, samplings), Readback(),
-                          lambda: order.append("waited"))
+    launched = launch_streams(logits, starts, positions, samplings)
+    real_stream = torch.cuda.current_stream
+    with monkeypatch.context() as patched:              # the one host wait, between the words' queue and check
+        patched.setattr(torch.cuda, "current_stream", lambda device=None: Waited(real_stream(device)))
+        got = collect_streams(launched, Readback())
     assert got == want and order == ["queue", "waited", "check"]
     bad = logits.clone()
     bad[starts[5] + 2, 9] = float("nan")

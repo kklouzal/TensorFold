@@ -15,8 +15,6 @@ from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
-from tensorfold.cuda.record_writer import close_all
-from tensorfold.cuda.round_profile import RoundProfile
 from tensorfold.cuda.sampling import (TokenMap, collect_streams, launch_streams, repaired_choose, validate_policy,
                                      validate_rows)
 from tensorfold.cuda.streams import Stream, accept
@@ -96,7 +94,6 @@ class MultiDecoder:
             reason = multi_graphs.capturable(w)
         self.graph_budget = budget if reason is None else 0
         self.graph_record: dict = {"captured": False, "reason": reason}
-        self.replays = 0                                 # profiling: this round's replayed forwards
         # programmatic dependent launch of the decode kernels: this chip's policy, once (pdl.ON is set each round)
         self.pdl = pdl.select(w.device.index or 0) if torch.cuda.is_available() else False
         pdl.ON = self.pdl
@@ -125,18 +122,6 @@ class MultiDecoder:
         self.keep = keep
         self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
         self.clock = 0
-        self.prof = RoundProfile.from_env()              # opt-in per-round timing (None: off, one test a mark)
-        self.chained = 0                                 # the last round's MTP chain steps (profile field)
-        self.sources: dict[int, str] = {}                # profiling only: stream id -> its pending drafts' source
-        self.copying: set[int] = set()                   # profiling only: streams this round's _draft_all copied for
-
-    def close_telemetry(self, timeout: float = 10.0) -> None:
-        """At shutdown: write the opt-in round profile's queued records and stop its writer; a failure raises once
-        (the decoder lets go of it first, so a retried close finds none)."""
-
-        writers = [self.prof.writer] if self.prof is not None else []
-        self.prof = None
-        close_all(writers, timeout)
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -309,8 +294,6 @@ class MultiDecoder:
         self.graphs = graphs
         self.memory_gate.room -= graphs.room_bytes
         self.graph_record = {"captured": True, **graphs.record()}
-        if self.prof is not None:                        # the round profile's first line: per-key graph memory
-            self.prof.writer.put({"multi_graphs": self.graph_record})
 
     @torch.no_grad()
     def admit(self, s: Stream) -> None:
@@ -595,10 +578,6 @@ class MultiDecoder:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
-        self.replays = 0
-        prof = self.prof
-        if prof is not None:
-            prof.begin()
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if self.filling and (not live or not self.converged):
@@ -606,8 +585,6 @@ class MultiDecoder:
             live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if not live:
             return ended
-        if prof is not None:
-            prof.mark("room")
         grammars, failed = {}, []
         for s in live:                                   # a grammar cuts the drafts no accepted path can hold
             if s.constraint is not None:
@@ -623,17 +600,12 @@ class MultiDecoder:
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
-        if prof is not None:
-            prof.mark("grammar")
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
         # the n-gram rows are read once the forward reaches their layer, behind the layers before it
         segs = stage(self.w, self.buf, windows, late=True)
-        if prof is not None:
-            prof.mark("stage")
-            self.buf.late_s = 0.0
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
         cuts = []
@@ -650,8 +622,6 @@ class MultiDecoder:
         tables = self.buf.gdn_tables = gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
         self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, tables=self.step_tables,
                                              rotor_lookup=self.buf.rotor_lookup)
-        if prof is not None:
-            prof.mark("tables", gpu=True)
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 pends = self._end_rows(pieces, psegs)
@@ -661,16 +631,9 @@ class MultiDecoder:
                 logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
                 if logits is None:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
-                else:
-                    self.replays += 1
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
-        if prof is not None:
-            prof.mark("verify_enq", gpu=True)            # host: the enqueue (a mixed round: its drain too)
-            ple_ms, self.buf.late_s = round(1e3 * self.buf.late_s, 4), None   # the late n-gram reads, inside it
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
-        if prof is not None and pieces:
-            prof.mark("absorb", gpu=True)
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         samplings = [s.sampling for s in live]
@@ -685,11 +648,7 @@ class MultiDecoder:
         except BaseException:
             words.settle()
             raise
-        if prof is not None:
-            prof.mark("sample_enq", gpu=True)
-        sampled = collect_streams(launched, words, (lambda: prof.mark("sample_wait")) if prof is not None else None)
-        if prof is not None:
-            prof.mark("sample", gpu=True)
+        sampled = collect_streams(launched, words)
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
@@ -711,11 +670,6 @@ class MultiDecoder:
                     s.error = exc
             last = s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        if prof is not None:
-            prof.mark("commit", gpu=True)
-        self.chained = 0
-        if prof is not None:
-            self.copying = set()
         self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
                         {s.sid: fresh for s, _, _, fresh, last in kept
                          if getattr(s, "copies", None) is not None and not last})
@@ -725,16 +679,7 @@ class MultiDecoder:
                 continue
             s.take(new, self._ends(s))
         spent = time.perf_counter() - t0
-        passed = sum(n for _, _, n in pieces)
-        if prof is not None:
-            prof.mark("take")
-            prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
-                     window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
-                     pass_rows=passed, chained=self.chained, ple_ms=ple_ms, replays=self.replays,
-                     source=[self.sources.get(s.sid, "") for s in live])
-            self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
-                            for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
-        self._timed(spent, passed)
+        self._timed(spent, sum(n for _, _, n in pieces))
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
         done = [s for s in live if s.done]
@@ -758,14 +703,9 @@ class MultiDecoder:
             if st.mtp_drafted:
                 st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                 st.mtp_drafted = 0
-        prof = self.prof
         windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
         segs = mtp_stage(self.w, self.mbuf, windows)
-        if prof is not None:
-            prof.mark("mtp_stage")
         logits = self._mtp(segs)
-        if prof is not None:
-            prof.mark("mtp_absorb", gpu=True)
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
@@ -780,10 +720,6 @@ class MultiDecoder:
                         s.context.extend(new[s.sid])
                         s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
                         del s.context[len(s.context) - len(new[s.sid]):]
-                        if prof is not None and s.drafts:
-                            self.copying.add(s.sid)
-                if prof is not None:
-                    prof.mark("copy")
                 keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
                 if len(keep_rows) != len(active):
                     logits = logits[keep_rows]
@@ -795,10 +731,7 @@ class MultiDecoder:
                 words.settle()
                 return
         for j in range(self.depth):
-            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
-                                words, f"pick{j}_wait" if prof is not None else None)
-            if prof is not None:
-                prof.mark(f"pick{j}", gpu=True)
+            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active], words)
             nxt = []
             for (s, row), (d, p) in zip(active, picks):
                 low = self.confidence > 0 and p < self.confidence
@@ -812,9 +745,6 @@ class MultiDecoder:
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.w, self.mbuf, windows)
             logits = self._mtp(segs)
-            self.chained = j + 1
-            if prof is not None:
-                prof.mark(f"chain{j + 1}", gpu=True)
 
             def chained(nxt=nxt):                        # the step's entries, once its status words are valid
                 for s, _, _ in nxt:
@@ -835,23 +765,19 @@ class MultiDecoder:
                                               rotor_lookup=self.mbuf.rotor_lookup)
         try:                                             # the caller checks the step's status
             out = self.graphs.mtp_step(segs) if self.graphs is not None else None
-            if out is None:
-                return mtp_compute(self.w, segs, self.mbuf, check=False)
-            self.replays += 1
-            return out
+            return mtp_compute(self.w, segs, self.mbuf, check=False) if out is None else out
         finally:
             self.mbuf.attn_step = None
 
-    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list, words: KVWords,
-               wait: str | None = None) -> list[tuple[int, float]]:
+    def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list,
+               words: KVWords) -> list[tuple[int, float]]:
         """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
         Positive keyed policies use global-ID ties. Borrow full rows only to
         repair truncation or apply the complete-vocabulary top-k-off rule.
 
         ``words``: the producing step's codec status words, read back in this readback's wait and latched before
-        anything here is validated or used (a failure before that wait checks them first). ``wait`` names the
-        profile mark after the readback.
+        anything here is validated or used (a failure before that wait checks them first).
         """
 
         try:
@@ -886,8 +812,6 @@ class MultiDecoder:
             words.queue()
             got = got.to("cpu", non_blocking=True)
             torch.cuda.current_stream(logits.device).synchronize()
-            if wait is not None:
-                self.prof.mark(wait)
         except BaseException:
             words.settle()
             raise

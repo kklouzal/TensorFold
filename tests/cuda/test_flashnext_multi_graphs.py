@@ -223,31 +223,49 @@ def test_mtp_steps_replay_the_eager_bits(captured, n, split):
     _equal(got["graph"], got["alone"], "graph")
 
 
+def _replays(dec) -> list[int]:
+    """A counter of the captured forwards and MTP steps ``dec`` replays (its graphs' calls that serve a step)."""
+
+    count = [0]
+
+    def counting(real):
+        def counted(segs):
+            out = real(segs)
+            count[0] += out is not None
+            return out
+        return counted
+
+    for name in ("verify_forward", "mtp_step"):
+        setattr(dec.graphs, name, counting(getattr(dec.graphs, name)))
+    return count
+
+
 def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096, depth=3, confidence=0.3,
             prefill_rows=256, draft=None, later=()):
-    """Decode ``prompts`` together (``later``: (round, prompt index) admitted mid-run); each stream's tokens and the
-    decoder (its replay count over the run in ``dec.total_replays``)."""
+    """Decode ``prompts`` together (``later``: (round, prompt index) admitted mid-run); each stream's tokens, the
+    decoder and its replays over the run."""
 
     dec = MultiDecoder(w, slots=len(prompts), capacity=capacity, depth=depth, confidence=confidence,
                        kv_dtype=kv_dtype, prefill_rows=prefill_rows, graphs=graphs)
+    replays = [0]
     if graphs:
         dec.capture_graphs()
+        replays = _replays(dec)
     streams = [Stream(list(p), count, smp, draft=True if draft is None else draft[i])
                for i, (p, smp) in enumerate(zip(prompts, samplings))]
     pending = {i: r for r, i in later}
     for i, s in enumerate(streams):
         if i not in pending:
             dec.admit(s)
-    rounds = dec.total_replays = 0
+    rounds = 0
     while dec.live() or any(i in pending for i in range(len(streams))):
         for i, r in list(pending.items()):
             if rounds >= r:
                 dec.admit(streams[i])
                 del pending[i]
         dec.finish(dec.round())
-        dec.total_replays += dec.replays
         rounds += 1
-    return [s.out for s in streams], dec
+    return [s.out for s in streams], dec, replays[0]
 
 
 @pytest.mark.parametrize("depth,confidence", [(1, 0.0), (3, 0.3), (5, 0.5)])
@@ -266,19 +284,19 @@ def test_graph_rounds_emit_each_streams_solo_tokens(depth, confidence):
                        graphs=True)
     dec.capture_graphs()
     assert dec.graph_record["captured"] and dec.graphs.verify and dec.graphs.mtp
+    replays = _replays(dec)
     streams = [Stream(list(p), c, smp, draft=i != 3) for i, (p, smp, c) in enumerate(zip(prompts, samplings, counts))]
     for s in streams[:2]:
         dec.admit(s)
-    rounds, replays = 0, 0
+    rounds = 0
     while dec.live() or rounds < 3:
         if rounds == 2:                                  # two more join while the first two decode
             for s in streams[2:]:
                 dec.admit(s)
         dec.finish(dec.round())
-        replays += dec.replays
         rounds += 1
     assert [s.out for s in streams] == refs
-    assert replays > 0
+    assert replays[0] > 0
 
 
 def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
@@ -292,8 +310,9 @@ def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
     prompts = [loop, torch.randint(1, V, (300,), generator=g).tolist(), loop[3:] + [11, 12], PROMPTS[1]]
     samplings = [None, Sampling(seed=4, top_k=20, top_p=0.95), Sampling(seed=8, top_k=20, top_p=0.95), None]
     refs = _solo(w, prompts, samplings, 40, RQ, capacity=1024, prefill_rows=64)
-    outs, dec = _decode(w, prompts, samplings, 40, graphs=True, capacity=1024, prefill_rows=64, later=[(2, 1), (4, 3)])
-    assert outs == refs and dec.total_replays > 0
+    outs, dec, replays = _decode(w, prompts, samplings, 40, graphs=True, capacity=1024, prefill_rows=64,
+                                 later=[(2, 1), (4, 3)])
+    assert outs == refs and replays > 0
     slots = dec.free + [k[1] for k in dec.kept]                     # kept prompt ends hold their slots
     assert max(st.version for st in slots) >= 1                     # a slot grew past its first 256 rows
 
@@ -317,10 +336,11 @@ def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
     scale = w.mtp.layer.attn.q_scale if where == "mtp" else w.layers[1].attn.q_scale
     saved = scale.clone()
     scale.fill_(float("nan"))
+    replays = _replays(dec)
     try:
         with pytest.raises(KVNumericError, match="layer=MTP" if where == "mtp" else "layer=1"):
             dec.round()
-        assert dec.replays > 0
+        assert replays[0] > 0
     finally:
         scale.copy_(saved)
     assert emitted == before and all(s.st._kv_error is not None for s in streams)
@@ -419,7 +439,7 @@ def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monk
         dec.admit(s)
     while dec.live():
         dec.finish(dec.round())
-    assert [s.out for s in streams] == refs and dec.replays == 0
+    assert [s.out for s in streams] == refs
 
 
 def test_a_failed_slot_restore_after_a_failed_capture_is_attached_to_the_capture_error(monkeypatch):

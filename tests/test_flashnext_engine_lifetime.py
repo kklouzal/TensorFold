@@ -50,8 +50,7 @@ def engine(scheduler=None):
     e.scheduler = scheduler
     e.w = SimpleNamespace(device="owned-device", meta={"expert_cache": Resource(e.events, "cache-close")})
     plan = Resource(e.events, "plan-close")
-    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None,
-                              close_telemetry=lambda: e.events.append("telemetry-close"))
+    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None)
     e.e = e.serial = None
     e.tp, e.vision, e.depth, e.max_len, e.cache = 1, None, 4, 2053, []
     e._serial = lambda *args, **kwargs: {"serial": True}
@@ -100,10 +99,10 @@ class LifetimeControls(unittest.TestCase):
             with self.subTest(draft=draft), self.assertRaisesRegex(RuntimeError, "closing or closed"):
                 e.generate([], 1, None, lambda _: False, draft=draft)
         self.assertIs(e.w, weight)
-        self.assertEqual(e.events, ["plan-close", "cache-close", "telemetry-close"])
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
         self.assertEqual(self.events, [("fence", "owned-device")])
         e.close()
-        self.assertEqual(e.events, ["plan-close", "cache-close", "telemetry-close"])
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
 
     def test_captured_scheduler_cannot_fall_through_when_close_wins_before_submit(self):
         began, release = threading.Event(), threading.Event()
@@ -227,7 +226,7 @@ class LifetimeControls(unittest.TestCase):
             e.generate([1], 1, None, lambda _: False)
         self.runtime.cuda.synchronize = lambda _: None
         e.close()
-        self.assertEqual(e.events, ["plan-close", "cache-close", "telemetry-close"])
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
         self.assertTrue(e._closed)
 
     def test_concurrent_closes_share_one_cleanup(self):
@@ -252,24 +251,7 @@ class LifetimeControls(unittest.TestCase):
             join(first)
             join(second)
         self.assertEqual(outcomes, {"first": None, "second": None})
-        self.assertEqual(e.events, ["plan-close", "cache-close", "telemetry-close"])
-
-    def test_a_failed_telemetry_close_raises_once_and_a_retried_close_completes(self):
-        e = engine()
-        failures = [RuntimeError("draft log writer stopped")]
-
-        def telemetry():                                  # MultiDecoder.close_telemetry reports a failure once
-            e.events.append("telemetry-close")
-            if failures:
-                raise failures.pop()
-
-        e.multi.close_telemetry = telemetry
-        with self.assertRaisesRegex(RuntimeError, "draft log writer stopped"):
-            e.close()
-        self.assertFalse(e._closed)
-        e.close()
-        self.assertTrue(e._closed)
-        self.assertEqual(e.events, ["plan-close", "cache-close", "telemetry-close"] * 2)
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
 
     def test_partial_lifecycle_initialization_closes_without_missing_attribute(self):
         for partial in (False, True):

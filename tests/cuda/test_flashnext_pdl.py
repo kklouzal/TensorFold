@@ -9,7 +9,7 @@ if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
     pytest.skip("PDL needs CUDA sm_90 or later", allow_module_level=True)
 
 from test_flashnext_forward import V, _model  # noqa: E402
-from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _solo, _verify  # noqa: E402
+from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _replays, _solo, _verify  # noqa: E402
 
 from tensorfold.cuda import pdl  # noqa: E402
 from tensorfold.cuda.kernels import qmm as shared  # noqa: E402
@@ -75,20 +75,20 @@ def test_decode_with_pdl_emits_each_streams_solo_tokens(monkeypatch, graphs):
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, prefill_rows=256,
                        graphs=graphs)
     assert dec.pdl
+    replays = [0]
     if graphs:
         dec.capture_graphs()
         keys = [*dec.graphs.verify, *dec.graphs.mtp]
         assert keys and all(key[0] for key in keys)
+        replays = _replays(dec)
     streams = [Stream(list(p), 20, smp, draft=i != 3) for i, (p, smp) in enumerate(zip(PROMPTS, SAMPLINGS))]
     for s in streams:
         dec.admit(s)
-    replays = 0
     while dec.live():
         dec.finish(dec.round())
         assert pdl.ON
-        replays += dec.replays
     assert [s.out for s in streams] == refs
-    assert (replays > 0) == graphs
+    assert (replays[0] > 0) == graphs
 
 
 def test_replayed_pdl_graphs_keep_their_bits_over_many_replays(monkeypatch):
