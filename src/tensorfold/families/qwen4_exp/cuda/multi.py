@@ -317,6 +317,8 @@ class MultiDecoder:
         self.graphs = graphs
         self.memory_gate.room -= graphs.bytes
         self.graph_record = {"captured": True, **graphs.record()}
+        if self.prof is not None:                        # the round profile's first line: per-key graph memory
+            self.prof.writer.put({"multi_graphs": self.graph_record})
 
     @torch.no_grad()
     def admit(self, s: Stream) -> None:

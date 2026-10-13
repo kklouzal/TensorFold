@@ -318,7 +318,8 @@ def test_actual_engine_uses_format_layout_for_window_admission(tmp_path, monkeyp
     calls, capacity = fake_runtime
     params = dict(mtp=True, kv_pair=((fmt.bits, fmt.group, fmt.scale_bytes),) * 2, kv_status=True)
     plan = (geometry.gdn_geometry(text, 1, 4, indexed=True, kept=KEEP_SERIAL + 1, **params) if streams == 1 else
-            geometry.indexed_stream_geometry(text, streams, 4, KEEP, points=POINTS, **params))
+            geometry.indexed_stream_geometry(text, streams, 4, KEEP, points=POINTS, **params,
+                                             graph_bytes=geometry.multi_graph_bytes()))     # its captured rounds
     budget = plan.needed(12000) + 32768
     monkeypatch.setattr(capacity, "available_bytes", lambda _: budget)
     engine = FlashNextEngine.__new__(FlashNextEngine)

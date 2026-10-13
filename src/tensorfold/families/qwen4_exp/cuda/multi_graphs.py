@@ -36,10 +36,10 @@ def free_bytes() -> int:
     """The memory graphs take from: a unified GPU's MemAvailable (the host's), else the card's free memory. Uncapped
     by TENSORFOLD_CUDA_MEMORY_LIMIT_GB, so a key's driver graph memory shows beside its private pool's blocks."""
 
-    from tensorfold.cuda import capacity
+    from tensorfold.cuda.capacity import page_room
 
-    memory = capacity._meminfo() if capacity.unified(torch) else None
-    return int(memory["MemAvailable"]) if memory is not None else int(torch.cuda.mem_get_info()[0])
+    room = page_room(torch)
+    return int(room) if room is not None else int(torch.cuda.mem_get_info()[0])
 
 
 def capturable(w) -> str | None:
