@@ -21,7 +21,7 @@ services:
       - --yarn-factor
       - '4'
       - --kv-dtype
-      - rotorquant8-norm
+      - rotorquant6-norm
       - --mtp-drafts
       - '4'
       - --mtp-confidence
@@ -68,7 +68,7 @@ services:
         source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
         target: /root/.cache/huggingface
       - type: bind
-        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-2edfaa51}
+        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-audit-20261013}
         target: /cache
     network_mode: host
     ipc: host
