@@ -274,6 +274,10 @@ def _indices(x, BITS: tl.constexpr):
     return q
 
 
+# Six bits keep the 63-selection chain. Folding it over the book's antisymmetry (31 selections on
+# (q & 31) ^ (31 if q < 32), then a sign) is bit-exact and ~20% faster on GB10 attention, but GB10 hard-hung (whole
+# SoC, no log) twice in ~350 s of 150k-token prompt passes with it, against none in ~3,800 s of this chain or the
+# register gather (2026-10-13). Re-qualify on GB10 before changing the six-bit kernels' machine code.
 @triton.jit
 def _centroids(q, BITS: tl.constexpr):
     """Unsigned centroid indices -> canonical FP32 coordinate values."""
