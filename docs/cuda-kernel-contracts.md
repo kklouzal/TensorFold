@@ -171,8 +171,17 @@ launched (fixed geometry) and write nothing; zero pending counts are the documen
 one private pool, keyed by (PDL, streams, rows) and the DeltaNet parity. What a step's host data shapes runs eagerly
 between the pieces on that step's data: block selection, each stream's n-gram conv tail and the late n-gram reads.
 A round replays one key's pieces in order and reads only static buffers afterwards, so no piece's pool memory is
-an output. Keys are captured only within `TENSORFOLD_MULTI_GRAPH_MIB`; experts that read their plan on the host
-decline capture.
+an output. Keys are captured only while their measured memory stays within `TENSORFOLD_MULTI_GRAPH_MIB`: a key's
+memory is the drop of free memory across its capture alone, after its eager warm-up's allocator blocks are in
+place, and the stream caches' room loses the larger of the kept keys' sum and the whole capture's settled drop.
+Startup admission plans the budget only where capture can happen: experts that read their plan on the host
+(`--vram-experts`) decline capture and plan none, and the decoder's budget must equal the plan. A capture failure
+stays the raised error; a failed end of its open capture or a failed restore of the slots is attached to it.
+
+`tensorfold.cuda.pdl.ON`, the launch policy every converted kernel's launch reads, is a process global with an
+explicit contract in `pdl.py`: only the concurrent decoder writes it (construction, each round, each captured
+variant), on the one thread launching the decode kernels and never while a launch is being built; every launch in
+the process follows its current value, which never changes results.
 
 Programmatic dependent launch (`tensorfold/cuda/pdl.py`, `kernels/pdl.cuh`): a kernel launched with the attribute
 may be scheduled while its predecessor finishes. Every such kernel calls `griddepcontrol.wait` as its first

@@ -170,6 +170,15 @@ Other unverified CUDA/MLX kernel, scheduling, prebuild, pinning and distributed
 Flash Next alternatives remain isolated evaluation packets. Source-only
 operation-order reasoning does not establish their integrated performance.
 
+On the `perf-idea2-round` branch, Flash Next's concurrent rounds add one host
+wait a step, late n-gram reads, lean sampling packets, static round tables,
+captured CUDA graphs within `TENSORFOLD_MULTI_GRAPH_MIB` and programmatic
+dependent launch, each behind a benchmark-only `TENSORFOLD_AB_CONTROL` switch
+(`b1`, `b2`, `b3`, `graphs`, `pdl`) that is removed after selection. Their
+evidence is synthetic-model GPU tests (identical tokens and bits in every switch
+value) on an RTX PRO 2000 Blackwell (sm_120); the GB10 A/B, full-model and
+installed-image qualification remain pending.
+
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
 workload scope. Actual integrated native/device/model/performance qualification

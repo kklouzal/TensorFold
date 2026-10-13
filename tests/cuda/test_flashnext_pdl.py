@@ -20,15 +20,7 @@ from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import qmm  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 
-
-@pytest.fixture(autouse=True)
-def _launches():
-    """Each test leaves the process-wide launch policy as it found it."""
-
-    before = pdl.ON
-    yield
-    pdl.ON = before
-
+# tests/cuda/conftest.py restores the process-wide launch policy (pdl.ON) after each test
 
 def test_selection_is_per_chip_and_overridable(monkeypatch):
     monkeypatch.delenv(pdl.ENV, raising=False)

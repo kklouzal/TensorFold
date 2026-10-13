@@ -61,6 +61,41 @@ def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(
         fits()
 
 
+@pytest.mark.torch
+@pytest.mark.parametrize("vram_experts,graphs,planned", [(None, True, True), (None, False, False),
+                                                         (1.0, True, False)])
+def test_concurrent_admission_plans_graph_memory_only_where_rounds_are_captured(tmp_path, monkeypatch,  # noqa: F811
+                                                                              fake_runtime, vram_experts, graphs,
+                                                                              planned):
+    """Flash Next's concurrent decoder plans TENSORFOLD_MULTI_GRAPH_MIB only when it can capture its rounds: experts
+    read through a host cache (--vram-experts) decline capture, so admission keeps that memory for the caches."""
+
+    from tensorfold.cuda import geometry
+    from tensorfold.families.qwen4_exp import ram_experts
+
+    class Planned(Exception):
+        pass
+
+    checkpoint(tmp_path, small_config(), WEIGHTS)
+    seen = []
+
+    def plan(*args, **kwargs):                           # the admitted geometry's graph budget, then stop
+        seen.append(kwargs["graph_bytes"])
+        raise Planned
+
+    layout = SimpleNamespace(transform=lambda rule: rule, format="mlx", **dict.fromkeys(
+        ("host_bytes", "metadata_host_bytes", "staging_bytes", "control_host_bytes", "loading_bytes", "gpu_bytes",
+         "metadata_device_bytes", "control_device_bytes"), 0))
+    monkeypatch.setattr(geometry, "indexed_stream_geometry", plan)
+    monkeypatch.setattr(ram_experts, "check", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ram_experts, "layout", lambda *args, **kwargs: layout)
+    monkeypatch.setattr(ram_experts, "plan_scratch", lambda *args, **kwargs: (0, 0))
+    obj, _ = start("indexed", tmp_path, None, None, 1, 4)
+    with pytest.raises(Planned):
+        obj.__init__(tmp_path, max_len=None, depth=3, streams=4, graphs=graphs, vram_experts=vram_experts)
+    assert seen == [geometry.multi_graph_bytes() if planned else 0]
+
+
 def test_stream_geometry_counts_every_stream_and_kept_prompt_end():
     from tensorfold.cuda.geometry import draft_geometry, indexed_stream_geometry, stream_geometry
     text = small_config()

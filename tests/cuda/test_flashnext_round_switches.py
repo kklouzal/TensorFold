@@ -141,6 +141,56 @@ def test_b1_failed_status_wins_over_nonfinite_scores_and_publishes_nothing(monke
     assert again.error is None and again.out == _solo(w, PROMPTS[:1], SAMPLINGS[1:2], 6, RQ, capacity=256)[0]
 
 
+class _FailedFrame:
+    """A frame's status words (``KVWords``' protocol) whose settle reports the frame's codec failure."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def queue(self) -> None:
+        self.calls.append("queue")
+
+    def check(self) -> None:
+        self.calls.append("check")
+
+    def settle(self) -> None:
+        self.calls.append("settle")
+        raise KVNumericError("the frame failed")
+
+
+def _raise(error):
+    def fail(*args, **kwargs):
+        raise error
+    return fail
+
+
+def test_b1_a_failure_before_the_status_check_reports_the_failed_frame_first(monkeypatch):
+    """KVWords' precedence past validation: a failure of the draft picks' device work, of their readback's wait, or
+    of the sampler's readback wait settles the frame's words first, so its codec failure is the error raised (the
+    other failure is its context), as the check right after the forward did before B1."""
+
+    from tensorfold.cuda.sampling import collect_streams, launch_streams
+
+    w = _model()
+    dec = MultiDecoder(w, slots=2, capacity=256, depth=3, kv_dtype=RQ)
+    logits = torch.randn((2, 64), device="cuda")
+    for target, name, error, calls in ((torch, "logsumexp", MemoryError("device work"), ["settle"]),
+                                       (torch.cuda, "current_stream", RuntimeError("wait"), ["queue", "settle"])):
+        words = _FailedFrame()
+        with monkeypatch.context() as patched:
+            patched.setattr(target, name, _raise(error))
+            with pytest.raises(KVNumericError) as caught:
+                dec._picks(logits, [5, 6], [None, SAMPLINGS[1]], False, words, None)
+        assert words.calls == calls and caught.value.__context__ is error
+    packets = launch_streams(logits, [0, 1, 2], [[5], [6]], [None, SAMPLINGS[1]])
+    words, error = _FailedFrame(), RuntimeError("wait")
+    with monkeypatch.context() as patched:
+        patched.setattr(torch.cuda, "current_stream", _raise(error))
+        with pytest.raises(KVNumericError) as caught:
+            collect_streams(packets, words)
+    assert words.calls == ["queue", "settle"] and caught.value.__context__ is error
+
+
 def test_b1_words_latch_every_state_in_order_and_run_once():
     """``KVWords``: the first failure in stream order is raised after every state latched; the follow-up runs only
     for a valid frame; a second check or settle does nothing."""

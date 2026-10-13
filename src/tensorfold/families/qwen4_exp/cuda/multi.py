@@ -311,14 +311,14 @@ class MultiDecoder:
     @torch.no_grad()
     def capture_graphs(self) -> None:
         """Capture the rounds' verify forwards and MTP steps on the idle slots (``multi_graphs``) and take their
-        measured memory from the stream caches' room. Before any request: every slot must be free."""
+        measured memory (``room_bytes``) from the stream caches' room. Before any request: every slot must be free."""
 
         if self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots:
             raise RuntimeError("graphs are captured on idle slots, before any request")
         graphs = multi_graphs.RoundGraphs(self, self.graph_budget)
         graphs.capture()
         self.graphs = graphs
-        self.memory_gate.room -= graphs.bytes
+        self.memory_gate.room -= graphs.room_bytes
         self.graph_record = {"captured": True, **graphs.record()}
         if self.prof is not None:                        # the round profile's first line: per-key graph memory
             self.prof.writer.put({"multi_graphs": self.graph_record})
@@ -611,6 +611,7 @@ class MultiDecoder:
         self.b1 = b1 = ab_switch.new("b1")               # "old": A/B baseline, remove after selection
         self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
         pdl.ON = self.pdl and ab_switch.new("pdl")       # "old": A/B baseline, remove after selection
+        lean = ab_switch.new("b3")                       # "old": A/B baseline, remove after selection
         self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:
@@ -699,7 +700,6 @@ class MultiDecoder:
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         samplings = [s.sampling for s in live]
-        lean = ab_switch.new("b3")                       # "old": A/B baseline, remove after selection
         if b1:
             # one host wait for the packets and the frame's status words, latched before any score is used; a
             # failure before that wait reports a failed frame first, as the check right after the forward did
@@ -960,30 +960,36 @@ class MultiDecoder:
             if words is not None:
                 words.settle()
             return []
-        row = logits.float()
-        # Greedy proposals only consume the original maximum and log-sum-exp.
-        # k=0 retains their common read-back offsets without unused top-k work.
-        k, candidates = 0, []
-        if not all(s is None or s.temperature <= 0 for s in samplings):
-            k = max([int(s.top_k) + MARGIN for s in samplings if s is not None and s.temperature > 0 and s.top_k] or [1])
-        if margins:
-            k = max(k, 2)                                # every row's top two values: greedy's gap
-        if k:
-            k = min(k, row.shape[1])
-            vals, idx = torch.topk(row, k, dim=-1, sorted=False)
-            candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
-        top, col = row.max(dim=-1, keepdim=True)
-        lse = torch.logsumexp(row, dim=-1, keepdim=True)
-        got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
-                         lse.view(torch.int32).to(torch.int64)], dim=1)
-        if words is None:                                # A/B baseline: remove after selection
-            got = got.cpu().numpy()                      # A/B baseline: remove after selection
-        else:
-            words.queue()
-            got = got.to("cpu", non_blocking=True)
-            torch.cuda.current_stream(logits.device).synchronize()
-        if wait is not None:
-            self.prof.mark(wait)
+        try:                                             # a failure before the words' check settles them first
+            row = logits.float()
+            # Greedy proposals only consume the original maximum and log-sum-exp.
+            # k=0 retains their common read-back offsets without unused top-k work.
+            k, candidates = 0, []
+            if not all(s is None or s.temperature <= 0 for s in samplings):
+                k = max([int(s.top_k) + MARGIN for s in samplings
+                         if s is not None and s.temperature > 0 and s.top_k] or [1])
+            if margins:
+                k = max(k, 2)                            # every row's top two values: greedy's gap
+            if k:
+                k = min(k, row.shape[1])
+                vals, idx = torch.topk(row, k, dim=-1, sorted=False)
+                candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
+            top, col = row.max(dim=-1, keepdim=True)
+            lse = torch.logsumexp(row, dim=-1, keepdim=True)
+            got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
+                             lse.view(torch.int32).to(torch.int64)], dim=1)
+            if words is None:                            # A/B baseline: remove after selection
+                got = got.cpu().numpy()                  # A/B baseline: remove after selection
+            else:
+                words.queue()
+                got = got.to("cpu", non_blocking=True)
+                torch.cuda.current_stream(logits.device).synchronize()
+            if wait is not None:
+                self.prof.mark(wait)
+        except BaseException:
+            if words is not None:
+                words.settle()
+            raise
         if words is not None:
             words.check()
             got = got.numpy()

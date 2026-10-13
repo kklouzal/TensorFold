@@ -117,7 +117,9 @@ class FlashNextEngine:
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
-        graph_bytes = multi_graph_bytes() if streams > 1 and graphs else 0     # captured rounds: bounded, planned
+        # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
+        # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
+        graph_bytes = multi_graph_bytes() if streams > 1 and graphs and vram_experts is None else 0
         geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, points=POINTS,
                                                           kv_pair=kv_geometry, graph_bytes=graph_bytes,
                                                           prefill_rows=rows0, kv_status=kv_status))
@@ -286,6 +288,10 @@ class FlashNextEngine:
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
                                       graphs=graphs)
+            if self.multi.graph_budget != graph_bytes:   # admission planned exactly what the decoder may capture
+                raise RuntimeError(f"the startup plan reserved {graph_bytes} bytes for captured rounds, but the "
+                                   f"decoder's budget is {self.multi.graph_budget} "
+                                   f"({self.multi.graph_record['reason'] or 'capturable'})")
             if automatic_experts:
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
             self.scheduler = Scheduler(self.multi, max_streams=streams)

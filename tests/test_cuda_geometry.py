@@ -105,6 +105,68 @@ def test_indexed_stream_status_and_independent_kv_sides_remain_budgeted_per_rank
         assert checked.bytes_at(slots) - mixed.bytes_at(slots) == 8 * 3 * (2 + int(mtp))
 
 
+MULTI_TEXT = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 64,
+              "num_hidden_layers": 6, "layer_types": ["linear_attention"] * 2 + ["full_attention"] * 2
+              + ["linear_attention", "full_attention"], "linear_num_key_heads": 2, "linear_num_value_heads": 4,
+              "linear_key_head_dim": 128, "linear_value_head_dim": 128, "linear_conv_kernel_dim": 4,
+              "vocab_size": 1024, "hc_count": 4}
+
+
+@pytest.mark.parametrize("value,mib", [(None, 512), ("", 512), (" 64 ", 64), ("0", 0), ("0064", 64),
+                                       ("65536", 65536)])
+def test_multi_graph_budget_reads_whole_mebibytes(monkeypatch, value, mib):
+    if value is None:
+        monkeypatch.delenv(geometry.MULTI_GRAPH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(geometry.MULTI_GRAPH_ENV, value)
+    assert geometry.multi_graph_bytes() == mib << 20
+
+
+@pytest.mark.parametrize("value", ["65537", "-1", "1.5", "0x10", "1e3", "+5", "512MiB", "abc", "\u0661\u0662",
+                                   pytest.param("1" * 5000, id="5000-digits")])
+def test_multi_graph_budget_refuses_anything_else_by_name(monkeypatch, value):
+    monkeypatch.setenv(geometry.MULTI_GRAPH_ENV, value)
+    with pytest.raises(ValueError, match=geometry.MULTI_GRAPH_ENV):
+        geometry.multi_graph_bytes()
+
+
+@pytest.mark.parametrize("streams,each,mtp", [(2, 1, False), (3, 4, True), (4, 5, True)])
+def test_indexed_stream_geometry_plans_the_static_tables_and_the_graph_budget(monkeypatch, streams, each, mtp):
+    """The concurrent decoder's plan includes its static round tables (``multi_static_bytes``) and the captured
+    rounds' budget, each byte for byte, at every window."""
+
+    plan = geometry.indexed_stream_geometry(MULTI_TEXT, streams, each, 8, mtp=mtp)
+    graphs = geometry.indexed_stream_geometry(MULTI_TEXT, streams, each, 8, mtp=mtp, graph_bytes=512 << 20)
+    tables = geometry.multi_static_bytes(MULTI_TEXT, streams, each, mtp)
+    monkeypatch.setattr(geometry, "multi_static_bytes", lambda *args: 0)
+    bare = geometry.indexed_stream_geometry(MULTI_TEXT, streams, each, 8, mtp=mtp)
+    for slots in (256, 4096, 65536):
+        assert graphs.bytes_at(slots) - plan.bytes_at(slots) == 512 << 20
+        assert plan.bytes_at(slots) - bare.bytes_at(slots) == tables > 0
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("streams,each,mtp", [(2, 1, False), (3, 4, True), (4, 5, True)])
+def test_static_round_table_bytes_are_the_tables_allocations(streams, each, mtp):
+    """``multi_static_bytes`` is what the decoder's static tables allocate (device arrays and their host mirrors:
+    ``gdn_multi.RoundTables``, ``attn_multi.StepTables`` for the verify and the MTP steps) plus its codec status
+    words (``MultiDecoder.kv_host``: two int32 a slot)."""
+
+    import torch
+
+    from tensorfold.families.qwen4_exp.cuda import attn_multi, gdn_multi
+
+    layers = [SimpleNamespace(linear=kind == "linear_attention") for kind in MULTI_TEXT["layer_types"]]
+    w = SimpleNamespace(device=torch.device("cpu"), layers=layers)
+    tables = [gdn_multi.RoundTables(w, SimpleNamespace(lin=sum(layer.linear for layer in layers)), streams, each),
+              attn_multi.StepTables(w, streams, each, mtp=False)]
+    if mtp:
+        tables.append(attn_multi.StepTables(w, streams, each, mtp=True))
+    arrays = [t for table in tables for t in (table.i32, table.h32, table.i64, table.h64)]
+    arrays.append(torch.zeros((streams, 2), dtype=torch.int32))
+    assert geometry.multi_static_bytes(MULTI_TEXT, streams, each, mtp) == bytes_in(arrays)
+
+
 @pytest.mark.torch
 @pytest.mark.parametrize("world", [1, 2])
 @pytest.mark.parametrize("mtp", [False, True])

@@ -11,9 +11,11 @@ path for the same key, so their bits are its bits.
 Pieces of every key share one private memory pool (``torch.cuda.graph_pool_handle``): a round replays one key's
 pieces in order and no piece's pool memory outlives it as an output (outputs are the static buffers). Keys are
 captured in order of expected use (fewer streams first) while their measured memory stays within the budget
-(``TENSORFOLD_MULTI_GRAPH_MIB``, counted in the startup memory plan and taken from the stream caches' room); the
-rest run eagerly. Rounds with a prompt pass, image rows or the lookup decoder, and steps whose key was not
-captured, run the same eager path.
+(``TENSORFOLD_MULTI_GRAPH_MIB``, counted in the startup memory plan); the rest run eagerly. A key's memory is the
+drop of free memory across its capture alone (its pool blocks and driver graph memory), measured after its eager
+warm-up's own allocator blocks are in place; the stream caches' room loses the larger of the kept keys' sum and the
+whole capture's settled drop. Rounds with a prompt pass, image rows or the lookup decoder, and steps whose key was
+not captured, run the same eager path.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import time
 
 import torch
 
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda import ab_switch, pdl
 from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_bytes as budget_bytes  # noqa: F401
 
@@ -75,9 +78,11 @@ class RoundGraphs:
         self.side = torch.cuda.Stream()
         self.verify: dict[tuple[bool, int, int, int], Pieces] = {}    # (PDL, streams, rows, DeltaNet parity)
         self.mtp: dict[tuple[bool, int, int], Pieces] = {}             # (PDL, streams, rows)
-        self.bytes = 0
+        self.bytes = 0                                   # the kept keys' measured memory (each >= 0): within budget
+        self.settled_bytes = 0                           # the whole capture's drop of free memory, settled (raw)
+        self.room_bytes = 0                              # what the stream caches' room loses: the larger of the two
         self.capture_s = 0.0
-        self.measured: list[dict] = []                   # per key: bytes, pieces, capture seconds (startup record)
+        self.measured: list[dict] = []                   # per key: raw bytes (< 0: outside noise), pieces, seconds
         self.stopped: str | None = None                  # why capture stopped before the last key (the budget)
 
     # -- replay ------------------------------------------------------------------------------------------------
@@ -122,17 +127,23 @@ class RoundGraphs:
 
     # -- capture -----------------------------------------------------------------------------------------------
     def _pieces(self, run, b) -> Pieces:
-        """``run()`` captured in pieces, one ending at each ``b.split`` insert."""
+        """``run()`` captured in pieces, one ending at each ``b.split`` insert. Only a begun capture is ended, once;
+        a failure inside ``run`` stays the raised error, with a failed end of its open capture attached."""
 
         pieces = Pieces()
+        open_graph: list[torch.cuda.CUDAGraph] = []      # the piece being captured (begun, not yet ended)
 
         def begin() -> None:
             graph = torch.cuda.CUDAGraph()
-            pieces.graphs.append(graph)
             graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
+            open_graph.append(graph)
+            pieces.graphs.append(graph)
+
+        def end() -> None:
+            open_graph.pop().capture_end()               # popped first: a failed end is never retried
 
         def split(insert) -> None:
-            pieces.graphs[-1].capture_end()
+            end()
             pieces.inserts.append(insert)
             begin()
 
@@ -142,22 +153,33 @@ class RoundGraphs:
                 begin()
                 try:
                     pieces.out = run()
-                finally:
-                    pieces.graphs[-1].capture_end()
+                except BaseException as primary:
+                    errors = []
+                    if open_graph:
+                        try:
+                            end()
+                        except BaseException as error:
+                            errors.append(error)
+                    raise_failures(primary, errors)
+                end()
         finally:
             b.split = None
         return pieces
 
     def capture(self) -> None:
         """Capture every key in order (streams 1, 2, ...: verify at both parities, then the MTP step) on the free
-        slots while the memory they take (``free_bytes``: the private pool's blocks and the driver's graph memory)
-        stays within the budget; a key past it is dropped and capture stops. The slots are reset afterwards.
+        slots while the kept keys' measured memory stays within the budget; a key past it is dropped and capture
+        stops. A key is measured across its capture alone (``free_bytes`` after its eager warm-up's allocator blocks,
+        then after its capture): its private pool blocks and driver graph memory, plus any outside change in the
+        same interval, recorded raw (a negative figure is outside noise and counts as 0 against the budget). The
+        slots are reset afterwards; the settled drop of the whole capture (after ``empty_cache``) is recorded, and
+        the stream caches' room loses the larger of it and the keys' sum (``room_bytes``).
 
         Keys are captured with the chip's PDL policy (``dec.pdl``); during a benchmark A/B (TENSORFOLD_AB_CONTROL,
-        switch "pdl") on a PDL chip, every key is then captured once more without it, budget permitting."""
+        switch "pdl") on a PDL chip, every key is then captured once more without it, budget permitting. A failure
+        stays the raised error; a failed restore of the slots afterwards is attached to it."""
 
         dec = self.dec
-        w, slots, width = dec.w, len(dec.free), dec.depth + 1
         states = list(dec.free)
         parity, launch = dec.gdn.parity, pdl.ON
         variants = [dec.pdl] + ([False] if dec.pdl and ab_switch.active() else [])     # A/B baseline: remove
@@ -168,31 +190,11 @@ class RoundGraphs:
         before = free_bytes()
         enabled = gc.isenabled()
         gc.disable()                                     # collecting a graph's exec invalidates an active capture
+        primary = None
         try:
-            for variant in variants:
-                pdl.ON = variant
-                for n in range(1, slots + 1):
-                    for rows in range(n, n * width + 1):
-                        keys = [("verify", rows, p) for p in (0, 1)] + \
-                            ([("mtp", rows, 0)] if dec.mbuf is not None else [])
-                        for kind, R, p in keys:
-                            t0 = time.perf_counter()
-                            pieces = self._key(kind, states[:n], R, p)
-                            torch.cuda.synchronize()
-                            used = before - free_bytes()
-                            if used > self.budget:
-                                del pieces               # this key's graphs go; the earlier keys stay
-                                self.stopped = (f"{used / MIB:.0f} MiB with the next key exceeds the "
-                                                f"{self.budget // MIB} MiB budget")
-                                return
-                            if kind == "verify":
-                                self.verify[(variant, n, R, p)] = pieces
-                            else:
-                                self.mtp[(variant, n, R)] = pieces
-                            self.measured.append({"key": [kind, variant, n, R, p], "pieces": len(pieces.graphs),
-                                                  "bytes": used - self.bytes,
-                                                  "s": round(time.perf_counter() - t0, 4)})
-                            self.bytes = used
+            self._keys(variants, states)
+        except BaseException as error:
+            primary = error
         finally:
             if enabled:
                 gc.enable()
@@ -201,17 +203,58 @@ class RoundGraphs:
             dec.buf.gdn_tables = dec.buf.attn_step = None
             if dec.mbuf is not None:
                 dec.mbuf.attn_step = None
+        try:
             torch.cuda.synchronize()
             for st in states:                            # the warm-up forwards wrote their caches and states
-                st.reset(w)
+                st.reset(dec.w)
             gc.collect()
             torch.cuda.synchronize()
-            torch.cuda.empty_cache()                     # a dropped key's pool blocks back before the final measure
-            self.bytes = max(0, before - free_bytes())
-            self.capture_s = time.perf_counter() - started
+            torch.cuda.empty_cache()                     # a dropped key's exec and the warm-ups' blocks back
+            self.settled_bytes = before - free_bytes()
+        except BaseException as error:
+            if primary is None:
+                raise
+            raise_failures(primary, [error])
+        if primary is not None:
+            raise_failures(primary, [])
+        self.room_bytes = max(self.bytes, self.settled_bytes)
+        self.capture_s = time.perf_counter() - started
 
-    def _key(self, kind: str, states, R: int, parity: int) -> Pieces:
-        """One key: an eager warm-up forward (compiles and configures its kernels), then its capture."""
+    def _keys(self, variants: list[bool], states) -> None:
+        dec = self.dec
+        slots, width = len(states), dec.depth + 1
+        for variant in variants:
+            pdl.ON = variant
+            for n in range(1, slots + 1):
+                for rows in range(n, n * width + 1):
+                    keys = [("verify", rows, p) for p in (0, 1)] + \
+                        ([("mtp", rows, 0)] if dec.mbuf is not None else [])
+                    for kind, R, p in keys:
+                        t0 = time.perf_counter()
+                        run, b = self._warm(kind, states[:n], R, p)
+                        # the warm-up's allocator blocks and module loads are taken as it is enqueued: no wait
+                        free = free_bytes()
+                        pieces = self._pieces(run, b)
+                        torch.cuda.synchronize()
+                        took = free - free_bytes()
+                        if pieces.out is None:
+                            raise RuntimeError(f"a captured {kind} step returned no logits")
+                        if self.bytes + max(0, took) > self.budget:
+                            del pieces                   # this key's graphs go; the earlier keys stay
+                            self.stopped = (f"{(self.bytes + took) / MIB:.0f} MiB with the next key exceeds the "
+                                            f"{self.budget // MIB} MiB budget")
+                            return
+                        if kind == "verify":
+                            self.verify[(variant, n, R, p)] = pieces
+                        else:
+                            self.mtp[(variant, n, R)] = pieces
+                        self.measured.append({"key": [kind, variant, n, R, p], "pieces": len(pieces.graphs),
+                                              "bytes": took, "s": round(time.perf_counter() - t0, 4)})
+                        self.bytes += max(0, took)
+
+    def _warm(self, kind: str, states, R: int, parity: int):
+        """One key's eager warm-up forward (compiles and configures its kernels) on its tables; returns the forward
+        to capture and its buffers."""
 
         dec = self.dec
         w, n = dec.w, len(states)
@@ -235,15 +278,13 @@ class RoundGraphs:
         b.rotor_lookup = False
         run()
         _kv_check(segs)
-        pieces = self._pieces(run, b)
-        if pieces.out is None:
-            raise RuntimeError(f"a captured {kind} step returned no logits")
-        return pieces
+        return run, b
 
     def record(self) -> dict:
         """The startup record (capacity plan): captured keys, measured bytes, capture time, per-key measures."""
 
         return {"verify_keys": len(self.verify), "mtp_keys": len(self.mtp), "bytes": self.bytes,
+                "settled_bytes": self.settled_bytes, "room_bytes": self.room_bytes,
                 "budget_bytes": self.budget, "capture_s": round(self.capture_s, 3), "stopped": self.stopped,
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
                 "keys": self.measured}

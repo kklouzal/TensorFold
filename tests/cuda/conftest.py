@@ -3,6 +3,7 @@
 import gc
 import importlib.util
 import os
+import sys
 
 import pytest
 
@@ -33,3 +34,16 @@ def _give_back_gpu_memory():
     if torch.cuda.is_initialized():
         gc.collect()
         torch.cuda.empty_cache()
+
+
+@pytest.fixture(autouse=True)
+def _pdl_policy():
+    """Each test leaves the process-wide PDL launch policy (``tensorfold.cuda.pdl.ON``) as it found it: a concurrent
+    Flash Next decoder sets it at construction and each round, and every later launch of a shared kernel follows it."""
+
+    module = sys.modules.get("tensorfold.cuda.pdl")
+    before = module.ON if module is not None else False
+    yield
+    module = sys.modules.get("tensorfold.cuda.pdl")
+    if module is not None:
+        module.ON = before

@@ -2,8 +2,10 @@
 launch geometry give the old eager bits, every captured key replays them, and decoding emits each stream's solo run
 through every round shape (joins, finishes, copy drafts, sparse rows, prompt passes, growth, failures)."""
 
+import gc
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -13,7 +15,7 @@ if not torch.cuda.is_available():
 
 from test_flashnext_forward import V, _model  # noqa: E402
 
-from tensorfold.cuda import ab_switch  # noqa: E402
+from tensorfold.cuda import ab_switch, pdl  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import attn_multi, gdn_multi, multi_graphs  # noqa: E402
@@ -347,6 +349,7 @@ def test_a_budget_too_small_stops_capture_and_rounds_run_eagerly(monkeypatch):
     record = dec.graph_record
     assert record["captured"] and record["stopped"] and record["bytes"] <= 1 << 20
     assert len(dec.graphs.verify) + len(dec.graphs.mtp) == len(record["keys"])
+    assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
     streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
     for s in streams:
         dec.admit(s)
@@ -356,8 +359,9 @@ def test_a_budget_too_small_stops_capture_and_rounds_run_eagerly(monkeypatch):
 
 
 def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room(tmp_path):
-    """T13: every key of 4 slots at depth 4 is captured within the default budget; the measured bytes come off the
-    memory gate's room and are recorded (logged here for the GB10 budget calibration)."""
+    """T13: every key of 4 slots at depth 4 is captured within the default budget; each key's capture is measured
+    alone (raw), the kept keys' sum is bounded by the budget, and the larger of it and the settled drop of the whole
+    capture comes off the memory gate's room; all recorded (logged here for the GB10 budget calibration)."""
 
     w = _model()
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=4, kv_dtype=RQ, prefill_rows=64, graphs=True)
@@ -366,7 +370,138 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room(tmp_path
     record = dec.graph_record
     assert record["verify_keys"] == 2 * (5 + 9 + 13 + 17) and record["mtp_keys"] == 5 + 9 + 13 + 17
     assert not record["stopped"] and 0 < record["bytes"] <= record["budget_bytes"]
-    assert dec.memory_gate.room == room - record["bytes"]
+    assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
+    assert record["room_bytes"] == max(record["bytes"], record["settled_bytes"])
+    assert dec.memory_gate.room == room - record["room_bytes"]
     print(json.dumps({k: v for k, v in record.items() if k != "keys"}))
     per = [k["bytes"] for k in record["keys"]]
     print("per-key bytes: min", min(per), "max", max(per), "pieces", record["pieces"])
+
+
+def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monkeypatch):
+    """C9: a key's capture failing midway raises that error itself; the launch policy, garbage collection, DeltaNet
+    parity and step tables are restored, the slots are reset, nothing comes off the room, and rounds decode the
+    solo tokens eagerly."""
+
+    w = _model()
+    refs = _solo(w, PROMPTS[:2], SAMPLINGS[:2], 12, RQ, capacity=1024, prefill_rows=16)
+    dec = MultiDecoder(w, slots=2, capacity=1024, depth=3, kv_dtype=RQ, prefill_rows=16, graphs=True)
+    room, launch, parity = dec.memory_gate.room, pdl.ON, dec.gdn.parity
+    real, calls, boom = multi_graphs.RoundGraphs._pieces, [], RuntimeError("the third key's capture failed")
+
+    def pieces(graphs, run, b):
+        calls.append(1)
+        if len(calls) == 3:
+            raise boom
+        return real(graphs, run, b)
+
+    monkeypatch.setattr(multi_graphs.RoundGraphs, "_pieces", pieces)
+    with pytest.raises(RuntimeError) as caught:
+        dec.capture_graphs()
+    assert caught.value is boom and caught.value.__cause__ is None
+    assert dec.graphs is None and not dec.graph_record["captured"] and dec.memory_gate.room == room
+    assert gc.isenabled() and pdl.ON == launch and dec.gdn.parity == parity
+    assert dec.buf.attn_step is None and dec.buf.gdn_tables is None and dec.mbuf.attn_step is None
+    assert all(not st._kv_pending and st._kv_error is None and st.pos == 0 for st in dec.free)
+    streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
+    for s in streams:
+        dec.admit(s)
+    while dec.live():
+        dec.finish(dec.round())
+    assert [s.out for s in streams] == refs and dec.replays == 0
+
+
+def test_a_failed_slot_restore_after_a_failed_capture_is_attached_to_the_capture_error(monkeypatch):
+    """C9: when restoring the slots also fails after a key's capture failed, the capture's error is still the one
+    raised, with the restore failure attached (its cause and a note); the launch policy and collection are restored."""
+
+    w = _model()
+    dec = MultiDecoder(w, slots=2, capacity=1024, depth=3, kv_dtype=RQ, prefill_rows=16, graphs=True)
+    launch = pdl.ON
+    boom, restore = RuntimeError("the first key's capture failed"), RuntimeError("a slot could not be reset")
+    monkeypatch.setattr(multi_graphs.RoundGraphs, "_pieces", lambda graphs, run, b: (_ for _ in ()).throw(boom))
+    monkeypatch.setattr(dec.free[1], "reset", lambda w: (_ for _ in ()).throw(restore))
+    with pytest.raises(RuntimeError) as caught:
+        dec.capture_graphs()
+    assert caught.value is boom and caught.value.__cause__ is restore
+    assert any("cleanup also failed" in note for note in caught.value.__notes__)
+    assert dec.graphs is None and gc.isenabled() and pdl.ON == launch
+
+
+def _side_capturing(graphs) -> bool:
+    with torch.cuda.stream(graphs.side):
+        return torch.cuda.is_current_stream_capturing()
+
+
+def test_capture_pieces_end_only_begun_captures_and_keep_the_first_failure(monkeypatch):
+    """C9 (``RoundGraphs._pieces``): a failure inside the captured forward stays the raised error once its open piece
+    is ended; a capture that cannot begin at a split is never ended (the piece before it ends once); an invalidating
+    call mid-capture is the raised error, with the failed end of its capture attached; capture works afterwards."""
+
+    graphs = multi_graphs.RoundGraphs(SimpleNamespace(), 0)
+    b = SimpleNamespace(split=None)
+    x = torch.zeros(16, device="cuda")
+    torch.cuda.synchronize()
+
+    def failing():
+        x.add_(1)
+        b.split(("select", None, False))
+        x.mul_(2)
+        raise ValueError("the forward failed mid-capture")
+
+    with pytest.raises(ValueError, match="mid-capture") as caught:
+        graphs._pieces(failing, b)
+    assert caught.value.__cause__ is None and b.split is None and not _side_capturing(graphs)
+
+    begun, ended = [], []
+
+    class Graph(torch.cuda.CUDAGraph):
+        def capture_begin(self, *args, **kwargs):
+            if begun:
+                raise RuntimeError("the second piece cannot begin")
+            begun.append(self)
+            super().capture_begin(*args, **kwargs)
+
+        def capture_end(self):
+            ended.append(self)
+            super().capture_end()
+
+    with monkeypatch.context() as patched:
+        patched.setattr(torch.cuda, "CUDAGraph", Graph)
+        with pytest.raises(RuntimeError, match="cannot begin") as caught:
+            graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None, False)), x.mul_(2)), b)
+    assert caught.value.__cause__ is None and ended == begun and len(begun) == 1 and not _side_capturing(graphs)
+
+    def invalidating():
+        x.add_(1)
+        torch.cuda.synchronize()                         # not permitted while this thread captures
+
+    with pytest.raises(Exception) as caught:
+        graphs._pieces(invalidating, b)
+    first = caught.value
+    assert "capturing" in str(first) and first.__cause__ is not None and first.__cause__ is not first
+    assert any("cleanup also failed" in note for note in getattr(first, "__notes__", []))
+    assert not _side_capturing(graphs)
+    torch.cuda.synchronize()
+
+    pieces = graphs._pieces(lambda: (x.add_(1), b.split(("ple_conv", None, False)), x.mul_(3)), b)
+    assert len(pieces.graphs) == 2 and pieces.inserts == [("ple_conv", None, False)]
+    x.zero_()
+    for graph in pieces.graphs:
+        graph.replay()
+    torch.cuda.synchronize()
+    assert torch.equal(x, torch.full_like(x, 3.0))
+
+
+def test_the_engine_refuses_a_decoder_whose_graph_budget_differs_from_its_plan(tmp_path, monkeypatch):
+    """Admission plans the captured rounds' budget from what the concurrent decoder will capture; a decoder that
+    declines (here: every model) while the plan reserved it is an internal inconsistency, refused at startup."""
+
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+
+    from test_flashnext_tp import _checkpoint
+
+    _checkpoint(tmp_path)
+    monkeypatch.setattr(multi_graphs, "capturable", lambda w: "declined by this test")
+    with pytest.raises(RuntimeError, match=r"startup plan reserved .* \(declined by this test\)"):
+        FlashNextEngine(tmp_path, depth=3, draft_vocab=None, max_len=512, prefetch=False, streams=2)
