@@ -247,6 +247,60 @@ def sample_streams(logits: torch.Tensor, starts: Sequence[int], positions: Seque
                    samplings: Sequence[Sampling | None]) -> list[list[int]]:
     """Group stream rows by candidate geometry while preserving each stream's policy and absolute positions."""
 
+    out, _, groups = _stream_groups(logits, starts, positions, samplings, draw=True)
+    # Preserve the original launch-all-groups pipeline. Sources stay strongly
+    # owned until every candidate/full-row readback has completed.
+    launched = [_group_packet(logits, starts, count, members) for count, members in groups.items()]
+    # Different policies sharing a count still use their own FP64 chooser.
+    for count, members, scores, packet, kept in launched:
+        _group_choose(out, count, members, scores, packet.cpu().numpy(), kept, starts, positions, samplings)
+    return out
+
+
+class StreamPackets:
+    """``launch_streams``' queued group packets; ``collect_streams`` reads them back and chooses."""
+
+    def __init__(self, logits, starts, positions, samplings, out, nucleus, launched) -> None:
+        self.logits, self.starts, self.positions, self.samplings = logits, starts, positions, samplings
+        self.out, self.nucleus, self.launched = out, nucleus, launched
+
+
+def launch_streams(logits: torch.Tensor, starts: Sequence[int], positions: Sequence[Sequence[int]],
+                   samplings: Sequence[Sampling | None]) -> StreamPackets:
+    """``sample_streams``' validation and candidate packets, queued: no host wait (top_k-off streams draw in
+    ``collect_streams``, after the readback)."""
+
+    out, nucleus, groups = _stream_groups(logits, starts, positions, samplings, draw=False)
+    launched = [_group_packet(logits, starts, count, members) for count, members in groups.items()]
+    return StreamPackets(logits, starts, positions, samplings, out, nucleus, launched)
+
+
+def collect_streams(p: StreamPackets, readback=None, waited: Callable[[], None] | None = None) -> list[list[int]]:
+    """``sample_streams``' choices from ``launch_streams``' packets in one host wait for every group's packet and
+    ``readback``'s words (its ``queue()`` copies them to host memory behind the packets; its ``check()``, after the
+    wait and before any score is validated, may raise first). ``waited`` (profiling) runs after the wait. Errors
+    keep ``sample_streams``' order: top_k-off streams in stream order, then the groups in order."""
+
+    if readback is not None:
+        readback.queue()
+    packets = [packet.to("cpu", non_blocking=True) for _, _, _, packet, _ in p.launched]
+    torch.cuda.current_stream(p.logits.device).synchronize()
+    if waited is not None:
+        waited()
+    if readback is not None:
+        readback.check()
+    out, starts, positions, samplings = p.out, p.starts, p.positions, p.samplings
+    for stream in p.nucleus:
+        out[stream] = nucleus_rows(p.logits[starts[stream]:starts[stream + 1]], positions[stream], samplings[stream])
+    for (count, members, scores, _, kept), packet in zip(p.launched, packets):
+        _group_choose(out, count, members, scores, packet.numpy(), kept, starts, positions, samplings)
+    return out
+
+
+def _stream_groups(logits, starts, positions, samplings, draw: bool):
+    """Validate every stream's rows and policy: the result slots, the top_k-off streams (``draw``: drawn here, in
+    stream order between the validations, as ``sample_streams`` always has) and the candidate groups."""
+
     if (len(starts) != len(samplings) + 1 or len(positions) != len(samplings)
             or not starts or starts[0] != 0
             or any(type(start) is not int for start in starts)
@@ -256,6 +310,7 @@ def sample_streams(logits: torch.Tensor, starts: Sequence[int], positions: Seque
         raise ValueError("stream boundaries must fit the complete logits rows")
     validate_rows(logits[:0], [], None)
     groups: dict[int, list[int]] = {}
+    nucleus: list[int] = []
     width = logits.shape[1]
     out: list[list[int]] = [[] for _ in samplings]
     for stream, sampling in enumerate(samplings):
@@ -264,67 +319,73 @@ def sample_streams(logits: torch.Tensor, starts: Sequence[int], positions: Seque
             continue
         greedy = sampling is None or sampling.temperature <= 0
         if not greedy and not sampling.top_k:
-            out[stream] = nucleus_rows(logits[starts[stream]:starts[stream + 1]], positions[stream], sampling)
+            if draw:
+                out[stream] = nucleus_rows(logits[starts[stream]:starts[stream + 1]], positions[stream], sampling)
+            else:
+                nucleus.append(stream)
         else:
             groups.setdefault(0 if greedy else min(width, int(sampling.top_k) + MARGIN), []).append(stream)
-    # Preserve the original launch-all-groups pipeline. Sources stay strongly
-    # owned until every candidate/full-row readback has completed.
-    launched = []
-    for count, members in groups.items():
-        scores = torch.cat([logits[starts[s]:starts[s + 1]] for s in members]) if len(members) > 1 \
-            else logits[starts[members[0]]:starts[members[0] + 1]]
-        source = scores
+    return out, nucleus, groups
+
+
+def _group_packet(logits, starts, count, members):
+    """A group's candidate packet on the device: (count, members, scores, packet, kept)."""
+
+    width = logits.shape[1]
+    scores = torch.cat([logits[starts[s]:starts[s + 1]] for s in members]) if len(members) > 1 \
+        else logits[starts[members[0]]:starts[members[0] + 1]]
+    source = scores
+    if count == 0:
+        cols = source.argmax(dim=-1, keepdim=True)
+        packet = torch.cat([cols, score_flags(source).to(torch.int64)[:, None],
+                            torch.isfinite(source.gather(1, cols)).to(torch.int64)], dim=1)
+        return count, members, source, packet, 1
+    scores = scores.float()
+    if count < width:
+        values, cols = torch.topk(scores, count, dim=-1, sorted=False)
+    else:
+        values = scores
+        cols = torch.arange(width, dtype=torch.int64, device=scores.device).expand(scores.shape[0], width)
+    kept = cols.shape[1]
+    packet = torch.cat([values.contiguous().view(torch.int32).to(torch.int64), cols,
+                        score_flags(scores).to(torch.int64)[:, None]], dim=1)
+    return count, members, scores, packet, kept
+
+
+def _group_choose(out, count, members, scores, packet, kept, starts, positions, samplings) -> None:
+    """A group's host choices from its packet (numpy), into ``out``; the scores stay borrowed for tie repair."""
+
+    width = scores.shape[1]
+    if count == 0:
+        if packet[:, 1].any():
+            raise ValueError("sampling scores contain NaN or positive infinity")
+        if not packet[:, 2].all():
+            raise ValueError("a complete vocabulary row needs at least one finite score")
+        columns, values_np = packet[:, :1], None
+    else:
+        if packet[:, 2 * kept].any():
+            raise ValueError("sampling scores contain NaN or positive infinity")
+        values_np = packet[:, :kept].astype(np.int32).view(np.float32)
+        columns = packet[:, kept:2 * kept]
+        valid_scores(values_np)
+    row = 0
+    complete_ids = None
+
+    def complete_row(index, base):
+        nonlocal complete_ids
+        if complete_ids is None:
+            complete_ids = np.arange(width, dtype=np.int64)
+        return scores[base + index].cpu().numpy(), complete_ids
+
+    for stream in members:
+        n = starts[stream + 1] - starts[stream]
         if count == 0:
-            cols = source.argmax(dim=-1, keepdim=True)
-            packet = torch.cat([cols, score_flags(source).to(torch.int64)[:, None],
-                                torch.isfinite(source.gather(1, cols)).to(torch.int64)], dim=1)
-            launched.append((count, members, source, packet, 1))
-            continue
-        scores = scores.float()
-        if count < width:
-            values, cols = torch.topk(scores, count, dim=-1, sorted=False)
+            out[stream] = [int(token) for token in columns[row:row + n, 0]]
         else:
-            values = scores
-            cols = torch.arange(width, dtype=torch.int64, device=scores.device).expand(scores.shape[0], width)
-        kept = cols.shape[1]
-        packet = torch.cat([values.contiguous().view(torch.int32).to(torch.int64), cols,
-                            score_flags(scores).to(torch.int64)[:, None]], dim=1)
-        launched.append((count, members, scores, packet, kept))
-    # Different policies sharing a count still use their own FP64 chooser.
-    for count, members, scores, packet, kept in launched:
-        packet = packet.cpu().numpy()
-        if count == 0:
-            if packet[:, 1].any():
-                raise ValueError("sampling scores contain NaN or positive infinity")
-            if not packet[:, 2].all():
-                raise ValueError("a complete vocabulary row needs at least one finite score")
-            columns, values_np = packet[:, :1], None
-        else:
-            if packet[:, 2 * kept].any():
-                raise ValueError("sampling scores contain NaN or positive infinity")
-            values_np = packet[:, :kept].astype(np.int32).view(np.float32)
-            columns = packet[:, kept:2 * kept]
-            valid_scores(values_np)
-        row = 0
-        complete_ids = None
-
-        def complete_row(index, base):
-            nonlocal complete_ids
-            if complete_ids is None:
-                complete_ids = np.arange(width, dtype=np.int64)
-            return scores[base + index].cpu().numpy(), complete_ids
-
-        for stream in members:
-            n = starts[stream + 1] - starts[stream]
-            if count == 0:
-                out[stream] = [int(token) for token in columns[row:row + n, 0]]
-            else:
-                out[stream] = repaired_choose(values_np[row:row + n], columns[row:row + n, :count],
-                    positions[stream], samplings[stream], width,
-                    lambda index, base=row: complete_row(index, base))
-            row += n
-
-    return out
+            out[stream] = repaired_choose(values_np[row:row + n], columns[row:row + n, :count],
+                positions[stream], samplings[stream], width,
+                lambda index, base=row: complete_row(index, base))
+        row += n
 
 
 def _stacked(gather: Callable[[torch.Tensor], torch.Tensor], t: torch.Tensor) -> torch.Tensor:

@@ -585,8 +585,10 @@ def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
 
 
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,
-            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None):
-    """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states."""
+            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True):
+    """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states.
+    ``check=False``: the codec status stays pending for the caller's check (``_kv_check`` or ``KVWords``) before any
+    of the frame's rows are used."""
 
     _kv_begin(segs)
     c = w.cfg
@@ -601,7 +603,8 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     for layer in w.layers:
         pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
     result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
-    _kv_check(segs, comm=w.comm)
+    if check:
+        _kv_check(segs, comm=w.comm)
     return result
 
 
@@ -646,6 +649,54 @@ def _kv_check(segs: Sequence[Seg], *, comm=None) -> None:
                 break
     if first is not None:
         raise first
+
+
+class KVWords:
+    """A frame's codec status words read back behind a caller's other results, in its single host wait.
+
+    ``queue`` copies each pending state's two words into pinned ``host`` rows on the current stream (no wait);
+    ``check``, after the caller has synchronized that stream, latches them as ``_kv_check`` does: every state in
+    order, the first failure raised. ``settle`` queues (once), waits and checks: a caller's failure before its own
+    wait reports a failed frame first, as a check right after the forward would have. One GPU (no peer status)."""
+
+    def __init__(self, segs: Sequence[Seg], host: torch.Tensor, after=None) -> None:
+        self.states = [st for st, _, _ in segs if st.kv_status is not None]
+        if len(self.states) > host.shape[0]:
+            raise ValueError(f"{len(self.states)} status words exceed the {host.shape[0]} host rows")
+        self.host, self.after, self.queued, self.checked = host, after, False, False
+
+    def queue(self) -> None:
+        for i, st in enumerate(self.states):
+            if st._kv_pending and st._kv_error is None:
+                self.host[i].copy_(st.kv_status, non_blocking=True)
+        self.queued = True
+
+    def check(self) -> None:
+        """Latch the words (the caller waited past ``queue``); then ``after`` (what the valid frame allows). Once."""
+
+        if self.checked:
+            return
+        self.checked = True
+        first = None
+        for st, (bits, layer) in zip(self.states, self.host[:len(self.states)].tolist()):
+            try:
+                st.kv_check_words(bits, layer)
+            except KVNumericError as error:
+                if first is None:
+                    first = error
+        if first is not None:
+            raise first
+        if self.after is not None:
+            self.after()
+
+    def settle(self) -> None:
+        if self.checked:
+            return
+        if self.states:
+            if not self.queued:
+                self.queue()
+            torch.cuda.current_stream(self.states[0].kv_status.device).synchronize()
+        self.check()
 
 
 def converges(w: Weights) -> bool:

@@ -182,6 +182,13 @@ def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tm
     monkeypatch.setattr(Engine, "sample", first)
     monkeypatch.setattr(multi_module, "sample_streams", lambda logits, starts_, positions, smps: [
         [scripted(smp.seed, int(p)) for p in pos] for pos, smp in zip(positions, smps)])
+    real_collect = multi_module.collect_streams
+
+    def collect(packets, readback=None, waited=None):     # the round's packets and status words, then the script
+        real_collect(packets, readback, waited)
+        return [[scripted(smp.seed, int(p)) for p in pos] for pos, smp in zip(packets.positions, packets.samplings)]
+
+    monkeypatch.setattr(multi_module, "collect_streams", collect)
     for env in ENVS:
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")

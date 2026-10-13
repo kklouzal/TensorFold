@@ -248,7 +248,20 @@ class State:
             return
         if status.is_cuda and torch.cuda.is_current_stream_capturing():
             return
-        bits, layer = status.cpu().tolist()
+        self._kv_latch(*status.cpu().tolist())
+
+    def kv_check_words(self, bits: int, layer: int) -> None:
+        """``kv_check`` from status words a caller read back after this frame's last status write (its own wait):
+        the same latch, without a readback of its own."""
+
+        if self.kv_status is None:
+            return
+        if self._kv_error is not None:
+            raise self._kv_error
+        if self._kv_pending:
+            self._kv_latch(bits, layer)
+
+    def _kv_latch(self, bits: int, layer: int) -> None:
         self._kv_pending = False
         if bits:
             names = [name for bit, name in ((1, "Q"), (2, "K"), (4, "V"), (8, "RMS"), (16, "index"))

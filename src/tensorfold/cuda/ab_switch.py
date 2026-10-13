@@ -37,5 +37,14 @@ def get(key: str, default):
     return _values.get(key, default) if _path else default
 
 
+def new(key: str) -> bool:
+    """A stage's switch: ``"new"`` (the default, the stage's behaviour) or ``"old"`` (the exact path it replaces)."""
+
+    variant = get(key, "new")
+    if variant not in ("new", "old"):
+        raise ValueError(f'ab_switch "{key}" must be "new" or "old", not {variant!r}')
+    return variant == "new"
+
+
 def snapshot() -> dict:
     return dict(_values) if _path else {}

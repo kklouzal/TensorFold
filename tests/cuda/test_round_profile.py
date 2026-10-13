@@ -52,8 +52,13 @@ def test_profile_records_rounds_without_changing_tokens(monkeypatch, tmp_path):
     records = [json.loads(line) for line in path.read_text().splitlines()]
     assert records and all(r["n"] >= 1 and r["rows"] >= r["n"] and r["wall_ms"] > 0 for r in records)
     names = [p[0] for p in records[-1]["phases"]]
-    for phase in ("room", "stage", "tables", "verify_enq", "kv_wait", "sample", "commit", "take", "end"):
+    # the verify's enqueue and its drain are separate phases: with "b1" (default) the drain is the sampling packet's
+    # wait ("sample_wait"); the A/B baseline ("b1": "old") checks the frame's status first ("kv_wait")
+    for phase in ("room", "stage", "tables", "verify_enq", "sample_enq", "sample_wait", "sample", "commit", "take",
+                  "end"):
         assert phase in names, (phase, names)
+    drafted = [[p[0] for p in r["phases"]] for r in records if r["chained"]]
+    assert drafted and all("pick0_wait" in n and "mtp_absorb" in n for n in drafted)
     timed = [p for r in records for p in r["phases"] if p[2] is not None]
     assert timed and all(p[2] >= 0 for p in timed)          # GPU progress between event marks
     assert {"window", "kept", "chained", "source", "ctx"} <= set(records[-1])

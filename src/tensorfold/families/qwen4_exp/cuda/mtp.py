@@ -35,9 +35,10 @@ def mtp_stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[in
 
 
 def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = True, logits: bool = True,
-                context: int | None = None) -> torch.Tensor | None:
+                context: int | None = None, check: bool = True) -> torch.Tensor | None:
     """The MTP head's GPU work (capturable); ``last_only``: the draft head's logits of each stream's last row.
-    ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection."""
+    ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection. ``check=False``
+    (a draft step's logits): the codec status stays pending for the caller's check before its rows are used."""
 
     _kv_begin(segs)
     c = w.cfg
@@ -70,7 +71,8 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     out = _mm(rows, head, xs, b.logits.view(-1)[:k * head.n].view(k, head.n), b)     # contiguous at any k
     if w.comm is not None:
         candidates(w, b, out, k, id_map=w.draft_ids, offset=int(w.meta["vocab_offset"]))
-    _kv_check(segs, comm=w.comm)
+    if check:
+        _kv_check(segs, comm=w.comm)
     return out
 
 
