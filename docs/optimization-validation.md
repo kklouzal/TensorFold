@@ -179,6 +179,18 @@ evidence is synthetic-model GPU tests (identical tokens and bits in every switch
 value) on an RTX PRO 2000 Blackwell (sm_120); the GB10 A/B, full-model and
 installed-image qualification remain pending.
 
+On the `perf-idea3-phase2` branch, Flash Next's concurrent drafting adds a
+cost-aware draft rule (predicted acceptance against a measured row cost, with a
+round-start trim) and drafts from a request's own prompt and reply, behind the
+benchmark-only `TENSORFOLD_AB_CONTROL` switches `draft_rule` and `suffix`
+(removed after selection), with `tools/fit_draft_rule.py`, the
+`tools/draft_replay.py` comparisons and `tools/bench_draft_host.py`. Their
+evidence is CPU oracles and synthetic-model GPU tests on an RTX PRO 2000
+Blackwell (sm_120): identical tokens in every switch value with true, partly
+true and adversarial proposals and random costs. Calibration on real traffic,
+the GB10 A/B, host-cost measurements on Grace and installed-image qualification
+remain pending.
+
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
 workload scope. Actual integrated native/device/model/performance qualification
