@@ -222,14 +222,22 @@ def _ssd_ngram_model(tmp_path, monkeypatch):
     return _model(ple=_ple(c, table, _Rand(3))), table
 
 
-@pytest.mark.parametrize("b2", ["new", "old"])
-def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_tokens(monkeypatch, tmp_path, b2):
+@pytest.mark.parametrize("b2,profiled", [("new", False), ("new", True), ("old", False)])
+def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_tokens(monkeypatch, tmp_path, b2,
+                                                                                    profiled):
     """B2: a round's n-gram rows (read through the production SSD reader) are read and copied when the forward
-    reaches the n-gram layer, after the layers before it are queued; tokens equal the solo runs either way."""
+    reaches the n-gram layer, after the layers before it are queued; tokens equal the solo runs either way, also
+    with the round profile timing the late reads (ple_ms)."""
 
+    from tensorfold.cuda import round_profile
     from tensorfold.families.qwen4_exp.cuda import forward as fwd
 
     w, table = _ssd_ngram_model(tmp_path, monkeypatch)
+    path = tmp_path / "rounds.jsonl"
+    if profiled:
+        monkeypatch.setenv(round_profile.ENV, str(path))
+    else:
+        monkeypatch.delenv(round_profile.ENV, raising=False)
     try:
         prompts = PROMPTS[:3]
         samplings = SAMPLINGS[:3]
@@ -249,5 +257,9 @@ def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_token
         assert (lates > 3) == (b2 == "new") and (lates == 0) == (b2 == "old")
         if b2 == "new":                                  # each late read follows its own forward's embedding
             assert all(order[i - 1] == "embed" for i, x in enumerate(order) if x == "late")
+        if profiled:
+            dec.close_telemetry()
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            assert records and all(r["ple_ms"] >= 0 for r in records) and any(r["ple_ms"] > 0 for r in records)
     finally:
         table.close()

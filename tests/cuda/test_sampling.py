@@ -116,7 +116,7 @@ def test_lean_packets_equal_the_copied_ones():
     """B3: back-to-back members sample from a slice of the logits instead of a copy, with the one-pass flags: the
     same packets for contiguous, out-of-order and gapped (empty-stream) groups, and the same choices."""
 
-    from tensorfold.cuda.sampling import _group_packet, _stream_groups, collect_streams, launch_streams
+    from tensorfold.cuda.sampling import _group_packet, _stream_groups, collect_streams, launch_streams, sample_streams
 
     torch.manual_seed(8)
     vocab = 248320

@@ -647,7 +647,7 @@ class MultiDecoder:
         segs = stage(self.w, self.buf, windows, late=ab_switch.new("b2"))    # "old": A/B baseline, remove
         if prof is not None:
             prof.mark("stage")
-            self.buf.ple_s = 0.0
+            self.buf.late_s = 0.0
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
         cuts = []
@@ -682,7 +682,7 @@ class MultiDecoder:
             self.buf.gdn_tables = self.buf.attn_step = None
         if prof is not None:
             prof.mark("verify_enq", gpu=True)            # host: the enqueue (a mixed round: its drain too)
-            ple_ms, self.buf.ple_s = round(1e3 * self.buf.ple_s, 4), None   # the late n-gram reads, inside it
+            ple_ms, self.buf.late_s = round(1e3 * self.buf.late_s, 4), None   # the late n-gram reads, inside it
         if not b1:                                       # A/B baseline: remove after selection
             _kv_check(segs)                              # A/B baseline: remove after selection
             if prof is not None:                         # A/B baseline: remove after selection

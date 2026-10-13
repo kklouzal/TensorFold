@@ -605,12 +605,12 @@ def stage_late(w: Weights, b: Buffers) -> None:
     buffers are free: ``stage`` waited for the previous step's copies, which the event records again after these)."""
 
     rows, b.ple_late = b.ple_late, None
-    t0 = time.perf_counter() if b.ple_s is not None else 0.0
+    t0 = time.perf_counter() if b.late_s is not None else 0.0
     for p, ids, at in rows:
         _stage_rows(w, b, p, ids, at)
     b.staged.record()
-    if b.ple_s is not None:
-        b.ple_s += time.perf_counter() - t0
+    if b.late_s is not None:
+        b.late_s += time.perf_counter() - t0
 
 
 def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:

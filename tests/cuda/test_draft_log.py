@@ -81,9 +81,9 @@ def test_everything_off_creates_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(draft_log.DraftWatch, "__init__", lambda *a, **k: created.append(1))
     real = MultiDecoder._picks
 
-    def picks(self, logits, positions, samplings, margins_on=False):
+    def picks(self, logits, positions, samplings, margins_on=False, *readback):
         margins.append(margins_on)
-        return real(self, logits, positions, samplings, margins_on)
+        return real(self, logits, positions, samplings, margins_on, *readback)
 
     monkeypatch.setattr(MultiDecoder, "_picks", picks)
     before = {t.name for t in threading.enumerate()}

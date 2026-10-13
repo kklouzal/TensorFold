@@ -57,8 +57,9 @@ def test_profile_records_rounds_without_changing_tokens(monkeypatch, tmp_path):
     for phase in ("room", "stage", "tables", "verify_enq", "sample_enq", "sample_wait", "sample", "commit", "take",
                   "end"):
         assert phase in names, (phase, names)
-    drafted = [[p[0] for p in r["phases"]] for r in records if r["chained"]]
-    assert drafted and all("pick0_wait" in n and "mtp_absorb" in n for n in drafted)
+    drafted = [[p[0] for p in r["phases"]] for r in records]
+    drafted = [n for n in drafted if "mtp_absorb" in n]
+    assert drafted and all("pick0_wait" in n for n in drafted)     # no copy drafts here: every absorb has a pick
     timed = [p for r in records for p in r["phases"] if p[2] is not None]
     assert timed and all(p[2] >= 0 for p in timed)          # GPU progress between event marks
     assert {"window", "kept", "chained", "source", "ctx"} <= set(records[-1])
