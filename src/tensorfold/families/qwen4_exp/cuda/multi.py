@@ -11,9 +11,11 @@ import torch
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.kernels import gdn
 
+from tensorfold.cuda import ab_switch
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
+from tensorfold.cuda.round_profile import RoundProfile
 from tensorfold.cuda.sampling import TokenMap, repaired_choose, sample_streams, validate_policy, validate_rows
 from tensorfold.cuda.streams import Stream, accept
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
@@ -100,6 +102,10 @@ class MultiDecoder:
         self.keep = keep
         self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
         self.clock = 0
+        self.prof = RoundProfile.from_env()              # opt-in per-round timing (None: off, one test a mark)
+        self.chained = 0                                 # the last round's MTP chain steps (profile field)
+        self.sources: dict[int, str] = {}                # profiling only: stream id -> its pending drafts' source
+        self.copying: set[int] = set()                   # profiling only: streams this round's _draft_all copied for
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -540,6 +546,10 @@ class MultiDecoder:
     def round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
+        ab_switch.refresh()
+        prof = self.prof
+        if prof is not None:
+            prof.begin()
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if self.filling and (not live or not self.converged):
@@ -547,6 +557,8 @@ class MultiDecoder:
             live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if not live:
             return ended
+        if prof is not None:
+            prof.mark("room")
         grammars, failed = {}, []
         for s in live:                                   # a grammar cuts the drafts no accepted path can hold
             if s.constraint is not None:
@@ -562,11 +574,15 @@ class MultiDecoder:
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
+        if prof is not None:
+            prof.mark("grammar")
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
         segs = stage(self.w, self.buf, windows)
+        if prof is not None:
+            prof.mark("stage")
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
         cuts = []
@@ -582,6 +598,8 @@ class MultiDecoder:
         held = [self.held.pop(s.sid, []) for s in live]
         tables = self.buf.gdn_tables = gdn_multi.Tables(self.w, self.gdn, segs, held)
         self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, rotor_lookup=self.buf.rotor_lookup)
+        if prof is not None:
+            prof.mark("tables", gpu=True)
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 pends = self._end_rows(pieces, psegs)
@@ -591,14 +609,22 @@ class MultiDecoder:
                 logits = compute(self.w, segs, self.buf)
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
+        if prof is not None:
+            prof.mark("verify_enq", gpu=True)
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
+        if prof is not None and pieces:
+            prof.mark("absorb", gpu=True)
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         for s, (_, a0, a1) in zip(live, segs):
             if s.sid in grammars:
                 s.constraint.mask(logits[a0:a1], grammars[s.sid])
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         _kv_check(segs)
+        if prof is not None:
+            prof.mark("kv_wait")
         sampled = sample_streams(logits, starts, positions, [s.sampling for s in live])
+        if prof is not None:
+            prof.mark("sample", gpu=True)
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
@@ -620,6 +646,11 @@ class MultiDecoder:
                     s.error = exc
             last = s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
+        if prof is not None:
+            prof.mark("commit", gpu=True)
+        self.chained = 0
+        if prof is not None:
+            self.copying = set()
         self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
                         {s.sid: fresh for s, _, _, fresh, last in kept if getattr(s, "copies", None) is not None and not last})
         for s, _, _, new, _ in kept:
@@ -628,6 +659,14 @@ class MultiDecoder:
                 continue
             s.take(new, self._ends(s))
         spent = time.perf_counter() - t0
+        if prof is not None:
+            prof.mark("take")
+            prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
+                     window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
+                     pass_rows=sum(n for _, _, n in pieces), chained=self.chained,
+                     source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
+            self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
+                            for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
         self._timed(spent, sum(n for _, _, n in pieces))
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
@@ -651,9 +690,14 @@ class MultiDecoder:
             if st.mtp_drafted:
                 st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                 st.mtp_drafted = 0
+        prof = self.prof
         windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
         segs = mtp_stage(self.w, self.mbuf, windows)
+        if prof is not None:
+            prof.mark("mtp_stage")
         logits = self._mtp(segs)
+        if prof is not None:
+            prof.mark("mtp_absorb", gpu=True)
         for (s, _, keep), (st, a0, a1) in zip(todo, segs):
             st.set_mtp_len(st.mtp_len + len(keep))
         active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
@@ -663,6 +707,10 @@ class MultiDecoder:
                     s.context.extend(new[s.sid])
                     s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
                     del s.context[len(s.context) - len(new[s.sid]):]
+                    if prof is not None and s.drafts:
+                        self.copying.add(s.sid)
+            if prof is not None:
+                prof.mark("copy")
             keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
             if len(keep_rows) != len(active):
                 logits = logits[keep_rows]
@@ -671,6 +719,8 @@ class MultiDecoder:
                 return
         for j in range(self.depth):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active])
+            if prof is not None:
+                prof.mark(f"pick{j}", gpu=True)
             nxt = []
             for (s, row), (d, p) in zip(active, picks):
                 low = self.confidence > 0 and p < self.confidence
@@ -684,6 +734,9 @@ class MultiDecoder:
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.w, self.mbuf, windows)
             logits = self._mtp(segs)
+            self.chained = j + 1
+            if prof is not None:
+                prof.mark(f"chain{j + 1}", gpu=True)
             for s, _, _ in nxt:
                 s.st.set_mtp_len(s.st.mtp_len + 1)
                 s.st.mtp_drafted += 1
