@@ -233,11 +233,24 @@ def test_pair_prep_value_choice_does_not_change_query_or_index(pair):
             assert guard.cpu().tolist() == [0, -2]
 
 
+SHAPES = [(17, 1, False), (65, 1, False), (513, 1, False), (513, 17, False), (513, 17, True), (1536, 256, False),
+          (1536, 256, True)]
+
+
 @pytest.mark.parametrize("pair", PAIRS, ids=pair_id)
-@pytest.mark.parametrize("length,rows,sparse", [(17, 1, False), (65, 1, False), (513, 1, False),
-                                               (513, 17, False), (513, 17, True),
-                                               (1536, 256, False), (1536, 256, True)])
+@pytest.mark.parametrize("length,rows,sparse", SHAPES)
 def test_all_pairs_native64_actual_operand_partials(pair, length, rows, sparse):
+    _native64_actual_operand_partials(pair, length, rows, sparse, prompt=False)
+
+
+@pytest.mark.parametrize("pair", [p for p in PAIRS if 6 in (p.key.bits, p.value.bits)], ids=pair_id)
+@pytest.mark.parametrize("length,rows,sparse", SHAPES)
+def test_six_bit_prompt_pass_gather_actual_operand_partials(pair, length, rows, sparse):
+    """attention(prompt=True) decodes six-bit sides by register gather: the same oracle bits as the chain."""
+    _native64_actual_operand_partials(pair, length, rows, sparse, prompt=True)
+
+
+def _native64_actual_operand_partials(pair, length, rows, sparse, *, prompt):
     capacity = max(length + 4, 640 if sparse else length)
     projected = make_projection(capacity)
     q, _, _, cache, status = prep(pair, projected, capacity=capacity)
@@ -258,7 +271,7 @@ def test_all_pairs_native64_actual_operand_partials(pair, length, rows, sparse):
                 target.nk[row] = ids.numel()
                 target.sparse[row] = 1
     got = attention.attention(query, cache.k, cache.v, pos, actual, rows, .0625,
-                              ks=cache.ks, vs=cache.vs, **traits(pair))
+                              ks=cache.ks, vs=cache.vs, prompt=prompt, **traits(pair))
     legacy_native = pair.symmetric and pair.key.codec == 0 and pair.key.bits in (4, 8)
     if legacy_native:
         # This oracle qualifies finite attention operands. The separate layout
