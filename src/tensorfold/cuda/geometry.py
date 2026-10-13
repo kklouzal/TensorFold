@@ -10,6 +10,8 @@ from .capacity import Geometry, Weights, headers, itemsize
 PREFILL_ROWS = 2048     # a prompt chunk's rows: Flash Next and GLM keep buffers of this many rows
 PROMPT_SHARE = 32       # a dense prompt chunk's arrays take at most this fraction of the GPU's memory
 PREFILL_ATT_ROWS = 256  # Flash Next's prompt attention block
+# Flash Next's multi-CTA block select (attention.MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES): rows, tile, slices
+QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
 MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
 
@@ -233,8 +235,9 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             # chunk partials cover the keys a row reads (at most the indexer budget and a block's tail)
             chunks = (min(capacity, budget + ratio - 1) + 511) // 512
             blocks = (capacity + ratio - 1) // ratio
-            scratch = (2 if mtp else 1) * rows * (h * (hd + 2) * chunks + blocks) * 4
+            scratch = (2 if mtp else 1) * (rows * (h * (hd + 2) * chunks + blocks) * 4 + qsa_select_bytes(rows, blocks))
             scratch += PREFILL_ATT_ROWS * (h * (hd + 2) * chunks + blocks) * 4
+            scratch += qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
         else:
             # Bound two retained prefixes, current KV state and a growth copy; speculative rows use separate workspace.
             rounded = 1 << (max(1024, capacity - reserve) - 1).bit_length()
@@ -242,6 +245,14 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
         return fixed + cache + scratch
     return Geometry(bytes_at, reserve)
+
+
+def qsa_select_bytes(rows: int, blocks: int) -> int:
+    """Flash Next's multi-CTA select scratch of an ``AttnScratch`` of ``rows`` rows and ``blocks`` blocks: four
+    256-bin radix histograms a row and 257 placement counts a slice."""
+
+    slices = min(QSA_SELECT_SLICES, 1 << (-(-blocks // QSA_SELECT_TILE) - 1).bit_length())
+    return min(rows, QSA_SELECT_ROWS) * (4 * 256 + slices * 257) * 4
 
 
 def _indexed_prefill_row(t: dict, world: int, h: int, hk: int, hd: int, nv: int, dv: int, width: int, slots: int,
@@ -469,6 +480,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
         cache = caches(capacity) + (streams - 1) * caches(min(first, capacity))
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
         scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
+        scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
         return fixed + cache + scratch
     return Geometry(bytes_at, each)
 

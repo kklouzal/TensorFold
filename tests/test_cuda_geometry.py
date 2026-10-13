@@ -61,7 +61,9 @@ def allocations(monkeypatch):
                            tensor=lambda values, **kw: allocate((len(values),), **kw),
                            zeros_like=lambda x: allocate(x.shape, dtype=x.dtype, device=x.device),
                            arange=lambda *a, **kw: allocate((len(range(*a)),), **kw),
-                           cuda=SimpleNamespace(is_available=lambda: False))
+                           cuda=SimpleNamespace(is_available=lambda: False,
+                                                get_device_properties=lambda device: SimpleNamespace(
+                                                    multi_processor_count=48)))
     # Imports use real torch annotations; only the allocation sites are replaced.
     try:
         yield recorded, fake
@@ -143,6 +145,21 @@ def test_indexed_state_actual_kv_and_serial_twin_are_budgeted(monkeypatch, alloc
     caches = 2 * (2 + int(mtp))                                          # two states: two attention layers, the MTP's
     assert bytes_in(kv) == caches * 2 * slots * cfg.kv_heads * geometry.kv_bytes(cfg.head_dim, bits)
     assert bytes_in(arrays) <= estimated
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("capacity", [4096, 65536, 262151, 1048584])
+@pytest.mark.parametrize("rows", [1, 20, 31, 32, 256])
+def test_qsa_select_scratch_is_the_planned_bytes(monkeypatch, allocations, capacity, rows):
+    """Flash Next's multi-CTA select scratch (histograms and placement counts) is ``qsa_select_bytes`` exactly."""
+
+    _, fake = allocations
+    mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.attention")
+    monkeypatch.setattr(mod, "torch", fake)
+    scratch = mod.AttnScratch(rows, 8, 64, capacity, "cpu")
+    assert geometry.QSA_SELECT_ROWS == mod.MULTI_ROWS - 1
+    assert (geometry.QSA_SELECT_TILE, geometry.QSA_SELECT_SLICES) == (mod.SELECT_TB, mod.SELECT_SLICES)
+    assert bytes_in([scratch.hist, scratch.suf]) == geometry.qsa_select_bytes(rows, scratch.nb)
 
 
 def test_mla_latent_estimate_grows_by_the_cache_and_counts_one_prompt_chunk_scratch(monkeypatch):

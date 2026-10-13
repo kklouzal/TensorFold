@@ -290,8 +290,8 @@ def test_qsa_selection_matches_a_plain_reference():
 
 
 def test_qsa_ties_at_the_cut_and_rows_within_the_register_width_list_the_same_blocks():
-    """A thousand blocks tied exactly at the cut past the register width: the tiles take the lowest ids among them, as
-    ``_select`` does; rows that fit the registers still run ``_select`` itself."""
+    """A thousand blocks tied exactly at the cut past the register width: the launcher's kernel (T for this decode
+    window) takes the lowest ids among them, as ``_select`` does; so do rows within the register width."""
 
     import triton
 
@@ -325,7 +325,7 @@ def test_qsa_ties_at_the_cut_and_rows_within_the_register_width_list_the_same_bl
         scores[:, order[400:1400]] = 0.5
         scratch.scores.copy_(scores)
         assert same(end), end
-    for end in (4096, 131_072):                               # within the width: the same kernel as before
+    for end in (4096, 131_072):                               # within the width: _select's own, then T's
         pos.fill_(end - rows)
         scratch.scores.copy_(torch.randn_like(scratch.scores))
         assert same(end), end
@@ -333,8 +333,8 @@ def test_qsa_ties_at_the_cut_and_rows_within_the_register_width_list_the_same_bl
 
 @pytest.mark.parametrize("rows", [7, 256])
 def test_qsa_rows_past_the_register_width_list_the_same_blocks(rows):
-    """Past 32,768 blocks (131,072 keys) a row's scores stream through ``_select_tiles``: the lists ``_select`` makes at
-    full width, on real, tied and all-equal scores, for a decode window and a prompt's row block, and the plain
+    """Past 32,768 blocks (131,072 keys) a row's scores stream through T (a decode window) or ``_select_tiles`` (a
+    prompt's row block): the lists ``_select`` makes at full width, on real, tied and all-equal scores, and the plain
     reference's (the 512 best blocks, lower ids among equal scores, in block order, then the tail)."""
 
     import triton

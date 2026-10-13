@@ -13,7 +13,7 @@ import triton.language as tl
 from tensorfold.cuda.kernels import gdn as shared
 
 from . import attention as attn_mod, glue
-from .attention import CHUNK, _chunk, _chunk_pair, _merge_row, _pool_block
+from .attention import CHUNK, _chunk, _chunk_pair, _merge_row, _pool_block, _score_rows
 
 PTRS = 6                 # a stream's pointers a layer: keys, values, key scales, value scales, index keys, pooled
 
@@ -63,6 +63,16 @@ def _pool_multi(CP, VP, P0, RS, W, INV, eps, N, DI: tl.constexpr, HALF: tl.const
                 tl.program_id(1), W, INV, eps, tl.load(RS + s), DI, HALF, RATIO,
                 ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2,
                 ROPE_SCALE=ROPE_SCALE)
+
+
+@triton.jit
+def _scores_multi(IQ, CP, POSR, SID, SC, NB, N, HI: tl.constexpr, DI: tl.constexpr, RATIO: tl.constexpr,
+                  TOP: tl.constexpr, BB: tl.constexpr):
+    """Every sparse row's block scores, each from its own stream's pooled keys: ``_scores``' bits."""
+
+    r = tl.program_id(0)
+    _score_rows(IQ, _ptr(CP + 5 * N, tl.load(SID + r), tl.bfloat16), SC, NB, r, tl.program_id(1),
+                (tl.load(POSR + r) + 1) // RATIO, HI, DI, TOP, BB)
 
 
 @triton.jit
@@ -170,7 +180,7 @@ class Step:
 
 
 def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
-    """Every stream's ``layer`` attention: prep, pool, sparse streams' own selects, chunks, merge -> b.attn_o[:R]."""
+    """Every stream's ``layer`` attention: prep, pool, all rows' scores and select, chunks, merge -> b.attn_o[:R]."""
 
     c, a, sc = w.cfg, layer.attn, b.attn
     n, rows, cp = step.n, step.rows, step.ptrs[step.index[layer.index]]
@@ -194,10 +204,20 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                                     VISION=step.vision, S1=sections[1], S2=sections[2],
                                                     ROPE_SCALE=c.rope_attention_factor,
                                                     num_warps=1)
-        for (st, a0, a1), end in zip(step.segs, step.ends):
-            if end // sc.ratio > top:                # this stream has sparse rows: its own select
-                _, _, pooled, pos, _ = _caches(layer, st, mtp)
-                attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
+        if attn_mod.qsa_new():
+            if max(step.ends) // sc.ratio > top:     # some stream has sparse rows: every row scored and selected
+                blocks = triton.cdiv(max(step.ends), sc.ratio)
+                if blocks > sc.nb:                   # before any launch: the scores' rows hold nb blocks
+                    raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
+                _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
+                                                               HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
+                                                               TOP=top, BB=64, num_warps=4)
+                attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)
+        else:                                        # A/B baseline: remove after selection
+            for (st, a0, a1), end in zip(step.segs, step.ends):
+                if end // sc.ratio > top:            # this stream has sparse rows: its own select
+                    _, _, pooled, pos, _ = _caches(layer, st, mtp)
+                    attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
     keys = max(step.ends)
     if sc.qsa:
         keys = min(keys, (top + 1) * sc.ratio - 1)
@@ -214,14 +234,14 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
     return b.attn_o[:rows]
 
 
-def _caches(layer, st, mtp: bool) -> tuple:
+def _caches(layer, st, mtp: bool) -> tuple:              # A/B baseline: remove after selection
     if mtp:
         return st.mtp_kc, st.mtp_ikc, st.mtp_pooled, st.mtp_pos, st.mtp_len
     ai = st.att_index[layer.index]
     return st.kc[ai], st.ikc[ai], st.pooled[ai], st.pos_dev, st.pos
 
 
-def _rows_from(sc, a0: int) -> SimpleNamespace:
+def _rows_from(sc, a0: int) -> SimpleNamespace:         # A/B baseline: remove after selection
     """The scratch as seen by a launch whose row 0 is window row ``a0``."""
 
     return SimpleNamespace(ratio=sc.ratio, budget=sc.budget, nb=sc.nb, idw=sc.idw, scores=sc.scores[a0:],

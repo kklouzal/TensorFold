@@ -6,6 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda import ab_switch
+
 from .image_rows import rope_axis
 from .kv_pair import load_side, resolve_pair, validate_storage
 
@@ -18,6 +20,14 @@ from .rotorquant_kernel import rotate as rotor_rotate
 CHUNK = 512
 TILE = 64
 SELECT_REGS = 32768  # _select holds a row's block scores in registers up to this many; past it they spill
+# T (``_select_multi``) splits each row's selection over slices for windows of fewer than MULTI_ROWS rows (a prompt's
+# row blocks already fill the SMs a row a CTA) past MULTI_MIN_BLOCKS blocks (below, ``_select``'s one launch wins)
+MULTI_ROWS = 32
+MULTI_MIN_BLOCKS = 16384
+SELECT_TB = 2048     # T's tile: the keys a CTA holds at once, 16 a thread
+SELECT_FILL = 4      # T's CTAs an SM a pass
+SELECT_SLICES = 64   # T's slices a row at most (its placement counts' scratch)
+SELECT_SPAN = 5      # T's tiles a slice at most, while the slices fit: longer slices serialize placement
 
 
 @triton.jit
@@ -265,6 +275,13 @@ class AttnScratch:
         self.nk = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.sparse = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.scores = torch.zeros((rows, self.nb), dtype=torch.float32, device=device) if self.qsa else None
+        # T's rows (fewer than MULTI_ROWS): radix histograms (zeroed by each call) and their slices' placement counts
+        # (written by the last pass before placement reads them), at most ``cw`` slices a row
+        self.cw = min(SELECT_SLICES, triton.next_power_of_2(-(-self.nb // SELECT_TB)))
+        multi = min(rows, MULTI_ROWS - 1)
+        self.hist = torch.zeros((multi, 4, 256), dtype=torch.int32, device=device) if self.qsa else None
+        self.suf = torch.zeros((multi, self.cw, 257), dtype=torch.int32, device=device) if self.qsa else None
+        self.sms = torch.cuda.get_device_properties(device).multi_processor_count if self.qsa else 0
 
 
 def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch,
@@ -360,8 +377,14 @@ def _scores(IQ, POOLED, POS0, SC, NB, HI: tl.constexpr, DI: tl.constexpr, RATIO:
     """Score each sparse row's complete blocks with the fp32 indexer-head sum, in order, of relu(q . k) / sqrt(DI)."""
 
     r = tl.program_id(0)
-    j = tl.program_id(1)
-    complete = (tl.load(POS0) + r + 1) // RATIO
+    _score_rows(IQ, POOLED, SC, NB, r, tl.program_id(1), (tl.load(POS0) + r + 1) // RATIO, HI, DI, TOP, BB)
+
+
+@triton.jit
+def _score_rows(IQ, POOLED, SC, NB, r, j, complete, HI: tl.constexpr, DI: tl.constexpr, TOP: tl.constexpr,
+                BB: tl.constexpr):
+    """Row r's scores of blocks [j * BB, j * BB + BB) below ``complete``; every scoring launch shares these bits."""
+
     if complete > TOP and j * BB < complete:
         b = j * BB + tl.arange(0, BB)
         ok = b < complete
@@ -375,12 +398,21 @@ def _scores(IQ, POOLED, POS0, SC, NB, HI: tl.constexpr, DI: tl.constexpr, RATIO:
 
 
 @triton.jit
+def _row_end(POS, r, PER_ROW: tl.constexpr):
+    """Row r's key count: its own position's (``POS[r]``, a concurrent step's rows) or the window's ``POS[0] + r``."""
+
+    if PER_ROW:
+        return tl.load(POS + r) + 1
+    return tl.load(POS) + r + 1
+
+
+@triton.jit
 def _select(SC, POS0, IDS, NKR, SPR, NB, RATIO: tl.constexpr, TOP: tl.constexpr, IDW: tl.constexpr,
-            BLOCK: tl.constexpr):
+            BLOCK: tl.constexpr, PER_ROW: tl.constexpr = False):
     """List each sparse row's TOP blocks in block order, breaking score ties by lower block id, followed by the unfinished tail; dense rows retain only their length."""
 
     r = tl.program_id(0)
-    end = tl.load(POS0) + r + 1
+    end = _row_end(POS0, r, PER_ROW)
     complete = end // RATIO
     if complete <= TOP:
         tl.store(NKR + r, end)
@@ -429,11 +461,11 @@ def _block_keys(ROW, b, ok):
 
 @triton.jit
 def _select_tiles(SC, POS0, IDS, NKR, SPR, NB, RATIO: tl.constexpr, TOP: tl.constexpr, IDW: tl.constexpr,
-                  TB: tl.constexpr):
+                  TB: tl.constexpr, PER_ROW: tl.constexpr = False):
     """``_select``'s lists for rows with more blocks than its registers hold, reading the row in TB-block tiles: the same cut (the TOP-th largest key) by radix select, one byte a pass from the top, then the same blocks placed tile by tile."""
 
     r = tl.program_id(0)
-    end = tl.load(POS0) + r + 1
+    end = _row_end(POS0, r, PER_ROW)
     complete = end // RATIO
     if complete <= TOP:
         tl.store(NKR + r, end)
@@ -484,18 +516,181 @@ def _select_tiles(SC, POS0, IDS, NKR, SPR, NB, RATIO: tl.constexpr, TOP: tl.cons
         tl.store(SPR + r, 1)
 
 
-def _launch_select(scratch: AttnScratch, pos0: torch.Tensor, rows: int, blocks: int) -> None:
-    """List each row's blocks from ``scratch.scores``: ``_select`` while ``blocks`` fit its registers, ``_select_tiles`` (the same lists) past them."""
+@triton.jit
+def _keys32(ROW, b, ok):
+    """``_block_keys``' order in 32 bits; slots off ``ok`` hold no key, and every use masks them."""
 
+    bits = tl.load(ROW + b, mask=ok, other=0.0).to(tl.uint32, bitcast=True)
+    return tl.where((bits & 0x80000000) != 0, ~bits, bits | 0x80000000)
+
+
+@triton.jit
+def _resolve(H, PASSES: tl.constexpr, TOP: tl.constexpr):
+    """The cut's leading PASSES bytes and ``need`` (its rank among the keys sharing them) from a row's whole-row
+    histograms H [4, 256], derived as ``_select_tiles`` derives them; every CTA derives the same values."""
+
+    digits = tl.arange(0, 256)
+    cut = tl.zeros((), dtype=tl.uint32)
+    need = tl.full((), TOP, dtype=tl.int32)
+    for p in tl.static_range(PASSES):
+        hist = tl.load(H + p * 256 + digits)
+        atleast = tl.sum(hist, axis=0) - tl.cumsum(hist, axis=0) + hist
+        d = tl.max(tl.where(atleast >= need, digits, -1), axis=0)     # >= 0: the prefix's keys number >= need
+        need = need - tl.sum(tl.where(digits > d, hist, 0), axis=0)
+        cut = cut | (d.to(tl.uint32) << (24 - 8 * p))
+    return cut, need
+
+
+@triton.jit
+def _select_pass(SC, POS, HIST, SUF, NB, SL, PASS: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
+                 CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr):
+    """Radix pass PASS over slice s (program 0) of row r (program 1): the histogram of byte 3 - PASS of the slice's
+    keys that share the cut's leading bytes, added into the row's (integer atomics: any order, the same sums). The
+    last pass also keeps the slice's counts for placement: SUF[r, s, x] = its keys above the cut's leading three
+    bytes plus those sharing them with a last byte >= x (x = 256: the former alone)."""
+
+    s = tl.program_id(0)
+    r = tl.program_id(1)
+    complete = _row_end(POS, r, PER_ROW) // RATIO
+    lo = s * SL
+    if complete > TOP and lo < complete:
+        hi = tl.minimum(lo + SL, complete)
+        row = SC + r.to(tl.int64) * NB
+        H = HIST + r * 1024
+        cut, _ = _resolve(H, PASS, TOP)
+        SHIFT: tl.constexpr = 24 - 8 * PASS
+        hist = tl.zeros((256,), dtype=tl.int32)
+        above = tl.zeros((TB,), dtype=tl.int32)
+        for t0 in range(lo, hi, TB):
+            b = t0 + tl.arange(0, TB)
+            ok = b < hi
+            k = _keys32(row, b, ok)
+            if PASS == 3:
+                above += (ok & ((k >> 8) > (cut >> 8))).to(tl.int32)
+            if PASS > 0:
+                ok = ok & ((k >> (SHIFT + 8)) == (cut >> (SHIFT + 8)))
+            hist += tl.histogram(((k >> SHIFT) & 0xFF).to(tl.int32), 256, mask=ok)
+        d = tl.arange(0, 256)
+        tl.atomic_add(H + PASS * 256 + d, hist, mask=hist > 0, sem="relaxed")
+        if PASS == 3:
+            mine = SUF + (r * CW + s) * 257
+            over = tl.sum(above, axis=0)
+            tl.store(mine + d, over + tl.sum(hist, axis=0) - tl.cumsum(hist, axis=0) + hist)
+            tl.store(mine + 256, over)
+
+
+@triton.jit
+def _select_emit(SC, POS, HIST, SUF, IDS, NKR, SPR, NB, SL, RATIO: tl.constexpr, TOP: tl.constexpr,
+                 IDW: tl.constexpr, CW: tl.constexpr, TB: tl.constexpr, PER_ROW: tl.constexpr):
+    """``_select_tiles``' placement of slice s of row r, its running counts seeded by the slices before it, so each
+    chosen block lands where the one-CTA scan puts it; slice 0 writes the tail, length and flag (a dense row's
+    length alone)."""
+
+    tl.static_assert(TB < 32768)                            # a tile's two counts (<= TB each) share one int32 sum
+    s = tl.program_id(0)
+    r = tl.program_id(1)
+    end = _row_end(POS, r, PER_ROW)
+    complete = end // RATIO
+    lo = s * SL
+    if complete <= TOP:
+        if s == 0:
+            tl.store(NKR + r, end)
+            tl.store(SPR + r, 0)
+    elif lo < complete:
+        cut, need = _resolve(HIST + r * 1024, 4, TOP)
+        d = (cut & 0xFF).to(tl.int32)
+        i = tl.arange(0, CW)
+        counts = SUF + (r * CW + i) * 257
+        before = i < s
+        over = tl.load(counts + d + 1, mask=before, other=0)                     # keys above the cut
+        seen = tl.sum(tl.load(counts + d, mask=before, other=0) - over, axis=0)  # keys equal to it, earlier slices
+        placed = tl.sum(over, axis=0) + tl.minimum(seen, need)
+        mine = SUF + (r * CW + s) * 257
+        over_here = tl.load(mine + d + 1)
+        last = placed + over_here + tl.minimum(tl.maximum(need - seen, 0), tl.load(mine + d) - over_here)
+        hi = tl.minimum(lo + SL, complete)
+        row = SC + r.to(tl.int64) * NB
+        for t0 in range(lo, hi, TB):
+            if placed < last:                               # tiles past the slice's last chosen block: nothing
+                b = t0 + tl.arange(0, TB)
+                ok = b < hi
+                k = _keys32(row, b, ok)
+                above = ok & (k > cut)
+                equal = ok & (k == cut)
+                both = tl.sum(equal.to(tl.int32) * 65536 + above.to(tl.int32), axis=0)     # ties << 16 | above
+                ties = both >> 16
+                if (seen < need) & (seen + ties > need):    # the tile holding the need-th equal key ranks them
+                    rank = seen + tl.cumsum(equal.to(tl.int32), axis=0)
+                    chosen = above | (equal & (rank <= need))
+                else:                                       # all of its equal keys are chosen, or none
+                    chosen = above | (equal & (seen < need))
+                place = placed + tl.cumsum(chosen.to(tl.int32), axis=0) - 1
+                for q in tl.static_range(RATIO):
+                    tl.store(IDS + r * IDW + place * RATIO + q, b * RATIO + q, mask=chosen)
+                placed += (both & 65535) + tl.minimum(tl.maximum(need - seen, 0), ties)
+                seen += ties
+        if s == 0:
+            t = tl.arange(0, RATIO)
+            tail = RATIO * complete + t
+            tl.store(IDS + r * IDW + TOP * RATIO + t, tail, mask=tail < end)
+            tl.store(NKR + r, TOP * RATIO + end - RATIO * complete)
+            tl.store(SPR + r, 1)
+
+
+def _slices(scratch: AttnScratch, rows: int, blocks: int) -> tuple[int, int]:
+    """T's slice length (whole SELECT_TB tiles) and count: about SELECT_FILL CTAs an SM a pass, at most SELECT_SPAN
+    tiles a slice (a slice's placement scans its tiles in turn), and at most ``scratch.cw`` slices (the slices its
+    placement counts hold), which wins: ``tiles / cw`` tiles a slice number at most ``cw``."""
+
+    want = min(scratch.cw, max(1, -(-SELECT_FILL * scratch.sms // rows)))
+    tiles = -(-blocks // SELECT_TB)
+    sl = SELECT_TB * max(-(-tiles // scratch.cw), min(SELECT_SPAN, -(-tiles // want)))
+    return sl, -(-blocks // sl)
+
+
+def _select_multi(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: int, per_row: bool) -> None:
+    """T: ``_select_tiles``' lists from a (slices, rows) grid: four histogram passes, then placement."""
+
+    if rows > scratch.hist.shape[0]:
+        raise ValueError(f"select scratch holds {scratch.hist.shape[0]} rows, not {rows}")
+    sl, n = _slices(scratch, rows, blocks)
+    common = dict(RATIO=scratch.ratio, TOP=scratch.budget // scratch.ratio, CW=scratch.cw, TB=SELECT_TB,
+                  PER_ROW=per_row, num_warps=SELECT_TB // 512)
+    scratch.hist.zero_()                     # every call: a dirty histogram would move the cut silently
+    for p in range(4):
+        _select_pass[(n, rows)](scratch.scores, pos, scratch.hist, scratch.suf, scratch.nb, sl, PASS=p, **common)
+    _select_emit[(n, rows)](scratch.scores, pos, scratch.hist, scratch.suf, scratch.ids, scratch.nk, scratch.sparse,
+                            scratch.nb, sl, IDW=scratch.idw, **common)
+
+
+def qsa_new() -> bool:
+    """A/B baseline: remove after selection. The benchmark switch "qsa": "new" (batched streams, T) or "old"."""
+
+    variant = ab_switch.get("qsa", "new")
+    if variant not in ("new", "old"):
+        raise ValueError(f'ab_switch "qsa" must be "new" or "old", not {variant!r}')
+    return variant == "new"
+
+
+def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: int, *,
+                   per_row: bool = False) -> None:
+    """List each row's blocks from ``scratch.scores``: T for windows of long rows, else ``_select`` while ``blocks``
+    fit its registers and ``_select_tiles`` (the same lists) past them. ``per_row``: row r ends at ``pos[r] + 1``."""
+
+    if blocks > scratch.nb:
+        raise ValueError(f"{blocks} blocks exceed the scratch's {scratch.nb}")
+    if rows < MULTI_ROWS and blocks > MULTI_MIN_BLOCKS and qsa_new():
+        _select_multi(scratch, pos, rows, blocks, per_row)
+        return
     top = scratch.budget // scratch.ratio
     width = triton.next_power_of_2(blocks)
     if width <= SELECT_REGS:
-        _select[(rows,)](scratch.scores, pos0, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
-                         RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, BLOCK=width, num_warps=16)
+        _select[(rows,)](scratch.scores, pos, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
+                         RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, BLOCK=width, PER_ROW=per_row, num_warps=16)
         return
     tb, warps = (4096, 8) if rows >= 64 else (8192, 16)      # a prompt's row blocks, a decode window
-    _select_tiles[(rows,)](scratch.scores, pos0, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
-                           RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, TB=tb, num_warps=warps)
+    _select_tiles[(rows,)](scratch.scores, pos, scratch.ids, scratch.nk, scratch.sparse, scratch.nb,
+                           RATIO=scratch.ratio, TOP=top, IDW=scratch.idw, TB=tb, PER_ROW=per_row, num_warps=warps)
 
 
 def qsa_select(iq: torch.Tensor, ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,

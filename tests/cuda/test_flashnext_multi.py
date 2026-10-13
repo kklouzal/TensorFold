@@ -8,11 +8,12 @@ if not torch.cuda.is_available():
 
 from test_flashnext_forward import V, _model  # noqa: E402
 
-from tensorfold.families.qwen4_exp.cuda import qmm  # noqa: E402
+from tensorfold.cuda import ab_switch  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda import attention as attn_mod, attn_multi, qmm  # noqa: E402
 
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
-from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_decode  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.decode import Engine, mtp_decode, prefill, serial_decode  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.forward import commit, compute, forward, stage  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.state import Buffers, State  # noqa: E402
@@ -152,9 +153,48 @@ def test_packed_passes_keep_each_prompt_one_token_early(kv_dtype):
             assert s.cached == len(p) - 1 and s.out == fresh(q, smp), (len(p), q[-2:])
 
 
+def _t_at_small_windows(monkeypatch) -> None:
+    """T at every block count, its tile cut to 512 keys (one warp) so this file's 1,024-block windows still split
+    each row over slices (the placement seeded by earlier slices' counts)."""
+
+    monkeypatch.setattr(attn_mod, "MULTI_MIN_BLOCKS", 0)
+    monkeypatch.setattr(attn_mod, "SELECT_TB", 512)
+
+
+def _qsa_variant(monkeypatch, tmp_path, variant: str) -> dict:
+    """The QSA path a test's rounds take: "new" (batched streams; T past its threshold), "new-T" (T at every block
+    count), "old" (the A/B baseline: each sparse stream's own ``_select``/``_select_tiles``). Counts the launches
+    of T and of the per-stream path."""
+
+    if variant == "new-T":
+        _t_at_small_windows(monkeypatch)
+    elif variant == "old":
+        control = tmp_path / "ab.json"
+        control.write_text('{"qsa": "old"}')
+        monkeypatch.setattr(ab_switch, "_path", str(control))
+        monkeypatch.setattr(ab_switch, "_values", {})
+        monkeypatch.setattr(ab_switch, "_stamp", None)
+        ab_switch.refresh()
+    counts = {"T": 0, "per-stream": 0, "slices": 0}
+    for module, name, key in ((attn_mod, "_select_multi", "T"), (attn_multi, "_rows_from", "per-stream")):
+        def spy(*a, real=getattr(module, name), key=key, **kw):
+            counts[key] += 1
+            return real(*a, **kw)
+        monkeypatch.setattr(module, name, spy)
+
+    def slices(*a, real=attn_mod._slices):
+        sl, n = real(*a)
+        counts["slices"] = max(counts["slices"], n)
+        return sl, n
+    monkeypatch.setattr(attn_mod, "_slices", slices)
+    return counts
+
+
+@pytest.mark.parametrize("variant", ["new", "new-T", "old"])
 @pytest.mark.parametrize("kv_dtype", ["bf16", "int8"])
-def test_sparse_streams_decode_together_as_alone(kv_dtype):
-    """Past the attention budget a long stream selects blocks beside short dense ones, each emitting its solo run."""
+def test_sparse_streams_decode_together_as_alone(monkeypatch, tmp_path, kv_dtype, variant):
+    """Past the attention budget a long stream selects blocks beside short dense ones, each emitting its solo run
+    (solo runs select with the one-CTA kernels; the rounds by each variant's)."""
 
     w = _model(7)
     g = torch.Generator().manual_seed(9)
@@ -164,6 +204,7 @@ def test_sparse_streams_decode_together_as_alone(kv_dtype):
     for prompt, sampling in zip(prompts, samplings):
         e = Engine(w, capacity=4096, max_rows=8, prefill_rows=256, kv_dtype=kv_dtype)
         refs.append(serial_decode(e, prefill(e, prompt, sampling), 16, sampling).tokens)
+    counts = _qsa_variant(monkeypatch, tmp_path, variant)
     dec = MultiDecoder(w, slots=3, capacity=4096, depth=3, confidence=0.3, kv_dtype=kv_dtype)
     streams = [Stream(p, 16, smp) for p, smp in zip(prompts, samplings)]
     for s in streams:
@@ -171,6 +212,36 @@ def test_sparse_streams_decode_together_as_alone(kv_dtype):
     while dec.live():
         dec.finish(dec.round())
     assert [s.out for s in streams] == refs
+    assert (counts["T"] > 0) == (variant == "new-T") and (counts["per-stream"] > 0) == (variant == "old"), counts
+    assert counts["slices"] > 1 or variant != "new-T", counts
+
+
+@pytest.mark.parametrize("graphs", [False, True])
+def test_long_stream_selects_the_same_blocks_through_t(monkeypatch, graphs):
+    """One stream past the budget: logits of every window size, tokens and MTP-drafted tokens are the same when its
+    selection runs T (forced at this small window, captured in the graphs too) as through ``_select``."""
+
+    w = _model(7)
+    g = torch.Generator().manual_seed(11)
+    prompt = torch.randint(1, V, (2600,), generator=g).tolist()
+    sampling = Sampling(seed=8, top_k=20, top_p=0.95)
+
+    def run():
+        e = Engine(w, capacity=4096, max_rows=8, prefill_rows=256, graphs=graphs)
+        first = prefill(e, prompt, sampling)
+        logits = [e.forward([first] + list(range(3, 3 + n)))[:n + 1].clone() for n in range(6)]   # uncommitted
+        tokens = serial_decode(e, first, 12, sampling).tokens
+        prefill(e, prompt, sampling)
+        return logits, tokens, mtp_decode(e, first, 12, sampling, depth=3, confidence=0.0).tokens
+
+    want = run()
+    _t_at_small_windows(monkeypatch)
+    calls = []
+    real = attn_mod._slices
+    monkeypatch.setattr(attn_mod, "_slices", lambda *a: calls.append(real(*a)[1]) or real(*a))
+    got = run()
+    assert calls and max(calls) > 1 and all(torch.equal(a, b) for a, b in zip(got[0], want[0]))
+    assert got[1:] == want[1:] and want[1] == want[2]
 
 
 def test_streams_keep_their_bits_when_their_caches_move():
