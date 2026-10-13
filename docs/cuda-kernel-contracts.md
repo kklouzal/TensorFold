@@ -156,3 +156,29 @@ custom driver contexts or reset/reuse live model allocations. Switching among
 compatible devices configures each independently. A two-device execution gate
 is required to claim that path validated; one-device execution proves only that
 device's configuration and output contracts.
+
+## Flash Next concurrent rounds: static tables, captured rounds and PDL
+
+A concurrent decoder (`MultiDecoder`) owns its rounds' device tables at fixed addresses
+(`gdn_multi.RoundTables`; `attn_multi.StepTables` for the verify and the MTP steps). A step writes them through a
+pinned mirror with one copy each on the current stream before its forward. The mirror is rewritten only after an
+event shows that copy complete, and the device tables only by later copies on the same stream, so every earlier
+consumer is stream-ordered before the rewrite. Pointees are the decoder's States: a resize, shrink or drop frees
+storage through the same stream's caching allocator. Rows past a stream's window and chunks past a row's keys are
+launched (fixed geometry) and write nothing; zero pending counts are the documented no-op.
+
+`multi_graphs.RoundGraphs` captures each pure decode round's verify forward and each MTP step in pieces that share
+one private pool, keyed by (PDL, streams, rows) and the DeltaNet parity. What a step's host data shapes runs eagerly
+between the pieces on that step's data: block selection, each stream's n-gram conv tail and the late n-gram reads.
+A round replays one key's pieces in order and reads only static buffers afterwards, so no piece's pool memory is
+an output. Keys are captured only within `TENSORFOLD_MULTI_GRAPH_MIB`; experts that read their plan on the host
+decline capture.
+
+Programmatic dependent launch (`tensorfold/cuda/pdl.py`, `kernels/pdl.cuh`): a kernel launched with the attribute
+may be scheduled while its predecessor finishes. Every such kernel calls `griddepcontrol.wait` as its first
+operation on every block and path, before any global access, then `griddepcontrol.launch_dependents`; only the
+lane matmul loads its immutable weights before the wait. A completed PDL kernel therefore implies its predecessors
+completed, writes stay ordered, and arithmetic is unchanged. Torch operations and copies between kernels keep
+full dependencies. Kernels compiled or launched without PDL keep their original code (Triton's `PDL` constexpr,
+the lane matmul's template flag); the other extension kernels execute the two instructions as no-ops.
+`tests/test_pdl_kernel_contract.py` checks the wait-first rule over the converted sources.
