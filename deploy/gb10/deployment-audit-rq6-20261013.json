@@ -1,0 +1,45 @@
+{
+ "date": "2026-10-13T02:43:30Z",
+ "status": "deploymentverified",
+ "change": "Audit waves 1-2 (reply correctness, fp32 logits, prefix-cache retention/kept points, keepalive/cancel) and KV cache rotorquant8-norm -> rotorquant6-norm (owner decision)",
+ "image": "sha256:ca62f8944734e5526b099a4cd1801d58a043af372e32196a01f747276f136e74",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-cadcae5c",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "cadcae5ce7e729cc4e6eadae44552f9b02dd1985",
+ "version": "0.6.6",
+ "container": "3a8d027f2753beac875f9e381a09dc01434606cbceb99cc1c8d1a535c65af486",
+ "cutover": "2026-10-13T02:40:11Z",
+ "started_at": "2026-10-13T02:40:22.518614697Z",
+ "healthy_after_seconds": 210,
+ "startup_log": "loaded in 162.8s; CUDA extensions rebuilt into the new cache; startup estimate 96.25 GiB within 112.28 GiB; 29.7 GiB free for stream caches, 14.22 GiB for one at the full 1,048,576 window; KV K=V=rotorquant6-norm",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-audit-20261013",
+ "rollback": {
+  "id": "f7154d15f972f6897c347d1f3b498835ca854727f38f517dd8ef2013df417949",
+  "name": "/qwen38-flash-next-tf-rollback-audit-20261013",
+  "image": "sha256:55a38d8985529e21370a6fd2acd4b7f8c88106661c01b7224f41e671d502d71f",
+  "source": "9acb28c3 (rotorquant8-norm, cache-python-0.6-2edfaa51)",
+  "state": "created/stopped",
+  "creation": "Engine API clone of the replaced container's Config/HostConfig; Compose labels removed, image pinned by ID, original container ID recorded in a label"
+ },
+ "changed_configuration": "Image; --kv-dtype rotorquant6-norm (was rotorquant8-norm); kernel-cache bind cache-python-0.6-audit-20261013 (was cache-python-0.6-2edfaa51). Environment, limits, CPU set, ulimits, restart policy and health check unchanged (compared with the rollback clone).",
+ "context": "GB10 had hung at 2026-10-12T18:12 MST on unified-memory exhaustion (NVRM NV_ERR_NO_MEMORY since 2026-10-09; unified GPU allocations are not charged to the container cgroup) and was rebooted before this replacement.",
+ "validation": {
+  "cpu_verification_image_cadcae5c": "215 passed with -o pythonpath=tests (test_native_ssd, test_harness_tokenizer, test_qwen4_exp_yarn, test_flashnext_prefix_retention, test_cuda_request_ticks, test_copy_drafts, test_rotorquant_six_scaling)",
+  "cuda_synthetic_gb10_sm121": "536 passed, 1 failed (stale bf16 harness buffer in test_actual_loss_harness_all_rows_match_fresh_public_prefill_endpoints after the fp32-logits change); fixed in cd7909c4 and passing on GB10 (test-only; runtime image unchanged). Files: test_flashnext_rotorquant, test_rotor_lookup_exact, test_flashnext_yarn, test_flashnext_multi, test_flashnext_prompt_cache",
+  "live_tokenize_count_equal_previous_service": "55",
+  "live_tokenize_metadata": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041; reasoning_efforts low,medium,xhigh; context_length 1048576",
+  "arithmetic_thinking_off_expected391": true,
+  "arithmetic_thinking_low_expected888": true,
+  "tool_call_round_trip": true,
+  "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
+  "harness_thinking_profile": "native-metadata, off,low,medium,xhigh (no Harness restart)",
+  "filled1M_quality_capacity": "unrun",
+  "rotorquant6_norm_full_model_quality": "unrun (owner-selected format; short live checks only)",
+  "controlled_baseline_performance_comparison": "unrun"
+ }
+}

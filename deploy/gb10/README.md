@@ -40,6 +40,27 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## Audit build and RotorQuant 6 deployment, 2026-10-13
+
+The service now runs source `cadcae5ce7e729cc4e6eadae44552f9b02dd1985` in ARM64
+image `sha256:ca62f8944734e5526b099a4cd1801d58a043af372e32196a01f747276f136e74`
+(`tensorfold-gb10-fork:local`), container `3a8d027f2753…`. It adds the audit
+waves (reply correctness, fp32 logits, prefix-cache retention and kept points,
+keepalive/cancel) and, by owner decision, stores keys and values as
+`rotorquant6-norm` instead of `rotorquant8-norm`, with a new kernel-cache bind.
+Startup reported 96.25 GiB within the 112.28 GiB budget and 14.22 GiB of cache
+for one stream at the full 1,048,576 window. Live tokenization matched the previous
+service's count and discovery metadata; short thinking-off, thinking and tool-call
+checks passed, and Harness resolved its thinking profile. Full-window and
+RotorQuant 6 quality and performance comparisons remain unrun. The replaced
+container is retained stopped as `qwen38-flash-next-tf-rollback-audit-20261013`
+(image `sha256:55a38d89…`, `rotorquant8-norm`, old cache directory). See
+[the deployment receipt](deployment-audit-rq6-20261013.json).
+
+Before this replacement the GB10 hung on unified-memory exhaustion. Unified GPU
+allocations are not charged to the container's memory limit, so observe host
+memory as well.
+
 ## Harness discovery bridge deployment, 2026-10-12
 
 The service now runs source `9acb28c395683a7b2fddc70904942396f902c7ca` in ARM64
