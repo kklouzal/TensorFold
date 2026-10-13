@@ -1,6 +1,7 @@
 """The cost-aware draft rule's host math (``tensorfold.drafters.draft_rule``, design 3): the prior against today's
 confidence rule, the stop rule's thresholds and shared steps, text-versus-chain values, the round-start trim against
-brute force, calibration files' validation and the online cost model."""
+brute force, calibration files' validation and the online cost model (its outlier bounds, and that it is total over
+valid observations: a decoder's drafting never raises from it)."""
 
 import itertools
 import json
@@ -101,22 +102,20 @@ def test_text_and_chain_values():
         assert dr.suffix_plan([prior.suffix(False, k, 7) for k in range(room)], th()) == ([], 0.0)
 
 
-def _best(chances, thresholds, budget):
-    """Brute force: the largest sum of chances over each stream's prefixes of drafts above their thresholds, at most
-    ``budget`` drafts in all."""
+def _best(chances, thresholds):
+    """Brute force: the largest sum of chances over each stream's prefixes of drafts at or above its threshold."""
 
     best = None
     for counts in itertools.product(*[range(len(chain) + 1) for chain in chances]):
-        if sum(counts) > budget or any(any(chain[j] < t for j in range(n)) for chain, t, n in
-                                       zip(chances, thresholds, counts)):
+        if any(any(chain[j] < t for j in range(n)) for chain, t, n in zip(chances, thresholds, counts)):
             continue
         value = sum(sum(chain[:n]) for chain, n in zip(chances, counts))
         if best is None or value > best[0] + 1e-12:
             best = (value, counts)
-    return best[0]
+    return best
 
 
-def test_the_trim_keeps_the_highest_prefixes_that_pay_within_the_rows():
+def test_the_trim_keeps_each_streams_drafts_that_pay_at_the_rounds_threshold():
     rng = random.Random(7)
     for _ in range(300):
         chances = []
@@ -127,16 +126,12 @@ def test_the_trim_keeps_the_highest_prefixes_that_pay_within_the_rows():
                 chain.append(c)
             chances.append(chain)
         thresholds = [rng.choice([0.0, 0.3, 0.5]) for _ in chances]
-        budget = rng.randint(0, 10)
-        kept = dr.trim(chances, thresholds, budget)
-        assert sum(kept) <= budget and all(0 <= n <= len(c) for n, c in zip(kept, chances))
+        kept = dr.trim(chances, thresholds)
+        assert all(0 <= n <= len(c) for n, c in zip(kept, chances))
         assert all(c[j] >= t for c, t, n in zip(chances, thresholds, kept) for j in range(n))
-        assert sum(sum(c[:n]) for c, n in zip(chances, kept)) == pytest.approx(_best(chances, thresholds, budget))
-        if budget:
-            fewer = dr.trim(chances, thresholds, budget - 1)
-            assert all(a <= b for a, b in zip(fewer, kept))          # a smaller budget takes, never adds
-    assert dr.trim([[0.9, 0.9], [0.9]], [0.0, 0.0], 2) == [1, 1]       # ties: the shallower first, then stream order
-    assert dr.trim([[0.2], [1.0, 1.0]], [0.3, 0.3], 9) == [0, 2]       # a zero-draft stream
+        assert tuple(kept) == _best(chances, thresholds)[1]           # every draft that pays, nothing else
+    assert dr.trim([[0.2], [1.0, 1.0]], [0.3, 0.3]) == [0, 2]          # a zero-draft stream
+    assert dr.trim([[0.9, 0.5, 0.4]], [0.45]) == [2]
 
 
 def _file(**over):
@@ -193,8 +188,36 @@ def test_a_calibration_file_round_trips_and_is_validated(tmp_path, monkeypatch):
     bad(lambda d: d["cost"].update(lam=1), "cost")
     bad(lambda d: d["cost"].update(**{"lambda": 9.0}), "tokens a ms")
     bad(lambda d: d["cost"]["mixed"].pop("pass"), "cost.mixed")
+    bad(lambda d: d["cost"]["unmixed"].update(t0=2e6), "at most 1e\\+06")
+    bad(lambda d: d["cost"]["mixed"].update(step=-0.1), "a step's from 0")
     with pytest.raises(ValueError, match="probability"):
         dr.Predictor.prior(1.5)
+
+
+def test_a_calibration_files_read_failures_name_the_file_and_keep_their_cause(tmp_path, monkeypatch):
+    """Startup fails with the variable and path for a missing file, one past MAX_FILE bytes, text that is not UTF-8
+    JSON, and JSON nested past the parser's depth; the underlying error stays the cause."""
+
+    missing = tmp_path / "missing.json"
+    with pytest.raises(ValueError, match=f"{dr.ENV}={missing}") as info:
+        dr.Predictor.load(missing)
+    assert isinstance(info.value.__cause__, FileNotFoundError)
+    monkeypatch.setenv(dr.ENV, str(missing))
+    with pytest.raises(ValueError, match=dr.ENV):
+        dr.Predictor.from_env(0.5)
+    path = tmp_path / "rule.json"
+    path.write_text(json.dumps(_file()))
+    monkeypatch.setattr(dr, "MAX_FILE", len(path.read_bytes()) - 1)
+    with pytest.raises(ValueError, match="larger than"):
+        dr.Predictor.load(path)
+    monkeypatch.setattr(dr, "MAX_FILE", 16 << 20)
+    assert dr.Predictor.load(path).as_dict() == _file()
+    path.write_bytes(b"\xff\xfe{")
+    with pytest.raises(ValueError, match=dr.ENV):
+        dr.Predictor.load(path)
+    path.write_text("[" * 200_000 + "]" * 200_000)
+    with pytest.raises(ValueError, match=dr.ENV):
+        dr.Predictor.load(path)
 
 
 def _rounds(rng, truth, step, mixed, count=400):
@@ -282,3 +305,49 @@ def test_the_cost_model_forgets_bounds_outliers_and_clamps():
     seeded = dr.CostModel({"unmixed": {**dr.COST_PRIOR["unmixed"], "row": 2.0, "step": 0.7},
                            "mixed": dict(dr.COST_PRIOR["mixed"]), "lambda": 0.1})
     assert (seeded.row_ms(0, False), seeded.step_ms(False), seeded.lam(1, False, 0)) == (2.0, 0.7, 0.1)
+
+
+def test_a_paused_chain_step_moves_the_step_estimate_boundedly():
+    """The measured step's average holds each round's step time within the outlier bound of the estimate, as the
+    regression does a round's: a 5 s pause in one step moves it by at most the average's rate times that bound."""
+
+    model = dr.CostModel()
+    for _ in range(100):
+        model.observe(rows=4, ctx_rows=4000, pass_rows=0, mixed=False, ms=40.0, chain_ms=4.0, chain_steps=2, tokens=4,
+                      live=1, context=1000)
+    assert model.step_ms(False) == pytest.approx(2.0, abs=1e-3)
+    model.observe(rows=4, ctx_rows=4000, pass_rows=0, mixed=False, ms=5040.0, chain_ms=5002.0, chain_steps=2,
+                  tokens=4, live=1, context=1000)
+    assert model.step_ms(False) - 2.0 <= dr.STEP_RATE * (dr.OUTLIER_MS + dr.OUTLIER_SHARE * 2.0) + 1e-9
+    slow = dr.CostModel()                                # a slower true step still comes through, a bound a round
+    for _ in range(200):
+        slow.observe(rows=2, ctx_rows=2000, pass_rows=0, mixed=True, ms=80.0, chain_ms=40.0, chain_steps=2, tokens=2,
+                     live=1, context=1000)
+    assert slow.step_ms(True) == pytest.approx(20.0, rel=1e-3)
+
+
+def test_the_cost_model_is_total_over_valid_observations():
+    """Any valid observation (extreme or degenerate rows, contexts, prompt rows, times and tokens) leaves every
+    estimate finite and within its clamps, and the decisions built on them never raise: a decoder's drafting cannot
+    fail from its cost model."""
+
+    rng = random.Random(23)
+    model = dr.CostModel()
+    for _ in range(3000):
+        rows = rng.choice([1, 2, 5, 40, 2048])
+        ms = rng.choice([1e-6, 0.01, 5.0, 50.0, 4e3, 1e7]) * rng.uniform(0.5, 1.0)
+        chain_steps = rng.choice([0, 1, 3, 15])
+        chain_ms = ms * rng.choice([0.0, 0.5, 1.0]) if chain_steps else 0.0
+        model.observe(rows=rows, ctx_rows=rows * rng.choice([0, 1, 10**6, 4 * 10**7]),
+                      pass_rows=rng.choice([0, 128, 8192]), mixed=rng.random() < 0.3, ms=ms, chain_ms=chain_ms,
+                      chain_steps=chain_steps, tokens=rng.choice([0, 1, 4, 4096]), live=rng.randint(0, 9),
+                      context=rng.choice([0, 1, 10**6, 10**8]))
+        for mixed in (False, True):
+            assert np.isfinite(model.fits[mixed].theta).all()
+            context, live = rng.choice([0, 10**5, 10**8]), rng.randint(0, 9)
+            lam = model.lam(live, mixed, context)
+            th = model.thresholds(lam, context, mixed)
+            assert dr.LAMBDA[0] <= lam <= dr.LAMBDA[1]
+            assert dr.ROW_MS[0] <= model.row_ms(context, mixed) <= dr.ROW_MS[1]
+            assert dr.STEP_MS[0] <= model.step_ms(mixed) <= dr.STEP_MS[1]
+            assert all(math.isfinite(v) for v in (th.row, th.full, th.shared))

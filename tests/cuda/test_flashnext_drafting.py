@@ -2,7 +2,8 @@
 drafts, design 4); "old" values are the A/B baseline, removed after selection. Drafts never change a reply: every
 switch value, cost, chance and proposal (true continuations, true prefixes then garbage, end tokens, ids outside
 the draft vocabulary) emits each stream's solo tokens, through joins, finishes, prompt passes, captured rounds, a
-background replay, a grammar and a background index build; a failed frame's codec status still wins.
+background replay, a grammar and a background index build; a failed frame's codec status still wins; a stream whose
+drafting fails ends alone with the error, the others keeping their solo tokens.
 
 The synthetic model never repeats its text, so its session index never matches on its own: proposals here are the
 real index's calls with their result replaced (``Texts``), which drives every path after them for real."""
@@ -345,11 +346,13 @@ def test_a_constrained_stream_with_text_drafts_emits_its_solo_tokens(monkeypatch
     assert [s.out for s in streams] == refs and streams[0].accepted > 0
 
 
+@pytest.mark.parametrize("broken", [False, True])
 @pytest.mark.parametrize("where", ["verify", "mtp"])
-def test_a_failed_frame_still_wins_when_streams_draft_from_text(monkeypatch, tmp_path, where):
+def test_a_failed_frame_still_wins_when_streams_draft_from_text(monkeypatch, tmp_path, where, broken):
     """A NaN query scale fails a step's codec status while streams hold text drafts (the rule's pick of their first
     MTP draft shares the absorb's readback): the round raises the codec failure, publishes nothing, and reset slots
-    serve again."""
+    serve again. ``broken``: one stream's session query also fails in that round; its contained drafting failure
+    does not hide the frame's."""
 
     monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")
     w = _model()
@@ -358,7 +361,7 @@ def test_a_failed_frame_still_wins_when_streams_draft_from_text(monkeypatch, tmp
     refs = _solo(w, prompts, samplings, [16, 16], RQ, capacity=256)
     Texts({tuple(p): r for p, r in zip(prompts, refs)}, seed=2, kinds=("truth",)).install(monkeypatch)
     _switch(monkeypatch, tmp_path, draft_rule="new", suffix="new")
-    emitted = []
+    emitted, real_propose = [], SessionIndex.propose
     dec = MultiDecoder(w, slots=2, capacity=256, depth=3, confidence=0.5, kv_dtype=RQ)
     streams = [Stream(list(p), 16, smp, emit=lambda new: emitted.extend(new)) for p, smp in zip(prompts, samplings)]
     for s in streams:
@@ -367,6 +370,15 @@ def test_a_failed_frame_still_wins_when_streams_draft_from_text(monkeypatch, tmp
     dec.finish(dec.round())
     assert any(s.drafts for s in streams)
     before = list(emitted)
+    if broken:
+        real = SessionIndex.propose
+
+        def propose(index, count):
+            if index.tokens[:len(prompts[1])].tolist() == prompts[1]:
+                raise MemoryError("injected drafting failure")
+            return real(index, count)
+
+        monkeypatch.setattr(SessionIndex, "propose", propose)
     scale = w.mtp.layer.attn.q_scale if where == "mtp" else w.layers[1].attn.q_scale
     saved = scale.clone()
     scale.fill_(float("nan"))
@@ -375,6 +387,7 @@ def test_a_failed_frame_still_wins_when_streams_draft_from_text(monkeypatch, tmp
             dec.round()
     finally:
         scale.copy_(saved)
+        monkeypatch.setattr(SessionIndex, "propose", real_propose)
     assert emitted == before
     dec.drop()
     again = Stream(list(prompts[1]), 16, None)
@@ -406,3 +419,135 @@ def test_admission_keeps_the_context_edge_clamp_under_every_switch(monkeypatch, 
     with pytest.raises(ValueError, match="suffix"):
         dec.admit(Stream(list(range(1, 241)), 100, None))
     assert len(dec.free) == 1 and not dec.filling and not dec.fills
+
+
+FAILURES = [("new", "build"), ("old", "build"), ("new", "join"), ("new", "propose"), ("old", "propose"),
+            ("new", "rule"), ("new", "copy"), ("old", "copy")]                # "old": A/B baseline, remove after
+
+
+@pytest.mark.parametrize("rule,where", FAILURES)
+def test_a_drafting_failure_ends_its_request_alone(monkeypatch, tmp_path, rule, where):
+    """A stream's drafting fails (its session index's background build, raised where a round adopts it; its query,
+    as its prompt joins or in a later round; the cost-aware rule's decision for it; its copy index): that request
+    ends with an error naming drafting, whose cause is the failure, having emitted a prefix of its solo tokens; the
+    other streams emit their solo tokens; its slot is freed and the decoder serves the next request."""
+
+    monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")
+    if where == "build":                                 # the target's 6-token prompt builds in the background
+        monkeypatch.setattr(session_index, "BULK", 6)
+    w = _vocab_model(9)
+    prompts, counts = [LOOP, PROMPTS[1], PROMPTS[0], PROMPTS[3]], [20, 24, 18, 16]
+    refs = _solo(w, prompts, SAMPLINGS[:4], counts)
+    target = 0 if where == "rule" else 1                 # the rule's failure: the one greedy drafting stream's
+    armed, calls, cause = [True], [0], MemoryError("injected drafting failure")
+
+    def fires(prompt) -> bool:
+        if not armed[0] or list(prompt[:len(prompts[target])]) != prompts[target]:
+            return False
+        calls[0] += 1
+        return calls[0] >= (3 if where == "propose" else 1)    # "propose": a later round's query
+
+    real_build, real_propose, real_mtp = session_index.build, SessionIndex.propose, draft_rule.Predictor.mtp
+
+    def build(prompt, k):
+        if where == "build" and fires(prompt):
+            raise cause
+        return real_build(prompt, k)
+
+    def propose(index, count):
+        if where in ("join", "propose") and index.ready() and fires(index.tokens[:index.n].tolist()):
+            raise cause
+        return real_propose(index, count)
+
+    def mtp(self, is_greedy, depth, p, m):
+        if where == "rule" and armed[0] and is_greedy:
+            raise cause
+        return real_mtp(self, is_greedy, depth, p, m)
+
+    monkeypatch.setattr(session_index, "build", build)
+    monkeypatch.setattr(SessionIndex, "propose", propose)
+    monkeypatch.setattr(draft_rule.Predictor, "mtp", mtp)
+    from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
+
+    real_copy = CopyIndex.propose
+
+    def copy(index, context, max_nodes=127):
+        if where == "copy" and fires(context):
+            raise cause
+        return real_copy(index, context, max_nodes)
+
+    monkeypatch.setattr(CopyIndex, "propose", copy)
+    _switch(monkeypatch, tmp_path, draft_rule=rule, suffix="old" if where == "copy" else "new")
+    dec = MultiDecoder(w, slots=4, capacity=1024, depth=3, confidence=0.5, prefill_rows=16)
+    streams = [Stream(list(p), c, smp) for p, smp, c in zip(prompts, SAMPLINGS, counts)]
+    try:
+        _run(dec, streams)
+        failed = streams[target]
+        assert isinstance(failed.error, RuntimeError) and "drafting for this request failed" in str(failed.error)
+        assert failed.error.__cause__ is cause and failed.done
+        assert failed.out and failed.out == refs[target][:len(failed.out)] and len(failed.out) < counts[target]
+        if where == "join":                              # it failed drafting as its prompt joined: its first token
+            assert len(failed.out) == 1
+        assert all(s.error is None and s.out == ref for i, (s, ref) in enumerate(zip(streams, refs)) if i != target)
+        assert not dec.streams and not dec.filling
+        assert len(dec.free) + len({id(k[1]) for k in dec.kept if all(k[1] is not f for f in dec.free)}) == 4
+        armed[0] = False                                 # the decoder goes on serving
+        again = Stream(list(prompts[target]), counts[target], SAMPLINGS[target])
+        _run(dec, [again])
+        assert again.error is None and again.out == refs[target]
+    finally:
+        dec.close_drafting()
+
+
+def test_drafting_judges_costs_at_the_streams_the_next_round_will_have(monkeypatch, tmp_path):
+    """The cost-aware rule drafts for the next round at that round's expected live streams: never more than the
+    round-start trim then finds (streams that finish in a round, wait or ended are not counted; a prompt that joins
+    may add one), and exactly those when none joins, here as streams finish one by one."""
+
+    w = _model()
+    prompts, counts = [PROMPTS[1], PROMPTS[0], PROMPTS[3]], [30, 12, 20]
+    refs = _solo(w, prompts, SAMPLINGS[:3], counts)
+    _switch(monkeypatch, tmp_path, draft_rule="new")
+    calls, at = [], [0]
+    real_chain, real_trim = MultiDecoder._chain, MultiDecoder._trim
+
+    def chain(self, active, logits, room, base, words, rule, texts, joined, live):
+        calls.append(("chain", at[0], live))
+        return real_chain(self, active, logits, room, base, words, rule, texts, joined, live)
+
+    def trim(self, live):
+        calls.append(("trim", at[0], len(live)))
+        return real_trim(self, live)
+
+    monkeypatch.setattr(MultiDecoder, "_chain", chain)
+    monkeypatch.setattr(MultiDecoder, "_trim", trim)
+    dec = MultiDecoder(w, slots=3, capacity=1024, depth=3, confidence=0.5, prefill_rows=16)
+    streams = [Stream(list(p), c, smp) for p, smp, c in zip(prompts, SAMPLINGS, counts)]
+    _run(dec, streams, each_round=lambda d, r: at.__setitem__(0, r))
+    assert [s.out for s in streams] == refs
+    pairs = []
+    for i, (kind, r, actual) in enumerate(calls):
+        if kind != "trim":
+            continue
+        drafted = [x for x in calls[:i] if x[0] == "chain" and x[1] in (r - 1, r)]
+        if drafted:
+            pairs.append((drafted[-1][2], actual))
+    assert pairs and all(predicted <= actual for predicted, actual in pairs)
+    assert (2, 2) in pairs and (1, 1) in pairs           # after the first and the second stream finished
+
+
+def test_a_failed_admission_step_frees_its_slot_before_any_index_build(monkeypatch, tmp_path):
+    """The prompt's kept points are found before its session index is built: a failure there frees the slot and
+    leaves no build behind."""
+
+    monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")
+    monkeypatch.setattr(session_index, "BULK", 8)
+    _switch(monkeypatch, tmp_path, suffix="new")
+
+    def points(ids):
+        raise ValueError("no message starts")
+
+    dec = MultiDecoder(_model(), slots=1, capacity=256, depth=4, prefill_rows=64, points=points)
+    with pytest.raises(ValueError, match="message starts"):
+        dec.admit(Stream(list(range(1, 41)), 10, None))
+    assert len(dec.free) == 1 and not dec.filling and not dec.fills and dec.session_builder.pool is None

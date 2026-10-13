@@ -59,8 +59,8 @@ def _decode(w, monkeypatch, confidence, count=32, *, prompts=PROMPTS, samplings=
 
     drafted, real = [], MultiDecoder._draft_all
 
-    def spy(self, streams, rule, **kw):
-        steps = real(self, streams, rule, **kw)
+    def spy(self, streams, rule, *args, **kw):
+        steps = real(self, streams, rule, *args, **kw)
         drafted.append(sorted((s.sid, tuple(s.drafts)) for s, *_ in streams))
         return steps
 

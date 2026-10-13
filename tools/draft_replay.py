@@ -14,7 +14,12 @@ tokens but one) and emits one more token. Copy and suffix drafters therefore rep
 drafts need the model: an MTP round reuses the recorded MTP round that started at the same index (exact when the MTP
 chain at a round start is a function of the committed tokens), else samples the recorded MTP rounds of its context
 bucket (seeded), else Tier-0 aggregates (``--mtp-drafts`` drafts, each kept with ``--mtp-accept`` given the ones
-before). Every policy's first round is the recorded one: a prompt joins with MTP drafts only.
+before). A prompt's first round drafts as the server's rule drafts a joining prompt: the A/B baseline's rule with
+MTP drafts only (every policy but the ``-new`` ones: the recorded first round), the cost-aware rule (the ``-new``
+policies) also from the request's own text when it pays. The server's session drafts need the prompt's index: a
+prompt of ``session_index.BULK`` (4096) tokens or more builds it in the background, and until it is in, the server
+drafts MTP only, so the replay's suffix rows may draft from text in a long prompt's first rounds where the server
+could not (a recorded round's ``src`` shows what the server drafted; ``CopyIndex`` builds on first use, never late).
 
 Policies (one report row each, per context bucket and overall):
 
@@ -344,9 +349,11 @@ class Report:
         return out
 
 
-def simulate(tr: dict, policy, mtp: Mtp, report: Report, name: str, rng: random.Random) -> list[tuple]:
+def simulate(tr: dict, policy, mtp: Mtp, report: Report, name: str, rng: random.Random,
+             joins: bool = False) -> list[tuple]:
     """One request under ``policy(i, context_length, room) -> (drafts, source) | None`` (None: an MTP round).
-    Returns its rounds (i, rows, kept, source)."""
+    ``joins``: the policy drafts the first round too (the cost-aware rule drafts a joining prompt from its text), else
+    the first round is MTP's. Returns its rounds (i, rows, kept, source)."""
 
     prompt, out, count = tr["prompt"], tr["out"], tr["count"]
     at = {r["n"]: (r["rows"], r["acc"], r["src"]) for r in tr["rounds"] if r["src"] in ("mtp", "")}
@@ -355,7 +362,7 @@ def simulate(tr: dict, policy, mtp: Mtp, report: Report, name: str, rng: random.
     while i < len(out):
         context = len(prompt) + i
         room = max(0, count - i)
-        proposal = None if first else policy(i, context, room)
+        proposal = None if first and not joins else policy(i, context, room)
         how = None                                       # an MTP round's model: exact | bucket | tier0
         if proposal is None:
             drafts, acc, src, how = mtp.round(at, i, context, room, len(out) - i, rng)
@@ -514,13 +521,14 @@ def run(traces: list[dict], args) -> dict:
         policies = [("copy8", copy8), ("copy8-new", copy8_new), ("suffix-old", suffix_old), ("sam-old", sam_old)]
         policies += [(f"suffix-new-w{w}", suffix_new(w, s1)) for w in args.windows]
         policies += [(f"sam-new-w{w}", suffix_new(w, s2)) for w in args.windows]
+        rule_new = {"copy8-new", *(f"{p}-new-w{w}" for p in ("suffix", "sam") for w in args.windows)}  # join with text
         policies += [(f"session-k{k}-w{w}", suffix(k, w, False)) for k in args.anchors for w in args.windows]
         policies += [(f"corpus-k{k}-w{w}", suffix(k, w, True)) for k in args.anchors for w in args.windows]
         policies += [(f"oracle-w{w}", oracle(w)) for w in args.windows]
         text = tr.get("text", "copy" if decoder["copy"] else None)       # version 1 traces before "text": copies
         for name, policy in policies:
             rng = random.Random(f"{args.seed}:{tr['rid']}:{name}")
-            got = simulate(tr, policy, mtp, report, name, rng)
+            got = simulate(tr, policy, mtp, report, name, rng, joins=name in rule_new)
             check = parity if name == "copy8" and text == "copy" else \
                 parity_suffix if name == "suffix-old" and text == "suffix" else None
             if check is not None and old_rule and recorded:

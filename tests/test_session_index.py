@@ -1,11 +1,13 @@
 """Session suffix drafts (``tensorfold.drafters.session_index``, design 4.2 S1) against brute force and against the
 offline replay's independent pure-Python S1 (``tools/draft_replay.py``), with its background build's lifecycle."""
 
+from concurrent.futures import CancelledError
 import importlib.util
 from pathlib import Path
 import random
 import sys
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -223,6 +225,41 @@ def test_a_failed_build_is_raised_where_the_index_is_adopted(monkeypatch):
             index.propose(3)
     finally:
         builder.close()
+
+
+def test_closing_the_builder_cancels_queued_builds_and_their_indexes_raise_when_adopted(monkeypatch):
+    """Shutdown with a build running and one queued: the running one finishes, the queued one never runs, and its
+    index raises the cancellation where a round would adopt it (the decoder ends that request alone); one thread at
+    most ever runs."""
+
+    monkeypatch.setattr(si, "BULK", 16)
+    release, started, running, peak = threading.Event(), threading.Event(), [0], [0]
+    real = si.build
+
+    def slow(prompt, k):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        started.set()
+        assert release.wait(10)
+        running[0] -= 1
+        return real(prompt, k)
+
+    monkeypatch.setattr(si, "build", slow)
+    builder = Builder()
+    first = SessionIndex(list(range(40)), builder)
+    assert started.wait(10)
+    queued = SessionIndex(list(range(50)), builder)
+    closer = threading.Thread(target=builder.close)
+    closer.start()
+    deadline = time.monotonic() + 10
+    while not queued.future.cancelled() and time.monotonic() < deadline:     # close cancels before it joins
+        time.sleep(0.001)
+    assert queued.future.cancelled()
+    release.set()
+    closer.join(10)
+    assert not closer.is_alive() and first.ready() and first.n == 40 and peak[0] == 1
+    with pytest.raises(CancelledError):
+        queued.ready()
 
 
 def test_ids_are_validated_and_a_resync_must_match():

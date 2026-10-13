@@ -9,6 +9,7 @@ from pathlib import Path
 import random
 import sys
 
+import numpy as np
 import pytest
 
 from tensorfold.drafters import draft_rule as dr
@@ -125,3 +126,53 @@ def test_too_few_samples_keep_the_prior_and_say_so(tmp_path):
     assert data["tables"] == prior and sorted(data["source"]["prior_tables"]) == \
         ["mtp.greedy", "mtp.sampled", "suffix.greedy", "suffix.sampled"]
     dr.Predictor.from_dict(data)
+    for bad in ([1, 2], {"held_out": {}}):                # added provenance: an object that keeps the fit's own fields
+        source = tmp_path / "source.json"
+        source.write_text(json.dumps(bad))
+        with pytest.raises(ValueError, match="--source"):
+            fit.run(type("Args", (), dict(log=[str(log)], traces=[], output="", source=str(source), confidence=0.5,
+                                          suffix_depth=8))())
+
+
+def test_the_cost_fit_bounds_paused_rounds_and_steps_as_the_online_model_does():
+    """Rounds paused by seconds (a host stall, a collection) in 3% of the log, and a few paused chain steps: the fit
+    holds each within the online outlier bound and still recovers the true costs, where plain least squares and a
+    plain step mean would not; the report counts the rounds held to the bound."""
+
+    rng = random.Random(9)
+    lines = _lines(rng)
+    for line in rng.sample(lines, 90):
+        line["ms"] += rng.uniform(2000, 5000)
+    for line in rng.sample([x for x in lines if x["chain_steps"]], 15):
+        line["chain_ms"] += 3000.0
+        line["ms"] += 3000.0
+    cost, report = fit.fit_cost(lines)
+    got = cost["unmixed"]                            # a held round still counts its bound (~27 ms): t0 a little high
+    assert got["t0"] == pytest.approx(30, abs=1.5)
+    assert (got["row"], got["ctx"], got["step"]) == pytest.approx((5, 0.3, 1.5), abs=0.3)
+    assert report["unmixed"]["bounded"] >= 90 and report["unmixed"]["iterations"] < fit.FIT_ITERATIONS
+    assert report["unmixed"]["step_iterations"] < fit.FIT_ITERATIONS
+    prior = dr.CostFit(dr.COST_PRIOR["unmixed"])     # the same data without the bound: far off (the test's power)
+    a = np.asarray([dr.features(x["rows"], sum((s["verified"] + 1) * s["ctx"] for s in x["streams"]), 0)
+                    for x in lines])
+    b = np.asarray([x["ms"] - x["chain_ms"] for x in lines])
+    plain = np.linalg.solve(a.T @ a + prior.precision0, a.T @ b + prior.precision0 @ prior.theta0)
+    assert abs(plain[0] - 30) > 50
+    steps = [x for x in lines if x["chain_steps"]]
+    assert sum(x["chain_ms"] for x in steps) / sum(x["chain_steps"] for x in steps) > 3.0
+    clean, _ = fit.fit_cost(_lines(random.Random(9)))            # no outliers: the bound changes nothing material
+    assert clean["unmixed"]["step"] == pytest.approx(1.5, abs=0.02)
+
+
+def test_the_bounded_fits_settle_or_say_so(monkeypatch):
+    fitted = dr.CostFit(dr.COST_PRIOR["unmixed"])
+    a = np.asarray([dr.features(r, r * c, 0) for r in range(1, 13) for c in (1_000, 150_000, 600_000)])
+    b = a @ np.asarray([300.0, 40.0, 3.0, 0.0])                 # ten times the prior's costs: still settles
+    theta, iterations, held = fit.bounded_fit(fitted, a, b)
+    assert theta[:3] == pytest.approx([300.0, 40.0, 3.0], rel=1e-3) and held == 0 and iterations > 2
+    assert fit.bounded_mean(np.asarray([2.0, 2.2, 400.0]), np.asarray([1.0, 1.0, 1.0]), 1.6)[0] < 10
+    monkeypatch.setattr(fit, "FIT_ITERATIONS", 2)
+    with pytest.raises(ValueError, match="did not settle"):
+        fit.bounded_fit(fitted, a, b)
+    with pytest.raises(ValueError, match="did not settle"):
+        fit.bounded_mean(np.asarray([2.0, 50.0]), np.asarray([1.0, 1.0]), 1.6)

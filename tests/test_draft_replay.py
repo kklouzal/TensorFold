@@ -308,3 +308,31 @@ def test_the_automaton_finds_the_longest_earlier_match_after_every_token():
             index = replay.Index(2)
             index.extend(seq)
             assert replay.match(index, seq, n, n - 1, 32, 1 << 20)[0] <= max(length, 0)
+
+
+def test_the_cost_aware_policies_draft_a_joining_prompts_first_round_from_its_text(tmp_path):
+    """The server's cost-aware rule drafts a prompt that joins with the others' drafts, from its text too, so the
+    ``-new`` policies' first round may be a text round; the A/B baseline's rule joins with MTP drafts only, so every
+    other policy's first round is the recorded MTP one. Here the prompt ends quoting an earlier passage that the reply
+    goes on with."""
+
+    quote = list(range(500, 520))
+    prompt = list(range(100, 110)) + quote + list(range(300, 305)) + quote[:9]
+    out = quote[9:] + [600, 601, 602]
+    tr = _recorded_suffix([(i, 1, 0, "") for i in range(1, len(out))], rule="new")
+    tr.update(prompt=prompt, out=out, count=len(out))
+    (tmp_path / "a.json").write_text(json.dumps(tr))
+    res = replay.run(replay.load([str(tmp_path)]), _args(windows=[5]))["results"]
+    for name in ("suffix-new-w5", "sam-new-w5", "copy8-new"):
+        # text rounds at 1 and 6 (4 drafts kept each) and 11 (3 drafted, none kept), MTP rounds at 12 and 13
+        st = res[name]["all"]
+        assert (st["rounds"], st["drafted"], st["accepted"], st["suffix_tokens"]) == (5, 11, 8, 11), name
+    for name in ("suffix-old", "sam-old", "copy8"):
+        # the recorded MTP round at 1, text rounds at 2 and 7 (4 kept each), MTP rounds at 12 and 13
+        st = res[name]["all"]
+        assert (st["rounds"], st["drafted"], st["accepted"], st["suffix_tokens"]) == (5, 8, 8, 10), name
+    oracle = lambda i, context, room: (out[i:i + 2], "oracle")  # noqa: E731
+    report = replay.Report(lambda rows, steps: 34.6 + (rows - 1) * 6.5 + steps * 1.6)
+    mtp = replay.Mtp([tr], 2, 0.75)
+    assert replay.simulate(tr, oracle, mtp, report, "a", random.Random(0))[0] == (1, 1, 0, "")
+    assert replay.simulate(tr, oracle, mtp, report, "b", random.Random(0), joins=True)[0] == (1, 3, 2, "oracle")

@@ -14,10 +14,12 @@ optionally, its ``TENSORFOLD_DRAFT_TRACE`` files (``tensorfold.cuda.draft_log``)
 - Suffix tables (``suffix``): with traces, every reply position is a round start the session index could draft from;
   its continuation's tokens are labelled against the reply (exact), by continuation index and match length. Without
   traces, the logged suffix and copy drafts are used.
-- Cost prior (``cost``): an MTP chain step's mean logged time, and the logged rounds' milliseconds less their chain
+- Cost prior (``cost``): an MTP chain step's mean logged time (each round's steps held within the server's outlier
+  bound of the mean, as its online average), and the logged rounds' milliseconds less their chain
   steps' fitted to ``t0 + row * (R - 1) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows`` (least squares
-  anchored at the design's prior, as the server's online model), with and without a prompt pass, and lambda* = all
-  rounds' tokens over their milliseconds.
+  anchored at the design's prior with each round held within the server's outlier bound of its prediction, as the
+  online model: a paused round moves the fit boundedly), with and without a prompt pass, and lambda* = all rounds'
+  tokens over their milliseconds.
 
 Requests are split by a hash of their random id into a fitting half and a held-out half for the report (log-loss,
 Brier score and reliability by predicted band, against the confidence rule's prior too); the written tables are then
@@ -48,6 +50,8 @@ DEPTH_EDGES = (0, 1, 2, 3, 5, 8)
 L_EDGES = (5.5, 7.5, 11.5, 15.5, 23.5, 31.5, 47.5, 63.5)      # match lengths: <=5, 6-7, 8-11, ... 48-63, 64
 SCORE_BINS = 12                                                # quantile bins of a probability or margin
 EPS = 1e-6
+FIT_ITERATIONS = 1000                                          # the bounded cost fit's fixed-point iterations at most
+FIT_TOLERANCE = 1e-9                                           # ... until no coefficient moves by more (relative)
 
 
 def _score(x):
@@ -223,34 +227,75 @@ def fit_suffix(samples, prior: draft_rule.Predictor) -> tuple[dict, dict]:
     return tables, report
 
 
+def bounded_fit(fit: draft_rule.CostFit, a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, int, int]:
+    """The anchored least squares of ``a @ theta ~ b`` with every round held within the online model's outlier bound
+    of its own prediction (``draft_rule.OUTLIER_MS``, ``OUTLIER_SHARE``; ``CostFit.observe``), from the prior's
+    coefficients to the fixed point: (coefficients, iterations, rounds held to the bound). Raises if it does not
+    settle within FIT_ITERATIONS."""
+
+    lhs, anchor = a.T @ a + fit.precision0, fit.precision0 @ fit.theta0
+    theta = fit.theta0.copy()
+    for iteration in range(1, FIT_ITERATIONS + 1):
+        predicted = a @ theta
+        bound = draft_rule.OUTLIER_MS + draft_rule.OUTLIER_SHARE * np.abs(predicted)
+        new = np.linalg.solve(lhs, a.T @ (predicted + np.clip(b - predicted, -bound, bound)) + anchor)
+        if np.max(np.abs(new - theta)) <= FIT_TOLERANCE * (1.0 + np.max(np.abs(new))):
+            predicted = a @ new
+            held = np.abs(b - predicted) > draft_rule.OUTLIER_MS + draft_rule.OUTLIER_SHARE * np.abs(predicted)
+            return new, iteration, int(np.count_nonzero(held))
+        theta = new
+    raise ValueError(f"the bounded cost fit did not settle in {FIT_ITERATIONS} iterations")
+
+
+def bounded_mean(means: np.ndarray, weights: np.ndarray, start: float) -> tuple[float, int]:
+    """The weighted mean of ``means`` with each held within the online outlier bound of the mean (the server's step
+    average, ``CostModel.observe``), from ``start`` to the fixed point: (mean, iterations)."""
+
+    mean = float(start)
+    for iteration in range(1, FIT_ITERATIONS + 1):
+        bound = draft_rule.OUTLIER_MS + draft_rule.OUTLIER_SHARE * abs(mean)
+        new = mean + float(np.sum(weights * np.clip(means - mean, -bound, bound)) / np.sum(weights))
+        if abs(new - mean) <= FIT_TOLERANCE * (1.0 + abs(new)):
+            return new, iteration
+        mean = new
+    raise ValueError(f"the bounded step mean did not settle in {FIT_ITERATIONS} iterations")
+
+
 def fit_cost(lines: Sequence[dict]) -> tuple[dict, dict]:
-    """The cost prior: each regime's MTP chain step (the logged steps' mean time), its rounds less their chain steps
-    by least squares anchored at the design's prior (the server's online model, without forgetting or its bound on
-    an outlier round: the report's rms_ms shows one), and lambda*."""
+    """The cost prior: each regime's MTP chain step (the logged steps' mean time, ``bounded_mean``), its rounds less
+    their chain steps by least squares anchored at the design's prior with the online model's outlier bound
+    (``bounded_fit``; without its forgetting), and lambda*. The report gives each regime's rounds, those held to the
+    bound (``bounded``), the fits' iterations and the root-mean-square residual."""
 
     prior = {**draft_rule.COST_PRIOR, "lambda": draft_rule.LAMBDA_PRIOR}
     out, report, tokens, ms = {}, {}, 0, 0.0
     for name, mixed in (("unmixed", False), ("mixed", True)):
         fit = draft_rule.CostFit(prior[name])
-        x, y, chain_ms, chain_steps = [], [], 0.0, 0
+        x, y, steps = [], [], []
         for line in lines:
             if bool(line["mixed"]) != mixed or not line["streams"]:
                 continue
             ctx_rows = sum((st["verified"] + 1) * st["ctx"] for st in line["streams"])
             x.append(draft_rule.features(line["rows"], ctx_rows, line["pass_rows"]))
             y.append(line["ms"] - line["chain_ms"])
-            chain_ms += line["chain_ms"]
-            chain_steps += line["chain_steps"]
+            if line["chain_steps"]:
+                steps.append((line["chain_ms"] / line["chain_steps"], line["chain_steps"]))
+        chain_steps = sum(n for _, n in steps)
         if x:
             a, b = np.asarray(x), np.asarray(y)
-            fit.theta = np.linalg.solve(a.T @ a + fit.precision0, a.T @ b + fit.precision0 @ fit.theta0)
+            fit.theta, iterations, held = bounded_fit(fit, a, b)
             residual = b - a @ fit.theta
-            report[name] = {"rounds": len(x), "rms_ms": round(float(np.sqrt(np.mean(residual ** 2))), 4),
-                            "chain_steps": chain_steps}
+            report[name] = {"rounds": len(x), "bounded": held, "iterations": iterations,
+                            "rms_ms": round(float(np.sqrt(np.mean(residual ** 2))), 4), "chain_steps": chain_steps}
         else:
             report[name] = {"rounds": 0}
         out[name] = {t: round(float(v), 6) for t, v in zip(draft_rule.COST_TERMS, fit.theta)}
-        out[name]["step"] = round(chain_ms / chain_steps, 6) if chain_steps else prior[name]["step"]
+        if steps:
+            means, weights = np.asarray(steps, dtype=np.float64).T
+            step, report[name]["step_iterations"] = bounded_mean(means, weights, prior[name]["step"])
+            out[name]["step"] = round(step, 6)
+        else:
+            out[name]["step"] = prior[name]["step"]
     for line in lines:
         tokens += sum(st["accepted"] + 1 for st in line["streams"])
         ms += line["ms"]
@@ -289,7 +334,10 @@ def run(args) -> dict:
               .isoformat(timespec="seconds"), "logs": _inputs(log_paths), "traces": len(trace_paths),
               "trace_inputs": _inputs(trace_paths), "suffix_from": "traces" if traces else "log",
               "confidence_prior": args.confidence, "prior_tables": unfitted,
-              "held_out": {"mtp": mtp_report, "suffix": suffix_report, "cost": cost_report}, **extra}
+              "held_out": {"mtp": mtp_report, "suffix": suffix_report, "cost": cost_report}}
+    if not isinstance(extra, dict) or set(extra) & set(source):     # added provenance never replaces the fit's own
+        raise ValueError(f"--source: a JSON object without the fit's own fields {sorted(source)}")
+    source.update(extra)
     data = {"v": draft_rule.VERSION, "kind": draft_rule.KIND, "source": source, "tables": tables, "cost": cost}
     draft_rule.Predictor.from_dict(data)                 # what the server will accept
     return data

@@ -1,16 +1,18 @@
 """Host (CPU) cost of Flash Next's drafting decisions: the session index (``drafters.session_index``), today's copy
 index (``CopyIndex``, the A/B baseline) and the cost-aware rule's per-round arithmetic (``drafters.draft_rule``).
 
-    python tools/bench_draft_host.py [--sizes 50000,200000,800000] [--rounds 2000] [--repeats 5] [--json OUT]
+    python tools/bench_draft_host.py [--sizes 50000,200000,800000] [--rounds 2000] [--repeats 5] [--reply 100000]
+        [--json OUT]
 
-Contexts are synthetic code-like token sequences (random ids with frequent copies of earlier spans, vocabulary
-248,320). Per size: the session index's prompt build on the calling thread, and in the background beside a simulated
-engine thread (1 ms GPU waits, then 50 us of host work) with how late it wakes from its waits (against the same
-waits with no build); per-round ``sync`` + ``propose`` (1-5 tokens a round, half of them copies of recent text) as
-p50/p99/max; a heavily repeated gram's query; memory per token; and ``CopyIndex``'s first (bulk) and per-round
-proposals. Rule: one round's host decisions for 4 streams x depth 4 (chances, chain steps, text-versus-chain values,
-the trim and the cost model's update). numpy only: run it in the target's runtime image for its pinned numpy and CPU
-(GB10's Grace cores).
+Contexts are synthetic code-like token sequences (random ids with frequent copies of earlier spans, vocabulary 248,320).
+Per size: the session index's prompt build on the calling thread, and in the background beside a simulated engine thread
+(1 ms GPU waits, then 50 us of host work) with how late it wakes from its waits (against the same waits with no build);
+per-round ``sync`` + ``propose`` (1-5 tokens a round, half of them copies of recent text) as p50/p99/max; a heavily
+repeated gram's query; memory (``tracemalloc``, numpy's arrays and Python's objects, in a pass of its own: the build's
+peak, what stays a prompt token, and what a reply token adds at worst, every reply gram new); and ``CopyIndex``'s first
+(bulk) and per-round proposals. Rule: one round's host decisions for 4 streams x depth 4 (chances, chain steps,
+text-versus-chain values, the trim and the cost model's update). numpy only: run it in the target's runtime image for
+its pinned numpy and CPU (GB10's Grace cores).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import random
 import sys
 import threading
 import time
+import tracemalloc
 
 import numpy as np
 
@@ -78,6 +81,40 @@ def rounds(rng: random.Random, ctx: list[int], count: int) -> list[list[int]]:
     return out
 
 
+class _Head:
+    """The first ``n`` tokens of a list, sliced without copying the rest (a reply for ``SessionIndex.sync``)."""
+
+    def __init__(self, seq: list[int], n: int) -> None:
+        self.seq, self.n = seq, n
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, key: slice) -> list[int]:
+        start, stop, _ = key.indices(self.n)
+        return self.seq[start:stop]
+
+
+def session_memory(prompt: list[int], reply: list[int]) -> dict:
+    """The session index's traced bytes: its prompt build's peak, what stays after it, and what ``reply`` (fresh ids:
+    every gram new, the worst case) adds a token, synced 4 tokens a round."""
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        base = tracemalloc.get_traced_memory()[0]
+        index = SessionIndex(prompt)
+        built, peak = tracemalloc.get_traced_memory()
+        for at in range(0, len(reply), 4):
+            index.sync(_Head(reply, at), reply[at:at + 4])
+        grown = tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    return {"build_peak_bytes": peak - base, "built_bytes": built - base,
+            "built_bytes_per_prompt_token": round((built - base) / len(prompt), 2),
+            "reply_bytes_per_token_worst": round((grown - built) / max(1, len(reply)), 1)}
+
+
 def bench_session(n: int, args, rng: random.Random) -> dict:
     prompt = corpus(n, rng)
     builds = []
@@ -123,7 +160,8 @@ def bench_session(n: int, args, rng: random.Random) -> dict:
         "round": quantiles(per),
         "repeated_gram_query_us": round(hot * 1e6, 1),
         "bytes_per_prompt_token": round((index.keys.nbytes + 4 * n) / n, 2),
-        "resident_bytes": int(index.keys.nbytes + index.tokens.nbytes)}
+        "resident_bytes": int(index.keys.nbytes + index.tokens.nbytes),
+        "memory": session_memory(prompt, [rng.randrange(VOCAB) for _ in range(args.reply)])}
 
 
 def bench_copy(n: int, args, rng: random.Random) -> dict:
@@ -168,7 +206,7 @@ def bench_rule(args, rng: random.Random) -> dict:
                 abar = [pred.abar("mtp", False, j) for j in range(4)]
                 draft_rule.suffix_plan(given, th)
                 draft_rule.mtp_value(0.9, abar, 4, th)
-        draft_rule.trim(chains, [th.row for th in ths], 16)
+        draft_rule.trim(chains, [th.row for th in ths])
         costs.observe(rows=1 + sum(map(len, chains)) + 3, ctx_rows=800_000, pass_rows=0, mixed=False,
                       ms=50.0 + rng.random(), chain_ms=4.5, chain_steps=3, tokens=6, live=4, context=200_000)
         per.append(time.perf_counter() - t)
@@ -180,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--sizes", default="50000,200000,800000", help="context sizes in tokens")
     ap.add_argument("--rounds", type=int, default=2000, help="rounds measured a size (default 2000)")
     ap.add_argument("--repeats", type=int, default=5, help="builds timed a size (default 5)")
+    ap.add_argument("--reply", type=int, default=100_000, help="reply tokens of the memory pass (default 100000)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--json", help="write the results here")
     args = ap.parse_args(argv)
@@ -190,8 +229,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = {"host": {"machine": platform.machine(), "processor": platform.processor(),
                        "python": sys.version.split()[0], "numpy": np.__version__,
                        "switch_interval_s": sys.getswitchinterval()},
-              "params": {"sizes": sizes, "rounds": args.rounds, "repeats": args.repeats, "seed": args.seed,
-                         "anchor": session_index.ANCHOR, "recent": session_index.RECENT,
+              "params": {"sizes": sizes, "rounds": args.rounds, "repeats": args.repeats, "reply": args.reply,
+                         "seed": args.seed, "anchor": session_index.ANCHOR, "recent": session_index.RECENT,
                          "longest": session_index.LONGEST},
               "session": [bench_session(n, args, rng) for n in sizes],
               "copy": [bench_copy(n, args, rng) for n in sizes],

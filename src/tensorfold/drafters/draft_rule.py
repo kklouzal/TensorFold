@@ -21,21 +21,26 @@ confidence the server was started with that reproduce the confidence rule's deci
 docstring).
 
 ``CostModel``: an MTP chain step's milliseconds measured directly (each step, from its launch to its pick's readback,
-which it needs anyway), as an exponential average; and a round's milliseconds less its chain steps', ``t0 + row *
-(R - 1) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows``, fitted online for rounds with and without a prompt
-pass by exponentially forgetting least squares anchored at a prior (recursive least squares with forgetting; the
-prior keeps unexcited directions). Timing steps directly keeps their cost out of the regression, where it is
-collinear with the rows the same decisions draft (under that feedback a fitted step cost went negative). lambda* is
-kept per region (live streams, a prompt pass, the longest context's bucket) as a ratio of exponential averages of
-tokens and milliseconds; a region not seen yet takes its nearest seen region's (as streams join or finish), then every
-round's, then the prior. Estimates are clamped to sane ranges. Determinism: decisions follow measured wall times, so
-a request's round structure is not reproducible run to run; its tokens are.
+which it needs anyway), as an exponential average; and a round's milliseconds less its chain steps',
+``t0 + row * (R - 1) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows``, fitted online for rounds with and
+without a prompt pass by exponentially forgetting least squares anchored at a prior (recursive least squares with
+forgetting; the prior keeps unexcited directions). Both hold each observation within an outlier bound of its estimate
+(OUTLIER_MS, OUTLIER_SHARE), so a paused round or step moves them boundedly. Timing steps directly keeps their cost out
+of the regression, where it is collinear with the rows the same decisions draft (under that feedback a fitted step cost
+went negative). lambda* is kept per region (live streams, a prompt pass, the longest context's bucket) as a ratio of
+exponential averages of tokens and milliseconds; a region not seen yet takes its nearest seen region's (as streams join
+or finish), then every round's, then the prior. Estimates are clamped to sane ranges. Determinism: decisions follow
+measured wall times, so a request's round structure is not reproducible run to run; its tokens are.
+
+Failure: everything here is total over validated state and its callers' contract (tables checked at load, a round's
+observation checked before it changes anything, every estimate finite and clamped, a margin given where a table reads
+one), so the only exception a decision or an estimate can raise is the interpreter's own exhaustion.
+``MultiDecoder`` still contains a failure in one stream's decisions to that stream (``_drafting_failed``).
 """
 
 from __future__ import annotations
 
 import bisect
-import heapq
 import json
 import math
 import os
@@ -50,6 +55,7 @@ from tensorfold.drafters.calibration import Calibration
 ENV = "TENSORFOLD_DRAFT_RULE"
 KIND = "tensorfold-draft-rule"
 VERSION = 1
+MAX_FILE = 16 << 20         # a calibration file's bytes at most (a fit's are kilobytes): bounds the startup's parse
 FEATURES = {"mtp": ("p", "m"), "suffix": ("L",)}
 POLICIES = ("greedy", "sampled")
 
@@ -71,6 +77,10 @@ COST_PRIOR = {"unmixed": {"t0": 34.6, "row": 6.5, "ctx": 0.22, "pass": 0.0, "ste
 COST_TERMS = ("t0", "row", "ctx", "pass")   # the regression's terms; "step" is measured (an exponential average)
 COST_SD = (20.0, 5.0, 0.5, 2.0)  # the prior's standard deviations (ms): weak, so a few rounds outweigh it
 STEP_RATE = 0.05            # the step average's newest-round weight (after its first rounds' plain average)
+# a round's cost counts at most OUTLIER_MS + OUTLIER_SHARE x |its prediction| off that prediction, online
+# (``CostFit.observe``) and offline (tools/fit_draft_rule.py): a paused round moves a fit boundedly
+OUTLIER_MS, OUTLIER_SHARE = 5.0, 0.5
+COST_LIMIT = 1e6            # a cost file's terms: at most this many ms in magnitude (a fit's predictions stay finite)
 LAMBDA_PRIOR = 2.33 / 50.0  # tokens a ms: production's 2.33 tokens a round at ~50 ms
 PRIOR_MS = 50.0             # the lambda prior's weight, in milliseconds of rounds
 FORGET = 0.995              # least squares' forgetting a round (memory ~200 rounds)
@@ -176,6 +186,8 @@ def _cost(data) -> dict:
         if not isinstance(terms, dict) or set(terms) != {*COST_TERMS, "step"}:
             raise ValueError(f"cost.{name}: {{{', '.join((*COST_TERMS, 'step'))}}}")
         out[name] = {t: _number(terms[t], f"cost.{name}.{t}") for t in (*COST_TERMS, "step")}
+        if any(abs(v) > COST_LIMIT for v in out[name].values()) or out[name]["step"] < 0:
+            raise ValueError(f"cost.{name}: milliseconds of at most {COST_LIMIT:g} in magnitude, a step's from 0")
     lam = _number(data["lambda"], "cost.lambda")
     if not LAMBDA[0] <= lam <= LAMBDA[1]:
         raise ValueError(f"cost.lambda: tokens a ms from {LAMBDA[0]} to {LAMBDA[1]}")
@@ -245,10 +257,16 @@ class Predictor:
 
     @classmethod
     def load(cls, path: str | Path) -> Predictor:
+        """A calibration file, validated (at most MAX_FILE bytes); any failure names the file."""
+
         try:
-            return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
-        except ValueError as error:
-            raise ValueError(f"{ENV}={path}: {error}") from None
+            with open(path, "rb") as f:
+                raw = f.read(MAX_FILE + 1)
+            if len(raw) > MAX_FILE:
+                raise ValueError(f"larger than {MAX_FILE} bytes")
+            return cls.from_dict(json.loads(raw.decode("utf-8")))
+        except (OSError, ValueError, RecursionError) as error:      # RecursionError: nesting past the parser's
+            raise ValueError(f"{ENV}={path}: {error}") from error
 
     @classmethod
     def from_env(cls, confidence: float) -> Predictor:
@@ -298,9 +316,9 @@ def features(rows: int, ctx_rows: float, pass_rows: int) -> np.ndarray:
 
 
 class CostFit:
-    """Exponentially forgetting least squares anchored at a prior (a round's cost less its chain steps;
-    ``tools/fit_draft_rule.py`` solves the same anchored problem over logged rounds, without forgetting or
-    ``observe``'s bound on an outlier round)."""
+    """Exponentially forgetting least squares anchored at a prior (a round's cost less its chain steps, each held
+    within the outlier bound of its prediction; ``tools/fit_draft_rule.py`` solves the same anchored, bounded problem
+    over logged rounds, without forgetting)."""
 
     def __init__(self, prior: dict) -> None:
         self.theta0 = np.asarray([prior[t] for t in COST_TERMS], dtype=np.float64)
@@ -313,12 +331,11 @@ class CostFit:
 
     def observe(self, x: np.ndarray, ms: float) -> None:
         predicted = float(x @ self.theta)
-        bound = 5.0 + 0.5 * abs(predicted)               # robust: an outlier round (a pause) moves it boundedly
+        bound = OUTLIER_MS + OUTLIER_SHARE * abs(predicted)    # robust: an outlier round (a pause) moves it boundedly
         y = predicted + min(bound, max(-bound, ms - predicted))
-        self.a = FORGET * self.a + np.outer(x, x)
-        self.b = FORGET * self.b + x * y
-        self.theta = np.linalg.solve(self.a + self.precision0, self.b + self.precision0 @ self.theta0)
-        self.coef = self.theta.tolist()
+        a, b = FORGET * self.a + np.outer(x, x), FORGET * self.b + x * y
+        self.theta = np.linalg.solve(a + self.precision0, b + self.precision0 @ self.theta0)   # then all at once
+        self.a, self.b, self.coef = a, b, self.theta.tolist()
         self.rounds += 1
 
 
@@ -350,10 +367,12 @@ class CostModel:
                              f"{tokens} tokens")
         mixed = bool(mixed)
         self.fits[mixed].observe(features(rows, ctx_rows, pass_rows), ms - chain_ms)
-        if chain_steps:
+        if chain_steps:                                  # a step's time, within the outlier bound of the estimate
             self.steps_seen[mixed] += 1
             rate = max(STEP_RATE, 1.0 / (self.steps_seen[mixed] + 1))
-            self.step[mixed] += rate * (chain_ms / chain_steps - self.step[mixed])
+            step = self.step[mixed]
+            bound = OUTLIER_MS + OUTLIER_SHARE * abs(step)
+            self.step[mixed] = step + rate * min(bound, max(-bound, chain_ms / chain_steps - step))
         region = self.region(live, mixed, context)
         ema = self.regions.get(region)
         if ema is None:                                  # a new region starts from its nearest estimate's lambda*
@@ -436,10 +455,11 @@ def mtp_value(c0: float, abar: Sequence[float], room: int, th: Thresholds) -> fl
     return value
 
 
-def trim(chances: Sequence[Sequence[float]], thresholds: Sequence[float], budget: int) -> list[int]:
-    """How many drafts each stream keeps at a round's start: those whose chance pays for its row at the round's
-    actual threshold, then the highest chances while they fit ``budget`` rows. Chances never rise along a chain, so
-    each stream keeps a prefix (ties: the shallower first, then the earlier stream)."""
+def trim(chances: Sequence[Sequence[float]], thresholds: Sequence[float]) -> list[int]:
+    """How many drafts each stream keeps at a round's start: the leading ones whose chance pays for its row at the
+    round's actual threshold (chances never rise along a chain, so that is every one at or above it). No row budget:
+    each stream drafts at most its room (the depth at most), so a round's window always fits the buffers, and
+    ``stage`` rejects one that would not."""
 
     counts = []
     for chain, th in zip(chances, thresholds):
@@ -447,15 +467,8 @@ def trim(chances: Sequence[Sequence[float]], thresholds: Sequence[float], budget
         while n < len(chain) and chain[n] >= th:
             n += 1
         counts.append(n)
-    if sum(counts) <= budget:
-        return counts
-    best = heapq.nsmallest(max(0, budget), ((-chain[j], j, s) for s, chain in enumerate(chances)
-                                            for j in range(counts[s])))
-    kept = [0] * len(chances)
-    for _, j, s in best:
-        kept[s] = max(kept[s], j + 1)
-    return kept
+    return counts
 
 
-__all__ = ["COPY_MATCH", "CostFit", "CostModel", "ENV", "Predictor", "STEP_SHARED", "Table", "Thresholds", "bucket",
-           "chain_step", "greedy", "mtp_value", "suffix_plan", "trim"]
+__all__ = ["COPY_MATCH", "CostFit", "CostModel", "ENV", "OUTLIER_MS", "OUTLIER_SHARE", "Predictor", "STEP_SHARED",
+           "Table", "Thresholds", "bucket", "chain_step", "greedy", "mtp_value", "suffix_plan", "trim"]

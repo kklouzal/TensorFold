@@ -10,8 +10,18 @@ tokens a round verifies), so a proposal needs no particular quality to be exact:
 The prompt's grams are one sorted ``uint64`` array of packed keys (a gram hash's high bits, then its end position),
 so the occurrences of a gram are one ascending run found by binary search. A long prompt's array is built off the
 engine thread (``Builder``, at admission): until it is ready the request has no session drafts (its MTP drafts go
-on). Reply grams go to a dict as they are committed. Memory: 4 bytes a token for the tokens and 8 for the prompt's
-keys (about 10 MB at 800k tokens), plus a dict entry a reply token.
+on). Reply grams go to a dict as they are committed.
+
+Memory (host; ``tools/bench_draft_host.py``'s memory pass, Python 3.12): 12 bytes a prompt token (its id, 4, and its
+key, 8: 12 MB at 1M tokens), a build's transient peak of about 28 bytes a prompt token (one build at a time on the
+builder's thread), and up to about 250 bytes a reply token (a dict entry with its key tuple and end list, when every
+reply gram is new). A stream's prompt and reply stay within its context (admission's clamp), so a decoder's indexes are
+bounded by its slots x context. The decoder's ``MemoryGate`` does not book them, as it books no other per-request host
+state: on a unified GPU (GB10) its live check reads MemAvailable, which they reduce, before any cache grows; 4 streams
+of 1M-token prompts hold about 48 MB plus one ~28 MB build, against the startup's host reserve (``reserve_bytes``: at
+least 4 GiB, a tenth of a GB10's memory) and the gate's own 2 GiB. A reply of a million new grams would add ~250 MB to
+its stream. (The A/B baseline's ``CopyIndex``, built on the engine thread, is not booked either: 16 bytes a prompt token
+and more a reply token.)
 
 Design 4.2 S1 (``design-3-drafting``); the best match is the longest among the ``RECENT`` newest anchor occurrences,
 not necessarily the longest anywhere (a suffix automaton's), by design.
@@ -88,8 +98,12 @@ def build(prompt: Sequence[int], k: int = ANCHOR) -> tuple[np.ndarray, np.ndarra
 
 
 class Builder:
-    """One background thread building long prompts' keys (a ``ThreadPoolExecutor``, started on first use). Its
-    owner closes it; a job's result is handed over through its future (``SessionIndex.ready``)."""
+    """One background thread building long prompts' keys (a ``ThreadPoolExecutor``, started on first use): one build
+    runs at a time and each admitted request queues at most one, which leaves the queue (``SessionIndex.cancel``)
+    when the request does, so a decoder holds at most its slots' builds plus one running for a request that left. A
+    job's result is handed over through its future (``SessionIndex.ready``: its lock publishes the arrays; the engine
+    thread never waits on it). Its owner closes it (``MultiDecoder.close_drafting``), cancelling queued builds and
+    joining the thread; a build submitted after that fails its request's admission."""
 
     def __init__(self) -> None:
         self.pool: ThreadPoolExecutor | None = None
@@ -136,7 +150,8 @@ class SessionIndex:
 
     # -- lifecycle ---------------------------------------------------------------------------------------------
     def ready(self) -> bool:
-        """Whether the prompt's keys are in (adopting a finished build; its failure is raised here)."""
+        """Whether the prompt's keys are in (adopting a finished build without waiting; its failure, or its
+        cancellation by a closed builder, is raised here, in a round: ``MultiDecoder`` ends that request alone)."""
 
         if self.future is None:
             return True
@@ -147,7 +162,8 @@ class SessionIndex:
         return True
 
     def cancel(self) -> None:
-        """The request left: a queued build is dropped (a running one finishes unread)."""
+        """The request left: a queued build is dropped (a running one finishes unread: its result, or its failure,
+        goes with its future, as the request no longer drafts)."""
 
         if self.future is not None:
             self.future.cancel()
