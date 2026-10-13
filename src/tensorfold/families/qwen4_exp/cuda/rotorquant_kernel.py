@@ -426,11 +426,13 @@ def dequant_group_4(code, scale, M: tl.constexpr, W: tl.constexpr):
 
 
 @triton.jit
-def dequant_group_6(low, high, scale, M: tl.constexpr, W: tl.constexpr):
+def dequant_group_6(low, high, scale, M: tl.constexpr, W: tl.constexpr, GATHER: tl.constexpr = False):
     """Planes ``[M,W/2]``, ``[M,W/4]``, scale ``[M,W/128]`` -> rotated BF16.
 
     Each128-coordinate group's64 low-nibble bytes precede its32 high-two-bit
     bytes. The caller gathers separate power-of-two axes from that96-byte block.
+    ``GATHER`` reads the centroids by register gather (the same constants): faster on prompt passes, slower on
+    sparse decode rows (its table goes to local memory).
     """
 
     tl.static_assert(W % 128 == 0)
@@ -438,7 +440,7 @@ def dequant_group_6(low, high, scale, M: tl.constexpr, W: tl.constexpr):
     lo = tl.reshape(tl.join(low & 15, low >> 4), (M, W))
     hi = tl.reshape((high.to(tl.int32)[:, :, None] >> (tl.arange(0, 4) * 2)[None, None, :]) & 3, (M, W))
     q = lo | (hi << 4)
-    c = tl.reshape(_centroids(q, 6), (M, W // 128, 128))
+    c = tl.reshape(_centroids_lookup(q, 6) if GATHER else _centroids(q, 6), (M, W // 128, 128))
     s = tl.reshape(scale.to(tl.float32), (M, W // 128, 1))
     return tl.reshape(_mul_rn(c, s), (M, W)).to(tl.bfloat16)
 
@@ -482,8 +484,17 @@ def _register_centroids(values: tl.constexpr, N: tl.constexpr, M: tl.constexpr):
 
 @triton.jit
 def _centroids_lookup(q, BITS: tl.constexpr):
-    tl.static_assert(BITS == 7)
-    table = _register_centroids(_C7, 128, q.shape[0])
+    """``_centroids`` by register gather: the same canonical constants, so elementwise users get identical bits.
+
+    Encoders keep ``_centroids``: their energy sums reduce over its result, and a gather's register layout changes
+    that FP32 reduction order and so the stored scale.
+    """
+
+    tl.static_assert(BITS == 6 or BITS == 7)
+    if BITS == 6:
+        table = _register_centroids(_C6, 64, q.shape[0])
+    else:
+        table = _register_centroids(_C7, 128, q.shape[0])
     return tl.gather(table, q, 1)
 
 
