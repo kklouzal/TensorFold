@@ -209,6 +209,21 @@ cgroup, so host memory must also be observed; this one observation is not a
 guaranteed free-memory floor. This record does not relabel the earlier exhaustive
 AMD64 or historical GB10 checks as new runs.
 
+Prebuilt images: each push to `python-0.6` (and each `v*` tag) builds this Dockerfile's
+runtime target natively for `linux/amd64` and `linux/arm64` in GitHub Actions
+(`.github/workflows/containers.yml`), runs the CPU verification set below inside
+each image, and publishes `ghcr.io/kklouzal/tensorfold:<commit>` (12- and 40-character
+forms) plus the branch or tag name, with a signed build-provenance attestation.
+Verify an image before deploying it, then pin it by digest:
+
+```bash
+gh attestation verify oci://ghcr.io/kklouzal/tensorfold:<commit> -R kklouzal/TensorFold
+docker pull ghcr.io/kklouzal/tensorfold:<commit>
+```
+
+Hosted runners have no GPU, so CUDA, full-model and deployment checks still run on
+the target host as described in this guide.
+
 Build from the repository root:
 
 ```bash
