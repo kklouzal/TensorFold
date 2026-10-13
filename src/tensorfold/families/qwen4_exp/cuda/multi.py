@@ -610,9 +610,11 @@ class MultiDecoder:
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
-        segs = stage(self.w, self.buf, windows)
+        # "b2" (default): the n-gram rows are read once the forward reaches their layer, behind the layers before it
+        segs = stage(self.w, self.buf, windows, late=ab_switch.new("b2"))    # "old": A/B baseline, remove
         if prof is not None:
             prof.mark("stage")
+            self.buf.ple_s = 0.0
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
         cuts = []
@@ -641,6 +643,7 @@ class MultiDecoder:
             self.buf.gdn_tables = self.buf.attn_step = None
         if prof is not None:
             prof.mark("verify_enq", gpu=True)            # host: the enqueue (a mixed round: its drain too)
+            ple_ms, self.buf.ple_s = round(1e3 * self.buf.ple_s, 4), None   # the late n-gram reads, inside it
         if not b1:                                       # A/B baseline: remove after selection
             _kv_check(segs)                              # A/B baseline: remove after selection
             if prof is not None:                         # A/B baseline: remove after selection
@@ -717,7 +720,7 @@ class MultiDecoder:
             prof.mark("take")
             prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
                      window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
-                     pass_rows=passed, chained=self.chained,
+                     pass_rows=passed, chained=self.chained, ple_ms=ple_ms,
                      source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
             self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
                             for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round

@@ -39,6 +39,8 @@ class Buffers:
         self.last = torch.zeros((rows,), dtype=torch.int32, device=dev)          # each stream's last row
         self.last_host = torch.zeros((rows,), dtype=torch.int32, pin_memory=torch.cuda.is_available())
         self.staged = torch.cuda.Event() if torch.cuda.is_available() else None
+        self.ple_late = None           # n-gram rows ``stage(late=True)`` left for the forward (forward.stage_late)
+        self.ple_s = None              # profiling: seconds stage_late spent (None: not timed)
         self.h = torch.empty((rows, wide), dtype=bf, device=dev)
         self.pss = torch.empty((rows, c.hidden // 256, c.streams), dtype=f32, device=dev)
         self.normed = torch.empty((rows, wide), dtype=bf, device=dev)

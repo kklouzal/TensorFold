@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from copy import copy
 from typing import Sequence
@@ -469,6 +470,8 @@ def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int,
     c = w.cfg
     h = b.h
     if layer.ple is not None:
+        if b.ple_late is not None:                   # the window's n-gram rows (stage(late=True)): read, copied
+            stage_late(w, b)
         if pending is not None:
             _writeback(h, b, R, c, pending)
             pending = None
@@ -539,8 +542,12 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
     w.comm.all_gather(c, b.cand_all[:b.world * R * (2 * CAND + 1)])
 
 
-def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]) -> list[Seg]:
-    """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment."""
+def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
+    """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment.
+
+    ``late`` (benchmark switch "b2"): the rows' n-gram ids are found now, but their table reads (an SSD read with
+    --ple-on-ssd) and copies wait for ``stage_late``, which the forward calls when it reaches the first n-gram layer:
+    the reads overlap the GPU work of the layers before it, and the copies still precede every read of the rows."""
 
     segs: list[Seg] = []
     for st, tokens in windows:
@@ -554,6 +561,7 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
     b.staged.synchronize()               # the previous step's copies out of the pinned buffers are done
     b.ids_host[:R].numpy()[:] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
+    rows = []
     for layer in w.layers:
         if layer.ple is not None:
             p = layer.ple
@@ -561,14 +569,36 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
                 toks = np.asarray(tokens, dtype=np.int64)
                 ids = p.ngram.ids(st.ple_history, toks)
                 st.ple_last = (st.ple_history, toks)
-                if w.x3 is not None:
-                    from .exl3_pack import stage_ple
-
-                    stage_ple(p.table, w.x3, ids, at=a0 * (ids.size // len(toks)))
+                at = a0 * (ids.size // len(toks))                                       # ids [rows, heads]
+                if late:
+                    rows.append((p, ids, at))
                 else:
-                    stage_ple_rows(p, b, ids, at=a0 * (ids.size // len(toks)))       # ids [rows, heads]
+                    _stage_rows(w, b, p, ids, at)
     b.staged.record()
+    b.ple_late = rows or None
     return segs
+
+
+def _stage_rows(w: Weights, b: Buffers, p, ids: np.ndarray, at: int) -> None:
+    if w.x3 is not None:
+        from .exl3_pack import stage_ple
+
+        stage_ple(p.table, w.x3, ids, at=at)
+    else:
+        stage_ple_rows(p, b, ids, at=at)
+
+
+def stage_late(w: Weights, b: Buffers) -> None:
+    """The n-gram rows ``stage(late=True)`` left: read now and copied behind the GPU work already queued (the pinned
+    buffers are free: ``stage`` waited for the previous step's copies, which the event records again after these)."""
+
+    rows, b.ple_late = b.ple_late, None
+    t0 = time.perf_counter() if b.ple_s is not None else 0.0
+    for p, ids, at in rows:
+        _stage_rows(w, b, p, ids, at)
+    b.staged.record()
+    if b.ple_s is not None:
+        b.ple_s += time.perf_counter() - t0
 
 
 def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:

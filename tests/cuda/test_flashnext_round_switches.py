@@ -183,3 +183,71 @@ def test_b1_words_latch_every_state_in_order_and_run_once():
     words.settle()
     words.settle()
     assert after == [1] and not any(st._kv_pending for st in good)
+
+
+def _ssd_ngram_model(tmp_path, monkeypatch):
+    """The synthetic model with its n-gram branch on a 4-bit table read from disk by the production reader
+    (``--ple-on-ssd`` with TENSORFOLD_SSD_NATIVE_THREADS: the native reader behind the read-ahead wrapper)."""
+
+    import struct
+
+    import numpy as np
+
+    from test_flashnext_forward import _Rand, _cfg, _ple
+    from tensorfold.families.qwen4_exp import host_table
+
+    c = _cfg(ple=True)
+    rows, dims = c.ngram(0).rows, c.ngram(0).dims
+    rng = np.random.default_rng(29)
+    words = rng.integers(0, 2**32, (rows, dims // 8), dtype=np.uint32)
+    scales = torch.from_numpy(rng.uniform(1e-3, 4e-3, (rows, dims // 32)).astype(np.float32)).to(torch.bfloat16)
+    biases = (-scales.float() * 7.5).to(torch.bfloat16)
+    parts = [words.view(np.uint8), scales.view(torch.uint16).numpy().view(np.uint8),
+             biases.view(torch.uint16).numpy().view(np.uint8)]
+    entries, at = [], 0
+    for part, shape, dtype in zip(parts, ((rows, dims // 8), (rows, dims // 32), (rows, dims // 32)),
+                                  ("U32", "BF16", "BF16")):
+        entries.append({"dtype": dtype, "shape": list(shape), "data_offsets": [at, at + part.nbytes]})
+        at += part.nbytes
+    header = json.dumps(dict(zip(("w", "s", "b"), entries))).encode()
+    header += b" " * ((8 - len(header) % 8) % 8)
+    path = tmp_path / "ngram.safetensors"
+    with path.open("wb") as f:
+        f.write(struct.pack("<Q", len(header)))
+        f.write(header)
+        for part in parts:
+            f.write(part.tobytes())
+    monkeypatch.setenv("TENSORFOLD_SSD_NATIVE_THREADS", "16")
+    table = host_table._ssd_table([(path, *entries)])
+    return _model(ple=_ple(c, table, _Rand(3))), table
+
+
+@pytest.mark.parametrize("b2", ["new", "old"])
+def test_b2_ngram_rows_read_behind_the_first_layers_give_each_streams_solo_tokens(monkeypatch, tmp_path, b2):
+    """B2: a round's n-gram rows (read through the production SSD reader) are read and copied when the forward
+    reaches the n-gram layer, after the layers before it are queued; tokens equal the solo runs either way."""
+
+    from tensorfold.families.qwen4_exp.cuda import forward as fwd
+
+    w, table = _ssd_ngram_model(tmp_path, monkeypatch)
+    try:
+        prompts = PROMPTS[:3]
+        samplings = SAMPLINGS[:3]
+        refs = _solo(w, prompts, samplings, 16, RQ)
+        _switch(monkeypatch, tmp_path, b2=b2)
+        order, real_late, real_embed = [], fwd.stage_late, fwd._embed
+        monkeypatch.setattr(fwd, "stage_late", lambda *a: order.append("late") or real_late(*a))
+        monkeypatch.setattr(fwd, "_embed", lambda *a: order.append("embed") or real_embed(*a))
+        dec = MultiDecoder(w, slots=3, capacity=1024, depth=3, confidence=0.3, kv_dtype=RQ)
+        streams = [Stream(list(p), 16, smp) for p, smp in zip(prompts, samplings)]
+        for s in streams:
+            dec.admit(s)
+        while dec.live():
+            dec.finish(dec.round())
+        assert [s.out for s in streams] == refs
+        lates = order.count("late")
+        assert (lates > 3) == (b2 == "new") and (lates == 0) == (b2 == "old")
+        if b2 == "new":                                  # each late read follows its own forward's embedding
+            assert all(order[i - 1] == "embed" for i, x in enumerate(order) if x == "late")
+    finally:
+        table.close()
