@@ -13,7 +13,22 @@ PREFILL_ATT_ROWS = 256  # Flash Next's prompt attention block
 # Flash Next's multi-CTA block select scratch: rows, tile, slices (attention's MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES)
 QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
+MULTI_GRAPH_ENV = "TENSORFOLD_MULTI_GRAPH_MIB"   # Flash Next's captured concurrent rounds: their memory budget (MiB)
+MULTI_GRAPH_MIB = 512       # its default: driver graph memory plus the graphs' private pool, within which keys are kept
 MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
+
+
+def multi_graph_bytes() -> int:
+    """Flash Next's captured-round memory budget from TENSORFOLD_MULTI_GRAPH_MIB (0: no graphs), in bytes."""
+
+    import os
+
+    value = os.environ.get(MULTI_GRAPH_ENV, "").strip()
+    if not value:
+        return MULTI_GRAPH_MIB << 20
+    if not value.isdecimal() or int(value) > 65536:
+        raise ValueError(f"{MULTI_GRAPH_ENV}: 0 to 65,536 MiB, not {value!r}")
+    return int(value) << 20
 
 
 def indexed_prefill_rows() -> int | None:
@@ -449,9 +464,10 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             first: int = 256, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                             kv_scale_bytes: int = 2, kv_status: bool = False,
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
-                            world: int = 1, points: int = 1) -> Geometry:
+                            world: int = 1, points: int = 1, graph_bytes: int = 0) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
-    the ``points`` each stream's prompt piece copies out before they are kept)."""
+    the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
+    budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs)."""
 
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
@@ -470,6 +486,10 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     fixed += prefill_rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, moe)
     if kv_status:
         fixed += 8 * streams * (2 + int(mtp))  # state flags and main/MTP status-pointer tables
+    # static round tables, device and pinned (gdn_multi.RoundTables, attn_multi.StepTables for the main and MTP steps)
+    fixed += 2 * ((8 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
+                  + (1 + mtp) * (2 * rows + 2 * streams) * 4 + (attention * 6 + 4 + mtp * 10) * streams * 8)
+    fixed += graph_bytes
     count = attention + int(mtp)
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:

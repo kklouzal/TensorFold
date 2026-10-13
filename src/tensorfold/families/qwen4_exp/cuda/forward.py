@@ -307,6 +307,16 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
     glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
                   b.ple_pss[:R], c.eps, c.streams)
+    if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
+        b.split(("ple_conv", layer, False))
+    else:
+        ple_conv_streams(layer, w, segs, b)
+
+
+def ple_conv_streams(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers) -> None:
+    """Each stream's n-gram conv over its own tail (a pointer of its State, so one launch a stream)."""
+
+    c, p = w.cfg, layer.ple
     for st, a0, a1 in segs:
         glue.ple_conv(b.ple_gated[a0:a1], b.ple_pss[a0:a1], p.norm_conv, st.ple_tail, p.conv, b.h[a0:a1],
                       b.h[a0:a1], b.ple_nrow[a0:a1], c.eps, c.streams, c.ngram_size)
@@ -470,7 +480,9 @@ def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int,
     c = w.cfg
     h = b.h
     if layer.ple is not None:
-        if b.ple_late is not None:                   # the window's n-gram rows (stage(late=True)): read, copied
+        if b.split is not None:                      # a captured forward: the late n-gram rows go between pieces
+            b.split(("ple_stage", layer, False))
+        elif b.ple_late is not None:                 # the window's n-gram rows (stage(late=True)): read, copied
             stage_late(w, b)
         if pending is not None:
             _writeback(h, b, R, c, pending)

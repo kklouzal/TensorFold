@@ -117,10 +117,48 @@ def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, HK: tl.constexpr, 
         _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, HK, D, G, CH, NCH, BITS, CODEC=CODEC)
 
 
-class Step:
-    """A step's row, stream and cache-pointer tables (the MTP head's with ``mtp``), read now: caches may move."""
+class StepTables:
+    """A decoder buffer's attention step tables at fixed device addresses, so a captured graph reads each step's:
+    rows' positions and streams, streams' first positions and row counts (int32); each layer's cache pointers
+    (``PTRS`` a stream, ``slots`` streams a layer), status and image pointers (int64). ``Step`` writes them through a
+    pinned mirror, one copy each on the current stream before the forward; the mirror is rewritten only after that
+    copy completes. ``width``: the most rows a stream's window holds (fixes ``_pool_multi``'s grid)."""
 
-    def __init__(self, w, segs: Sequence, mtp: bool, *, rotor_lookup: bool = False) -> None:
+    def __init__(self, w, slots: int, width: int, mtp: bool) -> None:
+        dev, pin = w.device, torch.cuda.is_available()
+        self.layers = 1 if mtp else sum(1 for layer in w.layers if not layer.linear)
+        self.slots, self.width, self.rows = slots, width, slots * width
+        size32, size64 = 2 * self.rows + 2 * slots, (self.layers * PTRS + 4) * slots
+        self.i32 = torch.zeros((size32,), dtype=torch.int32, device=dev)
+        self.h32 = torch.zeros((size32,), dtype=torch.int32, pin_memory=pin)
+        self.i64 = torch.zeros((size64,), dtype=torch.int64, device=dev)
+        self.h64 = torch.zeros((size64,), dtype=torch.int64, pin_memory=pin)
+        self.copied = torch.cuda.Event() if pin else None
+        self.queued = False
+
+    def mirror(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.queued:
+            self.copied.synchronize()                    # the last copy out of the mirror is done
+        return self.h32.numpy(), self.h64.numpy()
+
+    def upload(self) -> None:
+        self.i32.copy_(self.h32, non_blocking=True)
+        self.i64.copy_(self.h64, non_blocking=True)
+        if self.copied is not None:
+            self.copied.record()
+            self.queued = True
+
+
+class Step:
+    """A step's row, stream and cache-pointer tables (the MTP head's with ``mtp``), read now: caches may move.
+
+    ``tables`` (the buffer's ``StepTables``; benchmark switch "graphs"): written there, viewed at addresses fixed for
+    the step's stream and row counts, and ``layer`` launches a fixed geometry (``fixed``): pool programs for
+    ``tables.width`` rows a stream, every chunk. The extra programs write nothing (bit-equal), so a captured forward
+    serves every step of its stream and row counts. Else (A/B baseline) fresh uploads and the step's own geometry."""
+
+    def __init__(self, w, segs: Sequence, mtp: bool, *, rotor_lookup: bool = False,
+                 tables: StepTables | None = None) -> None:
         self.rotor_lookup = rotor_lookup
         n, rows = len(segs), segs[-1][2]
         self.identity = segs[0][0].kv_identity
@@ -151,10 +189,22 @@ class Step:
                 ptrs[i, :, s] = [kc.k.data_ptr(), kc.v.data_ptr(), kc.ks.data_ptr(), kc.vs.data_ptr(),
                                  ikc.data_ptr(), pooled.data_ptr()]
         dev = w.device
-        ints = shared.to_device(np.concatenate([posr, sid, first, counts]).tolist(), torch.int32, dev)
-        self.posr, self.sid = ints[:rows], ints[rows:2 * rows]
-        self.first, self.counts = ints[2 * rows:2 * rows + n], ints[2 * rows + n:]
-        self.ptrs = shared.to_device(ptrs.ravel().tolist(), torch.int64, dev).view(len(layers), PTRS * n)
+        self.fixed = tables is not None
+        if tables is not None:
+            t = tables
+            if n > t.slots or rows > t.rows or max(counts) > t.width or len(layers) != t.layers:
+                raise ValueError(f"a step of {n} streams and {rows} rows exceeds the static tables' {t.slots} x "
+                                 f"{t.width}")
+            h32, h64 = t.mirror()
+            h32[:rows], h32[t.rows:t.rows + rows] = posr, sid
+            h32[2 * t.rows:2 * t.rows + n], h32[2 * t.rows + t.slots:2 * t.rows + t.slots + n] = first, counts
+            h64[:len(layers) * PTRS * t.slots].reshape(len(layers), PTRS * t.slots)[:, :PTRS * n] = \
+                ptrs.reshape(len(layers), PTRS * n)
+        else:                                            # A/B baseline: remove after selection
+            ints = shared.to_device(np.concatenate([posr, sid, first, counts]).tolist(), torch.int32, dev)
+            self.posr, self.sid = ints[:rows], ints[rows:2 * rows]
+            self.first, self.counts = ints[2 * rows:2 * rows + n], ints[2 * rows + n:]
+            self.ptrs = shared.to_device(ptrs.ravel().tolist(), torch.int64, dev).view(len(layers), PTRS * n)
         key, value = self.pair.key, self.pair.value
         self.k_bits, self.v_bits = (0 if key.bits == 16 else key.bits), (0 if value.bits == 16 else value.bits)
         self.native = self.pair.symmetric and key.codec == 0
@@ -165,17 +215,32 @@ class Step:
         self.merge_shader_args = ({} if self.native else dict(V_BITS=self.v_bits, V_CODEC=value.codec))
         if not self.native and any(st.kv_status is None for st, _, _ in segs):
             raise ValueError("mixed or RotorQuant Multi steps require each owning State status")
-        self.status_ptrs = (shared.to_device([st.kv_status.data_ptr() for st, _, _ in segs], torch.int64, dev)
-                            if not self.native else None)
         self.n, self.rows, self.segs = n, rows, list(segs)
         self.ends = [p0 + c for p0, c in zip(first, counts)]
         self.most = max(counts)
         self.vision = any(st.image_positions is not None for st, _, _ in segs)
-        self.vision_ptrs = self.ptrs[0]
-        if self.vision:
-            vp = [[st.image_positions.data_ptr() if st.image_positions is not None else st.pos_dev.data_ptr(),
-                   st.rope_delta_dev.data_ptr(), 0 if st.image_positions is None else st.image_positions.shape[0]]
-                  for st, _, _ in segs]
+        vp = ([[st.image_positions.data_ptr() if st.image_positions is not None else st.pos_dev.data_ptr(),
+                st.rope_delta_dev.data_ptr(), 0 if st.image_positions is None else st.image_positions.shape[0]]
+               for st, _, _ in segs] if self.vision else None)
+        if tables is not None:
+            t, at = tables, len(layers) * PTRS * tables.slots
+            if not self.native:
+                h64[at:at + n] = [st.kv_status.data_ptr() for st, _, _ in segs]
+            if vp is not None:
+                h64[at + t.slots:at + t.slots + 3 * n] = np.asarray(vp, dtype=np.int64).T.ravel()
+            t.upload()
+            self.posr, self.sid = t.i32[:rows], t.i32[t.rows:t.rows + rows]
+            self.first = t.i32[2 * t.rows:2 * t.rows + n]
+            self.counts = t.i32[2 * t.rows + t.slots:2 * t.rows + t.slots + n]
+            self.ptrs = t.i64[:at].view(len(layers), PTRS * t.slots)[:, :PTRS * n]
+            self.status_ptrs = None if self.native else t.i64[at:at + n]
+            self.vision_ptrs = t.i64[at + t.slots:at + t.slots + 3 * n] if vp is not None else self.ptrs[0]
+            self.pool_blocks = t.width // w.cfg.index_ratio + 2
+            return
+        self.status_ptrs = (shared.to_device([st.kv_status.data_ptr() for st, _, _ in segs], torch.int64, dev)   # A/B
+                            if not self.native else None)                                          # baseline: remove
+        self.vision_ptrs = self.ptrs[0]                                                     # A/B baseline: remove
+        if self.vision:                                                                    # A/B baseline: remove
             self.vision_ptrs = shared.to_device(np.asarray(vp, dtype=np.int64).T.ravel().tolist(), torch.int64, dev)
 
 
@@ -198,30 +263,24 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                num_warps=2)
     top = sc.budget // sc.ratio
     if sc.qsa:
-        _pool_multi[(n, step.most // sc.ratio + 2)](cp, step.vision_ptrs, step.first, step.counts,
-                                                    a.ik_scale, w.inv_freq, c.eps, n,
-                                                    DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
-                                                    VISION=step.vision, S1=sections[1], S2=sections[2],
-                                                    ROPE_SCALE=c.rope_attention_factor,
-                                                    num_warps=1)
-        if attn_mod.qsa_new():                       # A/B baseline: remove the test after selection, keep the branch
-            if max(step.ends) // sc.ratio > top:     # some stream has sparse rows: every row scored and selected
-                blocks = triton.cdiv(max(step.ends), sc.ratio)
-                if blocks > sc.nb:                   # before any launch: the scores' rows hold nb blocks
-                    raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
-                _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
-                                                               HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
-                                                               TOP=top, BB=64, num_warps=4)
-                attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)
-        else:                                        # A/B baseline: remove after selection
-            for (st, a0, a1), end in zip(step.segs, step.ends):
-                if end // sc.ratio > top:            # this stream has sparse rows: its own select
-                    _, _, pooled, pos, _ = _caches(layer, st, mtp)
-                    attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
-    keys = max(step.ends)
-    if sc.qsa:
-        keys = min(keys, (top + 1) * sc.ratio - 1)
-    chunks = min(sc.nch, triton.cdiv(keys, CHUNK))
+        pool = step.pool_blocks if step.fixed else step.most // sc.ratio + 2     # else: A/B baseline, remove
+        _pool_multi[(n, pool)](cp, step.vision_ptrs, step.first, step.counts,
+                               a.ik_scale, w.inv_freq, c.eps, n,
+                               DI=c.index_dim, HALF=w.inv_freq.numel(), RATIO=sc.ratio,
+                               VISION=step.vision, S1=sections[1], S2=sections[2],
+                               ROPE_SCALE=c.rope_attention_factor,
+                               num_warps=1)
+        if b.split is not None:                      # a captured forward: this step's selection runs between pieces
+            b.split(("select", layer, mtp))
+        else:
+            select(layer, w, b, step, mtp)
+    if step.fixed:                                   # every chunk: one past a row's keys writes and is read nowhere
+        chunks = sc.nch
+    else:                                            # A/B baseline: remove after selection
+        keys = max(step.ends)                        # A/B baseline: remove after selection
+        if sc.qsa:                                   # A/B baseline: remove after selection
+            keys = min(keys, (top + 1) * sc.ratio - 1)   # A/B baseline: remove after selection
+        chunks = min(sc.nch, triton.cdiv(keys, CHUNK))   # A/B baseline: remove after selection
     hk = c.kv_heads
     g = c.heads // hk
     _chunks_multi[(rows, hk, chunks)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk, n, H=c.heads,
@@ -232,6 +291,29 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                              CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
                              num_warps=4)
     return b.attn_o[:rows]
+
+
+def select(layer, w, b, step: Step, mtp: bool) -> None:
+    """The step's sparse rows' block scores and selection (scratch ids, lengths, flags) from this step's contexts: its
+    launches' extent follows the longest context, so a captured forward runs it between its pieces."""
+
+    c, sc = w.cfg, b.attn
+    n, rows, cp = step.n, step.rows, step.ptrs[step.index[layer.index]]
+    top = sc.budget // sc.ratio
+    if attn_mod.qsa_new():                           # A/B baseline: remove the test after selection, keep the branch
+        if max(step.ends) // sc.ratio > top:         # some stream has sparse rows: every row scored and selected
+            blocks = triton.cdiv(max(step.ends), sc.ratio)
+            if blocks > sc.nb:                       # before any launch: the scores' rows hold nb blocks
+                raise ValueError(f"a step's {blocks} blocks exceed the scratch's {sc.nb}")
+            _scores_multi[(rows, triton.cdiv(blocks, 64))](b.iq, cp, step.posr, step.sid, sc.scores, sc.nb, n,
+                                                           HI=c.index_heads, DI=c.index_dim, RATIO=sc.ratio,
+                                                           TOP=top, BB=64, num_warps=4)
+            attn_mod._launch_select(sc, step.posr, rows, blocks, per_row=True)
+    else:                                            # A/B baseline: remove after selection
+        for (st, a0, a1), end in zip(step.segs, step.ends):
+            if end // sc.ratio > top:                # this stream has sparse rows: its own select
+                _, _, pooled, pos, _ = _caches(layer, st, mtp)
+                attn_mod.qsa_rows(b.iq[a0:a1], pooled, pos, _rows_from(sc, a0), a1 - a0, context=end)
 
 
 def _caches(layer, st, mtp: bool) -> tuple:              # A/B baseline: remove after selection

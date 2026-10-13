@@ -82,7 +82,7 @@ class FlashNextEngine:
         from .weights import draft_token_ids, load
         from tensorfold.cuda.capacity import admit, config, gather_ints
         from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
-                                              indexed_stream_geometry, indexed_weights)
+                                              indexed_stream_geometry, indexed_weights, multi_graph_bytes)
         chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
         if tp not in (1, 2) or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Flash Next runs on one GPU or two")
@@ -117,8 +117,9 @@ class FlashNextEngine:
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
+        graph_bytes = multi_graph_bytes() if streams > 1 and graphs else 0     # captured rounds: bounded, planned
         geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, points=POINTS,
-                                                          kv_pair=kv_geometry,
+                                                          kv_pair=kv_geometry, graph_bytes=graph_bytes,
                                                           prefill_rows=rows0, kv_status=kv_status))
                     if streams > 1 else
                     (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
@@ -283,7 +284,8 @@ class FlashNextEngine:
             self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
                                       confidence=self.confidence, keep=KEEP, points=self.points,
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
-                                      prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace)
+                                      prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
+                                      graphs=graphs)
             if automatic_experts:
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
             self.scheduler = Scheduler(self.multi, max_streams=streams)
@@ -344,7 +346,8 @@ class FlashNextEngine:
         captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
         started = time.perf_counter()
         if self.concurrent:
-            self.multi.warm()
+            self.multi.warm()                            # and captures its rounds' graphs
+            self.capacity_plan["multi_graphs"] = {"planned_bytes": graph_bytes, **self.multi.graph_record}
         else:
             from .decode import warm
 
@@ -361,9 +364,16 @@ class FlashNextEngine:
             self.serial = None                            # the serial requests' engine, made on first use
         rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
                 f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
+        graphs_note = ""
+        if self.concurrent:
+            record = self.multi.graph_record
+            graphs_note = (f"{record['verify_keys']} verify and {record['mtp_keys']} MTP step graphs captured "
+                           f"({record['bytes'] / 2**20:.0f} MiB of {record['budget_bytes'] / 2**20:.0f}, "
+                           f"{record['capture_s']:.1f}s)" if record["captured"] else f"eager ({record['reason']})")
         where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
                  f"lasts ({self.multi.memory_gate.room / 2**30:.1f} GiB free for their caches, "
-                 f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), eager" if self.concurrent else
+                 f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), {graphs_note}"
+                 if self.concurrent else
                  f"{self.context_window}-token prompt/reply window; {self.max_len}-token cache")
         if ple_on_ssd:
             how = "read from SSD at each lookup"

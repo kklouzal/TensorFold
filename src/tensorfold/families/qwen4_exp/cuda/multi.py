@@ -25,7 +25,7 @@ from tensorfold.engine.exact_sampling import MARGIN, choose_rows, keyed_margins,
 from tensorfold.engine.grammar import GrammarError
 
 from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
-from . import attn_multi, gdn_multi, image_rows, prefixes
+from . import attn_multi, gdn_multi, image_rows, multi_graphs, prefixes
 from .forward import (Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead,
                       stage)
 from .mtp import mtp_compute, mtp_stage
@@ -58,7 +58,7 @@ class MultiDecoder:
     def __init__(self, w, *, slots: int, capacity: int, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  stop_eos: bool = True, keep: int = 8, kv_dtype: str = "bf16", prefill_rows: int = PREFILL_ROWS,
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False) -> None:
         if w.comm is not None:
             raise ValueError("concurrent Flash Next runs on one GPU for now")
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
@@ -84,6 +84,22 @@ class MultiDecoder:
         # a frame's codec status words, read back with its sampling packet (KVWords): one host wait a step
         self.kv_host = torch.zeros((slots, 2), dtype=torch.int32, pin_memory=torch.cuda.is_available())
         self.b1 = True                                   # benchmark switch "b1" (round()): one readback a step
+        # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
+        self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
+        self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
+        self.mtp_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=True) if w.mtp is not None else None
+        self.static = True                               # benchmark switch "graphs" (round()): the above, replays
+        # captured rounds (multi_graphs; ``capture_graphs`` at warm-up): None until then, or when not captured
+        self.graphs: multi_graphs.RoundGraphs | None = None
+        reason = None if graphs else "not requested"
+        budget = multi_graphs.budget_bytes() if graphs else 0
+        if graphs and not budget:
+            reason = f"{multi_graphs.ENV}=0"
+        elif graphs:
+            reason = multi_graphs.capturable(w)
+        self.graph_budget = budget if reason is None else 0
+        self.graph_record: dict = {"captured": False, "reason": reason}
+        self.replays = 0                                 # profiling: this round's replayed forwards
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
         # slots start small and grow with their stream's context, up to the window, while the gate has room
         self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
@@ -286,6 +302,21 @@ class MultiDecoder:
         self._shrink(s.st)
         if all(f is not s.st for f in self.free):
             self.free.append(s.st)
+        if self.graph_budget and self.graphs is None:
+            self.capture_graphs()
+
+    @torch.no_grad()
+    def capture_graphs(self) -> None:
+        """Capture the rounds' verify forwards and MTP steps on the idle slots (``multi_graphs``) and take their
+        measured memory from the stream caches' room. Before any request: every slot must be free."""
+
+        if self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots:
+            raise RuntimeError("graphs are captured on idle slots, before any request")
+        graphs = multi_graphs.RoundGraphs(self, self.graph_budget)
+        graphs.capture()
+        self.graphs = graphs
+        self.memory_gate.room -= graphs.bytes
+        self.graph_record = {"captured": True, **graphs.record()}
 
     @torch.no_grad()
     def admit(self, s: Stream) -> None:
@@ -573,6 +604,8 @@ class MultiDecoder:
 
         ab_switch.refresh()
         self.b1 = b1 = ab_switch.new("b1")               # "old": A/B baseline, remove after selection
+        self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
+        self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:
             prof.begin()
@@ -628,8 +661,10 @@ class MultiDecoder:
                 ended += self._failed(pieces, exc)
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
-        tables = self.buf.gdn_tables = gdn_multi.Tables(self.w, self.gdn, segs, held)
-        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, rotor_lookup=self.buf.rotor_lookup)
+        tables = self.buf.gdn_tables = gdn_multi.Tables(self.w, self.gdn, segs, held,
+                                                        static=self.round_tables if static else None)
+        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, rotor_lookup=self.buf.rotor_lookup,
+                                             tables=self.step_tables if static else None)
         if prof is not None:
             prof.mark("tables", gpu=True)
         try:
@@ -637,8 +672,12 @@ class MultiDecoder:
                 pends = self._end_rows(pieces, psegs)
                 logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts)
                 heads = heads[:len(pends)].clone() if pends else None
-            else:
-                logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
+            else:                                      # a captured forward when one serves this round, else eager
+                logits = self.graphs.verify_forward(segs) if static and self.graphs is not None else None
+                if logits is None:
+                    logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
+                else:
+                    self.replays += 1
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
         if prof is not None:
@@ -720,7 +759,7 @@ class MultiDecoder:
             prof.mark("take")
             prof.end(n=len(live), rows=segs[-1][2], ctx=[st.pos for st, _, _ in segs],
                      window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
-                     pass_rows=passed, chained=self.chained, ple_ms=ple_ms,
+                     pass_rows=passed, chained=self.chained, ple_ms=ple_ms, replays=self.replays,
                      source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
             self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
                             for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
@@ -869,9 +908,14 @@ class MultiDecoder:
         if self.live() == 1:
             request = next(iter(self.streams.values())) if self.streams else self.filling[0]
             self.mbuf.rotor_lookup = self._rotor_lookup(request, len(segs))
-        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, rotor_lookup=self.mbuf.rotor_lookup)
-        try:
-            return mtp_compute(self.w, segs, self.mbuf, check=False)     # the caller checks the step's status
+        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, rotor_lookup=self.mbuf.rotor_lookup,
+                                              tables=self.mtp_tables if self.static else None)
+        try:                                             # the caller checks the step's status
+            out = self.graphs.mtp_step(segs) if self.static and self.graphs is not None else None
+            if out is None:
+                return mtp_compute(self.w, segs, self.mbuf, check=False)
+            self.replays += 1
+            return out
         finally:
             self.mbuf.attn_step = None
 

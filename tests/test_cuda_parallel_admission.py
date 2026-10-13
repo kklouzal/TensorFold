@@ -37,13 +37,15 @@ def test_parallel_startup_is_admitted_before_any_load(tmp_path, fake_runtime, fa
 @pytest.mark.parametrize("family,world", [("linear", 1), ("linear", 2), ("indexed", 1)])
 def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(tmp_path, monkeypatch, fake_runtime,  # noqa: F811
                                                                                 family, world):
-    from tensorfold.cuda.geometry import indexed_stream_geometry, stream_geometry
+    from tensorfold.cuda.geometry import indexed_stream_geometry, multi_graph_bytes, stream_geometry
     from tensorfold.families.qwen4_exp.cuda.prompt_plan import POINTS
     checkpoint(tmp_path, small_config(), WEIGHTS)
     calls, capacity = fake_runtime
-    # one GPU: the window is what one stream reaches beside the others' first rows; two ranks: every stream's
+    # one GPU: the window is what one stream reaches beside the others' first rows; two ranks: every stream's;
+    # Flash Next's concurrent rounds also plan their captured graphs' budget
     four = (stream_geometry(small_config(), world, 4, 8, first=256 if world == 1 else None) if family == "linear"
-            else indexed_stream_geometry(small_config(), 4, 4, 8, mtp=True, points=POINTS))
+            else indexed_stream_geometry(small_config(), 4, 4, 8, mtp=True, points=POINTS,
+                                         graph_bytes=multi_graph_bytes()))
     budget = four.needed(12000) + 32768                   # the streams fit 12,000 tokens, not 60,000
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     _, go = start(family, tmp_path, 60000, True, world, 4)
