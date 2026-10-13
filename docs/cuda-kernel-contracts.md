@@ -191,3 +191,25 @@ completed, writes stay ordered, and arithmetic is unchanged. Torch operations an
 full dependencies. Kernels compiled or launched without PDL keep their original code (Triton's `PDL` constexpr,
 the lane matmul's template flag); the other extension kernels execute the two instructions as no-ops.
 `tests/test_pdl_kernel_contract.py` checks the wait-first rule over the converted sources.
+
+## Flash Next block selection and six-bit prompt passes
+
+A sparse-attention row keeps its `TOP` best-scoring complete blocks, in block order, ties to the lower block id,
+followed by its unfinished tail. `attention._launch_select` chooses the kernel that lists them: `_select` while a
+row's scores fit its registers, `_select_tiles` past them, and for windows of fewer than `MULTI_ROWS` rows past
+`MULTI_MIN_BLOCKS` blocks the multi-CTA select (`_select_multi`), which splits each row into slices: four radix
+histogram passes add each slice's counts into the row's histograms with integer atomics (any order gives the same
+sums), and placement seeds each slice with the counts of the slices before it. Every kernel writes the same ids,
+lengths and flags bit for bit. A concurrent step scores every row from its own stream's pooled keys
+(`attn_multi._scores_multi`, sharing `_score_rows` with `_scores`) and selects all rows in one launch, each row ending
+at its own position. The select scratch (four 256-bin histograms a row, 257 placement counts a slice; shapes from
+`geometry.QSA_SELECT_*`) is counted in the startup memory plan. `tests/cuda/test_flashnext_qsa_select.py` compares
+the whole buffers with `_select_tiles`, `_select` and an independent sort (`tests/cuda/qsa_select_oracle.py`).
+
+Prompt passes (`attention(prompt=True)`, the forward's prompt branch) decode six-bit RotorQuant sides through
+`rotorquant_kernel._centroids_lookup`, a register gather of the same canonical constants, so every element has
+the selection chain's bits; decode steps and the encoders keep the 63-selection chain (a gather in the sparse
+decode kernels spills its table and was slower on GB10, and an encoder's FP32 energy sum would change order).
+The folded six-bit selection hard-hung GB10 and is not used; re-qualify on GB10 before changing six-bit kernel
+code. `tests/cuda/test_flashnext_kv_pairs.py` checks the gather against captured-operand partials for every key and
+value format pair with a six-bit side.
