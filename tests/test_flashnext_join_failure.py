@@ -46,7 +46,6 @@ def decoder(streams):
     dec.filling = list(streams)
     dec.fills = {s.sid: [Engine(), False, 0, [], None] for s in streams}   # [engine, drafts?, next row, kept, tail]
     dec._rotor_lookup = lambda *args: False
-    dec.watch = None                                                       # draft telemetry off
     return dec
 
 

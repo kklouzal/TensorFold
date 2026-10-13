@@ -10,7 +10,6 @@ writer is made, so a bad path fails at startup. A write that raises stops the wr
 from __future__ import annotations
 
 import json
-import os
 import queue
 import threading
 
@@ -116,39 +115,3 @@ class JsonLines(RecordWriter):
 
     def end(self) -> None:
         self.out.close()
-
-
-class JsonFiles(RecordWriter):
-    """Each record ``(name, document)`` becomes ``directory/name``, readable by its owner only (mode 0600).
-
-    A file appears complete or not at all: it is written and synced under a hidden temporary name, then renamed; a
-    failed write removes the temporary. Each document gains ``dropped``: documents lost to a full queue before it.
-    """
-
-    def __init__(self, directory: str, *, name: str, queue_size: int = 256) -> None:
-        self.directory = directory
-        os.makedirs(directory, mode=0o700, exist_ok=True)
-        super().__init__(name=name, queue_size=queue_size)
-
-    def write(self, record) -> None:
-        name, document = record
-        document["dropped"] = self.dropped
-        path = os.path.join(self.directory, name)
-        temporary = os.path.join(self.directory, f".{name}.part")
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.fchmod(fd, 0o600)                     # a stale temporary keeps its mode through O_CREAT
-            with os.fdopen(fd, "w", encoding="utf-8") as out:
-                fd = -1
-                json.dump(document, out, separators=(",", ":"), default=int)
-                out.flush()
-                os.fsync(out.fileno())
-            os.replace(temporary, path)
-        except BaseException:
-            if fd >= 0:
-                os.close(fd)
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
-            raise

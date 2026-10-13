@@ -9,7 +9,7 @@ import math
 import numpy as np
 import torch
 
-from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows, keyed_margins, uniform
+from tensorfold.engine.exact_sampling import MARGIN, Sampling, choose_rows, uniform
 
 MASS = 2.0 ** 40        # a token's share of the mass in fixed point: shard sums are exact, so ranks agree bit for bit
 NUCLEUS = 1024          # candidates a rank reads for a top_k-off draw; a row they don't cover reads whole shards
@@ -117,12 +117,8 @@ def ambiguous_rows(values: np.ndarray, top_k: int, full_width: int) -> np.ndarra
 
 
 def repaired_choose(values: np.ndarray, ids: np.ndarray, positions: Sequence[int], sampling: Sampling,
-                    full_width: int, full_row: Callable, margins: list | None = None) -> list[int]:
-    """Preserve the FP64 chooser; read ambiguous complete rows from the same immutable score evaluation.
-
-    ``margins`` (draft telemetry) receives each row's ``keyed_margins`` (margin, edge) over the candidates its token
-    was drawn from, the complete row when repaired; the tokens are ``choose_rows``' either way.
-    """
+                    full_width: int, full_row: Callable) -> list[int]:
+    """Preserve the FP64 chooser; read ambiguous complete rows from the same immutable score evaluation."""
 
     if values.shape != ids.shape or len(positions) != values.shape[0]:
         raise ValueError("one global-ID table and position per candidate row required")
@@ -131,24 +127,14 @@ def repaired_choose(values: np.ndarray, ids: np.ndarray, positions: Sequence[int
     # mixed Python integers at UINT64_MAX that inferred float64 cannot retain.
     keyed_positions = np.asarray(positions, dtype=np.uint64)
     repair = ambiguous_rows(values, sampling.top_k, full_width)
-    if margins is None:
-        out = choose_rows(values, ids, keyed_positions, sampling)
-    else:
-        drawn = keyed_margins(values, ids, keyed_positions, sampling)
-        out = [token for token, _, _ in drawn]
-        margins[:] = [(margin, edge) for _, margin, edge in drawn]
+    out = choose_rows(values, ids, keyed_positions, sampling)
     for row in repair:
         row = int(row)
         complete, global_ids = full_row(row)
         if complete.shape != (full_width,) or global_ids.shape != complete.shape:
             raise ValueError("tie repair must supply the complete original row and global IDs")
         valid_scores(complete[None])
-        if margins is None:
-            out[row] = choose_rows(complete[None], global_ids[None], keyed_positions[row:row + 1], sampling)[0]
-        else:
-            token, margin, edge = keyed_margins(complete[None], global_ids[None], keyed_positions[row:row + 1],
-                                                sampling)[0]
-            out[row], margins[row] = token, (margin, edge)
+        out[row] = choose_rows(complete[None], global_ids[None], keyed_positions[row:row + 1], sampling)[0]
     return out
 
 

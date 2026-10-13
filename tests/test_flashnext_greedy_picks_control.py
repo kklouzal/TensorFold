@@ -70,13 +70,13 @@ class Tensor:
         return Packet(rows)
 
 
-def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=False):
+def run(samplings, mapping=None, *, normalizer=4., width=8, column=5):
     cls = next(node for node in ast.parse(SOURCE.read_text()).body
                if isinstance(node, ast.ClassDef) and node.name == 'MultiDecoder')
     picks = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_picks')
     state = dict(samplings=samplings, topk=[], host_reads=0, k=0, repairs=0,
                  full_choices=0, word_views=[], word_storage=[], normalizer=normalizer, exp_inputs=[], width=width, column=column,
-                 margin_sources=[], gaps=[], readback=[])
+                 readback=[])
     def topk(row, k, **kw):
         state['topk'].append((k, kw))
         state['k'] = k
@@ -84,10 +84,8 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
     def cat(parts, **kw):
         state['payload'] = [part.name for part in parts]
         return Tensor('packed', state)
-    def repair(values, ids, positions, sampling, width, full, margins=None):
+    def repair(values, ids, positions, sampling, width, full):
         state['repairs'] += 1
-        if margins is not None:
-            margins[:] = [(.7, .9)]
         return [int(ids[0])]
     uint64 = object()
     def keys(positions, *, dtype):
@@ -99,12 +97,6 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
         if len(values) != 8 or len(ids) != 8:
             raise AssertionError('top_k0 chooser did not receive the complete source')
         return [int(ids[-1])]
-    def keyed(values, ids, positions, sampling):
-        state['margin_sources'].append(len(values))
-        return [(int(ids[-1]), .7, .9)]
-    def gap(values):
-        state['gaps'].append(list(values))
-        return .5
     def exponential(value):
         state['exp_inputs'].append(value)
         return .25
@@ -121,14 +113,12 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5, margins=Fa
             if isinstance(values, list) else True,
         arange=lambda width, **kw: Row(range(width)), asarray=keys)
     namespace = dict(torch=torch, np=np, MARGIN=8, choose_rows=choose, repaired_choose=repair,
-                     keyed_margins=keyed, value_gap=gap,
                      validate_rows=lambda *args: None, validate_policy=lambda *args: None)
     exec(compile(ast.Module(body=[picks], type_ignores=[]), str(SOURCE), 'exec',
                  flags=__future__.annotations.compiler_flag, dont_inherit=True), namespace)
     host = Row(mapping) if mapping is not None else None
     owner = SimpleNamespace(draft_host=host, _draft_map=SimpleNamespace(ids=lambda width: host) if host is not None else None)
-    values = namespace['_picks'](owner, Tensor('logits', state), [(1 << 64) - 1] * len(samplings), samplings,
-                                 words, margins)
+    values = namespace['_picks'](owner, Tensor('logits', state), [(1 << 64) - 1] * len(samplings), samplings, words)
     return state, values
 
 
@@ -142,17 +132,17 @@ class Controls(unittest.TestCase):
             self.assertEqual(state['readback'], ['queue', 'read', 'wait', 'check'])    # the status words ride it
             self.assertEqual(state['repairs'], 0)
             self.assertEqual(state['exp_inputs'], [3. - 4.] * 4)
-            self.assertEqual(values, [(5, .25, None)] * 4)
+            self.assertEqual(values, [(5, .25)] * 4)
             self.assertEqual(state['word_storage'], [('top', 'i64'), ('lse', 'i64')])
 
     def test_greedy_mapping_keeps_signed64_identity(self):
         state, values = run([None] * 2, [0, 10, 20, 30, 40, (1 << 63) - 1, 60, 70])
-        self.assertEqual(values, [((1 << 63) - 1, .25, None)] * 2)
+        self.assertEqual(values, [((1 << 63) - 1, .25)] * 2)
         self.assertEqual(state['topk'], [])
 
     def test_unsorted_mapped_greedy_keeps_the_first_physical_maximum(self):
         state, values = run([None], [9, 2], width=2, column=0)
-        self.assertEqual(values, [(9, .25, None)])
+        self.assertEqual(values, [(9, .25)])
         self.assertEqual(state['topk'], [])
         self.assertEqual(state['host_reads'], 1)
         self.assertEqual(state['exp_inputs'], [3. - 4.])
@@ -163,7 +153,7 @@ class Controls(unittest.TestCase):
         self.assertEqual(state['payload'], ['values', 'indices', 'top', 'column', 'lse'])
         self.assertEqual(state['repairs'], 1)
         self.assertEqual(state['full_choices'], 0)
-        self.assertEqual(values, [(5, .25, None), (0, .25, None)])
+        self.assertEqual(values, [(5, .25), (0, .25)])
         self.assertNotIn(('indices', 'i64'), state['word_storage'])  # native topk columns already int64
 
     def test_topk0_uses_complete_original_source_and_full_selected_probability(self):
@@ -171,33 +161,7 @@ class Controls(unittest.TestCase):
         self.assertEqual(state['full_choices'], 1)
         self.assertEqual(state['host_reads'], 2)
         self.assertEqual(state['exp_inputs'], [7. - 4.])
-        self.assertEqual(values, [(7, .25, None)])
-
-    def test_greedy_margins_add_the_top_two_to_the_same_single_readback(self):
-        state, values = run([None] * 3, margins=True)
-        self.assertEqual(state['topk'], [(2, dict(dim=-1, sorted=False))])
-        self.assertEqual(state['payload'], ['values', 'indices', 'top', 'column', 'lse'])
-        self.assertEqual(state['host_reads'], 1)
-        self.assertEqual(state['gaps'], [[2., 2.]] * 3)
-        self.assertEqual(state['margin_sources'], [])
-        self.assertEqual(values, [(5, .25, {'m': .5, 'e': None, 'g': .5, 'z': 1.})] * 3)
-        self.assertEqual(state['exp_inputs'], [3. - 4.] * 3)        # the draft's probability as without margins
-
-    def test_sampled_margins_rescore_the_chosen_candidates_without_another_read(self):
-        state, values = run([None, SimpleNamespace(temperature=.6, top_k=2)], margins=True)
-        self.assertEqual(state['topk'], [(8, dict(dim=-1, sorted=False))])   # top_k + MARGIN, within the width
-        self.assertEqual(state['host_reads'], 1)
-        self.assertEqual(state['repairs'], 1)                          # the chooser draws and scores once
-        self.assertEqual(state['margin_sources'], [])
-        self.assertEqual(values[1], (0, .25, {'m': .7, 'e': .9, 'g': .5, 'z': 1.}))
-        self.assertEqual(values[0], (5, .25, {'m': .5, 'e': None, 'g': .5, 'z': 1.}))
-
-    def test_topk0_margins_draw_with_the_shared_keyed_scores_from_the_complete_row(self):
-        state, values = run([SimpleNamespace(temperature=.6, top_k=0)], margins=True)
-        self.assertEqual(state['full_choices'], 0)
-        self.assertEqual(state['margin_sources'], [8])
-        self.assertEqual(state['host_reads'], 2)
-        self.assertEqual(values, [(7, .25, {'m': .7, 'e': .9, 'g': .5, 'z': 1.})])
+        self.assertEqual(values, [(7, .25)])
 
     def test_nonfinite_original_fp32_normalizer_stops_confidence(self):
         for normalizer in (float('nan'), float('inf'), -float('inf')):

@@ -148,7 +148,7 @@ def test_b1_a_failure_before_the_status_check_reports_the_failed_frame_first(mon
         with monkeypatch.context() as patched:
             patched.setattr(target, name, _raise(error))
             with pytest.raises(KVNumericError) as caught:
-                dec._picks(logits, [5, 6], [None, SAMPLINGS[1]], words, False, None)
+                dec._picks(logits, [5, 6], [None, SAMPLINGS[1]], words)
         assert words.calls == calls and caught.value.__context__ is error
     packets = launch_streams(logits, [0, 1, 2], [[5], [6]], [None, SAMPLINGS[1]])
     words, error = _FailedFrame(), RuntimeError("wait")

@@ -135,7 +135,7 @@ class AbsoluteGrowthTests(unittest.TestCase):
         self.dec.used, self.dec.clock = {}, 0
         self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None), None, None, None
         self.dec._draft_map = None
-        self.dec.copy, self.dec.watch = False, None              # no copy drafts; draft telemetry off
+        self.dec.copy = False
         self.dec.prefill_rows, self.dec.points, self.dec.vision = 4096, None, None
         live = torch_live(self.torch, capacity.available_bytes)
         self.dec.memory_gate = MemoryGate(live(), reserve=2 * GIB, live=live)

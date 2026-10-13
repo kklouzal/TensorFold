@@ -101,26 +101,6 @@ def choose(values: np.ndarray, ids: np.ndarray, position: int, s: Sampling) -> i
     return int(ids[int(np.argmax(scaled + gumbel))])
 
 
-def _keyed(values: np.ndarray, ids: np.ndarray, positions: Sequence[int],
-           s: Sampling) -> tuple[np.ndarray, np.ndarray]:
-    """Candidates' temperature-scaled logits and keyed scores: those plus Gumbel noise keyed by (seed, position, id)."""
-
-    scaled = values.astype(np.float64) / max(float(s.temperature), 1e-6)
-    return scaled, scaled - np.log(-np.log(uniform_rows(s.seed, np.asarray(positions), ids)))
-
-
-def _nucleus(scaled: np.ndarray, score: np.ndarray, s: Sampling) -> None:
-    """In place: -inf scores for the top-k candidates (in order) that top-p, then min-p, cut."""
-
-    if 0.0 < s.top_p < 1.0:
-        probs = np.exp(scaled - scaled.max(axis=-1, keepdims=True))
-        probs /= probs.sum(axis=-1, keepdims=True)
-        keep = (np.cumsum(probs, axis=-1) < s.top_p).sum(axis=-1) + 1    # searchsorted(cumsum, top_p) + 1
-        score[np.arange(score.shape[1])[None, :] >= keep[:, None]] = -np.inf
-    if s.min_p > 0.0:
-        score[scaled < scaled[:, :1] + s.min_log] = -np.inf               # ``choose``'s min_p prefix
-
-
 def choose_rows(values: np.ndarray, ids: np.ndarray, positions: Sequence[int], s: Sampling) -> list[int]:
     """Choose each row with the same operation order and bits as an independent ``choose`` call."""
 
@@ -128,54 +108,16 @@ def choose_rows(values: np.ndarray, ids: np.ndarray, positions: Sequence[int], s
     order = np.lexsort((ids, -values), axis=-1)
     k = max(1, min(int(s.top_k) if s.top_k else width, width))
     ids = np.take_along_axis(ids, order, axis=-1)[:, :k]
-    scaled, score = _keyed(np.take_along_axis(values, order, axis=-1)[:, :k], ids, positions, s)
-    _nucleus(scaled, score, s)
+    scaled = np.take_along_axis(values, order, axis=-1)[:, :k].astype(np.float64) / max(float(s.temperature), 1e-6)
+    score = scaled - np.log(-np.log(uniform_rows(s.seed, np.asarray(positions), ids)))
+    if 0.0 < s.top_p < 1.0:
+        probs = np.exp(scaled - scaled.max(axis=-1, keepdims=True))
+        probs /= probs.sum(axis=-1, keepdims=True)
+        keep = (np.cumsum(probs, axis=-1) < s.top_p).sum(axis=-1) + 1    # searchsorted(cumsum, top_p) + 1
+        score[np.arange(k)[None, :] >= keep[:, None]] = -np.inf
+    if s.min_p > 0.0:
+        score[scaled < scaled[:, :1] + s.min_log] = -np.inf               # ``choose``'s min_p prefix
     return [int(t) for t in ids[np.arange(rows), np.argmax(score, axis=-1)]]
-
-
-def keyed_margins(values: np.ndarray, ids: np.ndarray, positions: Sequence[int],
-                  s: Sampling) -> list[tuple[int, float, float]]:
-    """Each row's ``choose_rows`` token with two keyed margins, for draft telemetry (they never change a choice).
-
-    ``margin``: the token's score minus the best score of every other candidate the policy keeps (top-k, then top-p,
-    then min-p), +inf when it keeps only the token. ``edge``: the token's score minus the best score among the
-    candidates the policy cut from its first ``top_k + MARGIN`` (the whole row when top_k is 0), +inf when it cut
-    none; a target whose nucleus is wider may draw one of those. The order, scores and cut are ``choose_rows``'
-    (``_keyed``, ``_nucleus``), so the token is its draw and a kept candidate's score has the bits it compares.
-    """
-
-    rows, width = ids.shape
-    order = np.lexsort((ids, -values), axis=-1)
-    k = max(1, min(int(s.top_k) if s.top_k else width, width))
-    budget = min(width, int(s.top_k) + MARGIN) if s.top_k else width
-    values = np.take_along_axis(values, order[:, :budget], axis=-1)
-    ids = np.take_along_axis(ids, order[:, :budget], axis=-1)
-    scaled, score = _keyed(values[:, :k], ids[:, :k], positions, s)     # choose_rows' arrays, shapes and bits
-    cut = score.copy()
-    _nucleus(scaled, score, s)
-    cut[score > -np.inf] = -np.inf                       # the edge compares the candidates the policy cut
-    _, beyond = _keyed(values[:, k:], ids[:, k:], positions, s)          # and those past top-k in the budget
-    cut = np.maximum(cut.max(axis=-1), beyond.max(axis=-1, initial=-np.inf))
-    at = np.arange(rows)
-    best = np.argmax(score, axis=-1)
-    top = score[at, best]
-    score[at, best] = -np.inf
-    second = score.max(axis=-1)
-    out = []
-    for r in range(rows):
-        margin = math.inf if second[r] == -np.inf else float(top[r] - second[r])
-        edge = math.inf if cut[r] == -np.inf else float(top[r] - cut[r])
-        out.append((int(ids[r, best[r]]), margin, edge))
-    return out
-
-
-def value_gap(values: np.ndarray) -> float:
-    """A candidate row's top value minus its runner-up (+inf for a single candidate): a greedy draft's margin."""
-
-    if len(values) < 2:
-        return math.inf
-    two = np.partition(np.asarray(values, dtype=np.float64), len(values) - 2)[-2:]
-    return math.inf if two[0] == -np.inf else float(two[1] - two[0])
 
 
 def top_candidates(logits: Any, s: Sampling) -> tuple[Any, Any] | None:
@@ -258,5 +200,5 @@ def _nucleus_rows(logits: Any, positions: Sequence[int], s: Sampling) -> list[in
     return out if any(token is not None for token in out) else None
 
 
-__all__ = ["MARGIN", "Sampling", "choose", "choose_rows", "keyed_margins", "sample_rows", "seed_for",
-           "top_candidates", "uniform", "uniform_rows", "value_gap"]
+__all__ = ["MARGIN", "Sampling", "choose", "choose_rows", "sample_rows", "seed_for", "top_candidates", "uniform",
+           "uniform_rows"]
