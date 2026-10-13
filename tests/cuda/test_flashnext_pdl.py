@@ -12,9 +12,9 @@ if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9:
     pytest.skip("PDL needs CUDA sm_90 or later", allow_module_level=True)
 
 from test_flashnext_forward import V, _model  # noqa: E402
-from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _solo, _verify  # noqa: E402
+from test_flashnext_multi_graphs import PROMPTS, RQ, SAMPLINGS, _prefilled, _solo, _switch, _verify  # noqa: E402
 
-from tensorfold.cuda import ab_switch, pdl  # noqa: E402
+from tensorfold.cuda import pdl  # noqa: E402
 from tensorfold.cuda.kernels import qmm as shared  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import qmm  # noqa: E402
@@ -84,11 +84,8 @@ def test_decode_with_pdl_emits_each_streams_solo_tokens(monkeypatch, tmp_path, g
     monkeypatch.setenv(pdl.ENV, "1")
     w = _model(7)
     refs = _solo(w, PROMPTS, SAMPLINGS, 20, RQ)
+    _switch(monkeypatch, tmp_path)                   # an A/B run: ab_switch.active(), both PDL variants captured
     control = tmp_path / "ab.json"
-    control.write_text("{}")
-    monkeypatch.setattr(ab_switch, "_path", str(control))
-    monkeypatch.setattr(ab_switch, "_values", {})
-    monkeypatch.setattr(ab_switch, "_stamp", None)
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, prefill_rows=256,
                        graphs=graphs)
     assert dec.pdl

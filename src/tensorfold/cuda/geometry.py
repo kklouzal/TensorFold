@@ -12,10 +12,10 @@ PROMPT_SHARE = 32       # a dense prompt chunk's arrays take at most this fracti
 PREFILL_ATT_ROWS = 256  # Flash Next's prompt attention block
 # Flash Next's multi-CTA block select scratch: rows, tile, slices (attention's MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES)
 QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
-MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
 MULTI_GRAPH_ENV = "TENSORFOLD_MULTI_GRAPH_MIB"   # Flash Next's captured concurrent rounds: their memory budget (MiB)
 MULTI_GRAPH_MIB = 512       # its default: driver graph memory plus the graphs' private pool, within which keys are kept
-MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
+MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
+MLA_SELECT_ROWS = 512      # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
 
 
 def multi_graph_bytes() -> int:

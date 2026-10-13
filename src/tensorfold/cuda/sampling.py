@@ -287,8 +287,10 @@ def launch_streams(logits: torch.Tensor, starts: Sequence[int], positions: Seque
 def collect_streams(p: StreamPackets, readback=None, waited: Callable[[], None] | None = None) -> list[list[int]]:
     """``sample_streams``' choices from ``launch_streams``' packets in one host wait for every group's packet and
     ``readback``'s words (its ``queue()`` copies them to host memory behind the packets; its ``check()``, after the
-    wait and before any score is validated, may raise first). ``waited`` (profiling) runs after the wait. Errors
-    keep ``sample_streams``' order: top_k-off streams in stream order, then the groups in order."""
+    wait and before any score is validated, may raise first). ``waited`` (profiling) runs after the wait. Choice
+    errors keep ``sample_streams``' order: top_k-off streams in stream order, then the groups in order. Every stream's
+    row and policy validation already ran in ``launch_streams``, so a later stream's validation error comes before an
+    earlier top_k-off stream's choice error, which ``sample_streams`` (drawing between validations) raises first."""
 
     if readback is not None:
         readback.queue()

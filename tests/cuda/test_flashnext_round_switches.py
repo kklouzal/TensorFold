@@ -9,7 +9,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from test_flashnext_forward import V, _model  # noqa: E402
+from test_flashnext_forward import _model  # noqa: E402
 
 from tensorfold.cuda import ab_switch  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
@@ -39,20 +39,6 @@ def _solo(w, prompts, samplings, count, kv_dtype, capacity=1024):
         e = Engine(w, capacity=capacity, max_rows=8, prefill_rows=16, kv_dtype=kv_dtype)
         refs.append(serial_decode(e, prefill(e, prompt, sampling), count, sampling).tokens)
     return refs
-
-
-def _decode(w, prompts, samplings, count, kv_dtype, *, depth=3, confidence=0.3, capacity=1024, emitted=None):
-    dec = MultiDecoder(w, slots=len(prompts), capacity=capacity, depth=depth, confidence=confidence,
-                       kv_dtype=kv_dtype)
-    streams = []
-    for i, (prompt, sampling) in enumerate(zip(prompts, samplings)):
-        s = Stream(list(prompt), count, sampling,
-                   emit=(lambda new, i=i: emitted[i].extend(new)) if emitted is not None else None)
-        dec.admit(s)
-        streams.append(s)
-    while dec.live():
-        dec.finish(dec.round())
-    return dec, streams
 
 
 def _status_reads(monkeypatch) -> list:

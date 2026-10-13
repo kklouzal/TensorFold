@@ -283,7 +283,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
             b.split(("select", layer, mtp))
         else:
             select(layer, w, b, step, mtp)
-    if step.fixed:                                   # every chunk: one past a row's keys writes and is read nowhere
+    if step.fixed:                                   # every chunk: one past a row's keys writes nothing (start < n)
         chunks = sc.nch
     else:                                            # A/B baseline: remove after selection
         keys = max(step.ends)                        # A/B baseline: remove after selection

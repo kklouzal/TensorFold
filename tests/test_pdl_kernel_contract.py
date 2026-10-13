@@ -57,8 +57,7 @@ def test_cuda_kernels_wait_before_any_other_statement(path, names):
         match = re.search(r"\b" + name + r"\s*\([^{]*\)\s*\{\s*(?://[^\n]*\n\s*)*([^\n;]*;)", text)
         assert match, (path, name)
         assert match.group(1).strip() == "tensorfold::pdl_wait();", (path, name, match.group(1))
-    for launch in re.findall(r"<<<", text):
-        raise AssertionError(f"{path}: a plain <<<>>> launch bypasses the PDL launcher")
+    assert "<<<" not in text, f"{path}: a plain <<<>>> launch bypasses the PDL launcher"
 
 
 def test_lane_matmul_waits_before_reading_inputs_when_launched_with_pdl():

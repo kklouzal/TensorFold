@@ -3,6 +3,7 @@ launch geometry give the old eager bits, every captured key replays them, and de
 through every round shape (joins, finishes, copy drafts, sparse rows, prompt passes, growth, failures)."""
 
 import json
+import os
 
 import pytest
 import torch
@@ -278,7 +279,6 @@ def test_switching_graphs_every_round_keeps_the_bits(monkeypatch, tmp_path):
 
     def flip(r):
         control.write_text(json.dumps({"graphs": "old" if r % 2 else "new", "b1": "old" if r % 3 == 1 else "new"}))
-        import os
         os.utime(control, ns=(r * 10**9 + 1, r * 10**9 + 1))
 
     outs, dec = _decode(w, PROMPTS, SAMPLINGS, 24, graphs=True, each_round=flip)
