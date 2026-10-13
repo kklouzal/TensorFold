@@ -50,9 +50,22 @@ def test_segments_give_each_stream_its_own_rows():
         assert torch.equal(forward(w, st, b, [chain[keep] if keep < len(chain) else 1])[0], nxt)
 
 
-@pytest.mark.parametrize("confidence,vocab,kv_dtype", [(0.0, False, "bf16"), (0.3, False, "bf16"), (0.3, True, "bf16"),
-                                                       (0.3, True, "int8"), (0.0, False, "int4")])
-def test_streams_decoded_together_equal_each_alone(confidence, vocab, kv_dtype):
+@pytest.mark.parametrize("confidence,vocab,kv_dtype,rule", [(0.0, False, "bf16", "new"), (0.3, False, "bf16", "new"),
+                                                            (0.3, True, "bf16", "new"), (0.3, True, "int8", "new"),
+                                                            (0.0, False, "int4", "new"),
+                                                            (0.3, True, "bf16", "old"), (0.0, False, "int4", "old")])
+def test_streams_decoded_together_equal_each_alone(monkeypatch, tmp_path, confidence, vocab, kv_dtype, rule):
+    """Benchmark switch "draft_rule" ("old": A/B baseline, removed after selection): the cost-aware rule's costs are
+    pinned at its prior here, so its decisions repeat (the drafting tests cover them online)."""
+
+    from tensorfold.drafters import draft_rule
+
+    control = tmp_path / "ab.json"
+    control.write_text(f'{{"draft_rule": "{rule}"}}')
+    monkeypatch.setattr(ab_switch, "_path", str(control))
+    monkeypatch.setattr(ab_switch, "_values", {})
+    monkeypatch.setattr(ab_switch, "_stamp", None)
+    monkeypatch.setattr(draft_rule.CostModel, "observe", lambda self, **kw: None)
     w = _model()
     if vocab:                                            # drafts over a token subset (the real model's draft head)
         words, scales, biases = qmm.to_mlx(w.head)
@@ -77,7 +90,10 @@ def test_streams_decoded_together_equal_each_alone(confidence, vocab, kv_dtype):
         dec.finish(dec.round())
     for i, (s, got) in enumerate(streams):
         assert got == refs[i] and s.out == refs[i], i
-        assert s.min_rows >= (2 if s.draft else 1), (i, s.min_rows)
+        if rule == "old":                                # A/B baseline: remove after selection (a first draft
+            assert s.min_rows >= (2 if s.draft else 1), (i, s.min_rows)       # every round, however unlikely)
+        else:                                            # the cost-aware rule may verify none in a round
+            assert (s.drafted > 0) == s.draft and s.min_rows >= 1, (i, s.drafted)
     assert len(dec.free) + len({id(k[1]) for k in dec.kept}) == 4 and not dec.live()     # every slot back or kept
 
 

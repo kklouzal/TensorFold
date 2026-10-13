@@ -21,6 +21,8 @@ from tensorfold.cuda.round_profile import RoundProfile
 from tensorfold.cuda.sampling import (TokenMap, collect_streams, launch_streams, repaired_choose, sample_streams,
                                      validate_policy, validate_rows)
 from tensorfold.cuda.streams import Stream, accept
+from tensorfold.drafters import draft_rule
+from tensorfold.drafters import session_index
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows, keyed_margins, value_gap
 from tensorfold.engine.grammar import GrammarError
 
@@ -37,7 +39,7 @@ FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's cach
 GIB = 1024**3
 SHARE = 0.0                      # --decode-share: a round alone takes this share of its pass's time (0: whole passes)
 PASS_MIN = 128                   # the fewest prompt rows a round's pass takes
-COPY_MATCH = 8                   # copy drafts: the context's last this many tokens seen before, and as many after them
+COPY_MATCH = draft_rule.COPY_MATCH   # copy drafts: the context's last this many tokens seen before, and as many after
 FILL_GUARD = 8                   # a prompt passed over this many passes takes the next one (no starvation), as on Macs
 
 
@@ -130,11 +132,21 @@ class MultiDecoder:
         self.clock = 0
         self.prof = RoundProfile.from_env()              # opt-in per-round timing (None: off, one test a mark)
         self.chained = 0                                 # the last round's MTP chain steps (profile field)
+        self.steps = 0                                   # MTP head steps the round has run for drafts so far
+        self.chain_s, self.chain_n = 0.0, 0              # its chain steps (after the absorbs): seconds, count
         self.sources: dict[int, str] = {}                # profiling only: stream id -> its pending drafts' source
-        self.copying: set[int] = set()                   # profiling only: streams this round's _draft_all copied for
+        self.copying: dict[int, str] = {}                # profiling only: streams drafted from their own text
+        # benchmark switch "draft_rule" (round()): the cost-aware rule's chances (TENSORFOLD_DRAFT_RULE's fitted
+        # tables, else the confidence rule's prior) and its online round costs
+        self.rule = True
+        self.predictor = draft_rule.Predictor.from_env(confidence)
+        self.costs = draft_rule.CostModel(self.predictor.cost)
+        # long prompts' session indexes (benchmark switch "suffix" new), built off the engine thread
+        self.session_builder = session_index.Builder()
         # opt-in draft log, probes and benchmark trace (None: off, one test a hook)
         self.watch = DraftWatch.from_env({"depth": depth, "confidence": confidence, "copy": self.copy,
-                                          "copy_match": COPY_MATCH})
+                                          "copy_match": COPY_MATCH, "anchor": session_index.ANCHOR,
+                                          "recent": session_index.RECENT, "longest": session_index.LONGEST})
 
     def close_telemetry(self, timeout: float = 10.0) -> None:
         """At shutdown: write the opt-in round profile's and draft telemetry's queued records and stop every writer;
@@ -144,6 +156,11 @@ class MultiDecoder:
             (self.watch.writers() if self.watch is not None else [])
         self.prof = self.watch = None
         close_all(writers, timeout)
+
+    def close_drafting(self) -> None:
+        """At shutdown: cancel queued session index builds and wait for a running one."""
+
+        self.session_builder.close()
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -300,7 +317,10 @@ class MultiDecoder:
                 self.round()                             # the whole prompt (nothing else decodes), then a round
         finally:
             self.watch = watch
+            self.costs = draft_rule.CostModel(self.predictor.cost)   # nor are its first-use costs a round's
         self.streams.pop(s.sid, None)
+        if s.session is not None:
+            s.session.cancel()
         self._drop_kept(s.st)
         self._shrink(s.st)
         if all(f is not s.st for f in self.free):
@@ -348,11 +368,17 @@ class MultiDecoder:
         e._draft_map = self._draft_map
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
+            text = self.copy and s.draft                 # drafts from the request's own text (TENSORFOLD_MTP_COPY)
+            if text:                                     # benchmark switch "suffix": the request's, at admission
+                ab_switch.refresh()
+                suffix = ab_switch.new("suffix")         # "old": A/B baseline, remove after selection
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
             image = s.vision is not None
             image_rows.begin(e, s, self.vision)
             if image:
                 torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
+            if text and suffix:                          # its prompt's index, built off this thread when long
+                s.session = session_index.SessionIndex(s.prompt, self.session_builder)
         except Exception:
             self._drop_kept(st)
             self._shrink(st)
@@ -362,10 +388,10 @@ class MultiDecoder:
             if s.draft and st.image_positions is None and self.points is not None else []
         s.sid, s.st = self.next_id, st
         self.next_id += 1
-        if self.copy and s.draft:
-            from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
+        if text and not suffix:                          # A/B baseline: remove after selection
+            from tensorfold.families.qwen3_5.cuda.decode import CopyIndex   # A/B baseline: remove after selection
 
-            s.copies = CopyIndex(COPY_MATCH)
+            s.copies = CopyIndex(COPY_MATCH)             # A/B baseline: remove after selection
         s.prefill_s = time.perf_counter() - t0
         # the resumed point stays kept (slot_for keeps it in place, or a fork's source holds it): no fill re-keeps it
         self.fills[s.sid] = [e, mtp, begin, [], None]
@@ -529,7 +555,7 @@ class MultiDecoder:
         """Prompts that ended sample their first token, draft and join the rounds; returns those already done."""
 
         _kv_check([(s.st, 0, n) for s, _, n in pieces])
-        joined, head = [], 0
+        joined, head, drafting = [], 0, []
         for (s, a, n), last in zip(pieces, lasts):
             s.prefill_s += spent
             fill = self.fills[s.sid]
@@ -568,12 +594,17 @@ class MultiDecoder:
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
             if mtp and not s.done and s.count > 1:
-                s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
-                                 self.confidence)
+                if self.rule:                            # its first drafts with the others', by the round's rule
+                    drafting.append((s, last, [first], True))
+                else:                                    # A/B baseline: remove after selection
+                    s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
+                                     self.confidence)    # A/B baseline: remove after selection
             if self.watch is not None and not s.done:
                 self.watch.joined(s)
             if s.done:
                 joined.append(s)
+        if drafting:
+            self._draft_all(drafting, True, joined=True)
         return joined
 
     def cancel(self, streams: list[Stream]) -> list[Stream]:
@@ -612,6 +643,7 @@ class MultiDecoder:
         self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
         pdl.ON = self.pdl and ab_switch.new("pdl")       # "old": A/B baseline, remove after selection
         lean = ab_switch.new("b3")                       # "old": A/B baseline, remove after selection
+        rule = self.rule = ab_switch.new("draft_rule")   # "old": A/B baseline, remove after selection
         self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:
@@ -627,6 +659,10 @@ class MultiDecoder:
                 watch.begin()                          # the passes alone are not the round's time
         if not live:
             return ended
+        start, self.steps = time.perf_counter(), 0      # the round's cost: from after any passes alone
+        self.chain_s, self.chain_n = 0.0, 0
+        if rule:                                         # drafts that pay at this round's actual costs
+            self._trim(live)
         if prof is not None:
             prof.mark("room")
         grammars, failed = {}, []
@@ -641,6 +677,7 @@ class MultiDecoder:
                     failed.append(s)
                     continue
                 s.drafts = grammars[s.sid].tokens[1:]
+                del s.chances[len(s.drafts):]
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
@@ -731,7 +768,7 @@ class MultiDecoder:
                         s.probabilities, rows=[a0 + r for r in path])
         for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
             self.held[s.sid] = rows                      # the next round's trees fold these rows in first
-        kept = []
+        kept, ctx = [], [st.pos for st, _, _ in segs]
         for s, (_, tokens), (st, a0, a1), rows, (path, end) in zip(live, windows, segs, sampled, paths):
             if watch is not None:
                 watch.verified(s, st.pos, a1 - a0, len(path) - 1)
@@ -748,12 +785,10 @@ class MultiDecoder:
             kept.append((s, a0, rows[:len(path)], new, last))
         if prof is not None:
             prof.mark("commit", gpu=True)
-        self.chained = 0
-        if prof is not None:
-            self.copying = set()
-        steps = self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
-                                {s.sid: fresh for s, _, _, fresh, last in kept
-                                 if getattr(s, "copies", None) is not None and not last})
+            self.copying = {}
+        steps = self._draft_all([(s, self.buf.streams[a0:a0 + len(keep)], keep, False)
+                                 for s, a0, keep, _, last in kept if s.draft and not last], rule)
+        self.chained = max(0, steps - 1)
         for s, _, _, new, _ in kept:
             if s.error is not None:
                 s.done = True
@@ -767,37 +802,71 @@ class MultiDecoder:
                      window=[len(tokens) for _, tokens in windows], kept=[len(path) for path, _ in paths],
                      pass_rows=passed, chained=self.chained, ple_ms=ple_ms, replays=self.replays,
                      source=[self.sources.get(s.sid, "") for s in live], ab=ab_switch.snapshot())
-            self.sources = {s.sid: "copy" if s.sid in self.copying else ("mtp" if s.drafts else "")
+            self.sources = {s.sid: self.copying.get(s.sid) or ("mtp" if s.drafts else "")
                             for s, _, _, _, _ in kept}   # the drafts _draft_all just chose for the next round
         self._timed(spent, passed)
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
+        cost = None
+        if rule:                                       # what the round cost: the rule's next estimates
+            mixed, longest = bool(pieces), max(ctx)
+            self.costs.observe(rows=segs[-1][2], ctx_rows=sum((a1 - a0) * c for (_, a0, a1), c in zip(segs, ctx)),
+                               pass_rows=passed, mixed=mixed, ms=1e3 * (time.perf_counter() - start),
+                               chain_ms=1e3 * self.chain_s, chain_steps=self.chain_n,
+                               tokens=sum(len(new) for *_, new, _ in kept), live=len(live), context=longest)
+            if watch is not None:
+                cost = {"lam": self.costs.lam(len(live), mixed, longest), "row_ms": self.costs.row_ms(longest, mixed),
+                        "step_ms": self.costs.step_ms(mixed)}
         if watch is not None:
-            watch.round_end(live, rows=segs[-1][2], mixed=bool(pieces), pass_rows=passed, steps=steps)
+            watch.round_end(live, rows=segs[-1][2], mixed=bool(pieces), pass_rows=passed, steps=self.steps,
+                            chain=(self.chain_n, 1e3 * self.chain_s), rule=rule, cost=cost, ab=ab_switch.snapshot())
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
             self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list, new: dict | None = None) -> int:
-        """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth; returns
-        the MTP head steps run. A stream whose context repeats earlier text drafts that continuation instead of an
-        MTP row."""
+    def _trim(self, live: list[Stream]) -> None:
+        """The cost-aware rule at a round's start (design 3.4): each stream keeps the drafts whose chances pay for
+        their rows at the round's actual costs (a prompt pass, the live streams, its context), within the rows the
+        buffers hold. Drafts made under the A/B baseline carry no chances and stay."""
 
-        for s, _, _ in streams:
-            s.drafts = []
-        room = {s.sid: min(self.depth, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
-        todo = [(s, a0, keep) for s, a0, keep in streams if room[s.sid] > 0 and self.mbuf is not None]
+        mixed = bool(self.filling) and self.converged
+        ruled = [s for s in live if s.drafts and len(s.chances) == len(s.drafts)]
+        if not ruled:
+            return
+        lam = self.costs.lam(len(live), mixed, max(s.st.pos for s in live))
+        keep = draft_rule.trim([s.chances for s in ruled],
+                               [self.costs.thresholds(lam, s.st.pos, mixed).row for s in ruled],
+                               self.buf.rows - len(live))
+        for s, n in zip(ruled, keep):
+            del s.drafts[n:], s.chances[n:]
+
+    def _draft_all(self, streams: list, rule: bool, *, joined: bool = False) -> int:
+        """Every drafting stream absorbs its kept rows and drafts for its next round, all streams in one MTP head
+        step a depth; returns the steps run (also counted in ``self.steps``). ``streams``: (stream, its kept rows'
+        residual streams, the tokens they were kept for, whether those are in its reply already: a prompt that
+        ``joined``). A stream drafting from its own text (TENSORFOLD_MTP_COPY) takes its continuation instead of MTP
+        drafts where that is worth more (``rule``: the cost-aware rule; the A/B baseline: whenever it has one).
+        Every source drafts at most the stream's room (the depth at most), so a window stays within the static
+        tables' width and the captured rounds' keys (``multi_graphs``)."""
+
+        room, base, ahead = {}, {}, {}
+        for s, _, keep, taken in streams:
+            s.drafts, s.chances = [], []
+            pending = () if taken else keep
+            room[s.sid] = min(self.depth, s.count - len(s.out) - len(pending))
+            base[s.sid] = len(s.out) + len(pending)      # the reply index of its first draft
+            ahead[s.sid] = pending
+        todo = [item for item in streams if room[item[0].sid] > 0 and self.mbuf is not None]
         if not todo:
             return 0
-        for s, _, _ in todo:
+        for s, _, _, _ in todo:
             st = s.st
             if st.mtp_drafted:
                 st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                 st.mtp_drafted = 0
-        prof, watch = self.prof, self.watch
-        windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
-        segs = mtp_stage(self.w, self.mbuf, windows)
+        prof = self.prof
+        segs = mtp_stage(self.w, self.mbuf, [(s.st, keep, rows) for s, rows, keep, _ in todo])
         if prof is not None:
             prof.mark("mtp_stage")
         logits = self._mtp(segs)
@@ -805,7 +874,7 @@ class MultiDecoder:
             prof.mark("mtp_absorb", gpu=True)
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
-            for (s, _, keep), (st, a0, a1) in zip(todo, segs):
+            for (s, _, keep, _), (st, a0, a1) in zip(todo, segs):
                 st.set_mtp_len(st.mtp_len + len(keep))
 
         if self.b1:                                      # its status words join the first draft's readback
@@ -816,76 +885,161 @@ class MultiDecoder:
             if prof is not None:                         # A/B baseline: remove after selection
                 prof.mark("mtp_absorb_wait")             # A/B baseline: remove after selection
             absorbed()                                   # A/B baseline: remove after selection
-        # the reply index of each stream's first draft: its new tokens are not taken yet
-        base = {s.sid: len(s.out) + len(keep) for s, _, keep in todo} if watch is not None else None
-        active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
-        if new:
-            try:                                         # a failure here still reports a failed absorb first
+        active = [(s, a1 - 1) for (s, _, _, _), (_, _, a1) in zip(todo, segs)]
+        try:                                             # a failure here still reports a failed absorb first
+            texts = self._continuations(active, room, ahead)
+            if prof is not None and texts:
+                prof.mark("copy")
+            if not rule and texts:                       # A/B baseline: remove after selection (to "except")
+                taken = {sid for sid, text in texts.items()
+                         if text[0] != "suffix" or text[2] >= COPY_MATCH}
                 for s, _ in active:
-                    if s.sid in new and getattr(s, "copies", None) is not None:
-                        s.context.extend(new[s.sid])
-                        s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
-                        del s.context[len(s.context) - len(new[s.sid]):]
-                        if prof is not None and s.drafts:
-                            self.copying.add(s.sid)
-                        if watch is not None and s.drafts:
-                            watch.drafted(s, base[s.sid], "copy",
-                                          [(d, j, None, None) for j, d in enumerate(s.drafts)])
-                if prof is not None:
-                    prof.mark("copy")
-                keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
+                    if s.sid in taken:
+                        self._from_text(s, texts[s.sid], None, base[s.sid], joined)
+                keep_rows = [i for i, (s, _) in enumerate(active) if s.sid not in taken]
                 if len(keep_rows) != len(active):
                     logits = logits[keep_rows]
                 active = [active[i] for i in keep_rows]
-            except BaseException:
-                if words is not None:
-                    words.settle()
-                raise
-            if not active:                               # every stream copies: no draft readback checks the absorb
-                if words is not None:
-                    words.settle()
-                return 1
-        self._chain(active, logits, room, base, words)
-        return 1 + self.chained                          # the absorb, then the chain (round() zeroed it)
+        except BaseException:
+            if words is not None:
+                words.settle()
+            raise
+        steps = 1
+        if active:
+            steps += self._chain(active, logits, room, base, words, rule, texts, joined)
+        elif words is not None:                          # every stream copies: no draft readback checks the absorb
+            words.settle()
+        self.steps += steps
+        return steps
 
-    def _chain(self, active: list, logits: torch.Tensor, room: dict, base: dict | None,
-               words: KVWords | None = None) -> None:
-        """Chain MTP drafts from the absorb's logits, all streams in one step a depth (``self.chained`` steps).
+    def _continuations(self, active: list, room: dict, ahead: dict) -> dict[int, tuple[str, list[int], int]]:
+        """Each stream's drafts from its own text (TENSORFOLD_MTP_COPY): stream id -> (source, tokens, match length).
+        "owed": what a background replay sends again (certain); "suffix": the session index's continuation (switch
+        "suffix" new at the stream's admission); "copy": CopyIndex's (the A/B baseline). ``ahead``: tokens committed
+        this round, not yet in the reply."""
 
-        Draft j is keyed at its verify row's position. A draft below the confidence ends its stream's chain; the first
-        is kept regardless. A probe round (the draft log's) chains every stream on to its room; the drafts past the
-        rule are labelled in the log, never verified, and their MTP entries go with the stream's next absorb."""
+        out = {}
+        for s, _ in active:
+            n, pending = room[s.sid], ahead[s.sid]
+            if s.session is not None:
+                if len(s.owed) > len(pending):
+                    out[s.sid] = ("owed", list(s.owed[len(pending):len(pending) + n]), 0)
+                    continue
+                s.session.sync(s.out, pending)
+                length, tokens = s.session.propose(n)
+                if length:
+                    out[s.sid] = ("suffix", tokens, length)
+            elif s.copies is not None:                   # A/B baseline: remove after selection (to the return)
+                s.context.extend(pending)
+                drafts = s.copies.propose(s.context, max(n, COPY_MATCH))[:n]
+                del s.context[len(s.context) - len(pending):]
+                if drafts:
+                    out[s.sid] = ("copy", drafts, COPY_MATCH)
+        return out
+
+    def _from_text(self, s: Stream, text: tuple, chances: list[float] | None, base: int, joined: bool,
+                   agree: int | None = None) -> None:
+        """The stream drafts its continuation ``text``: all of it (``chances`` None: the A/B baseline), or the prefix
+        the rule verifies (the caller set it; ``chances``: each token's cumulative chance). Logged whole, with the
+        MTP head's first pick's agreement with its first token (``agree``)."""
+
+        src, tokens, length = text
+        if chances is None:                              # A/B baseline: remove after selection
+            s.drafts = list(tokens)                      # A/B baseline: remove after selection
+        if self.prof is not None:
+            self.copying[s.sid] = src
+        if self.watch is not None:
+            items = [(t, k, None, {"L": length or None, "a0": agree,
+                                   "c": None if chances is None else chances[k]}) for k, t in enumerate(tokens)]
+            self.watch.drafted(s, base, src, items, join=joined)
+
+    def _chain(self, active: list, logits: torch.Tensor, room: dict, base: dict, words: KVWords | None, rule: bool,
+               texts: dict, joined: bool) -> int:
+        """Chain MTP drafts from the absorb's logits, all streams in one step a depth; returns the chain's steps.
+
+        Draft j is keyed at its verify row's position. ``rule`` (design 3.4): a draft is verified while its chain's
+        chance pays for its row, and the chain goes on while the next draft's optimistic chance pays for a row and
+        a step (one the stream forces alone, or one another stream forces); a stream with a continuation from its
+        own text (``texts``) takes it instead where it is worth more than its MTP chain, judged from its first
+        pick. The A/B baseline: a draft below the confidence ends its stream's chain; the first is kept regardless.
+        A probe round (the draft log's) chains every MTP stream on to its room; the drafts past the rule are
+        labelled in the log, never verified, and their MTP entries go with the stream's next absorb."""
 
         prof, watch = self.prof, self.watch
         probe = watch is not None and watch.probing()
-        margins = watch is not None and watch.margins
+        margins = (watch is not None and watch.margins) or (rule and self.predictor.needs_margins)
         items = {s.sid: (s, []) for s, _ in active} if watch is not None else None
         shadow: set[int] = set()                         # probe rounds: streams the rule stopped, chained for labels
+        if rule:
+            mixed = bool(self.filling) and self.converged
+            lam = self.costs.lam(len(self.streams), mixed, max(s.st.pos for s, _ in active))
+            th = {s.sid: self.costs.thresholds(lam, s.st.pos, mixed) for s, _ in active}
+            chance = dict.fromkeys(th, 1.0)
+        steps, launched = 0, None
         for j in range(self.depth):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
                                 margins, words, f"pick{j}_wait" if prof is not None else None)
+            if launched is not None:                     # a chain step's cost: its launch to its pick's readback
+                self.chain_s += time.perf_counter() - launched
+                self.chain_n += 1
             if prof is not None:
                 prof.mark(f"pick{j}", gpu=True)
-            nxt = []
+            go: dict[int, str] = {}                      # stream id -> "full" | "shared" (the rule's) | "probe"
             for (s, row), (d, p, scores) in zip(active, picks):
+                sid, more = s.sid, j + 1 < room[s.sid]
+                if not rule:                             # A/B baseline: remove after selection (to "continue")
+                    if items is not None:
+                        items[sid][1].append((d, j, p, scores))
+                    if sid not in shadow:
+                        low = self.confidence > 0 and p < self.confidence
+                        if not low or j == 0:            # the first draft is kept even when low
+                            s.drafts.append(d)
+                        if low:                          # the rule ends this chain; a probe goes on unverified
+                            if not probe:
+                                continue
+                            shadow.add(sid)
+                    if more:
+                        go[sid] = "full"
+                    continue
+                g = draft_rule.greedy(s.sampling)
+                a = self.predictor.mtp(g, j, p, None if scores is None else scores["m"])
+                if j == 0 and sid in texts and self._text_wins(s, texts[sid], a, d, room[sid], th[sid], base,
+                                                                 joined):
+                    if items is not None:
+                        del items[sid]                   # its drafts are its text's; its MTP pick is not logged
+                    continue
+                c, include, full, shared = draft_rule.chain_step(chance[sid], a, self.predictor.abar("mtp", g, j + 1),
+                                                                 more, th[sid])
+                chance[sid] = c
                 if items is not None:
-                    items[s.sid][1].append((d, j, p, scores))
-                if s.sid not in shadow:
-                    low = self.confidence > 0 and p < self.confidence
-                    if not low or j == 0:                # the first draft is kept even when low
+                    items[sid][1].append((d, j, p, {**(scores or {}), "c": c}))
+                if sid not in shadow:
+                    if include:
                         s.drafts.append(d)
-                    if low:                              # the rule ends this chain; a probe goes on unverified
-                        if not probe:
-                            continue
-                        shadow.add(s.sid)
-                if j + 1 < room[s.sid]:
-                    nxt.append((s, row, d))
+                        s.chances.append(c)
+                    if full or shared:
+                        go[sid] = "full" if full else "shared"
+                        continue
+                    if not probe:
+                        continue
+                    shadow.add(sid)
+                if more:
+                    go[sid] = "probe"
+            forced = any(v == "full" for v in go.values())
+            for sid, v in go.items():
+                if v == "shared" and not forced:         # no stream forces the step: the rule stops these
+                    if probe and room[sid] > j + 1:
+                        shadow.add(sid)
+                        go[sid] = "probe"
+            nxt = [(s, row, d) for (s, row), (d, _, _) in zip(active, picks)
+                   if s.sid in go and (go[s.sid] != "shared" or forced)]
             if not nxt:
                 break
+            launched = time.perf_counter()
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.w, self.mbuf, windows)
             logits = self._mtp(segs)
-            self.chained = j + 1
+            steps = j + 1
             if prof is not None:
                 prof.mark(f"chain{j + 1}", gpu=True)
 
@@ -905,7 +1059,30 @@ class MultiDecoder:
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
         if items is not None:
             for sid, (s, drafted) in items.items():
-                watch.drafted(s, base[sid], "mtp", drafted, probe=probe)
+                watch.drafted(s, base[sid], "mtp", drafted, probe=probe, join=joined)
+        return steps
+
+    def _text_wins(self, s: Stream, text: tuple, a0: float, d0: int, room: int, th: draft_rule.Thresholds,
+                   base: dict, joined: bool) -> bool:
+        """Whether the stream drafts its continuation ``text`` rather than its MTP chain (design 4.4): the text's
+        verified prefix's value against the chain's, from its first pick's chance ``a0``. If so, its drafts are
+        set (``_from_text``)."""
+
+        src, tokens, length = text
+        g = draft_rule.greedy(s.sampling)
+        given = [1.0] * len(tokens) if src == "owed" else [self.predictor.suffix(g, k, length)
+                                                             for k in range(len(tokens))]
+        kept, value = draft_rule.suffix_plan(given, th)
+        abar = [self.predictor.abar("mtp", g, j) for j in range(room)]
+        if value <= draft_rule.mtp_value(a0, abar, room, th):
+            return False
+        s.drafts, s.chances = tokens[:len(kept)], kept
+        chances, c = [], 1.0
+        for a in given:
+            c *= a
+            chances.append(c)
+        self._from_text(s, text, chances, base[s.sid], joined, int(d0 == tokens[0]))
+        return True
 
     def _mtp(self, segs: list) -> torch.Tensor:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
@@ -1051,6 +1228,9 @@ class MultiDecoder:
         for s in done:
             if self.watch is not None:
                 self.watch.finished(s)
+            if s.session is not None:                    # a queued build of its prompt's index is dropped
+                s.session.cancel()
+                s.session = None
             self.streams.pop(s.sid, None)
             if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
                 self._shrink(s.st)
@@ -1062,6 +1242,9 @@ class MultiDecoder:
         for s in live:
             if self.watch is not None:
                 self.watch.finished(s)
+            if s.session is not None:
+                s.session.cancel()
+                s.session = None
             self.streams.pop(s.sid, None)
             self.held.pop(s.sid, None)
             self._drop_kept(s.st)

@@ -12,30 +12,39 @@ or text. A round's line is written once every draft it verified, and every shado
 when the stream's reply reaches the draft's position, or the stream ends (then the label stays null)::
 
     {"t": unix seconds, "live": streams verified, "rows": verify rows, "mixed": a prompt pass shared the forward,
-     "pass_rows": its prompt rows, "steps": MTP head steps that drafted the next round (absorb, then the chain),
-     "probed": that drafting was a probe, "joined": prompts that joined since the previous line, "ms": the round's
-     wall time (from after any prompt passes that ran alone),
+     "pass_rows": its prompt rows, "steps": MTP head steps that drafted the next round (absorb, then the chain;
+     with prompts that joined in the round's pass), "chain_steps", "chain_ms": those after the absorbs, and their
+     time (each from its launch to its pick's readback), "probed": that drafting was a probe, "joined": prompts that
+     joined since the previous line, "ms": the round's wall time (from after any prompt passes that ran alone),
+     "cost": the cost-aware rule's estimates after the round ({"lam": tokens a ms, "row_ms", "step_ms"} for its
+     region) or null (switch "draft_rule" old), "ab": the benchmark switches (``ab_switch.snapshot``),
      "dropped": lines lost to a full queue so far, "forced": lines written before their labels resolved so far,
      "streams": [{"rid": a random id per request, "ctx": committed context tokens, "n": reply tokens before the
-                  round, "src": "mtp" | "copy" | "" (no drafts), "probe": drafted in a probe, "join": drafted as
-                  its prompt joined (single-stream drafting: no probability or margins), "constrained": a grammar
-                  prunes its drafts (``inc`` false then also marks pruned ones), "verified": drafts verified,
-                  "accepted": drafts kept, "done": the stream ended in this round,
+                  round, "greedy": its policy, "src": "mtp" | "suffix" | "owed" | "copy" | "" (no drafts),
+                  "probe": drafted in a probe, "join": drafted as its prompt joined (the A/B baseline's
+                  single-stream drafting: no probability or margins), "constrained": a grammar prunes its drafts
+                  (``inc`` false then also marks pruned ones), "verified": drafts verified, "accepted": drafts
+                  kept, "done": the stream ended in this round,
                   "drafts": [{"j": depth, "p": the draft head's temperature-1 probability, "m": keyed margin,
                               "e": edge margin, "g": top-two logit gap, "z": log-sum-exp minus the top logit
-                              (``MultiDecoder._picks``), "inc": verified, "hit": equals the reply's token at its
-                              position, "label": hit, as did every earlier draft of its chain}]}]}
+                              (``MultiDecoder._picks``), "c": the cost-aware rule's chance (its chain's product
+                              of conditional chances) or null, "L": a suffix or copy draft's match length,
+                              "a0": whether the MTP head's first pick equalled a text's first token (null: not
+                              compared), "inc": verified, "hit": equals the reply's token at its position,
+                              "label": hit, as did every earlier draft of its chain}]}]}
 
-Copy and joined drafts carry null ``p``, ``m``, ``e``, ``g`` and ``z``; a margin of +inf is the string "inf" (NaN,
-which valid scores never give, would be "nan"). Shadow drafts (``inc`` false) were computed but not verified: dropped
-by the confidence rule, or chained past it in a probe.
+Text drafts (suffix, owed, copy) carry null ``p``, ``m``, ``e``, ``g`` and ``z``, as do the baseline's joined drafts;
+a margin of +inf is the string "inf" (NaN, which valid scores never give, would be "nan"). Shadow drafts (``inc``
+false) were computed but not verified: dropped by the rule, chained past it in a probe, or a text's tail past its
+verified prefix.
 Labels are exact because the reply does not depend on what was drafted. A draft's verified acceptance is its label
 unless the stream's room or an end token cut the round first.
 
-``TENSORFOLD_DRAFT_PROBE=<0..1>`` (with the log): the share of rounds whose MTP chain runs to full depth whatever the
-confidence rule decides; the rule's drafts alone are verified, the rest are labelled shadows. A probe costs MTP head
-steps, never tokens: the chained entries are trimmed before the stream's next absorb. Which rounds probe follows a
-fixed-seed generator, so the same sequence of rounds probes the same ones.
+``TENSORFOLD_DRAFT_PROBE=<0..1>`` (with the log): the share of drafting calls whose MTP chains run to their room
+whatever the stop rule decides (the confidence rule, or the cost-aware rule: switch "draft_rule"); the rule's drafts
+alone are verified, the rest are labelled shadows, and a stream that drafts from its text is not chained. A probe
+costs MTP head steps, never tokens: the chained entries are trimmed before the stream's next absorb. Which calls
+probe follows a fixed-seed generator, so the same sequence of rounds probes the same ones.
 
 ``TENSORFOLD_DRAFT_TRACE=<dir>`` writes one file a finished request, ``<dir>/<start>-<rid>.json``, mode 0600. IT
 PERSISTS CONTENT, the prompt's and the reply's token ids: enable it only for benchmark runs over public prompts. It is
@@ -47,9 +56,11 @@ the input of ``tools/draft_replay.py``::
      tokens resumed, "background", "error": its type's name or null,
      "process": a random id per decoder, "order": this request's place among the decoder's traced finishes (1, 2,
      ...), "after": how many had finished when it joined (an in-process corpus could hold exactly those),
-     "decoder": {"depth", "confidence", "copy", "copy_match"}, "dropped": earlier traces lost to a full queue,
+     "decoder": {"depth", "confidence", "copy", "copy_match", "anchor", "recent", "longest" (the session index's)},
+     "dropped": earlier traces lost to a full queue,
+     "text": the request's drafts from its own text ("suffix": the session index, "copy": CopyIndex; null: none),
      "rounds": [{"n": reply tokens before it, "rows": verify rows, "acc": drafts kept, "src", "live", "mixed",
-                 "ms"}]}
+                 "ms", "rule": "new" | "old", the rule that drafted the round's next drafts}]}
 
 A stream's rounds are held until it finishes: one small record a round, at most its token limit.
 """
@@ -172,12 +183,14 @@ class DraftWatch:
         return self.probed
 
     def joined(self, s) -> None:
-        """A prompt joined the rounds with its first token; ``s.drafts`` are its first drafts (single-stream)."""
+        """A prompt joined the rounds with its first token; ``s.drafts`` are its first drafts when the A/B baseline
+        drafted them alone (the cost-aware rule drafts joined prompts together, through ``drafted``, after this)."""
 
         self.rids[s.sid] = secrets.token_hex(8)
         self.joins += 1
         if self.trace is not None:
-            self.traces[s.sid] = {"start": time.time(), "after": self.finishes, "rounds": []}
+            text = "suffix" if s.session is not None else "copy" if s.copies is not None else None
+            self.traces[s.sid] = {"start": time.time(), "after": self.finishes, "text": text, "rounds": []}
         if s.drafts:
             self.drafted(s, len(s.out), "mtp", [(d, j, None, None) for j, d in enumerate(s.drafts)], join=True)
 
@@ -192,6 +205,7 @@ class DraftWatch:
                 scores = scores or {}
                 entries.append({"j": j, "p": None if p is None else float(f"{p:.6g}"), "m": _num(scores.get("m")),
                                 "e": _num(scores.get("e")), "g": _num(scores.get("g")), "z": _num(scores.get("z")),
+                                "c": _num(scores.get("c"), 6), "L": scores.get("L"), "a0": scores.get("a0"),
                                 "inc": False, "hit": None, "label": None})
         self.pending[s.sid] = _Chain(base, [int(item[0]) for item in items], entries, src, probe, join)
 
@@ -205,7 +219,8 @@ class DraftWatch:
             drafts = chain.entries if chain is not None else []
             for i, entry in enumerate(drafts):
                 entry["inc"] = i < rows - 1
-            self.round.append((s, {"rid": self.rids[s.sid], "ctx": ctx, "n": len(s.out), "src": src,
+            greedy = s.sampling is None or s.sampling.temperature <= 0
+            self.round.append((s, {"rid": self.rids[s.sid], "ctx": ctx, "n": len(s.out), "greedy": greedy, "src": src,
                                    "probe": chain is not None and chain.probe, "join": chain is not None and chain.join,
                                    "constrained": s.constraint is not None, "verified": rows - 1,
                                    "accepted": accepted, "done": False, "drafts": drafts}, chain))
@@ -215,17 +230,23 @@ class DraftWatch:
             trace["rounds"].append(entry)
             self.trace_rounds.append(entry)
 
-    def round_end(self, live: list, *, rows: int, mixed: bool, pass_rows: int, steps: int) -> None:
-        """The round's streams took their tokens (and prompts that ended in its pass joined): label, then write."""
+    def round_end(self, live: list, *, rows: int, mixed: bool, pass_rows: int, steps: int,
+                  chain: tuple[int, float] = (0, 0.0), rule: bool = False, cost: dict | None = None,
+                  ab: dict | None = None) -> None:
+        """The round's streams took their tokens (and prompts that ended in its pass joined): label, then write.
+        ``rule``: the cost-aware rule drafted the round's next drafts (switch "draft_rule" new)."""
 
         ms = round((time.perf_counter() - self.t0) * 1e3, 3)
         for entry in self.trace_rounds:
-            entry.update(live=len(live), mixed=mixed, ms=ms)
+            entry.update(live=len(live), mixed=mixed, ms=ms, rule="new" if rule else "old")
         if self.log is not None:
             self.serial += 1
             line = self.lines[self.serial] = _Line(self.serial, {
                 "t": time.time(), "live": len(live), "rows": rows, "mixed": mixed, "pass_rows": pass_rows,
-                "steps": steps, "probed": self.probed, "joined": self.joins, "ms": ms, "streams": []})
+                "steps": steps, "chain_steps": chain[0], "chain_ms": round(chain[1], 3), "probed": self.probed,
+                "joined": self.joins, "ms": ms,
+                "cost": None if cost is None else {k: _num(v, 6) for k, v in cost.items()}, "ab": ab or {},
+                "streams": []})
             for s, entry, chain in self.round:
                 entry["done"] = bool(s.done)
                 line.record["streams"].append(entry)
@@ -269,7 +290,7 @@ class DraftWatch:
                 "draft": s.draft, "constrained": s.constraint is not None, "cached": s.cached,
                 "background": s.background, "error": None if s.error is None else type(s.error).__name__,
                 "process": self.process, "order": self.finishes, "after": trace["after"],
-                "decoder": self.decoder, "rounds": trace["rounds"]}))
+                "decoder": self.decoder, "text": trace["text"], "rounds": trace["rounds"]}))
 
     # -- labels --------------------------------------------------------------------------------------------------
 

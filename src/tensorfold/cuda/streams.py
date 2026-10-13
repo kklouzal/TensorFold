@@ -21,11 +21,13 @@ class Stream:
     sid: int = 0
     st: Any = None                                # the committed model state
     snap: Any = None                              # the drafter's context
-    copies: Any = None
+    copies: Any = None                            # copy drafts' index (CopyIndex), or None
+    session: Any = None                           # session drafts' index (drafters.session_index), or None
     out: list[int] = field(default_factory=list)
     context: list[int] = field(default_factory=list)
     committed: list[int] = field(default_factory=list)     # tokens committed after the prompt, on every rank
     drafts: list[int] = field(default_factory=list)       # an MTP family's drafts for the next round
+    chances: list[float] = field(default_factory=list)    # the cost-aware rule's chance for each draft (else empty)
     stops: list[int] = field(default_factory=list)        # prompt positions whose states the prefill keeps
     constraint: Any = None                                # the reply's grammar (tensorfold.engine.grammar), or None
     background: bool = False                              # priority "background": after, and yielding to, the rest

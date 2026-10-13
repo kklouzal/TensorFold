@@ -877,7 +877,8 @@ class FlashNextEngine:
         if tables is not None:
             tables.close(lambda: torch.cuda.synchronize(weights.device))
         multi = getattr(self, 'multi', None)
-        if multi is not None:                      # opt-in telemetry: its queued records written, then it stops
+        if multi is not None:                      # session index builds stop; opt-in telemetry writes, then stops
+            multi.close_drafting()
             multi.close_telemetry()
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,

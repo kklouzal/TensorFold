@@ -13,6 +13,7 @@ spec = importlib.util.spec_from_file_location("draft_replay", TOOL)
 replay = importlib.util.module_from_spec(spec)
 sys.modules["draft_replay"] = replay
 spec.loader.exec_module(replay)
+draft_rule = replay.draft_rule
 
 P = list(range(100, 130))                                  # the prompt: 30 distinct tokens
 Y = [200, 201, 202] + P[:20] + [400, 401, 402]             # the reply quotes the prompt's first 20 tokens
@@ -32,7 +33,8 @@ SERIAL = [(i, 1, 0, "") for i in range(1, len(Y))]          # recorded: one toke
 
 def _args(**kw):
     ns = dict(t0=34.6, row_ms=6.5, step_ms=1.6, anchors=[4, 8], windows=[5, 8], recent=32, longest=64,
-              corpus_tokens=1_000_000, corpus_segment=262_144, mtp_drafts=2, mtp_accept=0.75, seed=0)
+              corpus_tokens=1_000_000, corpus_segment=262_144, mtp_drafts=2, mtp_accept=0.75, seed=0,
+              tables=None, lam=2.33 / 50, confidence=0.5)
     ns.update(kw)
     return type("Args", (), ns)()
 
@@ -189,3 +191,120 @@ def test_dropped_traces_add_up_across_decoders(tmp_path):
         (tmp_path / f"{i}.json").write_text(json.dumps(tr))
     result = replay.run(replay.load([str(tmp_path)]), _args(windows=[5], anchors=[4]))
     assert result["traces_dropped"] == 5 and "dropped 5 traces" in replay.table(result)
+
+
+COPY_ROUNDS = [(i, 1, 0, "") for i in range(1, 11)] + [(11, 5, 4, "copy"), (16, 5, 4, "copy"), (21, 5, 2, "copy"),
+                                                        (24, 1, 0, ""), (25, 1, 0, "")]
+
+
+def _recorded_suffix(rounds, rule="old"):
+    tr = _trace([(n, rows, acc, "suffix" if src == "copy" else src) for n, rows, acc, src in rounds], copy=True)
+    tr["text"] = "suffix"
+    for r in tr["rounds"]:
+        r["rule"] = rule
+    tr["decoder"].update(anchor=4, recent=32, longest=64)
+    return tr
+
+
+def test_suffix_old_replays_the_servers_session_drafts_and_checks_parity(tmp_path):
+    """The server's session drafts under the A/B baseline's rule: whole continuations of matches of 8+ tokens (the
+    4-token anchor first matches at i = 7 with 4 tokens: left to MTP), so this reply repeats copy8's rounds."""
+
+    (tmp_path / "a.json").write_text(json.dumps(_recorded_suffix(COPY_ROUNDS)))
+    wrong = _recorded_suffix(COPY_ROUNDS[:10] + [(11, 4, 3, "copy")] + COPY_ROUNDS[11:])
+    (tmp_path / "b.json").write_text(json.dumps(dict(wrong, rid="b", order=2)))
+    newer = _recorded_suffix(COPY_ROUNDS, rule="new")               # drafted by the cost-aware rule: not checked
+    (tmp_path / "c.json").write_text(json.dumps(dict(newer, rid="c", order=3)))
+    result = replay.run(replay.load([str(tmp_path)]), _args())
+    assert result["parity_suffix"] == {"checked": 2, "equal": 1, "differ": ["b"]}
+    assert result["parity"] == {"checked": 0, "equal": 0, "differ": []}       # copy8 checks copy traces only
+    st = result["results"]["suffix-old"]["all"]
+    assert st["suffix_tokens"] == 3 * (5 + 5 + 3) and st["tokens"] == 3 * (len(Y) - 1)        # three traces
+    assert "suffix-old parity with recorded rounds: 1/2" in replay.table(result)
+
+
+def test_suffix_new_takes_what_pays_under_the_prior_or_fitted_chances(tmp_path):
+    tr = _recorded_suffix(COPY_ROUNDS)
+    (tmp_path / "a.json").write_text(json.dumps(tr))
+    result = replay.run(replay.load([str(tmp_path)]), _args(windows=[5]))
+    for name in ("suffix-new-w5", "copy8-new"):                       # the prior: whole windows, as the baseline
+        assert result["results"][name]["all"]["rounds"] == result["results"]["suffix-old"]["all"]["rounds"], name
+    rule = draft_rule.Predictor.prior(0.5).as_dict()
+    rule["source"] = {"tool": "test"}
+    for policy in ("greedy", "sampled"):     # matches of 4+: 2 tokens pay (.9, .81 >= .303), a third (.243) not;
+        rule["tables"]["suffix"][policy] = {"feature": "L", "depth_edges": [0, 2], "score_edges": [3.5],   # an
+                                            "table": [[0.0, 0.9], [0.0, 0.3]], "abar": [0.9, 0.3]}  # MTP chain
+        rule["tables"]["mtp"][policy] = {"feature": "p", "depth_edges": [0], "score_edges": [], "table": [[0.5]],
+                                         "abar": [0.5]}                                             # is worth .197
+    tables = tmp_path / "rule.json"
+    tables.write_text(json.dumps(rule))
+    result = replay.run(replay.load([str(tmp_path / "a.json")]), _args(windows=[5], tables=str(tables)))
+    st = result["results"]["suffix-new-w5"]["all"]
+    # recorded MTP rounds to i = 6; text rounds of two drafts from i = 7 (the 4-token anchor) to 22, where the quote
+    # ends after one; then the recorded rounds at 24 and 25
+    assert (st["rounds"], st["drafted"], st["accepted"], st["suffix_tokens"]) == (6 + 6 + 2, 12, 11, 17)
+
+
+def test_stop_rules_compare_on_labelled_probe_chains(tmp_path):
+    """A probe chain labelled to its room: today's rule verifies the confident first draft and stops at the low
+    second; the prior's rule decides the same; a table that trusts every draft verifies all four and keeps two."""
+
+    def entry(p, label):
+        return {"j": 0, "p": p, "m": 1.0, "e": None, "g": None, "z": None, "c": None, "L": None, "a0": None,
+                "inc": False, "hit": label, "label": label}
+
+    drafts = [entry(0.9, 1), entry(0.3, 1), entry(0.9, 0), entry(0.9, 0)]
+    for j, d in enumerate(drafts):
+        d["j"] = j
+    stream = {"rid": "r", "ctx": 1000, "n": 3, "greedy": False, "src": "mtp", "probe": True, "join": False,
+              "constrained": False, "verified": 1, "accepted": 1, "done": False, "drafts": drafts}
+    lines = [{"streams": [stream]}, {"streams": [dict(stream, probe=False)]},
+             {"streams": [dict(stream, drafts=[dict(d, label=None) for d in drafts])]},
+             {"streams": [{k: v for k, v in stream.items() if k != "greedy"}]}]
+    log = tmp_path / "drafts.jsonl"
+    log.write_text("\n".join(json.dumps(line) for line in lines))
+    rule = draft_rule.Predictor.prior(0.5).as_dict()
+    rule["source"] = {"tool": "test"}
+    for policy in ("greedy", "sampled"):
+        rule["tables"]["mtp"][policy] = {"feature": "p", "depth_edges": [0], "score_edges": [], "table": [[0.9]],
+                                         "abar": [0.9]}
+    tables = tmp_path / "rule.json"
+    tables.write_text(json.dumps(rule))
+    got = replay.rules(replay.load_log([str(log)]), _args(tables=str(tables)))
+    res = got["results"]
+    assert (res["confidence"]["all"]["rounds"], res["confidence"]["all"]["rows"], res["confidence"]["all"]["tokens"]) \
+        == (2, 2 + 2, 2 + 2)                                          # 1 draft, kept: 2 tokens (the stream without
+    assert res["prior"]["all"]["rows"] == 2 and res["prior"]["all"]["tokens"] == 2      # "greedy": today's only)
+    assert (res["fit"]["all"]["rows"], res["fit"]["all"]["accepted"], res["fit"]["all"]["tokens"]) == (5, 2, 3)
+    assert res["confidence"]["all"]["ms"] == pytest.approx(2 * (34.6 + 6.5 + 2 * 1.6))
+    assert res["fit"]["all"]["ms"] == pytest.approx(34.6 + 4 * 6.5 + 4 * 1.6)
+    assert got["skipped"] == {"unlabelled": 1, "no_greedy_field": 1, "no_features": 0}
+    # allocate on the prior's chances (.9, .18, .162, .146): one draft has the best expected tokens a modelled ms
+    alloc = res["allocate"]["all"]
+    assert (alloc["rounds"], alloc["rows"], alloc["tokens"]) == (1, 2, 2)
+    assert alloc["ms"] == pytest.approx(34.6 + 6.5 + 4 * 1.6)
+
+
+def test_the_automaton_finds_the_longest_earlier_match_after_every_token():
+    """The S2 reference (design 4.2): after each token, the longest suffix that occurred before (brute force), and
+    a real occurrence of it; S1 never finds a longer one."""
+
+    rng = random.Random(5)
+    for alphabet in (2, 3, 7, 50):
+        automaton, seq = replay.Automaton(), []
+        for step in range(700):
+            c = rng.randrange(alphabet) if rng.random() < 0.7 or len(seq) < 10 else seq[rng.randrange(len(seq))]
+            length, end = automaton.extend(c)
+            seq.append(c)
+            n, want = len(seq), 0
+            for e in range(n - 1):
+                k = 0
+                while k <= e and seq[e - k] == seq[n - 1 - k]:
+                    k += 1
+                want = max(want, k)
+            assert length == want, (alphabet, step)
+            if length:
+                assert end < n - 1 and seq[end - length + 1:end + 1] == seq[n - length:]
+            index = replay.Index(2)
+            index.extend(seq)
+            assert replay.match(index, seq, n, n - 1, 32, 1 << 20)[0] <= max(length, 0)

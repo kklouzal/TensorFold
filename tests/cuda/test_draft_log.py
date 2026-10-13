@@ -17,7 +17,8 @@ if not torch.cuda.is_available():
 
 from test_flashnext_forward import V, _model  # noqa: E402
 
-from tensorfold.cuda import draft_log  # noqa: E402
+from tensorfold.cuda import ab_switch, draft_log  # noqa: E402
+from tensorfold.drafters import draft_rule  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import qmm  # noqa: E402
@@ -33,10 +34,24 @@ PROMPTS = [[5, 17, 99, 250], [1023, 7, 64, 300, 11, 12], [13], [8, 8, 9, 2000, 3
 SAMPLINGS = [None, Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=1.0, min_p=0.1),
              Sampling(seed=99, top_k=0, top_p=0.9)]
 ENVS = (draft_log.LOG_ENV, draft_log.PROBE_ENV, draft_log.TRACE_ENV)
-DRAFT_KEYS = {"j", "p", "m", "e", "g", "z", "inc", "hit", "label"}
-STREAM_KEYS = {"rid", "ctx", "n", "src", "probe", "join", "constrained", "verified", "accepted", "done", "drafts"}
-LINE_KEYS = {"t", "live", "rows", "mixed", "pass_rows", "steps", "probed", "joined", "ms", "streams", "dropped",
-             "forced"}
+DRAFT_KEYS = {"j", "p", "m", "e", "g", "z", "c", "L", "a0", "inc", "hit", "label"}
+STREAM_KEYS = {"rid", "ctx", "n", "greedy", "src", "probe", "join", "constrained", "verified", "accepted", "done",
+               "drafts"}
+LINE_KEYS = {"t", "live", "rows", "mixed", "pass_rows", "steps", "chain_steps", "chain_ms", "probed", "joined", "ms",
+             "cost", "ab", "streams", "dropped", "forced"}
+DECODER = {"depth": 3, "copy_match": 8, "anchor": 4, "recent": 32, "longest": 64}
+
+
+def _switch(monkeypatch, tmp_path, **values) -> None:
+    """The benchmark switches the decoder reads (A/B baseline values: removed after selection). The cost-aware
+    rule's costs are pinned at their prior, so its decisions repeat run to run (they follow wall times otherwise)."""
+
+    control = tmp_path / "ab.json"
+    control.write_text(json.dumps(values))
+    monkeypatch.setattr(ab_switch, "_path", str(control))
+    monkeypatch.setattr(ab_switch, "_values", {})
+    monkeypatch.setattr(ab_switch, "_stamp", None)
+    monkeypatch.setattr(draft_rule.CostModel, "observe", lambda self, **kw: None)
 
 
 def _decode(w, monkeypatch, confidence, count=32, *, prompts=PROMPTS, samplings=SAMPLINGS, counts=None, warm=False):
@@ -44,9 +59,9 @@ def _decode(w, monkeypatch, confidence, count=32, *, prompts=PROMPTS, samplings=
 
     drafted, real = [], MultiDecoder._draft_all
 
-    def spy(self, streams, new=None):
-        steps = real(self, streams, new)
-        drafted.append(sorted((s.sid, tuple(s.drafts)) for s, _, _ in streams))
+    def spy(self, streams, rule, **kw):
+        steps = real(self, streams, rule, **kw)
+        drafted.append(sorted((s.sid, tuple(s.drafts)) for s, *_ in streams))
         return steps
 
     monkeypatch.setattr(MultiDecoder, "_draft_all", spy)
@@ -95,9 +110,11 @@ def test_everything_off_creates_nothing(monkeypatch, tmp_path):
     assert not os.listdir(tmp_path)
 
 
+@pytest.mark.parametrize("rule", ["new", "old"])            # "old": A/B baseline, remove after selection
 @pytest.mark.parametrize("confidence,copy,vocab", [(0.3, False, False), (0.9, True, True), (0.0, True, False)])
-def test_log_probes_and_trace_change_no_draft_or_token(confidence, copy, vocab, monkeypatch, tmp_path):
+def test_log_probes_and_trace_change_no_draft_or_token(confidence, copy, vocab, rule, monkeypatch, tmp_path):
     w = _model_for(vocab)
+    _switch(monkeypatch, tmp_path, draft_rule=rule)
     for env in ENVS:
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1" if copy else "0")
@@ -120,8 +137,13 @@ def test_log_probes_and_trace_change_no_draft_or_token(confidence, copy, vocab, 
     assert all(set(st) == STREAM_KEYS and all(set(d) == DRAFT_KEYS for d in st["drafts"]) for st in entries)
     assert sum(len(line["streams"]) for line in lines) == sum(r for r, _, _ in stats)
     assert len({st["rid"] for st in entries}) == len(PROMPTS)
-    mtp = [d for st in entries if st["src"] == "mtp" and not st["join"] for d in st["drafts"]]
+    mtp = [d for st in entries if st["src"] == "mtp" and (not st["join"] or rule == "new") for d in st["drafts"]]
     assert mtp and all(d["p"] is not None and d["m"] is not None and d["g"] is not None for d in mtp)
+    assert all((d["c"] is not None) == (rule == "new") for d in mtp)        # the rule's chance, under the rule
+    assert all((line["cost"] is not None) == (rule == "new") and line["ab"] == {"draft_rule": rule} for line in lines)
+    assert all(line["chain_steps"] <= max(0, line["steps"] - 1) and 0 <= line["chain_ms"] <= line["ms"]
+               for line in lines)
+    assert any(line["chain_steps"] for line in lines)    # every probe chains on: timed steps
     assert all(d["m"] == "inf" or d["m"] >= 0 for d in mtp)
     shadows = [d for st in entries for d in st["drafts"] if not d["inc"]]
     if confidence > 0:
@@ -143,23 +165,28 @@ def test_log_probes_and_trace_change_no_draft_or_token(confidence, copy, vocab, 
     assert sorted(d["out"] for d in docs) == sorted(outs)
     for doc in docs:
         assert sum(r["acc"] + 1 for r in doc["rounds"]) == len(doc["out"]) - 1
-        assert doc["decoder"] == {"depth": 3, "confidence": confidence, "copy": copy, "copy_match": 8}
+        assert doc["decoder"] == {**DECODER, "confidence": confidence, "copy": copy}
+        assert doc["text"] == ("suffix" if copy else None) and {r["rule"] for r in doc["rounds"]} == {rule}
     result = replay.run(replay.load([str(trace)]), ARGS)
-    if copy:                                             # this model's replies never repeat: MTP rounds only
-        assert result["parity"] == {"checked": len(PROMPTS), "equal": len(PROMPTS), "differ": []}
+    if copy and rule == "old":                           # this model's replies never repeat: MTP rounds only
+        assert result["parity_suffix"] == {"checked": len(PROMPTS), "equal": len(PROMPTS), "differ": []}
     assert result["results"]["recorded"]["all"]["tokens"] == sum(len(o) - 1 for o in outs)
 
 
 ARGS = type("Args", (), dict(t0=34.6, row_ms=6.5, step_ms=1.6, anchors=[4], windows=[5], recent=32, longest=64,
-                             corpus_tokens=0, corpus_segment=1024, mtp_drafts=2, mtp_accept=0.75, seed=0))()
+                             corpus_tokens=0, corpus_segment=1024, mtp_drafts=2, mtp_accept=0.75, seed=0,
+                             tables=None, lam=2.33 / 50, confidence=0.5))()
 QUOTE_A, QUOTE_B = list(range(10, 70)), list(range(300, 340))
 SCRIPTS = {1: [5, 6] + QUOTE_A[:30] + [7] + QUOTE_A[10:40] + [8, 9],      # replies that quote their prompts
            2: [11] + QUOTE_B[5:25] + [12, 13] + QUOTE_B[:12] + [14]}
 
 
-def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tmp_path):
-    """The target's draws are scripted (by seed) to quote the prompt, so the decoder copies; with the log, probes and
-    trace on, its drafts and rounds are unchanged, copy drafts are labelled, and the offline copy8 replays it."""
+@pytest.mark.parametrize("rule,suffix", [("old", "old"), ("old", "new"), ("new", "new"), ("new", "old")])
+def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tmp_path, rule, suffix):
+    """The target's draws are scripted (by seed) to quote the prompt, so the decoder drafts from its own text (the
+    session index: switch "suffix" new; CopyIndex: old); with the log, probes and trace on, its drafts and rounds
+    are unchanged, text drafts are labelled, and under the A/B baseline's rule the offline replay reproduces the
+    rounds (copy8, suffix-old)."""
 
     from tensorfold.families.qwen4_exp.cuda import multi as multi_module
     from tensorfold.families.qwen4_exp.cuda.decode import Engine
@@ -189,6 +216,7 @@ def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tm
         return [[scripted(smp.seed, int(p)) for p in pos] for pos, smp in zip(packets.positions, packets.samplings)]
 
     monkeypatch.setattr(multi_module, "collect_streams", collect)
+    _switch(monkeypatch, tmp_path, draft_rule=rule, suffix=suffix)
     for env in ENVS:
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")
@@ -204,13 +232,18 @@ def test_offline_copy_drafts_replay_the_decoders_round_for_round(monkeypatch, tm
     assert outs == plain and stats == plain_stats and drafts == plain_drafts
     dec.close_telemetry()
     entries = [st for line in log.read_text().splitlines() for st in json.loads(line)["streams"]]
-    copies = [st for st in entries if st["src"] == "copy"]
+    src = "suffix" if suffix == "new" else "copy"
+    copies = [st for st in entries if st["src"] == src]
     assert copies and any(st["accepted"] > 0 for st in copies)
-    for st in copies:                                    # copy drafts: no head features, exact labels
-        assert all(d["p"] is None and d["m"] is None and d["hit"] is not None for d in st["drafts"])
-        lead = next((i for i, d in enumerate(st["drafts"]) if d["label"] != 1), len(st["drafts"]))
+    for st in copies:                                    # text drafts: no head features, exact labels
+        assert all(d["p"] is None and d["m"] is None and d["L"] >= 4 and d["hit"] is not None for d in st["drafts"])
+        assert all((d["c"] is not None) == (rule == "new") and (d["a0"] is not None) == (rule == "new")
+                   for d in st["drafts"])
+        lead = next((i for i, d in enumerate(st["drafts"]) if d["label"] != 1 or not d["inc"]), len(st["drafts"]))
         assert st["accepted"] == lead or st["done"]
     result = replay.run(replay.load([str(trace)]), ARGS)
-    assert result["parity"] == {"checked": 2, "equal": 2, "differ": []}
-    copy8 = result["results"]["copy8"]["all"]
+    parity = result["parity" if suffix == "old" else "parity_suffix"]
+    assert parity == ({"checked": 2, "equal": 2, "differ": []} if rule == "old" else
+                      {"checked": 0, "equal": 0, "differ": []})
+    copy8 = result["results"]["copy8" if suffix == "old" else "suffix-old"]["all"]
     assert copy8["suffix_tokens"] > 0 and copy8["tokens"] == sum(len(s) - 1 for s in SCRIPTS.values())

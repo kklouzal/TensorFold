@@ -172,7 +172,8 @@ def test_trace_files_hold_the_request_and_only_its_owner_reads_them(tmp_path):
     assert doc["decoder"] == {"depth": 3, "confidence": 0.5, "copy": True} and doc["draft"] and not doc["constrained"]
     assert sum(r["acc"] + 1 for r in doc["rounds"]) == len(TRUTH) - 1
     assert doc["rounds"][0] == {"n": 1, "rows": 3, "acc": 2, "src": "mtp", "live": 1, "mixed": False,
-                                "ms": doc["rounds"][0]["ms"]}
+                                "ms": doc["rounds"][0]["ms"], "rule": "old"}
+    assert doc["text"] is None                           # neither a session index nor copies on the stream
     assert doc["start"] <= doc["end"] and doc["dropped"] == 0
     assert (doc["order"], doc["after"]) == (1, 0) and doc["process"] == watch.process
 

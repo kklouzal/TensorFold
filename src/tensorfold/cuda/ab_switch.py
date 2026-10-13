@@ -1,7 +1,8 @@
 """Benchmark-only variant switches for interleaved A/B runs; removed once the A/B has selected (R5).
 
-``TENSORFOLD_AB_CONTROL=<json file>`` names a JSON object of switches. ``refresh()`` (once a round) re-reads it when
-its modification time changes, so a benchmark flips variants between requests without restarting the engine.
+``TENSORFOLD_AB_CONTROL=<json file>`` names a JSON object of switches. ``refresh()`` (once a round, and as a request
+is admitted) re-reads it when its modification time changes, so a benchmark flips variants between requests without
+restarting the engine.
 Unset, ``get`` returns the default and ``refresh`` does nothing.
 """
 
