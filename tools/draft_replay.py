@@ -720,13 +720,20 @@ def region_lambda(lines: list[dict]) -> dict[tuple[int, str], float]:
     return {key: tokens / ms for key, (tokens, ms) in sums.items() if ms > 0}
 
 
+def _v1_cost(line: dict) -> dict | None:
+    """A line's cost-aware estimates when build 263d7203's rule drafted (one row slope, a mean step), else None."""
+
+    cost = line.get("cost")
+    return cost if cost and "step_stream_ms" not in cost else None
+
+
 def v1_costs(lines: list[dict]) -> dict[int, tuple[float, float]]:
     """Build 263d7203's online estimates as its log reported them (row_ms, step_ms), averaged by live streams."""
 
     acc: dict[int, list[float]] = {}
     for line in lines:
-        cost = line.get("cost")
-        if cost and "step_stream_ms" not in cost:           # that build's lines: one row slope, a mean step
+        cost = _v1_cost(line)
+        if cost:
             a = acc.setdefault(line["live"], [0.0, 0.0, 0])
             a[0] += cost["row_ms"]
             a[1] += cost["step_ms"]
@@ -813,7 +820,7 @@ def rules(lines: list[dict], args) -> dict:
         decided["allocate"] = decide_allocate(group, preds["prior"], alone)
         arm = (line.get("ab") or {}).get("draft_rule", "new")
         verified = [st["verified"] for st in group]
-        check = checks["parity"] if arm == "old" else checks["v1_agreement"] if line.get("cost") and v1 else None
+        check = checks["parity"] if arm == "old" else checks["v1_agreement"] if _v1_cost(line) else None
         if check is not None:
             check["checked"] += 1
             check["equal"] += decided["confidence" if arm == "old" else "cost-v1"][0] == verified

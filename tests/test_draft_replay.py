@@ -306,6 +306,13 @@ def test_stop_rules_decide_probe_calls_jointly_and_cost_their_rounds(tmp_path):
     conf = res["confidence"]["live4"]
     assert (conf["drafted"], conf["kept"], conf["chain_steps"]) == (16, 12, 3)
     assert got["checks"]["v1_agreement"] == {"checked": 1, "equal": 0}     # the server verified none here
+    # a call the reworked rule drafted (its cost block has a further stream's step) is not judged against cost-v1
+    rework = _line(7.0, [_probe(f"w{i}", confident, [1, 1, 1, 0]) for i in range(4)],
+                   cost={"lam": 0.12, "row_ms": 4.2, "step_ms": 2.18, "step_stream_ms": 0.26})
+    log.write_text("\n".join(json.dumps(x) for x in [four, old_call, rework]))
+    again = replay.rules(replay.load_log([str(log)]), _args(lam=0.12))
+    assert again["calls"] == 3 and again["checks"]["v1_agreement"] == {"checked": 1, "equal": 0}
+    assert again["v1_costs"] == {4: [5.0, 2.65]}
     versus = got["versus_confidence"]
     assert versus["prior"]["live4"]["gain"] == pytest.approx(0.0, abs=1e-12)
     assert versus["cost-v1"]["live4"]["gain"] == pytest.approx((8 / ms(4, 4, [])) / (16 / ms(4, 16, [4, 4, 4])) - 1,

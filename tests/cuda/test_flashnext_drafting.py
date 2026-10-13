@@ -8,6 +8,7 @@ drafting fails ends alone with the error, the others keeping their solo tokens.
 The synthetic model never repeats its text, so its session index never matches on its own: proposals here are the
 real index's calls with their result replaced (``Texts``), which drives every path after them for real."""
 
+import json
 import random
 import threading
 
@@ -243,6 +244,40 @@ def test_random_costs_chances_and_adversarial_texts_keep_every_token(monkeypatch
     _run(dec, streams, later=[(3, 3)])
     assert [s.out for s in streams] == refs
     assert 0 in windows and 4 in windows                 # zero-draft rounds and whole windows
+
+
+def test_a_fitted_margin_table_reads_each_drafts_keyed_margin(monkeypatch, tmp_path):
+    """A calibration file (``TENSORFOLD_DRAFT_RULE``) whose MTP tables score a draft by its keyed margin (``m``), with
+    a fit's samples a bin (a step's expected value): with no draft log the rule's picks read margins, its chances come
+    from them, and every stream (greedy and sampled) emits its solo tokens."""
+
+    w = _model()
+    prompts, counts = [PROMPTS[1], PROMPTS[0], PROMPTS[3]], [24, 14, 18]
+    refs = _solo(w, prompts, SAMPLINGS[:3], counts)
+    rule = draft_rule.Predictor.prior(0.5).as_dict()
+    rule["source"] = {"tool": "test"}
+    for policy in draft_rule.POLICIES:
+        rule["tables"]["mtp"][policy] = {"feature": "m", "depth_edges": [0, 1, 3], "score_edges": [0.5, 2.0, 6.0],
+                                         "table": [[0.3, 0.6, 0.85, 0.97]] * 3, "abar": [0.97] * 3,
+                                         "count": [[5, 20, 40, 200]] * 3}
+    path = tmp_path / "rule.json"
+    path.write_text(json.dumps(rule))
+    monkeypatch.setenv(draft_rule.ENV, str(path))
+    _switch(monkeypatch, tmp_path, draft_rule="new")
+    margins, real = [], draft_rule.Table.chance
+
+    def chance(self, depth, score):
+        if self.feature == "m":
+            margins.append(score)
+        return real(self, depth, score)
+
+    monkeypatch.setattr(draft_rule.Table, "chance", chance)
+    dec = MultiDecoder(w, slots=3, capacity=1024, depth=3, confidence=0.5, prefill_rows=16)
+    assert dec.predictor.needs_margins and dec.watch is None
+    streams = [Stream(list(p), c, smp) for p, smp, c in zip(prompts, SAMPLINGS, counts)]
+    _run(dec, streams)
+    assert [s.out for s in streams] == refs
+    assert margins and all(isinstance(m, float) and m >= 0 for m in margins)    # the winner's margin: never below 0
 
 
 @pytest.mark.parametrize("rule", ["new", "old"])         # "old": A/B baseline, remove after selection
