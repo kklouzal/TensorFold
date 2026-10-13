@@ -651,6 +651,7 @@ class MultiDecoder:
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         samplings = [s.sampling for s in live]
+        lean = ab_switch.new("b3")                       # "old": A/B baseline, remove after selection
         if b1:
             # one host wait for the packets and the frame's status words, latched before any score is used; a
             # failure before that wait reports a failed frame first, as the check right after the forward did
@@ -659,7 +660,7 @@ class MultiDecoder:
                 for s, (_, a0, a1) in zip(live, segs):
                     if s.sid in grammars:
                         s.constraint.mask(logits[a0:a1], grammars[s.sid])
-                launched = launch_streams(logits, starts, positions, samplings)
+                launched = launch_streams(logits, starts, positions, samplings, lean=lean)
             except BaseException:
                 words.settle()
                 raise
@@ -671,7 +672,7 @@ class MultiDecoder:
             for s, (_, a0, a1) in zip(live, segs):       # A/B baseline: remove after selection
                 if s.sid in grammars:                    # A/B baseline: remove after selection
                     s.constraint.mask(logits[a0:a1], grammars[s.sid])   # A/B baseline: remove after selection
-            sampled = sample_streams(logits, starts, positions, samplings)   # A/B baseline: remove after selection
+            sampled = sample_streams(logits, starts, positions, samplings, lean=lean)   # A/B baseline: remove
         if prof is not None:
             prof.mark("sample", gpu=True)
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))

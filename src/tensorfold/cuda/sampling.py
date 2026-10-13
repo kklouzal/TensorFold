@@ -94,6 +94,14 @@ def score_flags(scores: torch.Tensor) -> torch.Tensor:
     return (torch.isnan(scores) | torch.isposinf(scores)).any(dim=-1)
 
 
+def score_flags_lean(scores: torch.Tensor) -> torch.Tensor:
+    """``score_flags`` in one pass over the rows: a row's maximum is NaN when any score is (the CUDA max reductions
+    propagate NaN) and +inf when any score is +inf without a NaN, else finite or -inf (all masked), so the row is
+    invalid exactly when its maximum is not below +inf."""
+
+    return ~(scores.amax(dim=-1) < float("inf"))
+
+
 def valid_scores(values: np.ndarray, *, require_finite: bool = True) -> None:
     """Contain malformed scores before logarithms and keyed selection; -inf is a mask."""
 
@@ -244,13 +252,14 @@ def sample_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampli
 
 
 def sample_streams(logits: torch.Tensor, starts: Sequence[int], positions: Sequence[Sequence[int]],
-                   samplings: Sequence[Sampling | None]) -> list[list[int]]:
-    """Group stream rows by candidate geometry while preserving each stream's policy and absolute positions."""
+                   samplings: Sequence[Sampling | None], *, lean: bool = False) -> list[list[int]]:
+    """Group stream rows by candidate geometry while preserving each stream's policy and absolute positions.
+    ``lean`` (benchmark switch "b3"): ``_group_packet``'s byte savings, the same packets."""
 
     out, _, groups = _stream_groups(logits, starts, positions, samplings, draw=True)
     # Preserve the original launch-all-groups pipeline. Sources stay strongly
     # owned until every candidate/full-row readback has completed.
-    launched = [_group_packet(logits, starts, count, members) for count, members in groups.items()]
+    launched = [_group_packet(logits, starts, count, members, lean) for count, members in groups.items()]
     # Different policies sharing a count still use their own FP64 chooser.
     for count, members, scores, packet, kept in launched:
         _group_choose(out, count, members, scores, packet.cpu().numpy(), kept, starts, positions, samplings)
@@ -266,12 +275,12 @@ class StreamPackets:
 
 
 def launch_streams(logits: torch.Tensor, starts: Sequence[int], positions: Sequence[Sequence[int]],
-                   samplings: Sequence[Sampling | None]) -> StreamPackets:
+                   samplings: Sequence[Sampling | None], *, lean: bool = False) -> StreamPackets:
     """``sample_streams``' validation and candidate packets, queued: no host wait (top_k-off streams draw in
-    ``collect_streams``, after the readback)."""
+    ``collect_streams``, after the readback). ``lean`` (benchmark switch "b3"): ``_group_packet``'s byte savings."""
 
     out, nucleus, groups = _stream_groups(logits, starts, positions, samplings, draw=False)
-    launched = [_group_packet(logits, starts, count, members) for count, members in groups.items()]
+    launched = [_group_packet(logits, starts, count, members, lean) for count, members in groups.items()]
     return StreamPackets(logits, starts, positions, samplings, out, nucleus, launched)
 
 
@@ -328,16 +337,23 @@ def _stream_groups(logits, starts, positions, samplings, draw: bool):
     return out, nucleus, groups
 
 
-def _group_packet(logits, starts, count, members):
-    """A group's candidate packet on the device: (count, members, scores, packet, kept)."""
+def _group_packet(logits, starts, count, members, lean: bool = False):
+    """A group's candidate packet on the device: (count, members, scores, packet, kept). ``lean`` (benchmark switch
+    "b3"): members whose rows lie back to back in order are one slice of the logits, not a copy (the same rows), and
+    the invalid-domain flags come from one pass (``score_flags_lean``, the same bits)."""
 
     width = logits.shape[1]
-    scores = torch.cat([logits[starts[s]:starts[s + 1]] for s in members]) if len(members) > 1 \
-        else logits[starts[members[0]]:starts[members[0] + 1]]
+    if lean and all(starts[a + 1] == starts[b] for a, b in zip(members, members[1:])):
+        scores = logits[starts[members[0]]:starts[members[-1] + 1]]
+    elif len(members) > 1:                                # A/B baseline: "b3" old, and members out of order
+        scores = torch.cat([logits[starts[s]:starts[s + 1]] for s in members])
+    else:
+        scores = logits[starts[members[0]]:starts[members[0] + 1]]
+    flags = score_flags_lean if lean else score_flags     # A/B baseline: remove after selection
     source = scores
     if count == 0:
         cols = source.argmax(dim=-1, keepdim=True)
-        packet = torch.cat([cols, score_flags(source).to(torch.int64)[:, None],
+        packet = torch.cat([cols, flags(source).to(torch.int64)[:, None],
                             torch.isfinite(source.gather(1, cols)).to(torch.int64)], dim=1)
         return count, members, source, packet, 1
     scores = scores.float()
@@ -348,7 +364,7 @@ def _group_packet(logits, starts, count, members):
         cols = torch.arange(width, dtype=torch.int64, device=scores.device).expand(scores.shape[0], width)
     kept = cols.shape[1]
     packet = torch.cat([values.contiguous().view(torch.int32).to(torch.int64), cols,
-                        score_flags(scores).to(torch.int64)[:, None]], dim=1)
+                        flags(scores).to(torch.int64)[:, None]], dim=1)
     return count, members, scores, packet, kept
 
 
