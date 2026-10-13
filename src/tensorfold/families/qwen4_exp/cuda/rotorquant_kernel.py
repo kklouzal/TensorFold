@@ -287,9 +287,15 @@ def _centroids(q, BITS: tl.constexpr):
         for i in tl.static_range(15):
             out = tl.where(q == i, _C4[i], out)
     elif BITS == 6:
+        # The book is antisymmetric bit for bit (C[63 - i] == -C[i], tests/test_rotorquant_six.py): 31 selections
+        # over its positive half and a sign give every constant exactly, at half the selections, and with no
+        # indexed table (a register gather spills one to local memory: 1.6-2.5x slower sparse decode rows on GB10).
+        low = q < 32
+        k = (q & 31) ^ tl.where(low, 31, 0)
         out = tl.full(q.shape, _C6[63], tl.float32)
-        for i in tl.static_range(63):
-            out = tl.where(q == i, _C6[i], out)
+        for i in tl.static_range(31):
+            out = tl.where(k == i, _C6[32 + i], out)
+        out = tl.where(low, -out, out)
     elif BITS == 7:
         out = tl.full(q.shape, _C7[127], tl.float32)
         for i in tl.static_range(127):
