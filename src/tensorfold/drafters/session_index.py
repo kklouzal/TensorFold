@@ -127,6 +127,7 @@ class SessionIndex:
         self.keys = np.empty(0, dtype=np.uint64)
         self.bits = 1
         self.grams: dict[tuple[int, ...], list[int]] = {}     # reply grams: their end positions, ascending
+        self.last: list[int] = []                        # the sequence's last k tokens, as Python ints
         self.future: Future | None = None
         if builder is not None and len(prompt) >= BULK:
             self.future = builder.submit(prompt, k)
@@ -157,6 +158,7 @@ class SessionIndex:
         self.tokens = np.empty(len(ids) + GROW, dtype=np.int32)
         self.tokens[:len(ids)] = ids
         self.n = len(ids)
+        self.last = ids[-self.k:].tolist()
         backlog, self.backlog = self.backlog, []
         self._append(backlog)
 
@@ -180,21 +182,25 @@ class SessionIndex:
             self._append(tokens)
 
     def _append(self, tokens: Sequence[int]) -> None:
-        if not len(tokens):
+        tokens = [int(t) for t in tokens]
+        if not tokens:
             return
+        if min(tokens) < 0:
+            raise ValueError("session drafts index non-negative token ids")
         need = self.n + len(tokens)
         if need > len(self.tokens):
             grown = np.empty(max(need, len(self.tokens) + len(self.tokens) // 4) + GROW, dtype=np.int32)
             grown[:self.n] = self.tokens[:self.n]
             self.tokens = grown
-        t, k = self.tokens, self.k
-        start = self.n
-        t[start:need] = tokens
-        if np.any(t[start:need] < 0):
-            raise ValueError("session drafts index non-negative token ids")
+        self.tokens[self.n:need] = tokens
+        k, last, grams = self.k, self.last, self.grams
+        for end, t in enumerate(tokens, self.n):
+            last.append(t)
+            if len(last) > k:
+                del last[0]
+            if end >= k - 1:
+                grams.setdefault(tuple(last), []).append(end)
         self.n = need
-        for end in range(max(start, k - 1), need):
-            self.grams.setdefault(tuple(t[end - k + 1:end + 1].tolist()), []).append(end)
 
     # -- queries -----------------------------------------------------------------------------------------------
     def match(self) -> tuple[int, int]:
@@ -204,8 +210,7 @@ class SessionIndex:
         n, k = self.n, self.k
         if self.future is not None or n < k + 1:
             return 0, -1
-        t = self.tokens
-        needle = t[n - k:n].tolist()
+        t, needle = self.tokens, self.last
         newest = self.grams.get(tuple(needle), [])
         ends = newest[-self.recent - 1:]
         if ends and ends[-1] == n - 1:                   # the end's own gram
@@ -214,8 +219,8 @@ class SessionIndex:
         want = self.recent - len(ends)
         if want > 0 and len(self.keys):
             lo = _hash(needle) >> self.bits << self.bits
-            a = int(np.searchsorted(self.keys, np.uint64(lo), "left"))
-            b = int(np.searchsorted(self.keys, np.uint64(lo | ((1 << self.bits) - 1)), "right"))
+            # the gram's run: no key holds the all-ones position (the bits exceed every prompt position)
+            a, b = self.keys.searchsorted(np.asarray([lo, lo | ((1 << self.bits) - 1)], dtype=np.uint64)).tolist()
             mask = np.uint64((1 << self.bits) - 1)
             older = (self.keys[max(a, b - want):b] & mask).astype(np.int64)
             older = older[older < n - 1]

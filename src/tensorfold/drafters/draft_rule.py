@@ -20,11 +20,15 @@ optionally a fitted cost prior; it holds no token ids or text. Without one, ``Pr
 confidence the server was started with that reproduce the confidence rule's decisions at the default costs (see its
 docstring).
 
-``CostModel``: a round's milliseconds ``t0 + row * (R - 1) + ctx * sum(rows * context) / 1e5 + step * steps +
-pass * prompt_rows``, fitted online for rounds with and without a prompt pass by exponentially forgetting least
-squares anchored at a prior (recursive least squares with forgetting; the prior keeps unexcited directions), and
-lambda* per region (live streams, a prompt pass, the longest context's bucket) as a ratio of exponential averages of
-tokens and milliseconds. Estimates are clamped to sane ranges. Determinism: decisions follow measured wall times, so
+``CostModel``: an MTP chain step's milliseconds measured directly (each step, from its launch to its pick's readback,
+which it needs anyway), as an exponential average; and a round's milliseconds less its chain steps', ``t0 + row *
+(R - 1) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows``, fitted online for rounds with and without a prompt
+pass by exponentially forgetting least squares anchored at a prior (recursive least squares with forgetting; the
+prior keeps unexcited directions). Timing steps directly keeps their cost out of the regression, where it is
+collinear with the rows the same decisions draft (under that feedback a fitted step cost went negative). lambda* is
+kept per region (live streams, a prompt pass, the longest context's bucket) as a ratio of exponential averages of
+tokens and milliseconds; a region not seen yet takes its nearest seen region's (as streams join or finish), then every
+round's, then the prior. Estimates are clamped to sane ranges. Determinism: decisions follow measured wall times, so
 a request's round structure is not reproducible run to run; its tokens are.
 """
 
@@ -62,14 +66,15 @@ BUCKETS = ((50_000, "<50k"), (300_000, "50-300k"), (600_000, "300-600k"), (None,
 # Cost prior (ms; design 3.5 defaults): t0 = 32 ms + 2.6 ms host, a verify row 6.5 ms, an MTP step 1.6 ms, the
 # indexer ~0.22 ms a row per 100k tokens of context; a round with a prompt pass reads the experts for it anyway, so
 # its window rows are cheap, and each prompt row costs about a prefill row (~580 tok/s measured).
-COST_PRIOR = {"unmixed": {"t0": 34.6, "row": 6.5, "ctx": 0.22, "step": 1.6, "pass": 0.0},
-              "mixed": {"t0": 34.6, "row": 1.0, "ctx": 0.22, "step": 1.6, "pass": 1.7}}
-COST_TERMS = ("t0", "row", "ctx", "step", "pass")
-COST_SD = (20.0, 5.0, 0.5, 2.0, 2.0)  # the prior's standard deviations (ms): weak, so a few rounds outweigh it
+COST_PRIOR = {"unmixed": {"t0": 34.6, "row": 6.5, "ctx": 0.22, "pass": 0.0, "step": 1.6},
+              "mixed": {"t0": 34.6, "row": 1.0, "ctx": 0.22, "pass": 1.7, "step": 1.6}}
+COST_TERMS = ("t0", "row", "ctx", "pass")   # the regression's terms; "step" is measured (an exponential average)
+COST_SD = (20.0, 5.0, 0.5, 2.0)  # the prior's standard deviations (ms): weak, so a few rounds outweigh it
+STEP_RATE = 0.05            # the step average's newest-round weight (after its first rounds' plain average)
 LAMBDA_PRIOR = 2.33 / 50.0  # tokens a ms: production's 2.33 tokens a round at ~50 ms
 PRIOR_MS = 50.0             # the lambda prior's weight, in milliseconds of rounds
 FORGET = 0.995              # least squares' forgetting a round (memory ~200 rounds)
-LAMBDA_RATE = 0.05          # lambda*'s exponential averages: the newest round's weight
+LAMBDA_RATE = 0.05          # lambda*'s exponential averages: the newest round's weight (after the first rounds')
 ROW_MS = (0.01, 200.0)      # clamps: a verify row's marginal ms
 STEP_MS = (0.0, 100.0)      # an MTP step's ms
 LAMBDA = (0.002, 2.0)       # tokens a ms
@@ -168,9 +173,9 @@ def _cost(data) -> dict:
     out = {}
     for name in ("unmixed", "mixed"):
         terms = data[name]
-        if not isinstance(terms, dict) or set(terms) != set(COST_TERMS):
-            raise ValueError(f"cost.{name}: {{{', '.join(COST_TERMS)}}}")
-        out[name] = {t: _number(terms[t], f"cost.{name}.{t}") for t in COST_TERMS}
+        if not isinstance(terms, dict) or set(terms) != {*COST_TERMS, "step"}:
+            raise ValueError(f"cost.{name}: {{{', '.join((*COST_TERMS, 'step'))}}}")
+        out[name] = {t: _number(terms[t], f"cost.{name}.{t}") for t in (*COST_TERMS, "step")}
     lam = _number(data["lambda"], "cost.lambda")
     if not LAMBDA[0] <= lam <= LAMBDA[1]:
         raise ValueError(f"cost.lambda: tokens a ms from {LAMBDA[0]} to {LAMBDA[1]}")
@@ -288,13 +293,13 @@ class Thresholds:
     step: float                                          # an MTP step alone, in tokens (full - row)
 
 
-def features(rows: int, ctx_rows: float, steps: int, pass_rows: int) -> np.ndarray:
-    return np.asarray([1.0, rows - 1.0, ctx_rows / 1e5, float(steps), float(pass_rows)])
+def features(rows: int, ctx_rows: float, pass_rows: int) -> np.ndarray:
+    return np.asarray([1.0, rows - 1.0, ctx_rows / 1e5, float(pass_rows)])
 
 
 class CostFit:
-    """Exponentially forgetting least squares anchored at a prior (a 5-term round cost; ``tools/fit_draft_rule.py``
-    solves the same anchored problem over logged rounds without forgetting)."""
+    """Exponentially forgetting least squares anchored at a prior (a round's cost less its chain steps;
+    ``tools/fit_draft_rule.py`` solves the same anchored problem over logged rounds without forgetting)."""
 
     def __init__(self, prior: dict) -> None:
         self.theta0 = np.asarray([prior[t] for t in COST_TERMS], dtype=np.float64)
@@ -302,6 +307,7 @@ class CostFit:
         self.a = np.zeros((len(COST_TERMS), len(COST_TERMS)))
         self.b = np.zeros(len(COST_TERMS))
         self.theta = self.theta0.copy()
+        self.coef = self.theta.tolist()                  # as Python floats, for the per-stream thresholds
         self.rounds = 0
 
     def observe(self, x: np.ndarray, ms: float) -> None:
@@ -311,6 +317,7 @@ class CostFit:
         self.a = FORGET * self.a + np.outer(x, x)
         self.b = FORGET * self.b + x * y
         self.theta = np.linalg.solve(self.a + self.precision0, self.b + self.precision0 @ self.theta0)
+        self.coef = self.theta.tolist()
         self.rounds += 1
 
 
@@ -320,36 +327,67 @@ class CostModel:
     def __init__(self, prior: dict | None = None) -> None:
         prior = prior or {**COST_PRIOR, "lambda": LAMBDA_PRIOR}
         self.fits = {False: CostFit(prior["unmixed"]), True: CostFit(prior["mixed"])}
+        self.step = {False: prior["unmixed"]["step"], True: prior["mixed"]["step"]}
+        self.steps_seen = {False: 0, True: 0}
         self.lambda0 = prior["lambda"]
-        self.regions: dict[tuple[int, bool, str], list[float]] = {}     # region -> [tokens EMA, ms EMA]
+        self.regions: dict[tuple[int, bool, str], list[float]] = {}     # region -> [tokens, ms averages, rounds]
+        self.overall: list[float] | None = None                         # every round's
 
     @staticmethod
     def region(live: int, mixed: bool, context: int) -> tuple[int, bool, str]:
         return min(max(1, live), 4), bool(mixed), bucket(context)
 
-    def observe(self, *, rows: int, ctx_rows: float, steps: int, pass_rows: int, mixed: bool, ms: float,
-                tokens: int, live: int, context: int) -> None:
-        """A round's verify rows, the sum of its rows' contexts, its MTP steps, prompt rows, wall milliseconds and
-        emitted tokens (``live`` streams, the longest at ``context``)."""
+    def observe(self, *, rows: int, ctx_rows: float, pass_rows: int, mixed: bool, ms: float, chain_ms: float,
+                chain_steps: int, tokens: int, live: int, context: int) -> None:
+        """A round's verify rows, the sum of its rows' contexts, its prompt rows, wall milliseconds (``chain_ms`` of
+        them in its ``chain_steps`` MTP chain steps) and emitted tokens (``live`` streams, the longest at
+        ``context``)."""
 
-        if not (math.isfinite(ms) and ms > 0) or rows < 1 or tokens < 0:
-            raise ValueError(f"a round's cost observation: rows {rows}, {ms} ms, {tokens} tokens")
-        self.fits[bool(mixed)].observe(features(rows, ctx_rows, steps, pass_rows), ms)
-        ema = self.regions.setdefault(self.region(live, mixed, context), [self.lambda0 * PRIOR_MS, PRIOR_MS])
-        ema[0] += LAMBDA_RATE * (tokens - ema[0])
-        ema[1] += LAMBDA_RATE * (ms - ema[1])
+        if not (math.isfinite(ms) and ms > 0 and math.isfinite(chain_ms) and 0 <= chain_ms <= ms) or rows < 1 or \
+                tokens < 0 or chain_steps < 0:
+            raise ValueError(f"a round's cost observation: rows {rows}, {ms} ms ({chain_ms} in {chain_steps} steps), "
+                             f"{tokens} tokens")
+        mixed = bool(mixed)
+        self.fits[mixed].observe(features(rows, ctx_rows, pass_rows), ms - chain_ms)
+        if chain_steps:
+            self.steps_seen[mixed] += 1
+            rate = max(STEP_RATE, 1.0 / (self.steps_seen[mixed] + 1))
+            self.step[mixed] += rate * (chain_ms / chain_steps - self.step[mixed])
+        region = self.region(live, mixed, context)
+        ema = self.regions.get(region)
+        if ema is None:                                  # a new region starts from its nearest estimate's lambda*
+            ema = self.regions[region] = [self._estimate(region) * PRIOR_MS, PRIOR_MS, 0]
+        if self.overall is None:
+            self.overall = [self.lambda0 * PRIOR_MS, PRIOR_MS, 0]
+        for e in (ema, self.overall):                    # the start counts as one round: averages of the first
+            e[2] += 1                                    # rounds, then exponential (LAMBDA_RATE)
+            rate = max(LAMBDA_RATE, 1.0 / (e[2] + 1))
+            e[0] += rate * (tokens - e[0])
+            e[1] += rate * (ms - e[1])
+
+    def _estimate(self, region: tuple[int, bool, str]) -> float:
+        """lambda* of ``region``: its own, else the nearest live count's with the same prompt pass and context
+        bucket (fewer streams on ties), else every round's, else the prior."""
+
+        ema = self.regions.get(region)
+        if ema is None:
+            live, mixed, name = region
+            near = [r for r in self.regions if r[1:] == (mixed, name)]
+            if near:
+                ema = self.regions[min(near, key=lambda r: (abs(r[0] - live), r[0]))]
+            else:
+                ema = self.overall
+        return self.lambda0 if ema is None else ema[0] / ema[1]
 
     def lam(self, live: int, mixed: bool, context: int) -> float:
-        ema = self.regions.get(self.region(live, mixed, context))
-        value = self.lambda0 if ema is None else ema[0] / ema[1]
-        return min(LAMBDA[1], max(LAMBDA[0], value))
+        return min(LAMBDA[1], max(LAMBDA[0], self._estimate(self.region(live, mixed, context))))
 
     def row_ms(self, context: int, mixed: bool) -> float:
-        theta = self.fits[bool(mixed)].theta
-        return min(ROW_MS[1], max(ROW_MS[0], float(theta[1] + theta[2] * context / 1e5)))
+        _, row, ctx, _ = self.fits[bool(mixed)].coef
+        return min(ROW_MS[1], max(ROW_MS[0], row + ctx * context / 1e5))
 
     def step_ms(self, mixed: bool) -> float:
-        return min(STEP_MS[1], max(STEP_MS[0], float(self.fits[bool(mixed)].theta[3])))
+        return min(STEP_MS[1], max(STEP_MS[0], self.step[bool(mixed)]))
 
     def thresholds(self, lam: float, context: int, mixed: bool) -> Thresholds:
         row, step = lam * self.row_ms(context, mixed), lam * self.step_ms(mixed)

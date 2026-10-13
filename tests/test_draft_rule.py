@@ -197,60 +197,88 @@ def test_a_calibration_file_round_trips_and_is_validated(tmp_path, monkeypatch):
         dr.Predictor.prior(1.5)
 
 
-def _rounds(rng, truth, mixed, count=400):
-    """Rounds of a known linear cost, with noise."""
+def _rounds(rng, truth, step, mixed, count=400):
+    """Rounds of a known linear cost (``truth`` over ``dr.features``) plus chain steps of ``step`` ms each, with
+    noise: (rows, sum of rows' contexts, prompt rows, ms, chain ms, chain steps)."""
 
     out = []
     for _ in range(count):
-        rows, steps = rng.randint(1, 12), rng.randint(1, 5)
+        rows, steps = rng.randint(1, 12), rng.randint(0, 4)
         ctx = rng.randint(1_000, 600_000)
         passed = rng.randint(64, 512) if mixed else 0
-        x = dr.features(rows, rows * ctx, steps, passed)
-        out.append((rows, rows * ctx, steps, passed, float(x @ truth) + rng.gauss(0, 0.2)))
+        chain = sum(step + rng.gauss(0, 0.05) for _ in range(steps))
+        x = dr.features(rows, rows * ctx, passed)
+        out.append((rows, rows * ctx, passed, float(x @ truth) + chain + rng.gauss(0, 0.2), chain, steps))
     return out
+
+
+def _observe(model, rounds, mixed, tokens=3, live=2, context=100_000):
+    for rows, ctx_rows, passed, ms, chain, steps in rounds:
+        model.observe(rows=rows, ctx_rows=ctx_rows, pass_rows=passed, mixed=mixed, ms=ms, chain_ms=chain,
+                      chain_steps=steps, tokens=tokens, live=live, context=context)
 
 
 def test_the_cost_model_learns_each_regimes_costs_and_lambda_per_region():
     rng = random.Random(1)
     model = dr.CostModel()
-    truths = {False: np.asarray([20.0, 3.0, 0.4, 0.9, 0.0]), True: np.asarray([25.0, 0.5, 0.4, 0.9, 1.2])}
-    for mixed, truth in truths.items():
-        for rows, ctx_rows, steps, passed, ms in _rounds(rng, truth, mixed):
-            model.observe(rows=rows, ctx_rows=ctx_rows, steps=steps, pass_rows=passed, mixed=mixed, ms=ms,
-                          tokens=3, live=2, context=100_000)
+    truths = {False: (np.asarray([20.0, 3.0, 0.4, 0.0]), 0.9), True: (np.asarray([25.0, 0.5, 0.4, 1.2]), 1.3)}
+    for mixed, (truth, step) in truths.items():
+        _observe(model, _rounds(rng, truth, step, mixed), mixed)
     unmixed = model.fits[False].theta
-    assert unmixed[:4] == pytest.approx(truths[False][:4], abs=0.15)
-    assert unmixed[4] == pytest.approx(dr.COST_PRIOR["unmixed"]["pass"], abs=1e-6)   # never excited: the prior's
-    assert model.fits[True].theta == pytest.approx(truths[True], abs=0.15)
+    assert unmixed[:3] == pytest.approx(truths[False][0][:3], abs=0.15)
+    assert unmixed[3] == pytest.approx(dr.COST_PRIOR["unmixed"]["pass"], abs=1e-6)   # never excited: the prior's
+    assert model.fits[True].theta == pytest.approx(truths[True][0], abs=0.15)
     assert model.row_ms(100_000, False) == pytest.approx(3.0 + 0.4, abs=0.2)
-    assert model.step_ms(True) == pytest.approx(0.9, abs=0.15)
+    assert (model.step_ms(False), model.step_ms(True)) == pytest.approx((0.9, 1.3), abs=0.05)   # measured steps
     region = model.regions[model.region(2, False, 100_000)]
     assert model.lam(2, False, 100_000) == pytest.approx(region[0] / region[1])
-    assert model.lam(3, False, 100_000) == dr.LAMBDA_PRIOR                 # an unseen region: the prior
+    assert model.lam(3, False, 100_000) == model.lam(2, False, 100_000)    # unseen: the nearest live count's
+    assert model.lam(2, False, 700_000) == pytest.approx(model.overall[0] / model.overall[1])   # else every round's
+    assert dr.CostModel().lam(2, False, 100_000) == dr.LAMBDA_PRIOR       # nothing seen: the prior
+    _observe(model, _rounds(rng, truths[False][0], 0.9, False, 1), False, live=4)
+    assert model.regions[model.region(4, False, 100_000)][0] / dr.PRIOR_MS == pytest.approx(
+        model.lam(2, False, 100_000), rel=0.2)                              # a new region starts from its nearest
     t = model.thresholds(0.05, 100_000, False)
     assert (t.row, t.full) == pytest.approx((0.05 * model.row_ms(100_000, False),
                                              0.05 * (model.row_ms(100_000, False) + model.step_ms(False))))
 
 
+def test_steps_measured_apart_keep_their_cost_when_decisions_tie_rows_to_steps():
+    """Under the rule's feedback a round's steps follow its rows (every stream that drafts deep also chains): a
+    regression on both cannot tell them apart, a measured step can."""
+
+    rng = random.Random(4)
+    model = dr.CostModel()
+    rounds = []
+    for _ in range(600):
+        drafts = rng.randint(0, 4)
+        chain = sum(2.0 + rng.gauss(0, 0.05) for _ in range(drafts))
+        rows = 4 * (1 + drafts)
+        rounds.append((rows, rows * 2000, 0, 6.0 + 0.1 * (rows - 1) + chain + rng.gauss(0, 0.3), chain, drafts))
+    _observe(model, rounds, False, live=4, context=2000)
+    assert model.step_ms(False) == pytest.approx(2.0, abs=0.05)
+    assert model.row_ms(2000, False) == pytest.approx(0.1 + 0.22 * 0.02, abs=0.1)
+
+
 def test_the_cost_model_forgets_bounds_outliers_and_clamps():
     rng = random.Random(2)
     model = dr.CostModel()
-    for rows, ctx_rows, steps, passed, ms in _rounds(rng, np.asarray([20.0, 3.0, 0.0, 1.0, 0.0]), False, 600):
-        model.observe(rows=rows, ctx_rows=ctx_rows, steps=steps, pass_rows=passed, mixed=False, ms=ms, tokens=2,
-                      live=1, context=1000)
-    for rows, ctx_rows, steps, passed, ms in _rounds(rng, np.asarray([20.0, 6.0, 0.0, 1.0, 0.0]), False, 1500):
-        model.observe(rows=rows, ctx_rows=ctx_rows, steps=steps, pass_rows=passed, mixed=False, ms=ms, tokens=2,
-                      live=1, context=1000)
+    _observe(model, _rounds(rng, np.asarray([20.0, 3.0, 0.0, 0.0]), 1.0, False, 600), False, 2, 1, 1000)
+    _observe(model, _rounds(rng, np.asarray([20.0, 6.0, 0.0, 0.0]), 1.0, False, 1500), False, 2, 1, 1000)
     assert model.fits[False].theta[1] == pytest.approx(6.0, abs=0.2)      # the newer cost wins
     before = model.fits[False].theta.copy()
-    model.observe(rows=2, ctx_rows=2000, steps=1, pass_rows=0, mixed=False, ms=5000.0, tokens=2, live=1, context=1000)
+    model.observe(rows=2, ctx_rows=2000, pass_rows=0, mixed=False, ms=5000.0, chain_ms=0.0, chain_steps=0, tokens=2,
+                  live=1, context=1000)
     assert np.abs(model.fits[False].theta - before).max() < 1.0           # a 5 s pause moves it boundedly
     for _ in range(200):                                 # absurd measurements: estimates stay within the clamps
-        model.observe(rows=12, ctx_rows=0, steps=1, pass_rows=0, mixed=True, ms=1e-6, tokens=900, live=1, context=1)
+        model.observe(rows=12, ctx_rows=0, pass_rows=0, mixed=True, ms=1e-6, chain_ms=1e-6, chain_steps=3,
+                      tokens=900, live=1, context=1)
     assert model.row_ms(0, True) >= dr.ROW_MS[0] and model.lam(1, True, 1) <= dr.LAMBDA[1]
-    for bad in (0.0, -1.0, math.nan, math.inf):
+    assert model.step_ms(True) >= dr.STEP_MS[0]
+    for bad, chain in ((0.0, 0.0), (-1.0, 0.0), (math.nan, 0.0), (math.inf, 0.0), (5.0, 6.0), (5.0, -1.0)):
         with pytest.raises(ValueError, match="observation"):
-            model.observe(rows=1, ctx_rows=0, steps=1, pass_rows=0, mixed=False, ms=bad, tokens=1, live=1, context=1)
-    seeded = dr.CostModel({"unmixed": {**dr.COST_PRIOR["unmixed"], "row": 2.0},
+            model.observe(rows=1, ctx_rows=0, pass_rows=0, mixed=False, ms=bad, chain_ms=chain, chain_steps=1,
+                          tokens=1, live=1, context=1)
+    seeded = dr.CostModel({"unmixed": {**dr.COST_PRIOR["unmixed"], "row": 2.0, "step": 0.7},
                            "mixed": dict(dr.COST_PRIOR["mixed"]), "lambda": 0.1})
-    assert seeded.row_ms(0, False) == 2.0 and seeded.lam(1, False, 0) == 0.1
+    assert (seeded.row_ms(0, False), seeded.step_ms(False), seeded.lam(1, False, 0)) == (2.0, 0.7, 0.1)
