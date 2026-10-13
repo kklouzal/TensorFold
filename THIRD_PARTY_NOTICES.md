@@ -54,11 +54,6 @@ The MLX engine of `glm5_next` (`src/tensorfold/families/glm5_next/`: the forward
 
 CUDA backends use [PyTorch](https://github.com/pytorch/pytorch), BSD-3-Clause, and
 [Triton](https://github.com/triton-lang/triton), MIT, supplied by NVIDIA's container rather than bundled.
-
-The container images published from this repository (`ghcr.io/kklouzal/tensorfold`) are built on NVIDIA's
-NGC `cuda-dl-base` image and include NVIDIA software under the NVIDIA Deep Learning Container License and
-the licenses of its components. TensorFold is the application these images add; the NVIDIA base is not
-distributed separately. This software contains source code provided by NVIDIA Corporation.
 Dense Qwen implements mlx-lm's model math. CUDA DFlash2 implementations port z-lab's architecture under
 the MIT License, Copyright © 2026 Z Lab.
 
