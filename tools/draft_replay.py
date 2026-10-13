@@ -116,7 +116,7 @@ import sys
 BUCKETS = ((50_000, "<50k"), (300_000, "50-300k"), (600_000, "300-600k"), (None, ">600k"))
 SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen3_5/cuda/decode.py"
 SRC = Path(__file__).resolve().parents[1] / "src"
-if str(SRC) not in sys.path:                             # the rule's host math (numpy only), as the server runs it
+if str(SRC) not in sys.path:                             # the rule's host math (plain Python), as the server runs it
     sys.path.insert(0, str(SRC))
 from tensorfold.drafters import draft_rule  # noqa: E402
 from tensorfold.engine.allocate import allocate  # noqa: E402
@@ -774,11 +774,6 @@ def _outcome(line: dict, group: list[dict], ks: list[int], steps: list[int], cos
     return tokens, rows, sum(ks), kept, ms
 
 
-def _keys(line: dict) -> list[str]:
-    live = line["live"]
-    return ["all", f"live{live}", f"live{live} {bucket(max(st['ctx'] for st in line['streams']))}"]
-
-
 def rules(lines: list[dict], args) -> dict:
     """Stop rules on the log's probe drafting calls (``--log``): exact per-call counterfactuals (the module's
     description)."""
@@ -791,6 +786,7 @@ def rules(lines: list[dict], args) -> dict:
         block = preds["fit"].cost or block
     cross = [draft_rule.Predictor.load(path) for path in args.cross_tables or ()]   # fitted on half 0, half 1
     costs, lams, v1 = Costs(block), region_lambda(lines), v1_costs(lines)
+    model = costs.model
     alone = lambda rows, steps: costs.block["unmixed"]["t0"] + (rows - 1) * costs.block["unmixed"]["row"] + \
         steps * costs.block["unmixed"]["step"]  # noqa: E731
     order = ["confidence", *(["cost-v1"] if v1 else []), *preds, *(["fit-cv"] if cross else []), "allocate"]
@@ -799,10 +795,10 @@ def rules(lines: list[dict], args) -> dict:
     checks = {"parity": {"checked": 0, "equal": 0}, "v1_agreement": {"checked": 0, "equal": 0}}
     for line, group in calls:
         mixed, live = bool(line["mixed"]), line["live"]
-        context = max(st["ctx"] for st in line["streams"])
-        lam = args.lam if args.lam is not None else lams[(live, bucket(context))]
+        ctx_bucket = bucket(max(st["ctx"] for st in line["streams"]))
+        keys = ["all", f"live{live}", f"live{live} {ctx_bucket}"]      # reported overall, by live, by live and bucket
+        lam = args.lam if args.lam is not None else lams[(live, ctx_bucket)]
         lam *= args.lam_scale
-        model = costs.model
         rows = [lam * model.row_ms(st["ctx"], mixed) for st in group]
         step, extra = lam * model.step_ms(mixed), lam * model.step_stream_ms(mixed)
         decided = {"confidence": decide_confidence(group, args.confidence)}
@@ -823,11 +819,11 @@ def rules(lines: list[dict], args) -> dict:
             check["equal"] += decided["confidence" if arm == "old" else "cost-v1"][0] == verified
         for name, (ks, steps) in decided.items():
             tokens, n_rows, drafted, kept, ms = _outcome(line, group, ks, steps, costs)
-            for key in _keys(line):
+            for key in keys:
                 t = totals[name].setdefault(key, [0, 0, 0, 0, 0, 0.0, 0])
                 for i, v in enumerate((1, tokens, n_rows, drafted, kept, ms, len(steps))):
                     t[i] += v
-            per_call[name].append((_keys(line)[1], tokens, ms))
+            per_call[name].append((keys[1], tokens, ms))
     results = {}
     for name, buckets in totals.items():
         results[name] = {}

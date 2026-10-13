@@ -28,8 +28,9 @@ optionally, its ``TENSORFOLD_DRAFT_TRACE`` files (``tensorfold.cuda.draft_log``)
 Requests are split by a hash of their random id (``draft_rule.half``) into a fitting half and a held-out half for the
 report (log-loss, Brier score and reliability by predicted band, against the confidence rule's prior too); the
 written tables are then fitted on every sample, or with ``--fit-half H`` on half H's requests alone (the report's
-held-out half is then the other: two such files cross-fit an evaluation, ``tools/draft_replay.py --cross-tables``). The file holds numbers only: no token ids or text. Install it with
-``TENSORFOLD_DRAFT_RULE=<path>`` (the server validates it at startup).
+held-out half is then the other: two such files cross-fit an evaluation, ``tools/draft_replay.py --cross-tables``).
+The file holds numbers only: no token ids or text. Install it with ``TENSORFOLD_DRAFT_RULE=<path>`` (the server
+validates it at startup).
 """
 
 from __future__ import annotations
@@ -361,8 +362,8 @@ def run(args) -> dict:
               .isoformat(timespec="seconds"), "logs": _inputs(log_paths), "traces": len(trace_paths),
               "trace_inputs": _inputs(trace_paths), "suffix_from": "traces" if traces else "log",
               "confidence_prior": args.confidence, "fit_half": args.fit_half, "prior_tables": unfitted,
-              "prior_costs": [f"{name}{'.steps' if part == 'steps' else ''}" for name in ("unmixed", "mixed")
-                              for part, entry in (("rounds", cost_report[name]), ("steps", cost_report[name]["steps"]))
+              "prior_costs": [name + part for name in ("unmixed", "mixed")
+                              for part, entry in (("", cost_report[name]), (".steps", cost_report[name]["steps"]))
                               if entry.get("prior_kept")],
               "held_out": {"mtp": mtp_report, "suffix": suffix_report, "cost": cost_report}}
     if not isinstance(extra, dict) or set(extra) & set(source):     # added provenance never replaces the fit's own

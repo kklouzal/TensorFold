@@ -280,7 +280,7 @@ def test_stop_rules_decide_probe_calls_jointly_and_cost_their_rounds(tmp_path):
     plain = _line(6.0, [_probe("n", confident, [1, 1, 1, 1], probe=False)])
     log = tmp_path / "drafts.jsonl"
     log.write_text("\n".join(json.dumps(x) for x in [four, old_call, joined, unlabelled, old_log, plain]))
-    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.12, lam_scale=1.0, cross_tables=None))
+    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.12))
     assert got["calls"] == 2 and got["skipped"] == {"joined": 1, "unlabelled": 1, "no_greedy_field": 1,
                                                     "no_features": 0}
     assert got["checks"]["parity"] == {"checked": 1, "equal": 1}          # today's rule = the server's decision
@@ -332,8 +332,7 @@ def test_cross_fitted_tables_judge_each_stream_by_the_other_half(tmp_path):
     log = tmp_path / "drafts.jsonl"
     log.write_text("\n".join(json.dumps(_line(float(t), [_probe(rids[h], [0.9] * 3, [1, 1, 1])]))
                              for t, h in enumerate((0, 1))))
-    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.05, lam_scale=1.0,
-                                                          cross_tables=[str(p) for p in paths]))
+    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.05, cross_tables=[str(p) for p in paths]))
     cv = got["results"]["fit-cv"]["live1"]
     # half 0's request is judged by half 1's table (nothing verified), half 1's by half 0's (its whole room)
     assert (cv["calls"], cv["drafted"]) == (2, 0 + 3)
