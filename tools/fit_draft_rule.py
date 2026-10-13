@@ -187,8 +187,8 @@ def fit_mtp(samples, prior: draft_rule.Predictor) -> tuple[dict, dict]:
     for policy, rows in samples.items():
         candidates = {}
         for feature, at in (("p", 1), ("m", 2)):
-            usable = [(d, s[at], s[3], s[4]) for s in rows for d in (s[0],) if s[at] is not None
-                      and not (isinstance(s[at], float) and math.isnan(s[at]))]
+            usable = [(s[0], s[at], s[3], s[4]) for s in rows
+                      if s[at] is not None and not (isinstance(s[at], float) and math.isnan(s[at]))]
             if len(usable) < 2 * SCORE_BINS:
                 continue
             score_edges = edges([u[1] for u in usable if not u[3]])
@@ -225,7 +225,8 @@ def fit_suffix(samples, prior: draft_rule.Predictor) -> tuple[dict, dict]:
 
 def fit_cost(lines: Sequence[dict]) -> tuple[dict, dict]:
     """The cost prior: each regime's MTP chain step (the logged steps' mean time), its rounds less their chain steps
-    by least squares anchored at the design's prior (the server's online model, without forgetting), and lambda*."""
+    by least squares anchored at the design's prior (the server's online model, without forgetting or its bound on
+    an outlier round: the report's rms_ms shows one), and lambda*."""
 
     prior = {**draft_rule.COST_PRIOR, "lambda": draft_rule.LAMBDA_PRIOR}
     out, report, tokens, ms = {}, {}, 0, 0.0

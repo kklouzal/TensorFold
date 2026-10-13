@@ -7,7 +7,6 @@ background replay, a grammar and a background index build; a failed frame's code
 The synthetic model never repeats its text, so its session index never matches on its own: proposals here are the
 real index's calls with their result replaced (``Texts``), which drives every path after them for real."""
 
-import json
 import random
 import threading
 
@@ -18,8 +17,8 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from test_flashnext_forward import V, _model  # noqa: E402
+from test_flashnext_multi_graphs import RQ, _switch  # noqa: E402
 
-from tensorfold.cuda import ab_switch  # noqa: E402
 from tensorfold.cuda.streams import Stream  # noqa: E402
 from tensorfold.drafters import draft_rule, session_index  # noqa: E402
 from tensorfold.drafters.session_index import SessionIndex  # noqa: E402
@@ -29,19 +28,10 @@ from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_de
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.state import KVNumericError  # noqa: E402
 
-RQ = "rotorquant6-norm"
 PROMPTS = [[5, 17, 99, 250], [1023, 7, 64, 300, 11, 12], [13], [8, 8, 9, 2000, 31]]
 LOOP = [7, 300, 41, 9, 1500, 22, 64, 5] * 8                       # repetitive text: the real index matches it
 SAMPLINGS = [None, Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=1.0, min_p=0.1),
              Sampling(seed=99, top_k=0, top_p=0.9), None]
-
-
-def _switch(monkeypatch, tmp_path, **values) -> None:
-    control = tmp_path / "ab.json"
-    control.write_text(json.dumps(values))
-    monkeypatch.setattr(ab_switch, "_path", str(control))
-    monkeypatch.setattr(ab_switch, "_values", {})
-    monkeypatch.setattr(ab_switch, "_stamp", None)
 
 
 def _vocab_model(seed=3):
@@ -233,7 +223,7 @@ def test_random_costs_chances_and_adversarial_texts_keep_every_token(monkeypatch
     def thresholds(self, lam, context, mixed):
         row = rng.choice([0.0, 0.1, 0.3, 0.6, 0.95, 1.5])
         full = row + rng.choice([0.0, 0.05, 0.5])
-        return draft_rule.Thresholds(row, full, rng.uniform(row, full), full - row)
+        return draft_rule.Thresholds(row, full, rng.uniform(row, full))
 
     monkeypatch.setattr(draft_rule.CostModel, "thresholds", thresholds)
     monkeypatch.setattr(draft_rule.Predictor, "mtp", lambda self, g, j, p, m: rng.random())

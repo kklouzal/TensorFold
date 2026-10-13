@@ -17,7 +17,7 @@ LAM, ROW, STEP = dr.LAMBDA_PRIOR, 6.5, 1.6
 
 def th(lam=LAM, row=ROW, step=STEP) -> dr.Thresholds:
     r, s = lam * row, lam * step
-    return dr.Thresholds(r, r + s, r + dr.STEP_SHARED * s, s)
+    return dr.Thresholds(r, r + s, r + dr.STEP_SHARED * s)
 
 
 def confidence_rule(ps, confidence, room):
@@ -67,7 +67,7 @@ def test_the_prior_without_a_confidence_verifies_every_draft_to_nine_and_departs
     pred = dr.Predictor.prior(0.0)
     for room in range(1, 10):
         assert cost_rule([1e-9] * room, pred, True, room, th()) == (room, room)
-    assert cost_rule([1e-9] * 12, pred, True, 12, th()) == (9, 9)        # .9^10 x .9 falls under the step's 0.38
+    assert cost_rule([1e-9] * 12, pred, True, 12, th()) == (9, 9)        # the 9th's .9^9 x .9 under the step's .38
     low = dr.Predictor.prior(0.5)
     assert cost_rule([0.1, 0.9, 0.9], low, False, 3, th(0.06)) == (0, 1)   # dear rows: a low first draft is dropped
     assert cost_rule([0.1, 0.9, 0.9], low, False, 3, th(0.04), shared=True) == (3, 3)   # it rides forced steps
@@ -76,7 +76,7 @@ def test_the_prior_without_a_confidence_verifies_every_draft_to_nine_and_departs
 
 
 def test_chain_steps_go_on_alone_or_in_a_step_another_stream_forces():
-    t = dr.Thresholds(0.3, 0.4, 0.32, 0.1)
+    t = dr.Thresholds(0.3, 0.4, 0.32)
     assert dr.chain_step(1.0, 0.5, 0.9, True, t) == (0.5, True, True, True)          # .45 >= .4
     assert dr.chain_step(1.0, 0.4, 0.9, True, t) == (0.4, True, False, True)         # .36: only a forced step
     assert dr.chain_step(1.0, 0.4, 0.9, False, t) == (0.4, True, False, False)       # no room for another
@@ -85,7 +85,7 @@ def test_chain_steps_go_on_alone_or_in_a_step_another_stream_forces():
 
 
 def test_text_and_chain_values():
-    t = dr.Thresholds(0.3, 0.4, 0.32, 0.1)
+    t = dr.Thresholds(0.3, 0.4, 0.32)
     kept, value = dr.suffix_plan([0.9, 0.9, 0.3, 1.0], t)
     assert kept == pytest.approx([0.9, 0.81]) and value == pytest.approx(0.6 + 0.51)  # then .243 < .3: the end
     assert dr.suffix_plan([0.2, 1.0], t) == ([], 0.0)

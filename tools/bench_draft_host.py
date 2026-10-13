@@ -185,6 +185,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(argv)
     rng = random.Random(args.seed)
     sizes = [int(x) for x in args.sizes.split(",") if x]
+    if any(n < session_index.BULK for n in sizes):           # shorter prompts build on the calling thread
+        ap.error(f"--sizes: each at least {session_index.BULK} tokens (a background build to measure)")
     result = {"host": {"machine": platform.machine(), "processor": platform.processor(),
                        "python": sys.version.split()[0], "numpy": np.__version__,
                        "switch_interval_s": sys.getswitchinterval()},

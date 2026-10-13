@@ -14,7 +14,8 @@ when the stream's reply reaches the draft's position, or the stream ends (then t
     {"t": unix seconds, "live": streams verified, "rows": verify rows, "mixed": a prompt pass shared the forward,
      "pass_rows": its prompt rows, "steps": MTP head steps that drafted the next round (absorb, then the chain;
      with prompts that joined in the round's pass), "chain_steps", "chain_ms": those after the absorbs, and their
-     time (each from its launch to its pick's readback), "probed": that drafting was a probe, "joined": prompts that
+     time (each from its launch to its pick's readback), "probed": a drafting call of the round was a probe (its
+     streams', or under the cost-aware rule the prompts that joined in its pass), "joined": prompts that
      joined since the previous line, "ms": the round's wall time (from after any prompt passes that ran alone),
      "cost": the cost-aware rule's estimates after the round ({"lam": tokens a ms, "row_ms", "step_ms"} for its
      region) or null (switch "draft_rule" old), "ab": the benchmark switches (``ab_switch.snapshot``),
@@ -74,6 +75,7 @@ import secrets
 import time
 
 from tensorfold.cuda.record_writer import JsonFiles, JsonLines, close_all
+from tensorfold.drafters import draft_rule
 
 LOG_ENV, PROBE_ENV, TRACE_ENV = "TENSORFOLD_DRAFT_LOG", "TENSORFOLD_DRAFT_PROBE", "TENSORFOLD_DRAFT_TRACE"
 OPEN = 4096          # round lines waiting for labels; past this the oldest is written with its open labels null
@@ -177,10 +179,12 @@ class DraftWatch:
         self.probed = False
 
     def probing(self) -> bool:
-        """Whether this round's MTP chain runs to full depth (asked once a round, by its drafting)."""
+        """Whether this drafting call's MTP chains run to their room (asked once a call: a round's streams', and
+        under the cost-aware rule the prompts that joined in its pass); the round's line says whether any did."""
 
-        self.probed = self.rate > 0.0 and self.rng.random() < self.rate
-        return self.probed
+        probe = self.rate > 0.0 and self.rng.random() < self.rate
+        self.probed = self.probed or probe
+        return probe
 
     def joined(self, s) -> None:
         """A prompt joined the rounds with its first token; ``s.drafts`` are its first drafts when the A/B baseline
@@ -219,7 +223,7 @@ class DraftWatch:
             drafts = chain.entries if chain is not None else []
             for i, entry in enumerate(drafts):
                 entry["inc"] = i < rows - 1
-            greedy = s.sampling is None or s.sampling.temperature <= 0
+            greedy = draft_rule.greedy(s.sampling)       # the policy whose tables the rule reads (a fit's key)
             self.round.append((s, {"rid": self.rids[s.sid], "ctx": ctx, "n": len(s.out), "greedy": greedy, "src": src,
                                    "probe": chain is not None and chain.probe, "join": chain is not None and chain.join,
                                    "constrained": s.constraint is not None, "verified": rows - 1,

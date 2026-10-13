@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import random
 import stat
 import threading
 
@@ -81,6 +82,21 @@ def test_probes_need_the_log_and_a_probability(monkeypatch, tmp_path):
     watch = DraftWatch.from_env()
     assert watch.margins and all(watch.probing() for _ in range(20))
     watch.close()
+
+
+def test_a_rounds_line_says_whether_any_of_its_drafting_calls_probed(tmp_path):
+    """Under the cost-aware rule a round drafts its streams, then the prompts that joined in its pass: two calls. Each
+    draws once from the fixed-seed generator; the round's line is "probed" when either probed."""
+
+    watch = DraftWatch(log=str(tmp_path / "log.jsonl"), probe=0.5, seed=7)
+    draws, want = random.Random(7), []
+    for _ in range(40):
+        watch.begin()
+        calls = [watch.probing(), watch.probing()]
+        assert calls == [draws.random() < 0.5, draws.random() < 0.5]
+        want.append(any(calls))
+        watch.round_end([], rows=1, mixed=False, pass_rows=0, steps=1)
+    assert [line["probed"] for line in _lines(watch)] == want and any(want) and not all(want)
 
 
 def test_labels_follow_the_reply_and_lines_wait_for_them(tmp_path):

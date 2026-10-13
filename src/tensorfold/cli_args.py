@@ -117,11 +117,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter-bits", type=int, default=4, help="quantize the draft model's linears (0: bf16)")
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
-                            "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
-                            "an explicit value selects included MTP instead of default DFlash; 0: no MTP drafts")
+                            "confidence, or by the cost-aware draft rule in concurrent rounds; Nemotron on CUDA: 3, "
+                            "stopping under 20%% confidence); on Qwen3.6 MoE Mac, an explicit value selects included "
+                            "MTP instead of default DFlash; 0: no MTP drafts")
     speed.add_argument("--mtp-confidence", type=float, default=None,
                        help="on CUDA, stop an MTP chain before a later draft under this probability "
-                            "(Flash Next default 0.70; Nemotron default 0.20)")
+                            "(Flash Next default 0.70, and in concurrent rounds the edge of the default draft tables "
+                            "unless TENSORFOLD_DRAFT_RULE names a fit; Nemotron default 0.20)")
     speed.add_argument("--lane-kernels", choices=("auto", "on", "off"), default="auto",
                        help="lane kernels for Qwen3.8 dense (auto: on GPUs with tensor units)")
     speed.add_argument("--prompt-cache-gib", type=float, default=None,

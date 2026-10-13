@@ -197,13 +197,14 @@ class Predictor:
         An MTP draft at or above ``confidence`` lands with chance PRIOR_HIGH, so a chain of them is verified to its
         room (up to 9 drafts at the default thresholds 0.30 a row, 0.38 a row and step: lambda* 0.0466 tokens/ms x
         6.5 ms a row, 1.6 ms a step); a first draft below it has PRIOR_LOW_FIRST, verified but ending the chain, and
-        a later one PRIOR_LOW_LATER, dropped. A stream alone in its steps keeps exactly those decisions while
-        lambda* x row_ms is in (0.253, 0.35] (lambda* 0.039-0.054 at 6.5 ms: production's 0.0466 and session 1's
-        0.0526). Elsewhere the rule follows the design: deeper chains where rows are cheap (prompt-pass rounds), a
-        low first draft dropped where they are dear, and a low first draft chaining on in a step another stream
-        forces (STEP_SHARED) where lambda* x row_ms <= 0.30. A suffix (or copy) token after a match of COPY_MATCH+
-        tokens lands with PRIOR_COPY > PRIOR_HIGH, so it wins over any MTP chain, as copies do today; a shorter match
-        gets 0 (never verified). ``confidence`` 0 (no rule): every MTP draft gets PRIOR_HIGH."""
+        a later one PRIOR_LOW_LATER, dropped. A stream alone in its steps keeps exactly those decisions, for rooms
+        up to 7 drafts (up to 9 at production's lambda*), while lambda* x row_ms is in (0.253, 0.35] (lambda*
+        0.039-0.054 at 6.5 ms: production's 0.0466 and session 1's 0.0526). Elsewhere the rule follows the design:
+        deeper chains where rows are cheap (prompt-pass rounds), a low first draft dropped where they are dear, and a
+        low first draft chaining on in a step another stream forces (STEP_SHARED) where lambda* x row_ms <= 0.30. A
+        suffix (or copy) token after a match of COPY_MATCH+ tokens lands with PRIOR_COPY > PRIOR_HIGH, so it wins
+        over any MTP chain, as copies do today; a shorter match gets 0 (never verified). ``confidence`` 0 (no rule):
+        every MTP draft gets PRIOR_HIGH."""
 
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"confidence: a probability from 0 to 1, not {confidence}")
@@ -290,7 +291,6 @@ class Thresholds:
     row: float
     full: float
     shared: float
-    step: float                                          # an MTP step alone, in tokens (full - row)
 
 
 def features(rows: int, ctx_rows: float, pass_rows: int) -> np.ndarray:
@@ -299,7 +299,8 @@ def features(rows: int, ctx_rows: float, pass_rows: int) -> np.ndarray:
 
 class CostFit:
     """Exponentially forgetting least squares anchored at a prior (a round's cost less its chain steps;
-    ``tools/fit_draft_rule.py`` solves the same anchored problem over logged rounds without forgetting)."""
+    ``tools/fit_draft_rule.py`` solves the same anchored problem over logged rounds, without forgetting or
+    ``observe``'s bound on an outlier round)."""
 
     def __init__(self, prior: dict) -> None:
         self.theta0 = np.asarray([prior[t] for t in COST_TERMS], dtype=np.float64)
@@ -391,7 +392,7 @@ class CostModel:
 
     def thresholds(self, lam: float, context: int, mixed: bool) -> Thresholds:
         row, step = lam * self.row_ms(context, mixed), lam * self.step_ms(mixed)
-        return Thresholds(row, row + step, row + STEP_SHARED * step, step)
+        return Thresholds(row, row + step, row + STEP_SHARED * step)
 
 
 # -- decisions -----------------------------------------------------------------------------------------------------

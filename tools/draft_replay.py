@@ -375,11 +375,7 @@ def thresholds(args) -> draft_rule.Thresholds:
     """The cost-aware rule's thresholds (tokens) at the modeled costs: ``--lam`` tokens a ms."""
 
     row, step = args.lam * args.row_ms, args.lam * args.step_ms
-    return draft_rule.Thresholds(row, row + step, row + draft_rule.STEP_SHARED * step, step)
-
-
-def predictor(args, confidence: float) -> draft_rule.Predictor:
-    return draft_rule.Predictor.load(args.tables) if args.tables else draft_rule.Predictor.prior(confidence)
+    return draft_rule.Thresholds(row, row + step, row + draft_rule.STEP_SHARED * step)
 
 
 def is_greedy(sampling: dict | None) -> bool:
@@ -410,6 +406,7 @@ def run(traces: list[dict], args) -> dict:
     CopyIndex = copy_index_class()
     parity, parity_suffix = _parity(), _parity()
     th = thresholds(args)
+    fitted = draft_rule.Predictor.load(args.tables) if args.tables else None     # else each decoder's prior
     by_process: dict[str, list[dict]] = {}
     for tr in traces:
         by_process.setdefault(tr["process"], []).append(tr)
@@ -428,7 +425,8 @@ def run(traces: list[dict], args) -> dict:
         depth, needle = int(decoder["depth"]), int(decoder["copy_match"])
         anchor, recent, longest = (int(decoder.get(key, default)) for key, default in
                                    (("anchor", 4), ("recent", 32), ("longest", 64)))
-        pred, greedy = predictor(args, float(decoder["confidence"])), is_greedy(tr["sampling"])
+        pred = fitted or draft_rule.Predictor.prior(float(decoder["confidence"]))
+        greedy = is_greedy(tr["sampling"])
         old_rule = all(r.get("rule", "old") == "old" for r in tr["rounds"])
         recorded = []
         report.request("recorded")
@@ -548,9 +546,9 @@ def rules(lines: list[dict], args) -> dict:
 
     cost = lambda rows, steps: args.t0 + (rows - 1) * args.row_ms + steps * args.step_ms  # noqa: E731
     report, th = Report(cost), thresholds(args)
-    preds = {"prior": None, **({"fit": draft_rule.Predictor.load(args.tables)} if args.tables else {})}
+    preds = {"prior": draft_rule.Predictor.prior(args.confidence),
+             **({"fit": draft_rule.Predictor.load(args.tables)} if args.tables else {})}
     skipped = {"unlabelled": 0, "no_greedy_field": 0, "no_features": 0}
-    confidence = args.confidence
     for line in lines:
         for st in line["streams"]:
             drafts = st["drafts"]
@@ -560,7 +558,7 @@ def rules(lines: list[dict], args) -> dict:
                 skipped["unlabelled"] += 1
                 continue
             labels = [d["label"] for d in drafts]
-            for name, k, steps in _decide(drafts, confidence, preds, st.get("greedy"), th, skipped, cost):
+            for name, k, steps in _decide(drafts, args.confidence, preds, st.get("greedy"), th, skipped, cost):
                 acc = 0
                 while acc < k and labels[acc] == 1:
                     acc += 1
@@ -568,8 +566,8 @@ def rules(lines: list[dict], args) -> dict:
     return {"skipped": skipped, "results": report.summary()}
 
 
-def _decide(drafts: list[dict], confidence: float, preds: dict, greedy, th, skipped: dict, th_ms=None):
-    """(rule, drafts it verifies, MTP steps it runs) for one labelled probe chain (``th_ms(rows, steps)``: the
+def _decide(drafts: list[dict], confidence: float, preds: dict, greedy, th, skipped: dict, cost):
+    """(rule, drafts it verifies, MTP steps it runs) for one labelled probe chain (``cost(rows, steps)``: the
     modelled round milliseconds, for allocate)."""
 
     k = steps = 0
@@ -585,7 +583,6 @@ def _decide(drafts: list[dict], confidence: float, preds: dict, greedy, th, skip
         skipped["no_greedy_field"] += 1
         return
     for name, pred in preds.items():
-        pred = pred or draft_rule.Predictor.prior(confidence)
         feature = pred.tables["mtp", "greedy" if greedy else "sampled"].feature
         if any(d[feature] is None for d in drafts):
             skipped["no_features"] += 1
@@ -604,7 +601,7 @@ def _decide(drafts: list[dict], confidence: float, preds: dict, greedy, th, skip
             for j, d in enumerate(drafts):
                 c *= pred.mtp(greedy, j, _score(d["p"]), _score(d["m"]))
                 chances.append(c)
-            costs = {rows: th_ms(rows, len(drafts)) for rows in range(1, len(drafts) + 2)}
+            costs = {rows: cost(rows, len(drafts)) for rows in range(1, len(drafts) + 2)}
             yield "allocate", allocate([1], [chances], costs, 0.0, 1 + len(drafts))[0], len(drafts)
 
 

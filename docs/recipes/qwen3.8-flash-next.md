@@ -434,7 +434,9 @@ A quantized cache changes the output, so its replies differ from bf16's. Drafted
 families refuse `--kv-dtype` before any download.
 
 `--mtp-confidence P`, from 0 to 1, sets the probability under which a chain stops before a later draft; the CUDA
-default is 0.70, for one stream and for concurrent rounds. Only Flash Next's CUDA engine has this rule, so the MLX path and the other families refuse it.
+default is 0.70. Concurrent rounds verify a draft only while its predicted chance of being kept pays for its verify
+row; their default draft tables put their edge at P, unless `TENSORFOLD_DRAFT_RULE` names a fitted file (see the
+README). Only Flash Next's CUDA engine has this rule, so the MLX path and the other families refuse it.
 
 ## Draft vocabulary provenance
 

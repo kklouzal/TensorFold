@@ -368,8 +368,14 @@ class FlashNextEngine:
         self.cache: list[tuple[list[int], dict]] = []    # (committed ids, what resuming from them needs)
         if not automatic_experts or self.concurrent:
             self.serial = None                            # the serial requests' engine, made on first use
-        rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
-                f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
+        if not self.depth:
+            rule = "no drafts: the serial reference, one token a round"
+        elif self.concurrent:                            # the cost-aware rule (benchmark switch "draft_rule" new)
+            rule = (f"up to {self.depth} MTP drafts a round, each verified while its predicted chance pays for its "
+                    f"row (draft tables: TENSORFOLD_DRAFT_RULE, else from {self.confidence:.0%} confidence)")
+        else:
+            rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
+                    f"{self.confidence:.0%}")
         graphs_note = ""
         if self.concurrent:
             record = self.multi.graph_record
