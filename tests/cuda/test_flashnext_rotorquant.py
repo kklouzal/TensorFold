@@ -550,8 +550,9 @@ def test_actual_loss_harness_all_rows_match_fresh_public_prefill_endpoints():
         expected.append(fresh.pbuf.logits[0].clone())
     batch = Engine(w, capacity=128, max_rows=8, prefill_rows=64)
     # Only this loss harness asks the head for all 35 positions; ordinary
-    # serving allocates a bounded number of prompt-ending head rows.
-    batch.pbuf.logits = torch.empty((64, w.head.n), dtype=torch.bfloat16, device=w.device)
+    # serving allocates a bounded number of prompt-ending head rows. Keep the
+    # engine's own logits dtype (fp32 head sums) so only the row count differs.
+    batch.pbuf.logits = torch.empty((64, w.head.n), dtype=batch.pbuf.logits.dtype, device=w.device)
     got = compute(w, stage(w, batch.pbuf, [(batch.st, prompt)]), batch.pbuf, ends=range(len(prompt))).clone()
     assert got.shape[0] == len(prompt)
     assert torch.equal(got, torch.stack(expected))
