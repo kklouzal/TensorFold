@@ -611,7 +611,6 @@ class MultiDecoder:
         self.b1 = b1 = ab_switch.new("b1")               # "old": A/B baseline, remove after selection
         self.static = static = ab_switch.new("graphs")   # "old": A/B baseline, remove after selection
         pdl.ON = self.pdl and ab_switch.new("pdl")       # "old": A/B baseline, remove after selection
-        lean = ab_switch.new("b3")                       # "old": A/B baseline, remove after selection
         self.replays = 0
         prof, watch = self.prof, self.watch
         if prof is not None:
@@ -708,7 +707,7 @@ class MultiDecoder:
                 for s, (_, a0, a1) in zip(live, segs):
                     if s.sid in grammars:
                         s.constraint.mask(logits[a0:a1], grammars[s.sid])
-                launched = launch_streams(logits, starts, positions, samplings, lean=lean)
+                launched = launch_streams(logits, starts, positions, samplings)
             except BaseException:
                 words.settle()
                 raise
@@ -720,7 +719,7 @@ class MultiDecoder:
             for s, (_, a0, a1) in zip(live, segs):       # A/B baseline: remove after selection
                 if s.sid in grammars:                    # A/B baseline: remove after selection
                     s.constraint.mask(logits[a0:a1], grammars[s.sid])   # A/B baseline: remove after selection
-            sampled = sample_streams(logits, starts, positions, samplings, lean=lean)   # A/B baseline: remove
+            sampled = sample_streams(logits, starts, positions, samplings)   # A/B baseline: remove after selection
         if prof is not None:
             prof.mark("sample", gpu=True)
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))

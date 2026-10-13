@@ -81,23 +81,6 @@ def test_b1_rounds_emit_each_streams_solo_tokens(monkeypatch, tmp_path, kv_dtype
         assert (len(reads) == 0) == (b1 == "new"), len(reads)
 
 
-@pytest.mark.parametrize("values", [{"b3": "old"}, {"b3": "new"}, {"b1": "old", "b3": "new"}])
-def test_switch_values_emit_each_streams_solo_tokens(monkeypatch, tmp_path, values):
-    """Every switch value (B3: sampling packets from a slice and one-pass flags) emits each stream's solo run: greedy
-    and keyed streams, drafting and serial, rotorquant6-norm."""
-
-    w = _model()
-    refs = _solo(w, PROMPTS, SAMPLINGS, 16, RQ)
-    _switch(monkeypatch, tmp_path, **values)
-    dec = MultiDecoder(w, slots=4, capacity=1024, depth=3, confidence=0.3, kv_dtype=RQ)
-    streams = [Stream(list(p), 16, smp, draft=i != 3) for i, (p, smp) in enumerate(zip(PROMPTS, SAMPLINGS))]
-    for s in streams:
-        dec.admit(s)
-    while dec.live():
-        dec.finish(dec.round())
-    assert [s.out for s in streams] == refs
-
-
 @pytest.mark.parametrize("b1", ["new", "old"])
 @pytest.mark.parametrize("where", ["verify", "mtp"])
 def test_b1_failed_status_wins_over_nonfinite_scores_and_publishes_nothing(monkeypatch, tmp_path, b1, where):
