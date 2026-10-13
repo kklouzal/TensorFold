@@ -168,7 +168,7 @@ def _qsa_variant(monkeypatch, tmp_path, variant: str) -> dict:
 
     if variant == "new-T":
         _t_at_small_windows(monkeypatch)
-    elif variant == "old":
+    elif variant == "old":                           # A/B baseline: remove after selection (with "per-stream")
         control = tmp_path / "ab.json"
         control.write_text('{"qsa": "old"}')
         monkeypatch.setattr(ab_switch, "_path", str(control))
@@ -190,7 +190,7 @@ def _qsa_variant(monkeypatch, tmp_path, variant: str) -> dict:
     return counts
 
 
-@pytest.mark.parametrize("variant", ["new", "new-T", "old"])
+@pytest.mark.parametrize("variant", ["new", "new-T", "old"])   # "old": A/B baseline, remove after selection
 @pytest.mark.parametrize("kv_dtype", ["bf16", "int8"])
 def test_sparse_streams_decode_together_as_alone(monkeypatch, tmp_path, kv_dtype, variant):
     """Past the attention budget a long stream selects blocks beside short dense ones, each emitting its solo run

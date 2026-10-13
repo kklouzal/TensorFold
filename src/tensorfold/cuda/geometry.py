@@ -10,7 +10,7 @@ from .capacity import Geometry, Weights, headers, itemsize
 PREFILL_ROWS = 2048     # a prompt chunk's rows: Flash Next and GLM keep buffers of this many rows
 PROMPT_SHARE = 32       # a dense prompt chunk's arrays take at most this fraction of the GPU's memory
 PREFILL_ATT_ROWS = 256  # Flash Next's prompt attention block
-# Flash Next's multi-CTA block select (attention.MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES): rows, tile, slices
+# Flash Next's multi-CTA block select scratch: rows, tile, slices (attention's MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES)
 QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
 MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)

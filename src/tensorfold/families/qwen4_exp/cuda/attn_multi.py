@@ -204,7 +204,7 @@ def layer(layer, w, b, step: Step, mtp: bool, scale: float) -> torch.Tensor:
                                                     VISION=step.vision, S1=sections[1], S2=sections[2],
                                                     ROPE_SCALE=c.rope_attention_factor,
                                                     num_warps=1)
-        if attn_mod.qsa_new():
+        if attn_mod.qsa_new():                       # A/B baseline: remove the test after selection, keep the branch
             if max(step.ends) // sc.ratio > top:     # some stream has sparse rows: every row scored and selected
                 blocks = triton.cdiv(max(step.ends), sc.ratio)
                 if blocks > sc.nb:                   # before any launch: the scores' rows hold nb blocks

@@ -6,7 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
-from tensorfold.cuda import ab_switch
+from tensorfold.cuda import ab_switch  # A/B baseline: remove after selection
+from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
 from .image_rows import rope_axis
 from .kv_pair import load_side, resolve_pair, validate_storage
@@ -21,12 +22,13 @@ CHUNK = 512
 TILE = 64
 SELECT_REGS = 32768  # _select holds a row's block scores in registers up to this many; past it they spill
 # T (``_select_multi``) splits each row's selection over slices for windows of fewer than MULTI_ROWS rows (a prompt's
-# row blocks already fill the SMs a row a CTA) past MULTI_MIN_BLOCKS blocks (below, ``_select``'s one launch wins)
-MULTI_ROWS = 32
+# row blocks already fill the SMs a row a CTA) past MULTI_MIN_BLOCKS blocks (below, ``_select``'s one launch wins).
+# Its scratch's shape (rows, tile, slices) comes from the memory plan's constants (geometry.QSA_SELECT_*).
+MULTI_ROWS = QSA_SELECT_ROWS + 1
 MULTI_MIN_BLOCKS = 16384
-SELECT_TB = 2048     # T's tile: the keys a CTA holds at once, 16 a thread
-SELECT_FILL = 4      # T's CTAs an SM a pass
-SELECT_SLICES = 64   # T's slices a row at most (its placement counts' scratch)
+SELECT_TB = QSA_SELECT_TILE         # T's tile: the keys a CTA holds at once, 16 a thread
+SELECT_FILL = 4                     # T's CTAs an SM a pass
+SELECT_SLICES = QSA_SELECT_SLICES   # T's slices a row at most (its placement counts' scratch)
 SELECT_SPAN = 5      # T's tiles a slice at most, while the slices fit: longer slices serialize placement
 
 
@@ -664,7 +666,9 @@ def _select_multi(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: in
 
 
 def qsa_new() -> bool:
-    """A/B baseline: remove after selection. The benchmark switch "qsa": "new" (batched streams, T) or "old"."""
+    """A/B baseline: remove after selection. The benchmark switch "qsa": "new" (batched streams, T) or "old". Read
+    at every launch from the values ``ab_switch.refresh`` loads once a ``MultiDecoder`` round (a process without
+    one keeps "new"); a captured CUDA graph keeps the variant it was captured with."""
 
     variant = ab_switch.get("qsa", "new")
     if variant not in ("new", "old"):
@@ -679,7 +683,7 @@ def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: i
 
     if blocks > scratch.nb:
         raise ValueError(f"{blocks} blocks exceed the scratch's {scratch.nb}")
-    if rows < MULTI_ROWS and blocks > MULTI_MIN_BLOCKS and qsa_new():
+    if rows < MULTI_ROWS and blocks > MULTI_MIN_BLOCKS and qsa_new():   # qsa_new(): A/B baseline, remove
         _select_multi(scratch, pos, rows, blocks, per_row)
         return
     top = scratch.budget // scratch.ratio

@@ -150,8 +150,8 @@ def test_slice_boundaries_list_the_one_cta_blocks(monkeypatch):
 
     rows = 12
     sc = _scratch(rows, 4 * 200_000)
-    for sms, blocks, cw, span in ((10_000, 120_000, 64, 1), (10_000, 150_000, 64, 2), (12, 150_000, 64, att.SELECT_SPAN),
-                                  (12, 150_000, 8, 10)):
+    for sms, blocks, cw, span in ((10_000, 120_000, 64, 1), (10_000, 150_000, 64, 2),
+                                  (12, 150_000, 64, att.SELECT_SPAN), (12, 150_000, 8, 10)):
         monkeypatch.setattr(sc, "sms", sms)
         monkeypatch.setattr(sc, "cw", cw)                # the placement counts' row stride: fewer slices fit
         sl, n = att._slices(sc, rows, blocks)
@@ -341,7 +341,7 @@ def test_the_launcher_picks_each_kernel_by_its_thresholds(monkeypatch, tmp_path)
         assert calls == [(want, rows)], (rows, blocks)
     with pytest.raises(ValueError):
         att._launch_select(sc, pos, 1, sc.nb + 1)
-    control = tmp_path / "ab.json"
+    control = tmp_path / "ab.json"                   # A/B baseline: remove through the ValueError after selection
     for name, value in (("_path", str(control)), ("_values", {}), ("_stamp", None)):   # all restored by undo
         monkeypatch.setattr(ab_switch, name, value)
 
