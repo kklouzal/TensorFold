@@ -37,8 +37,8 @@ ENVS = (draft_log.LOG_ENV, draft_log.PROBE_ENV, draft_log.TRACE_ENV)
 DRAFT_KEYS = {"j", "p", "m", "e", "g", "z", "c", "L", "a0", "inc", "hit", "label"}
 STREAM_KEYS = {"rid", "ctx", "n", "greedy", "src", "probe", "join", "constrained", "verified", "accepted", "done",
                "drafts"}
-LINE_KEYS = {"t", "live", "rows", "mixed", "pass_rows", "steps", "chain_steps", "chain_ms", "probed", "joined", "ms",
-             "cost", "ab", "streams", "dropped", "forced"}
+LINE_KEYS = {"t", "live", "rows", "mixed", "pass_rows", "steps", "chain_steps", "chain_ms", "chain_rows", "probed",
+             "joined", "ms", "cost", "ab", "streams", "dropped", "forced"}
 DECODER = {"depth": 3, "copy_match": 8, "anchor": 4, "recent": 32, "longest": 64}
 
 
@@ -143,6 +143,15 @@ def test_log_probes_and_trace_change_no_draft_or_token(confidence, copy, vocab, 
     assert all((line["cost"] is not None) == (rule == "new") and line["ab"] == {"draft_rule": rule} for line in lines)
     assert all(line["chain_steps"] <= max(0, line["steps"] - 1) and 0 <= line["chain_ms"] <= line["ms"]
                for line in lines)
+    # each chain step drafted for one stream or more: what the next round verified from it (prompts that joined apart)
+    ordered = sorted(lines, key=lambda line: line["t"])
+    for line, nxt in zip(ordered, ordered[1:]):
+        assert line["chain_steps"] <= line["chain_rows"] <= 4 * line["chain_steps"]
+        calls = [[len(st["drafts"]) for st in nxt["streams"] if st["src"] == "mtp" and st["join"] == join]
+                 for join in (False, True)]
+        if not nxt["joined"] and not any(st["done"] for st in line["streams"]):
+            assert line["chain_rows"] == sum(n - 1 for call in calls for n in call)
+    assert all(set(line["cost"]) == {"lam", "row_ms", "step_ms", "step_stream_ms"} for line in lines if line["cost"])
     assert any(line["chain_steps"] for line in lines)    # every probe chains on: timed steps
     assert all(d["m"] == "inf" or d["m"] >= 0 for d in mtp)
     shadows = [d for st in entries for d in st["drafts"] if not d["inc"]]

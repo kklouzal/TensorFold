@@ -210,8 +210,9 @@ def test_text_drafts_through_captured_rounds(monkeypatch, tmp_path, rule, suffix
 
 
 def test_random_costs_chances_and_adversarial_texts_keep_every_token(monkeypatch, tmp_path):
-    """The cost-aware rule with random thresholds (zero-draft rounds to whole windows), random chances, steps forced
-    or shared at random, and adversarial texts: every stream emits its solo tokens."""
+    """The cost-aware rule with random costs (zero-draft rounds to whole windows), random chances and step values
+    (steps that one stream, several together or none pay for), and adversarial texts: every stream emits its solo
+    tokens."""
 
     monkeypatch.setenv("TENSORFOLD_MTP_COPY", "1")
     w = _vocab_model(5)
@@ -221,15 +222,14 @@ def test_random_costs_chances_and_adversarial_texts_keep_every_token(monkeypatch
     Texts({tuple(p): r for p, r in zip(prompts, refs)}, seed=8).install(monkeypatch)
     rng = random.Random(17)
 
-    def thresholds(self, lam, context, mixed):
-        row = rng.choice([0.0, 0.1, 0.3, 0.6, 0.95, 1.5])
-        full = row + rng.choice([0.0, 0.05, 0.5])
-        return draft_rule.Thresholds(row, full, rng.uniform(row, full))
-
-    monkeypatch.setattr(draft_rule.CostModel, "thresholds", thresholds)
-    monkeypatch.setattr(draft_rule.Predictor, "mtp", lambda self, g, j, p, m: rng.random())
-    monkeypatch.setattr(draft_rule.Predictor, "suffix", lambda self, g, k, length: rng.random())
-    monkeypatch.setattr(draft_rule.Predictor, "abar", lambda self, src, g, j: rng.random())
+    monkeypatch.setattr(draft_rule.CostModel, "lam", lambda self, live, mixed, context: 1.0)   # costs in tokens
+    monkeypatch.setattr(draft_rule.CostModel, "row_ms", lambda self, context, mixed: rng.choice([0.0, 0.1, 0.3, 0.6,
+                                                                                                0.95, 1.5]))
+    monkeypatch.setattr(draft_rule.CostModel, "step_ms", lambda self, mixed: rng.choice([0.0, 0.05, 0.5]))
+    monkeypatch.setattr(draft_rule.CostModel, "step_stream_ms", lambda self, mixed: rng.choice([0.0, 0.02, 0.2]))
+    monkeypatch.setattr(draft_rule.Table, "chance", lambda self, depth, score: rng.random())
+    monkeypatch.setattr(draft_rule.Table, "value", lambda self, depth, c, row: rng.random() * 0.6)
+    monkeypatch.setattr(draft_rule.Table, "optimistic", lambda self, depth: rng.random())
     _switch(monkeypatch, tmp_path, draft_rule="new", suffix="new")
     windows, real = [], MultiDecoder._trim
 
@@ -447,7 +447,8 @@ def test_a_drafting_failure_ends_its_request_alone(monkeypatch, tmp_path, rule, 
         calls[0] += 1
         return calls[0] >= (3 if where == "propose" else 1)    # "propose": a later round's query
 
-    real_build, real_propose, real_mtp = session_index.build, SessionIndex.propose, draft_rule.Predictor.mtp
+    real_build, real_propose, real_chance = session_index.build, SessionIndex.propose, draft_rule.Table.chance
+    greedy_mtp = []                                      # the decoder's greedy MTP table (its predictor's)
 
     def build(prompt, k):
         if where == "build" and fires(prompt):
@@ -459,14 +460,14 @@ def test_a_drafting_failure_ends_its_request_alone(monkeypatch, tmp_path, rule, 
             raise cause
         return real_propose(index, count)
 
-    def mtp(self, is_greedy, depth, p, m):
-        if where == "rule" and armed[0] and is_greedy:
+    def chance(self, depth, score):
+        if where == "rule" and armed[0] and greedy_mtp and self is greedy_mtp[0]:
             raise cause
-        return real_mtp(self, is_greedy, depth, p, m)
+        return real_chance(self, depth, score)
 
     monkeypatch.setattr(session_index, "build", build)
     monkeypatch.setattr(SessionIndex, "propose", propose)
-    monkeypatch.setattr(draft_rule.Predictor, "mtp", mtp)
+    monkeypatch.setattr(draft_rule.Table, "chance", chance)
     from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
 
     real_copy = CopyIndex.propose
@@ -479,6 +480,7 @@ def test_a_drafting_failure_ends_its_request_alone(monkeypatch, tmp_path, rule, 
     monkeypatch.setattr(CopyIndex, "propose", copy)
     _switch(monkeypatch, tmp_path, draft_rule=rule, suffix="old" if where == "copy" else "new")
     dec = MultiDecoder(w, slots=4, capacity=1024, depth=3, confidence=0.5, prefill_rows=16)
+    greedy_mtp.append(dec.predictor.mtp_tables[True])
     streams = [Stream(list(p), c, smp) for p, smp, c in zip(prompts, SAMPLINGS, counts)]
     try:
         _run(dec, streams)

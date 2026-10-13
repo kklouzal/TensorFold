@@ -133,7 +133,8 @@ class MultiDecoder:
         self.prof = RoundProfile.from_env()              # opt-in per-round timing (None: off, one test a mark)
         self.chained = 0                                 # the last round's MTP chain steps (profile field)
         self.steps = 0                                   # MTP head steps the round has run for drafts so far
-        self.chain_s, self.chain_n = 0.0, 0              # its chain steps (after the absorbs): seconds, count
+        # its chain steps (after the absorbs): seconds, count, and the streams they drafted for, summed
+        self.chain_s, self.chain_n, self.chain_rows = 0.0, 0, 0
         self.sources: dict[int, str] = {}                # profiling only: stream id -> its pending drafts' source
         self.copying: dict[int, str] = {}                # profiling only: streams drafted from their own text
         # benchmark switch "draft_rule" (round()): the cost-aware rule's chances (TENSORFOLD_DRAFT_RULE's fitted
@@ -665,7 +666,7 @@ class MultiDecoder:
         if not live:
             return ended
         start, self.steps = time.perf_counter(), 0      # the round's cost: from after any passes alone
-        self.chain_s, self.chain_n = 0.0, 0
+        self.chain_s, self.chain_n, self.chain_rows = 0.0, 0, 0
         if rule:                                         # drafts that pay at this round's actual costs
             self._trim(live)
         if prof is not None:
@@ -816,16 +817,18 @@ class MultiDecoder:
         cost = None
         if rule:                                       # what the round cost: the rule's next estimates
             mixed, longest = bool(pieces), max(ctx)
-            self.costs.observe(rows=segs[-1][2], ctx_rows=sum((a1 - a0) * c for (_, a0, a1), c in zip(segs, ctx)),
-                               pass_rows=passed, mixed=mixed, ms=1e3 * (time.perf_counter() - start),
-                               chain_ms=1e3 * self.chain_s, chain_steps=self.chain_n,
-                               tokens=sum(len(new) for *_, new, _ in kept), live=len(live), context=longest)
+            self.costs.observe(rows=segs[-1][2], live=len(live),
+                               ctx_rows=sum((a1 - a0) * c for (_, a0, a1), c in zip(segs, ctx)), pass_rows=passed,
+                               mixed=mixed, ms=1e3 * (time.perf_counter() - start), chain_ms=1e3 * self.chain_s,
+                               chain_steps=self.chain_n, chain_rows=self.chain_rows,
+                               tokens=sum(len(new) for *_, new, _ in kept), context=longest)
             if watch is not None:
                 cost = {"lam": self.costs.lam(len(live), mixed, longest), "row_ms": self.costs.row_ms(longest, mixed),
-                        "step_ms": self.costs.step_ms(mixed)}
+                        "step_ms": self.costs.step_ms(mixed), "step_stream_ms": self.costs.step_stream_ms(mixed)}
         if watch is not None:
             watch.round_end(live, rows=segs[-1][2], mixed=bool(pieces), pass_rows=passed, steps=self.steps,
-                            chain=(self.chain_n, 1e3 * self.chain_s), rule=rule, cost=cost, ab=ab_switch.snapshot())
+                            chain=(self.chain_n, 1e3 * self.chain_s, self.chain_rows), rule=rule, cost=cost,
+                            ab=ab_switch.snapshot())
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
             self.held.pop(s.sid, None)
@@ -841,9 +844,9 @@ class MultiDecoder:
         ruled = [s for s in live if s.drafts and len(s.chances) == len(s.drafts)]
         if not ruled:
             return
-        lam = self.costs.lam(len(live), mixed, max(s.st.pos for s in live))
-        keep = draft_rule.trim([s.chances for s in ruled],
-                               [self.costs.thresholds(lam, s.st.pos, mixed).row for s in ruled])
+        costs = self.costs
+        lam = costs.lam(len(live), mixed, max(s.st.pos for s in live))
+        keep = draft_rule.trim([s.chances for s in ruled], [lam * costs.row_ms(s.st.pos, mixed) for s in ruled])
         for s, n in zip(ruled, keep):
             del s.drafts[n:], s.chances[n:]
 
@@ -989,37 +992,43 @@ class MultiDecoder:
                texts: dict, joined: bool, live: int) -> int:
         """Chain MTP drafts from the absorb's logits, all streams in one step a depth; returns the chain's steps.
 
-        Draft j is keyed at its verify row's position. ``rule`` (design 3.4): a draft is verified while its chain's
-        chance pays for its row, and the chain goes on while the next draft's optimistic chance pays for a row and
-        a step (one the stream forces alone, or one another stream forces); a stream with a continuation from its
-        own text (``texts``) takes it instead where it is worth more than its MTP chain, judged from its first
-        pick. Costs are judged at the region the next round is expected to have (``live`` streams, a prompt pass if
-        one is filling): the round-start trim (``_trim``) can only remove drafts, so streams that finish, wait or ended
-        are not counted. A failure in a stream's decisions ends that stream alone (``_drafting_failed``).
-        The A/B baseline: a draft below the confidence ends its stream's chain; the first is kept regardless.
-        A probe round (the draft log's) chains every MTP stream on to its room; the drafts past the rule are
-        labelled in the log, never verified, and their MTP entries go with the stream's next absorb."""
+        Draft j is keyed at its verify row's position. ``rule`` (design 3.4, ``drafters.draft_rule``): a draft is
+        verified while its chain's chance pays for its row, and a step goes on for the streams whose next draft's
+        expected value pays their share of it, when together they pay for the whole step (``joint_step``); a
+        stream with a continuation from its own text (``texts``) takes it instead where it is worth more than its MTP
+        chain, judged from its first pick. Costs are judged at the region the next round is expected to have
+        (``live`` streams, a prompt pass if one is filling): the round-start trim (``_trim``) can only remove drafts,
+        so streams that finish, wait or ended are not counted. A failure in a stream's decisions ends that stream
+        alone (``_drafting_failed``). The A/B baseline: a draft below the confidence ends its stream's chain; the
+        first is kept regardless. A probe round (the draft log's) chains every MTP stream on to its room; the drafts
+        past the rule are labelled in the log, never verified, and their MTP entries go with the stream's next
+        absorb. Each step's time and the streams it drafted for are counted for the cost model (``chain_s``,
+        ``chain_n``, ``chain_rows``)."""
 
         prof, watch = self.prof, self.watch
         probe = watch is not None and watch.probing()
         margins = (watch is not None and watch.margins) or (rule and self.predictor.needs_margins)
         items = {s.sid: (s, []) for s, _ in active} if watch is not None else None
         shadow: set[int] = set()                         # probe rounds: streams the rule stopped, chained for labels
-        if rule:
-            mixed = bool(self.filling) and self.converged
-            lam = self.costs.lam(live, mixed, max(s.st.pos for s, _ in active))
-            th = {s.sid: self.costs.thresholds(lam, s.st.pos, mixed) for s, _ in active}
-            chance = dict.fromkeys(th, 1.0)
-        steps, launched = 0, None
+        if rule:                                         # costs in tokens: a step's first and each further
+            costs, mixed = self.costs, bool(self.filling) and self.converged    # stream, each stream's draft row
+            lam = costs.lam(live, mixed, max(s.st.pos for s, _ in active))
+            step, extra = lam * costs.step_ms(mixed), lam * costs.step_stream_ms(mixed)
+            rows = {s.sid: lam * costs.row_ms(s.st.pos, mixed) for s, _ in active}
+            tables = {s.sid: self.predictor.mtp_tables[draft_rule.greedy(s.sampling)] for s, _ in active}
+            chance = dict.fromkeys(rows, 1.0)
+        steps, launched, launched_rows = 0, None, 0
         for j in range(self.depth):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
                                 margins, words, f"pick{j}_wait" if prof is not None else None)
             if launched is not None:                     # a chain step's cost: its launch to its pick's readback
                 self.chain_s += time.perf_counter() - launched
                 self.chain_n += 1
+                self.chain_rows += launched_rows
             if prof is not None:
                 prof.mark(f"pick{j}", gpu=True)
-            go: dict[int, str] = {}                      # stream id -> "full" | "shared" (the rule's) | "probe"
+            go: set[int] = set()                         # the streams the next step drafts for
+            candidates: list[tuple[int, float]] = []     # the rule's: (stream id, its next draft's value)
             for (s, row), (d, p, scores) in zip(active, picks):
                 sid, more = s.sid, j + 1 < room[s.sid]
                 if not rule:                             # A/B baseline: remove after selection (to "continue")
@@ -1034,19 +1043,17 @@ class MultiDecoder:
                                 continue
                             shadow.add(sid)
                     if more:
-                        go[sid] = "full"
+                        go.add(sid)
                     continue
                 try:                                     # a failure ends this stream's request alone
-                    g = draft_rule.greedy(s.sampling)
-                    a = self.predictor.mtp(g, j, p, None if scores is None else scores["m"])
-                    if j == 0 and sid in texts and self._text_wins(s, texts[sid], a, d, room[sid], th[sid], base,
-                                                                     joined):
+                    table = tables[sid]                  # margins are read whenever a table needs them
+                    a = table.chance(j, p if table.feature == "p" else scores["m"])
+                    if j == 0 and sid in texts and self._text_wins(s, texts[sid], a, d, room[sid], rows[sid], step,
+                                                                     base, joined):
                         if items is not None:
                             del items[sid]               # its drafts are its text's; its MTP pick is not logged
                         continue
-                    c, include, full, shared = draft_rule.chain_step(chance[sid], a,
-                                                                     self.predictor.abar("mtp", g, j + 1), more,
-                                                                     th[sid])
+                    c, include, value = draft_rule.chain_step(chance[sid], a, table, j, more, rows[sid])
                 except Exception as exc:                 # noqa: BLE001  (its request ends, the others go on)
                     self._drafting_failed(s, exc)
                     if items is not None:
@@ -1059,25 +1066,25 @@ class MultiDecoder:
                     if include:
                         s.drafts.append(d)
                         s.chances.append(c)
-                    if full or shared:
-                        go[sid] = "full" if full else "shared"
+                    if value is not None:                # the step decides it, with the others' (below)
+                        candidates.append((sid, value))
                         continue
                     if not probe:
                         continue
                     shadow.add(sid)
-                if more:
-                    go[sid] = "probe"
-            forced = any(v == "full" for v in go.values())
-            for sid, v in go.items():
-                if v == "shared" and not forced:         # no stream forces the step: the rule stops these
-                    if probe and room[sid] > j + 1:
+                if more:                                 # a probe chains it on to its room, unverified
+                    go.add(sid)
+            if candidates:
+                for (sid, _), joins in zip(candidates, draft_rule.joint_step([v for _, v in candidates], step, extra)):
+                    if joins:
+                        go.add(sid)
+                    elif probe:                          # the rule stops it (a further draft fits: it has a value)
                         shadow.add(sid)
-                        go[sid] = "probe"
-            nxt = [(s, row, d) for (s, row), (d, _, _) in zip(active, picks)
-                   if s.sid in go and (go[s.sid] != "shared" or forced)]
+                        go.add(sid)
+            nxt = [(s, row, d) for (s, row), (d, _, _) in zip(active, picks) if s.sid in go]
             if not nxt:
                 break
-            launched = time.perf_counter()
+            launched, launched_rows = time.perf_counter(), len(nxt)
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.w, self.mbuf, windows)
             logits = self._mtp(segs)
@@ -1104,19 +1111,19 @@ class MultiDecoder:
                 watch.drafted(s, base[sid], "mtp", drafted, probe=probe, join=joined)
         return steps
 
-    def _text_wins(self, s: Stream, text: tuple, a0: float, d0: int, room: int, th: draft_rule.Thresholds,
+    def _text_wins(self, s: Stream, text: tuple, a0: float, d0: int, room: int, row: float, step: float,
                    base: dict, joined: bool) -> bool:
         """Whether the stream drafts its continuation ``text`` rather than its MTP chain (design 4.4): the text's
-        verified prefix's value against the chain's, from its first pick's chance ``a0``. If so, its drafts are
-        set (``_from_text``)."""
+        verified prefix's value against the chain's, from its first pick's chance ``a0`` (``row``, ``step``: a draft
+        row's and an MTP step's cost in tokens). If so, its drafts are set (``_from_text``)."""
 
         src, tokens, length = text
         g = draft_rule.greedy(s.sampling)
         given = [1.0] * len(tokens) if src == "owed" else [self.predictor.suffix(g, k, length)
                                                              for k in range(len(tokens))]
-        kept, value = draft_rule.suffix_plan(given, th)
-        abar = [self.predictor.abar("mtp", g, j) for j in range(room)]
-        if value <= draft_rule.mtp_value(a0, abar, room, th):
+        kept, value = draft_rule.suffix_plan(given, row)
+        table = self.predictor.mtp_tables[g]
+        if value <= draft_rule.mtp_value(a0, [table.optimistic(j) for j in range(room)], room, row, step):
             return False
         s.drafts, s.chances = tokens[:len(kept)], kept
         chances, c = [], 1.0

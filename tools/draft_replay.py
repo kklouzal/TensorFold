@@ -1,9 +1,10 @@
 """Replay finished requests' token traces under deterministic draft policies, with a modeled round cost.
 
-    python tools/draft_replay.py TRACE_OR_DIR... [--json OUT] [--t0 34.6] [--row-ms 6.5] [--step-ms 1.6]
+    python tools/draft_replay.py TRACE_OR_DIR... [--json OUT] [--t0 MS] [--row-ms MS] [--step-ms MS]
         [--anchors 4,6,8] [--windows 5,8,16] [--recent 32] [--longest 64] [--corpus-tokens 1000000]
         [--corpus-segment 262144] [--mtp-drafts 2] [--mtp-accept 0.75] [--seed 0]
-        [--log DRAFT_LOG...] [--tables FIT.json] [--lam 0.0466]
+        [--log DRAFT_LOG...] [--tables FIT.json] [--cross-tables HALF0.json HALF1.json] [--lam TOKENS_PER_MS]
+        [--lam-scale 1.0] [--confidence 0.5]
 
 Input: the files ``TENSORFOLD_DRAFT_TRACE`` writes (``tensorfold.cuda.draft_log``), one per finished request, and
 optionally (``--log``) the ``TENSORFOLD_DRAFT_LOG`` lines of the same run for the MTP stop-rule comparison below.
@@ -44,7 +45,8 @@ Policies (one report row each, per context bucket and overall):
                         a request's first rounds
     suffix-new-w{W}     the session drafts under the cost-aware rule (``tensorfold.drafters.draft_rule``): the verified
                         prefix of S1's continuation whose chances (``--tables``, else the prior of the trace's
-                        confidence) pay for their rows at ``--lam`` x ``--row-ms``, taken when worth more than an
+                        confidence) pay for their rows at ``--lam`` (default ``draft_rule.LAMBDA_PRIOR``) x
+                        ``--row-ms``, taken when worth more than an
                         MTP chain valued at its optimistic chances (the live rule also knows the first MTP pick's;
                         exact for the prior, an approximation for fitted tables); W-1 drafts at most (W above the
                         decoder's depth + 1 is beyond what the server captures: a what-if)
@@ -54,20 +56,50 @@ Policies (one report row each, per context bucket and overall):
                         automaton, design 4.2 S2, pure Python: the coverage oracle S1's newest-``recent`` limit is
                         measured against)
 
-Round cost: ``t0 + (rows - 1) * row_ms + steps * step_ms``, steps = the MTP absorb (1) plus an MTP chain's further
-steps (an MTP round with J drafts: max(1, J)). Context buckets: prompt plus reply before the round, <50k, 50-300k,
-300-600k, >600k tokens. Only TensorFold-owned sources (the session, and requests this server served) are simulated.
-Serial and grammar-constrained requests are reported under ``recorded`` only.
+Round cost (a request replayed alone): ``t0 + (rows - 1) * row_ms + steps * step_ms`` (defaults: the server's cost
+prior, ``draft_rule.COST_PRIOR``'s unmixed t0, draft row and step), steps = the MTP absorb (1) plus an MTP chain's
+further steps (an MTP round with J drafts: max(1, J)). Context buckets: prompt plus reply before the round, <50k,
+50-300k, 300-600k, >600k tokens. Only TensorFold-owned sources (the session, and requests this server served) are
+simulated. Serial and grammar-constrained requests are reported under ``recorded`` only.
 
-MTP stop rules (``--log``, the ``rules`` section): every probe round's MTP chain is labelled to its room, so any stop
-rule's outcome on it is exact (design 3.6): a rule that verifies k of its drafts keeps the leading labelled ones among
-them and runs as many MTP head steps as the picks it computes. Rules: ``confidence`` (today's: the first draft
-always, later ones while at or above the decoder's confidence), ``prior`` (the cost-aware rule with the prior's
-tables) and ``fit`` (with ``--tables``), at ``--lam`` x (``--row-ms``, ``--step-ms``) and steps forced alone (the
-shared-step option of concurrent rounds is not modelled), and ``allocate`` (``engine.allocate``: the prefix with the
-most expected tokens a modelled millisecond, design 3.1's comparison, on the prior's chances with the whole chain
-computed). Rounds whose labels did not resolve, and streams whose log predates the "greedy" field, are counted and
-left out.
+MTP stop rules (``--log``, the ``rules`` section). A probe drafting call chains every MTP stream on to its room and
+every draft is labelled exactly (a reply does not depend on its drafts), so any stop rule's decisions on that call,
+and the tokens they keep, are exact (design 3.6): a stream that verifies k drafts keeps the leading labelled ones. A
+call's streams are the probe MTP streams of the round that verified them (lines ordered by ``t``, the server's round
+order; prompts that joined in a probe of their own are left out). Each rule decides, step by step as the server does,
+which drafts each stream verifies and which streams each chain step drafts for; the round is then costed with the
+call's drafts and its other streams' as logged: ``t0 + stream * (live - 1) + row * (R - live) + ctx * sum(rows x
+context) / 1e5`` (+ ``pass`` x prompt rows) plus the call's chain steps, ``step + step_stream * (streams - 1)`` each,
+from the cost block of ``--tables`` (else the server's ``draft_rule.COST_PRIOR``). Rules:
+
+    confidence    today's (switch "draft_rule" old): the first draft always, later ones while at or above
+                  ``--confidence``; each stream chains on while its drafts do
+    cost-v1       the cost-aware rule of build 263d7203 with the prior's tables: a step runs when one stream pays a
+                  draft row and the whole step alone, and takes the streams whose next draft pays a row and 0.15 of a
+                  step; at the costs its online model reported (the log's "cost" fields, averaged by live streams:
+                  one row slope folding the streams' own cost in, and a step's mean time)
+    prior, fit    the cost-aware rule (``draft_rule.chain_step``, ``joint_step``: a step's value to a stream is its
+                  next draft's expected value) with the prior's tables, and with ``--tables``' fitted ones, at the
+                  cost model's draft row and step costs
+    fit-cv        the same, cross-fitted (``--cross-tables H0 H1``: tables fitted on each half of the requests,
+                  ``tools/fit_draft_rule.py --fit-half``): a stream's chances from the half without its request, so
+                  its call is out of sample
+    allocate      ``engine.allocate`` a stream (design 3.1's comparison, the prior's chances, the whole chain computed)
+
+lambda*: ``--lam`` if given, else the log's own tokens a millisecond in the call's region (live streams, the longest
+context's bucket), times ``--lam-scale``. Reported per rule overall, by live streams and by live streams and bucket:
+calls, tokens, verified drafts and chain steps a round, modelled ms a round and tokens a ms ("all": pooled); each
+rule's tokens a ms against the confidence rule's on the same calls by live streams, and over all of them as the time
+the confidence rule's tokens of each live count take (a paired bootstrap over calls, 95%); and checks: the confidence
+rule's verified drafts equal the server's on the A/B baseline's calls (``parity``), cost-v1's agreement with the
+server's on its own calls, and the cost model's mean and root-mean-square residual on every logged round by live
+streams (its rows as logged). Calls with unresolved labels, streams without the "greedy" field or a feature, are
+counted and left out.
+
+Limits (what the per-call counterfactual does not see): each rule's later rounds would start elsewhere in the reply
+(different round boundaries and contexts), lambda* would follow the rule's own throughput, the round's milliseconds
+are modelled (the cost model's residual), text drafts keep their logged outcome, and probe calls are a fixed share of
+drafting calls (``TENSORFOLD_DRAFT_PROBE``), so their counts are small at several streams.
 """
 
 from __future__ import annotations
@@ -378,11 +410,12 @@ def simulate(tr: dict, policy, mtp: Mtp, report: Report, name: str, rng: random.
     return rounds
 
 
-def thresholds(args) -> draft_rule.Thresholds:
-    """The cost-aware rule's thresholds (tokens) at the modeled costs: ``--lam`` tokens a ms."""
+def thresholds(args) -> tuple[float, float]:
+    """The cost-aware rule's draft row and MTP step in tokens at the modeled costs (``--lam`` tokens a ms, else the
+    server's prior)."""
 
-    row, step = args.lam * args.row_ms, args.lam * args.step_ms
-    return draft_rule.Thresholds(row, row + step, row + draft_rule.STEP_SHARED * step)
+    lam = draft_rule.LAMBDA_PRIOR if args.lam is None else args.lam
+    return lam * args.row_ms, lam * args.step_ms
 
 
 def is_greedy(sampling: dict | None) -> bool:
@@ -390,14 +423,16 @@ def is_greedy(sampling: dict | None) -> bool:
 
 
 def text_plan(pred, greedy: bool, length: int, tokens: list[int], depth: int, room: int,
-              th: draft_rule.Thresholds) -> list[int] | None:
+              th: tuple[float, float]) -> list[int] | None:
     """The cost-aware rule's verified prefix of a text continuation, or None when an MTP chain is worth more (valued
-    at its optimistic chances: the first pick's own chance is not in a trace)."""
+    at its optimistic chances: the first pick's own chance is not in a trace). ``th``: a draft row and a step in
+    tokens."""
 
+    row, step = th
     given = [pred.suffix(greedy, k, length) for k in range(len(tokens))]
-    kept, value = draft_rule.suffix_plan(given, th)
+    kept, value = draft_rule.suffix_plan(given, row)
     abar = [pred.abar("mtp", greedy, j) for j in range(max(1, min(depth, room)))]
-    if value <= draft_rule.mtp_value(abar[0], abar, min(depth, room), th):
+    if value <= draft_rule.mtp_value(abar[0], abar, min(depth, room), row, step):
         return None
     return tokens[:len(kept)]
 
@@ -549,68 +584,315 @@ def _score(x):
     return float(x) if isinstance(x, str) else x
 
 
-def rules(lines: list[dict], args) -> dict:
-    """Stop rules on the probe rounds' labelled MTP chains (``--log``): exact per-round counterfactuals."""
-
-    cost = lambda rows, steps: args.t0 + (rows - 1) * args.row_ms + steps * args.step_ms  # noqa: E731
-    report, th = Report(cost), thresholds(args)
-    preds = {"prior": draft_rule.Predictor.prior(args.confidence),
-             **({"fit": draft_rule.Predictor.load(args.tables)} if args.tables else {})}
-    skipped = {"unlabelled": 0, "no_greedy_field": 0, "no_features": 0}
-    for line in lines:
-        for st in line["streams"]:
-            drafts = st["drafts"]
-            if st["src"] != "mtp" or not st["probe"] or not drafts:
-                continue
-            if any(d["label"] is None for d in drafts):
-                skipped["unlabelled"] += 1
-                continue
-            labels = [d["label"] for d in drafts]
-            for name, k, steps in _decide(drafts, args.confidence, preds, st.get("greedy"), th, skipped, cost):
-                acc = 0
-                while acc < k and labels[acc] == 1:
-                    acc += 1
-                report.add(name, st["ctx"], 1 + k, acc, steps, "mtp" if k else "")
-    return {"skipped": skipped, "results": report.summary()}
+V1_SHARED = 0.15        # cost-v1 (build 263d7203): a further stream's share of a step another stream forces
 
 
-def _decide(drafts: list[dict], confidence: float, preds: dict, greedy, th, skipped: dict, cost):
-    """(rule, drafts it verifies, MTP steps it runs) for one labelled probe chain (``cost(rows, steps)``: the
-    modelled round milliseconds, for allocate)."""
+def probe_calls(lines: list[dict]) -> tuple[list[tuple[dict, list[dict]]], dict]:
+    """The log's probe drafting calls: (the round that verified them, the call's streams), in round order (by
+    ``t``); and how many were left out, by reason."""
 
-    k = steps = 0
-    for j, d in enumerate(drafts):
-        steps = j + 1                                    # the absorb computes pick 0; each further pick a step
-        low = confidence > 0 and d["p"] < confidence
-        if not low or j == 0:
-            k += 1
-        if low:
-            break
-    yield "confidence", k, steps
-    if greedy is None:
-        skipped["no_greedy_field"] += 1
-        return
-    for name, pred in preds.items():
-        feature = pred.tables["mtp", "greedy" if greedy else "sampled"].feature
-        if any(d[feature] is None for d in drafts):
-            skipped["no_features"] += 1
+    skipped = {"joined": 0, "unlabelled": 0, "no_greedy_field": 0, "no_features": 0}
+    calls = []
+    for line in sorted(lines, key=lambda x: x["t"]):
+        group = [st for st in line["streams"] if st["src"] == "mtp" and st["probe"] and st["drafts"]]
+        skipped["joined"] += sum(1 for st in group if st["join"])
+        group = [st for st in group if not st["join"]]
+        if not group:
             continue
-        c, k, steps = 1.0, 0, 0
-        for j, d in enumerate(drafts):
-            steps = j + 1
-            a = pred.mtp(greedy, j, _score(d["p"]), _score(d["m"]))
-            c, include, full, _ = draft_rule.chain_step(c, a, pred.abar("mtp", greedy, j + 1), j + 1 < len(drafts), th)
-            k += include
-            if not full:
+        drafts = [d for st in group for d in st["drafts"]]
+        if any(d["label"] is None for d in drafts):
+            skipped["unlabelled"] += 1
+        elif any("greedy" not in st for st in group):
+            skipped["no_greedy_field"] += 1
+        elif any(d["p"] is None or d["m"] is None for d in drafts):
+            skipped["no_features"] += 1
+        else:
+            calls.append((line, group))
+    return calls, skipped
+
+
+def _steps(picks: list[int]) -> list[int]:
+    """Each chain step's streams, from the picks each stream computed (the absorb computes pick 0 for every one)."""
+
+    return [sum(1 for n in picks if n > j) for j in range(1, max(picks, default=1))]
+
+
+def decide_confidence(group: list[dict], confidence: float) -> tuple[list[int], list[int]]:
+    """Today's rule on a call: (drafts each stream verifies, each chain step's streams)."""
+
+    ks, picks = [], []
+    for st in group:
+        k = n = 0
+        for j, d in enumerate(st["drafts"]):
+            n = j + 1
+            low = confidence > 0 and d["p"] < confidence
+            if not low or j == 0:
+                k += 1
+            if low:
                 break
-        yield name, k, steps
-        if name == "prior":                              # allocate: the whole chain's chances, then its best prefix
-            chances, c = [], 1.0
-            for j, d in enumerate(drafts):
-                c *= pred.mtp(greedy, j, _score(d["p"]), _score(d["m"]))
-                chances.append(c)
-            costs = {rows: cost(rows, len(drafts)) for rows in range(1, len(drafts) + 2)}
-            yield "allocate", allocate([1], [chances], costs, 0.0, 1 + len(drafts))[0], len(drafts)
+        ks.append(k)
+        picks.append(n)
+    return ks, _steps(picks)
+
+
+def _chance(pred, st: dict, j: int) -> tuple[float, draft_rule.Table]:
+    """A stream's draft j: its chance under ``pred``, and the table that gave it."""
+
+    table = pred.mtp_tables[bool(st["greedy"])]
+    return table.chance(j, _score(st["drafts"][j][table.feature])), table
+
+
+def decide_joint(group: list[dict], preds: list, rows: list[float], step: float,
+                 extra: float) -> tuple[list[int], list[int]]:
+    """The cost-aware rule on a call, as ``MultiDecoder._chain`` decides it: each stream's predictor ``preds`` and
+    draft row ``rows``; ``step``, ``extra``: a step's first and further stream; costs in tokens."""
+
+    c, ks, alive, steps = [1.0] * len(group), [0] * len(group), list(range(len(group))), []
+    for j in range(max(len(st["drafts"]) for st in group)):
+        candidates = []
+        for i in alive:
+            a, table = _chance(preds[i], group[i], j)
+            c[i], include, value = draft_rule.chain_step(c[i], a, table, j, j + 1 < len(group[i]["drafts"]), rows[i])
+            ks[i] += include
+            if value is not None:
+                candidates.append((i, value))
+        joins = draft_rule.joint_step([v for _, v in candidates], step, extra)
+        alive = [i for (i, _), on in zip(candidates, joins) if on]
+        if not alive:
+            break
+        steps.append(len(alive))
+    return ks, steps
+
+
+def decide_v1(group: list[dict], pred, rows: list[float], step: float) -> tuple[list[int], list[int]]:
+    """Build 263d7203's cost-aware rule on a call: a step runs when a stream's next draft pays its row and the
+    whole step (``step`` tokens) alone, for those streams and the ones whose next draft pays a row and V1_SHARED of
+    the step."""
+
+    c, ks, alive, steps = [1.0] * len(group), [0] * len(group), list(range(len(group))), []
+    for j in range(max(len(st["drafts"]) for st in group)):
+        full, shared = [], []
+        for i in alive:
+            a, table = _chance(pred, group[i], j)
+            c[i] *= a
+            if c[i] < rows[i]:
+                continue
+            ks[i] += 1
+            if j + 1 < len(group[i]["drafts"]):
+                ahead = c[i] * table.optimistic(j + 1)
+                if ahead >= rows[i] + step:
+                    full.append(i)
+                elif ahead >= rows[i] + V1_SHARED * step:
+                    shared.append(i)
+        if not full:
+            break
+        alive = sorted(full + shared)
+        steps.append(len(alive))
+    return ks, steps
+
+
+def decide_allocate(group: list[dict], pred, cost) -> tuple[list[int], list[int]]:
+    """``engine.allocate`` a stream: the prefix of its whole chain (computed) with the most expected tokens a
+    modelled millisecond (``cost(rows, steps)``: a stream alone)."""
+
+    ks = []
+    for st in group:
+        chances, c = [], 1.0
+        for j in range(len(st["drafts"])):
+            c *= _chance(pred, st, j)[0]
+            chances.append(c)
+        n = len(chances)
+        ks.append(allocate([1], [chances], {rows: cost(rows, n) for rows in range(1, n + 2)}, 0.0, 1 + n)[0])
+    return ks, _steps([len(st["drafts"]) for st in group])
+
+
+def region_lambda(lines: list[dict]) -> dict[tuple[int, str], float]:
+    """The log's tokens a millisecond by (live streams, the longest context's bucket)."""
+
+    sums: dict[tuple[int, str], list[float]] = {}
+    for line in lines:
+        if not line["streams"]:
+            continue
+        key = (line["live"], bucket(max(st["ctx"] for st in line["streams"])))
+        acc = sums.setdefault(key, [0.0, 0.0])
+        acc[0] += sum(st["accepted"] + 1 for st in line["streams"])
+        acc[1] += line["ms"]
+    return {key: tokens / ms for key, (tokens, ms) in sums.items() if ms > 0}
+
+
+def v1_costs(lines: list[dict]) -> dict[int, tuple[float, float]]:
+    """Build 263d7203's online estimates as its log reported them (row_ms, step_ms), averaged by live streams."""
+
+    acc: dict[int, list[float]] = {}
+    for line in lines:
+        cost = line.get("cost")
+        if cost and "step_stream_ms" not in cost:           # that build's lines: one row slope, a mean step
+            a = acc.setdefault(line["live"], [0.0, 0.0, 0])
+            a[0] += cost["row_ms"]
+            a[1] += cost["step_ms"]
+            a[2] += 1
+    return {live: (r / n, st / n) for live, (r, st, n) in acc.items()}
+
+
+class Costs:
+    """A round's modelled milliseconds (the cost block's terms, ``draft_rule.CostModel``'s forms) and the cost-aware
+    rule's draft row and step costs at its prior (no observations: the model's estimates before any round)."""
+
+    def __init__(self, block: dict) -> None:
+        self.block, self.model = block, draft_rule.CostModel(block)
+
+    def round_ms(self, line: dict, rows: int, ctx_rows: float) -> float:
+        c = self.block["mixed" if line["mixed"] else "unmixed"]
+        x = draft_rule.features(rows, line["live"], ctx_rows, line["pass_rows"])
+        return sum(c[t] * v for t, v in zip(draft_rule.COST_TERMS, x))
+
+    def chain_ms(self, line: dict, steps: list[int]) -> float:
+        c = self.block["mixed" if line["mixed"] else "unmixed"]
+        return sum(c["step"] + c["step_stream"] * (n - 1) for n in steps)
+
+
+def _outcome(line: dict, group: list[dict], ks: list[int], steps: list[int], costs: Costs) -> tuple[int, int, int,
+                                                                                                    int, float]:
+    """The call's round with the group's drafts ``ks``: (tokens, rows, verified drafts, kept drafts, ms)."""
+
+    rows = ctx_rows = tokens = kept = 0
+    ids = {id(st) for st in group}
+    for st in line["streams"]:
+        if id(st) not in ids:
+            rows += 1 + st["verified"]
+            ctx_rows += (1 + st["verified"]) * st["ctx"]
+            tokens += 1 + st["accepted"]
+    for st, k in zip(group, ks):
+        acc = 0
+        while acc < k and st["drafts"][acc]["label"] == 1:
+            acc += 1
+        rows += 1 + k
+        ctx_rows += (1 + k) * st["ctx"]
+        tokens += 1 + acc
+        kept += acc
+    ms = costs.round_ms(line, rows, ctx_rows) + costs.chain_ms(line, steps)
+    return tokens, rows, sum(ks), kept, ms
+
+
+def _keys(line: dict) -> list[str]:
+    live = line["live"]
+    return ["all", f"live{live}", f"live{live} {bucket(max(st['ctx'] for st in line['streams']))}"]
+
+
+def rules(lines: list[dict], args) -> dict:
+    """Stop rules on the log's probe drafting calls (``--log``): exact per-call counterfactuals (the module's
+    description)."""
+
+    calls, skipped = probe_calls(lines)
+    preds = {"prior": draft_rule.Predictor.prior(args.confidence)}
+    block = {**draft_rule.COST_PRIOR, "lambda": draft_rule.LAMBDA_PRIOR}
+    if args.tables:
+        preds["fit"] = draft_rule.Predictor.load(args.tables)
+        block = preds["fit"].cost or block
+    cross = [draft_rule.Predictor.load(path) for path in args.cross_tables or ()]   # fitted on half 0, half 1
+    costs, lams, v1 = Costs(block), region_lambda(lines), v1_costs(lines)
+    alone = lambda rows, steps: costs.block["unmixed"]["t0"] + (rows - 1) * costs.block["unmixed"]["row"] + \
+        steps * costs.block["unmixed"]["step"]  # noqa: E731
+    order = ["confidence", *(["cost-v1"] if v1 else []), *preds, *(["fit-cv"] if cross else []), "allocate"]
+    totals: dict[str, dict[str, list[float]]] = {name: {} for name in order}
+    per_call: dict[str, list[tuple[str, float, float]]] = {name: [] for name in order}
+    checks = {"parity": {"checked": 0, "equal": 0}, "v1_agreement": {"checked": 0, "equal": 0}}
+    for line, group in calls:
+        mixed, live = bool(line["mixed"]), line["live"]
+        context = max(st["ctx"] for st in line["streams"])
+        lam = args.lam if args.lam is not None else lams[(live, bucket(context))]
+        lam *= args.lam_scale
+        model = costs.model
+        rows = [lam * model.row_ms(st["ctx"], mixed) for st in group]
+        step, extra = lam * model.step_ms(mixed), lam * model.step_stream_ms(mixed)
+        decided = {"confidence": decide_confidence(group, args.confidence)}
+        if v1:
+            row_ms, step_ms = v1.get(live) or v1[min(v1, key=lambda n: (abs(n - live), n))]
+            decided["cost-v1"] = decide_v1(group, preds["prior"], [lam * row_ms] * len(group), lam * step_ms)
+        for name, pred in preds.items():
+            decided[name] = decide_joint(group, [pred] * len(group), rows, step, extra)
+        if cross:                                        # each stream by the table fitted on the other half
+            decided["fit-cv"] = decide_joint(group, [cross[1 - draft_rule.half(st["rid"])] for st in group], rows,
+                                             step, extra)
+        decided["allocate"] = decide_allocate(group, preds["prior"], alone)
+        arm = (line.get("ab") or {}).get("draft_rule", "new")
+        verified = [st["verified"] for st in group]
+        check = checks["parity"] if arm == "old" else checks["v1_agreement"] if line.get("cost") and v1 else None
+        if check is not None:
+            check["checked"] += 1
+            check["equal"] += decided["confidence" if arm == "old" else "cost-v1"][0] == verified
+        for name, (ks, steps) in decided.items():
+            tokens, n_rows, drafted, kept, ms = _outcome(line, group, ks, steps, costs)
+            for key in _keys(line):
+                t = totals[name].setdefault(key, [0, 0, 0, 0, 0, 0.0, 0])
+                for i, v in enumerate((1, tokens, n_rows, drafted, kept, ms, len(steps))):
+                    t[i] += v
+            per_call[name].append((_keys(line)[1], tokens, ms))
+    results = {}
+    for name, buckets in totals.items():
+        results[name] = {}
+        for key, (n, tokens, n_rows, drafted, kept, ms, chain) in buckets.items():
+            results[name][key] = {"calls": n, "tokens": tokens, "rows": n_rows, "drafted": drafted, "kept": kept,
+                                  "chain_steps": chain, "ms": round(ms, 3), "tokens_per_round": tokens / n,
+                                  "drafts_per_round": drafted / n, "chain_steps_per_round": chain / n,
+                                  "ms_per_round": ms / n, "tokens_per_ms": tokens / ms if ms else None}
+    return {"calls": len(calls), "skipped": skipped, "lam": {f"{k[0]} {k[1]}": round(v, 5) for k, v in lams.items()},
+            "lam_scale": args.lam_scale, "v1_costs": {k: [round(x, 4) for x in v] for k, v in v1.items()},
+            "results": results, "versus_confidence": _versus(per_call, args.seed), "checks": checks,
+            "model_residual": _residuals(lines, costs)}
+
+
+def _versus(per_call: dict, seed: int, resamples: int = 2000) -> dict:
+    """Each rule's tokens a ms over the confidence rule's on the same calls, by live streams (the ratio less one), and
+    over all of them as the time the confidence rule's tokens of each live count take (a workload's streams fix its
+    live count, so pooling the counts' rounds would weigh them by the rule's own milliseconds); with a paired
+    bootstrap 95% interval over calls."""
+
+    base = per_call["confidence"]
+    lives = sorted({k for k, _, _ in base})
+
+    def gain(rows, sample):
+        sums: dict[str, list[float]] = {}
+        for i in sample:
+            a = sums.setdefault(base[i][0], [0.0, 0.0, 0.0, 0.0])
+            a[0] += rows[i][1]
+            a[1] += rows[i][2]
+            a[2] += base[i][1]
+            a[3] += base[i][2]
+        return sum(bm for _, _, _, bm in sums.values()) / sum(bt * m / t for t, m, bt, _ in sums.values()) - 1.0
+
+    out: dict = {}
+    for name, rows in per_call.items():
+        if name == "confidence":
+            continue
+        out[name] = {}
+        for key in ["all", *lives]:
+            idx = [i for i, (k, _, _) in enumerate(base) if key == "all" or k == key]
+            rng = random.Random(f"{seed}:{name}:{key}")
+            boots = sorted(gain(rows, [idx[rng.randrange(len(idx))] for _ in idx]) for _ in range(resamples))
+            out[name][key] = {"calls": len(idx), "gain": round(gain(rows, idx), 5),
+                              "ci95": [round(boots[int(0.025 * resamples)], 5),
+                                       round(boots[int(0.975 * resamples) - 1], 5)]}
+    return out
+
+
+def _residuals(lines: list[dict], costs: Costs) -> dict:
+    """The cost model's residual on every logged round (its rows as logged), by live streams: rounds, mean and root
+    mean square of (ms less chain steps) less the model."""
+
+    acc: dict[str, list[float]] = {}
+    for line in lines:
+        if not line["streams"]:
+            continue
+        ctx_rows = sum((st["verified"] + 1) * st["ctx"] for st in line["streams"])
+        r = line["ms"] - line["chain_ms"] - costs.round_ms(line, line["rows"], ctx_rows)
+        for key in ("all", f"live{line['live']}"):
+            a = acc.setdefault(key, [0, 0.0, 0.0])
+            a[0] += 1
+            a[1] += r
+            a[2] += r * r
+    return {k: {"rounds": n, "mean_ms": round(s / n, 3), "rms_ms": round((q / n) ** 0.5, 3)}
+            for k, (n, s, q) in sorted(acc.items())}
 
 
 def load_log(paths: Sequence[str]) -> list[dict]:
@@ -646,10 +928,37 @@ def table(result: dict) -> str:
     if result["traces_dropped"]:
         lines.append(f"warning: the server dropped {result['traces_dropped']} traces (a full queue)")
     if "rules" in result:
-        lines.append("MTP stop rules on probe rounds (exact per round):")
-        lines += _rows(result["rules"]["results"])
-        lines.append(f"left out: {result['rules']['skipped']}")
+        lines += rule_rows(result["rules"])
     return "\n".join(lines)
+
+
+def rule_rows(rules: dict) -> list[str]:
+    """The ``rules`` section as text: each rule's rounds by region, its gain over the confidence rule, the checks."""
+
+    lines = [f"MTP stop rules on {rules['calls']} probe calls (exact decisions and kept tokens; modelled ms; lambda* "
+             f"x {rules['lam_scale']}):",
+             f"{'rule':<11} {'region':<15} {'calls':>6} {'tok/rnd':>7} {'drafts':>6} {'chain':>5} {'ms/rnd':>7} "
+             f"{'tok/ms':>7} {'vs confidence (95%)':>26}"]
+    keys = sorted({k for buckets in rules["results"].values() for k in buckets}, key=lambda k: (k != "all", k))
+    for key in keys:
+        for name, buckets in rules["results"].items():
+            st = buckets.get(key)
+            if st is None:
+                continue
+            versus = rules["versus_confidence"].get(name, {}).get(key)
+            gain = "" if versus is None else \
+                f"{100 * versus['gain']:+.2f}% [{100 * versus['ci95'][0]:+.2f},{100 * versus['ci95'][1]:+.2f}]"
+            lines.append(f"{name:<11} {key:<15} {st['calls']:>6} {st['tokens_per_round']:>7.3f} "
+                         f"{st['drafts_per_round']:>6.2f} {st['chain_steps_per_round']:>5.2f} "
+                         f"{st['ms_per_round']:>7.2f} {st['tokens_per_ms']:>7.4f} {gain:>26}")
+    checks = rules["checks"]
+    lines.append(f"confidence rule = the server's (A/B baseline calls): {checks['parity']['equal']}/"
+                 f"{checks['parity']['checked']}; cost-v1 = the server's (its calls): "
+                 f"{checks['v1_agreement']['equal']}/{checks['v1_agreement']['checked']}")
+    lines.append("cost model residual (logged ms less chain steps, less the model): " + ", ".join(
+        f"{k} {v['mean_ms']:+.2f} (rms {v['rms_ms']:.2f}, {v['rounds']})" for k, v in rules["model_residual"].items()))
+    lines.append(f"left out: {rules['skipped']}")
+    return lines
 
 
 def _rows(results: dict) -> list[str]:
@@ -675,9 +984,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("traces", nargs="+", help="trace files or directories of them")
     ap.add_argument("--json", help="write the full result here")
-    ap.add_argument("--t0", type=float, default=34.6, help="ms a round costs with one row (default 34.6)")
-    ap.add_argument("--row-ms", type=float, default=6.5, help="ms each further verify row adds (default 6.5)")
-    ap.add_argument("--step-ms", type=float, default=1.6, help="ms each MTP head step adds (default 1.6)")
+    prior = draft_rule.COST_PRIOR["unmixed"]
+    ap.add_argument("--t0", type=float, default=prior["t0"],
+                    help=f"ms a round of one stream costs with one row (default {prior['t0']}, the server's prior)")
+    ap.add_argument("--row-ms", type=float, default=prior["row"],
+                    help=f"ms each further verify row adds (default {prior['row']})")
+    ap.add_argument("--step-ms", type=float, default=prior["step"],
+                    help=f"ms each MTP head step adds (default {prior['step']})")
     ap.add_argument("--anchors", type=_ints, default=[4, 6, 8], help="S1 anchor lengths (default 4,6,8)")
     ap.add_argument("--windows", type=_ints, default=[5, 8, 16], help="window caps in rows (default 5,8,16)")
     ap.add_argument("--recent", type=int, default=32, help="S1: the newest anchor occurrences compared (32)")
@@ -686,11 +999,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--corpus-segment", type=int, default=262_144, help="corpus segment size in tokens")
     ap.add_argument("--mtp-drafts", type=int, default=2, help="Tier-0 MTP drafts a round (default 2)")
     ap.add_argument("--mtp-accept", type=float, default=0.75, help="Tier-0 MTP draft acceptance (default 0.75)")
-    ap.add_argument("--seed", type=int, default=0, help="seeds the modeled MTP rounds")
+    ap.add_argument("--seed", type=int, default=0, help="seeds the modeled MTP rounds and the rules' bootstrap")
     ap.add_argument("--log", nargs="*", default=[], help="TENSORFOLD_DRAFT_LOG files: compare MTP stop rules")
     ap.add_argument("--tables", help="a fitted draft rule (tools/fit_draft_rule.py) for the cost-aware rule's chances")
-    ap.add_argument("--lam", type=float, default=draft_rule.LAMBDA_PRIOR,
-                    help=f"lambda*: tokens a ms the rule's thresholds use (default {draft_rule.LAMBDA_PRIOR:.4f})")
+    ap.add_argument("--lam", type=float, help="lambda*: tokens a ms the rule's thresholds use (default: the server's "
+                    f"prior {draft_rule.LAMBDA_PRIOR} for traces; the log's own by region for --log)")
+    ap.add_argument("--lam-scale", type=float, default=1.0, help="--log: lambda* times this (sensitivity; 1)")
+    ap.add_argument("--cross-tables", nargs=2, metavar=("HALF0", "HALF1"),
+                    help="--log: fits on each half of the requests (fit_draft_rule.py --fit-half 0, 1): rule fit-cv")
     ap.add_argument("--confidence", type=float, default=0.5,
                     help="the confidence rule's threshold for log lines (default 0.5, production's)")
     args = ap.parse_args(argv)

@@ -90,13 +90,17 @@ def test_a_rounds_line_says_whether_any_of_its_drafting_calls_probed(tmp_path):
 
     watch = DraftWatch(log=str(tmp_path / "log.jsonl"), probe=0.5, seed=7)
     draws, want = random.Random(7), []
-    for _ in range(40):
+    for i in range(40):
         watch.begin()
         calls = [watch.probing(), watch.probing()]
         assert calls == [draws.random() < 0.5, draws.random() < 0.5]
         want.append(any(calls))
-        watch.round_end([], rows=1, mixed=False, pass_rows=0, steps=1)
-    assert [line["probed"] for line in _lines(watch)] == want and any(want) and not all(want)
+        watch.round_end([], rows=1, mixed=False, pass_rows=0, steps=1 + i % 3, chain=(i % 3, 2.25 * (i % 3), i % 3 * 2))
+    lines = _lines(watch)
+    assert [line["probed"] for line in lines] == want and any(want) and not all(want)
+    # the chain steps, their time and the streams they drafted for
+    assert [(line["chain_steps"], line["chain_ms"], line["chain_rows"]) for line in lines] == \
+        [(i % 3, 2.25 * (i % 3), i % 3 * 2) for i in range(40)]
 
 
 def test_labels_follow_the_reply_and_lines_wait_for_them(tmp_path):

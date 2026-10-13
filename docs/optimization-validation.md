@@ -187,9 +187,22 @@ benchmark-only `TENSORFOLD_AB_CONTROL` switches `draft_rule` and `suffix`
 `tools/draft_replay.py` comparisons and `tools/bench_draft_host.py`. Their
 evidence is CPU oracles and synthetic-model GPU tests on an RTX PRO 2000
 Blackwell (sm_120): identical tokens in every switch value with true, partly
-true and adversarial proposals and random costs. Calibration on real traffic,
-the GB10 A/B, host-cost measurements on Grace and installed-image qualification
-remain pending.
+true and adversarial proposals and random costs. The GB10 A/B of build 263d7203
+(Qwen3.8 Flash Next, RotorQuant6-norm cache, four MTP drafts, confidence 0.5)
+found that rule slower than the confidence rule: 0.6% at one stream and about
+3% per stream with four cached streams. Its calibration draft log of
+2026-10-13 traced the four-stream loss to MTP chain steps that ran only when a
+single stream paid for the whole step, and to a round cost that priced each
+stream's own work into its draft rows. On the `perf-idea3-rework` branch the
+rule prices draft rows apart from each stream's cost, runs a step when its
+streams' expected next-draft values together pay for it, and reads its default
+costs from that log's fit. An offline evaluation on the log's 1,526 probe
+drafting calls (exact decisions and kept tokens, modelled round time, tables
+cross-fitted by halves of the requests) estimates 1.6% more tokens a
+millisecond than the confidence rule with fitted tables (1.4% to 2.3% by
+stream count) and no change with the default tables; it is not a throughput
+measurement. The rework's GB10 A/B, host-cost measurements on Grace and
+installed-image qualification remain pending.
 
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and

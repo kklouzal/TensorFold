@@ -13,12 +13,14 @@ when the stream's reply reaches the draft's position, or the stream ends (then t
 
     {"t": unix seconds, "live": streams verified, "rows": verify rows, "mixed": a prompt pass shared the forward,
      "pass_rows": its prompt rows, "steps": MTP head steps that drafted the next round (absorb, then the chain;
-     with prompts that joined in the round's pass), "chain_steps", "chain_ms": those after the absorbs, and their
-     time (each from its launch to its pick's readback), "probed": a drafting call of the round was a probe (its
-     streams', or under the cost-aware rule the prompts that joined in its pass), "joined": prompts that
-     joined since the previous line, "ms": the round's wall time (from after any prompt passes that ran alone),
-     "cost": the cost-aware rule's estimates after the round ({"lam": tokens a ms, "row_ms", "step_ms"} for its
-     region) or null (switch "draft_rule" old), "ab": the benchmark switches (``ab_switch.snapshot``),
+     with prompts that joined in the round's pass), "chain_steps", "chain_ms", "chain_rows": those after the
+     absorbs, their time (each from its launch to its pick's readback) and the streams they drafted for (summed over
+     the steps), "probed": a drafting call of the round was a probe (its streams', or under the cost-aware rule
+     the prompts that joined in its pass), "joined": prompts that joined since the previous line, "ms": the
+     round's wall time (from after any prompt passes that ran alone),
+     "cost": the cost-aware rule's estimates after the round ({"lam": tokens a ms, "row_ms": a draft row's at the
+     longest context, "step_ms": an MTP step's, "step_stream_ms": a further stream's in a step} for its region) or
+     null (switch "draft_rule" old), "ab": the benchmark switches (``ab_switch.snapshot``),
      "dropped": lines lost to a full queue so far, "forced": lines written before their labels resolved so far,
      "streams": [{"rid": a random id per request, "ctx": committed context tokens, "n": reply tokens before the
                   round, "greedy": its policy, "src": "mtp" | "suffix" | "owed" | "copy" | "" (no drafts),
@@ -235,10 +237,11 @@ class DraftWatch:
             self.trace_rounds.append(entry)
 
     def round_end(self, live: list, *, rows: int, mixed: bool, pass_rows: int, steps: int,
-                  chain: tuple[int, float] = (0, 0.0), rule: bool = False, cost: dict | None = None,
+                  chain: tuple[int, float, int] = (0, 0.0, 0), rule: bool = False, cost: dict | None = None,
                   ab: dict | None = None) -> None:
         """The round's streams took their tokens (and prompts that ended in its pass joined): label, then write.
-        ``rule``: the cost-aware rule drafted the round's next drafts (switch "draft_rule" new)."""
+        ``chain``: its MTP chain steps, their milliseconds and the streams they drafted for; ``rule``: the cost-aware
+        rule drafted the round's next drafts (switch "draft_rule" new)."""
 
         ms = round((time.perf_counter() - self.t0) * 1e3, 3)
         for entry in self.trace_rounds:
@@ -247,8 +250,8 @@ class DraftWatch:
             self.serial += 1
             line = self.lines[self.serial] = _Line(self.serial, {
                 "t": time.time(), "live": len(live), "rows": rows, "mixed": mixed, "pass_rows": pass_rows,
-                "steps": steps, "chain_steps": chain[0], "chain_ms": round(chain[1], 3), "probed": self.probed,
-                "joined": self.joins, "ms": ms,
+                "steps": steps, "chain_steps": chain[0], "chain_ms": round(chain[1], 3), "chain_rows": chain[2],
+                "probed": self.probed, "joined": self.joins, "ms": ms,
                 "cost": None if cost is None else {k: _num(v, 6) for k, v in cost.items()}, "ab": ab or {},
                 "streams": []})
             for s, entry, chain in self.round:

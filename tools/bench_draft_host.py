@@ -10,9 +10,9 @@ Per size: the session index's prompt build on the calling thread, and in the bac
 per-round ``sync`` + ``propose`` (1-5 tokens a round, half of them copies of recent text) as p50/p99/max; a heavily
 repeated gram's query; memory (``tracemalloc``, numpy's arrays and Python's objects, in a pass of its own: the build's
 peak, what stays a prompt token, and what a reply token adds at worst, every reply gram new); and ``CopyIndex``'s first
-(bulk) and per-round proposals. Rule: one round's host decisions for 4 streams x depth 4 (chances, chain steps,
-text-versus-chain values, the trim and the cost model's update). numpy only: run it in the target's runtime image for
-its pinned numpy and CPU (GB10's Grace cores).
+(bulk) and per-round proposals. Rule (``bench_rule``): one round's host decisions on the decoder's critical path for 1
+and 4 streams at depth 4, the confidence rule's against the cost-aware rule's. numpy only: run it in the target's
+runtime image for its pinned Python, numpy and CPU (GB10's Grace cores).
 """
 
 from __future__ import annotations
@@ -180,37 +180,109 @@ def bench_copy(n: int, args, rng: random.Random) -> dict:
     return {"tokens": n, "first_propose_ms": round(first * 1e3, 2), "round": quantiles(per)}
 
 
-def bench_rule(args, rng: random.Random) -> dict:
-    """One round's host arithmetic for 4 streams at depth 4: thresholds, 4 chain steps a stream, a text-versus-chain
-    value for two of them, the round-start trim and the cost model's update."""
+def _fitted_like(rng: random.Random) -> draft_rule.Predictor:
+    """A predictor with fitted-like MTP tables (12 score bins, sample counts a bin) for the rule's lookups."""
 
-    pred, costs = draft_rule.Predictor.prior(0.5), draft_rule.CostModel()
-    per = []
-    for _ in range(args.rounds):
-        t = time.perf_counter()
-        lam = costs.lam(4, False, 200_000)
-        ths = [costs.thresholds(lam, 200_000 + s, False) for s in range(4)]
-        chains = []
-        for s, th in enumerate(ths):
-            c, chain = 1.0, []
-            for j in range(4):
-                c, include, full, shared = draft_rule.chain_step(c, pred.mtp(s % 2 == 0, j, rng.random(), None),
-                                                                 pred.abar("mtp", s % 2 == 0, j + 1), j < 3, th)
-                if include:
-                    chain.append(c)
-                if not (full or shared):
-                    break
-            chains.append(chain)
-            if s < 2:
-                given = [pred.suffix(False, k, 12) for k in range(4)]
-                abar = [pred.abar("mtp", False, j) for j in range(4)]
-                draft_rule.suffix_plan(given, th)
-                draft_rule.mtp_value(0.9, abar, 4, th)
-        draft_rule.trim(chains, [th.row for th in ths])
-        costs.observe(rows=1 + sum(map(len, chains)) + 3, ctx_rows=800_000, pass_rows=0, mixed=False,
-                      ms=50.0 + rng.random(), chain_ms=4.5, chain_steps=3, tokens=6, live=4, context=200_000)
-        per.append(time.perf_counter() - t)
-    return {"streams": 4, "depth": 4, "round": quantiles(per)}
+    data = draft_rule.Predictor.prior(0.5).as_dict()
+    edges = [round(0.2 + 0.065 * k, 3) for k in range(11)]
+    for policy in draft_rule.POLICIES:
+        data["tables"]["mtp"][policy] = {
+            "feature": "p", "depth_edges": [0, 1, 2, 3, 5, 8], "score_edges": edges,
+            "table": [[round(min(0.99, 0.3 + 0.06 * k - 0.02 * d), 4) for k in range(12)] for d in range(6)],
+            "abar": [0.97] * 6, "count": [[rng.randint(50, 900) for _ in range(12)] for _ in range(6)]}
+    data["source"] = {"tool": "bench"}
+    return draft_rule.Predictor.from_dict(data)
+
+
+def _picks(rng: random.Random, n: int, depth: int) -> list[list[float]]:
+    """Each stream's draft probabilities a pick: mostly confident, as the calibration log's (70% at 0.95 or more)."""
+
+    return [[rng.uniform(0.95, 1.0) if rng.random() < 0.7 else rng.uniform(0.0, 0.95) for _ in range(depth)]
+            for _ in range(n)]
+
+
+def confidence_round(picks: list[list[float]], confidence: float, depth: int) -> int:
+    """The A/B baseline's host decisions in a round (``MultiDecoder._chain``, rule "old"): a comparison a pick."""
+
+    active, drafts, steps = list(range(len(picks))), [[] for _ in picks], 0
+    for j in range(depth):
+        go = []
+        for i in active:
+            p = picks[i][j]
+            low = confidence > 0 and p < confidence
+            if not low or j == 0:
+                drafts[i].append(j)
+            if low:
+                continue
+            if j + 1 < depth:
+                go.append(i)
+        if not go:
+            break
+        active, steps = go, steps + 1
+    return steps
+
+
+def rule_round(costs: draft_rule.CostModel, pred: draft_rule.Predictor, picks: list[list[float]], depth: int,
+               ctx: list[int], chances: list[list[float]]) -> int:
+    """The cost-aware rule's host decisions in a round, as ``MultiDecoder`` runs them on the critical path: the
+    round-start trim, the chain's costs, each pick's chance, chain step and joint step, and the cost observation."""
+
+    n = len(picks)
+    lam = costs.lam(n, False, max(ctx))                                  # _trim
+    draft_rule.trim(chances, [lam * costs.row_ms(c, False) for c in ctx])
+    lam = costs.lam(n, False, max(ctx))                                  # _chain
+    step, extra = lam * costs.step_ms(False), lam * costs.step_stream_ms(False)
+    rows = {i: lam * costs.row_ms(c, False) for i, c in enumerate(ctx)}
+    tables = {i: pred.mtp_tables[draft_rule.greedy(None)] for i in range(n)}
+    chance = dict.fromkeys(rows, 1.0)
+    active, drafts, steps, stream_steps = list(range(n)), [[] for _ in picks], 0, 0
+    for j in range(depth):
+        candidates = []
+        for i in active:
+            table = tables[i]
+            c, include, value = draft_rule.chain_step(chance[i], table.chance(j, picks[i][j]), table, j,
+                                                      j + 1 < depth, rows[i])
+            chance[i] = c
+            if include:
+                drafts[i].append(c)
+            if value is not None:
+                candidates.append((i, value))
+        active = [i for (i, _), on in zip(candidates, draft_rule.joint_step([v for _, v in candidates], step, extra))
+                  if on]
+        if not active:
+            break
+        steps, stream_steps = steps + 1, stream_steps + len(active)
+    rows_all = n + sum(map(len, drafts))
+    costs.observe(rows=rows_all, live=n, ctx_rows=float(rows_all * max(ctx)), pass_rows=0, mixed=False,
+                  ms=50.0 + 10.0 * n, chain_ms=2.2 * steps, chain_steps=steps, chain_rows=stream_steps, tokens=n + 2,
+                  context=max(ctx))
+    return steps
+
+
+def bench_rule(args, rng: random.Random) -> dict:
+    """One round's host decisions at depth 4 for 1 and 4 streams: the confidence rule (the A/B baseline) and the
+    cost-aware rule with the prior's tables and with fitted-like ones (sample counts: expected next-draft values),
+    as p50/p99/max microseconds a round (rounds interleaved; picks drawn as the calibration log's)."""
+
+    out = {}
+    fitted = _fitted_like(rng)
+    for n in (1, 4):
+        ctx = [30_000 + 70_000 * i for i in range(n)]
+        variants = {"confidence": [], "rule-prior": [], "rule-fitted": []}
+        models = {"rule-prior": (draft_rule.CostModel(), draft_rule.Predictor.prior(0.5)),
+                  "rule-fitted": (draft_rule.CostModel(), fitted)}
+        for _ in range(args.rounds):
+            picks = _picks(rng, n, 4)
+            chances = [[0.9, 0.81, 0.73][:rng.randint(0, 3)] for _ in range(n)]
+            for name in variants:                        # interleaved: the same picks, back to back
+                t = time.perf_counter()
+                if name == "confidence":
+                    confidence_round(picks, 0.5, 4)
+                else:
+                    rule_round(*models[name], picks, 4, ctx, chances)
+                variants[name].append(time.perf_counter() - t)
+        out[f"streams{n}"] = {name: quantiles(xs) for name, xs in variants.items()}
+    return {"depth": 4, "rounds": args.rounds, **out}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

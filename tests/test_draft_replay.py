@@ -34,7 +34,7 @@ SERIAL = [(i, 1, 0, "") for i in range(1, len(Y))]          # recorded: one toke
 def _args(**kw):
     ns = dict(t0=34.6, row_ms=6.5, step_ms=1.6, anchors=[4, 8], windows=[5, 8], recent=32, longest=64,
               corpus_tokens=1_000_000, corpus_segment=262_144, mtp_drafts=2, mtp_accept=0.75, seed=0,
-              tables=None, lam=2.33 / 50, confidence=0.5)
+              tables=None, lam=2.33 / 50, lam_scale=1.0, cross_tables=None, confidence=0.5)
     ns.update(kw)
     return type("Args", (), ns)()
 
@@ -245,44 +245,98 @@ def test_suffix_new_takes_what_pays_under_the_prior_or_fitted_chances(tmp_path):
     assert (st["rounds"], st["drafted"], st["accepted"], st["suffix_tokens"]) == (6 + 6 + 2, 12, 11, 17)
 
 
-def test_stop_rules_compare_on_labelled_probe_chains(tmp_path):
-    """A probe chain labelled to its room: today's rule verifies the confident first draft and stops at the low
-    second; the prior's rule decides the same; a table that trusts every draft verifies all four and keeps two."""
+def _entry(j, p, label, m=1.0):
+    return {"j": j, "p": p, "m": m, "e": None, "g": None, "z": None, "c": None, "L": None, "a0": None, "inc": False,
+            "hit": label, "label": label}
 
-    def entry(p, label):
-        return {"j": 0, "p": p, "m": 1.0, "e": None, "g": None, "z": None, "c": None, "L": None, "a0": None,
-                "inc": False, "hit": label, "label": label}
 
-    drafts = [entry(0.9, 1), entry(0.3, 1), entry(0.9, 0), entry(0.9, 0)]
-    for j, d in enumerate(drafts):
-        d["j"] = j
-    stream = {"rid": "r", "ctx": 1000, "n": 3, "greedy": False, "src": "mtp", "probe": True, "join": False,
-              "constrained": False, "verified": 1, "accepted": 1, "done": False, "drafts": drafts}
-    lines = [{"streams": [stream]}, {"streams": [dict(stream, probe=False)]},
-             {"streams": [dict(stream, drafts=[dict(d, label=None) for d in drafts])]},
-             {"streams": [{k: v for k, v in stream.items() if k != "greedy"}]}]
+def _probe(rid, ps, labels, ctx=1000, verified=0, **over):
+    st = {"rid": rid, "ctx": ctx, "n": 3, "greedy": False, "src": "mtp", "probe": True, "join": False,
+          "constrained": False, "verified": verified, "accepted": 0, "done": False,
+          "drafts": [_entry(j, p, label) for j, (p, label) in enumerate(zip(ps, labels))]}
+    st.update(over)
+    return st
+
+
+def _line(t, streams, arm="new", cost=None):
+    return {"t": t, "live": len(streams), "rows": sum(1 + st["verified"] for st in streams), "mixed": False,
+            "pass_rows": 0, "steps": 1, "chain_steps": 0, "chain_ms": 0.0, "ms": 50.0 + 20 * len(streams),
+            "cost": cost, "ab": {"draft_rule": arm}, "streams": streams}
+
+
+def test_stop_rules_decide_probe_calls_jointly_and_cost_their_rounds(tmp_path):
+    """Probe calls labelled to their rooms: today's rule on the A/B baseline's call decides what the server did
+    (parity); four streams whose next drafts pay a step only together chain on under the joint rule, where build
+    263d7203's rule (a step one stream pays alone) stops them; each round is costed by the cost model with the call's
+    drafts and steps; calls that cannot be judged are counted and left out."""
+
+    confident = [0.9, 0.9, 0.9, 0.9]
+    old_call = _line(1.0, [_probe("a", [0.9, 0.3, 0.9, 0.9], [1, 1, 0, 0], verified=1)], arm="old")
+    four = _line(2.0, [_probe(f"s{i}", confident, [1, 1, 1, 0]) for i in range(4)],
+                 cost={"lam": 0.12, "row_ms": 5.0, "step_ms": 2.65})
+    joined = _line(3.0, [_probe("j", confident, [1, 1, 1, 1], join=True)])
+    unlabelled = _line(4.0, [_probe("u", confident, [1, None, None, None])])
+    old_log = _line(5.0, [{k: v for k, v in _probe("g", confident, [1, 1, 1, 1]).items() if k != "greedy"}])
+    plain = _line(6.0, [_probe("n", confident, [1, 1, 1, 1], probe=False)])
     log = tmp_path / "drafts.jsonl"
-    log.write_text("\n".join(json.dumps(line) for line in lines))
-    rule = draft_rule.Predictor.prior(0.5).as_dict()
-    rule["source"] = {"tool": "test"}
-    for policy in ("greedy", "sampled"):
-        rule["tables"]["mtp"][policy] = {"feature": "p", "depth_edges": [0], "score_edges": [], "table": [[0.9]],
-                                         "abar": [0.9]}
-    tables = tmp_path / "rule.json"
-    tables.write_text(json.dumps(rule))
-    got = replay.rules(replay.load_log([str(log)]), _args(tables=str(tables)))
+    log.write_text("\n".join(json.dumps(x) for x in [four, old_call, joined, unlabelled, old_log, plain]))
+    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.12, lam_scale=1.0, cross_tables=None))
+    assert got["calls"] == 2 and got["skipped"] == {"joined": 1, "unlabelled": 1, "no_greedy_field": 1,
+                                                    "no_features": 0}
+    assert got["checks"]["parity"] == {"checked": 1, "equal": 1}          # today's rule = the server's decision
+    assert got["v1_costs"] == {4: [5.0, 2.65]}
     res = got["results"]
-    assert (res["confidence"]["all"]["rounds"], res["confidence"]["all"]["rows"], res["confidence"]["all"]["tokens"]) \
-        == (2, 2 + 2, 2 + 2)                                          # 1 draft, kept: 2 tokens (the stream without
-    assert res["prior"]["all"]["rows"] == 2 and res["prior"]["all"]["tokens"] == 2      # "greedy": today's only)
-    assert (res["fit"]["all"]["rows"], res["fit"]["all"]["accepted"], res["fit"]["all"]["tokens"]) == (5, 2, 3)
-    assert res["confidence"]["all"]["ms"] == pytest.approx(2 * (34.6 + 6.5 + 2 * 1.6))
-    assert res["fit"]["all"]["ms"] == pytest.approx(34.6 + 4 * 6.5 + 4 * 1.6)
-    assert got["skipped"] == {"unlabelled": 1, "no_greedy_field": 1, "no_features": 0}
-    # allocate on the prior's chances (.9, .18, .162, .146): one draft has the best expected tokens a modelled ms
+    block = draft_rule.COST_PRIOR["unmixed"]
+
+    def ms(live, drafts, steps):                          # the cost model's round, contexts 1000 each
+        rows = live + drafts
+        return block["t0"] + block["stream"] * (live - 1) + block["row"] * drafts + block["ctx"] * rows * 1000 / 1e5 \
+            + sum(block["step"] + block["step_stream"] * (n - 1) for n in steps)
+
+    one = res["confidence"]["live1"]                      # the first draft, kept; the low second ends the chain
+    assert (one["calls"], one["drafted"], one["tokens"], one["chain_steps"]) == (1, 1, 2, 1)
+    assert one["ms"] == pytest.approx(ms(1, 1, [1]), abs=1e-3)              # reported to the microsecond
+    # four confident streams at lambda* .12: one alone stops after two drafts (.729 - .12 x 4.2 < .12 x 2.18), the
+    # four together pay every step: four drafts each, three kept, three steps of four streams
+    joint = res["prior"]["live4"]
+    assert (joint["drafted"], joint["kept"], joint["tokens"], joint["chain_steps"]) == (16, 12, 16, 3)
+    assert joint["ms"] == pytest.approx(ms(4, 16, [4, 4, 4]), abs=1e-3)
+    v1 = res["cost-v1"]["live4"]                          # .81 < .12 x (5 + 2.65): no stream forces the first step
+    assert (v1["drafted"], v1["kept"], v1["tokens"], v1["chain_steps"]) == (4, 4, 8, 0)
+    conf = res["confidence"]["live4"]
+    assert (conf["drafted"], conf["kept"], conf["chain_steps"]) == (16, 12, 3)
+    assert got["checks"]["v1_agreement"] == {"checked": 1, "equal": 0}     # the server verified none here
+    versus = got["versus_confidence"]
+    assert versus["prior"]["live4"]["gain"] == pytest.approx(0.0, abs=1e-12)
+    assert versus["cost-v1"]["live4"]["gain"] == pytest.approx((8 / ms(4, 4, [])) / (16 / ms(4, 16, [4, 4, 4])) - 1,
+                                                               abs=1e-5)
     alloc = res["allocate"]["all"]
-    assert (alloc["rounds"], alloc["rows"], alloc["tokens"]) == (1, 2, 2)
-    assert alloc["ms"] == pytest.approx(34.6 + 6.5 + 4 * 1.6)
+    assert alloc["chain_steps"] == 3 + 3                  # the whole chains computed
+    assert "MTP stop rules on 2 probe calls" in replay.table({"results": {}, "parity": replay._parity(),
+                                                              "traces_dropped": 0, "rules": got})
+
+
+def test_cross_fitted_tables_judge_each_stream_by_the_other_half(tmp_path):
+    """``--cross-tables``: a stream's chances come from the table fitted on the half of the requests without its
+    own (``draft_rule.half``)."""
+
+    rids = {h: next(f"r{i}" for i in range(100) if draft_rule.half(f"r{i}") == h) for h in (0, 1)}
+    paths = []
+    for h, chance in ((0, 0.95), (1, 0.05)):             # half 0's fit trusts every draft, half 1's none
+        rule = draft_rule.Predictor.prior(0.5).as_dict()
+        rule["source"] = {"tool": "test"}
+        rule["tables"]["mtp"]["sampled"] = {"feature": "p", "depth_edges": [0], "score_edges": [], "table": [[chance]],
+                                            "abar": [chance]}
+        paths.append(tmp_path / f"half{h}.json")
+        paths[-1].write_text(json.dumps(rule))
+    log = tmp_path / "drafts.jsonl"
+    log.write_text("\n".join(json.dumps(_line(float(t), [_probe(rids[h], [0.9] * 3, [1, 1, 1])]))
+                             for t, h in enumerate((0, 1))))
+    got = replay.rules(replay.load_log([str(log)]), _args(lam=0.05, lam_scale=1.0,
+                                                          cross_tables=[str(p) for p in paths]))
+    cv = got["results"]["fit-cv"]["live1"]
+    # half 0's request is judged by half 1's table (nothing verified), half 1's by half 0's (its whole room)
+    assert (cv["calls"], cv["drafted"]) == (2, 0 + 3)
 
 
 def test_the_automaton_finds_the_longest_earlier_match_after_every_token():

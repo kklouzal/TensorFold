@@ -2,15 +2,31 @@
 
 Drafts never change a reply (keyed sampling: design 2), only how many of its tokens a round verifies, so these
 decide nothing but speed. A round's long-run throughput is best when each round maximizes expected tokens minus
-lambda* times its expected milliseconds (lambda*: the achievable tokens a millisecond), so a draft is verified when
-its chance of being kept, ``c`` (the product of its chain's conditional chances), pays for its row::
+lambda* times its expected milliseconds (lambda*: the achievable tokens a millisecond). Both add up over a round's
+parts, so each decision takes what pays at the margin.
+
+A verified draft j of a stream adds ``c_j`` expected tokens (the chance it is kept: the product of its chain's
+conditional chances) and one verify row, ``row_ms`` (a draft row's marginal milliseconds at the stream's context)::
 
     include draft j  <=>  c_j >= lambda* * row_ms                       (j = 0 too: a round may verify no draft)
-    chain on        <=>  c_j * abar[j + 1] >= lambda* * (row_ms + step_ms)       (a step it forces alone)
-                     or  c_j * abar[j + 1] >= lambda* * (row_ms + STEP_SHARED * step_ms) while another stream forces it
 
-``abar[j]`` is a table row's optimistic (75th percentile) chance, the option value of chaining on. Everything here is
-host arithmetic on values the decoder already read back.
+A batched MTP chain step drafts the next draft of every stream it takes and costs ``step_ms + step_stream_ms * (n -
+1)`` milliseconds for n streams (measured). For stream s, the step reveals its next draft's conditional chance ``a``,
+and that draft is verified only if it then pays for its row, so the step is worth ``v_s = E[max(0, c_j * a - lambda* *
+row_ms(s))]`` tokens to it, over the chances the table gives its next depth (``Table.value``: its fit's samples a
+score bin; a table without them, as the prior's, puts all on that depth's optimistic chance ``abar``, so ``v_s =
+max(0, c_j * abar[j + 1] - lambda* * row_ms(s))``). A draft the stream does not verify, or one past its room, has no
+next. Chances never rise along a chain, so a step that does not pay now pays no better later: this one-step
+lookahead is the stopping rule (a monotone problem). Running the step for a set P of streams adds ``sum_P v_s -
+lambda* * (step_ms + step_stream_ms * (|P| - 1))``: each member adds ``v_s - lambda* * step_stream_ms`` beyond the
+step's fixed ``lambda* * (step_ms - step_stream_ms)``, so the best set takes exactly the streams with ``v_s >= lambda*
+* step_stream_ms`` (and ``v_s > 0``), and the step runs when their gains pay the fixed part (``joint_step``)::
+
+    the step runs  <=>  sum over those streams of (v_s - lambda* * step_stream_ms) >= lambda* * (step_ms - step_stream_ms)
+
+Alone (one stream) that is ``v_s >= lambda* * step_ms``: the step pays for itself (with the prior's tables, ``c_j *
+abar[j + 1] >= lambda* * (row_ms + step_ms)``). With more streams, a step that no single stream pays for runs when its
+streams' values add up to its cost.
 
 ``Predictor``: monotone tables (``drafters.calibration.Calibration``: non-decreasing in score within a depth row) by
 source (``mtp``: score ``p``, the draft head's probability, or ``m``, the keyed margin; ``suffix``: score ``L``, the
@@ -20,17 +36,22 @@ optionally a fitted cost prior; it holds no token ids or text. Without one, ``Pr
 confidence the server was started with that reproduce the confidence rule's decisions at the default costs (see its
 docstring).
 
-``CostModel``: an MTP chain step's milliseconds measured directly (each step, from its launch to its pick's readback,
-which it needs anyway), as an exponential average; and a round's milliseconds less its chain steps',
-``t0 + row * (R - 1) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows``, fitted online for rounds with and
-without a prompt pass by exponentially forgetting least squares anchored at a prior (recursive least squares with
-forgetting; the prior keeps unexcited directions). Both hold each observation within an outlier bound of its estimate
-(OUTLIER_MS, OUTLIER_SHARE), so a paused round or step moves them boundedly. Timing steps directly keeps their cost out
-of the regression, where it is collinear with the rows the same decisions draft (under that feedback a fitted step cost
-went negative). lambda* is kept per region (live streams, a prompt pass, the longest context's bucket) as a ratio of
-exponential averages of tokens and milliseconds; a region not seen yet takes its nearest seen region's (as streams join
-or finish), then every round's, then the prior. Estimates are clamped to sane ranges. Determinism: decisions follow
-measured wall times, so a request's round structure is not reproducible run to run; its tokens are.
+``CostModel``: two fits a regime (rounds with and without a prompt pass), each exponentially forgetting least squares
+anchored at a prior (the prior keeps unexcited directions): a round's milliseconds less its MTP chain steps',
+``t0 + stream * (live - 1) + row * (R - live) + ctx * sum(rows * context) / 1e5 + pass * prompt_rows`` for ``live``
+streams with ``R`` verify rows in all (a stream's own row and work cost ``stream``, each draft row ``row``: one slope
+for every row would fold the streams' fixed cost into the draft rows' price), and its chain steps' milliseconds,
+``step * steps + step_stream * (stream_steps - steps)`` (stream_steps: the streams the steps drafted for, summed; each
+step timed from its launch to its pick's readback, which it needs anyway). Timing steps apart keeps their cost out of
+the round's regression, where it is collinear with the rows the same decisions draft. Each fit holds an observation
+within an outlier bound of its prediction (OUTLIER_MS, OUTLIER_SHARE), so a paused round moves it boundedly. lambda* is
+kept per region (live streams, a prompt pass, the longest context's bucket) as a ratio of exponential averages of
+tokens and milliseconds; a region not seen yet takes its nearest seen region's (as streams join or finish), then every
+round's, then the prior. Estimates are clamped to sane ranges. Determinism: decisions follow measured wall times, so a
+request's round structure is not reproducible run to run; its tokens are.
+
+Host cost: the decoder runs this between a pick's readback and the next launch, so it is plain Python floats and lists
+(a fit's update solves its small system by Cholesky, without numpy's per-call overheads).
 
 Failure: everything here is total over validated state and its callers' contract (tables checked at load, a round's
 observation checked before it changes anything, every estimate finite and clamped, a margin given where a table reads
@@ -41,21 +62,20 @@ one), so the only exception a decision or an estimate can raise is the interpret
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import math
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
-
-import numpy as np
 
 from tensorfold.drafters.calibration import Calibration
 
 ENV = "TENSORFOLD_DRAFT_RULE"
 KIND = "tensorfold-draft-rule"
-VERSION = 1
+VERSION = 2                 # version 1's cost block had one row slope and no per-stream step cost
 MAX_FILE = 16 << 20         # a calibration file's bytes at most (a fit's are kilobytes): bounds the startup's parse
+MAX_DEPTH_EDGE = 64         # a table's last depth edge at most (lookups hold a row a depth up to it)
 FEATURES = {"mtp": ("p", "m"), "suffix": ("L",)}
 POLICIES = ("greedy", "sampled")
 
@@ -66,32 +86,49 @@ PRIOR_LOW_LATER = 0.2       # a later one below it: dropped
 PRIOR_COPY = 0.94           # a suffix token after a match of COPY_MATCH+ tokens (as family_depth's copy_rate)
 COPY_MATCH = 8              # the needle today's copy drafts need; shorter suffix matches get chance 0 in the prior
 
-STEP_SHARED = 0.15          # the share of an MTP step's time a stream adds to a step another stream forces
 BUCKETS = ((50_000, "<50k"), (300_000, "50-300k"), (600_000, "300-600k"), (None, ">600k"))
 
-# Cost prior (ms; design 3.5 defaults): t0 = 32 ms + 2.6 ms host, a verify row 6.5 ms, an MTP step 1.6 ms, the
-# indexer ~0.22 ms a row per 100k tokens of context; a round with a prompt pass reads the experts for it anyway, so
-# its window rows are cheap, and each prompt row costs about a prefill row (~580 tok/s measured).
-COST_PRIOR = {"unmixed": {"t0": 34.6, "row": 6.5, "ctx": 0.22, "pass": 0.0, "step": 1.6},
-              "mixed": {"t0": 34.6, "row": 1.0, "ctx": 0.22, "pass": 1.7, "step": 1.6}}
-COST_TERMS = ("t0", "row", "ctx", "pass")   # the regression's terms; "step" is measured (an exponential average)
-COST_SD = (20.0, 5.0, 0.5, 2.0)  # the prior's standard deviations (ms): weak, so a few rounds outweigh it
-STEP_RATE = 0.05            # the step average's newest-round weight (after its first rounds' plain average)
-# a round's cost counts at most OUTLIER_MS + OUTLIER_SHARE x |its prediction| off that prediction, online
+# Cost prior (ms) and LAMBDA_PRIOR: tools/fit_draft_rule.py over the calibration draft log of 2026-10-13 (GB10,
+# Qwen3.8 Flash Next rotorquant6-norm, build 263d7203, --mtp-drafts 4, --mtp-confidence 0.5, TENSORFOLD_MTP_COPY=1,
+# both "draft_rule" arms; 26,859 rounds of 1-4 streams at 30k-300k tokens, 20,154 of them with chain steps; log sha256
+# d994602a...97b220c89): unmixed rounds' terms (rms residual 3.42 ms a round, 0.35 ms a round's chain steps). Its
+# prompts were cached, so 3 rounds had a prompt pass, too few to fit: mixed rounds' terms are the unmixed fit's, but a
+# round with a prompt pass reads the experts for it anyway, so its draft rows are cheap (design 3.5), a stream's own
+# work (attention, recurrent state, sampling) is the unmixed stream cost less a draft row's, and a prompt row costs
+# about a prefill row.
+COST_PRIOR = {"unmixed": {"t0": 38.8, "stream": 9.33, "row": 4.17, "ctx": 0.118, "pass": 0.0,
+                          "step": 2.18, "step_stream": 0.263},
+              "mixed": {"t0": 38.8, "stream": 5.16, "row": 1.0, "ctx": 0.118, "pass": 1.7,
+                        "step": 2.18, "step_stream": 0.263}}
+COST_TERMS = ("t0", "stream", "row", "ctx", "pass")   # a round's regression (less its chain steps)
+STEP_TERMS = ("step", "step_stream")                  # its chain steps' regression
+COST_SD = (20.0, 10.0, 5.0, 0.5, 2.0)  # the priors' standard deviations (ms): weak, so a few rounds outweigh them
+STEP_SD = (2.0, 1.0)
+# an observation counts at most OUTLIER_MS + OUTLIER_SHARE x |its prediction| off that prediction, online
 # (``CostFit.observe``) and offline (tools/fit_draft_rule.py): a paused round moves a fit boundedly
 OUTLIER_MS, OUTLIER_SHARE = 5.0, 0.5
 COST_LIMIT = 1e6            # a cost file's terms: at most this many ms in magnitude (a fit's predictions stay finite)
-LAMBDA_PRIOR = 2.33 / 50.0  # tokens a ms: production's 2.33 tokens a round at ~50 ms
+LAMBDA_PRIOR = 0.070        # tokens a ms: the calibration log's rounds' (lone streams' 0.056, four streams' 0.10)
 PRIOR_MS = 50.0             # the lambda prior's weight, in milliseconds of rounds
-FORGET = 0.995              # least squares' forgetting a round (memory ~200 rounds)
+FORGET = 0.995              # least squares' forgetting an observation (memory ~200 rounds)
 LAMBDA_RATE = 0.05          # lambda*'s exponential averages: the newest round's weight (after the first rounds')
-ROW_MS = (0.01, 200.0)      # clamps: a verify row's marginal ms
-STEP_MS = (0.0, 100.0)      # an MTP step's ms
+ROW_MS = (0.01, 200.0)      # clamps: a draft row's marginal ms
+STEP_MS = (0.0, 100.0)      # an MTP step's ms (a further stream's share of one: from 0 to the step's)
 LAMBDA = (0.002, 2.0)       # tokens a ms
 
 
 def bucket(context: int) -> str:
-    return next(name for limit, name in BUCKETS if limit is None or context < limit)
+    for limit, name in BUCKETS[:-1]:
+        if context < limit:
+            return name
+    return BUCKETS[-1][1]
+
+
+def half(rid: str) -> int:
+    """A request's half, 0 or 1, by a stable hash of its random id (the draft log's ``rid``): a fit's held-out report
+    (tools/fit_draft_rule.py) and cross-fitted evaluations (tools/draft_replay.py) split requests by it."""
+
+    return hashlib.sha256(rid.encode()).digest()[0] & 1
 
 
 def greedy(sampling) -> bool:
@@ -103,19 +140,50 @@ def greedy(sampling) -> bool:
 # -- predictor -----------------------------------------------------------------------------------------------------
 
 class Table:
-    """One source and policy's chances: a ``Calibration`` over (depth, score) with its score ``feature`` and each
-    depth row's optimistic chance ``abar``."""
+    """One source and policy's chances: a ``Calibration`` over (depth, score) with its score ``feature``, each depth
+    row's optimistic chance ``abar`` and optionally its fit's samples a bin (``count``). Lookups read a depth's row
+    directly (``rows``, ``abars``, ``spreads``: one a depth up to the last depth edge, whose row serves every deeper
+    one)."""
 
-    __slots__ = ("feature", "cal", "abar", "count")
+    __slots__ = ("feature", "cal", "abar", "count", "edges", "rows", "abars", "spreads")
 
     def __init__(self, feature: str, cal: Calibration, abar: Sequence[float], count=None) -> None:
         self.feature, self.cal, self.abar, self.count = feature, cal, tuple(float(a) for a in abar), count
+        self.edges = cal.score_edges
+        spreads = []                                     # a depth row's chances, ascending, and the weights from each
+        for r, row in enumerate(cal.table):              # on: (chances, sum of weights, sum of weight x chance)
+            counts = count[r] if count is not None else None
+            total = sum(counts) if counts else 0
+            pairs = sorted((p, n / total) for p, n in zip(row, counts) if n) if total else [(self.abar[r], 1.0)]
+            weight, mass = [0.0] * (len(pairs) + 1), [0.0] * (len(pairs) + 1)
+            for k in range(len(pairs) - 1, -1, -1):
+                weight[k] = weight[k + 1] + pairs[k][1]
+                mass[k] = mass[k + 1] + pairs[k][1] * pairs[k][0]
+            spreads.append((tuple(p for p, _ in pairs), tuple(weight), tuple(mass)))
+        index = [max(0, bisect.bisect_right(cal.depth_edges, d) - 1) for d in range(int(cal.depth_edges[-1]) + 1)]
+        self.rows = tuple(cal.table[i] for i in index)
+        self.abars = tuple(self.abar[i] for i in index)
+        self.spreads = tuple(spreads[i] for i in index)
 
     def chance(self, depth: int, score: float) -> float:
-        return self.cal.probability(depth, score)
+        rows = self.rows
+        return (rows[depth] if depth < len(rows) else rows[-1])[bisect.bisect_left(self.edges, score)]
 
     def optimistic(self, depth: int) -> float:
-        return self.abar[max(0, bisect.bisect_right(self.cal.depth_edges, int(depth)) - 1)]
+        abars = self.abars
+        return abars[depth] if depth < len(abars) else abars[-1]
+
+    def value(self, depth: int, c: float, row: float) -> float:
+        """E[max(0, c * a - row)] for a draft at ``depth`` whose chain's chance so far is ``c``, over the chances
+        ``a`` its depth row gives (weighted by the fit's samples, else all on ``abar``): its expected tokens net of
+        its row (``row`` tokens) when it is verified only if it pays."""
+
+        if c <= 0.0:
+            return 0.0
+        spreads = self.spreads
+        chances, weight, mass = spreads[depth] if depth < len(spreads) else spreads[-1]
+        k = bisect.bisect_left(chances, row / c)        # the chances that pay: a >= row / c
+        return max(0.0, c * mass[k] - row * weight[k])
 
     def as_dict(self) -> dict:
         out = {"feature": self.feature, "depth_edges": list(self.cal.depth_edges),
@@ -145,8 +213,8 @@ def _table(data, source: str, policy: str) -> Table:
     depth = data.get("depth_edges")
     if not isinstance(depth, list) or not depth or depth[0] != 0 or \
             any(isinstance(d, bool) or not isinstance(d, int) for d in depth) or \
-            any(b <= a for a, b in zip(depth, depth[1:])):
-        raise ValueError(f"{where}.depth_edges: ascending integers from 0")
+            any(b <= a for a, b in zip(depth, depth[1:])) or depth[-1] > MAX_DEPTH_EDGE:
+        raise ValueError(f"{where}.depth_edges: ascending integers from 0 to at most {MAX_DEPTH_EDGE}")
     scores = data.get("score_edges")
     if not isinstance(scores, list):
         raise ValueError(f"{where}.score_edges: a list")
@@ -181,12 +249,13 @@ def _cost(data) -> dict:
     if not isinstance(data, dict) or set(data) != {"unmixed", "mixed", "lambda"}:
         raise ValueError("cost: {unmixed, mixed, lambda}")
     out = {}
+    terms = (*COST_TERMS, *STEP_TERMS)
     for name in ("unmixed", "mixed"):
-        terms = data[name]
-        if not isinstance(terms, dict) or set(terms) != {*COST_TERMS, "step"}:
-            raise ValueError(f"cost.{name}: {{{', '.join((*COST_TERMS, 'step'))}}}")
-        out[name] = {t: _number(terms[t], f"cost.{name}.{t}") for t in (*COST_TERMS, "step")}
-        if any(abs(v) > COST_LIMIT for v in out[name].values()) or out[name]["step"] < 0:
+        given = data[name]
+        if not isinstance(given, dict) or set(given) != set(terms):
+            raise ValueError(f"cost.{name}: {{{', '.join(terms)}}}")
+        out[name] = {t: _number(given[t], f"cost.{name}.{t}") for t in terms}
+        if any(abs(v) > COST_LIMIT for v in out[name].values()) or any(out[name][t] < 0 for t in STEP_TERMS):
             raise ValueError(f"cost.{name}: milliseconds of at most {COST_LIMIT:g} in magnitude, a step's from 0")
     lam = _number(data["lambda"], "cost.lambda")
     if not LAMBDA[0] <= lam <= LAMBDA[1]:
@@ -201,22 +270,25 @@ class Predictor:
     def __init__(self, tables: dict[tuple[str, str], Table], source: dict, cost: dict | None = None) -> None:
         self.tables, self.source, self.cost = tables, source, cost
         self.needs_margins = any(t.feature == "m" for (src, _), t in tables.items() if src == "mtp")
+        # by policy (greedy: True, sampled: False), as the decoder reads them a pick
+        self.mtp_tables = {g: tables["mtp", POLICIES[0] if g else POLICIES[1]] for g in (True, False)}
+        self.suffix_tables = {g: tables["suffix", POLICIES[0] if g else POLICIES[1]] for g in (True, False)}
 
     @classmethod
     def prior(cls, confidence: float) -> Predictor:
         """Tables that reproduce the confidence rule's decisions (design 3.4) at the default costs, until a fit.
 
         An MTP draft at or above ``confidence`` lands with chance PRIOR_HIGH, so a chain of them is verified to its
-        room (up to 9 drafts at the default thresholds 0.30 a row, 0.38 a row and step: lambda* 0.0466 tokens/ms x
-        6.5 ms a row, 1.6 ms a step); a first draft below it has PRIOR_LOW_FIRST, verified but ending the chain, and
-        a later one PRIOR_LOW_LATER, dropped. A stream alone in its steps keeps exactly those decisions, for rooms
-        up to 7 drafts (up to 9 at production's lambda*), while lambda* x row_ms is in (0.253, 0.35] (lambda*
-        0.039-0.054 at 6.5 ms: production's 0.0466 and session 1's 0.0526). Elsewhere the rule follows the design:
-        deeper chains where rows are cheap (prompt-pass rounds), a low first draft dropped where they are dear, and a
-        low first draft chaining on in a step another stream forces (STEP_SHARED) where lambda* x row_ms <= 0.30. A
-        suffix (or copy) token after a match of COPY_MATCH+ tokens lands with PRIOR_COPY > PRIOR_HIGH, so it wins
-        over any MTP chain, as copies do today; a shorter match gets 0 (never verified). ``confidence`` 0 (no rule):
-        every MTP draft gets PRIOR_HIGH."""
+        room; a first draft below it has PRIOR_LOW_FIRST, verified but ending the chain, and a later one
+        PRIOR_LOW_LATER, dropped. A stream alone in its steps keeps exactly those decisions while lambda* x row_ms <=
+        PRIOR_LOW_FIRST (0.35) < lambda* x (row_ms + step_ms) / PRIOR_HIGH, for rooms up to 6 drafts (more at lower
+        lambda*): at the cost prior's draft row and step (COST_PRIOR, at 30k tokens), lambda* above 0.049 and up to
+        0.083 tokens a ms (the calibration log's lone streams: 0.056). Elsewhere the rule follows the design: a low
+        first draft chaining on where rows and steps are cheap for the tokens they buy (prompt-pass rounds, long
+        contexts' lower lambda*), dropped where rows are dear (several streams' higher lambda*), and chains that pay
+        only together going on in a step their streams share (``joint_step``). A suffix (or copy) token after a match
+        of COPY_MATCH+ tokens lands with PRIOR_COPY > PRIOR_HIGH, so it wins over any MTP chain, as copies do today; a
+        shorter match gets 0 (never verified). ``confidence`` 0 (no rule): every MTP draft gets PRIOR_HIGH."""
 
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"confidence: a probability from 0 to 1, not {confidence}")
@@ -285,7 +357,7 @@ class Predictor:
     def mtp(self, is_greedy: bool, depth: int, p: float, m: float | None) -> float:
         """An MTP draft's chance given the drafts before it were kept."""
 
-        table = self.tables["mtp", POLICIES[0] if is_greedy else POLICIES[1]]
+        table = self.mtp_tables[bool(is_greedy)]
         score = p if table.feature == "p" else m
         if score is None:
             raise ValueError(f"an MTP draft's chance needs its {table.feature!r}")
@@ -294,7 +366,7 @@ class Predictor:
     def suffix(self, is_greedy: bool, k: int, length: int) -> float:
         """A suffix token's chance (the ``k``-th of a match of ``length`` tokens) given the ones before it."""
 
-        return self.tables["suffix", POLICIES[0] if is_greedy else POLICIES[1]].chance(k, length)
+        return self.suffix_tables[bool(is_greedy)].chance(k, length)
 
     def abar(self, source: str, is_greedy: bool, depth: int) -> float:
         return self.tables[source, POLICIES[0] if is_greedy else POLICIES[1]].optimistic(depth)
@@ -302,51 +374,110 @@ class Predictor:
 
 # -- cost model ----------------------------------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class Thresholds:
-    """A stream's thresholds in tokens: a verify row's cost, and a row plus an MTP step forced alone or shared."""
+def features(rows: int, live: int, ctx_rows: float, pass_rows: int) -> list[float]:
+    """A round's terms (COST_TERMS): ``live`` streams with ``rows`` verify rows in all."""
 
-    row: float
-    full: float
-    shared: float
+    return [1.0, live - 1.0, float(rows - live), ctx_rows / 1e5, float(pass_rows)]
 
 
-def features(rows: int, ctx_rows: float, pass_rows: int) -> np.ndarray:
-    return np.asarray([1.0, rows - 1.0, ctx_rows / 1e5, float(pass_rows)])
+def step_features(steps: int, stream_steps: int) -> list[float]:
+    """A round's chain-step terms (STEP_TERMS): its steps, and the streams they drafted for beyond one a step."""
+
+    return [float(steps), float(stream_steps - steps)]
+
+
+def solve(m: Sequence[Sequence[float]], diag: Sequence[float], v: Sequence[float]) -> list[float] | None:
+    """x with (m + diag(``diag``)) x = v, for a symmetric positive semidefinite ``m`` (its lower triangle is read) and
+    a positive ``diag``: Cholesky on the system scaled to a unit diagonal. None when rounding leaves a pivot that is
+    not positive or a result that is not finite (singular to working precision: inputs far beyond any round's)."""
+
+    k = len(v)
+    scale = []
+    for i in range(k):
+        d = m[i][i] + diag[i]
+        if not 0.0 < d < math.inf:
+            return None
+        scale.append(1.0 / math.sqrt(d))
+    low: list[list[float]] = []
+    for i in range(k):
+        row, mi, si = [0.0] * k, m[i], scale[i]
+        for j in range(i):
+            lj = low[j]
+            s = mi[j] * si * scale[j]
+            for q in range(j):
+                s -= row[q] * lj[q]
+            row[j] = s / lj[j]
+        s = (mi[i] + diag[i]) * si * si
+        for q in range(i):
+            s -= row[q] * row[q]
+        if not s > 0.0:
+            return None
+        row[i] = math.sqrt(s)
+        low.append(row)
+    z = []
+    for i in range(k):
+        s, li = v[i] * scale[i], low[i]
+        for q in range(i):
+            s -= li[q] * z[q]
+        z.append(s / li[i])
+    x = [0.0] * k
+    for i in range(k - 1, -1, -1):
+        s = z[i]
+        for q in range(i + 1, k):
+            s -= low[q][i] * x[q]
+        x[i] = s / low[i][i]
+    out = [xi * si for xi, si in zip(x, scale)]
+    return out if all(math.isfinite(c) for c in out) else None
 
 
 class CostFit:
-    """Exponentially forgetting least squares anchored at a prior (a round's cost less its chain steps, each held
-    within the outlier bound of its prediction; ``tools/fit_draft_rule.py`` solves the same anchored, bounded problem
-    over logged rounds, without forgetting)."""
+    """Exponentially forgetting least squares anchored at a prior (coefficients ``prior`` with standard deviations
+    ``sd``), each observation held within the outlier bound of its prediction; ``tools/fit_draft_rule.py`` solves the
+    same anchored, bounded problem over logged rounds, without forgetting. ``coef``: the estimate. An update singular
+    to working precision (``solve``; no round's inputs make one) keeps the estimate and is counted (``singular``)."""
 
-    def __init__(self, prior: dict) -> None:
-        self.theta0 = np.asarray([prior[t] for t in COST_TERMS], dtype=np.float64)
-        self.precision0 = np.diag([1.0 / sd ** 2 for sd in COST_SD])
-        self.a = np.zeros((len(COST_TERMS), len(COST_TERMS)))
-        self.b = np.zeros(len(COST_TERMS))
-        self.theta = self.theta0.copy()
-        self.coef = self.theta.tolist()                  # as Python floats, for the per-stream thresholds
+    __slots__ = ("theta0", "precision0", "anchor", "a", "b", "coef", "rounds", "singular")
+
+    def __init__(self, prior: Sequence[float], sd: Sequence[float]) -> None:
+        k = len(prior)
+        self.theta0 = [float(v) for v in prior]
+        self.precision0 = [1.0 / s ** 2 for s in sd]
+        self.anchor = [p * t for p, t in zip(self.precision0, self.theta0)]     # the prior's pull
+        self.a = [[0.0] * k for _ in range(k)]          # the data's forgotten normal equations (lower triangle)
+        self.b = [0.0] * k
+        self.coef = list(self.theta0)
         self.rounds = 0
+        self.singular = 0
 
-    def observe(self, x: np.ndarray, ms: float) -> None:
-        predicted = float(x @ self.theta)
-        bound = OUTLIER_MS + OUTLIER_SHARE * abs(predicted)    # robust: an outlier round (a pause) moves it boundedly
-        y = predicted + min(bound, max(-bound, ms - predicted))
-        a, b = FORGET * self.a + np.outer(x, x), FORGET * self.b + x * y
-        self.theta = np.linalg.solve(a + self.precision0, b + self.precision0 @ self.theta0)   # then all at once
-        self.a, self.b, self.coef = a, b, self.theta.tolist()
+    def predict(self, x: Sequence[float]) -> float:
+        return sum(c * v for c, v in zip(self.coef, x))
+
+    def observe(self, x: Sequence[float], y: float) -> None:
+        predicted = self.predict(x)
+        bound = OUTLIER_MS + OUTLIER_SHARE * abs(predicted)    # robust: an outlier (a pause) moves it boundedly
+        y = predicted + min(bound, max(-bound, y - predicted))
+        a, b = self.a, self.b
+        for i, xi in enumerate(x):
+            ai = a[i]
+            for j in range(i + 1):
+                ai[j] = FORGET * ai[j] + xi * x[j]
+            b[i] = FORGET * b[i] + xi * y
+        coef = solve(a, self.precision0, [bi + pull for bi, pull in zip(b, self.anchor)])
+        if coef is None:
+            self.singular += 1
+        else:
+            self.coef = coef
         self.rounds += 1
 
 
 class CostModel:
-    """Round costs and lambda* per region, online (``observe`` once a round)."""
+    """Round and chain-step costs and lambda* per region, online (``observe`` once a round)."""
 
     def __init__(self, prior: dict | None = None) -> None:
         prior = prior or {**COST_PRIOR, "lambda": LAMBDA_PRIOR}
-        self.fits = {False: CostFit(prior["unmixed"]), True: CostFit(prior["mixed"])}
-        self.step = {False: prior["unmixed"]["step"], True: prior["mixed"]["step"]}
-        self.steps_seen = {False: 0, True: 0}
+        regimes = ((False, "unmixed"), (True, "mixed"))
+        self.fits = {mixed: CostFit([prior[name][t] for t in COST_TERMS], COST_SD) for mixed, name in regimes}
+        self.steps = {mixed: CostFit([prior[name][t] for t in STEP_TERMS], STEP_SD) for mixed, name in regimes}
         self.lambda0 = prior["lambda"]
         self.regions: dict[tuple[int, bool, str], list[float]] = {}     # region -> [tokens, ms averages, rounds]
         self.overall: list[float] | None = None                         # every round's
@@ -355,24 +486,22 @@ class CostModel:
     def region(live: int, mixed: bool, context: int) -> tuple[int, bool, str]:
         return min(max(1, live), 4), bool(mixed), bucket(context)
 
-    def observe(self, *, rows: int, ctx_rows: float, pass_rows: int, mixed: bool, ms: float, chain_ms: float,
-                chain_steps: int, tokens: int, live: int, context: int) -> None:
-        """A round's verify rows, the sum of its rows' contexts, its prompt rows, wall milliseconds (``chain_ms`` of
-        them in its ``chain_steps`` MTP chain steps) and emitted tokens (``live`` streams, the longest at
-        ``context``)."""
+    def observe(self, *, rows: int, live: int, ctx_rows: float, pass_rows: int, mixed: bool, ms: float,
+                chain_ms: float, chain_steps: int, chain_rows: int, tokens: int, context: int) -> None:
+        """A round of ``live`` streams: its verify rows (``rows`` in all), the sum of its rows' contexts, its prompt
+        rows, wall milliseconds (``chain_ms`` of them in its ``chain_steps`` MTP chain steps, which drafted for
+        ``chain_rows`` streams in all) and emitted tokens (the longest stream at ``context``)."""
 
-        if not (math.isfinite(ms) and ms > 0 and math.isfinite(chain_ms) and 0 <= chain_ms <= ms) or rows < 1 or \
-                tokens < 0 or chain_steps < 0:
-            raise ValueError(f"a round's cost observation: rows {rows}, {ms} ms ({chain_ms} in {chain_steps} steps), "
-                             f"{tokens} tokens")
+        if not (math.isfinite(ms) and ms > 0 and math.isfinite(chain_ms) and 0 <= chain_ms <= ms) or live < 1 or \
+                rows < live or tokens < 0 or chain_steps < 0 or chain_rows < chain_steps or \
+                (chain_rows and not chain_steps) or not (math.isfinite(ctx_rows) and ctx_rows >= 0) or pass_rows < 0:
+            raise ValueError(f"a round's cost observation: {live} streams, rows {rows}, context rows {ctx_rows}, "
+                             f"prompt rows {pass_rows}, {ms} ms ({chain_ms} in {chain_steps} steps for {chain_rows} "
+                             f"streams), {tokens} tokens")
         mixed = bool(mixed)
-        self.fits[mixed].observe(features(rows, ctx_rows, pass_rows), ms - chain_ms)
-        if chain_steps:                                  # a step's time, within the outlier bound of the estimate
-            self.steps_seen[mixed] += 1
-            rate = max(STEP_RATE, 1.0 / (self.steps_seen[mixed] + 1))
-            step = self.step[mixed]
-            bound = OUTLIER_MS + OUTLIER_SHARE * abs(step)
-            self.step[mixed] = step + rate * min(bound, max(-bound, chain_ms / chain_steps - step))
+        self.fits[mixed].observe(features(rows, live, ctx_rows, pass_rows), ms - chain_ms)
+        if chain_steps:
+            self.steps[mixed].observe(step_features(chain_steps, chain_rows), chain_ms)
         region = self.region(live, mixed, context)
         ema = self.regions.get(region)
         if ema is None:                                  # a new region starts from its nearest estimate's lambda*
@@ -403,55 +532,83 @@ class CostModel:
         return min(LAMBDA[1], max(LAMBDA[0], self._estimate(self.region(live, mixed, context))))
 
     def row_ms(self, context: int, mixed: bool) -> float:
-        _, row, ctx, _ = self.fits[bool(mixed)].coef
-        return min(ROW_MS[1], max(ROW_MS[0], row + ctx * context / 1e5))
+        """A draft row's marginal milliseconds at ``context``."""
+
+        coef = self.fits[bool(mixed)].coef
+        return min(ROW_MS[1], max(ROW_MS[0], coef[2] + coef[3] * context / 1e5))
 
     def step_ms(self, mixed: bool) -> float:
-        return min(STEP_MS[1], max(STEP_MS[0], self.step[bool(mixed)]))
+        """An MTP chain step's milliseconds for one stream."""
 
-    def thresholds(self, lam: float, context: int, mixed: bool) -> Thresholds:
-        row, step = lam * self.row_ms(context, mixed), lam * self.step_ms(mixed)
-        return Thresholds(row, row + step, row + STEP_SHARED * step)
+        return min(STEP_MS[1], max(STEP_MS[0], self.steps[bool(mixed)].coef[0]))
+
+    def step_stream_ms(self, mixed: bool) -> float:
+        """The milliseconds each further stream adds to a chain step: from 0 to a step's."""
+
+        return min(self.step_ms(mixed), max(STEP_MS[0], self.steps[bool(mixed)].coef[1]))
 
 
 # -- decisions -----------------------------------------------------------------------------------------------------
 
-def chain_step(c_prev: float, a: float, abar_next: float, more: bool, th: Thresholds) -> tuple[float, bool, bool, bool]:
-    """Draft j of a chain: its cumulative chance, whether it is verified, and whether the chain goes on (a step the
-    stream would force alone, or one it joins). ``more``: a further draft fits the stream's room."""
+def chain_step(c_prev: float, a: float, table: Table, depth: int, more: bool,
+               row: float) -> tuple[float, bool, float | None]:
+    """Draft ``depth`` of a chain (conditional chance ``a``; ``table``: its source and policy's): its cumulative
+    chance, whether it is verified (``row``: a draft row's cost in tokens), and the next step's value to the stream
+    in tokens (``Table.value``; None: the chain cannot go on, because this draft is not verified, or ``more`` says no
+    further draft fits the stream's room). ``joint_step`` decides the step."""
 
     c = c_prev * a
-    include = c >= th.row
-    ahead = c * abar_next if include and more else -1.0
-    return c, include, ahead >= th.full, ahead >= th.shared
+    if c < row:
+        return c, False, None
+    return c, True, (table.value(depth + 1, c, row) if more else None)
 
 
-def suffix_plan(chances: Sequence[float], th: Thresholds) -> tuple[list[float], float]:
-    """A candidate's verified prefix (its tokens' cumulative chances while they pay for their rows) and its value in
-    tokens (expected tokens less their rows' cost). It needs no MTP step."""
+def joint_step(values: Sequence[float], step: float, extra: float) -> list[bool]:
+    """Which streams a batched MTP step drafts for, given each candidate's value for it ``values`` (tokens, net of
+    its row): those worth something and at least ``extra`` (a further stream's share of a step, in tokens), when their
+    gains beyond it pay the rest of the step (``step`` for its first stream); else none (the module's derivation).
+    With ``extra`` at most ``step`` (``CostModel.step_stream_ms``) and ``step`` > 0, a candidate alone goes on exactly
+    when its value pays ``step``."""
+
+    gain, members = 0.0, []
+    for v in values:
+        joins = v > 0.0 and v >= extra
+        members.append(joins)
+        if joins:
+            gain += v - extra
+    if gain >= step - extra and any(members):
+        return members
+    return [False] * len(members)
+
+
+def suffix_plan(chances: Sequence[float], row: float) -> tuple[list[float], float]:
+    """A candidate's verified prefix (its tokens' cumulative chances while they pay for their rows, ``row`` tokens
+    each) and its value in tokens (expected tokens less their rows' cost). It needs no MTP step."""
 
     kept, c, value = [], 1.0, 0.0
     for a in chances:
         c *= a
-        if c < th.row:
+        if c < row:
             break
         kept.append(c)
-        value += c - th.row
+        value += c - row
     return kept, value
 
 
-def mtp_value(c0: float, abar: Sequence[float], room: int, th: Thresholds) -> float:
+def mtp_value(c0: float, abar: Sequence[float], room: int, row: float, step: float) -> float:
     """The MTP chain's value from its first draft (chance ``c0``), deeper drafts at their optimistic chances, each
-    paying a row and the step that drafts it."""
+    paying a row and the step that drafts it as if alone (``row``, ``step``: tokens; a text needs no step, and
+    whether other streams will share the chain's steps is not known when a stream chooses its text)."""
 
-    if c0 < th.row:
+    if c0 < row:
         return 0.0
-    value, c = c0 - th.row, c0
+    full = row + step
+    value, c = c0 - row, c0
     for j in range(1, room):
         c *= abar[j]
-        if c < th.full:
+        if c < full:
             break
-        value += c - th.full
+        value += c - full
     return value
 
 
@@ -470,5 +627,6 @@ def trim(chances: Sequence[Sequence[float]], thresholds: Sequence[float]) -> lis
     return counts
 
 
-__all__ = ["COPY_MATCH", "CostFit", "CostModel", "ENV", "OUTLIER_MS", "OUTLIER_SHARE", "Predictor", "STEP_SHARED",
-           "Table", "Thresholds", "bucket", "chain_step", "greedy", "mtp_value", "suffix_plan", "trim"]
+__all__ = ["COPY_MATCH", "CostFit", "CostModel", "ENV", "OUTLIER_MS", "OUTLIER_SHARE", "Predictor", "Table",
+           "bucket", "chain_step", "features", "greedy", "half", "joint_step", "mtp_value", "solve", "step_features",
+           "suffix_plan", "trim"]
