@@ -136,8 +136,10 @@ alignment contract. These requirements follow the native pointer types and
 
 ## Native specialization configuration
 
-Each loaded QMM kernel specialization owns configuration flags for the actual
-CUDA device count initialized by Torch. The flags use `std::call_once` per
+Each loaded QMM or grouped-expert prefill-form kernel specialization owns
+configuration flags for the actual CUDA device count initialized by Torch
+(gate/up on 16-pair items needs more than the default 48 KB of dynamic shared
+memory). The flags use `std::call_once` per
 device, with no additional GPU-count ceiling. A device guard establishes the
 target primary context before configuration. A successful
 `cudaFuncSetAttribute` publishes that device's flag; failure aborts the operation
@@ -159,6 +161,17 @@ custom driver contexts or reset/reuse live model allocations. Switching among
 compatible devices configures each independently. A two-device execution gate
 is required to claim that path validated; one-device execution proves only that
 device's configuration and output contracts.
+
+## Grouped-expert prefill items
+
+A prefill-form expert plan's items hold at most `tile` pairs, the size
+`experts.route` planned them with: 64 (`experts_prefill.cu`, 64-row tiles) or 16
+(`experts_window.cu`, 16-row tiles). The native `prefill` launch takes that tile
+and runs one item a tile, so it must equal the plan's: a 16-row launch on items
+of 64 would skip rows. `experts.gate_up` and `experts.down` pass `plan.tile` and
+size the grid with `experts.max_items` for it. Like GDN schedules, items and
+counts are trusted products of the plan kernel; the launch does not read them
+back to check them. A pair's bits do not depend on its item's size.
 
 ## Flash Next concurrent rounds: static tables, captured rounds and PDL
 
