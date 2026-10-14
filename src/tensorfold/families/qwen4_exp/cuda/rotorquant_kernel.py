@@ -450,6 +450,22 @@ def dequant_group_6(low, high, scale, M: tl.constexpr, W: tl.constexpr, GATHER: 
 
 
 @triton.jit
+def dequant_half_6(low, high, scale, CENTROIDS, M: tl.constexpr):
+    """One 64-coordinate half of six-bit groups: its 32 low-nibble bytes ``[M,32]``, 16 high-two-bit bytes ``[M,16]``
+    and the group's scale ``[M]`` -> rotated BF16 ``[M,64]``.
+
+    Centroids load from ``CENTROIDS``, a float32 table of ``CENTROIDS_6`` (``centroid_table(6)``): the same
+    constants as ``_centroids``, so ``dequant_group_6``'s bits for these coordinates.
+    """
+
+    low = low.to(tl.int32)
+    lo = tl.reshape(tl.join(low & 15, low >> 4), (M, 64))
+    hi = tl.reshape((high.to(tl.int32)[:, :, None] >> (tl.arange(0, 4) * 2)[None, None, :]) & 3, (M, 64))
+    c = tl.load(CENTROIDS + (lo | (hi << 4)))
+    return _mul_rn(c, scale.to(tl.float32)[:, None]).to(tl.bfloat16)
+
+
+@triton.jit
 def dequant_group_7(low, middle, high, scale, M: tl.constexpr, W: tl.constexpr):
     """Low4/mid2/high1 planes and FP32 RMS -> rotated BF16 ``[M,W]``.
 

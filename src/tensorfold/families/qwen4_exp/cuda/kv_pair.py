@@ -228,3 +228,14 @@ def load_side(DATA, SCALE, ki, valid, hk, HK: tl.constexpr, D: tl.constexpr, M: 
         out = tl.load(DATA + row[:, None] * D + tl.arange(0, D)[None, :],
                       mask=valid[:, None], other=0.0)
     return canonical_bf16_operand(out)
+
+
+@triton.jit
+def load_half6(DATA, row, valid, scale, J: tl.constexpr, D: tl.constexpr, CENTROIDS):
+    """Coordinates ``[64 J, 64 J + 64)`` of six-bit RotorQuant rows ``row`` (``key * HK + head``) in the stored basis:
+    ``load_side``'s bits for those columns. ``scale`` ``[M]`` is group ``J // 2``'s; invalid rows read nothing."""
+
+    base = row[:, None] * (D * 3 // 4) + (J // 2) * 96
+    low = tl.load(DATA + base + (J % 2) * 32 + tl.arange(0, 32)[None, :], mask=valid[:, None], other=0)
+    high = tl.load(DATA + base + 64 + (J % 2) * 16 + tl.arange(0, 16)[None, :], mask=valid[:, None], other=0)
+    return canonical_bf16_operand(rotor.dequant_half_6(low, high, scale, CENTROIDS, M=row.shape[0]))

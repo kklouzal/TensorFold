@@ -12,6 +12,7 @@ PROMPT_SHARE = 32       # a dense prompt chunk's arrays take at most this fracti
 PREFILL_ATT_ROWS = 256  # Flash Next's prompt attention block
 # Flash Next's multi-CTA block select scratch: rows, tile, slices (attention's MULTI_ROWS - 1, SELECT_TB, SELECT_SLICES)
 QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
+CENTROID_TABLE_BYTES = 512  # each Flash Next attention scratch's 64 float32 centroids (one caching-allocator block)
 MULTI_GRAPH_ENV = "TENSORFOLD_MULTI_GRAPH_MIB"   # Flash Next's captured concurrent rounds: their memory budget (MiB)
 MULTI_GRAPH_MIB = 512       # its default: driver graph memory plus the graphs' private pool, within which keys are kept
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
@@ -266,6 +267,7 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             scratch = (2 if mtp else 1) * (rows * (h * (hd + 2) * chunks + blocks) * 4 + qsa_select_bytes(rows, blocks))
             scratch += PREFILL_ATT_ROWS * (h * (hd + 2) * chunks + blocks) * 4
             scratch += qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
+            scratch += ((2 if mtp else 1) + 1) * CENTROID_TABLE_BYTES
         else:
             # Bound two retained prefixes, current KV state and a growth copy; speculative rows use separate workspace.
             rounded = 1 << (max(1024, capacity - reserve) - 1).bit_length()
@@ -511,6 +513,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
         scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
         scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
+        scratch += (2 + mtp) * CENTROID_TABLE_BYTES
         return fixed + cache + scratch
     return Geometry(bytes_at, each)
 
