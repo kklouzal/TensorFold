@@ -323,37 +323,37 @@ def _chunk_quarters(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, C
 
 
 @triton.jit
-def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
-           CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0,
+def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, D: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr,
+           QSA: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0,
            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
     pdl_wait(PDL)
     r = tl.program_id(0)
-    hk = tl.program_id(1)
     n = tl.load(POS0) + r + 1
     if QSA:
         n = tl.where(tl.load(SPR + r) != 0, tl.load(NKR + r), n)
     if V_BITS >= 0:
-        _merge_row(PO, PM, PL, OUT, n, r, hk, H, HK, D, G, CH, NCH, V_BITS, CODEC=V_CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, V_BITS, CODEC=V_CODEC)
     else:
-        _merge_row(PO, PM, PL, OUT, n, r, hk, H, HK, D, G, CH, NCH, BITS, CODEC=CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS, CODEC=CODEC)
 
 
 @triton.jit
-def _merge_row(PO, PM, PL, OUT, n, r, hk, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
-               CH: tl.constexpr, NCH: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0):
-    """Row r's chunk partials merged in chunk order into its output heads (rotated back when the cache is)."""
+def _merge_row(PO, PM, PL, OUT, n, r, h, H: tl.constexpr, D: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr,
+               BITS: tl.constexpr, CODEC: tl.constexpr = 0):
+    """Row r's chunk partials of query head h merged in chunk order into its output (rotated back when the cache is).
+    The merge and the inverse rotation are per head and per element, so a program a head keeps the bits of any
+    grouping of heads; one warp a head is the shortest path."""
 
-    gg = tl.arange(0, 16)
+    head = h + tl.arange(0, 1)
     d = tl.arange(0, D)
-    head = hk * G + gg
-    m = tl.full((16,), float("-inf"), tl.float32)
-    l = tl.zeros((16,), tl.float32)
-    o = tl.zeros((16, D), tl.float32)
+    m = tl.full((1,), float("-inf"), tl.float32)
+    l = tl.zeros((1,), tl.float32)
+    o = tl.zeros((1, D), tl.float32)
     for c in range(0, tl.cdiv(n, CH)):
         base = (r * NCH + c) * H + head
-        cm = tl.load(PM + base, mask=gg < G, other=float("-inf"))
-        cl = tl.load(PL + base, mask=gg < G, other=0.0)
-        co = tl.load(PO + base[:, None] * D + d[None, :], mask=gg[:, None] < G, other=0.0)
+        cm = tl.load(PM + base)
+        cl = tl.load(PL + base)
+        co = tl.load(PO + base[:, None] * D + d[None, :])
         active = cl > 0.0
         next_m = tl.where(active, tl.maximum(m, cm), m)
         a = tl.where(active, tl.where(m == float("-inf"), 0.0, tl.exp(m - next_m)), 1.0)
@@ -363,11 +363,11 @@ def _merge_row(PO, PM, PL, OUT, n, r, hk, H: tl.constexpr, HK: tl.constexpr, D: 
         m = next_m
     result = o / l[:, None]
     if CODEC:
-        result = rotor_rotate(result, M=16, W=D, CODEC=CODEC, INVERSE=True)
+        result = rotor_rotate(result, M=1, W=D, CODEC=CODEC, INVERSE=True)
     elif BITS:
         # values are stored rotated: p . (H v) = H (p . v), so one H32 a row restores the merged output
-        result = tl.reshape(h32(tl.reshape(result, (16 * D // 32, 32)), M=16 * D // 32), (16, D))
-    tl.store(OUT + (r * H + head[:, None]) * D + d[None, :], result.to(tl.bfloat16), mask=gg[:, None] < G)
+        result = tl.reshape(h32(tl.reshape(result, (D // 32, 32)), M=D // 32), (1, D))
+    tl.store(OUT + (r * H + head[:, None]) * D + d[None, :], result.to(tl.bfloat16))
 
 
 class AttnScratch:
@@ -452,9 +452,9 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
                              IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, ROTOR_LOOKUP=rotor_lookup,
                              GATHER6=prompt and 6 in (kb, vb), **pair, num_warps=4, num_stages=1, PDL=pdl.ON,
                              launch_pdl=pdl.ON)
-    _merge[(rows, hk)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h,
-                       HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=4,
-                       PDL=pdl.ON, launch_pdl=pdl.ON)
+    _merge[(rows, h)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h, D=d,
+                      CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=1,
+                      PDL=pdl.ON, launch_pdl=pdl.ON)
     return out
 
 
