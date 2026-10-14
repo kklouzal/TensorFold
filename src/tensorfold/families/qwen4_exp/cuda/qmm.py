@@ -182,11 +182,11 @@ def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
     shifts = tl.arange(0, 8) * 4
     m_ok = rm < M
     n_ok = rn < N
-    SUB: tl.constexpr = SBN // BLOCK_N                  # program tiles per stored tile
+    SUB: tl.constexpr = SBN // BLOCK_N                  # program tiles per stored tile (BLOCK_N divides SBN)
     tile = W + (pid_n // SUB) * (KG * SBN * 4)
     local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)     # stored rows: local + (pid_n // SUB) * SBN == rn
     g0 = pid_s * PER
-    last = g0 + PER - 1
+    last = g0 + PER - 1                                 # PER >= 1: SK divides the K/32 groups (matmul checks)
     if PD >= 1:
         s_n, b_n, xs_n = _sbx(S, B, XS, g0, rn, n_ok, rm, m_ok, N, KG)
     if PD == 2:
@@ -278,9 +278,10 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
            pd: int | None = None, num_warps: int | None = None, num_stages: int | None = None,
            block_n: int | None = None, reduce: bool = True) -> torch.Tensor:
     """x (M, K) bf16 (rows may be strided) @ q.T -> (M, N) bf16 (or fp32 sums with ``f32``). ``reduce=False`` with a
-    split K returns the unreduced fp32 slices [SK, M, N] (the caller sums them in slice order). ``pd``, ``num_warps``,
-    ``num_stages`` and ``block_n`` (dividing ``BN``) override the tiled kernel's launch, never its bits; the "frag"
-    layout ignores them."""
+    split K returns the unreduced fp32 slices [SK, M, N] (the caller sums them in slice order). ``sk`` (whole groups a
+    slice) replaces the shape's K split, and with it the order of the sums. ``pd``, ``num_warps``, ``num_stages`` and
+    ``block_n`` (16, 32 or 64: dividing ``BN``) override the tiled kernel's launch, never its bits; the "frag" layout
+    ignores them. The tiled kernel's arguments are checked before any launch (ValueError)."""
 
     if q.layout == "frag":
         if x.shape[1] != q.k or x.stride(1) != 1:
@@ -293,11 +294,15 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     bm = bucket(m)
     c_pd, c_warps, c_stages, c_bn = launch_for(q.n, q.k, m)
     pd = c_pd if pd is None else int(pd)
+    bn = block_n or c_bn
+    sk = int(sk) if sk else split_for(q.n, q.k)
+    kg = k // GS
     if pd not in (0, 1, 2):
         raise ValueError(f"matmul: pd {pd} must be 0, 1 or 2")
-    if xs is None:
-        xs = group_sums(x)
-    sk = int(sk) if sk else split_for(q.n, q.k)
+    if bn < 16 or BN % bn:              # program tiles inside one stored tile, each at least a dot's 16 columns
+        raise ValueError(f"matmul: block_n {bn} must divide BN={BN} and be at least 16")
+    if not 1 <= sk <= kg or kg % sk:    # no group dropped or past K; the loads ahead stay inside a slice
+        raise ValueError(f"matmul: {sk} K slices do not split {kg} groups into whole groups")
     if out is None:
         out = torch.empty((m, q.n), dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
     elif out.shape != (m, q.n) or not out.is_contiguous():
@@ -306,7 +311,8 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
         part = torch.empty((sk, m, q.n), dtype=torch.float32, device=x.device)
     if sk > 1 and part.numel() < sk * m * q.n:
         raise ValueError("matmul: split-K scratch too small")
-    bn = block_n or c_bn
+    if xs is None:
+        xs = group_sums(x)
     grid = (triton.cdiv(m, bm), triton.cdiv(q.n, bn), sk)
     _qmm[grid](x, xs, q.weight, q.scales, q.biases, out, part if sk > 1 else out, m, x.stride(0),
                N=q.n, K=k, SK=sk, BM=bm, BLOCK_N=bn, PD=pd, F32=f32, SBN=BN,
