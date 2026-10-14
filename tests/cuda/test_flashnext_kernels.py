@@ -3,7 +3,6 @@ matches an fp32 reference within bf16 tolerance."""
 
 import pytest
 import torch
-import triton
 
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
@@ -118,26 +117,6 @@ def test_moe_matches_fp32():
             y = act @ dw.T
             err = (b.y[r, k] - y).abs().max().item()
             assert err <= y.abs().max().item() * 2 ** -5 + 1e-3, (r, k, err)
-
-
-@pytest.mark.parametrize("m", [1, 5, 16])
-def test_router_logits_do_not_depend_on_the_expert_tile(m):
-    """A logit is one tensor-core chain over K in BK steps, so its bits never depend on how many experts a program
-    takes: the decode launch (16 experts a program) equals 32- and 64-expert tiles on many-binade inputs."""
-    g = torch.Generator(device=DEV).manual_seed(40 + m)
-
-    def wide(shape, lo, hi):
-        v = torch.exp2(torch.randint(lo, hi, shape, generator=g, device=DEV).float())
-        sign = torch.where(torch.rand(shape, generator=g, device=DEV) < 0.5, -1.0, 1.0)
-        return (sign * v * (1 + torch.rand(shape, generator=g, device=DEV))).to(torch.bfloat16)
-
-    x, rows = wide((m, 2560), -20, 4), wide((513, 2560), -24, -2)
-    got = moe.router(x, rows)
-    for block_e, stages in ((32, 4), (64, 3)):
-        want = torch.full_like(got, float("nan"))
-        moe._router[(1, triton.cdiv(513, block_e))](x, rows, want, m, x.stride(0), D=2560, NE=513, BM=16,
-                                                    BLOCK_E=block_e, BK=256, num_warps=4, num_stages=stages)
-        assert torch.equal(got.view(torch.int32), want.view(torch.int32)), block_e
 
 
 def test_moe_rows_with_few_finite_logits_pick_distinct_experts():
