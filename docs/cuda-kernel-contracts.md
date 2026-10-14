@@ -246,9 +246,10 @@ Eight-bit RotorQuant encoders (`rotorquant_kernel.quant_groups_8`, through `kv_p
 `glue._prep_row` in `_attn_prep` and `attn_multi._prep_multi`) read the same scratch's tables: the binary-lifting
 thresholds `LIFTING_8` (`AttnScratch.thresholds`, 255 float32; `geometry.THRESHOLD_TABLE_BYTES` in the memory plan)
 and `CENTROIDS_8` at offset 64 of `AttnScratch.centroids` (`attention.codebook` makes both). `_indices_8` makes
-`_indices(x, 8)`'s eight comparisons and steps with each level's boundary loaded instead of selected: level L's 2^L
-cells sit at [2^L - 1, 2^(L + 1) - 1) and the cell is q >> (8 - L), so every load stays within 0..254 for any input,
-NaN included, and every constant is an exact float32: the codes are the selection chain's. The norm8 scale gathers
+the eight-bit binary-lifting chain's eight comparisons and steps with each level's boundary loaded instead of
+selected: level L's 2^L cells sit at [2^L - 1, 2^(L + 1) - 1) and the cell is q >> (8 - L), so every load stays
+within 0..254 for any input, NaN included, and every constant is an exact float32: the codes are the selection
+chain's. The norm8 scale gathers
 its centroids from the loaded table broadcast to a register tile, as `_centroids(q, 8)` gathers from its selected
 table: the FP32 energy sum's order follows that register layout, and a plain indexed load would lay the centroids
 out differently (another summation order can change the stored scale). The other encoders keep their register
@@ -256,5 +257,6 @@ selection chains. `glue.attn_prep` refuses an
 eight-bit RotorQuant side whose tables are missing or differ in shape, dtype, device or contiguity
 (`kv_pair.validate_tables`); the concurrent decoder's `attn_multi.layer` passes its `AttnScratch`'s tables, made at
 construction and never written, without checking them again. `tests/cuda/test_flashnext_rotorquant.py` keeps the
-selecting eight-bit encoder as the oracle whose codes and scales the table encoder equals bit for bit, and checks
+selecting eight-bit encoder (its selection chain `_indices8_selected`) as the oracle whose codes and scales the table
+encoder equals bit for bit, and checks
 `_indices_8` at every midpoint and its FP32 neighbours against independently expected indices.
