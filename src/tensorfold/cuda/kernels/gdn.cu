@@ -292,7 +292,9 @@ void dispatch_tree(int slots, const at::Tensor& q, const at::Tensor& k, const at
 #define TREE(S, R, W, C) launch_tree<QK, S, R, W, C>(q, k, v, g, beta, state, table, starts, plan, nodes, streams, \
                                                      max_rows, y, pend, final_state, final_table, pdl)
 #define TREE_(S, R, W) TREE(S, R, W, false)
-    if (slots == 0) TREE(0, 8, 4, true);
+    // a chain: 4 rows a warp (a row's steps and butterfly do not depend on the rows beside it); on dev-01 (sm_120)
+    // 4 x 4 ran the decode trees ~4 us faster a launch than 8 x 4, the same bits
+    if (slots == 0) TREE(0, 4, 4, true);
     else if (slots <= 2) TREE_(2, 4, 4);
     else if (slots <= 4) TREE_(4, 2, 4);
     else if (slots <= 8) TREE_(8, 2, 4);
