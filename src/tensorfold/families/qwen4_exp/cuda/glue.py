@@ -13,34 +13,6 @@ from .image_rows import rope_axis
 from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage, validate_tables
 
 from .kvquant import h32, quant_groups_4, quant_groups_8
-from .rotorquant_kernel import quant_groups_3 as rotor_groups_3, quant_groups_4 as rotor_groups_4, rotate as rotor_rotate
-from .rotorquant_kernel import quant_groups_6 as rotor_groups_6
-from .rotorquant_kernel import quant_groups_7 as rotor_groups_7, quant_groups_8 as rotor_groups_8
-
-KV_ACTIVATION_BOUND = tl.constexpr(2**30)
-
-
-@triton.jit
-def _kv_guard(x, STATUS, error, LAYER: tl.constexpr):
-    """Contain an invalid failed frame; its status must be checked before publication."""
-
-    valid = (x == x) & (tl.abs(x) <= KV_ACTIVATION_BOUND)
-    if tl.sum((~valid).to(tl.int32), axis=0) != 0:
-        tl.atomic_or(STATUS, error)
-        tl.atomic_cas(STATUS + 1, -2, LAYER)
-    # These sentinels only keep the failed GPU operation numerically bounded.
-    # The owning State stays poisoned; no sentinel result may be committed.
-    return tl.where(valid, x, 0.0)
-
-
-@triton.jit
-def _kv_rms_guard(scale, x, STATUS, LAYER: tl.constexpr, M: tl.constexpr,
-                  MAX_SCALE: tl.constexpr = 8 * KV_ACTIVATION_BOUND):
-    nonzero = tl.max(tl.abs(x), axis=1) > 0.0
-    bad = (scale != scale) | (scale < 0.0) | (scale > MAX_SCALE) | ((scale == 0.0) & nonzero)
-    if tl.sum(bad.to(tl.int32), axis=0) != 0:
-        tl.atomic_or(STATUS, 8)
-        tl.atomic_cas(STATUS + 1, -2, LAYER)
 
 
 @triton.jit
@@ -321,7 +293,7 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
                PW: tl.constexpr, NQ: tl.constexpr, NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr,
                IHD: tl.constexpr, HALF: tl.constexpr, BITS: tl.constexpr, MODE: tl.constexpr = 0,
                S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
-               CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
+               STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
                K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None,
                PDL: tl.constexpr = False):
@@ -330,7 +302,7 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
     pdl_wait(PDL)
     r = tl.program_id(0)
     _prep_row(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW, NQ,
-              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE, CODEC=CODEC,
+              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE,
               STATUS=STATUS, VALIDATE=VALIDATE, LAYER=LAYER, K_BITS=K_BITS, K_CODEC=K_CODEC,
               V_BITS=V_BITS, V_CODEC=V_CODEC, CENTROIDS=CENTROIDS, THRESHOLDS=THRESHOLDS)
 
@@ -340,7 +312,7 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
               NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
               BITS: tl.constexpr, ROPE=None, DELTA=None, length=0, MODE: tl.constexpr = 0,
               S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
-              CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
+              STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
               K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None):
     """``_attn_prep``'s head ``head`` of row r at position ``pos``, into the caches given. Pair formats store each
@@ -350,8 +322,6 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
 
     PAIR: tl.constexpr = K_BITS >= 0
     C8 = CENTROIDS + 64 if CENTROIDS is not None else None
-    QB: tl.constexpr = K_BITS if PAIR else BITS
-    QC: tl.constexpr = K_CODEC if PAIR else CODEC
     d = tl.arange(0, HD)
     if head < NQ + NKV + NI:
         width = tl.where(head >= NQ + NKV, IHD, HD)
@@ -363,8 +333,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         else:
             src = r * PW + NQ * 2 * HD + 2 * NKV * HD + (head - NQ - NKV) * IHD
         x = tl.load(P + src + d, mask=live, other=0.0).to(tl.float32)
-        if (PAIR or CODEC) and VALIDATE:
-            x = _kv_guard(x, STATUS, tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER)
+        if PAIR and VALIDATE:
+            x = source_guard(x, STATUS, tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER)
         rinv = 1.0 / tl.sqrt(tl.sum(x * x, axis=0) / width + eps)
         if head < NQ:
             w = tl.load(QW + d).to(tl.float32)
@@ -392,16 +362,13 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
             cos, sin = cos * ROPE_SCALE, sin * ROPE_SCALE
         rot = tl.where(d < HALF, xn * cos - xpn * sin, tl.where(d < 2 * HALF, xpn * sin + xn * cos, xn))
         out = rot.to(tl.bfloat16)
-        if (PAIR or CODEC) and VALIDATE:
-            out = _kv_guard(out.to(tl.float32), STATUS,
+        if PAIR and VALIDATE:
+            out = source_guard(out.to(tl.float32), STATUS,
                             tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER).to(tl.bfloat16)
         if head < NQ:
             if PAIR:
                 out = tl.reshape(transform(tl.reshape(out.to(tl.float32), (1, HD)),
-                                           M=1, D=HD, BITS=QB, CODEC=QC), (HD,)).to(tl.bfloat16)
-            elif CODEC:
-                out = tl.reshape(rotor_rotate(tl.reshape(out.to(tl.float32), (1, HD)), M=1, W=HD,
-                                               CODEC=CODEC), (HD,)).to(tl.bfloat16)
+                                           M=1, D=HD, BITS=K_BITS, CODEC=K_CODEC), (HD,)).to(tl.bfloat16)
             elif BITS:                               # the query rides the cache's rotation (see the docstring)
                 out = tl.reshape(h32(tl.reshape(out.to(tl.float32), (HD // 32, 32)), M=HD // 32),
                                  (HD,)).to(tl.bfloat16)
@@ -411,68 +378,6 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
             if PAIR:
                 store_side(out, KC, KS, slot, STATUS, D=HD, BITS=K_BITS, CODEC=K_CODEC,
                            VALIDATE=VALIDATE, LAYER=LAYER, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-            elif CODEC:
-                gg = tl.arange(0, HD // 128)
-                block = tl.reshape(out.to(tl.float32), (HD // 128, 128))
-                v = tl.load(P + r * PW + NQ * 2 * HD + NKV * HD + (head - NQ) * HD + d)
-                if VALIDATE:
-                    v = _kv_guard(v.to(tl.float32), STATUS, 4, LAYER)
-                vblock = tl.reshape(v.to(tl.float32), (HD // 128, 128))
-                if BITS == 3:
-                    kl, kh, ks = rotor_groups_3(block, M=HD // 128, CODEC=CODEC)
-                    vl, vh, vs = rotor_groups_3(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 32)
-                    hi = tl.arange(0, 16)
-                    base = slot * (HD * 3 // 8) + gg[:, None] * 48
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 32 + hi[None, :], kh)
-                    tl.store(VC + base + 32 + hi[None, :], vh)
-                elif BITS == 6:
-                    kl, kh, ks = rotor_groups_6(block, M=HD // 128, CODEC=CODEC)
-                    vl, vh, vs = rotor_groups_6(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 64)
-                    hi = tl.arange(0, 32)
-                    base = slot * (HD * 3 // 4) + gg[:, None] * 96
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 64 + hi[None, :], kh)
-                    tl.store(VC + base + 64 + hi[None, :], vh)
-                elif BITS == 7:
-                    kl, km, kh, ks = rotor_groups_7(block, M=HD // 128, CODEC=CODEC)
-                    vl, vm, vh, vs = rotor_groups_7(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 64)
-                    mid = tl.arange(0, 32)
-                    hi = tl.arange(0, 16)
-                    base = slot * (HD * 7 // 8) + gg[:, None] * 112
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 64 + mid[None, :], km)
-                    tl.store(VC + base + 64 + mid[None, :], vm)
-                    tl.store(KC + base + 96 + hi[None, :], kh)
-                    tl.store(VC + base + 96 + hi[None, :], vh)
-                elif BITS == 8:
-                    kc, ks = rotor_groups_8(block, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-                    vc, vs = rotor_groups_8(vblock, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-                    gb = tl.arange(0, 128)
-                    off = slot * HD + gg[:, None] * 128 + gb[None, :]
-                    tl.store(KC + off, kc)
-                    tl.store(VC + off, vc)
-                else:
-                    tl.static_assert(BITS == 4)
-                    kc, ks = rotor_groups_4(block, M=HD // 128, CODEC=CODEC)
-                    vc, vs = rotor_groups_4(vblock, M=HD // 128, CODEC=CODEC)
-                    gb = tl.arange(0, 64)
-                    off = slot * (HD // 2) + gg[:, None] * 64 + gb[None, :]
-                    tl.store(KC + off, kc)
-                    tl.store(VC + off, vc)
-                if VALIDATE:
-                    _kv_rms_guard(ks, block, STATUS, LAYER, HD // 128,
-                                  MAX_SCALE=(128 if CODEC == 8 else 32 if CODEC == 6 or CODEC == 7 else 8) * KV_ACTIVATION_BOUND)
-                    _kv_rms_guard(vs, vblock, STATUS, LAYER, HD // 128,
-                                  MAX_SCALE=(128 if CODEC == 8 else 32 if CODEC == 6 or CODEC == 7 else 8) * KV_ACTIVATION_BOUND)
-                tl.store(KS + slot * (HD // 128) + gg, ks)
-                tl.store(VS + slot * (HD // 128) + gg, vs)
             elif BITS:
                 gg = tl.arange(0, HD // 32)
                 block = tl.reshape(out.to(tl.float32), (HD // 32, 32))
@@ -503,8 +408,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
     elif head == NQ + NKV + NI:
         live = d < IHD
         raw = tl.load(P + r * PW + NQ * 2 * HD + 2 * NKV * HD + NI * IHD + d, mask=live, other=0.0)
-        if (PAIR or CODEC) and VALIDATE:
-            raw = _kv_guard(raw.to(tl.float32), STATUS, 16, LAYER).to(tl.bfloat16)
+        if PAIR and VALIDATE:
+            raw = source_guard(raw.to(tl.float32), STATUS, 16, LAYER).to(tl.bfloat16)
         tl.store(IKC + pos.to(tl.int64) * IHD + d, raw, mask=live)
     elif PAIR:
         j = head - (NQ + NKV + NI + 1)
@@ -562,7 +467,7 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
         p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, ks, vs, iq, ikc,
         rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
         NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), BITS=kb, MODE=mode,
-        S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, CODEC=kf if native else 0, STATUS=status,
+        S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, STATUS=status,
         VALIDATE=status is not None, LAYER=layer, CENTROIDS=centroids, THRESHOLDS=thresholds, **pair, num_warps=2,
         PDL=pdl.ON, launch_pdl=pdl.ON)
 

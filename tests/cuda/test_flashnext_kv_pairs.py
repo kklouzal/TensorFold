@@ -411,7 +411,7 @@ def test_merges_one_query_head_a_program_keep_the_kv_head_tile_bits(format):
                         device="cuda")
     single_n = torch.where(sparse != 0, nk, pos0 + torch.arange(1, rows + 1, device="cuda", dtype=torch.int32))
     multi_n = torch.where((posr + 1) // ratio > top, nk, posr + 1)
-    args = dict(BITS=bits, CODEC=0, V_BITS=bits, V_CODEC=format.codec)
+    args = dict(BITS=bits, V_BITS=bits, V_CODEC=format.codec)
     for name, n in (("merge", single_n), ("merge-multi", multi_n)):
         got = torch.full((rows, H, D), float("nan"), dtype=torch.bfloat16, device="cuda")
         if name == "merge":

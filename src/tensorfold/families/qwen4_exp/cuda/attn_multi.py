@@ -28,7 +28,7 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
                 NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
                 BITS: tl.constexpr, KT: tl.constexpr, VISION: tl.constexpr,
                 S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
-                CODEC: tl.constexpr = 0, STATUS=None, LAYER: tl.constexpr = 0,
+                STATUS=None, LAYER: tl.constexpr = 0,
                 K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
                 CENTROIDS=None, THRESHOLDS=None, PDL: tl.constexpr = False):
@@ -40,15 +40,15 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
         rope, delta = _ptr(VP, s, tl.int32), _ptr(VP + N, s, tl.int32)
         length = tl.load(VP + 2 * N + s).to(tl.int32)
     PAIR: tl.constexpr = K_BITS >= 0
-    KS_TYPE: tl.constexpr = tl.float32 if (K_CODEC if PAIR else CODEC) else tl.float16
-    VS_TYPE: tl.constexpr = tl.float32 if (V_CODEC if PAIR else CODEC) else tl.float16
+    KS_TYPE: tl.constexpr = tl.float32 if PAIR and K_CODEC else tl.float16
+    VS_TYPE: tl.constexpr = tl.float32 if PAIR and V_CODEC else tl.float16
     VALUE_TYPE: tl.constexpr = VT if PAIR else KT
-    status = _ptr(STATUS, s, tl.int32) if PAIR or CODEC else None
+    status = _ptr(STATUS, s, tl.int32) if PAIR else None
     glue._prep_row(P, tl.load(POSR + r), r, tl.program_id(1), QW, KW, IW, INV, Q, _ptr(CP, s, KT),
                    _ptr(CP + N, s, VALUE_TYPE), _ptr(CP + 2 * N, s, KS_TYPE), _ptr(CP + 3 * N, s, VS_TYPE), IQ,
                    _ptr(CP + 4 * N, s, tl.bfloat16), eps, PW, NQ, NKV, HD, NI, IHD, HALF, BITS,
                    ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2,
-                   ROPE_SCALE=ROPE_SCALE, CODEC=CODEC, STATUS=status, VALIDATE=PAIR or CODEC != 0, LAYER=LAYER,
+                   ROPE_SCALE=ROPE_SCALE, STATUS=status, VALIDATE=PAIR, LAYER=LAYER,
                    K_BITS=K_BITS, K_CODEC=K_CODEC, V_BITS=V_BITS, V_CODEC=V_CODEC, CENTROIDS=CENTROIDS,
                    THRESHOLDS=THRESHOLDS)
 
@@ -84,7 +84,7 @@ def _scores_multi(IQ, CP, POSR, SID, SC, NB, N, HI: tl.constexpr, DI: tl.constex
 def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.constexpr, HK: tl.constexpr,
                   D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr, SCALE: tl.constexpr,
                   IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, KT: tl.constexpr, RATIO: tl.constexpr,
-                  TOP: tl.constexpr, CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
+                  TOP: tl.constexpr, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                   V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
                   ROTOR_LOOKUP: tl.constexpr = False, PDL: tl.constexpr = False):
     pdl_wait(PDL)
@@ -103,17 +103,15 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.co
                     PO, PM, PL, IDS, CENTROIDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS,
                     V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
     else:
-        ST: tl.constexpr = tl.float32 if CODEC else tl.float16
-        _chunk(Q, _ptr(CP, s, KT), _ptr(CP + N, s, KT), _ptr(CP + 2 * N, s, ST), _ptr(CP + 3 * N, s, ST),
-               n, sparse, r, tl.program_id(1), tl.program_id(2), PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW,
-               QSA, BITS, CODEC=CODEC)
+        _chunk(Q, _ptr(CP, s, KT), _ptr(CP + N, s, KT), _ptr(CP + 2 * N, s, tl.float16),
+               _ptr(CP + 3 * N, s, tl.float16), n, sparse, r, tl.program_id(1), tl.program_id(2), PO, PM, PL, IDS,
+               H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS)
 
 
 @triton.jit
 def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, D: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr,
                  QSA: tl.constexpr, BITS: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
-                 CODEC: tl.constexpr = 0, V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0,
-                 PDL: tl.constexpr = False):
+                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
     pdl_wait(PDL)
     r = tl.program_id(0)
     n = tl.load(POSR + r) + 1
@@ -122,7 +120,7 @@ def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, D: tl.constexpr, C
     if V_BITS >= 0:
         _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, V_BITS, CODEC=V_CODEC)
     else:
-        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS, CODEC=CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS)
 
 
 class StepTables:
@@ -247,7 +245,7 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
                                b.q, b.iq, c.eps, n, PW=b.pa.shape[1], NQ=c.heads, NKV=c.kv_heads, HD=c.head_dim,
                                NI=c.index_heads, IHD=c.index_dim, HALF=w.inv_freq.numel(), BITS=kb, KT=kt,
                                VISION=step.vision, S1=sections[1], S2=sections[2],
-                               ROPE_SCALE=c.rope_attention_factor, CODEC=0, STATUS=step.status_ptrs,
+                               ROPE_SCALE=c.rope_attention_factor, STATUS=step.status_ptrs,
                                LAYER=layer.index, CENTROIDS=sc.centroids, THRESHOLDS=sc.thresholds, **pair,
                                num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
     top = sc.budget // sc.ratio
@@ -268,10 +266,10 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
     _chunks_multi[(rows, hk, sc.nch)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk,
                                       sc.centroids, n, H=c.heads, HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch,
                                       SCALE=scale, IDW=sc.idw, QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top,
-                                      CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4, num_stages=1,
+                                      ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4, num_stages=1,
                                       PDL=pdl.ON, launch_pdl=pdl.ON)
     _merge_multi[(rows, c.heads)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, D=c.head_dim, CH=CHUNK,
-                                  NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
+                                  NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, **merge_pair,
                                   num_warps=1, PDL=pdl.ON, launch_pdl=pdl.ON)
     return b.attn_o[:rows]
 
