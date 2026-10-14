@@ -384,7 +384,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         xpn = (xp * rinv * wp).to(tl.bfloat16).to(tl.float32)
         i = tl.where(d < HALF, d, tl.where(d < 2 * HALF, d - HALF, 0))
         axis = rope_axis(pos, ROPE, DELTA, length, i, MODE, S1, S2)
-        ang = axis.to(tl.float32) * tl.load(INV + i)
+        # lanes past the rotary dims keep xn: a zero angle spares them the long reduction of a large one
+        ang = tl.where(d < 2 * HALF, axis.to(tl.float32) * tl.load(INV + i), 0.0)
         cos = tl.cos(ang)
         sin = tl.sin(ang)
         if ROPE_SCALE != 1.0:

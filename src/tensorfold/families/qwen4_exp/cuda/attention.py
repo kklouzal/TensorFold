@@ -492,7 +492,7 @@ def _pool_block(IKC, POOLED, p0, i, W, INV, eps, R, DI: tl.constexpr, HALF: tl.c
         xpn = (xp * rinv * tl.load(W + partner)).to(tl.bfloat16).to(tl.float32)
         j = tl.where(d < HALF, d, tl.where(d < 2 * HALF, d - HALF, 0))
         axis = rope_axis(RATIO * b, ROPE, DELTA, length, j, MODE, S1, S2)
-        ang = axis.to(tl.float32) * tl.load(INV + j)
+        ang = tl.where(d < 2 * HALF, axis.to(tl.float32) * tl.load(INV + j), 0.0)   # as ``glue._prep_row``'s
         cos, sin = tl.cos(ang), tl.sin(ang)
         if ROPE_SCALE != 1.0:
             cos, sin = cos * ROPE_SCALE, sin * ROPE_SCALE
