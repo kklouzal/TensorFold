@@ -7,6 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda.kernels import qmm  # noqa: E402
+from wide_bf16 import wide as _wide  # noqa: E402
 
 ROWS = [1, 2, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 200, 256, 384, 512, 700, 1024, 1500, 2048]
 
@@ -109,17 +110,6 @@ def test_every_nibble_decodes_exactly(n, k, gs):
     for f32 in (False, True):
         assert torch.equal(qmm.matmul(eye, q, f32=f32).float(), want), f32
         assert torch.equal(qmm.prefill_matmul(eye, q, f32=f32).float(), want), f32
-
-
-def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
-    """bf16 values over a wide exponent range, both signs, with zeros and negative zeros."""
-
-    g = torch.Generator(device="cuda").manual_seed(seed)
-    mant = torch.rand(shape, generator=g, device="cuda") + 1.0
-    exp = torch.randint(lo, hi + 1, shape, generator=g, device="cuda").float()
-    sign = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.5, -1.0, 1.0)
-    v = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.03, sign * 0.0, sign * mant * torch.exp2(exp))
-    return v.to(torch.bfloat16)
 
 
 @pytest.mark.parametrize("wide", [False, True])

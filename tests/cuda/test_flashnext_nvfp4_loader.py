@@ -16,7 +16,6 @@ import pytest
 pytest.importorskip("triton")
 torch = pytest.importorskip("torch")
 
-from tensorfold.families.qwen4_exp.cuda import bf16, nvfp4  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.weights import Config  # noqa: E402
 

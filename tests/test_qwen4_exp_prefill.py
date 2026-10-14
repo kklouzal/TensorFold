@@ -464,7 +464,7 @@ def test_prefill_identity_is_fixed_before_snapshot_keys(monkeypatch):
     assert "matmul=pending" not in key and ("matmul=custom" in key) == prefill_mm.tiles()
     monkeypatch.setenv("TF_FLASH_PREFILL", "0")
     with pytest.raises(RuntimeError):
-        runtime.prefill_key
+        runtime.prefill_key  # noqa: B018 - the read itself refuses the changed mode
 
 
 @pytest.mark.parametrize("rows,past", [(1, 60), (7, 33), (64, 0), (100, 150), (130, 1000)])

@@ -20,7 +20,7 @@ from tensorfold.families.qwen4_exp.cuda.state import KVNumericError, State  # no
 
 PROMPTS = [[5, 17, 99, 250], [1023, 7, 64, 300, 11, 12], [13], [8, 8, 9, 2000, 31]]
 SAMPLINGS = [None, Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=0.95), None]
-RQ = "rotorquant6-norm"                                   # the production cache format: a status word a stream
+RQ = "rotorquant8-norm"                                   # the production cache format: a status word a stream
 
 
 def _solo(w, prompts, samplings, count, kv_dtype, capacity=1024):

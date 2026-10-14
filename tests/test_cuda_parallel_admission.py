@@ -64,9 +64,9 @@ def test_parallel_window_that_cannot_fit_every_stream_is_refused_before_loading(
 @pytest.mark.torch
 @pytest.mark.parametrize("vram_experts,graphs,planned", [(None, True, True), (None, False, False),
                                                          (1.0, True, False)])
-def test_concurrent_admission_plans_graph_memory_only_where_rounds_are_captured(tmp_path, monkeypatch,  # noqa: F811
-                                                                              fake_runtime, vram_experts, graphs,
-                                                                              planned):
+def test_concurrent_admission_plans_graph_memory_only_where_rounds_are_captured(tmp_path, monkeypatch,
+                                                                              fake_runtime,  # noqa: F811
+                                                                              vram_experts, graphs, planned):
     """Flash Next's concurrent decoder plans TENSORFOLD_MULTI_GRAPH_MIB only when it can capture its rounds: experts
     read through a host cache (--vram-experts) decline capture, so admission keeps that memory for the caches."""
 

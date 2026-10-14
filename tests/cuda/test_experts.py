@@ -7,6 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda import experts  # noqa: E402
+from wide_bf16 import wide as _wide  # noqa: E402
 
 DEV = "cuda"
 
@@ -258,17 +259,6 @@ def test_many_units_a_warp_keep_the_bits():
     assert int(plan.counts[0]) * (ex.dims // experts.COLS) > 8192
     for r in (0, 31, 63):
         assert torch.equal(run(ex, x[r:r + 1], picks[r:r + 1])[1], y[9 * r:9 * r + 9]), r
-
-
-def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
-    """bf16 values over a wide exponent range, both signs, with zeros and negative zeros."""
-
-    g = torch.Generator(device=DEV).manual_seed(seed)
-    mant = torch.rand(shape, generator=g, device=DEV) + 1.0
-    exp = torch.randint(lo, hi + 1, shape, generator=g, device=DEV).float()
-    sign = torch.where(torch.rand(shape, generator=g, device=DEV) < 0.5, -1.0, 1.0)
-    v = torch.where(torch.rand(shape, generator=g, device=DEV) < 0.03, sign * 0.0, sign * mant * torch.exp2(exp))
-    return v.to(torch.bfloat16)
 
 
 @pytest.mark.parametrize("adversarial", [False, True])
