@@ -1,0 +1,50 @@
+{
+ "date": "2026-10-14T23:30:00Z",
+ "status": "deploymentverified",
+ "change": "Decode-bandwidth round 2 over 52b8f229: per-head attention value prep and an eight-bit encoder threshold table (AttnScratch.thresholds), RoPE stops at the rotary dims, one head per merge program; DeltaNet chain trees take their rows a warp per chip (gdn.CHAIN_ROWS: dev-01 4, else 8 = the GB10's measured shape); lane-matmul block ids, cluster flag and expert window tiles from per-chip tables whose only entries are dev-01's (GB10 keeps its previous launches). Tokens bit-identical to the replaced build (52b8f229) and to fd0205a0. KV rotorquant8-norm (canonical), reserve 8 GiB.",
+ "image": "sha256:506b39132a2d1399434913da8709c8f098241f76b32acc670a3312dd0a217829",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-a05c3219",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "a05c3219 (perf-bw-int2)",
+ "deploy_commit": "ff20feba (src/ identical to a05c3219; compose kernel cache)",
+ "version": "0.6.6",
+ "container": "875a8b95b5a97589b1dfb9b7becc03f1255159607f4379e588d4dae9abdd0024",
+ "cutover": "2026-10-14T23:01:59Z",
+ "healthy_by": "2026-10-14T23:03:50Z",
+ "startup_log": "loaded in 102.3s (model files re-read after the GB10 bench runs; prompt kernels warmed in 46.6s); startup estimate 100.01 GiB within 110.15 GiB; 27.5 GiB free for stream caches (measured host MemAvailable at startup; tf-int2 with the same GB10 code measured 28.4), 17.47 GiB for one at the full 1,048,576 window; 54 verify and 27 MTP step graphs captured (512 MiB of 512)",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-bw-a05c3219 (the qualification container tf-int2's cache, renamed)",
+ "downtime": "production stopped 2026-10-14T22:02:02Z for GB10 table tuning and round-2 qualification; new build serving from 23:03:50Z",
+ "rollback": {
+  "id": "4dc56c7ebd1dba3fc47086f5c4c08bfac974c17aacf9f0d85473eae179bd64b9",
+  "name": "/qwen38-flash-next-tf-rollback-bw-20261014",
+  "image": "sha256:6c528ff69846ac125d2e0e2bf621ae8e0e9a4f8337a1b8ccfa1cd62a0277f7c1",
+  "source": "52b8f229 (rotorquant8-norm, reserve 8, cache-python-0.6-bw-52b8f229)",
+  "state": "created/stopped",
+  "creation": "make_rollback.py Engine API clone of the replaced container (b55e56d3)"
+ },
+ "changed_configuration": "Image and kernel-cache bind only (cache-python-0.6-bw-a05c3219, was cache-python-0.6-bw-52b8f229); compare_containers.py: command and environment equal the rollback clone's.",
+ "selection": "docs/optimization-validation.md (decode-bandwidth round 2) and ~/.tensorfold-bandwidth-ledger-20261014.md on dev-01",
+ "validation": {
+  "installed_package_equals_git_archive": "495 files sha256-equal to git archive a05c3219 (image adds _fd_owner.abi3.so; 3 READMEs not installed)",
+  "gb10_staged_exposure": "test container tf-int2 (e4aaedc0; GB10 behaviour equals a05c3219: later commits change only a dev-01 table block id, comments, tests and docs) under memguard and the host monitor: startup, graph capture, replies at ~30k, ~150k, ~300k and ~650k; no stall or kernel fault; 650k admission showed NVRM retry lines with >= ~19.4 GB available",
+  "gb10_exactness": "warmup eeb00020ef59, ~30k explain 2ca5401a342d, ~30k rewrite 7e8d1e3cd78d, ~150k explain 2bda214dbb22, ~150k rewrite b18c4618db18, ~300k explain 223bfbcfe9a2, ~650k explain e60d6bc52f86: all equal fd0205a0's and 52b8f229's",
+  "gb10_ab": "container A/B ABBA vs the 52b8f229 production image (clone tf-cur): decode +1.24% (30k explain), +1.62% (30k rewrite), +1.96% (150k explain), +1.95% (150k rewrite), +1.89% (300k explain), geometric mean +1.73%, every B start above every A start; prompt passes +0.2..+0.7%; identical tokens in all starts",
+  "gb10_table_matrix": "lane / expert-tile / both tables vs base at one stream (150k) and four streams, ABCDDCBA, 600 rounds, identical tokens: inconclusive (base pass-to-pass spread 1.5% at n=1, 2.8% at n=4); the GB10 gets no table entries; lane+tile at n=4 (0.980 round) stays an open GB10 candidate",
+  "post_swap_exactness": "warmup, ~30k explain, ~30k rewrite, ~150k explain on :8888 all EXACT (decode 71.18 / 82.36 / 65.41 tok/s; 52b8f229 post-swap 70.75 / 81.47 / 64.71)",
+  "gb10_kernel_identity": "every Triton entry run since the cutover has machine code already run on this GB10: the 4 new post-cutover entries (_router, _scores_multi, _select x2) are identical to entries in tested caches",
+  "dev01_sm120": "e2e synthetic hashes ALL 7f47c506ddf9e858 (rq6) and ALL 67a762f3ac80e419 (rq8n/rq8/rq6n) equal the base; GPU suites 801 passed, 3 skipped, 4 failed (test_qmm::test_27b_triton_bits, pre-existing on the base: groups-of-64 sm_120 vs the Triton reference); KV-pair prep/encoder oracle tests for every pair 1666 passed; engine KV-pair tests (six/eight-bit) 100 passed; shared kernel contract tests 16 passed, 1 skipped (fda55e38); dev-01 A/B vs the deployed source n=1 0.954x, n=4 0.946x round time",
+  "live_tokenize_count": "55",
+  "live_tokenize_metadata": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041; context_length 1048576",
+  "arithmetic_thinking_off_expected391": true,
+  "arithmetic_thinking_low_expected888": true,
+  "tool_call_round_trip": true,
+  "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
+  "full_model_quality": "unchanged by construction (identical tokens)",
+  "four_stream_gb10_throughput": "measured only in the table matrix bench (synthetic n-gram), not in a container A/B"
+ }
+}

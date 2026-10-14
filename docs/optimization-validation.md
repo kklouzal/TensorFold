@@ -264,6 +264,29 @@ Rejected: one pooled-key tile load per stream in concurrent index scoring (no me
 already share it through L2). Full-model quality is unchanged by construction (identical tokens); four-stream
 throughput on GB10 was not measured.
 
+Decode-bandwidth round 2 (`a05c3219`, deployed 2026-10-14 over `52b8f229`;
+[receipt](../deploy/gb10/deployment-bw2-20261014.json)): exact changes, selected with the same sm_120 round bench
+(rotorquant8-norm, 150k, 600 rounds, interleaved ABBA, identical tokens in every run) and qualified on GB10. The
+attention chain preps each head's value side separately, encodes eight-bit K/V against a threshold table
+(`AttnScratch.thresholds`), skips RoPE angles past the rotary dims and merges one query head a program: round 0.986x
+at one stream (pairs 0.985, 0.987, 0.986), 0.998x at four, 0.990x with rotorquant6-norm (four pairs); in-round
+profiles show the prep launch 33.8 to 7.1 us. The lane matmul's block and cluster choice and the decode expert window
+tiles come from per-chip tables (`qmm.LANE`, `experts.WINDOW_TILES`) whose only entries are sm_120's: round 0.970x at
+one stream (three pairs), 0.960x at four (two pairs); the LM head's 17- to 32-row entry (block 5) measured 0.987,
+0.986 and 0.994 in an isolated four-stream A/B and is kept. DeltaNet chain trees take their rows a warp from
+`gdn.CHAIN_ROWS` (4 on sm_120 with 34 SMs, else 8). Against the deployed `52b8f229` source the combined build ran the
+round 0.954x at one stream (0.954, 0.952, 0.957) and 0.946x at four (0.944, 0.947), prompt fill unchanged. On GB10
+(container A/B against the `52b8f229` image, ABBA, prompts of ~30k to ~300k, 512-token replies) decode rose 1.2 to
+2.0% (geometric mean +1.7%, every new-build start above every old one per request), prompt passes 0.2 to 0.7%, with
+identical tokens; the build reproduced the reference reply tokens at ~30k, ~150k, ~300k and ~650k. GB10 lane and
+expert-tile table candidates (ABCDDCBA, one and four streams) were inconclusive (base pass-to-pass spread 1.5% at one
+stream, 2.8% at four), so the GB10 keeps its previous launches; lane plus tile at four streams (round 0.980x) remains
+an open GB10 candidate. Rejected on sm_120: a router decode tile of 16 experts (no in-round gain; reverted),
+prefetching shared-expert weights into L2 during routing (1.006 to 1.018x slower), and a fused top-k plus plan kernel
+(1.7 to 3.5x slower). Left open below round A/B resolution (< ~0.1% of a round each): alternative lane blocks for the
+attention output, DeltaNet/attention 17- to 20-row and per-layer-embedding projections. Full-model quality is
+unchanged by construction; four-stream GB10 throughput was measured only in the synthetic table bench.
+
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
 workload scope. Actual integrated native/device/model/performance qualification

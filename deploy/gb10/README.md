@@ -40,9 +40,24 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## Decode-bandwidth round 2 deployment, 2026-10-14
+
+The service runs source `a05c3219` (deploy commit `ff20feba`) in image `sha256:506b3913…`, container `875a8b95…`,
+with `rotorquant8-norm` K/V, an 8 GiB reserve and kernel cache `cache-python-0.6-bw-a05c3219`. Attention value prep,
+the eight-bit encoder, RoPE and the merge changed; the DeltaNet chain trees return to 8 value rows a warp on this chip
+(4 on the RTX PRO 2000); the lane matmul and expert window launches are unchanged here (their new per-chip tables hold
+only RTX PRO 2000 entries). Every reply keeps the previous build's tokens. On GB10 a staged test container reproduced
+the reference replies at ~30k through ~650k, and a container A/B against the replaced build measured decode +1.2 to
++2.0% (geometric mean +1.7%), prompt passes +0.2 to +0.7%. After the swap, reference replies at ~30k and ~150k
+matched, live tokenization, thinking-off, thinking and tool-call checks passed, and Harness reports the provider
+compatible. Every Triton kernel run since the swap has machine code already run on this GB10. The replaced container
+(`52b8f229`) is retained stopped as `qwen38-flash-next-tf-rollback-bw-20261014`. See
+[the deployment receipt](deployment-bw2-20261014.json) and the
+[selection evidence](../../docs/optimization-validation.md).
+
 ## Decode-bandwidth build deployment, 2026-10-14
 
-The service runs source `52b8f229` (deploy commit `1314ca05`) in image `sha256:6c528ff6…`, container `16c40da8…`,
+From 21:46Z to 23:01Z the service ran source `52b8f229` (deploy commit `1314ca05`) in image `sha256:6c528ff6…`, container `16c40da8…`,
 with `rotorquant8-norm` K/V and a new kernel cache (`cache-python-0.6-bw-52b8f229`). Six- and eight-bit decode
 attention, the decode hyper-connection read-outs and the DeltaNet chain trees changed; every reply keeps the previous
 build's tokens. On GB10 a staged test container reproduced the previous build's replies at ~30k, ~150k, ~300k and
