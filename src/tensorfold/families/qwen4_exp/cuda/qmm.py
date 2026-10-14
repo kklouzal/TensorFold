@@ -277,9 +277,10 @@ def split_for(n: int, k: int) -> int:
 # of TENSORFOLD_QMM_LANE_TILES, clusters allowed), the first that covers the window; else the row bucket's block with
 # clusters. Blocks and the cluster/reduce-kernel slice sum never change a row's bits (fixed K slices, groups in order).
 # dev-01 (RTX PRO 2000, sm_120, 34 SMs; data/qmm micro, DRAM-cold weights, vs the bucket blocks): 128 columns on 4
-# warps, 3 stages to 16 rows (0.90-0.96x the 64-column blocks' time; out projections 0.88x), 32 x 128 on 4 warps to
-# 32 rows (0.79-0.89x); the draft head (fp32 out) 2 stages (0.93x); the 2560 x 2560 K split staged instead of
-# clusters (at most 17 clusters of 4 fit at a time: 0.53-0.71x to 16 rows, with 32-row blocks 0.45-0.67x to 96 rows).
+# warps, 3 stages to 16 rows (0.90-0.99x the 64-column blocks' time; out projections 0.88x), 32 x 128 on 4 warps to
+# 32 rows (0.80-0.89x at 17-20 rows; to 32, the same grids); the draft head (fp32 out) 2 stages (0.93x at 1-4 rows);
+# the 2560 x 2560 K split staged instead of clusters (at most 17 clusters of 4 fit at a time: 0.53-0.71x to 16 rows,
+# with 32-row blocks 0.45-0.67x at 20-80 rows; to 96, the grids of 80).
 LANE = {
     (12, 0, 34): {
         (16480, 2560): ((16, 4, True), (32, 5, True)),          # DeltaNet q/k/v, z, b, a

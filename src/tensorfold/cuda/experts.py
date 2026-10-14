@@ -28,8 +28,8 @@ def _ext():
 
     here = Path(__file__).parent
     return load(name="tensorfold_experts_v8", sources=[str(here / "experts.cpp"), str(here / "experts.cu"),
-                                                        str(here / "experts_prefill.cu"), str(here / "experts_window.cu"),
-                                                        str(here / "experts_pack.cu")],
+                                                        str(here / "experts_prefill.cu"),
+                                                        str(here / "experts_window.cu"), str(here / "experts_pack.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
 
 
