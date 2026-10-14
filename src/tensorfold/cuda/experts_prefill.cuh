@@ -9,6 +9,7 @@
 #include <torch/extension.h>
 
 #include "experts.cuh"
+#include "kernels/kernel_configuration.cuh"
 #include "kernels/pdl.cuh"
 
 namespace {
@@ -163,11 +164,8 @@ void launch_prefill(const at::Tensor& x, int x_stride, int slots, const at::Tens
   using P = Pre<GS, M, RT, WM, WN, ST>;
   constexpr int SMEM = P::STAGES * P::STAGE_BYTES;
   auto* kern = prefill_kernel<GS, M, EPI, RT, WM, WN, ST>;
-  static bool ready = false;
-  if (!ready) {
-    C10_CUDA_CHECK(cudaFuncSetAttribute(kern, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM));
-    ready = true;
-  }
+  static tensorfold::KernelConfiguration configured;  // per device: gate/up on items of 16 (3 stages) pass 48 KB
+  configured.configure(kern, SMEM, x.get_device());
   const int64_t grid = max_items * ((nb + WN - 1) / WN);
   if (grid < 1) return;
   tensorfold::launch(kern, dim3(static_cast<unsigned>(grid)), dim3(P::THREADS), SMEM, pdl,
