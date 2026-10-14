@@ -228,8 +228,14 @@ register gather: a separate GB10 container A/B (`5e81802c` against
 `32b4ab99`, two starts each, ABBA, cold ~30k and ~150k prompts) measured
 prompt throughput +33.8 to +37.7% (95% bootstrap CIs within +32.1 and +38.8%)
 with identical tokens; decode kernels are unchanged. The switches are removed
-from this source; its own installed-image GB10 qualification and full-model
-quality comparison remain pending.
+from this source, whose kernel sources equal the A/B image's. Its
+synthetic-model CUDA suites pass on an RTX PRO 2000 Blackwell (sm_120, 894
+tests: each stream's tokens equal its solo run, and the static tables and graph
+replays equal the per-stream forward bit for bit) except five prompt-attention
+bit tests that fail identically on the production source, and a synthetic
+two-stream RotorQuant 6 decode hashes its tokens and caches as before. Its own
+installed-image GB10 qualification and full-model quality comparison remain
+pending.
 
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
