@@ -280,7 +280,8 @@ def split_for(n: int, k: int) -> int:
 # warps, 3 stages to 16 rows (0.90-0.99x the 64-column blocks' time; out projections 0.88x), 32 x 128 on 4 warps to
 # 32 rows (0.80-0.89x at 17-20 rows; to 32, the same grids); the draft head (fp32 out) 2 stages (0.93x at 1-4 rows);
 # the 2560 x 2560 K split staged instead of clusters (at most 17 clusters of 4 fit at a time: 0.53-0.71x to 16 rows,
-# with 32-row blocks 0.45-0.67x at 20-80 rows; to 96, the grids of 80).
+# with 32-row blocks 0.45-0.67x at 20-80 rows; to 96, the grids of 80); the head (fp32 out) 32 x 128 at 17-32 rows
+# (0.83x at 20 rows; to 16 rows no block beat the bucket's).
 LANE = {
     (12, 0, 34): {
         (16480, 2560): ((16, 4, True), (32, 5, True)),          # DeltaNet q/k/v, z, b, a
@@ -289,6 +290,7 @@ LANE = {
         (2560, 6144): ((16, 4, True), (32, 5, True)),           # DeltaNet / attention output (unreduced slices)
         (2560, 2560): ((16, 1, False), (96, 5, False)),         # PLE value, MTP fc_e / fc_h
         (79591, 2560): ((16, 6, True),),                        # draft head
+        (248320, 2560): ((16, 0, True), (32, 5, True)),         # head: the bucket's block to 16 rows
     },
 }
 

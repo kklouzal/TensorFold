@@ -124,12 +124,12 @@ def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
 
 @pytest.mark.parametrize("wide", [False, True])
 @pytest.mark.parametrize("n,k,sk", [(16480, 2560, 1), (13952, 2560, 1), (10240, 2560, 1), (2560, 6144, 8),
-                                    (2560, 2560, 4), (79591, 2560, 1), (1000, 2560, 2)])
+                                    (2560, 2560, 4), (79591, 2560, 1), (248320, 2560, 1), (1000, 2560, 2)])
 def test_every_lane_block_and_slice_sum_keep_the_bits(n, k, sk, wide):
     """Every lane block (TENSORFOLD_QMM_LANE_TILES), with a reduced split K in a cluster or in the buffer and reduce
     kernel, gives the row bucket's bits: bf16 and fp32 outputs and unreduced K slices, 1-20 rows and past a block's
-    rows, on normal and wide-range inputs and weights (every shape of Flash Next's lane table, the draft head's odd n
-    among them, and a ragged n)."""
+    rows, on normal and wide-range inputs and weights (every shape of Flash Next's lane table, the head and the draft
+    head's odd n among them, and a ragged n)."""
 
     words, scales, biases = _weights(n, k, 32, 13 * n + k)
     if wide:
