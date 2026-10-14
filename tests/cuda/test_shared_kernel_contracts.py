@@ -34,7 +34,7 @@ def _weight(n=128, k=512, gs=32):
 def _raw_qmm(x, weight, out, *, sk=1, part=None, reduce=True, f32=False, xs=None):
     xs = qmm.group_sums(x, weight.gs) if xs is None else xs
     qmm._ext().qmm(x, xs, weight.weight, weight.scales, weight.biases, out, part, weight.n, sk,
-                   weight.gs, qmm.bucket(x.shape[0]), f32, reduce, False)
+                   weight.gs, qmm.BUCKET_TILES[qmm.bucket(x.shape[0])], f32, reduce, True, False)
 
 
 def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
@@ -243,11 +243,11 @@ def test_qmm_raw_staging_alignment_and_scalar_output_exceptions():
         inputs = [weight.weight, weight.scales, weight.biases]
         inputs[('weight', 'scales', 'biases').index(component)] = shifted
         with pytest.raises(RuntimeError):
-            qmm._ext().qmm(x, sums, *inputs, output, None, 128, 1, 32, 16, False, True, False)
+            qmm._ext().qmm(x, sums, *inputs, output, None, 128, 1, 32, qmm.BUCKET_TILES[16], False, True, True, False)
     rows = torch.empty((16, 129), dtype=torch.bfloat16, device='cuda')
     with pytest.raises(RuntimeError):
         qmm._ext().qmm(x, sums, weight.weight, rows[:, :128], torch.empty_like(rows)[:, :128],
-                       output, None, 128, 1, 32, 16, False, True, False)
+                       output, None, 128, 1, 32, qmm.BUCKET_TILES[16], False, True, True, False)
     shifted_out = torch.empty(129, dtype=torch.bfloat16, device='cuda')[1:].view(1, 128)
     with pytest.raises(RuntimeError):
         _raw_qmm(x, weight, shifted_out)
