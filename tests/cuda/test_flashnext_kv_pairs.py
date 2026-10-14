@@ -27,6 +27,7 @@ from tests.kv_pair_failure_evidence import save_failure_snapshot  # noqa: E402
 
 PAIRS = tuple(KVPairFormat(k, v) for k, v in itertools.product(FORMATS, repeat=2))
 H, HK, D = 24, 2, 256
+CODEBOOK = attention.codebook("cuda")     # the eight-bit encoders' tables, made once (outside any graph capture)
 
 
 def pair_id(pair):
@@ -214,7 +215,7 @@ def prep(pair, projection, *, capacity=None, position=0, delta=0):
     glue.attn_prep(projection, pos, scale, scale, index_scale, inv, q, cache.k, cache.v, iq, index,
                    1e-6, q_heads=H, kv_heads=HK, head_dim=D, index_heads=1, index_dim=128,
                    ks=cache.ks, vs=cache.vs, delta=rotary, status=status, **traits(pair),
-                   **dict(zip(("centroids", "thresholds"), attention.codebook("cuda"))))
+                   **dict(zip(("centroids", "thresholds"), CODEBOOK)))
     return q, iq, index, cache, status
 
 
@@ -354,8 +355,8 @@ def test_every_side_source_guard_has_actual_failed_status(format, side, error, f
     x[9] = {"nan": float("nan"), "inf": float("inf"), "over-source-bound": float(2**31)}[failure]
     status = torch.tensor([0, -2], device="cuda", dtype=torch.int32)
     code, scale = (cache.k, cache.ks) if side == "K" else (cache.v, cache.vs)
-    _guard_and_store[(1,)](x, code, scale, status, *attention.codebook("cuda"), D,
-                           0 if format.bits == 16 else format.bits, format.codec, error, num_warps=2)
+    _guard_and_store[(1,)](x, code, scale, status, *CODEBOOK, D, 0 if format.bits == 16 else format.bits,
+                           format.codec, error, num_warps=2)
     assert status.cpu().tolist() == [error, 42]
     assert torch.isfinite(scale).all()
 
@@ -366,14 +367,12 @@ def test_mixed_native_scale_fp16_overflow_is_contained_and_underflow_is_legacy(f
     cache = KVCache(1, 1, D, "cuda", pair=pair)
     status = torch.tensor([0, -2], device="cuda", dtype=torch.int32)
     x = torch.full((D,), 65504., device="cuda", dtype=torch.bfloat16)
-    _guard_and_store[(1,)](x, cache.k, cache.ks, status, *attention.codebook("cuda"), D, format.bits, 0, 2,
-                           num_warps=2)
+    _guard_and_store[(1,)](x, cache.k, cache.ks, status, *CODEBOOK, D, format.bits, 0, 2, num_warps=2)
     assert status.cpu().tolist() == [8, 42]
     assert torch.isfinite(cache.ks).all() and torch.all(cache.ks == 0)
     status.copy_(torch.tensor([0, -2], device="cuda", dtype=torch.int32))
     x.fill_(torch.finfo(torch.bfloat16).tiny)
-    _guard_and_store[(1,)](x, cache.k, cache.ks, status, *attention.codebook("cuda"), D, format.bits, 0, 2,
-                           num_warps=2)
+    _guard_and_store[(1,)](x, cache.k, cache.ks, status, *CODEBOOK, D, format.bits, 0, 2, num_warps=2)
     assert status.cpu().tolist() == [0, -2]
     assert torch.all(cache.ks == 0)
 
@@ -541,8 +540,8 @@ def test_rotor_forbidden_fp32_erasure_poison_is_not_native_underflow(format):
     status = torch.tensor([0, -2], device="cuda", dtype=torch.int32)
     source = torch.zeros(D, device="cuda", dtype=torch.float32)
     source[0] = 2**-149
-    _guard_and_store[(1,)](source, cache.k, cache.ks, status, *attention.codebook("cuda"),
-                           D, format.bits, format.codec, 2, num_warps=2)
+    _guard_and_store[(1,)](source, cache.k, cache.ks, status, *CODEBOOK, D, format.bits, format.codec, 2,
+                           num_warps=2)
     assert status.cpu().tolist() == [8, 42]
     assert torch.isfinite(cache.ks).all()
 

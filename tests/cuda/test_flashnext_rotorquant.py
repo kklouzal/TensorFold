@@ -23,6 +23,7 @@ from tensorfold.families.qwen4_exp.kv_formats import FORMATS  # noqa: E402
 VARIANTS = ("planar", "isofast")
 WIDTHS = (3, 4)
 FORMAT_CASES = tuple(item for item in FORMATS if item.rotor is not None)
+CODEBOOK = attn_mod.codebook("cuda")      # the eight-bit encoders' tables, made once: graph captures encode too
 
 
 @triton.jit
@@ -164,7 +165,7 @@ def test_eight_bit_lifting_table_selects_the_same_indices():
     got = {}
     for table in (False, True):
         got[table] = torch.full_like(source, -1, dtype=torch.int32)
-        _lifting_indices[(1,)](source, got[table], attn_mod.codebook("cuda")[1], source.numel(),
+        _lifting_indices[(1,)](source, got[table], CODEBOOK[1], source.numel(),
                                triton.next_power_of_2(source.numel()), table)
     assert torch.equal(got[True], got[False])
     assert int(got[True].min()) == 0 and int(got[True].max()) == 255
@@ -191,7 +192,7 @@ def test_eight_bit_encoder_tables_keep_the_selected_encoder_bits(codec, m, warps
     for table in (False, True):
         code = torch.full((rows, 128), 7, dtype=torch.uint8, device="cuda")
         rms = torch.full((rows,), math.nan, dtype=torch.float32, device="cuda")
-        _encode8[(triton.cdiv(rows, m),)](x, code, rms, *attn_mod.codebook("cuda"), rows, codec, m, table,
+        _encode8[(triton.cdiv(rows, m),)](x, code, rms, *CODEBOOK, rows, codec, m, table,
                                           num_warps=warps)
         out[table] = (code, rms)
     assert torch.equal(out[True][0], out[False][0])
@@ -217,7 +218,7 @@ def encode(x, bits, variant, m=4):
     code = torch.empty((*lead, width * bits // 8), dtype=torch.uint8, device=x.device)
     rms = torch.empty((*lead, width // 128), dtype=torch.float32, device=x.device)
     n = x.numel() // 128
-    _encode[(triton.cdiv(n, m),)](x, code, rms, *attn_mod.codebook(x.device), n, bits, ref.variant_id(variant), m,
+    _encode[(triton.cdiv(n, m),)](x, code, rms, *CODEBOOK, n, bits, ref.variant_id(variant), m,
                                 enable_fp_fusion=False, num_warps=4)
     return code, rms
 
@@ -525,7 +526,7 @@ def test_fused_prep_quantizes_post_rope_bf16_and_leaves_index_keys_unchanged(for
                        iq, index, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                        bits=cache.bits if cache.quantized else 0, codec=cache.codec, delta=delta, status=status,
-                       **dict(zip(("centroids", "thresholds"), attn_mod.codebook("cuda"))))
+                       **dict(zip(("centroids", "thresholds"), CODEBOOK)))
         if status is not None:
             assert status.cpu().tolist() == [0, -2]
         outputs.append((q, iq, index))
@@ -679,7 +680,7 @@ def test_fused_numeric_guard_reports_source_and_first_layer_without_publication(
                    q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                    index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                    bits=cache.bits, codec=cache.codec, status=st.kv_status, layer=17,
-                   **dict(zip(("centroids", "thresholds"), attn_mod.codebook("cuda"))))
+                   **dict(zip(("centroids", "thresholds"), CODEBOOK)))
     with pytest.raises(KVNumericError, match="layer=17"):
         st.kv_check()
     assert int(st.kv_status[0].item()) & bit
