@@ -181,11 +181,6 @@ __device__ __forceinline__ void warp_tiles(const uint32_t* __restrict__ T, int N
     }
 }
 
-// The K2 values an instance covering [LO, HI] compiles (half-bits 2..16).
-__host__ __device__ constexpr bool k2_supported(int k2) {
-    return k2 >= 2 && k2 <= 16;
-}
-
 // Program (expert u, n block, split and member tile): up to 16 members times W_q over the split's K range; warps added in order.
 template <int CB, int NT, int W, int PF, int LO, int HI>
 __global__ void __launch_bounds__(W * 32) grouped_kernel(
@@ -333,8 +328,8 @@ void grouped_launch(const GroupedArgs& a, cudaStream_t stream) {
     if (a.lo == 8 && a.hi == 8) TF_LAUNCH(NT_, W_, PF_, 8, 8);                                                  \
     else if (a.lo >= 2 && a.hi <= 10) TF_LAUNCH(NT_, W_, PF_, 2, 10);                                           \
     else TF_LAUNCH(NT_, W_, PF_, 2, 16);
+    // default_config's settings (exl3/experts.py): eight-column tiles prefetch one step, four-column tiles two
     if (a.nt == 8 && a.warps == 4 && a.pf == 1) { TF_RANGES(8, 4, 1) }
-    else if (a.nt == 8 && a.warps == 4 && a.pf == 2) { TF_RANGES(8, 4, 2) }
     else if (a.nt == 4 && a.warps == 4 && a.pf == 2) { TF_RANGES(4, 4, 2) }
     else TORCH_CHECK(false, "unsupported tile setting nt=", a.nt, " warps=", a.warps, " pf=", a.pf);
 #undef TF_RANGES

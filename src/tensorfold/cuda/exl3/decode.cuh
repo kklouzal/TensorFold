@@ -41,16 +41,7 @@ __device__ __forceinline__ void lane_start(int lane, int& word, int& offset) {
     offset = first & 31;
 }
 
-// This lane's words of a tile (tile: the tile's first 32-bit word; global or shared memory).
-template <int K2>
-__device__ __forceinline__ void load_lane_words(const uint32_t* tile, int lane, uint32_t (&w)[lane_words<K2>()]) {
-    int word, offset;
-    lane_start<K2>(lane, word, offset);
-#pragma unroll
-    for (int i = 0; i < lane_words<K2>(); ++i) w[i] = tile[(word + i) % tile_words<K2>()];
-}
-
-// The same from global memory through the read-only cache.
+// This lane's words of a tile (tile: the tile's first 32-bit word) from global memory through the read-only cache.
 template <int K2>
 __device__ __forceinline__ void ldg_lane_words(const uint32_t* tile, int lane, uint32_t (&w)[lane_words<K2>()]) {
     int word, offset;
@@ -107,13 +98,6 @@ __device__ __forceinline__ uint32_t decode2(uint32_t s0, uint32_t s1) {
         const half2 r = __hadd2(*reinterpret_cast<const half2*>(&lo), *reinterpret_cast<const half2*>(&hi));
         return *reinterpret_cast<const uint32_t*>(&r);
     }
-}
-
-// One codebook value.
-template <int CB>
-__device__ __forceinline__ half decode1(uint32_t s) {
-    const uint32_t v = decode2<CB>(s, s);
-    return __ushort_as_half(static_cast<unsigned short>(v & 0xffffu));
 }
 
 // This lane's 8 values of a tile as the B fragments of the tile's two n8 halves (columns 0-7 in b0, 8-15 in b1).

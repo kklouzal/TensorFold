@@ -17,8 +17,7 @@ using namespace qmm_frag;
 
 // PDL: launched with programmatic dependent launch (weights staged before the dependency wait); else the plain
 // launch's original prologue, unchanged.
-template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PIPE = false,
-          bool PDL = false>
+template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PDL = false>
 __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
         const __nv_bfloat16* __restrict__ x, const float* __restrict__ xs, const uint32_t* __restrict__ w,
         const __nv_bfloat16* __restrict__ scales, const __nv_bfloat16* __restrict__ biases,
@@ -108,7 +107,6 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
                         acc_[i][j][e] = __fmaf_rn(x_[i][e >> 1], b_[j][e & 1], __fmaf_rn(d_[i][j][e], s_[j][e & 1],
                                                                                        acc_[i][j][e]));
         };
-        float dp[T::MT][T::NT][4], sp[T::NT][2], bp[T::NT][2], xp[T::MT][2];
         if constexpr (PDL) {
             // weights before the previous kernel ends, inputs after its writes are visible: every block of every
             // path waits here, before reading x or xs and before writing anything; each stage's two commit groups
@@ -168,7 +166,6 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
                         else mma(d[i][j], a[i], b0, b1);
                     }
                 }
-                if (PIPE && kt == 0 && it > 0) epilogue(acc, dp, sp, bp, xp);      // the previous group's, between MMAs
             }
             float sv[T::NT][2], bv[T::NT][2], xv[T::MT][2];
 #pragma unroll
@@ -185,24 +182,8 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
                 xv[i][0] = px[row];
                 xv[i][1] = px[row + 8];
             }
-            if constexpr (PIPE) {
-#pragma unroll
-                for (int i = 0; i < T::MT; ++i) {
-#pragma unroll
-                    for (int j = 0; j < T::NT; ++j)
-#pragma unroll
-                        for (int e = 0; e < 4; ++e) dp[i][j][e] = d[i][j][e];
-                    xp[i][0] = xv[i][0]; xp[i][1] = xv[i][1];
-                }
-#pragma unroll
-                for (int j = 0; j < T::NT; ++j) {
-                    sp[j][0] = sv[j][0]; sp[j][1] = sv[j][1]; bp[j][0] = bv[j][0]; bp[j][1] = bv[j][1];
-                }
-            } else {
-                epilogue(acc, d, sv, bv, xv);
-            }
+            epilogue(acc, d, sv, bv, xv);
         }
-        if (PIPE && per > 0) epilogue(acc, dp, sp, bp, xp);
         wait<0>();
         __syncthreads();
         if constexpr (CLUSTER) {
@@ -210,7 +191,6 @@ __global__ void __launch_bounds__(WM * WN * 32) qmm_kernel(
             __trap();                                     // no clusters before sm_90: the host never launches this
 #else
             // K slices of a tile form a cluster: slice 0 adds peers' partials in slice order, as reduce_kernel does
-            constexpr int E = T::MT * T::NT * 4;
             auto cluster = cooperative_groups::this_cluster();
             float* mine = reinterpret_cast<float*>(buf);
             if (slice != 0) {
@@ -285,13 +265,13 @@ __global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__
     else reinterpret_cast<__nv_bfloat16*>(out)[i] = __float2bfloat16_rn(acc);
 }
 
-template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER, bool PIPE = false>
+template <int GS, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER>
 void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
             const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK, bool pdl) {
     using T = LaneTile<GS, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
-    auto kernel = pdl ? qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE, true>
-                      : qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, PIPE, false>;
+    auto kernel = pdl ? qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, true>
+                      : qmm_kernel<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER, false>;
     static tensorfold::KernelConfiguration configured, configured_pdl;
     (pdl ? configured_pdl : configured).configure(kernel, T::SMEM, x.get_device());
     cudaLaunchConfig_t config = {};

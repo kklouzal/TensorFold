@@ -1,4 +1,4 @@
-// The fused gate|up epilogue shared by the prompt GEMMs: a 128 x 256 block of eight 64 x 64 warps (warps 0-1 of each
+// The fused gate|up epilogue of the prompt GEMM (gemm_ck.cu): a 128 x 256 block of eight 64 x 64 warps (warps 0-1 of each
 // row half hold gate's 128 columns, 2-3 up's same columns) -> SiLU(gate) * up -> NVFP4 rows of down's input, quantized
 // as act.cu's quant4 quantizes rows (nvfp4q.cuh). Partners (wm, c) and (wm, c + 2) each keep half their m16 tiles
 // and hand the other half over through shared memory, so all eight warps run the SwiGLU and the quantization.

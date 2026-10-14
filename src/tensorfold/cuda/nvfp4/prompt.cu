@@ -57,7 +57,7 @@ struct Tile {
     static constexpr int SMEM = STAGES * STAGE;
 };
 
-template <int MODE, int BM, int BN, int WM, int WN, int STAGES, bool F32>
+template <int MODE, int BM, int BN, int WM, int WN, int STAGES>
 __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
         const __nv_bfloat16* __restrict__ x, const unsigned char* __restrict__ w, const uint8_t* __restrict__ bs,
         float scale, void* __restrict__ out, int M, int N, int K, int npad, int ldx, int group) {
@@ -178,29 +178,23 @@ __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
                 const int row = m0 + wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8;
                 if (row >= M) continue;
                 const float v0 = acc[i][j][2 * h] * scale, v1 = acc[i][j][2 * h + 1] * scale;
-                if (F32) {
-                    float* dst = reinterpret_cast<float*>(out) + static_cast<size_t>(row) * N + col;
-                    if (col < N) dst[0] = v0;
-                    if (col + 1 < N) dst[1] = v1;
-                } else {
-                    __nv_bfloat16* dst = reinterpret_cast<__nv_bfloat16*>(out) + static_cast<size_t>(row) * N + col;
-                    if (col + 1 < N && (N & 1) == 0)
-                        *reinterpret_cast<__nv_bfloat162*>(dst) = __floats2bfloat162_rn(v0, v1);
-                    else {
-                        if (col < N) dst[0] = __float2bfloat16_rn(v0);
-                        if (col + 1 < N) dst[1] = __float2bfloat16_rn(v1);
-                    }
+                __nv_bfloat16* dst = reinterpret_cast<__nv_bfloat16*>(out) + static_cast<size_t>(row) * N + col;
+                if (col + 1 < N && (N & 1) == 0)
+                    *reinterpret_cast<__nv_bfloat162*>(dst) = __floats2bfloat162_rn(v0, v1);
+                else {
+                    if (col < N) dst[0] = __float2bfloat16_rn(v0);
+                    if (col + 1 < N) dst[1] = __float2bfloat16_rn(v1);
                 }
             }
         }
 }
 
-template <int MODE, int BM, int BN, int WM, int WN, int STAGES, bool F32>
+template <int MODE, int BM, int BN, int WM, int WN, int STAGES>
 void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out, int N,
             int npad) {
     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
-    auto kernel = prompt_kernel<MODE, BM, BN, WM, WN, STAGES, F32>;
+    auto kernel = prompt_kernel<MODE, BM, BN, WM, WN, STAGES>;
     static bool configured = false;
     if (!configured) {
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, T::SMEM);
@@ -215,16 +209,16 @@ void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, doub
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <int MODE, bool F32>
+template <int MODE>
 void by_tile(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
              int N, int npad) {
     switch (tile) {
-        case 1: launch<MODE, 128, 256, 2, 4, 3, F32>(x, w, bs, scale, out, N, npad); break;
-        case 2: launch<MODE, 128, 128, 2, 2, 4, F32>(x, w, bs, scale, out, N, npad); break;
-        case 3: launch<MODE, 64, 128, 1, 4, 4, F32>(x, w, bs, scale, out, N, npad); break;
-        case 4: launch<MODE, 128, 128, 2, 2, 2, F32>(x, w, bs, scale, out, N, npad); break;
-        case 5: launch<MODE, 64, 128, 1, 2, 2, F32>(x, w, bs, scale, out, N, npad); break;
-        default: launch<MODE, 128, 128, 2, 4, 3, F32>(x, w, bs, scale, out, N, npad); break;
+        case 1: launch<MODE, 128, 256, 2, 4, 3>(x, w, bs, scale, out, N, npad); break;
+        case 2: launch<MODE, 128, 128, 2, 2, 4>(x, w, bs, scale, out, N, npad); break;
+        case 3: launch<MODE, 64, 128, 1, 4, 4>(x, w, bs, scale, out, N, npad); break;
+        case 4: launch<MODE, 128, 128, 2, 2, 2>(x, w, bs, scale, out, N, npad); break;
+        case 5: launch<MODE, 64, 128, 1, 2, 2>(x, w, bs, scale, out, N, npad); break;
+        default: launch<MODE, 128, 128, 2, 4, 3>(x, w, bs, scale, out, N, npad); break;
     }
 }
 
@@ -233,9 +227,9 @@ void by_tile(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tenso
 // ``tile`` (0: 128x128 on 8 warps; 1: 128x256 on 8; 2: 128x128 on 4; 3: 64x128 on 4; 4: 128x128 on 4, two stages;
 // 5: 64x128 on 2, two stages) never changes a row's bits.
 void prompt16_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
-                   int64_t mode, int64_t N, int64_t npad, int64_t tile, bool f32) {
+                   int64_t mode, int64_t N, int64_t npad, int64_t tile) {
     const int n = static_cast<int>(N), np = static_cast<int>(npad), t = static_cast<int>(tile);
-    if (mode == FP4) { if (f32) by_tile<FP4, true>(t, x, w, bs, scale, out, n, np); else by_tile<FP4, false>(t, x, w, bs, scale, out, n, np); }
-    else if (mode == FP8) { if (f32) by_tile<FP8, true>(t, x, w, bs, scale, out, n, np); else by_tile<FP8, false>(t, x, w, bs, scale, out, n, np); }
-    else { if (f32) by_tile<MXFP8, true>(t, x, w, bs, scale, out, n, np); else by_tile<MXFP8, false>(t, x, w, bs, scale, out, n, np); }
+    if (mode == FP4) by_tile<FP4>(t, x, w, bs, scale, out, n, np);
+    else if (mode == FP8) by_tile<FP8>(t, x, w, bs, scale, out, n, np);
+    else by_tile<MXFP8>(t, x, w, bs, scale, out, n, np);
 }

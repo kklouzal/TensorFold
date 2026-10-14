@@ -62,7 +62,6 @@ struct WS {
     static constexpr int W_AT = KS * (X + SX), SW_AT = W_AT + TILES * KS * TILE;
     static constexpr int STAGE = SW_AT + TILES * KS * TS;              // KS steps: rows, scales, then each tile's
     static constexpr int SMEM = STAGES * STAGE + STAGES * 8 + STAGES * 4;
-    static constexpr int COPIES = MODE == A4 ? 2 + 2 * TILES : 1 + TILES;
 };
 
 // Stage ``s`` <- steps [kt KS, kt KS + KS): one bulk copy a lane (rows, row scales, each tile's weights and scales,

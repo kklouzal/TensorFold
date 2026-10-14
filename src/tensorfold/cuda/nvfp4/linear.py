@@ -43,7 +43,7 @@ def _prompt(mode: int, w: torch.Tensor, bs: torch.Tensor | None, scale: float, n
         x = x.to(torch.bfloat16).contiguous()
     fits = out is not None and out.is_contiguous() and out.dtype == torch.bfloat16 and out.shape == (x.shape[0], n)
     y = out if fits else torch.empty((x.shape[0], n), dtype=torch.bfloat16, device=x.device)
-    _prompt_ext().prompt16(x, w, bs, float(scale), y, mode, n, npad, PROMPT_TILE, False)
+    _prompt_ext().prompt16(x, w, bs, float(scale), y, mode, n, npad, PROMPT_TILE)
     if out is not None and y is not out:
         out.copy_(y)
     return y
