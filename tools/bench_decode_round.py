@@ -31,8 +31,11 @@ rotary 64 under the production YaRN-4 policy, DeltaNet nk 16 / nv 48 / dk = dv =
 streams of low rank 320, indexer 4 x 128 with budget 2048 and ratio 4, the MTP head with its own MoE layer). The
 decoder is ``multi.MultiDecoder`` built as ``engine.FlashNextEngine`` builds it for ``--parallel 4`` (4 slots, KEEP 8,
 the RQ6 pair, prefill rows, share), warmed and graph-captured by its own ``warm()``; rounds are its ``round()``.
-Each stream's state is built by the real prompt path (``admit`` + rounds' prompt passes over a random-token prompt):
-the KV/indexer caches, pooled keys, DeltaNet/conv states and MTP cache hold what that path computes.
+Each stream's state is built by the real prompt path (``admit``, then the decoder's prompt passes, ``_fill``, over a
+random-token prompt of the stream's context, all of them before any decode round, so every stream starts the rounds
+at exactly its context): the KV/indexer caches, pooled keys, DeltaNet/conv states and MTP cache hold what that path
+computes. A stream whose prompt ends samples its first token and drafts as in production. (Production runs a filling
+prompt's passes inside the live streams' rounds; those mixed rounds are not measured here.)
 
 What is synthetic or not represented:
 - Layers: default one real period, 3 DeltaNet + 1 full-attention layer (``--layers LLLA``), not 48 (36 + 12): the
@@ -45,9 +48,15 @@ What is synthetic or not represented:
   with ``ssd=True``, native reader, read-ahead, late reads during the forward). The table is synthetic and smaller
   (``--ngram-base`` 500,000 -> 8.0M rows, 0.8 GB, page-cache resident after first use; production: 20M base, 320M
   rows, 32 GB on NVMe), so host read latency is optimistic; the GPU work (16 rows of 160 values per token) is real.
-- Routing: random router rows over random hidden states pick experts near-uniformly; the real model's rows within a
-  round share experts more (~89% unique experts per row in production telemetry vs ~95-98% here), so the expert
-  bytes per round are a slight over-estimate at multi-row windows.
+- MTP experts: by default (``--mtp-experts shared``) the MTP layer reads the last decoder layer's expert table, not a
+  table of its own (one 1.47 GiB table less: the default plan then fits the ~10.3 GiB the card has free beside the
+  embedding server). The bytes each MTP step reads are the same; between the two layers' reads the LM head
+  (397 MB) or the draft head (127 MB) streams through the 32 MiB L2, so the sharing cannot turn DRAM reads into
+  cache hits. ``--mtp-experts own`` gives it its own table where memory allows (e.g. smaller --experts).
+- Routing: random router rows over random hidden states pick experts near-uniformly: a window of R rows touches
+  about 512 x (1 - (1 - 10/512)^R) routed experts (R = 5: 48.0, 96% of the 50 picks unique; R = 20: 167, 84%),
+  while production's rows share more (~89% unique at n=1, telemetry), so expert bytes per round are slightly
+  over-estimated (~8% at 5 rows). Analytic, not measured here.
 - Acceptance: random weights accept almost no drafts (the real rule keeps 1 row a round). ``--accept N`` (default 3,
   close to production's n=1 mean of ~3.0-3.2 accepted rows a round) keeps exactly N rows of each window (the
   committed path, the DeltaNet rows folded next round and the MTP absorb all have N rows, as in production);
@@ -463,10 +472,16 @@ def main(argv=None) -> int:
     for s in streams:
         dec.admit(s)
     joined: dict[int, float] = {}
-    fill_rounds = 0
-    while dec.filling:
-        done = dec.round()
-        fill_rounds += 1
+    passes = Counter()
+    real_pass = dec._pass
+
+    def counted_pass():
+        passes["passes"] += 1
+        return real_pass()
+
+    dec._pass = counted_pass
+    while dec.filling:          # prompt passes only (no decode round between them: each stream joins at its context)
+        done = dec._fill()
         for s in done:
             if s.error is not None:
                 raise RuntimeError(f"stream {s.sid} failed while filling") from s.error
@@ -474,6 +489,7 @@ def main(argv=None) -> int:
         for s in streams:
             if s.sid in dec.streams and s.sid not in joined:
                 joined[s.sid] = time.perf_counter() - t0
+    del dec._pass
     fill_s = time.perf_counter() - t0
     torch.cuda.synchronize()
     for s in streams:                                   # room for every measured round: no resize while timing
@@ -486,10 +502,10 @@ def main(argv=None) -> int:
                           "prefill_pass_s": round(s.prefill_s, 2), "pos_after_fill": s.st.pos,
                           "capacity_rows": s.st.capacity, "cache_bytes": s.st.cache_bytes()}
                          for n, s in zip(contexts, streams, strict=True)]
-    report["fill"] = {"seconds": round(fill_s, 2), "rounds": fill_rounds,
+    report["fill"] = {"seconds": round(fill_s, 2), "passes": passes["passes"],
                       "tokens_per_s": round(sum(contexts) / fill_s, 1)}
     log(f"[bench] prompts filled through the prompt path in {fill_s:.1f}s ({sum(contexts) / fill_s:.0f} tok/s, "
-        f"{fill_rounds} rounds); joined at " + ", ".join(f"{joined.get(s.sid, -1):.1f}s" for s in streams))
+        f"{passes['passes']} passes); joined at " + ", ".join(f"{joined.get(s.sid, -1):.1f}s" for s in streams))
 
     # -- rounds ------------------------------------------------------------------------------------------------------
     probe = Probe(dec, multi_mod, torch, args.nvtx_layers)
