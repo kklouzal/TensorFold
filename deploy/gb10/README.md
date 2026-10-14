@@ -40,6 +40,25 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## RotorQuant 8 KV restart, 2026-10-14
+
+By owner decision the service stores keys and values as `rotorquant8-norm`
+again (it ran `rotorquant6-norm` from 2026-10-13). The image (`da53a063…`,
+source `fd0205a0`), environment, binds and kernel cache are unchanged; only
+`--kv-dtype` differs (compose `298054a4`). Container `145d4b86…` started at
+04:35:32Z and was healthy by 04:38:02Z: startup estimate 100.01 GiB within
+111.95 GiB, 30.0 GiB free for stream caches and 17.47 GiB for one stream at the
+full 1,048,576 window. Live tokenization, thinking-off, thinking and tool-call
+checks passed, and Harness reports the provider compatible. This source's
+RotorQuant 8 KV kernels (42 of the 44 Triton entries compiled after the restart)
+had not run on this GB10 before. A host monitor and `memguard.sh` (4 GiB floor)
+watch the service. The GB10 had gone down at 02:57:49Z under the RotorQuant 6
+service on a host-wide out-of-memory (NVRM `NV_ERR_NO_MEMORY`, then the kernel
+OOM killer) while one conversation stood at ~608k tokens. RotorQuant 8 keys and
+values take about 32% more memory per token. The RotorQuant 6 container is
+retained stopped as `qwen38-flash-next-tf-rollback-rq6-20261014`. See
+[the deployment receipt](deployment-rq8norm-20261014.json).
+
 ## Performance build deployment, 2026-10-14
 
 The service now runs source `fd0205a0eb7959ebd71cfa83da56c53c4a17d09e` in ARM64

@@ -1,0 +1,44 @@
+{
+ "date": "2026-10-14T04:45:00Z",
+ "status": "deploymentverified",
+ "change": "KV cache rotorquant6-norm -> rotorquant8-norm (owner decision 2026-10-14: 'q6 was causing issues at high context'). Same image, environment, binds and kernel cache; only --kv-dtype changes (compose 298054a4)",
+ "image": "sha256:da53a063ac505851a60457b9bfdf03fff59c448e30c2c062189649a83042148d",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-fd0205a0",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "fd0205a0eb7959ebd71cfa83da56c53c4a17d09e",
+ "compose_revision": "298054a4",
+ "version": "0.6.6",
+ "container": "145d4b8637a5558ee062789c65e1220749f691ec5b646d5e7bb656c1ec1bbb89",
+ "cutover": "2026-10-14T04:35:32Z",
+ "healthy_by": "2026-10-14T04:38:02Z",
+ "startup_log": "loaded in 143.3s; startup estimate 100.01 GiB within 111.95 GiB; 30.0 GiB free for stream caches, 17.47 GiB for one at the full 1,048,576 window; 60 verify and 30 MTP step graphs captured (508 MiB of 512, 45.9s); prompt kernels warmed in 120.0s; KV K=V=rotorquant8-norm",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-perf-20261013",
+ "context": "The GB10 went down at 2026-10-14T02:57:49Z under the rotorquant6-norm service: kernel NVRM NV_ERR_NO_MEMORY at 02:57:44Z, then a global OOM kill (victim a1111-controller's python) and no clean shutdown; the next boot started 03:03:00Z. The service had been answering one Harness conversation growing from ~434k to ~608k prompt tokens (decode ~41-46 tok/s); the 02:53:54Z and 02:56:40Z requests did not finish. At the OOM, anonymous memory was ~3.3 GB and page cache ~0.2 GB, so the GPU (unified) allocations had taken the rest. The container was started at boot (03:03:19Z) and stopped at 03:04:02Z.",
+ "rollback": {
+  "id": "8e0cb829d6a765bb899c3d2b438875f6c2339c000676f47b689a7094d3d63e08",
+  "name": "/qwen38-flash-next-tf-rollback-rq6-20261014",
+  "image": "sha256:da53a063ac505851a60457b9bfdf03fff59c448e30c2c062189649a83042148d",
+  "source": "fd0205a0 (rotorquant6-norm, cache-python-0.6-perf-20261013)",
+  "state": "created/stopped",
+  "creation": "make_rollback.py Engine API clone of the replaced container (86d98637); the older clone qwen38-flash-next-tf-rollback-perf-20261013 (cadcae5c) is kept"
+ },
+ "changed_configuration": "Config.Cmd index 15: rotorquant6-norm -> rotorquant8-norm. Environment (as a set), binds, image, limits and ulimits equal the rollback clone's (compare_containers.py; ulimit order and Compose labels differ).",
+ "validation": {
+  "live_tokenize_count": "55",
+  "live_tokenize_metadata": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041; context_length 1048576",
+  "arithmetic_thinking_off_expected391": true,
+  "arithmetic_thinking_low_expected888": true,
+  "tool_call_round_trip": true,
+  "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
+  "gb10_kernel_identity": "44 Triton entries compiled after the cutover: 2 proven (_merge, _merge_multi); 42 have machine code never run on this GB10 before (_prep_multi 26, _attn_prep 13, _chunks_multi 2, _chunks 1): this source's rotorquant8-norm KV kernels. The previous rotorquant8-norm service (9acb28c3, 2026-10-10..13) ran older versions of these kernels",
+  "safety": "host monitor streamed to dev-01 (sessions/rq8-20261014/host-monitor.log); memguard.sh 4096 qwen38-flash-next-tf running on GB10 (kills the container if MemAvailable falls under 4 GiB; log audit-20261013/memguard-rq8-prod.log)",
+  "reference_token_hashes": "none for rotorquant8-norm on this source (stage_exact references are rotorquant6-norm)",
+  "full_model_quality": "unrun",
+  "filled1M_capacity": "unrun"
+ }
+}
