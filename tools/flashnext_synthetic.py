@@ -305,10 +305,13 @@ def _bf16_bits(x: np.ndarray) -> np.ndarray:
     return u.astype(np.uint16)
 
 
-def ngram_table(data_dir: Path, ngram, shards: int, layer: int, seed: int = 11) -> tuple[Path, str, list[str]]:
+def ngram_table(data_dir: Path, ngram, shards: int, layer: int,
+                seed: int = 11) -> tuple[Path, str, list[str], dict]:
     """An MLX 4-bit n-gram table (``shards`` shards of equal rows, words/scales/biases, as the checkpoint ships it) in
     one safetensors file under ``data_dir``, made once and reused (keyed by its geometry and seed). Returns the
-    directory, the file name and the shard keys."""
+    directory, the file name, the shard keys and the table's ``done`` record: geometry and size, and for a table this
+    version made also the seed, the numpy version that drew it (``default_rng`` streams may differ across numpy
+    versions) and the file's sha256. A reused table whose record disagrees with its geometry or file size is refused."""
 
     rows, dims = int(ngram.rows), int(ngram.dims)
     if rows % shards or dims % 32:
@@ -321,7 +324,11 @@ def ngram_table(data_dir: Path, ngram, shards: int, layer: int, seed: int = 11) 
     name = "ngram.safetensors"
     path = where / name
     if path.is_file() and (where / "done").is_file():
-        return where, name, keys
+        done = json.loads((where / "done").read_text())
+        if (done.get("rows"), done.get("dims"), done.get("shards"), done.get("bytes")) != \
+                (rows, dims, shards, path.stat().st_size):
+            raise ValueError(f"{where}: the cached n-gram table disagrees with its record {done}; delete the directory")
+        return where, name, keys, done
     where.mkdir(parents=True, exist_ok=True)
     k8, kg = dims // 8, dims // 32
     header, at = {}, 0
@@ -334,19 +341,34 @@ def ngram_table(data_dir: Path, ngram, shards: int, layer: int, seed: int = 11) 
     blob = json.dumps(header).encode()
     blob += b" " * ((8 - len(blob) % 8) % 8)
     rng = np.random.default_rng(seed)
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "wb") as f:
-        f.write(struct.pack("<Q", len(blob)))
-        f.write(blob)
-        for _ in keys:
-            f.write(rng.integers(0, 2**32, (per, k8), dtype=np.uint32).tobytes())
-            s = rng.random((per, kg), dtype=np.float32) * SCALE / 8 + SCALE / 64
-            f.write(_bf16_bits(s).tobytes())
-            f.write(_bf16_bits(-7.5 * _bf16_to_f32(_bf16_bits(s))).tobytes())
-    os.replace(tmp, path)
-    done = {"rows": rows, "dims": dims, "shards": shards, "bytes": path.stat().st_size}
-    (where / "done").write_text(json.dumps(done))
-    return where, name, keys
+    digest = hashlib.sha256()
+    tmp = path.with_name(f"{name}.{os.getpid()}.tmp")       # this process's: a concurrent maker writes its own
+    try:
+        with open(tmp, "wb") as f:
+            def put(data: bytes) -> None:
+                f.write(data)
+                digest.update(data)
+
+            put(struct.pack("<Q", len(blob)))
+            put(blob)
+            for _ in keys:
+                put(rng.integers(0, 2**32, (per, k8), dtype=np.uint32).tobytes())
+                s = rng.random((per, kg), dtype=np.float32) * SCALE / 8 + SCALE / 64
+                put(_bf16_bits(s).tobytes())
+                put(_bf16_bits(-7.5 * _bf16_to_f32(_bf16_bits(s))).tobytes())
+        os.replace(tmp, path)
+    except BaseException as primary:       # no partial table left behind; the failure propagates as it was
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as cleanup:
+            primary.add_note(f"removing {tmp} also failed: {cleanup!r}")
+        raise
+    done = {"rows": rows, "dims": dims, "shards": shards, "bytes": path.stat().st_size, "seed": seed,
+            "numpy": np.__version__, "sha256": digest.hexdigest()}
+    marker = where / f"done.{os.getpid()}.tmp"
+    marker.write_text(json.dumps(done))
+    os.replace(marker, where / "done")
+    return where, name, keys, done
 
 
 def _bf16_to_f32(bits: np.ndarray) -> np.ndarray:
@@ -359,6 +381,7 @@ class Built:
     w: object               # weights.Weights (w.meta["ple_tables"] owns the n-gram table(s))
     table_path: Path | None
     seconds: float
+    table_record: dict | None   # ``ngram_table``'s record of the table file
 
 
 def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share_mtp_experts: bool,
@@ -389,7 +412,7 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
     torch.cuda.empty_cache()
     log(f"[synthetic] embed/head/draft head built ({time.perf_counter() - t0:.1f}s)")
     ple_tables = PLETables()
-    table_path = None
+    table_path = table_record = None
     layers = []
     for i, kind in enumerate(c.layer_types):
         linear = kind == "linear"
@@ -399,7 +422,7 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
             if data_dir is None:
                 raise ValueError("a PLE layer needs --data-dir for its n-gram table")
             ngram = c.ngram(c.ple_layers.index(i))
-            where, name, keys = ngram_table(data_dir, ngram, c.ngram_shards, i)
+            where, name, keys, table_record = ngram_table(data_dir, ngram, c.ngram_shards, i)
             table = ple_tables.acquire(open_table(where, [(name, k) for k in keys], lambda n: 1.0, ssd=ple_on_ssd))
             if table.rows != ngram.rows:
                 raise ValueError(f"n-gram tables hold {table.rows} rows, expected {ngram.rows}")
@@ -426,7 +449,7 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     log(f"[synthetic] model built in {time.perf_counter() - t0:.1f}s: {w.nbytes() / 2**30:.3f} GiB of weights")
-    return Built(w, table_path, time.perf_counter() - t0)
+    return Built(w, table_path, time.perf_counter() - t0, table_record)
 
 
 def write_config(where: Path, raw: dict) -> Path:

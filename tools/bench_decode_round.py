@@ -21,7 +21,9 @@ Defaults are production's decode settings (GB10 compose: --parallel 4, --mtp-dra
 --yarn-factor 4 with a 1,048,576-token window, --decode-share 0.5, --ple-on-ssd with 32 native read threads,
 TENSORFOLD_PREFILL_ROWS 2048, captured rounds within TENSORFOLD_MULTI_GRAPH_MIB 512, PDL by chip policy) except:
 greedy sampling, copy drafts off, confidence 0 (every chain runs to --depth, so rows/round = streams x (depth+1)) and
-a fixed accepted path (``--accept``, below). ``--help`` lists every knob; the JSON records all of them.
+a fixed accepted path (``--accept``, below); no vision tower (production's ``--vision`` serves image requests
+only). ``--help`` lists every knob; the JSON records all of them, the environment's TENSORFOLD_/CUDA_/PYTORCH_/
+TORCH_/TRITON_/NVIDIA_/BENCH_ variables and the runtime versions.
 
 What is real: every kernel, launch geometry, packing and code path of a decode round. The weights are random MLX
 affine 4-bit/group-32 arrays at the production dimensions, assembled by ``flashnext_synthetic.build`` exactly as
@@ -63,10 +65,12 @@ What is synthetic or not represented:
   20): S = 0: 0.949 (n=1, 5 rows), 0.806 (n=4, 20 rows); S = 0.3: 0.891, 0.641; S = 0.6: 0.795, 0.473. S = 0.3
   matches production's n=1 figure; production's n=4 overlap is unmeasured.
 - Acceptance: random weights accept almost no drafts (the real rule keeps 1 row a round). ``--accept N`` (default 3,
-  close to production's n=1 mean of ~3.0-3.2 accepted rows a round) keeps exactly N rows of each window (the
-  committed path, the DeltaNet rows folded next round and the MTP absorb all have N rows, as in production);
-  ``--accept model`` uses the real rule. Either way the emitted tokens are a deterministic function of the arithmetic
-  (``tokens_sha256`` in the JSON: equal across bit-identical builds).
+  close to production's n=1 mean of ~3.0-3.2 accepted rows a round) keeps the first N rows of each window (the
+  committed path, the DeltaNet rows folded next round and the MTP absorb all have N rows, as in production); a
+  window shorter than N (a chain ``--confidence`` stopped early) keeps all its rows: each sample's ``committed``
+  counts the rows kept. ``--no-mtp`` windows hold one row (``--accept 1`` or ``model``). ``--accept model`` uses
+  the real rule. Either way the emitted tokens are a deterministic function of the arithmetic (``tokens_sha256`` in
+  the JSON: equal across bit-identical builds).
 - Sampling: greedy (production samples at temperature 1, top-k 20, top-p 0.95: same verify/draft kernels, the
   sampler's host packets differ slightly). Copy drafts off (production TENSORFOLD_MTP_COPY=1 proposes repeated text
   instead of MTP rows on repetitive contexts; random prompts would never match).
@@ -78,10 +82,13 @@ What is synthetic or not represented:
 Measurement: ``--warmup`` rounds, then ``--rounds`` timed rounds: CUDA events around each ``round()`` (the round's
 GPU span, host gaps included) and wall time, events around the verify forward and the MTP chain, NVTX ranges per
 round, verify forward ("verify[graph]"/"verify[eager]"), MTP chain and each MTP step; per-round rows, MTP steps,
-graph replays vs eager forwards. ``--profile-rounds K`` runs K more rounds between cudaProfilerStart/Stop for
-``nsys --capture-range cudaProfilerApi`` or ``ncu --profile-from-start off`` (their timings are listed apart); the
-routing rounds come last. ``tokens_sha256`` hashes every stream's tokens up to the end of the measured rounds: equal
-for equal settings on bit-identical builds (cross-run determinism on one build and GPU; checked 2026-10-14).
+graph replays vs eager forwards. The phase events and NVTX ranges are recorded inside the round's span (their host
+time is in ``round_ms``; every run of this tool carries the same ones). ``--profile-rounds K`` runs K more rounds
+between cudaProfilerStart/Stop for ``nsys --capture-range cudaProfilerApi`` or ``ncu --profile-from-start off``
+(their timings are listed apart); the routing rounds come last. Every stream decodes in every round: a stream that
+ends, fails or waits for memory stops the run, and so does a cache resize during the rounds (all are grown first).
+``tokens_sha256`` hashes every stream's tokens up to the end of the measured rounds: equal for equal settings on
+bit-identical builds (cross-run determinism on one build and GPU; checked 2026-10-14).
 Both expert kernel forms run as in production: the verify window's buffers use the experts' prompt-form kernels
 (``moe_prefill=True``), the MTP steps' the decode-form ones.
 
@@ -99,12 +106,15 @@ import os
 import platform
 import statistics
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
 
 TOOL = "bench_decode_round"
 VERSION = 1
+# the environment a report records: the decoder's, the runtimes' and the wrapper's settings (no secrets live there)
+ENV_PREFIXES = ("TENSORFOLD_", "CUDA_", "PYTORCH_", "TORCH_", "TRITON_", "NVIDIA_", "BENCH_")
 
 
 def _args(argv=None) -> argparse.Namespace:
@@ -156,7 +166,21 @@ def _args(argv=None) -> argparse.Namespace:
     p.add_argument("--vram-budget-gib", type=float, default=10.5,
                    help="refuse a plan above this; report measured use against it")
     p.add_argument("--out", default="", help="JSON report path")
-    return p.parse_args(argv)
+    a = p.parse_args(argv)
+    for name, low in (("experts", 1), ("slots", 1), ("depth", 0), ("warmup", 0), ("rounds", 0), ("profile_rounds", 0),
+                      ("prefill_rows", 1), ("capacity", 1), ("graph_mib", 0), ("ngram_base", 1),
+                      ("routing_rounds", 0)):
+        if getattr(a, name) < low:
+            p.error(f"--{name.replace('_', '-')} must be at least {low}")
+    for name, value in (("confidence", a.confidence), ("decode-share", a.decode_share),
+                        ("yarn-factor", a.yarn_factor), ("router-skew", a.router_skew)):
+        if not value >= 0 or (name == "confidence" and value > 1):      # NaN fails too
+            p.error(f"--{name} {value} is out of range")
+    if not a.vram_budget_gib > 0:
+        p.error("--vram-budget-gib must be positive")
+    if a.accept != "model" and not a.accept.isdecimal():
+        p.error(f"--accept: a row count or 'model', not {a.accept!r}")
+    return a
 
 
 def _pct(values, q):
@@ -174,25 +198,29 @@ def _summary(values) -> dict:
 
 
 def _source_sha() -> dict:
-    """The tensorfold package this process imports (sha256 over its .py/.cu/.cpp/.cuh/.c/.h/.txt files), this tool's
-    own two files, and the git sha the wrapper recorded on the host (BENCH_GIT_SHA; the container holds a copy
-    without .git)."""
+    """The tensorfold package this process imports (sha256 over its .py/.cu/.cpp/.cuh/.c/.h/.txt files; each binary
+    in it, e.g. the wrapper's _fd_owner overlay, apart), this tool's own two files, and the git sha the wrapper
+    recorded on the host (BENCH_GIT_SHA; the container holds a copy without .git)."""
 
     import tensorfold
 
     root = Path(tensorfold.__file__).parent
     h = hashlib.sha256()
     n = 0
+    binaries = {}
     for f in sorted(root.rglob("*")):
         if f.is_file() and f.suffix in (".py", ".cu", ".cpp", ".cuh", ".c", ".h", ".txt"):
             h.update(str(f.relative_to(root)).encode())
             h.update(f.read_bytes())
             n += 1
+        elif f.is_file() and f.suffix == ".so":
+            binaries[str(f.relative_to(root))] = hashlib.sha256(f.read_bytes()).hexdigest()
     here = Path(__file__).resolve().parent
     tools = {name: hashlib.sha256((here / name).read_bytes()).hexdigest()
              for name in ("bench_decode_round.py", "flashnext_synthetic.py")}
     return {"git": os.environ.get("BENCH_GIT_SHA", "unknown"), "git_dirty": os.environ.get("BENCH_GIT_DIRTY", ""),
-            "package_root": str(root), "package_files": n, "package_sha256": h.hexdigest(), "tools_sha256": tools}
+            "package_root": str(root), "package_files": n, "package_sha256": h.hexdigest(),
+            "package_binaries_sha256": binaries, "tools_sha256": tools}
 
 
 def _gpu(torch) -> dict:
@@ -204,18 +232,22 @@ def _gpu(torch) -> dict:
         import triton
 
         out["triton"] = triton.__version__
-    except Exception:                                  # noqa: BLE001  (provenance only)
-        pass
+    except Exception as exc:                           # noqa: BLE001  (provenance only: recorded, not fatal)
+        out["triton"] = f"unavailable: {type(exc).__name__}"
     try:
         import pynvml
 
         pynvml.nvmlInit()
-        hnd = pynvml.nvmlDeviceGetHandleByIndex(0)
-        out["clocks_mhz"] = {k: pynvml.nvmlDeviceGetClockInfo(hnd, v) for k, v in
-                             (("sm", pynvml.NVML_CLOCK_SM), ("mem", pynvml.NVML_CLOCK_MEM))}
-        out["max_clocks_mhz"] = {k: pynvml.nvmlDeviceGetMaxClockInfo(hnd, v) for k, v in
+        try:
+            hnd = pynvml.nvmlDeviceGetHandleByIndex(0)     # NVML's index 0 (NVML ignores CUDA_VISIBLE_DEVICES)
+            out["nvml_device"] = pynvml.nvmlDeviceGetName(hnd)         # ... so its name shows which device it read
+            out["clocks_mhz"] = {k: pynvml.nvmlDeviceGetClockInfo(hnd, v) for k, v in
                                  (("sm", pynvml.NVML_CLOCK_SM), ("mem", pynvml.NVML_CLOCK_MEM))}
-        out["driver"] = pynvml.nvmlSystemGetDriverVersion()
+            out["max_clocks_mhz"] = {k: pynvml.nvmlDeviceGetMaxClockInfo(hnd, v) for k, v in
+                                     (("sm", pynvml.NVML_CLOCK_SM), ("mem", pynvml.NVML_CLOCK_MEM))}
+            out["driver"] = pynvml.nvmlSystemGetDriverVersion()
+        finally:
+            pynvml.nvmlShutdown()
     except Exception as exc:                           # noqa: BLE001  (the wrapper samples nvidia-smi on the host)
         out["nvml"] = f"unavailable: {type(exc).__name__}"
     return out
@@ -329,7 +361,28 @@ class Probe:
         return out
 
 
-def _routing(dec, cfg, torch, count: int, log) -> dict:
+def _reader(layer) -> str:
+    """The n-gram reader's class and, for a read-ahead wrapper, its table's (the native and Python SSD readers share
+    the wrapper class)."""
+
+    table = layer.ple.table
+    inner = getattr(table, "table", None)
+    return type(table).__name__ + (f"({type(inner).__name__})" if inner is not None else "")
+
+
+def _check_streams(streams, done, where: str) -> None:
+    """Every stream decodes in every round this tool runs: one that ended (failed or not) or waits for memory stops
+    the run (its error chained), as its absence would silently change the measured rounds."""
+
+    if done:
+        error = next((s.error for s in done if s.error is not None), None)
+        raise RuntimeError(f"{len(done)} stream(s) ended {where}") from error
+    waiting = [s.sid for s in streams if s.waiting]
+    if waiting:
+        raise RuntimeError(f"stream(s) {waiting} wait for memory {where}")
+
+
+def _routing(dec, cfg, torch, streams, count: int, log) -> dict:
     """``count`` more rounds, eager (graphs detached: the same kernels and bits as their replays) and untimed, recording
     every MoE layer's routed picks (``moe.pick[:R, :top_k]``, copied after each ``forward.moe_block``): unique routed
     experts per layer of each verify forward and per MTP step (step 0 of a round is the absorb), against the
@@ -343,8 +396,9 @@ def _routing(dec, cfg, torch, count: int, log) -> dict:
 
     def moe_block(layer, w, b, R):
         out = real(layer, w, b, R)
-        kind = "verify" if b is dec.buf else "mtp" if b is dec.mbuf else "other"
-        seen.append((kind, layer.index, R, b.moe.pick[:R, :K].clone()))
+        if b is not dec.buf and b is not dec.mbuf:                  # rounds without a prompt pass use no other
+            raise RuntimeError("a routing round ran an MoE layer on a buffer other than the verify/MTP windows'")
+        seen.append(("verify" if b is dec.buf else "mtp", layer.index, R, b.moe.pick[:R, :K].clone()))
         return out
 
     graphs, dec.graphs = dec.graphs, None
@@ -353,14 +407,11 @@ def _routing(dec, cfg, torch, count: int, log) -> dict:
     try:
         for i in range(count):
             seen.clear()
-            done = dec.round()
-            if done:
-                raise RuntimeError(f"{len(done)} stream(s) ended in routing round {i}")
+            _check_streams(streams, dec.round(), f"in routing round {i}")
             torch.cuda.synchronize()
             rec = {"verify": [], "mtp": []}
             for kind, index, R, pick in seen:
-                unique = int(torch.unique(pick).numel())
-                rec.setdefault(kind, []).append([index, R, unique])
+                rec[kind].append([index, R, int(torch.unique(pick).numel())])
             per_round.append(rec)
     finally:
         fwd.moe_block = real
@@ -402,12 +453,14 @@ def _routing(dec, cfg, torch, count: int, log) -> dict:
 
 def main(argv=None) -> int:
     args = _args(argv)
-    contexts = [int(x) for x in args.contexts.split(",") if x.strip()]
-    if not 1 <= len(contexts) <= args.slots:
-        raise SystemExit(f"--contexts: 1 to --slots ({args.slots}) streams, not {len(contexts)}")
+    parts = [x.strip() for x in args.contexts.split(",") if x.strip()]
+    if not all(x.isdecimal() and int(x) >= 1 for x in parts) or not 1 <= len(parts) <= args.slots:
+        raise SystemExit(f"--contexts: 1 to --slots ({args.slots}) positive prompt lengths, not {args.contexts!r}")
+    contexts = [int(x) for x in parts]
     accept = None if args.accept == "model" else int(args.accept)
-    if accept is not None and not 1 <= accept <= args.depth + 1:
-        raise SystemExit(f"--accept: 1 to depth + 1 ({args.depth + 1}) rows, or 'model'")
+    rows_max = (args.depth if not args.no_mtp else 0) + 1                # a window's rows
+    if accept is not None and not 1 <= accept <= rows_max:
+        raise SystemExit(f"--accept: 1 to {rows_max} rows (depth + 1; 1 with --no-mtp), or 'model'")
     # production's environment, read by the decoder and the n-gram reader at construction
     os.environ["TENSORFOLD_MULTI_GRAPH_MIB"] = str(args.graph_mib)
     os.environ["TENSORFOLD_MTP_COPY"] = "0"
@@ -432,9 +485,11 @@ def main(argv=None) -> int:
 
     t_start = time.perf_counter()
     log = lambda *a: print(*a, flush=True)                                     # noqa: E731
-    report: dict = {"tool": TOOL, "version": VERSION, "argv": sys.argv, "args": vars(args),
-                    "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "host": platform.node(), "source": _source_sha()}
+    report: dict = {"tool": TOOL, "version": VERSION, "argv": sys.argv if argv is None else [sys.argv[0], *argv],
+                    "args": vars(args), "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "host": platform.node(), "source": _source_sha(),
+                    "runtime": {"python": platform.python_version(), "numpy": np.__version__},
+                    "env": {k: v for k, v in sorted(os.environ.items()) if k.startswith(ENV_PREFIXES)}}
     torch.cuda.init()
     free0, total = torch.cuda.mem_get_info()
     report["gpu"] = _gpu(torch)
@@ -446,11 +501,12 @@ def main(argv=None) -> int:
     if args.config:   # the embedded copy must be the real one (text config)
         given, embedded = synth.text(real), synth.text(synth.REAL_CONFIG)
         mismatch = sorted(k for k in set(given) | set(embedded) if given.get(k) != embedded.get(k))
-        report["config_check"] = {"file": args.config, "text_config_keys_differing_from_embedded": mismatch}
+        report["config_check"] = {"file": args.config, "text_config_keys_differing_from_embedded": mismatch,
+                                  "sha256": hashlib.sha256(Path(args.config).read_bytes()).hexdigest()}
         log(f"[bench] --config text_config vs embedded copy: {mismatch or 'identical'}")
     raw = synth.synthetic_config(real, args.layers, args.experts, args.ngram_base, not args.no_ple)
-    cdir = synth.write_config(Path(os.environ.get("TMPDIR", "/tmp")) / f"flashnext-synth-{os.getpid()}", raw)
-    cfg, rope = synth.read_config(cdir, args.yarn_factor or None)
+    with tempfile.TemporaryDirectory(prefix="flashnext-synth-") as cdir:   # read now: Config keeps no path
+        cfg, rope = synth.read_config(synth.write_config(Path(cdir), raw), args.yarn_factor or None)
     mtp = not args.no_mtp
     draft = None if args.draft_vocab == "none" else (int(args.draft_vocab) if args.draft_vocab.isdecimal()
                                                      else args.draft_vocab)
@@ -508,8 +564,8 @@ def main(argv=None) -> int:
                        "mtp": mtp, "draft_rows": draft_rows, "mtp_experts": args.mtp_experts,
                        "router_skew": args.router_skew,
                        "ngram": ({"rows": cfg.ngram(0).rows, "dims": cfg.ngram(0).dims, "shards": cfg.ngram_shards,
-                                  "table": str(built.table_path), "on_ssd": not args.ple_in_memory,
-                                  "reader": type(w.layers[cfg.ple_layers[0]].ple.table).__name__}
+                                  "table": str(built.table_path), "table_record": built.table_record,
+                                  "on_ssd": not args.ple_in_memory, "reader": _reader(w.layers[cfg.ple_layers[0]])}
                                  if cfg.ple_layers else None),
                        "build_s": round(built.seconds, 2)}
 
@@ -527,12 +583,15 @@ def main(argv=None) -> int:
     dec.memory_gate = MemoryGate(1 << 62, reserve=0, live=None)     # admission is this tool's budget (docstring)
     if accept is not None:
         def fixed_accept(tokens, parents, sampled, room, eos=()):
-            """The window's first k rows (a chain, as round() builds it) and the last one's sample; the streams take
-            no end tokens (stop_eos=False), so ``eos`` is empty."""
+            """The window's first k rows (a chain, as round() builds it) and the last one's sample. End tokens are
+            never looked for: the measured streams take none (stop_eos=False, ``eos`` empty) and warm()'s request
+            (which does) keeps one row (room 1), where ``accept`` returns the same."""
 
             k = max(1, min(accept, len(tokens), room))
             if any(parents[r] != r - 1 for r in range(1, k)):
                 raise RuntimeError("--accept N needs chain windows (row r's parent is r - 1)")
+            if eos and k > 1:
+                raise RuntimeError("--accept N: a stream that stops at end tokens takes the real rule")
             return list(range(k)), sampled[k - 1]
 
         multi_mod.accept = fixed_accept
@@ -579,31 +638,33 @@ def main(argv=None) -> int:
 
     dec._pass = counted_pass
     while dec.filling:          # prompt passes only (no decode round between them: each stream joins at its context)
-        done = dec._fill()
-        for s in done:
-            if s.error is not None:
-                raise RuntimeError(f"stream {s.sid} failed while filling") from s.error
-        dec.finish(done)
+        _check_streams(streams, dec._fill(), "while filling")
         for s in streams:
             if s.sid in dec.streams and s.sid not in joined:
                 joined[s.sid] = time.perf_counter() - t0
     del dec._pass
     torch.cuda.synchronize()
     fill_s = time.perf_counter() - t0
+    if any(dec.streams.get(s.sid) is not s or s.done for s in streams):
+        raise RuntimeError("the prompt passes ended without every stream decoding")
     for s in streams:                                   # room for every round this tool runs: no resize in them
-        dec._grow(s.st, max(s.st.pos, s.st.mtp_len) + extra_rows)
+        need = max(s.st.pos, s.st.mtp_len) + extra_rows
+        if not dec._grow(s.st, need) or s.st.capacity < need:
+            raise RuntimeError(f"stream {s.sid}: no room for {need} cache rows (its window holds {s.st.limit}): "
+                               "fewer rounds or a larger --capacity")
+    grown = [s.st.capacity for s in streams]
     torch.cuda.synchronize()
     mem["after_fill_allocated"] = torch.cuda.memory_allocated()
     mem["after_fill_reserved"] = torch.cuda.memory_reserved()
     mem["after_fill_free"] = torch.cuda.mem_get_info()[0]
-    report["streams"] = [{"context": n, "prompt_tokens": len(s.prompt), "joined_s": round(joined.get(s.sid, -1), 2),
+    report["streams"] = [{"context": n, "prompt_tokens": len(s.prompt), "joined_s": round(joined[s.sid], 2),
                           "prefill_pass_s": round(s.prefill_s, 2), "pos_after_fill": s.st.pos,
                           "capacity_rows": s.st.capacity, "cache_bytes": s.st.cache_bytes()}
                          for n, s in zip(contexts, streams, strict=True)]
     report["fill"] = {"seconds": round(fill_s, 2), "passes": passes["passes"],
                       "tokens_per_s": round(sum(contexts) / fill_s, 1)}
     log(f"[bench] prompts filled through the prompt path in {fill_s:.1f}s ({sum(contexts) / fill_s:.0f} tok/s, "
-        f"{passes['passes']} passes); joined at " + ", ".join(f"{joined.get(s.sid, -1):.1f}s" for s in streams))
+        f"{passes['passes']} passes); joined at " + ", ".join(f"{joined[s.sid]:.1f}s" for s in streams))
 
     # -- rounds ------------------------------------------------------------------------------------------------------
     probe = Probe(dec, multi_mod, torch, args.nvtx_layers)
@@ -628,11 +689,7 @@ def main(argv=None) -> int:
             w1 = time.perf_counter()
             nvtx.range_pop()
             got = probe.end()
-            for s in done:
-                if s.error is not None:
-                    raise RuntimeError(f"stream {s.sid} failed in {label} round {i}") from s.error
-            if done:
-                raise RuntimeError(f"{len(done)} stream(s) ended in {label} round {i}")
+            _check_streams(streams, done, f"in {label} round {i}")
             got.update(round_ms=e0.elapsed_time(e1), wall_ms=(w1 - w0) * 1e3, rows=rows, streams=len(live),
                        tokens=sum(len(s.out) for s in streams) - out0,
                        committed=sum(s.st.pos for s in streams) - sum(pos0))
@@ -657,10 +714,13 @@ def main(argv=None) -> int:
     tok = hashlib.sha256(json.dumps([s.out for s in streams]).encode()).hexdigest()
     report["tokens_sha256"] = tok                       # the measured rounds' tokens (before the routing rounds)
     report["tokens_out"] = [len(s.out) for s in streams]
-    report["routing"] = _routing(dec, cfg, torch, args.routing_rounds, log) if args.routing_rounds else None
+    report["routing"] = _routing(dec, cfg, torch, streams, args.routing_rounds, log) if args.routing_rounds else None
+    if [s.st.capacity for s in streams] != grown:
+        raise RuntimeError(f"stream caches resized during the rounds: {grown} -> {[s.st.capacity for s in streams]}")
     mem["peak_allocated"] = torch.cuda.max_memory_allocated()
     mem["end_free"] = torch.cuda.mem_get_info()[0]
     mem["process_device_bytes_estimate"] = free0 - mem["end_free"]
+    mem["within_budget"] = mem["process_device_bytes_estimate"] <= report["plan_bytes"]["budget"]
     mem["note"] = ("process_device_bytes_estimate = free at init - free at end: this process's allocations after "
                    "CUDA init if no other process's use changed meanwhile (its context's own bytes come before init's "
                    "reading; the host pmon log has fb MB per process); peak_allocated: torch's peak over the whole "
@@ -688,7 +748,8 @@ def main(argv=None) -> int:
             f"{st['tokens']['mean']:.2f}")
     log(f"[bench] memory: weights {mem['weights_nbytes'] / 2**30:.3f} GiB, peak allocated "
         f"{mem['peak_allocated'] / 2**30:.3f} GiB, process ~{mem['process_device_bytes_estimate'] / 2**30:.3f} GiB "
-        f"after init; tokens sha256 {tok[:16]}")
+        f"after init (--vram-budget-gib {args.vram_budget_gib:.2f}{'' if mem['within_budget'] else ': EXCEEDED'}); "
+        f"tokens sha256 {tok[:16]}")
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
