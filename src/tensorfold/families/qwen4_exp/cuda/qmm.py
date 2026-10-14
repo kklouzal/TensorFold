@@ -281,7 +281,7 @@ def split_for(n: int, k: int) -> int:
 # 32 rows (0.80-0.89x at 17-20 rows; to 32, the same grids); the draft head (fp32 out) 2 stages (0.93x at 1-4 rows);
 # the 2560 x 2560 K split staged instead of clusters (at most 17 clusters of 4 fit at a time: 0.53-0.71x to 16 rows,
 # with 32-row blocks 0.45-0.67x at 20-80 rows; to 96, the grids of 80); the head (fp32 out) 32 x 128 at 17-32 rows
-# (0.83x at 20 rows; to 16 rows no block beat the bucket's).
+# (0.83x at 20 rows), to 16 rows the bucket's block (the best others 0.986-0.999x at 1, 4 and 5 rows, one run).
 LANE = {
     (12, 0, 34): {
         (16480, 2560): ((16, 4, True), (32, 5, True)),          # DeltaNet q/k/v, z, b, a

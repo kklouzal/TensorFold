@@ -182,10 +182,11 @@ def plan(streams: Sequence[Sequence[int]], device) -> Plan:
     return Plan(dev[:3 * w].view(w, 3), dev[3 * w:], slots, rows)
 
 
-# A chain's value rows a warp (4 warps a program) by chip (major, minor, SMs) where measured, else 8; a row's arithmetic
-# never depends on its warp-mates, so every choice keeps the bits. dev-01 (RTX PRO 2000, sm_120, 34 SMs): 4 ran the
-# Flash Next decode trees ~4 us a launch faster (round A/B, one and four streams); GB10 (sm_121, 48 SMs): 8 ran ~0.3%
-# faster decode (container A/B, five requests).
+# A chain's value rows a warp (4 warps a program) by chip (major, minor, SMs) where measured, else 8 (the shape before
+# the table); a row's arithmetic never depends on its warp-mates, so every choice keeps the bits. dev-01 (RTX PRO 2000,
+# sm_120, 34 SMs): 4 ran the Flash Next decode trees ~4 us a launch faster at one stream (verify medians, two
+# interleaved passes) and showed no regression at four (round A/B, three pairs); GB10 (sm_121, 48 SMs): 8 decoded 0.1
+# to 0.5% faster in each of five one-stream requests (container A/B, two starts each).
 CHAIN_ROWS = {(12, 0, 34): 4}
 
 

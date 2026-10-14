@@ -56,7 +56,9 @@ def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
         gdn._ext().replay(table, 1, 1, rows.cpu(), counts, 2, 6, 128, True, False, False)
     with pytest.raises(RuntimeError):
         gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 2**63 - 1, None, None, 8, False)
-    for rows_a_warp in (0, 2, 6, 16):              # chains take 4 or 8 value rows a warp
+    for rows_a_warp in (4, 8):                     # chains take 4 or 8 value rows a warp...
+        gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, rows_a_warp, False)
+    for rows_a_warp in (0, 2, 6, 16):              # ...and no other count
         with pytest.raises(RuntimeError):
             gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, rows_a_warp, False)
     torch.cuda.synchronize()

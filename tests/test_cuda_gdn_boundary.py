@@ -235,6 +235,26 @@ class GDNBoundary(unittest.TestCase):
         with self.assertRaises(ValueError):
             ns['replay_table'](*args, in_place=True)
 
+    def test_tree_passes_its_chips_chain_rows_and_unmeasured_chips_keep_eight(self):
+        """``tree`` hands the extension ``CHAIN_ROWS`` for its device's chip: 4 value rows a warp on dev-01, and on
+        every chip outside the table (GB10 among them) the 8 chains ran before it; the table names only 4 or 8."""
+
+        nodes = [node for node in ast.parse(SOURCE.read_text()).body
+                 if isinstance(node, ast.FunctionDef) and node.name in {'tree', '_record_pointers'}
+                 or isinstance(node, ast.Assign) and [getattr(t, 'id', None) for t in node.targets] == ['CHAIN_ROWS']]
+        calls = []
+        chips = {0: (12, 0, 34), 1: (12, 1, 48), 2: (12, 0, 36), 3: (12, 0, 188), 4: (9, 0, 132), 5: (8, 9, 128)}
+        ns = {'torch': SimpleNamespace(Tensor=Tensor), 'pdl': SimpleNamespace(ON=True), 'chip': chips.__getitem__,
+              '_ext': lambda: SimpleNamespace(tree=lambda *args: calls.append(args))}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), ns)
+        self.assertEqual(len(nodes), 3)
+        self.assertLessEqual(set(ns['CHAIN_ROWS'].values()), {4, 8})
+        p = SimpleNamespace(entries='entries', starts='starts', slots=0, max_rows=5)
+        for device in chips:
+            q = SimpleNamespace(device=SimpleNamespace(index=device))
+            ns['tree'](q, q, Tensor((5, 6, 8), dtype='bf16'), q, q, p, state=Tensor((6, 8, 128)))
+        self.assertEqual([args[13:] for args in calls], [(4, True)] + [(8, True)] * 5)
+
     def test_forward_paths_reject_bad_input_before_pinned_copy(self):
         nodes = [node for node in ast.parse(FORWARD.read_text()).body if isinstance(node, ast.FunctionDef)
                  and node.name == '_validated_paths']
