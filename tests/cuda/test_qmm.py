@@ -141,10 +141,8 @@ def test_every_lane_block_and_slice_sum_keep_the_bits(n, k, sk, wide):
         for f32, reduce in ((False, True), (True, True), (True, False)):
             if not reduce and sk == 1:
                 continue
-            want = qmm.matmul(x, q, xs, sk=sk, f32=f32, reduce=reduce)
+            want = qmm.matmul(x, q, xs, sk=sk, f32=f32, reduce=reduce).view(torch.int32 if f32 else torch.int16)
             for tile in tiles:
                 for clusters in (True, False):
                     got = qmm.matmul(x, q, xs, sk=sk, f32=f32, reduce=reduce, tile=tile, clusters=clusters)
-                    assert torch.equal(got.view(torch.int32) if got.dtype == torch.float32 else got.view(torch.int16),
-                                       want.view(torch.int32) if want.dtype == torch.float32 else
-                                       want.view(torch.int16)), (m, f32, reduce, tile, clusters)
+                    assert torch.equal(got.view(want.dtype), want), (m, f32, reduce, tile, clusters)
