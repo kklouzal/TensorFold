@@ -17,7 +17,7 @@ B = python3 tools/bench_decode_round.py):
       --metrics gpu__time_duration.sum,dram__bytes.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum \
       -o /runs/ncu-n1/prof $B --contexts 150000 --rounds 0 --profile-rounds 1 --out /runs/ncu-n1/bench.json
 
-Defaults are production's decode settings (GB10 compose: --parallel 4, --mtp-drafts 4, --kv-dtype rotorquant6-norm,
+Defaults are production's decode settings (GB10 compose: --parallel 4, --mtp-drafts 4, --kv-dtype rotorquant8-norm,
 --yarn-factor 4 with a 1,048,576-token window, --decode-share 0.5, --ple-on-ssd with 32 native read threads,
 TENSORFOLD_PREFILL_ROWS 2048, captured rounds within TENSORFOLD_MULTI_GRAPH_MIB 512, PDL by chip policy) except:
 greedy sampling, copy drafts off, confidence 0 (every chain runs to --depth, so rows/round = streams x (depth+1)) and
@@ -130,7 +130,7 @@ def _args(argv=None) -> argparse.Namespace:
                    help="MTP chain stop probability (0: every chain runs to --depth; production 0.5)")
     p.add_argument("--accept", default="3",
                    help="rows each window keeps: N (fixed accepted path) or 'model' (the real accept rule)")
-    p.add_argument("--kv-dtype", default="rotorquant6-norm")
+    p.add_argument("--kv-dtype", default="rotorquant8-norm")
     p.add_argument("--graph-mib", type=int, default=512,
                    help="captured-round budget (TENSORFOLD_MULTI_GRAPH_MIB); 0 = eager rounds")
     p.add_argument("--pdl", choices=("chip", "on", "off"), default="chip",
