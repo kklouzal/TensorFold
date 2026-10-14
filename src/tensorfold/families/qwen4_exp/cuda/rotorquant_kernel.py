@@ -466,6 +466,18 @@ def dequant_half_6(low, high, scale, CENTROIDS, M: tl.constexpr):
 
 
 @triton.jit
+def dequant_quarter_8(code, scale, CENTROIDS):
+    """Eight-bit indices ``[M,64]`` of one 128-coordinate group and its scale ``[M]`` -> rotated BF16 ``[M,64]``.
+
+    Centroids load from ``CENTROIDS``, the caller's float32 device copy of ``CENTROIDS_8``: the same constants as
+    ``_centroids``' table, so ``dequant_group_8``'s bits for these coordinates.
+    """
+
+    c = tl.load(CENTROIDS + code.to(tl.int32))
+    return _mul_rn(c, scale.to(tl.float32)[:, None]).to(tl.bfloat16)
+
+
+@triton.jit
 def dequant_group_7(low, middle, high, scale, M: tl.constexpr, W: tl.constexpr):
     """Low4/mid2/high1 planes and FP32 RMS -> rotated BF16 ``[M,W]``.
 

@@ -250,6 +250,16 @@ def test_six_bit_prompt_pass_gather_actual_operand_partials(pair, length, rows, 
     _native64_actual_operand_partials(pair, length, rows, sparse, prompt=True)
 
 
+EIGHT_BIT_ROTOR_PAIRS = [p for p in PAIRS if p.key.codec and p.value.codec and p.key.bits == p.value.bits == 8]
+
+
+@pytest.mark.parametrize("pair", EIGHT_BIT_ROTOR_PAIRS, ids=pair_id)
+@pytest.mark.parametrize("length,rows,sparse", SHAPES)
+def test_eight_bit_prompt_pass_quarters_actual_operand_partials(pair, length, rows, sparse):
+    """attention(prompt=True) with eight-bit RotorQuant K and V runs the quarter path: the same oracle bits."""
+    _native64_actual_operand_partials(pair, length, rows, sparse, prompt=True)
+
+
 def _native64_actual_operand_partials(pair, length, rows, sparse, *, prompt):
     capacity = max(length + 4, 640 if sparse else length)
     projected = make_projection(capacity)

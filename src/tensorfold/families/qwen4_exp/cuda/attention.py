@@ -11,14 +11,14 @@ from tensorfold.cuda.pdl import wait as pdl_wait
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
 from .image_rows import rope_axis
-from .kv_pair import load_half6, load_side, resolve_pair, validate_storage
+from .kv_pair import load_quarter, load_side, resolve_pair, validate_storage
 
 from .kvquant import dequant_group_4, dequant_group_8, h32
 from .rotorquant_kernel import dequant_group_3 as rotor_dequant_3, dequant_group_4 as rotor_dequant_4
 from .rotorquant_kernel import dequant_group_6 as rotor_dequant_6
 from .rotorquant_kernel import dequant_group_7 as rotor_dequant_7, dequant_group_8 as rotor_dequant_8
 from .rotorquant_kernel import rotate as rotor_rotate
-from .rotorquant_ref import CENTROIDS_6
+from .rotorquant_ref import CENTROIDS_6, CENTROIDS_8
 
 CHUNK = 512
 TILE = 64
@@ -193,13 +193,15 @@ def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTR
                 ROTOR_LOOKUP: tl.constexpr = False, GATHER6: tl.constexpr = False):
     """Canonical 64-key arithmetic with each side decoded in its own stored basis.
 
-    Six-bit K and V at head width 256 outside prompt passes decode through ``_chunk_six`` (``CENTROIDS``: the
-    scratch's centroid table), the same bits."""
+    RotorQuant K and V of six or eight bits at head width 256 decode through ``_chunk_quarters`` (``CENTROIDS``:
+    the scratch's centroid tables), the same bits, except six-bit sides in prompt passes (``GATHER6``)."""
 
-    if K_BITS == 6 and V_BITS == 6 and D == 256 and not GATHER6:
+    K_Q: tl.constexpr = K_CODEC != 0 and (K_BITS == 6 or K_BITS == 8)
+    V_Q: tl.constexpr = V_CODEC != 0 and (V_BITS == 6 or V_BITS == 8)
+    if K_Q and V_Q and D == 256 and not GATHER6:
         tl.static_assert(not ROTOR_LOOKUP)      # the lookup is seven-bit only, as ``load_side`` asserts
-        _chunk_six(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS, H, HK, D, G, CH, NCH, SCALE,
-                   IDW, QSA)
+        _chunk_quarters(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS, H, HK, D, G, CH, NCH,
+                        SCALE, IDW, QSA, K_BITS, V_BITS)
     else:
         _chunk_tiles(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW,
                      QSA, K_BITS, K_CODEC, V_BITS, V_CODEC, ROTOR_LOOKUP, GATHER6)
@@ -240,25 +242,30 @@ def _chunk_tiles(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
 
 
 @triton.jit
-def _six_pv(o, p, VC, row, valid, scale, J: tl.constexpr, D: tl.constexpr, CENTROIDS, alpha):
+def _quarter_pv(o, p, VC, row, valid, scale, J: tl.constexpr, D: tl.constexpr, BITS: tl.constexpr, CENTROIDS,
+                alpha):
     """``_tile``'s value update for output columns [64 J, 64 J + 64): the same per-column arithmetic."""
-    return o * alpha[:, None] + tl.dot(p, load_half6(VC, row, valid, scale, J, D, CENTROIDS))
+    return o * alpha[:, None] + tl.dot(p, load_quarter(VC, row, valid, scale, J, D, BITS, CENTROIDS))
 
 
 @triton.jit
-def _chunk_six(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS,
-               H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
-               NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr):
-    """``_chunk_tiles`` for six-bit K and V at D 256, decoded in 64-column quarters with table centroids.
+def _chunk_quarters(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS,
+                    H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
+                    NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr,
+                    K_BITS: tl.constexpr, V_BITS: tl.constexpr):
+    """``_chunk_tiles`` for six- or eight-bit RotorQuant K and V at D 256, decoded in 64-column quarters with
+    table centroids (``CENTROIDS``: six-bit table at 0, eight-bit at 64).
 
     Bits: the scores accumulate the four quarters' MMAs into one accumulator in column order, the same MMA
     sequence (and FP32 accumulation order) as the whole-tile dot from zero; the value update is per output column,
-    so each quarter's dot is the whole tile's columns; decoding is elementwise (``load_half6``). The softmax runs on
-    the same [16, 64] score tile and layout. Quarters keep each tile's decoded operands in registers (the whole
-    [64, 256] tiles spill) and the table replaces the 63-select centroid chain.
+    so each quarter's dot is the whole tile's columns; decoding is elementwise (``load_quarter``). The softmax runs
+    on the same [16, 64] score tile and layout. Quarters keep each tile's decoded operands in registers (whole
+    [64, 256] tiles spill) and the tables replace the six-bit 63-select chain and the eight-bit register gather.
     """
 
     tl.static_assert(D == 256)
+    KT = CENTROIDS + (64 if K_BITS == 8 else 0)
+    VT = CENTROIDS + (64 if V_BITS == 8 else 0)
     start = c * CH
     if start < n:
         gg = tl.arange(0, 16)
@@ -286,10 +293,10 @@ def _chunk_six(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTRO
             ks0 = tl.load(KSC + row * (D // 128), mask=valid, other=0.0)
             ks1 = tl.load(KSC + row * (D // 128) + 1, mask=valid, other=0.0)
             acc = tl.zeros((16, 64), tl.float32)
-            acc = tl.dot(q0, tl.trans(load_half6(KC, row, valid, ks0, 0, D, CENTROIDS)), acc)
-            acc = tl.dot(q1, tl.trans(load_half6(KC, row, valid, ks0, 1, D, CENTROIDS)), acc)
-            acc = tl.dot(q2, tl.trans(load_half6(KC, row, valid, ks1, 2, D, CENTROIDS)), acc)
-            acc = tl.dot(q3, tl.trans(load_half6(KC, row, valid, ks1, 3, D, CENTROIDS)), acc)
+            acc = tl.dot(q0, tl.trans(load_quarter(KC, row, valid, ks0, 0, D, K_BITS, KT)), acc)
+            acc = tl.dot(q1, tl.trans(load_quarter(KC, row, valid, ks0, 1, D, K_BITS, KT)), acc)
+            acc = tl.dot(q2, tl.trans(load_quarter(KC, row, valid, ks1, 2, D, K_BITS, KT)), acc)
+            acc = tl.dot(q3, tl.trans(load_quarter(KC, row, valid, ks1, 3, D, K_BITS, KT)), acc)
             scores = tl.where(valid[None, :], acc * SCALE, float("-inf"))
             tile_m = tl.max(scores, 1)
             active = tile_m != float("-inf")
@@ -299,10 +306,10 @@ def _chunk_six(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTRO
             pb = p.to(tl.bfloat16)
             vs0 = tl.load(VSC + row * (D // 128), mask=valid, other=0.0)
             vs1 = tl.load(VSC + row * (D // 128) + 1, mask=valid, other=0.0)
-            o0 = _six_pv(o0, pb, VC, row, valid, vs0, 0, D, CENTROIDS, alpha)
-            o1 = _six_pv(o1, pb, VC, row, valid, vs0, 1, D, CENTROIDS, alpha)
-            o2 = _six_pv(o2, pb, VC, row, valid, vs1, 2, D, CENTROIDS, alpha)
-            o3 = _six_pv(o3, pb, VC, row, valid, vs1, 3, D, CENTROIDS, alpha)
+            o0 = _quarter_pv(o0, pb, VC, row, valid, vs0, 0, D, V_BITS, VT, alpha)
+            o1 = _quarter_pv(o1, pb, VC, row, valid, vs0, 1, D, V_BITS, VT, alpha)
+            o2 = _quarter_pv(o2, pb, VC, row, valid, vs1, 2, D, V_BITS, VT, alpha)
+            o3 = _quarter_pv(o3, pb, VC, row, valid, vs1, 3, D, V_BITS, VT, alpha)
             denominator = denominator * alpha + tl.sum(p, 1)
             m = next_m
         base = (r * NCH + c) * H + hk * G + gg
@@ -388,8 +395,8 @@ class AttnScratch:
         self.hist = torch.zeros((multi, 4, 256), dtype=torch.int32, device=device) if self.qsa else None
         self.suf = torch.zeros((multi, self.cw, 257), dtype=torch.int32, device=device) if self.qsa else None
         self.sms = torch.cuda.get_device_properties(device).multi_processor_count if self.qsa else 0
-        # six-bit decode chunks' centroid table (``_chunk_six``): CENTROIDS_6 as float32, the constants' exact values
-        self.centroids = torch.tensor(CENTROIDS_6, dtype=torch.float32, device=device)
+        # ``_chunk_quarters``' centroid tables, CENTROIDS_6 then CENTROIDS_8 as float32 (the constants' exact values)
+        self.centroids = torch.tensor(CENTROIDS_6 + CENTROIDS_8, dtype=torch.float32, device=device)
 
 
 def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch,

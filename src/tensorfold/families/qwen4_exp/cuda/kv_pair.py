@@ -231,11 +231,18 @@ def load_side(DATA, SCALE, ki, valid, hk, HK: tl.constexpr, D: tl.constexpr, M: 
 
 
 @triton.jit
-def load_half6(DATA, row, valid, scale, J: tl.constexpr, D: tl.constexpr, CENTROIDS):
-    """Coordinates ``[64 J, 64 J + 64)`` of six-bit RotorQuant rows ``row`` (``key * HK + head``) in the stored basis:
-    ``load_side``'s bits for those columns. ``scale`` ``[M]`` is group ``J // 2``'s; invalid rows read nothing."""
+def load_quarter(DATA, row, valid, scale, J: tl.constexpr, D: tl.constexpr, BITS: tl.constexpr, CENTROIDS):
+    """Coordinates ``[64 J, 64 J + 64)`` of six- or eight-bit RotorQuant rows ``row`` (``key * HK + head``) in the
+    stored basis: ``load_side``'s bits for those columns. ``scale`` ``[M]`` is group ``J // 2``'s, ``CENTROIDS`` that
+    width's float32 table; invalid rows read nothing."""
 
-    base = row[:, None] * (D * 3 // 4) + (J // 2) * 96
-    low = tl.load(DATA + base + (J % 2) * 32 + tl.arange(0, 32)[None, :], mask=valid[:, None], other=0)
-    high = tl.load(DATA + base + 64 + (J % 2) * 16 + tl.arange(0, 16)[None, :], mask=valid[:, None], other=0)
-    return canonical_bf16_operand(rotor.dequant_half_6(low, high, scale, CENTROIDS, M=row.shape[0]))
+    if BITS == 8:
+        code = tl.load(DATA + row[:, None] * D + J * 64 + tl.arange(0, 64)[None, :], mask=valid[:, None], other=0)
+        out = rotor.dequant_quarter_8(code, scale, CENTROIDS)
+    else:
+        tl.static_assert(BITS == 6)
+        base = row[:, None] * (D * 3 // 4) + (J // 2) * 96
+        low = tl.load(DATA + base + (J % 2) * 32 + tl.arange(0, 32)[None, :], mask=valid[:, None], other=0)
+        high = tl.load(DATA + base + 64 + (J % 2) * 16 + tl.arange(0, 16)[None, :], mask=valid[:, None], other=0)
+        out = rotor.dequant_half_6(low, high, scale, CENTROIDS, M=row.shape[0])
+    return canonical_bf16_operand(out)

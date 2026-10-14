@@ -192,7 +192,7 @@ full dependencies. Kernels compiled or launched without PDL keep their original 
 the lane matmul's template flag); the other extension kernels execute the two instructions as no-ops.
 `tests/test_pdl_kernel_contract.py` checks the wait-first rule over the converted sources.
 
-## Flash Next block selection and six-bit centroid decoding
+## Flash Next block selection and RotorQuant centroid decoding
 
 A sparse-attention row keeps its `TOP` best-scoring complete blocks, in block order, ties to the lower block id,
 followed by its unfinished tail. `attention._launch_select` chooses the kernel that lists them: `_select` while a
@@ -208,14 +208,16 @@ the whole buffers with `_select_tiles`, `_select` and an independent sort (`test
 
 Prompt passes (`attention(prompt=True)`, the forward's prompt branch) decode six-bit RotorQuant sides through
 `rotorquant_kernel._centroids_lookup`, a register gather of the same canonical constants, so every element has
-the selection chain's bits. Decode chunks with six-bit K and V at head width 256 (`attention._chunk_six`, both
-`_chunks` and `_chunks_multi`) decode 64-column quarters (`kv_pair.load_half6`) whose centroids load from the
-attention scratch's float32 `CENTROIDS_6` table (`rotorquant_kernel.dequant_half_6`; `geometry.CENTROID_TABLE_BYTES`
-in the memory plan): the four quarters' score MMAs accumulate in column order into one accumulator (the whole-tile
-dot's MMA sequence), the value update is per output column and the softmax runs on the same score tile, so the
-partials keep the whole-tile bits. Other pairs' decode and the encoders keep the 63-selection chain
-(a register gather in the sparse decode kernels spills its table and was slower on GB10, and an encoder's FP32
-energy sum would change order). The folded six-bit selection hard-hung GB10 and is not used; re-qualify on GB10
-before changing six-bit kernel code. `tests/cuda/test_flashnext_kv_pairs.py` checks against captured-operand
-partials the gather for every key and value format pair with a six-bit side and the quarter path (through
-`_chunks`) for every pair of six-bit sides.
+the selection chain's bits. Every other chunk whose K and V are both six- or eight-bit RotorQuant at head width
+256 (`attention._chunk_quarters`, both `_chunks` and `_chunks_multi`) decodes 64-column quarters
+(`kv_pair.load_quarter`) whose centroids load from the attention scratch's float32 tables, `CENTROIDS_6` then
+`CENTROIDS_8` (`rotorquant_kernel.dequant_half_6` / `dequant_quarter_8`; `geometry.CENTROID_TABLE_BYTES` in the
+memory plan): the four quarters' score MMAs accumulate in column order into one accumulator (the whole-tile dot's
+MMA sequence), the value update is per output column and the softmax runs on the same score tile, so the partials
+keep the whole-tile bits of the six-bit selection chain and the eight-bit register gather. Other pairs and the
+encoders keep the whole-tile decode (a six-bit register gather in the sparse decode kernels spills its table and was
+slower on GB10, and an encoder's FP32 energy sum would change order). The folded six-bit selection hard-hung GB10
+and is not used; re-qualify on GB10 before changing six- or eight-bit decode kernel code.
+`tests/cuda/test_flashnext_kv_pairs.py` checks against captured-operand partials the gather for every key and value
+format pair with a six-bit side and the quarter path (through `_chunks`) for every pair of six- or eight-bit
+RotorQuant sides, in decode and prompt passes.
