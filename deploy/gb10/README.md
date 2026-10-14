@@ -40,6 +40,19 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## Decode-bandwidth build deployment, 2026-10-14
+
+The service runs source `52b8f229` (deploy commit `1314ca05`) in image `sha256:6c528ff6…`, container `16c40da8…`,
+with `rotorquant8-norm` K/V and a new kernel cache (`cache-python-0.6-bw-52b8f229`). Six- and eight-bit decode
+attention, the decode hyper-connection read-outs and the DeltaNet chain trees changed; every reply keeps the previous
+build's tokens. On GB10 a staged test container reproduced the previous build's replies at ~30k, ~150k, ~300k and
+~650k, and a container A/B measured decode +5.9% (5.4 to 6.5%) and prompt passes 1.44 to 1.59x. After the swap,
+reference replies at ~30k and ~150k matched, live tokenization, thinking-off, thinking and tool-call checks passed,
+and Harness reports the provider compatible. Every Triton kernel run since the swap has machine code already run on
+this GB10. The replaced container is retained stopped as `qwen38-flash-next-tf-rollback-rq8-20261014`. See
+[the deployment receipt](deployment-bw-20261014.json) and the
+[selection evidence](../../docs/optimization-validation.md).
+
 ## RotorQuant 8 KV restart, 2026-10-14
 
 By owner decision the service stores keys and values as `rotorquant8-norm`

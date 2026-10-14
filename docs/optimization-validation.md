@@ -246,6 +246,22 @@ full-model quality comparison and four-stream throughput at the default
 512 MiB graph budget (which captures every one- to three-stream key and the
 first four-stream keys) remain unmeasured.
 
+Decode-bandwidth build (`52b8f229`, deployed 2026-10-14 with RotorQuant 8-norm K/V, the canonical format): exact
+changes, every one keeping each output's arithmetic, selected on an RTX PRO 2000 Blackwell (sm_120, 34 SMs) with a
+real-shape synthetic four-layer Flash Next round (`tools/bench_decode_round.py`) and qualified on GB10.
+Six- and eight-bit RotorQuant decode chunks decode 64-column quarters with table centroids
+([contract](cuda-kernel-contracts.md)); decode hyper-connection read-outs run the separate kernels with scales and
+biases loaded ahead and the stored padding rows masked; DeltaNet chain trees run 4 value rows a warp. On sm_120
+(600 rounds, interleaved ABBA against `18a7c448`, identical tokens in every run) the round median fell 11.3% at one
+stream and 150k (pairs 0.894, 0.876, 0.892), 9.4% at four streams (0.907, 0.904) and 10.6% at 400k (0.895, 0.894);
+150k prompt fill rose 1.65x. On GB10 (container A/B against the `fd0205a0` image, two starts each, ABCCBA, prompts
+of ~30k to ~300k, 512-token replies) every reply equalled the previous build's tokens, decode rose 5.4 to 6.5%
+(mean +5.9%) and prompt passes 1.44 to 1.59x; the same build reproduced the previous build's reply tokens at
+~30k, ~150k, ~300k and ~650k. On GB10 the trees' 8 x 4 shape ran ~0.3% faster than 4 x 4 in all five requests
+(not yet selected per device). Rejected: one pooled-key tile load per stream in concurrent index scoring (no
+measured gain: a tile's row programs already share it through L2). Full-model quality is unchanged by
+construction (identical tokens); four-stream throughput on GB10 was not measured.
+
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
 workload scope. Actual integrated native/device/model/performance qualification

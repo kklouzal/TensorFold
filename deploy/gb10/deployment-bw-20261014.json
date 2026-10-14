@@ -1,0 +1,49 @@
+{
+ "date": "2026-10-14T22:05:00Z",
+ "status": "deploymentverified",
+ "change": "Decode-bandwidth build: six- and eight-bit RotorQuant decode chunks in 64-column quarters with table centroids, decode hyper-connection read-outs on the separate kernels (scales/biases loaded ahead, padding rows masked), DeltaNet chain trees at 4 value rows a warp; tokens bit-identical to the replaced build (fd0205a0). KV rotorquant8-norm (canonical).",
+ "image": "sha256:6c528ff69846ac125d2e0e2bf621ae8e0e9a4f8337a1b8ccfa1cd62a0277f7c1",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-52b8f229",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "52b8f229cfcbb14224b2ef2ade30a0117d385176",
+ "deploy_commit": "1314ca05 (src/ identical to 52b8f229; merge of python-0.6 deploy records + compose kernel cache)",
+ "version": "0.6.6",
+ "container": "16c40da8b20bddfea9348ae3a15c1c25e0df81ecd9f9df26d20eee4c5a0e5bf8",
+ "cutover": "2026-10-14T21:46:28Z",
+ "healthy_by": "2026-10-14T21:47:04Z",
+ "startup_log": "loaded in 28.4s (warm cache filled by the test container); startup estimate 100.01 GiB within 112.12 GiB; 30.4 GiB free for stream caches, 17.47 GiB for one at the full 1,048,576 window; 44 verify and 22 MTP step graphs captured (504 MiB of 512)",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-bw-52b8f229",
+ "downtime": "production stopped by the owner at 2026-10-14T20:12:35Z for GB10 testing; new build serving from 21:47:04Z",
+ "rollback": {
+  "id": "b2cbc75ebf17a212daf1403d19764e6661e89fca27f9006fc9b426f0ef4e035c",
+  "name": "/qwen38-flash-next-tf-rollback-rq8-20261014",
+  "image": "sha256:da53a063ac505851a60457b9bfdf03fff59c448e30c2c062189649a83042148d",
+  "source": "fd0205a0 (rotorquant8-norm, cache-python-0.6-perf-20261013)",
+  "state": "created/stopped",
+  "creation": "make_rollback.py Engine API clone of the replaced container (145d4b86)"
+ },
+ "changed_configuration": "Image and kernel-cache bind only (cache-python-0.6-bw-52b8f229, was cache-python-0.6-perf-20261013); command and environment equal the rollback clone's.",
+ "selection": "docs/optimization-validation.md (decode-bandwidth build) and ~/.tensorfold-bandwidth-ledger-20261014.md on dev-01",
+ "validation": {
+  "installed_package_equals_git_archive": "493 files sha256-equal to git archive 52b8f229 (image adds _fd_owner.abi3.so; 3 READMEs not installed)",
+  "gb10_staged_exposure": "test container tf-bw1 (memguard 8192, host monitor): startup, graph capture, then replies at ~30k, ~150k, ~300k and ~650k; no stall or kernel fault; 650k admission showed NVRM NV_ERR_NO_MEMORY retry lines with >= ~17.5 GB available",
+  "gb10_exactness": "warmup eeb00020ef59, ~30k explain 2ca5401a342d, ~30k rewrite 7e8d1e3cd78d, ~150k explain 2bda214dbb22, ~150k rewrite b18c4618db18, ~300k explain 223bfbcfe9a2, ~650k explain e60d6bc52f86: all equal the previous build's (recorded from production and its image clone the same day)",
+  "gb10_ab": "container A/B ABCCBA vs fd0205a0 image: decode +5.4..+6.5% (mean +5.9%), prompt passes 1.44..1.59x, identical tokens in all 6 starts",
+  "post_swap_exactness": "warmup, ~30k explain, ~30k rewrite, ~150k explain on :8888 all EXACT (decode 70.75 / 81.47 / 64.71 tok/s)",
+  "gb10_kernel_identity": "every Triton entry run since the cutover has machine code already run on this GB10 (138 from the test container; 3 later _select/_router entries identical to the previous production cache's)",
+  "dev01_sm120": "e2e synthetic hashes ALL 7f47c506ddf9e858 (rq6) and ALL 67a762f3ac80e419 (rq8n/rq8/rq6n) equal the base; GPU suites 693 passed, 2 skipped; KV-pair oracle tests for every six/eight-bit pair 600 passed; multi-graph tests incl. rotorquant8-norm 38 passed; HC decode bit tests and suites 196 passed",
+  "live_tokenize_count": "55",
+  "live_tokenize_metadata": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041; context_length 1048576",
+  "arithmetic_thinking_off_expected391": true,
+  "arithmetic_thinking_low_expected888": true,
+  "tool_call_round_trip": true,
+  "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
+  "full_model_quality": "unchanged by construction (identical tokens)",
+  "four_stream_gb10_throughput": "unmeasured"
+ }
+}
