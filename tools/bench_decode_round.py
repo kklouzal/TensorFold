@@ -14,7 +14,7 @@ B = python3 tools/bench_decode_round.py):
   #     --format csv -o /home/kklouzal/tensorfold-bw/runs/nsys-n1/stats .../nsys-n1/trace.nsys-rep
   # ncu on the profiled rounds' kernels (graph kernel nodes profiled one by one):
   gpu-run.sh ncu-n1 /opt/ncu/ncu --profile-from-start off --graph-profiling node --launch-count 30 \
-      --metrics gpu__time_duration.sum,dram__bytes.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed \
+      --metrics gpu__time_duration.sum,dram__bytes.sum,dram__bytes_op_read.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed \
       -o /runs/ncu-n1/prof $B --contexts 150000 --rounds 0 --profile-rounds 1 --out /runs/ncu-n1/bench.json
 
 Defaults are production's decode settings (GB10 compose: --parallel 4, --mtp-drafts 4, --kv-dtype rotorquant6-norm,
@@ -53,10 +53,15 @@ What is synthetic or not represented:
   embedding server). The bytes each MTP step reads are the same; between the two layers' reads the LM head
   (397 MB) or the draft head (127 MB) streams through the 32 MiB L2, so the sharing cannot turn DRAM reads into
   cache hits. ``--mtp-experts own`` gives it its own table where memory allows (e.g. smaller --experts).
-- Routing: random router rows over random hidden states pick experts near-uniformly: a window of R rows touches
-  about 512 x (1 - (1 - 10/512)^R) routed experts (R = 5: 48.0, 96% of the 50 picks unique; R = 20: 167, 84%),
-  while production's rows share more (~89% unique at n=1, telemetry), so expert bytes per round are slightly
-  over-estimated (~8% at 5 rows). Analytic, not measured here.
+- Routing: random router rows over random hidden states pick experts nearly uniformly, so a window's rows share
+  fewer experts than production's (~89% of the picks unique at n=1, telemetry): expert bytes per round are
+  over-estimated. ``--routing-rounds`` (default 20) records it in every report: untimed eager rounds after the
+  measured ones (the same kernels and bits as the replays) copy each MoE layer's picks and count unique routed
+  experts per verify layer and MTP step. ``--router-skew S`` (default 0: off) scales each routed expert's router
+  row by exp(S z), z ~ N(0, 1), so popular experts win more rows and windows share experts. Measured on dev-01
+  (2026-10-14; unique routed experts / picks in the verify forward, uniform expectation 0.962 at 5 rows, 0.834 at
+  20): S = 0: 0.949 (n=1, 5 rows), 0.806 (n=4, 20 rows); S = 0.3: 0.891, 0.641; S = 0.6: 0.795, 0.473. S = 0.3
+  matches production's n=1 figure; production's n=4 overlap is unmeasured.
 - Acceptance: random weights accept almost no drafts (the real rule keeps 1 row a round). ``--accept N`` (default 3,
   close to production's n=1 mean of ~3.0-3.2 accepted rows a round) keeps exactly N rows of each window (the
   committed path, the DeltaNet rows folded next round and the MTP absorb all have N rows, as in production);
@@ -74,7 +79,15 @@ Measurement: ``--warmup`` rounds, then ``--rounds`` timed rounds: CUDA events ar
 GPU span, host gaps included) and wall time, events around the verify forward and the MTP chain, NVTX ranges per
 round, verify forward ("verify[graph]"/"verify[eager]"), MTP chain and each MTP step; per-round rows, MTP steps,
 graph replays vs eager forwards. ``--profile-rounds K`` runs K more rounds between cudaProfilerStart/Stop for
-``nsys --capture-range cudaProfilerApi`` or ``ncu --profile-from-start off`` (their timings are listed apart).
+``nsys --capture-range cudaProfilerApi`` or ``ncu --profile-from-start off`` (their timings are listed apart); the
+routing rounds come last. ``tokens_sha256`` hashes every stream's tokens up to the end of the measured rounds: equal
+for equal settings on bit-identical builds (cross-run determinism on one build and GPU; checked 2026-10-14).
+Both expert kernel forms run as in production: the verify window's buffers use the experts' prompt-form kernels
+(``moe_prefill=True``), the MTP steps' the decode-form ones.
+
+ncu on sm_120 (GB206): ``dram__bytes_read.sum`` is not available and unknown ``--metrics`` names are dropped
+silently; use ``dram__bytes.sum``, ``dram__bytes_op_read.sum`` / ``dram__bytes_op_write.sum``. ncu 2026.3 writes
+its report as ``.ncu-repz``.
 """
 
 from __future__ import annotations
@@ -130,6 +143,10 @@ def _args(argv=None) -> argparse.Namespace:
     p.add_argument("--draft-vocab", default="default", help="'default' (packaged ids), 'none', or a count")
     p.add_argument("--mtp-experts", choices=("shared", "own"), default="shared",
                    help="the MTP layer's expert table: the last layer's (saves 1.47 GiB; docstring) or its own")
+    p.add_argument("--router-skew", type=float, default=0.0,
+                   help="lognormal sigma of the routed experts' router-row scales (0: off; docstring table)")
+    p.add_argument("--routing-rounds", type=int, default=20,
+                   help="untimed eager rounds after the measured ones that record each MoE layer's routed experts")
     p.add_argument("--nvtx-layers", action="store_true",
                    help="NVTX range per decoder layer (eager forwards only: graph replays carry none)")
     p.add_argument("--seed", type=int, default=1234)
@@ -307,6 +324,77 @@ class Probe:
         return out
 
 
+def _routing(dec, cfg, torch, count: int, log) -> dict:
+    """``count`` more rounds, eager (graphs detached: the same kernels and bits as their replays) and untimed, recording
+    every MoE layer's routed picks (``moe.pick[:R, :top_k]``, copied after each ``forward.moe_block``): unique routed
+    experts per layer of each verify forward and per MTP step (step 0 of a round is the absorb), against the
+    uniform-routing expectation E (1 - (1 - k/E)^R)."""
+
+    from tensorfold.families.qwen4_exp.cuda import forward as fwd
+
+    real = fwd.moe_block
+    seen: list = []
+    E, K = cfg.experts, cfg.top_k
+
+    def moe_block(layer, w, b, R):
+        out = real(layer, w, b, R)
+        kind = "verify" if b is dec.buf else "mtp" if b is dec.mbuf else "other"
+        seen.append((kind, layer.index, R, b.moe.pick[:R, :K].clone()))
+        return out
+
+    graphs, dec.graphs = dec.graphs, None
+    fwd.moe_block = moe_block
+    per_round = []
+    try:
+        for i in range(count):
+            seen.clear()
+            done = dec.round()
+            if done:
+                raise RuntimeError(f"{len(done)} stream(s) ended in routing round {i}")
+            torch.cuda.synchronize()
+            rec = {"verify": [], "mtp": []}
+            for kind, index, R, pick in seen:
+                unique = int(torch.unique(pick).numel())
+                rec.setdefault(kind, []).append([index, R, unique])
+            per_round.append(rec)
+    finally:
+        fwd.moe_block = real
+        dec.graphs = graphs
+
+    def expect(R):
+        return E * (1 - (1 - K / E) ** R)
+
+    def fraction(entries):
+        return [u / (R * K) for _, R, u in entries]
+
+    verify = [e for r in per_round for e in r["verify"]]
+    absorb = [r["mtp"][0] for r in per_round if r["mtp"]]
+    chain = [e for r in per_round for e in r["mtp"][1:]]
+    layers = sorted({e[0] for e in verify})
+    out = {"rounds": count, "experts": E, "top_k": K, "note": "unique routed experts (shared expert excluded); "
+           "fraction = unique / (rows x top_k); uniform = the expectation under uniform independent routing",
+           "verify": {"rows": _summary([e[1] for e in verify]), "unique": _summary([e[2] for e in verify]),
+                      "fraction": _summary(fraction(verify)),
+                      "uniform_fraction": (statistics.fmean(expect(e[1]) / (e[1] * K) for e in verify)
+                                           if verify else None),
+                      "per_layer_unique_mean": {str(li): statistics.fmean(e[2] for e in verify if e[0] == li)
+                                                for li in layers}},
+           "mtp_absorb": {"rows": _summary([e[1] for e in absorb]), "unique": _summary([e[2] for e in absorb]),
+                          "fraction": _summary(fraction(absorb))},
+           "mtp_chain": {"rows": _summary([e[1] for e in chain]), "unique": _summary([e[2] for e in chain]),
+                         "fraction": _summary(fraction(chain))},
+           "samples": per_round}
+    v = out["verify"]
+    if verify:
+        log(f"[bench] routing ({count} eager rounds): verify {v['unique']['mean']:.1f} unique routed experts a layer "
+            f"of {v['rows']['mean']:.1f} rows x {K} ({v['fraction']['mean']:.3f}; uniform "
+            f"{v['uniform_fraction']:.3f}); "
+            f"MTP absorb {out['mtp_absorb']['unique'].get('mean', 0):.1f} of "
+            f"{out['mtp_absorb']['rows'].get('mean', 0):.1f} rows, chain step "
+            f"{out['mtp_chain']['unique'].get('mean', 0):.1f} of {out['mtp_chain']['rows'].get('mean', 0):.1f} rows")
+    return out
+
+
 def main(argv=None) -> int:
     args = _args(argv)
     contexts = [int(x) for x in args.contexts.split(",") if x.strip()]
@@ -399,7 +487,7 @@ def main(argv=None) -> int:
     data_dir = Path(args.data_dir)
     built = synth.build(cfg, rope, seed=args.seed, mtp=mtp, draft_vocab=draft,
                         share_mtp_experts=args.mtp_experts == "shared", data_dir=data_dir if cfg.ple_layers else None,
-                        ple_on_ssd=not args.ple_in_memory, log=log)
+                        ple_on_ssd=not args.ple_in_memory, router_skew=args.router_skew, log=log)
     w = built.w
     mem = {"weights_nbytes": w.nbytes(), "after_weights_allocated": torch.cuda.memory_allocated(),
            "after_weights_free": torch.cuda.mem_get_info()[0]}
@@ -410,6 +498,7 @@ def main(argv=None) -> int:
                        "gdn": [cfg.nk, cfg.nv, cfg.dk, cfg.dv, cfg.conv_kernel], "hc": [cfg.streams, cfg.low],
                        "indexer": [cfg.index_heads, cfg.index_dim, cfg.index_budget, cfg.index_ratio],
                        "mtp": mtp, "draft_rows": draft_rows, "mtp_experts": args.mtp_experts,
+                       "router_skew": args.router_skew,
                        "ngram": ({"rows": cfg.ngram(0).rows, "dims": cfg.ngram(0).dims, "shards": cfg.ngram_shards,
                                   "table": str(built.table_path), "on_ssd": not args.ple_in_memory,
                                   "reader": type(w.layers[cfg.ple_layers[0]].ple.table).__name__}
@@ -556,6 +645,10 @@ def main(argv=None) -> int:
             torch.cuda.synchronize()
             cudart.cudaProfilerStop()
     rounds_s = time.perf_counter() - t0
+    tok = hashlib.sha256(json.dumps([s.out for s in streams]).encode()).hexdigest()
+    report["tokens_sha256"] = tok                       # the measured rounds' tokens (before the routing rounds)
+    report["tokens_out"] = [len(s.out) for s in streams]
+    report["routing"] = _routing(dec, cfg, torch, args.routing_rounds, log) if args.routing_rounds else None
     mem["peak_allocated"] = torch.cuda.max_memory_allocated()
     mem["end_free"] = torch.cuda.mem_get_info()[0]
     mem["process_device_bytes_estimate"] = free0 - mem["end_free"]
@@ -572,9 +665,6 @@ def main(argv=None) -> int:
                         "seconds": round(rounds_s, 2), "summary": stats(timed),
                         "profiled_summary": stats(profiled) if profiled else None,
                         "samples": timed, "warmup_samples": warm, "profiled_samples": profiled}
-    tok = hashlib.sha256(json.dumps([s.out for s in streams]).encode()).hexdigest()
-    report["tokens_sha256"] = tok
-    report["tokens_out"] = [len(s.out) for s in streams]
     report["elapsed_s"] = round(time.perf_counter() - t_start, 1)
     if timed:
         st = report["rounds"]["summary"]

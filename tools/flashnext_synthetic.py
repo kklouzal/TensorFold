@@ -214,12 +214,19 @@ class Rand:
             del gate, upp, dn
         return grouped.Experts(up, down, c.group_size, W, D, 0.0)
 
-    def moe(self, c, experts=None):
+    def moe(self, c, experts=None, *, skew: float = 0.0, skew_seed: int = 0):
+        """``skew`` > 0: each routed expert's router row scaled by exp(skew * z), z ~ N(0, 1) from its own generator
+        (``skew_seed``; the shared expert's gate row and every other array unchanged), so some experts win more
+        rows' top-k than others and a window's rows share experts (``bench_decode_round --router-skew``)."""
+
         from tensorfold.families.qwen4_exp.cuda.weights import MoEW
 
         # router rows (bf16) then the shared expert's gate row (dequantized MLX in the checkpoint: bf16 here)
-        router = (torch.randn((c.experts + 1, c.hidden), generator=self.g, device=DEV) * 0.05).to(torch.bfloat16)
-        return MoEW(router, self.experts(c) if experts is None else experts)
+        router = torch.randn((c.experts + 1, c.hidden), generator=self.g, device=DEV) * 0.05
+        if skew:
+            z = torch.randn((c.experts,), generator=torch.Generator().manual_seed(skew_seed)).to(DEV)
+            router[:c.experts] *= torch.exp(skew * z)[:, None]
+        return MoEW(router.to(torch.bfloat16), self.experts(c) if experts is None else experts)
 
     def attention(self, c):
         from tensorfold.families.qwen4_exp.cuda import qmm
@@ -357,7 +364,7 @@ class Built:
 
 
 def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share_mtp_experts: bool,
-          data_dir: Path | None, ple_on_ssd: bool, log=print) -> Built:
+          data_dir: Path | None, ple_on_ssd: bool, router_skew: float = 0.0, log=print) -> Built:
     """The model ``weights.load`` would return for a checkpoint of these dimensions (one GPU, MLX 4-bit)."""
 
     import time
@@ -389,7 +396,7 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
     for i, kind in enumerate(c.layer_types):
         linear = kind == "linear"
         layer = LayerW(i, linear, r.hc(c, True), r.hc(c, True), r.gdn(c) if linear else None,
-                       None if linear else r.attention(c), r.moe(c))
+                       None if linear else r.attention(c), r.moe(c, skew=router_skew, skew_seed=seed + 7919 * (i + 1)))
         if i in c.ple_layers:
             if data_dir is None:
                 raise ValueError("a PLE layer needs --data-dir for its n-gram table")
@@ -415,7 +422,8 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
     w.draft_head, w.draft_ids = draft_head, draft_ids
     if mtp:
         shared = layers[-1].moe.experts if share_mtp_experts else None
-        mlayer = LayerW(-1, False, r.hc(c, True), r.hc(c, True), None, r.attention(c), r.moe(c, shared))
+        mlayer = LayerW(-1, False, r.hc(c, True), r.hc(c, True), None, r.attention(c),
+                        r.moe(c, shared, skew=router_skew, skew_seed=seed + 7919 * 1000))
         w.mtp = MTPW(r.norm(D), r.norm(c.streams * D), r.q4(D, D), r.q4(D, D), mlayer, r.hc(c, False))
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
