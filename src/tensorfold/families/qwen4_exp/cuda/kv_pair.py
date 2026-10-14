@@ -234,7 +234,7 @@ def load_side(DATA, SCALE, ki, valid, hk, HK: tl.constexpr, D: tl.constexpr, M: 
 def load_quarter(DATA, row, valid, scale, J: tl.constexpr, D: tl.constexpr, BITS: tl.constexpr, CENTROIDS):
     """Coordinates ``[64 J, 64 J + 64)`` of six- or eight-bit RotorQuant rows ``row`` (``key * HK + head``) in the
     stored basis: ``load_side``'s bits for those columns. ``scale`` ``[M]`` is group ``J // 2``'s, ``CENTROIDS`` that
-    width's float32 table; invalid rows read nothing."""
+    width's float32 table; invalid rows load no payload (their code 0 is an in-range table index)."""
 
     if BITS == 8:
         code = tl.load(DATA + row[:, None] * D + J * 64 + tl.arange(0, 64)[None, :], mask=valid[:, None], other=0)

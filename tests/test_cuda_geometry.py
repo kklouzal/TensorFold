@@ -224,6 +224,19 @@ def test_qsa_select_scratch_is_the_planned_bytes(monkeypatch, allocations, capac
     assert bytes_in([scratch.hist, scratch.suf]) == geometry.qsa_select_bytes(rows, scratch.nb)
 
 
+@pytest.mark.torch
+def test_centroid_tables_are_the_planned_bytes(monkeypatch, allocations):
+    """Each Flash Next attention scratch's centroid tables (``AttnScratch.centroids``: 64 six-bit then 256 eight-bit
+    float32 centroids) take ``CENTROID_TABLE_BYTES``: their bytes in the caching allocator's 512-byte blocks."""
+
+    _, fake = allocations
+    mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.attention")
+    monkeypatch.setattr(mod, "torch", fake)
+    scratch = mod.AttnScratch(1, 8, 64, 4096, "cpu")
+    assert scratch.centroids.shape == (64 + 256,) and scratch.centroids.dtype == fake.float32
+    assert geometry.CENTROID_TABLE_BYTES == -(-bytes_in([scratch.centroids]) // 512) * 512
+
+
 def test_mla_latent_estimate_grows_by_the_cache_and_counts_one_prompt_chunk_scratch(monkeypatch):
     """Per token, the latent estimate grows by the latent and indexer caches of every attention layer (the MTP's
     too) plus one fp32 pool score for each of the (at most 512) prompt-chunk rows scored at once; the MTP head adds its

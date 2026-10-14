@@ -125,17 +125,19 @@ def _equal(a, b, what):
         assert x.shape == y.shape and torch.equal(x, y), (what, i)
 
 
-@pytest.fixture(scope="module")
-def captured():
+@pytest.fixture(scope="module", params=[RQ, "rotorquant8-norm"])
+def captured(request):
     """A captured 3-slot decoder over a model whose QSA engages past 2,048 keys, and prefilled states: one long
-    (2,400 rows: sparse), two short (dense)."""
+    (2,400 rows: sparse), two short (dense); six- and eight-bit caches, whose concurrent attention decodes in
+    quarters (``attention._chunk_quarters`` through ``attn_multi._chunks_multi``)."""
 
+    kv_dtype = request.param
     w = _model(7)
-    dec = MultiDecoder(w, slots=3, capacity=4096, depth=3, confidence=0.3, kv_dtype=RQ, graphs=True)
+    dec = MultiDecoder(w, slots=3, capacity=4096, depth=3, confidence=0.3, kv_dtype=kv_dtype, graphs=True)
     dec.capture_graphs()
     g = torch.Generator().manual_seed(9)
     long = torch.randint(1, V, (2400,), generator=g).tolist()
-    states = _prefilled(w, [long, PROMPTS[0], PROMPTS[1]], RQ, 4096)
+    states = _prefilled(w, [long, PROMPTS[0], PROMPTS[1]], kv_dtype, 4096)
     return w, dec, states
 
 

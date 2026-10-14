@@ -452,10 +452,10 @@ def dequant_group_6(low, high, scale, M: tl.constexpr, W: tl.constexpr, GATHER: 
 @triton.jit
 def dequant_half_6(low, high, scale, CENTROIDS, M: tl.constexpr):
     """One 64-coordinate half of six-bit groups: its 32 low-nibble bytes ``[M,32]``, 16 high-two-bit bytes ``[M,16]``
-    and the group's scale ``[M]`` -> rotated BF16 ``[M,64]``.
+    (unsigned) and the group's scale ``[M]`` -> rotated BF16 ``[M,64]``.
 
-    Centroids load from ``CENTROIDS``, the caller's float32 device copy of ``CENTROIDS_6``: the same constants as
-    ``_centroids``, so ``dequant_group_6``'s bits for these coordinates.
+    Centroids load unmasked (unsigned bytes keep each index in 0..63) from ``CENTROIDS``, the caller's float32 device
+    copy of ``CENTROIDS_6``: the same constants as ``_centroids``, so ``dequant_group_6``'s bits for these coordinates.
     """
 
     low = low.to(tl.int32)
@@ -467,11 +467,11 @@ def dequant_half_6(low, high, scale, CENTROIDS, M: tl.constexpr):
 
 @triton.jit
 def dequant_quarter_8(code, scale, CENTROIDS):
-    """Eight-bit indices ``[M,64]`` of one 128-coordinate group and its scale ``[M]`` -> rotated BF16 ``[M,64]``.
+    """Unsigned byte indices ``[M,64]`` of one 128-coordinate group and its scale ``[M]`` -> rotated BF16 ``[M,64]``.
 
-    Centroids load from ``CENTROIDS``, the caller's float32 device copy of ``CENTROIDS_8``: the same constants as
-    ``_centroids``' table, so ``dequant_group_8``'s bits for these coordinates.
-    """
+    Centroids load unmasked (unsigned bytes keep each index in 0..255) from ``CENTROIDS``, the caller's float32 device
+    copy of ``CENTROIDS_8``: the same constants as ``_centroids``' table, so ``dequant_group_8``'s bits for these
+    coordinates."""
 
     c = tl.load(CENTROIDS + code.to(tl.int32))
     return _mul_rn(c, scale.to(tl.float32)[:, None]).to(tl.bfloat16)
