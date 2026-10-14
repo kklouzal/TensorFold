@@ -14,7 +14,7 @@ B = python3 tools/bench_decode_round.py):
   #     --format csv -o /home/kklouzal/tensorfold-bw/runs/nsys-n1/stats .../nsys-n1/trace.nsys-rep
   # ncu on the profiled rounds' kernels (graph kernel nodes profiled one by one):
   gpu-run.sh ncu-n1 /opt/ncu/ncu --profile-from-start off --graph-profiling node --launch-count 30 \
-      --metrics gpu__time_duration.sum,dram__bytes.sum,dram__bytes_op_read.sum,dram__throughput.avg.pct_of_peak_sustained_elapsed \
+      --metrics gpu__time_duration.sum,dram__bytes.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum \
       -o /runs/ncu-n1/prof $B --contexts 150000 --rounds 0 --profile-rounds 1 --out /runs/ncu-n1/bench.json
 
 Defaults are production's decode settings (GB10 compose: --parallel 4, --mtp-drafts 4, --kv-dtype rotorquant6-norm,
