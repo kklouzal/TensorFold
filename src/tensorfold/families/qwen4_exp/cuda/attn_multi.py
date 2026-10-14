@@ -110,19 +110,19 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.co
 
 
 @triton.jit
-def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr,
-                 CH: tl.constexpr, NCH: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, RATIO: tl.constexpr,
-                 TOP: tl.constexpr, CODEC: tl.constexpr = 0,
-                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
+def _merge_multi(PO, PM, PL, POSR, OUT, NKR, H: tl.constexpr, D: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr,
+                 QSA: tl.constexpr, BITS: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
+                 CODEC: tl.constexpr = 0, V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0,
+                 PDL: tl.constexpr = False):
     pdl_wait(PDL)
     r = tl.program_id(0)
     n = tl.load(POSR + r) + 1
     if QSA:
         n = tl.where(n // RATIO > TOP, tl.load(NKR + r), n)
     if V_BITS >= 0:
-        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, HK, D, G, CH, NCH, V_BITS, CODEC=V_CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, V_BITS, CODEC=V_CODEC)
     else:
-        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, HK, D, G, CH, NCH, BITS, CODEC=CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS, CODEC=CODEC)
 
 
 class StepTables:
@@ -270,9 +270,9 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
                                       SCALE=scale, IDW=sc.idw, QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top,
                                       CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4, num_stages=1,
                                       PDL=pdl.ON, launch_pdl=pdl.ON)
-    _merge_multi[(rows, hk)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, HK=hk, D=c.head_dim, G=g,
-                             CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
-                             num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
+    _merge_multi[(rows, c.heads)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, D=c.head_dim, CH=CHUNK,
+                                  NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
+                                  num_warps=1, PDL=pdl.ON, launch_pdl=pdl.ON)
     return b.attn_o[:rows]
 
 
