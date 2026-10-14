@@ -1,5 +1,5 @@
 // Prefill form shared by its launches (experts_prefill.cu: items of 64 pairs; experts_window.cu: items of 16):
-// w = bf16(fma(q, s, b)), one fp32 chain over K; chunk-invariant bits, not decode's.
+// w = bf16(fma(q, s, b)), one fp32 chain over K; chunk-invariant bits, not decode's (replies prefill again).
 #pragma once
 
 #include <ATen/cuda/CUDAContext.h>
@@ -178,3 +178,6 @@ void launch_prefill(const at::Tensor& x, int x_stride, int slots, const at::Tens
 }
 
 }  // namespace
+
+// The prefill form's kernels (group size, matrices, epilogue); each item tile launches every one
+#define TF_PREFILL_FORMS(X) X(32, 1, 0) X(32, 1, 3) X(32, 2, 2) X(64, 1, 0) X(64, 1, 3) X(64, 1, 1) X(64, 2, 2)

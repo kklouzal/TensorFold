@@ -1,4 +1,4 @@
-// Shared by the grouped-expert kernels (experts.cu: decode form and plan; experts_prefill.cu: prefill form).
+// Shared by the grouped-expert kernels (experts.cu: decode form and plan; experts_prefill.cuh: prefill form).
 #pragma once
 
 #include <cuda_bf16.h>
