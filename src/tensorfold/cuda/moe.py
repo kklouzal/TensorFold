@@ -50,8 +50,8 @@ def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None)
     if out is None:
         out = torch.empty((m, ne), dtype=torch.float32, device=x.device)
     bm = _tile(m)
-    if bm == 16:
-        be, bk, stages = 32, 256, 4
+    if bm == 16:                                 # decode: 16 experts a program, twice the programs of 32
+        be, bk, stages = 16, 256, 3
     else:
         be, bk, stages = 64, 64, 3               # Smaller K tiles keep prefill within shared-memory limits.
     grid = (triton.cdiv(m, bm), triton.cdiv(ne, be))
