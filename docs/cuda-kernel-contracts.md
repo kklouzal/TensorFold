@@ -216,13 +216,29 @@ memory plan): the four quarters' score MMAs accumulate in column order into one 
 MMA sequence as the pinned Triton lowers it), the value update is per output column and the softmax runs on the
 same score tile, so the partials keep the whole-tile bits of the six-bit selection chain and the eight-bit register
 gather. The table loads are unmasked: RotorQuant payloads are unsigned bytes and masked rows load code 0, so every
-index stays inside its table (0..63 six-bit, 64..319 eight-bit). Other pairs and the encoders keep the whole-tile
-decode (a six-bit register gather in the sparse decode kernels spills its table and was slower on GB10, and an
-encoder's FP32 energy sum would change order). The folded six-bit selection hard-hung GB10 and is not used;
-re-qualify on GB10 before changing six- or eight-bit decode kernel code.
+index stays inside its table (0..63 six-bit, 64..319 eight-bit). Other pairs keep the whole-tile decode (a six-bit
+register gather in the sparse decode kernels spills its table and was slower on GB10). The folded six-bit selection
+hard-hung GB10 and is not used; re-qualify on GB10 before changing six- or eight-bit decode or encode kernel code.
 `tests/cuda/test_flashnext_kv_pairs.py` checks against captured-operand partials the gather in prompt passes for
 every key and value format pair with a six-bit side, and the quarter path (through `_chunks`) in decode passes for
 every pair of six- or eight-bit RotorQuant sides (an eight-bit pair's prompt pass launches the same kernel; a
 prompt pass with a six-bit side takes the gather). `tests/cuda/test_flashnext_multi_graphs.py` covers
 `_chunks_multi`'s quarters through concurrent verify windows and MTP steps, whose logits, streams and cache rows
 equal the per-stream forward's bit for bit with `rotorquant6-norm` and `rotorquant8-norm` caches.
+
+Eight-bit RotorQuant encoders (`rotorquant_kernel.quant_groups_8`, through `kv_pair.store_side` from
+`glue._prep_row` in `_attn_prep` and `attn_multi._prep_multi`) read the same scratch's tables: the binary-lifting
+thresholds `LIFTING_8` (`AttnScratch.thresholds`, 255 float32; `geometry.THRESHOLD_TABLE_BYTES` in the memory plan)
+and `CENTROIDS_8` at offset 64 of `AttnScratch.centroids` (`attention.codebook` makes both). `_indices_8` makes
+`_indices(x, 8)`'s eight comparisons and steps with each level's boundary loaded instead of selected: level L's 2^L
+cells sit at [2^L - 1, 2^(L + 1) - 1) and the cell is q >> (8 - L), so every load stays within 0..254 for any input,
+NaN included, and every constant is an exact float32: the codes are the selection chain's. The norm8 scale gathers
+its centroids from the loaded table broadcast to a register tile, as `_centroids(q, 8)` gathers from its selected
+table: the FP32 energy sum's order follows that register layout, and a plain indexed load would lay the centroids
+out differently (another summation order can change the stored scale). The other encoders keep their register
+selection chains. `glue.attn_prep` refuses an
+eight-bit RotorQuant side whose tables are missing or differ in shape, dtype, device or contiguity
+(`kv_pair.validate_tables`); the concurrent decoder's `attn_multi.layer` passes its `AttnScratch`'s tables, made at
+construction and never written, without checking them again. `tests/cuda/test_flashnext_rotorquant.py` keeps the
+selecting eight-bit encoder as the oracle whose codes and scales the table encoder equals bit for bit, and checks
+`_indices_8` at every midpoint and its FP32 neighbours against independently expected indices.

@@ -19,7 +19,8 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.families.qwen4_exp.kv_formats import FORMATS, KVPairFormat, get_pair  # noqa: E402
-from tensorfold.families.qwen4_exp.cuda import attention, glue, kv_pair, rotorquant_ref as ref  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda import attention, attn_multi, glue, kv_pair, kvquant  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda import rotorquant_kernel as rotor, rotorquant_ref as ref  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache  # noqa: E402
 from tests.kv_pair_inverse_oracle import inverse_rounding_envelope, native_inverse_rounding_envelope  # noqa: E402
 from tests.kv_pair_native_legacy_oracle import _canonical_legacy_chunk  # noqa: E402
@@ -200,7 +201,7 @@ def make_projection(rows, seed=618):
     return torch.randn((rows, pw), device="cuda", generator=generator).bfloat16()
 
 
-def prep(pair, projection, *, capacity=None, position=0, delta=0):
+def prep(pair, projection, *, capacity=None, position=0, delta=0, tables=CODEBOOK):
     rows = projection.shape[0]
     capacity = rows + position if capacity is None else capacity
     cache = KVCache(capacity, HK, D, "cuda", pair=pair)
@@ -215,8 +216,27 @@ def prep(pair, projection, *, capacity=None, position=0, delta=0):
     glue.attn_prep(projection, pos, scale, scale, index_scale, inv, q, cache.k, cache.v, iq, index,
                    1e-6, q_heads=H, kv_heads=HK, head_dim=D, index_heads=1, index_dim=128,
                    ks=cache.ks, vs=cache.vs, delta=rotary, status=status, **traits(pair),
-                   centroids=CODEBOOK[0], thresholds=CODEBOOK[1])
+                   centroids=tables[0], thresholds=tables[1])
     return q, iq, index, cache, status
+
+
+@pytest.mark.parametrize("key,value", [("rotorquant8", "bf16"), ("bf16", "rotorquant8-norm"),
+                                       ("int8", "rotorquant8"), ("rotorquant8-norm", "rotorquant8-norm")])
+def test_eight_bit_rotor_prep_refuses_tables_other_than_the_scratch_codebook(key, value):
+    """An eight-bit RotorQuant side's encoder loads its lifting thresholds and centroids unmasked from the attention
+    scratch's float32 tables (``attention.codebook``), so ``attn_prep`` refuses missing, short, mistyped, strided or
+    other-device tables before any launch: on the key side, the value side (beside a native eight-bit key) or both."""
+    named = {format.name: format for format in FORMATS}
+    pair = KVPairFormat(named[key], named[value])
+    centroids, thresholds = CODEBOOK
+    strided = torch.zeros(2 * 320, device="cuda")[::2], torch.zeros(2 * 255, device="cuda")[::2]
+    foreign = ((None, thresholds), (centroids, None), (centroids[:-1], thresholds), (centroids, thresholds[:-1]),
+               (centroids.double(), thresholds), (centroids, thresholds.double()), (strided[0], thresholds),
+               (centroids, strided[1]), (centroids.cpu(), thresholds), (centroids, thresholds.cpu()))
+    projection = make_projection(1)
+    for tables in foreign:
+        with pytest.raises(ValueError, match="centroid and threshold tables"):
+            prep(pair, projection, tables=tables)
 
 
 @pytest.mark.parametrize("pair", PAIRS, ids=pair_id)
@@ -335,6 +355,76 @@ def assert_bf16_inverse_envelope(pair, raw, actual):
 
 
 
+
+
+@triton.jit
+def _merge_tile16(PO, PM, PL, N, OUT, H_: tl.constexpr, D_: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
+                  NCH: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr):
+    """Oracle: the merge before 2026-10-14 (``attention._merge_row`` at 59bb1c51), a KV head's query heads as one
+    16-row tile on four warps, the value side's inverse rotation over the whole tile; row r reads N[r] keys."""
+    row, kv_head = tl.program_id(0), tl.program_id(1)
+    n = tl.load(N + row)
+    g, d = tl.arange(0, 16), tl.arange(0, D_)
+    head = kv_head * G + g
+    maximum = tl.full((16,), float("-inf"), tl.float32)
+    denominator = tl.zeros((16,), tl.float32)
+    numerator = tl.zeros((16, D_), tl.float32)
+    for chunk in range(0, tl.cdiv(n, CH)):
+        address = (row * NCH + chunk) * H_ + head
+        m = tl.load(PM + address, mask=g < G, other=float("-inf"))
+        weight = tl.load(PL + address, mask=g < G, other=0.)
+        o = tl.load(PO + address[:, None] * D_ + d[None, :], mask=g[:, None] < G, other=0.)
+        active = weight > 0.
+        next_max = tl.where(active, tl.maximum(maximum, m), maximum)
+        a = tl.where(active, tl.where(maximum == float("-inf"), 0., tl.exp(maximum - next_max)), 1.)
+        b = tl.where(active, tl.exp(m - next_max), 0.)
+        numerator = numerator * a[:, None] + o * b[:, None]
+        denominator = denominator * a + weight * b
+        maximum = next_max
+    result = numerator / denominator[:, None]
+    if CODEC:
+        result = rotor.rotate(result, M=16, W=D_, CODEC=CODEC, INVERSE=True)
+    elif BITS:
+        result = tl.reshape(kvquant.h32(tl.reshape(result, (16 * D_ // 32, 32)), M=16 * D_ // 32), (16, D_))
+    tl.store(OUT + (row * H_ + head[:, None]) * D_ + d[None, :], result.to(tl.bfloat16), mask=g[:, None] < G)
+
+
+@pytest.mark.parametrize("format", FORMATS, ids=lambda f: f.name)
+def test_merges_one_query_head_a_program_keep_the_kv_head_tile_bits(format):
+    """``attention._merge`` and ``attn_multi._merge_multi`` take one query head a program on one warp. The merge and
+    every value side's inverse rotation are per head and per element, so each output equals the 16-head tile's
+    (``_merge_tile16``) bit for bit: rows dense and sparse, inactive chunks, -inf maxima, partials over many binades."""
+    rows, nch, ratio, top = 5, 5, 4, 512
+    bits = 0 if format.bits == 16 else format.bits
+    generator = torch.Generator(device="cuda").manual_seed(70 + FORMATS.index(format))
+    po = torch.randn((rows, nch, H, D), generator=generator, device="cuda")
+    po[:, :, ::7] *= torch.exp2(torch.randint(-40, 20, po[:, :, ::7].shape, generator=generator, device="cuda").float())
+    pm = torch.randn((rows, nch, H), generator=generator, device="cuda") * 30
+    pl = torch.rand((rows, nch, H), generator=generator, device="cuda") * 50
+    pl[torch.rand((rows, nch, H), generator=generator, device="cuda") < 0.2] = 0.
+    pm[:, 0, ::5], pl[:, 0, ::5] = float("-inf"), 0.
+    pl[:, 1] += 1.                                       # every head merges at least one active chunk
+    nk = torch.tensor([2048 + 3 - row % 4 for row in range(rows)], dtype=torch.int32, device="cuda")
+    sparse = torch.tensor([row % 2 for row in range(rows)], dtype=torch.int32, device="cuda")
+    pos0 = torch.tensor([1500], dtype=torch.int32, device="cuda")
+    posr = torch.tensor([150000 + row if row % 2 else 1500 + 300 * row for row in range(rows)], dtype=torch.int32,
+                        device="cuda")
+    single_n = torch.where(sparse != 0, nk, pos0 + torch.arange(1, rows + 1, device="cuda", dtype=torch.int32))
+    multi_n = torch.where((posr + 1) // ratio > top, nk, posr + 1)
+    args = dict(BITS=bits, CODEC=0, V_BITS=bits, V_CODEC=format.codec)
+    for name, n in (("merge", single_n), ("merge-multi", multi_n)):
+        got = torch.full((rows, H, D), float("nan"), dtype=torch.bfloat16, device="cuda")
+        if name == "merge":
+            attention._merge[(rows, H)](po, pm, pl, pos0, got, nk, sparse, H=H, D=D, CH=attention.CHUNK, NCH=nch,
+                                        QSA=True, **args, num_warps=1)
+        else:
+            attn_multi._merge_multi[(rows, H)](po, pm, pl, posr, got, nk, H=H, D=D, CH=attention.CHUNK, NCH=nch,
+                                               QSA=True, RATIO=ratio, TOP=top, **args, num_warps=1)
+        want = torch.full_like(got, float("nan"))
+        _merge_tile16[(rows, HK)](po, pm, pl, n, want, H, D, H // HK, attention.CHUNK, nch, bits, format.codec,
+                                  num_warps=4)
+        assert torch.isfinite(want).all()
+        exact(name, KVPairFormat(format, format), got, want, po=po, pm=pm, pl=pl)
 
 
 @triton.jit
