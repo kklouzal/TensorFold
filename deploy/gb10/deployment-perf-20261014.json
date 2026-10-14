@@ -1,0 +1,52 @@
+{
+ "date": "2026-10-14T01:15:00Z",
+ "status": "deploymentverified",
+ "change": "Flash Next decode/prefill performance build selected by the 2026-10-13 GB10 A/B: one-launch and multi-CTA sparse-attention block select, static round tables with captured CUDA graphs (TENSORFOLD_MULTI_GRAPH_MIB, default 512), one host wait a step (codec status words in the sampling readback), late n-gram reads, programmatic dependent launch of the decode kernels on GB10, RotorQuant 6 prompt-pass register gather. Benchmark switches, the round profile and draft telemetry removed; tokens bit-identical to the replaced build",
+ "image": "sha256:da53a063ac505851a60457b9bfdf03fff59c448e30c2c062189649a83042148d",
+ "image_tags": [
+  "tensorfold-python-integration:arm64-runtime-fd0205a0",
+  "tensorfold-gb10-fork:local"
+ ],
+ "runtime_source": "fd0205a0eb7959ebd71cfa83da56c53c4a17d09e",
+ "version": "0.6.6",
+ "container": "86d986371bdc7cdafa06b8036010ed1725405930bcf7fb4a4dfec974a3d5e9c3",
+ "cutover": "2026-10-14T00:53:11Z",
+ "started_at": "2026-10-14T00:53:11.426496448Z",
+ "healthy_after_seconds": 197,
+ "startup_log": "loaded in 199.8s; CUDA extensions built into the new cache; startup estimate 96.76 GiB within 112.31 GiB; 31.0 GiB free for stream caches, 14.22 GiB for one at the full 1,048,576 window; 61 verify and 30 MTP step graphs captured (504 MiB of 512, 32.1s); prompt kernels warmed in 143.4s; KV K=V=rotorquant6-norm",
+ "endpoint": "http://192.168.1.50:8888/v1",
+ "restart_count": 0,
+ "OOMKilled": false,
+ "cache": "/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-perf-20261013",
+ "rollback": {
+  "id": "6f62e9b5d56b93da870ec3988fcff34f91de100b942f17d1726acb4388c8b127",
+  "name": "/qwen38-flash-next-tf-rollback-perf-20261013",
+  "image": "sha256:ca62f8944734e5526b099a4cd1801d58a043af372e32196a01f747276f136e74",
+  "source": "cadcae5c (rotorquant6-norm, cache-python-0.6-audit-20261013)",
+  "state": "created/stopped",
+  "creation": "Engine API clone of the replaced container's Config/HostConfig; Compose labels removed, image pinned by ID, original container ID recorded in a label"
+ },
+ "changed_configuration": "Image and kernel-cache bind (cache-python-0.6-perf-20261013, was cache-python-0.6-audit-20261013) only. Command, entrypoint, environment, health check, limits and ulimits equal the rollback clone's (environment and ulimits compared as sets); TENSORFOLD_MULTI_GRAPH_MIB is unset (default 512 MiB) and TENSORFOLD_MEMORY_RESERVE_GIB stays 6.",
+ "selection": "docs/optimization-validation.md (GB10 A/B of 2026-10-13: kept stages, rejected lean sampling packets, cost-aware draft rule and session suffix drafter)",
+ "validation": {
+  "kernel_sources_equal_ab_image": "every @triton.jit function (222) and CUDA/C++ source (56) byte-identical to d1416db0, the A/B-qualified kernel set",
+  "installed_package_equals_git_archive": "493 files sha256-equal to git archive fd0205a0 (image adds _fd_owner.abi3.so; READMEs not installed)",
+  "dev01_sm120_synthetic_cuda": "894 passed, 5 failed (test_prefill_attention::test_cuda_prompt_attention_has_the_triton_bits, the same 5 cases fail on the replaced source cadcae5c), 2 skipped",
+  "dev01_cpu": "targeted 621 passed, 2 known environment failures; full CPU suite failure set identical to d1416db0's",
+  "dev01_synthetic_rotorquant6_hash": "ALL 7f47c506ddf9e858 (unchanged)",
+  "pre_swap_test_container": "same configuration on port 8890 with the old cache: gate request token_sha 8dae761b8840 (equal to the A/B builds); warmup, ~30k explain/rewrite and ~150k explain/rewrite replies equal the reference token hashes; a cached four-stream group (both ~30k and ~150k prompts) returned each stream's one-stream tokens",
+  "gb10_kernel_identity": "all 133 Triton entries compiled by the test container and all 115 in the new production cache have machine code (SASS) already run on the GB10 (none new)",
+  "post_swap_stage_exact": "warmup eeb00020ef59, ~30k explain 856e35032e4c, ~30k rewrite 877767454c98, ~150k explain 20ace7564902, ~150k rewrite 0d8c70aadd05: all equal the reference",
+  "live_tokenize_count": "55",
+  "live_tokenize_metadata": "chat_template_sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041; reasoning_efforts low,medium,xhigh; context_length 1048576",
+  "arithmetic_thinking_off_expected391": true,
+  "arithmetic_thinking_low_expected888": true,
+  "tool_call_round_trip": true,
+  "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
+  "harness_thinking_profile": "unchanged discovery metadata; Harness keeps its native-metadata off,low,medium,xhigh profile (no Harness restart)",
+  "host_memory": "lowest MemAvailable during verification 29.9 GB; NVRM NV_ERR_NO_MEMORY x3 at 2026-10-14T00:45:34Z in the pre-swap container (~150k admission) with ~32 GB available, none since cutover",
+  "four_stream_steady_state_at_default_graph_budget": "unmeasured (the A/B captured every key at 1024 MiB; 512 MiB captures every one- to three-stream key and the first four-stream keys, the rest run eagerly; the first four-stream group compiled 11 kernels in its decode)",
+  "full_model_quality": "unrun (tokens equal the replaced build's in every check)",
+  "filled1M_quality_capacity": "unrun"
+ }
+}

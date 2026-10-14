@@ -40,6 +40,33 @@ The live deployment and rollback details are recorded below. Controlled
 baseline/performance comparisons remain separate and unrun. See the
 [source/image-specific qualification](../../docs/optimization-validation.md#python-line-integration-2026-10-11).
 
+## Performance build deployment, 2026-10-14
+
+The service now runs source `fd0205a0eb7959ebd71cfa83da56c53c4a17d09e` in ARM64
+image `sha256:da53a063ac505851a60457b9bfdf03fff59c448e30c2c062189649a83042148d`
+(`tensorfold-gb10-fork:local`), container `86d986371bdc…`, cut over at
+2026-10-14T00:53:11Z. It adds the decode and prompt-pass stages that the
+[2026-10-13 GB10 A/B](../../docs/optimization-validation.md) kept: one-launch
+and multi-CTA sparse-attention select, static round tables with captured CUDA
+graphs, one host wait a step, late n-gram reads, programmatic dependent launch
+and the RotorQuant 6 prompt-pass gather. Its kernel sources equal the A/B
+image's. Only the image and a new kernel-cache bind
+(`cache-python-0.6-perf-20261013`) changed; `TENSORFOLD_MULTI_GRAPH_MIB` keeps
+its 512 MiB default and `TENSORFOLD_MEMORY_RESERVE_GIB` stays 6. Startup
+reported 96.76 GiB within the 112.31 GiB budget, 31.0 GiB for stream caches,
+14.22 GiB for one stream at the full 1,048,576 window, and 61 verify and 30 MTP
+step graphs in 504 MiB. A same-configuration test container and then the
+service returned the reference tokens for warmup, ~30k and ~150k prompts; four
+concurrent streams returned their one-stream tokens. Every Triton kernel they
+compiled has machine code that had already run on this GB10. Live tokenization
+metadata, thinking-off, thinking and tool-call checks passed, and Harness
+reports the provider compatible. Four-stream throughput at the default graph
+budget, full-model quality and filled-window capacity remain unmeasured. The
+replaced container is retained stopped as
+`qwen38-flash-next-tf-rollback-perf-20261013` (image `sha256:ca62f894…`,
+audit cache directory). See
+[the deployment receipt](deployment-perf-20261014.json).
+
 ## Audit build and RotorQuant 6 deployment, 2026-10-13
 
 The service now runs source `cadcae5ce7e729cc4e6eadae44552f9b02dd1985` in ARM64

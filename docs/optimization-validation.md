@@ -237,9 +237,14 @@ synthetic-model CUDA suites pass on an RTX PRO 2000 Blackwell (sm_120, 894
 tests: each stream's tokens equal its solo run, and the static tables and graph
 replays equal the per-stream forward bit for bit) except five prompt-attention
 bit tests that fail identically on the production source, and a synthetic
-two-stream RotorQuant 6 decode hashes its tokens and caches as before. Its own
-installed-image GB10 qualification and full-model quality comparison remain
-pending.
+two-stream RotorQuant 6 decode hashes its tokens and caches as before. Its
+installed image (`fd0205a0`) qualified on GB10 and serves there since
+2026-10-14 ([deployment](../deploy/gb10/README.md#performance-build-deployment-2026-10-14)):
+reference tokens at ~30k and ~150k, four concurrent streams equal to their
+one-stream tokens, and only machine code already run on the GB10. Its
+full-model quality comparison and four-stream throughput at the default
+512 MiB graph budget (which captures every one- to three-stream key and the
+first four-stream keys) remain unmeasured.
 
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and
