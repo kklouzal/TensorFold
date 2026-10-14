@@ -7,7 +7,7 @@ from typing import Any
 from tensorfold.server.anthropic_translate import Reply, error, translate
 from tensorfold.server.errors import CapacityError, RequestError
 from tensorfold.server.request_body import read_body
-from tensorfold.server.responses import LIMIT, Wire, _run_chat, _send
+from tensorfold.server.responses import LIMIT, _event_wire, _event_writer, _run_chat, _send
 
 
 def route(path: str) -> bool:
@@ -68,26 +68,9 @@ def post(handler: Any, app: Any) -> None:
         return _send(handler, 503 if isinstance(exc, CapacityError) else 400,
                      error(str(exc), 503 if isinstance(exc, CapacityError) else 400))
 
-    def send(event: dict[str, Any]) -> None:
-        handler.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
-        handler.wfile.flush()
-
-    def comment(line: bytes) -> None:
-        handler.wfile.write(line + b"\n\n")
-        handler.wfile.flush()
-
+    send = _event_writer(handler)
     reply = Reply(reply_model(app, body), send)
-
-    def opened() -> None:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/event-stream")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "close")
-        handler.end_headers()
-        handler.close_connection = True
-        reply.start()
-
-    wire = Wire(opened, reply.chunk, comment)
+    wire = _event_wire(handler, reply)
     try:
         _run_chat(handler, chat, wire)
         if wire.stream or wire.status is None:

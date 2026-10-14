@@ -176,6 +176,36 @@ class Wire:
         pass
 
 
+def _event_writer(handler: Any) -> Callable[[dict[str, Any]], None]:
+    """Write one translated stream event to the client: its ``event:`` type line and JSON ``data:`` line."""
+
+    def send(event: dict[str, Any]) -> None:
+        handler.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
+        handler.wfile.flush()
+
+    return send
+
+
+def _event_wire(handler: Any, reply: Any) -> Wire:
+    """The chat handler's ``Wire`` for a translated reply: a streamed chat reply opens the client's event stream
+    (then ``reply.start``) and feeds ``reply.chunk``; the chat stream's comment lines pass through to the client."""
+
+    def opened() -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        handler.close_connection = True
+        reply.start()
+
+    def comment(line: bytes) -> None:
+        handler.wfile.write(line + b"\n\n")
+        handler.wfile.flush()
+
+    return Wire(opened, reply.chunk, comment)
+
+
 def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
     """The server's own chat-completions handler on ``body``, over this connection, its response written to ``wire``."""
 
@@ -208,28 +238,9 @@ def post(handler: Any, app: Any) -> None:
     base = {"id": _id("resp"), "object": "response", "created_at": int(time.time()), "status": "in_progress",
             "error": None, "incomplete_details": None, "model": reply_model(app, body), "output": [], "usage": None,
             **request.echo}
-
-    def send(event: dict[str, Any]) -> None:
-        handler.wfile.write(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
-        handler.wfile.flush()
-
-    def comment(line: bytes) -> None:
-        handler.wfile.write(line + b"\n\n")
-        handler.wfile.flush()
-
-    reply = Reply(base, send if request.stream else None,
+    reply = Reply(base, _event_writer(handler) if request.stream else None,
                   (lambda final: store.put(final, request.added)) if request.store else None)
-
-    def opened() -> None:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/event-stream")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "close")
-        handler.end_headers()
-        handler.close_connection = True
-        reply.start()
-
-    wire = Wire(opened, reply.chunk, comment)
+    wire = _event_wire(handler, reply)
     try:
         _run_chat(handler, request.chat, wire)
     except OSError:                                   # the client left while the reply was written
