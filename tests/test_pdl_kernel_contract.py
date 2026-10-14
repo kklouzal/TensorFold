@@ -15,7 +15,7 @@ TRITON = ["cuda/moe.py", "families/qwen4_exp/cuda/glue.py", "families/qwen4_exp/
 CUDA = {"cuda/kernels/gdn.cu": ["tree_kernel", "replay_kernel"],
         "families/qwen4_exp/cuda/gdn_io.cu": ["front_kernel", "back_kernel"],
         "cuda/experts.cu": ["expert_kernel", "plan_kernel", "plan_rank", "plan_offsets", "plan_scatter"],
-        "cuda/experts_prefill.cu": ["prefill_kernel"]}
+        "cuda/experts_prefill.cuh": ["prefill_kernel"], "cuda/experts_prefill.cu": [], "cuda/experts_window.cu": []}
 
 
 def _jit_kernels(tree):
