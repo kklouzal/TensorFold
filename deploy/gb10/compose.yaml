@@ -68,7 +68,7 @@ services:
         source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
         target: /root/.cache/huggingface
       - type: bind
-        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-bw-52b8f229}
+        source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-bw-a05c3219}
         target: /cache
     network_mode: host
     ipc: host
