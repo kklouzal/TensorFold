@@ -439,8 +439,8 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     g = h // hk
     if g > 16:
         raise ValueError(
-            f"this attention kernel tiles 16 query heads per KV head (G={g} does not fit); "
-            "a G under 16 is masked off after the rotation, not rotated differently")
+            f"the attention chunk kernels tile 16 query heads per KV head (G={g} does not fit); "
+            "a G under 16 leaves the tile's spare rows masked off")
     nch = scratch.nch
     keys = nch * CHUNK if context is None else context
     if scratch.qsa:

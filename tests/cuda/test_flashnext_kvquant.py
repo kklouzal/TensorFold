@@ -264,8 +264,8 @@ def test_attention_reads_the_quantized_cache_within_a_stated_tolerance(dtype, bi
 @pytest.mark.parametrize("bits", [8, 4])
 @pytest.mark.parametrize("g", [4, 8, 12])
 def test_the_rotation_trick_matches_an_explicit_unrotate(bits, g):
-    """G is not 16. The merge kernel tiles 16 query heads and masks ``gg < G``, and H32 runs along the
-    head dim, so a G under 16 does not mix the padding lanes into the stored rows.
+    """G is not 16. The chunk kernels tile 16 query heads and mask ``gg < G``; the merge takes one query head a
+    program and runs H32 along the head dim, so a G under 16 mixes no padding lanes into the stored rows.
 
     One case is a short window. The other starts at position 504 and runs 16 rows, so the online
     softmax rescale crosses CHUNK = 512.
