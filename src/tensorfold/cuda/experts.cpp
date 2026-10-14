@@ -9,7 +9,7 @@ void experts_run_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_st
 void experts_prefill_cuda(int64_t gs, int64_t epi, const at::Tensor& x, int64_t x_stride, int64_t slots,
                           const at::Tensor& w, int64_t kg, int64_t nb, const at::Tensor& items,
                           const at::Tensor& counts, const at::Tensor& members, at::Tensor& out, int64_t n,
-                          double limit, int64_t max_items, bool pdl);
+                          double limit, int64_t max_items, int64_t tile, bool pdl);
 
 void experts_pack_cuda(const at::Tensor& words, const at::Tensor& scales, const at::Tensor& biases, int64_t gs,
                        at::Tensor& out);
@@ -48,12 +48,14 @@ void run(int64_t gs, int64_t epi, const at::Tensor& x, int64_t slots, const at::
   experts_run_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_units, pdl);
 }
 
+// ``tile``: the plan's pairs an item (16 or 64), the kernel's row tile
 void prefill(int64_t gs, int64_t epi, const at::Tensor& x, int64_t slots, const at::Tensor& w, int64_t kg,
              int64_t nb, const at::Tensor& items, const at::Tensor& counts, const at::Tensor& members, at::Tensor out,
-             int64_t n, double limit, int64_t max_items, bool pdl) {
+             int64_t n, double limit, int64_t max_items, int64_t tile, bool pdl) {
   check_call(x, kg * gs, w, out, n, nb, epi);
+  TORCH_CHECK(tile == 16 || tile == 64, "prefill items hold 16 or 64 pairs");
   experts_prefill_cuda(gs, epi, x, x.stride(0), slots, w, kg, nb, items, counts, members, out, n, limit, max_items,
-                       pdl);
+                       tile, pdl);
 }
 
 // MLX words [E, N, K/8] (32-bit), scales and biases [E, N, K/gs] (2-byte) -> int32 blocks [E, N/32, K/gs, 32 * gs / 8 + 32]

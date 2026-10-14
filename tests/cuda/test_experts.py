@@ -256,3 +256,45 @@ def test_many_units_a_warp_keep_the_bits():
     assert int(plan.counts[0]) * (ex.dims // experts.COLS) > 8192
     for r in (0, 31, 63):
         assert torch.equal(run(ex, x[r:r + 1], picks[r:r + 1])[1], y[9 * r:9 * r + 9]), r
+
+
+def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
+    """bf16 values over a wide exponent range, both signs, with zeros and negative zeros."""
+
+    g = torch.Generator(device=DEV).manual_seed(seed)
+    mant = torch.rand(shape, generator=g, device=DEV) + 1.0
+    exp = torch.randint(lo, hi + 1, shape, generator=g, device=DEV).float()
+    sign = torch.where(torch.rand(shape, generator=g, device=DEV) < 0.5, -1.0, 1.0)
+    v = torch.where(torch.rand(shape, generator=g, device=DEV) < 0.03, sign * 0.0, sign * mant * torch.exp2(exp))
+    return v.to(torch.bfloat16)
+
+
+@pytest.mark.parametrize("adversarial", [False, True])
+def test_decode_window_items_of_16_keep_the_bits(adversarial):
+    """Flash Next's expert shapes (D 2560, NI 640, groups of 32, SwiGLU, bf16 y): a decode window planned in items of
+    16 pairs (the 16-row prefill tiles, ``window_tile``) gives every pair the bits of items of 64 (the 64-row tiles),
+    at 1-20 rows, with experts in every row (16-pair items split them) and on wide-range inputs and weights."""
+
+    e, d, ni, gs = 24, 2560, 640, 32
+    w = [mlx(e, ni, d, gs, 91 + i) for i in range(2)] + [mlx(e, d, ni, gs, 93)]
+    if adversarial:
+        w = [(words, _wide(s.shape, -20, 2, 7 * i), _wide(b.shape, -20, 2, 7 * i + 1)) for i, (words, s, b) in
+             enumerate(w)]
+    ex = experts.make(w[:2], w[2], gs)
+    case = (gs, True, 0.0, e, d, ni, 1)
+    for rows, hot in [(r, False) for r in range(1, 21)] + [(5, True), (20, True), (37, True)]:
+        x = _wide((rows, d), -20, 4, rows) if adversarial else (torch.randn((rows, d), device=DEV) * 0.5).to(
+            torch.bfloat16)
+        picks = picks_for(rows, case, rows, hot=0 if hot else None).contiguous()
+        got = {}
+        for tile in (experts.TILE, experts.PREFILL_TILE):
+            plan = experts.Plan(rows, picks.shape[1], e, DEV, prefill=True)
+            experts.route(picks, plan, tile)
+            act = torch.full((rows * picks.shape[1], ni), 7.0, dtype=torch.bfloat16, device=DEV)
+            y = torch.full((rows * picks.shape[1], d), 7.0, dtype=torch.bfloat16, device=DEV)
+            experts.gate_up(x, ex, plan, act, rows)
+            experts.down(act, ex, plan, y, rows)
+            got[tile] = (act.view(torch.int16), y.view(torch.int16), int(plan.counts[0]))
+        assert torch.equal(got[16][0], got[64][0]) and torch.equal(got[16][1], got[64][1]), (rows, hot)
+        if hot and rows > 16:
+            assert got[16][2] > got[64][2]                     # the 16-pair items did split an expert's pairs
