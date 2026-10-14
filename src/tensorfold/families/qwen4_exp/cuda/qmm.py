@@ -117,13 +117,6 @@ def split_k(n: int, k: int, target: int = 160) -> int:
     return sk
 
 
-def gpi_for(per: int, want: int) -> int:
-    for g in (want, 8, 4, 2, 1):
-        if g <= want and per % g == 0:
-            return g
-    return 1
-
-
 def bucket(m: int) -> int:
     """Rows a program takes: 16 to 128, then tiles of 128 (a row's bits never depend on its tile)."""
 
@@ -158,9 +151,25 @@ def group_sums(x: torch.Tensor) -> torch.Tensor:
 
 
 @triton.jit
+def _sbx(S, B, XS, g, rn, n_ok, rm, m_ok, N: tl.constexpr, KG: tl.constexpr):
+    """Group g's scales and biases (stored dtype) for the program's columns and its rows' group sums."""
+
+    s = tl.load(S + g * N + rn, mask=n_ok, other=0.0)
+    b = tl.load(B + g * N + rn, mask=n_ok, other=0.0)
+    xs = tl.load(XS + rm * KG + g, mask=m_ok, other=0.0)
+    return s, b, xs
+
+
+@triton.jit
 def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
          N: tl.constexpr, K: tl.constexpr, SK: tl.constexpr, BM: tl.constexpr,
-         BLOCK_N: tl.constexpr, GPI: tl.constexpr, F32: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
+         BLOCK_N: tl.constexpr, PD: tl.constexpr, F32: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
+    """A K slice's groups one a loop step, summed in order. Triton pipelines the words and inputs (async copies)
+    but would load the scales, biases and group sums synchronously behind the dot's shared-memory barriers, one
+    memory latency a step: with PD 1 or 2 they are loaded PD groups ahead into loop-carried registers (the same
+    values; a slice's last steps reload its last group, in bounds and unused). The stored tile's rows past N
+    (``tile_words``' zero padding) are masked to the same zero words."""
+
     pdl_wait(PDL)
     KG: tl.constexpr = K // 32
     PER: tl.constexpr = KG // SK
@@ -175,19 +184,33 @@ def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
     n_ok = rn < N
     SUB: tl.constexpr = SBN // BLOCK_N                  # program tiles per stored tile
     tile = W + (pid_n // SUB) * (KG * SBN * 4)
-    local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)
+    local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)     # stored rows: local + (pid_n // SUB) * SBN == rn
+    g0 = pid_s * PER
+    last = g0 + PER - 1
+    if PD >= 1:
+        s_n, b_n, xs_n = _sbx(S, B, XS, g0, rn, n_ok, rm, m_ok, N, KG)
+    if PD == 2:
+        s_n2, b_n2, xs_n2 = _sbx(S, B, XS, tl.minimum(g0 + 1, last), rn, n_ok, rm, m_ok, N, KG)
     acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
-    for i in range(PER // GPI):
-        for j in tl.static_range(GPI):
-            g = pid_s * PER + i * GPI + j
+    for i in range(PER):
+        g = g0 + i
+        if PD == 1:
+            s, b, xs = s_n, b_n, xs_n
+            s_n, b_n, xs_n = _sbx(S, B, XS, tl.minimum(g + 1, last), rn, n_ok, rm, m_ok, N, KG)
+        elif PD == 2:
+            s, b, xs = s_n, b_n, xs_n
+            s_n, b_n, xs_n = s_n2, b_n2, xs_n2
+            s_n2, b_n2, xs_n2 = _sbx(S, B, XS, tl.minimum(g + 2, last), rn, n_ok, rm, m_ok, N, KG)
+        if N % SBN != 0:
+            words = tl.load(tile + g * (SBN * 4) + local[:, None] * 4 + rw[None, :], mask=n_ok[:, None], other=0)
+        else:
             words = tl.load(tile + g * (SBN * 4) + local[:, None] * 4 + rw[None, :])
-            x = tl.load(X + rm[:, None] * x_stride + (g * 32 + rk)[None, :], mask=m_ok[:, None], other=0.0)
-            q = _deq(words, shifts, BLOCK_N)
-            p = tl.dot(x, tl.trans(q))
-            s = tl.load(S + g * N + rn, mask=n_ok, other=0.0).to(tl.float32)
-            b = tl.load(B + g * N + rn, mask=n_ok, other=0.0).to(tl.float32)
-            xs = tl.load(XS + rm * KG + g, mask=m_ok, other=0.0)
-            acc = acc + p * s[None, :] + xs[:, None] * b[None, :]
+        x = tl.load(X + rm[:, None] * x_stride + (g * 32 + rk)[None, :], mask=m_ok[:, None], other=0.0)
+        q = _deq(words, shifts, BLOCK_N)
+        p = tl.dot(x, tl.trans(q))
+        if PD == 0:
+            s, b, xs = _sbx(S, B, XS, g, rn, n_ok, rm, m_ok, N, KG)
+        acc = acc + p * s.to(tl.float32)[None, :] + xs[:, None] * b.to(tl.float32)[None, :]
     out_mask = m_ok[:, None] & n_ok[None, :]
     if SK == 1:
         if F32:
@@ -212,31 +235,33 @@ def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.con
         tl.store(OUT + offs, acc.to(tl.bfloat16), mask=ok)
 
 
-# (groups per unrolled step, warps, stages) by row bucket: every choice gives the same bits
-CONFIG = {16: (4, 4, 3), 32: (2, 4, 3), 64: (2, 4, 2), 128: (1, 8, 2)}
+# The tiled kernel's (groups its scales/biases/group sums are loaded ahead, warps, stages) by row bucket, measured
+# on the hyper-connection shapes (dev-01, sm_120); every choice gives the same bits.
+CONFIG = {16: (2, 4, 3), 32: (1, 4, 3), 64: (1, 4, 2), 128: (0, 8, 2)}
+TUNED = {(10240, 320, 32): (2, 4, 3)}        # (n, k, bucket) exceptions: the up projection keeps 2 ahead at 32 rows
 
-# K slices are fixed per shape to preserve summation order; other launch settings do not change bits.
-SHAPES16 = {
-    (324, 10240): (32, 2, 4, 3, 64),         # hyper-connection down + inject
-    (320, 10240): (32, 2, 4, 3, 64),         # a mixer's down
-    (10240, 320): (1, 2, 4, 3, 64),          # hyper-connection up
-    (16480, 2560): (1, 1, 4, 3, 64),         # DeltaNet q/k/v, z, b, a
-    (2560, 6144): (8, 2, 4, 2, 64),          # DeltaNet / attention output
-    (13952, 2560): (1, 2, 4, 3, 64),         # attention q|gate, k, v, indexer
-    (248320, 2560): (1, 4, 4, 2, 64),        # head
+# K slices are fixed per shape to preserve summation order.
+SPLITS = {
+    (324, 10240): 32,         # hyper-connection down + inject
+    (320, 10240): 32,         # a mixer's down
+    (10240, 320): 1,          # hyper-connection up
+    (16480, 2560): 1,         # DeltaNet q/k/v, z, b, a
+    (2560, 6144): 8,          # DeltaNet / attention output
+    (13952, 2560): 1,         # attention q|gate, k, v, indexer
+    (248320, 2560): 1,        # head
 }
 
 
 def split_for(n: int, k: int) -> int:
     """The K slices of an (n, k) matrix: the shape constant when there is one, else ``split_k``."""
 
-    got = SHAPES16.get((n, k))
-    return got[0] if got else split_k(n, k)
+    got = SPLITS.get((n, k))
+    return got if got else split_k(n, k)
 
 
 def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch.Tensor | None = None,
            f32: bool = False, sk: int | None = None, part: torch.Tensor | None = None,
-           gpi: int | None = None, num_warps: int | None = None, num_stages: int | None = None,
+           pd: int | None = None, num_warps: int | None = None, num_stages: int | None = None,
            block_n: int | None = None, reduce: bool = True) -> torch.Tensor:
     """x (M, K) bf16 (rows may be strided) @ q.T -> (M, N) bf16 (or fp32 sums with ``f32``). ``reduce=False`` with a split K returns the unreduced fp32 slices [SK, M, N] (the caller sums them in slice order)."""
 
@@ -249,16 +274,13 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     if k != q.k or x.stride(1) != 1:
         raise ValueError(f"matmul: x {tuple(x.shape)} does not match K={q.k}")
     bm = bucket(m)
-    c_gpi, c_warps, c_stages = CONFIG[bm]
-    c_bn = BN
-    tuned = SHAPES16.get((q.n, q.k)) if bm == 16 else None
-    if tuned is not None:
-        _, c_gpi, c_warps, c_stages, c_bn = tuned
+    c_pd, c_warps, c_stages = TUNED.get((q.n, q.k, bm), CONFIG[bm])
+    pd = c_pd if pd is None else int(pd)
+    if pd not in (0, 1, 2):
+        raise ValueError(f"matmul: pd {pd} must be 0, 1 or 2")
     if xs is None:
         xs = group_sums(x)
     sk = int(sk) if sk else split_for(q.n, q.k)
-    per = (k // GS) // sk
-    g = gpi_for(per, gpi or c_gpi)
     if out is None:
         out = torch.empty((m, q.n), dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
     elif out.shape != (m, q.n) or not out.is_contiguous():
@@ -267,10 +289,10 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
         part = torch.empty((sk, m, q.n), dtype=torch.float32, device=x.device)
     if sk > 1 and part.numel() < sk * m * q.n:
         raise ValueError("matmul: split-K scratch too small")
-    bn = block_n or c_bn
+    bn = block_n or BN
     grid = (triton.cdiv(m, bm), triton.cdiv(q.n, bn), sk)
     _qmm[grid](x, xs, q.weight, q.scales, q.biases, out, part if sk > 1 else out, m, x.stride(0),
-               N=q.n, K=k, SK=sk, BM=bm, BLOCK_N=bn, GPI=g, F32=f32, SBN=BN,
+               N=q.n, K=k, SK=sk, BM=bm, BLOCK_N=bn, PD=pd, F32=f32, SBN=BN,
                num_warps=num_warps or c_warps, num_stages=num_stages or c_stages, PDL=pdl.ON, launch_pdl=pdl.ON)
     if sk > 1 and reduce:
         total = m * q.n
@@ -286,139 +308,3 @@ def prefill_matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, ou
     if q.layout == "frag":
         return shared.prefill_matmul(x, q, f32=f32, out=out)
     return matmul(x, q, xs, out=out, f32=f32, part=part, reduce=reduce)
-
-
-@triton.jit
-def _bsig(x):
-    return (1.0 / (1.0 + tl.exp(-x))).to(tl.bfloat16).to(tl.float32)
-
-
-@triton.jit
-def _qmm_hcdown(H, PSS, SCALE, NORMED, W, S, B, OUT, PART, M, eps,
-                N: tl.constexpr, K: tl.constexpr, D: tl.constexpr, NC: tl.constexpr, SS: tl.constexpr,
-                SK: tl.constexpr, BM: tl.constexpr, BLOCK_N: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr,
-                PDL: tl.constexpr = False):
-    """Compute the down projection with glue.hc_normed's bf16 rounding and ordered partial sums, keeping each K slice within one stream and writing normed values once for the up mix."""
-
-    pdl_wait(PDL)
-    KG: tl.constexpr = K // 32
-    PER: tl.constexpr = KG // SK
-    pid_n = tl.program_id(1)
-    pid_s = tl.program_id(2)
-    rm = tl.program_id(0) * BM + tl.arange(0, BM)
-    rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    rk = tl.arange(0, 32)
-    rw = tl.arange(0, 4)
-    shifts = tl.arange(0, 8) * 4
-    m_ok = rm < M
-    n_ok = rn < N
-    st = (pid_s * PER * 32) // D
-    total = tl.zeros((BM,), dtype=tl.float32)
-    for c in range(NC):
-        total += tl.load(PSS + (rm * NC + c) * SS + st, mask=m_ok, other=0.0)
-    rinv = 1.0 / tl.sqrt(total / D + eps)
-    SUB: tl.constexpr = SBN // BLOCK_N
-    tile = W + (pid_n // SUB) * (KG * SBN * 4)
-    local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)
-    acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
-    for i in range(PER // GPI):
-        for j in tl.static_range(GPI):
-            g = pid_s * PER + i * GPI + j
-            hv = tl.load(H + rm[:, None] * K + (g * 32 + rk)[None, :], mask=m_ok[:, None], other=0.0).to(tl.float32)
-            sc = tl.load(SCALE + g * 32 + rk).to(tl.float32)
-            x = (hv * rinv[:, None] * sc[None, :]).to(tl.bfloat16)
-            tl.store(NORMED + rm[:, None] * K + (g * 32 + rk)[None, :], x, mask=m_ok[:, None] & (pid_n == 0))
-            xs = tl.sum(x.to(tl.float32), axis=1)
-            words = tl.load(tile + g * (SBN * 4) + local[:, None] * 4 + rw[None, :])
-            q = _deq(words, shifts, BLOCK_N)
-            p = tl.dot(x, tl.trans(q))
-            s = tl.load(S + g * N + rn, mask=n_ok, other=0.0).to(tl.float32)
-            b = tl.load(B + g * N + rn, mask=n_ok, other=0.0).to(tl.float32)
-            acc = acc + p * s[None, :] + xs[:, None] * b[None, :]
-    out_mask = m_ok[:, None] & n_ok[None, :]
-    if SK == 1:
-        tl.store(OUT + rm[:, None] * N + rn[None, :], acc.to(tl.bfloat16), mask=out_mask)
-    else:
-        tl.store(PART + (pid_s * M + rm[:, None]) * N + rn[None, :], acc, mask=out_mask)
-
-
-def hc_down(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: torch.Tensor, q: Q4, eps: float,
-            streams: int, *, out: torch.Tensor, part: torch.Tensor) -> torch.Tensor:
-    """normed = bf16(h * rinv * scale) written to ``normed``; returns the down projection's unreduced K slices [SK, R, N] (or [R, N] bf16 when SK is 1). The K split is the shape's constant (``split_for``)."""
-
-    if q.layout != "tiled":
-        raise ValueError("hc_down takes tiled weights")
-
-    m, k = h.shape
-    d = k // streams
-    sk = split_for(q.n, q.k)
-    _, gpi, warps, stages, bn = SHAPES16.get((q.n, q.k), (sk, 2, 4, 3, BN))
-    per = (k // GS) // sk
-    if (per * GS) > d or d % (per * GS):
-        raise ValueError("hc_down: a K slice must lie inside one stream")
-    grid = (triton.cdiv(m, 16), triton.cdiv(q.n, bn), sk)
-    _qmm_hcdown[grid](h, pss, scale, normed, q.weight, q.scales, q.biases, out, part, m, eps, N=q.n, K=k, D=d,
-                      NC=pss.shape[1], SS=streams, SK=sk, BM=16, BLOCK_N=bn, GPI=gpi_for(per, gpi), SBN=BN,
-                      num_warps=warps, num_stages=stages, PDL=pdl.ON, launch_pdl=pdl.ON)
-    return out if sk == 1 else part[:sk * m * q.n].view(sk, m, q.n)
-
-
-@triton.jit
-def _qmm_upmix(X, XS, W, S, B, NORMED, MIXED, XSM, M,
-               N: tl.constexpr, K: tl.constexpr, D: tl.constexpr, SS: tl.constexpr, BM: tl.constexpr,
-               DB: tl.constexpr, GPI: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
-    """The up projection for dims [DB j, DB (j + 1)) of every stream, then the mix: mixed = bf16(sum over streams in order of bf16(bf16(sigmoid(bf16(up_s))) * normed_s) / S) (glue.hc_mix's bits) and its group sum."""
-
-    pdl_wait(PDL)
-    KG: tl.constexpr = K // 32
-    j = tl.program_id(1)
-    rm = tl.program_id(0) * BM + tl.arange(0, BM)
-    m_ok = rm < M
-    rk = tl.arange(0, 32)
-    rw = tl.arange(0, 4)
-    shifts = tl.arange(0, 8) * 4
-    dd = tl.arange(0, DB)
-    total = tl.zeros((BM, DB), dtype=tl.float32)
-    for st in tl.static_range(SS):
-        row0 = st * D + j * DB
-        tile = W + (row0 // SBN) * (KG * SBN * 4)
-        local = row0 % SBN + dd
-        rn = row0 + dd
-        acc = tl.zeros((BM, DB), dtype=tl.float32)
-        for i in range(KG // GPI):
-            for jj in tl.static_range(GPI):
-                g = i * GPI + jj
-                words = tl.load(tile + g * (SBN * 4) + local[:, None] * 4 + rw[None, :])
-                x = tl.load(X + rm[:, None] * K + (g * 32 + rk)[None, :], mask=m_ok[:, None], other=0.0)
-                q = _deq(words, shifts, DB)
-                p = tl.dot(x, tl.trans(q))
-                s = tl.load(S + g * N + rn).to(tl.float32)
-                b = tl.load(B + g * N + rn).to(tl.float32)
-                xs = tl.load(XS + rm * KG + g, mask=m_ok, other=0.0)
-                acc = acc + p * s[None, :] + xs[:, None] * b[None, :]
-        up = acc.to(tl.bfloat16).to(tl.float32)
-        nv = tl.load(NORMED + rm[:, None] * N + (st * D + j * DB + dd)[None, :], mask=m_ok[:, None],
-                     other=0.0).to(tl.float32)
-        total += (_bsig(up) * nv).to(tl.bfloat16).to(tl.float32)
-    mixed = (total / SS).to(tl.bfloat16)
-    tl.store(MIXED + rm[:, None] * D + (j * DB + dd)[None, :], mixed, mask=m_ok[:, None])
-    GB: tl.constexpr = DB // 32
-    sums = tl.sum(tl.reshape(mixed.to(tl.float32), (BM, GB, 32)), axis=2)         # each 32-dim group's sum
-    gi = j * GB + tl.arange(0, GB)
-    tl.store(XSM + rm[:, None] * (D // 32) + gi[None, :], sums, mask=m_ok[:, None])
-
-
-def hc_upmix(act: torch.Tensor, xs_act: torch.Tensor, q: Q4, normed: torch.Tensor, mixed: torch.Tensor,
-             xs_mixed: torch.Tensor, streams: int) -> None:
-    """The up projection and the stream mix in one kernel, 32 dims of every stream a program: the bits of ``matmul`` then ``glue.hc_mix``."""
-
-    if q.layout != "tiled":
-        raise ValueError("hc_upmix takes tiled weights")
-
-    m, k = act.shape
-    d = q.n // streams
-    db = 32
-    grid = (triton.cdiv(m, 16), d // db)
-    _qmm_upmix[grid](act, xs_act, q.weight, q.scales, q.biases, normed, mixed, xs_mixed, m, N=q.n, K=k, D=d,
-                     SS=streams, BM=16, DB=db, GPI=gpi_for(k // GS, 2), SBN=BN, num_warps=4, num_stages=3,
-                     PDL=pdl.ON, launch_pdl=pdl.ON)
