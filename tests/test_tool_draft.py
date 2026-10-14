@@ -208,7 +208,8 @@ def test_target_candidates_reach_the_capture_sidecar(tmp_path):
     mx = pytest.importorskip("mlx.core")
     import numpy as np
 
-    from tensorfold.drafters.dflash_drafter import DFlashProposer, _capture_writer
+    from tensorfold.drafters.dflash_capture import _capture_writer
+    from tensorfold.drafters.dflash_drafter import DFlashProposer
     from tensorfold.engine.exact_sampling import Sampling, choose, sample_rows
     from tensorfold.engine.tool_draft import ToolCallProposer
 
