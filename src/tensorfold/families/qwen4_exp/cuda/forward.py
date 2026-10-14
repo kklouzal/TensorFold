@@ -71,7 +71,8 @@ def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mod
 
 
 # prompt chunks of more rows take the fused write-back and norm (``hc_check.fuser``) when it is enabled; every decode
-# window takes the separate read-out kernels, measured faster than a fused down/up read-out at 1-20 rows (same bits)
+# window takes the separate read-out kernels: on dev-01 (sm_120) they ran faster than a fused down/up read-out at
+# 1-20 rows, with the same bits
 FUSED_ROWS = 16
 
 

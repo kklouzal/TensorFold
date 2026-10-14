@@ -352,6 +352,33 @@ def test_tiled_matmul_launch_settings_keep_the_bits(n, k):
                 assert _same(got, want), (n, k, m, pd, warps, stages, block_n)
 
 
+@pytest.mark.parametrize("n,k", SHAPES)
+def test_tiled_matmul_slices_of_one_or_two_groups_keep_the_bits(n, k):
+    """K slices of one or two groups (the smallest ``sk`` overrides allow): the loads ahead clamp to the slice's last
+    group from the first step; every PD gives the oracle's slices."""
+
+    gen = torch.Generator(device=DEV).manual_seed(7 * n + k)
+    q = qmm.make_q4(*_weights(n, k, gen, True), "tiled")
+    x = _rows((5, k), gen, True)
+    for sk in (k // GS // 2, k // GS):
+        want = oracle_matmul(x, q, sk=sk, reduce=False)
+        for pd in (0, 1, 2):
+            assert _same(qmm.matmul(x, q, sk=sk, pd=pd, reduce=False), want), (n, k, sk, pd)
+
+
+@pytest.mark.parametrize("n,k", SHAPES)
+def test_tiled_matmul_rows_do_not_depend_on_the_window(n, k):
+    """A row's fp32 K slices (bf16 product without a split) are its own in a window of any size, whichever launch the
+    window's rows select (``launch_for``): the decode contract that a window row equals the serial step."""
+
+    gen = torch.Generator(device=DEV).manual_seed(5 * n + k)
+    q = qmm.make_q4(*_weights(n, k, gen, True), "tiled")
+    x = _rows((130, k), gen, True)
+    alone = torch.cat([qmm.matmul(x[r:r + 1], q, reduce=False) for r in range(130)], dim=-2)
+    for m in [*range(2, 21), *BUCKET_ROWS]:
+        assert _same(qmm.matmul(x[:m], q, reduce=False), alone[..., :m, :]), (n, k, m)
+
+
 @pytest.mark.parametrize("adversarial", [False, True])
 @pytest.mark.parametrize("inject", [True, False])
 def test_decode_readout_matches_the_former_fused_kernels(inject, adversarial):
