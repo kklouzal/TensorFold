@@ -36,8 +36,6 @@ class DFlashProposer:
         self.last_confident = False
         # most DFlash2 drafts the next proposal may hold (None: max_draft; 0: no drafter forward, copies only)
         self.model_cap: int | None = None
-        # DFlash2 drafts accepted lately and chains cut short lately (decayed each drafted round)
-        self.hits = self.misses = 0.0
         self.proposals = 0
         self.proposed_tokens = 0
         self.accepted_tokens = 0
@@ -542,14 +540,6 @@ class DFlashProposer:
                 observe(proposed, accepted)
             return
         self.accepted_tokens += int(accepted)
-        if proposed > 0:
-            self.hits = self.hits * 0.9 + accepted
-            self.misses = self.misses * 0.9 + (1.0 if accepted < proposed else 0.0)
-
-    def continue_rate(self) -> float:
-        """Estimate continuation probability with decayed acceptance counts and a prior of three successes in five trials."""
-
-        return (self.hits + 3.0) / (self.hits + self.misses + 5.0)
 
     def telemetry(self) -> dict[str, Any]:
         out = {"dflash_proposals": self.proposals, "dflash_proposed": self.proposed_tokens,

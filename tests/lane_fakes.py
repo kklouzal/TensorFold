@@ -351,14 +351,10 @@ class FakeEngine(LaneEngine):
                 streams=len(plans),
                 width=max(lengths),
                 rows=sum(lengths),
-                ragged=len(set(lengths)) > 1,
                 rollbacks=sum(result[2] < result[1] for result in results.values()),
                 committed=sum(len(result[0]) for result in results.values()),
                 forward_ms=elapsed,
-                finalize_ms=0.0,
-                rollback_ms=0.0,
                 total_ms=elapsed,
-                started_at=started,
             )
         )
         return results

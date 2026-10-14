@@ -292,16 +292,12 @@ class RoundStats:
     streams: int
     width: int
     rows: int
-    ragged: bool
     rollbacks: int
     committed: int
     forward_ms: float
-    finalize_ms: float
-    rollback_ms: float
     total_ms: float
     draft_ms: float = 0.0      # proposer time inside the round (precise rounds)
     post_ms: float = 0.0       # predictions to host, verification, proposer bookkeeping
-    started_at: float = 0.0    # perf_counter at the round's start (gaps between rounds)
 
 
 class LaneEngine(FamilyRounds):

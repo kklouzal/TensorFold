@@ -93,7 +93,6 @@ class SnapshotCopy:
     path: Path
     sha256: str | None
     size: int
-    source_identity: tuple[int, ...]
     integrity_sha256: str | None = None
 
 
@@ -182,7 +181,6 @@ def private_snapshot(path: Path, *, max_bytes: int, integrity_sizes=None, hash_c
             copied,
             None if digest is None else digest.hexdigest(),
             before.st_size,
-            _identity(before),
             None if protected is None else protected.hexdigest(),
         )
     except BaseException as error:

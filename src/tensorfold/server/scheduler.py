@@ -436,16 +436,6 @@ class Scheduler(PromptFill):
 
         return [f.job for f in self._fills]
 
-    @staticmethod
-    def finish_job(job: ChatJob, reason: str = "stop") -> None:
-        """Ask the engine to stop a stream at the next round (safe from any thread)."""
-
-        stream = job.stream
-        if stream is not None and not stream.finished:
-            stream.finish_reason = reason
-            stream.finished = True
-            stream.finished_at = time.perf_counter()
-
     # -- the loop -------------------------------------------------------------
     def _run(self) -> None:
         failure = None
