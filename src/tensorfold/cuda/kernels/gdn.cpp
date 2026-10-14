@@ -5,7 +5,7 @@
 #include "tensor_contracts.cuh"
 
 void gdn_tree_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-                   const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, int, int, int,
+                   const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, int, int, int, int,
                    at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                    const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, bool);
 void gdn_replay_cuda(const at::Tensor&, int, int, const at::Tensor&, const at::Tensor&, const at::Tensor&, int, int,
@@ -61,8 +61,9 @@ at::Tensor tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, c
                 const c10::optional<at::Tensor>& table, const c10::optional<at::Tensor>& starts,
                 const at::Tensor& plan, int64_t slots, int64_t max_rows,
                 const c10::optional<std::vector<at::Tensor>>& pending, const c10::optional<at::Tensor>& final,
-                bool pdl) {
+                int64_t chain_rows, bool pdl) {
     check_rows(q, k, v, g, beta);
+    TORCH_CHECK(chain_rows == 4 || chain_rows == 8, "chains take 4 or 8 value rows a warp");
     TORCH_CHECK(state.has_value() != table.has_value() && (state.has_value() ? !starts.has_value() : starts.has_value()),
                 "pass one state, or a table and starts");
     TORCH_CHECK(plan.is_cuda() && plan.is_contiguous() && plan.scalar_type() == at::kInt &&
@@ -133,8 +134,8 @@ at::Tensor tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, c
     }
     c10::cuda::CUDAGuard guard(q.device());
     auto y = at::empty({q.size(0), v.size(1), v.size(2)}, v.options());
-    gdn_tree_cuda(q, k, v, g, beta, s, t, st, plan, static_cast<int>(slots), streams, static_cast<int>(max_rows), y,
-                  pk, pv, pg, pb, prows, pcounts, fstate, ftable, pdl);
+    gdn_tree_cuda(q, k, v, g, beta, s, t, st, plan, static_cast<int>(slots), static_cast<int>(chain_rows), streams,
+                  static_cast<int>(max_rows), y, pk, pv, pg, pb, prows, pcounts, fstate, ftable, pdl);
     return y;
 }
 

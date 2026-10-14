@@ -217,6 +217,30 @@ def test_long_chains_and_their_final_state(nodes):
     assert torch.equal(finals[0], final) and torch.equal(finals[1], final)
 
 
+
+@pytest.mark.parametrize("keys", [torch.bfloat16, torch.float32])
+def test_every_chain_shape_keeps_the_bits(keys, monkeypatch):
+    """Chains at 4 and 8 value rows a warp (``gdn.CHAIN_ROWS`` picks one by chip) give the same outputs, final states
+    and pending write-backs, at Flash Next's head shape and with a value width that leaves warps past it."""
+
+    def run(rows, args, nodes):
+        monkeypatch.setattr(gdn, "CHAIN_ROWS", {gdn.chip(torch.cuda.current_device()): rows})
+        state, final = args[5].clone(), torch.empty_like(args[5])
+        pk, pv, pg, pb = (x[:3].contiguous() for x in args[1:5])
+        pending = [pk, pv, pg, pb, torch.tensor([[0, 1, 2]], dtype=torch.int32, device="cuda"),
+                   torch.tensor([3], dtype=torch.int32, device="cuda")]
+        table = gdn.to_device(gdn.pointers([state]), torch.int64, "cuda")
+        out = gdn.tree(*args[:5], gdn.plan([list(range(-1, nodes - 1))], "cuda"), table=table, pending=pending,
+                       final=gdn.to_device(gdn.pointers([final]), torch.int64, "cuda"))
+        return out, final, state
+
+    for nodes, hv, dv in ((5, 48, 128), (33, 6, 40)):
+        args = _inputs(nodes, kh=16 if hv == 48 else 2, hv=hv, dv=dv, keys=keys, seed=nodes)
+        four, eight = run(4, args, nodes), run(8, args, nodes)
+        for a, b in zip(four, eight):
+            assert torch.equal(a.view(torch.int16) if a.dtype == torch.bfloat16 else a.view(torch.int32),
+                               b.view(torch.int16) if b.dtype == torch.bfloat16 else b.view(torch.int32)), (nodes, hv)
+
 def test_schedule_reads_each_parent_state():
     """On the host: every scheduled node reads its parent's state from where the schedule left it."""
 

@@ -12,6 +12,8 @@ import torch
 
 from tensorfold.cuda import pdl
 
+from .qmm import chip
+
 
 @lru_cache(maxsize=1)
 def _ext():
@@ -180,6 +182,13 @@ def plan(streams: Sequence[Sequence[int]], device) -> Plan:
     return Plan(dev[:3 * w].view(w, 3), dev[3 * w:], slots, rows)
 
 
+# A chain's value rows a warp (4 warps a program) by chip (major, minor, SMs) where measured, else 8; a row's arithmetic
+# never depends on its warp-mates, so every choice keeps the bits. dev-01 (RTX PRO 2000, sm_120, 34 SMs): 4 ran the
+# Flash Next decode trees ~4 us a launch faster (round A/B, one and four streams); GB10 (sm_121, 48 SMs): 8 ran ~0.3%
+# faster decode (container A/B, five requests).
+CHAIN_ROWS = {(12, 0, 34): 4}
+
+
 def tree(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, beta: torch.Tensor, p: Plan,
          state: torch.Tensor | None = None, table: torch.Tensor | None = None,
          pending: Sequence[torch.Tensor] | None = None, final: torch.Tensor | None = None) -> torch.Tensor:
@@ -207,7 +216,8 @@ def tree(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, g: torch.Tensor, bet
         if finals:
             _check_state_writes(finals, inputs + list(owners) + ([] if pending is None else list(pending)))
     return _ext().tree(q, k, v, g, beta, state, table, None if table is None else p.starts, p.entries, p.slots,
-                       p.max_rows, None if pending is None else list(pending), final, pdl.ON)
+                       p.max_rows, None if pending is None else list(pending), final,
+                       CHAIN_ROWS.get(chip(q.device.index), 8), pdl.ON)
 
 
 def pointers(tensors: Sequence[torch.Tensor]) -> list[int]:

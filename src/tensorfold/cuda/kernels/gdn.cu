@@ -284,17 +284,18 @@ Pending<QK> pending_of(const at::Tensor& pk, const at::Tensor& pv, const at::Ten
 }
 
 template <typename QK>
-void dispatch_tree(int slots, const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const at::Tensor& g,
-                   const at::Tensor& beta, const float* state, const long long* table, const int* starts,
-                   const at::Tensor& plan, int nodes, int streams, int max_rows, at::Tensor& y, Pending<QK> pend,
-                   float* final_state, const long long* final_table, bool pdl) {
+void dispatch_tree(int slots, int chain_rows, const at::Tensor& q, const at::Tensor& k, const at::Tensor& v,
+                   const at::Tensor& g, const at::Tensor& beta, const float* state, const long long* table,
+                   const int* starts, const at::Tensor& plan, int nodes, int streams, int max_rows, at::Tensor& y,
+                   Pending<QK> pend, float* final_state, const long long* final_table, bool pdl) {
     // no slots: every window is a chain in row order, no plan to read; more slots, fewer rows a warp to cap memory
 #define TREE(S, R, W, C) launch_tree<QK, S, R, W, C>(q, k, v, g, beta, state, table, starts, plan, nodes, streams, \
                                                      max_rows, y, pend, final_state, final_table, pdl)
 #define TREE_(S, R, W) TREE(S, R, W, false)
-    // chains: 4 rows a warp (a row's steps and butterfly never read the rows beside it, so any rows x warps keeps
-    // the bits); 4 x 4 ran ~4 us a launch faster than 8 x 4 on dev-01 (sm_120, one stream)
-    if (slots == 0) TREE(0, 4, 4, true);
+    // chains: the caller's rows a warp, 4 or 8 on 4 warps (a row's steps and butterfly never read the rows beside it,
+    // so any rows x warps keeps the bits; gdn.CHAIN_ROWS picks them by chip)
+    if (slots == 0 && chain_rows == 4) TREE(0, 4, 4, true);
+    else if (slots == 0) TREE(0, 8, 4, true);
     else if (slots <= 2) TREE_(2, 4, 4);
     else if (slots <= 4) TREE_(4, 2, 4);
     else if (slots <= 8) TREE_(8, 2, 4);
@@ -308,9 +309,10 @@ void dispatch_tree(int slots, const at::Tensor& q, const at::Tensor& k, const at
 
 void gdn_tree_cuda(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const at::Tensor& g,
                    const at::Tensor& beta, const at::Tensor& state, const at::Tensor& table, const at::Tensor& starts,
-                   const at::Tensor& plan, int slots, int streams, int max_rows, at::Tensor& y, const at::Tensor& pk,
-                   const at::Tensor& pv, const at::Tensor& pg, const at::Tensor& pb, const at::Tensor& prows,
-                   const at::Tensor& pcounts, const at::Tensor& fstate, const at::Tensor& ftable, bool pdl) {
+                   const at::Tensor& plan, int slots, int chain_rows, int streams, int max_rows, at::Tensor& y,
+                   const at::Tensor& pk, const at::Tensor& pv, const at::Tensor& pg, const at::Tensor& pb,
+                   const at::Tensor& prows, const at::Tensor& pcounts, const at::Tensor& fstate,
+                   const at::Tensor& ftable, bool pdl) {
     const float* s = state.defined() ? state.data_ptr<float>() : nullptr;
     const long long* t = table.defined() ? reinterpret_cast<const long long*>(table.data_ptr<int64_t>()) : nullptr;
     const int* st = starts.defined() ? starts.data_ptr<int>() : nullptr;
@@ -318,10 +320,10 @@ void gdn_tree_cuda(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v
     float* fs = fstate.defined() ? fstate.data_ptr<float>() : nullptr;
     const long long* ft = ftable.defined() ? reinterpret_cast<const long long*>(ftable.data_ptr<int64_t>()) : nullptr;
     if (q.scalar_type() == at::kFloat)
-        dispatch_tree<float>(slots, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
+        dispatch_tree<float>(slots, chain_rows, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
                              pending_of<float>(pk, pv, pg, pb, prows, pcounts), fs, ft, pdl);
     else
-        dispatch_tree<__nv_bfloat16>(slots, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
+        dispatch_tree<__nv_bfloat16>(slots, chain_rows, q, k, v, g, beta, s, t, st, plan, nodes, streams, max_rows, y,
                                      pending_of<__nv_bfloat16>(pk, pv, pg, pb, prows, pcounts), fs, ft, pdl);
 }
 
