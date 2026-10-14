@@ -156,7 +156,6 @@ _COOP_TEMPLATE = r"""
 _MAIN = tensor_source(_MAIN_TEMPLATE)
 _MAIN_TILED = tensor_source(_MAIN_TEMPLATE, tiled=True)
 _COOP = tensor_source(_COOP_TEMPLATE, coop=True)
-AB_FLAG = [False]                                    # The engine can switch kernel variants between rounds.
 
 _kernels: dict[str, Any] = {}
 
