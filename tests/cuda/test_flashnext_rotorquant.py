@@ -26,7 +26,8 @@ FORMAT_CASES = tuple(item for item in FORMATS if item.rotor is not None)
 
 
 @triton.jit
-def _encode(X, CODE, RMS, N: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr, M: tl.constexpr):
+def _encode(X, CODE, RMS, CENTROIDS, THRESHOLDS, N: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr,
+            M: tl.constexpr):
     row = tl.program_id(0) * M + tl.arange(0, M)
     x = tl.load(X + row[:, None] * 128 + tl.arange(0, 128)[None, :], row[:, None] < N, other=0.0)
     if BITS == 3:
@@ -43,7 +44,7 @@ def _encode(X, CODE, RMS, N: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constex
         tl.store(CODE + row[:, None] * 112 + 64 + tl.arange(0, 32)[None, :], mid, row[:, None] < N)
         tl.store(CODE + row[:, None] * 112 + 96 + tl.arange(0, 16)[None, :], high, row[:, None] < N)
     elif BITS == 8:
-        code, rms = kernel.quant_groups_8(x, M, CODEC)
+        code, rms = kernel.quant_groups_8(x, M, CODEC, CENTROIDS + 64, THRESHOLDS)
         tl.store(CODE + row[:, None] * 128 + tl.arange(0, 128)[None, :], code, row[:, None] < N)
     else:
         code, rms = kernel.quant_groups_4(x, M, CODEC)
@@ -117,6 +118,86 @@ def _centroid_bits(CODE, OUT, BITS: tl.constexpr):
     tl.store(OUT + offset, kernel._centroids(q, BITS))
 
 
+@triton.jit
+def _lifting_indices(X, OUT, THRESHOLDS, N: tl.constexpr, W: tl.constexpr, TABLE: tl.constexpr):
+    i = tl.arange(0, W)
+    x = tl.load(X + i, i < N, other=0.0)
+    q = kernel._indices_8(x, THRESHOLDS) if TABLE else kernel._indices(x, 8)
+    tl.store(OUT + i, q, i < N)
+
+
+@triton.jit
+def _encode8_selected(x, M: tl.constexpr, CODEC: tl.constexpr):
+    """Oracle: the eight-bit encoder before its tables (2026-10-14), boundaries and centroids selected in registers."""
+    unit, rms = kernel._normalized(x.to(tl.float32), M)
+    code = kernel._indices(kernel.rotate(unit, M, 128, CODEC), 8).to(tl.uint8)
+    if CODEC == 8:
+        centroid = kernel._centroids(code.to(tl.int32), 8)
+        energy = tl.sum(kernel._mul_rn(centroid, centroid), axis=1)
+        correction = kernel._sqrt_rn(tl.math.div_rn(128.0, energy))
+        rms = kernel._mul_rn(rms, correction)
+    return code, rms
+
+
+@triton.jit
+def _encode8(X, CODE, RMS, CENTROIDS, THRESHOLDS, N, CODEC: tl.constexpr, M: tl.constexpr, TABLE: tl.constexpr):
+    row = tl.program_id(0) * M + tl.arange(0, M)
+    x = tl.load(X + row[:, None] * 128 + tl.arange(0, 128)[None, :], row[:, None] < N, other=0.0)
+    if TABLE:
+        code, rms = kernel.quant_groups_8(x, M, CODEC, CENTROIDS + 64, THRESHOLDS)
+    else:
+        code, rms = _encode8_selected(x, M, CODEC)
+    tl.store(CODE + row[:, None] * 128 + tl.arange(0, 128)[None, :], code, row[:, None] < N)
+    tl.store(RMS + row, rms, row < N)
+
+
+def test_eight_bit_lifting_table_selects_the_same_indices():
+    """``_indices_8`` (boundaries loaded from ``LIFTING_8``) == ``_indices(x, 8)`` (selected) at every midpoint, its
+    FP32 neighbours, signed zeros, infinities, NaN and spread values."""
+    assert kernel.LIFTING_8 == tuple(cell for row in kernel._BINARY_T8.value for cell in row)
+    midpoint = torch.tensor(ref.thresholds(8), dtype=torch.float32, device="cuda")
+    below = torch.nextafter(midpoint, torch.full_like(midpoint, -math.inf))
+    above = torch.nextafter(midpoint, torch.full_like(midpoint, math.inf))
+    special = torch.tensor([0.0, -0.0, math.inf, -math.inf, math.nan, 1e30, -1e30, 1e-40, -1e-40], device="cuda")
+    spread = torch.randn(4096, generator=torch.Generator(device="cuda").manual_seed(8), device="cuda") * 3
+    source = torch.cat((below, midpoint, above, special, spread))
+    got = {}
+    for table in (False, True):
+        got[table] = torch.full_like(source, -1, dtype=torch.int32)
+        _lifting_indices[(1,)](source, got[table], attn_mod.codebook("cuda")[1], source.numel(),
+                               triton.next_power_of_2(source.numel()), table)
+    assert torch.equal(got[True], got[False])
+    assert int(got[True].min()) == 0 and int(got[True].max()) == 255
+
+
+@pytest.mark.parametrize("codec", (4, 8), ids=("rotorquant8", "rotorquant8-norm"))
+@pytest.mark.parametrize("m,warps", [(2, 2), (4, 4), (1, 1)])
+def test_eight_bit_encoder_tables_keep_the_selected_encoder_bits(codec, m, warps):
+    """The table encoder's codes and scales == the register-selected oracle's, bit for bit, at the prep's shape
+    ([2, 128] on two warps) and others; normal, many-binade, zero and tiny groups."""
+    g = torch.Generator(device="cuda").manual_seed(80 + codec + m)
+    n = 512
+    normal = torch.randn((n, 128), generator=g, device="cuda")
+    exponent = torch.randint(-40, 30, (n, 128), generator=g, device="cuda").float()
+    wide = torch.where(torch.rand((n, 128), generator=g, device="cuda") < 0.5, -1.0, 1.0) * torch.exp2(exponent)
+    wide = wide * (1 + torch.rand((n, 128), generator=g, device="cuda"))
+    sparse = torch.where(torch.rand((n, 128), generator=g, device="cuda") < 0.97, 0.0, normal)
+    tiny = normal * 2.0**-126
+    zero = torch.zeros((8, 128), device="cuda")
+    zero[1::2] = -0.0
+    x = torch.cat((normal, wide, sparse, tiny, zero)).to(torch.bfloat16)
+    rows = x.shape[0]
+    out = {}
+    for table in (False, True):
+        code = torch.full((rows, 128), 7, dtype=torch.uint8, device="cuda")
+        rms = torch.full((rows,), math.nan, dtype=torch.float32, device="cuda")
+        _encode8[(triton.cdiv(rows, m),)](x, code, rms, *attn_mod.codebook("cuda"), rows, codec, m, table,
+                                          num_warps=warps)
+        out[table] = (code, rms)
+    assert torch.equal(out[True][0], out[False][0])
+    assert torch.equal(out[True][1].view(torch.int32), out[False][1].view(torch.int32))
+
+
 @pytest.mark.parametrize("bits", (7, 8), ids=("rotorquant7", "rotorquant8"))
 def test_high_precision_every_centroid_has_exact_canonical_fp32_bits(bits):
     if bits == 8:
@@ -136,7 +217,7 @@ def encode(x, bits, variant, m=4):
     code = torch.empty((*lead, width * bits // 8), dtype=torch.uint8, device=x.device)
     rms = torch.empty((*lead, width // 128), dtype=torch.float32, device=x.device)
     n = x.numel() // 128
-    _encode[(triton.cdiv(n, m),)](x, code, rms, n, bits, ref.variant_id(variant), m,
+    _encode[(triton.cdiv(n, m),)](x, code, rms, *attn_mod.codebook(x.device), n, bits, ref.variant_id(variant), m,
                                 enable_fp_fusion=False, num_warps=4)
     return code, rms
 
@@ -443,7 +524,8 @@ def test_fused_prep_quantizes_post_rope_bf16_and_leaves_index_keys_unchanged(for
         glue.attn_prep(projected, pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, q, cache.k, cache.v,
                        iq, index, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
-                       bits=cache.bits if cache.quantized else 0, codec=cache.codec, delta=delta, status=status)
+                       bits=cache.bits if cache.quantized else 0, codec=cache.codec, delta=delta, status=status,
+                       **dict(zip(("centroids", "thresholds"), attn_mod.codebook("cuda"))))
         if status is not None:
             assert status.cpu().tolist() == [0, -2]
         outputs.append((q, iq, index))
@@ -596,7 +678,8 @@ def test_fused_numeric_guard_reports_source_and_first_layer_without_publication(
                    q, cache.k, cache.v, iq, st.ikc[0], c.eps,
                    q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                    index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
-                   bits=cache.bits, codec=cache.codec, status=st.kv_status, layer=17)
+                   bits=cache.bits, codec=cache.codec, status=st.kv_status, layer=17,
+                   **dict(zip(("centroids", "thresholds"), attn_mod.codebook("cuda"))))
     with pytest.raises(KVNumericError, match="layer=17"):
         st.kv_check()
     assert int(st.kv_status[0].item()) & bit

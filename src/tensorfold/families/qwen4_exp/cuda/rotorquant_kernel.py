@@ -70,9 +70,12 @@ _BINARY_T6 = tl.constexpr(tuple(tuple(THRESHOLDS_6[2 * step * cell + step - 1]
 _BINARY_T7 = tl.constexpr(tuple(tuple(THRESHOLDS_7[2 * step * cell + step - 1]
                                       for cell in range(128 // (2 * step)))
                                for step in (64, 32, 16, 8, 4, 2, 1)))
-_BINARY_T8 = tl.constexpr(tuple(tuple(THRESHOLDS_8[2 * step * cell + step - 1]
-                                      for cell in range(256 // (2 * step)))
-                               for step in (128, 64, 32, 16, 8, 4, 2, 1)))
+_ROWS_8 = tuple(tuple(THRESHOLDS_8[2 * step * cell + step - 1] for cell in range(256 // (2 * step)))
+                for step in (128, 64, 32, 16, 8, 4, 2, 1))
+_BINARY_T8 = tl.constexpr(_ROWS_8)
+# The eight-bit binary-lifting rows as one table, level L's 2^L cells at [2^L - 1, 2^(L + 1) - 1): its float32 device
+# copy (the constants' exact values) gives ``_indices_8`` the boundaries ``_indices(x, 8)`` selects.
+LIFTING_8 = tuple(cell for row in _ROWS_8 for cell in row)
 _COS = tl.constexpr(PLANAR_COS)
 _SIN = tl.constexpr(PLANAR_SIN)
 _QUAT = tl.constexpr(ISO_QUATERNION)
@@ -378,29 +381,46 @@ def quant_groups_7(x, M: tl.constexpr, CODEC: tl.constexpr):
 
 
 @triton.jit
-def correct_scale8(code, original_rms, M: tl.constexpr):
+def _indices_8(x, THRESHOLDS):
+    """``_indices(x, 8)``, each level's boundary loaded from ``THRESHOLDS`` (a float32 device copy of ``LIFTING_8``)
+    instead of selected: before level L, q is a multiple of 2 step (step = 128 >> L), so ``_index_step_high``'s
+    boundary is row L's cell q >> (8 - L). The same comparisons and steps, so the same indices."""
+
+    q = tl.full(x.shape, 0, tl.int32)
+    for level in tl.static_range(8):
+        boundary = tl.load(THRESHOLDS + ((1 << level) - 1) + (q >> (8 - level)))
+        q = q + (x > boundary).to(tl.int32) * (128 >> level)
+    return q
+
+
+@triton.jit
+def correct_scale8(code, original_rms, CENTROIDS, M: tl.constexpr):
     """The norm8 metadata policy: canonical code squares, positive FP32 sum, RN div/sqrt/mul.
 
     Codes remain original-RMS Gaussian indices. Every pinned centroid is
     nonzero; even zero-source groups have positive energy and +0 metadata.
     Callers contain nonfinite or erased nonzero RMS before publishing State.
+    ``CENTROIDS``: a float32 device copy of ``CENTROIDS_8``, gathered like ``_centroids``' register table: the
+    gather's register layout fixes the energy sum's order (a plain indexed load's layout would not).
     """
 
-    centroid = _centroids(code.to(tl.int32), 8)
+    table = tl.load(CENTROIDS + tl.arange(0, 256))
+    centroid = tl.gather(tl.broadcast_to(table[None, :], (M, 256)), code.to(tl.int32), 1)
     energy = tl.sum(_mul_rn(centroid, centroid), axis=1)
     correction = _sqrt_rn(tl.math.div_rn(128.0, energy))
     return _mul_rn(original_rms, correction)
 
 
 @triton.jit
-def quant_groups_8(x, M: tl.constexpr, CODEC: tl.constexpr):
-    """``[M,128]`` -> unsigned indices and original or reconstruction-norm RMS."""
+def quant_groups_8(x, M: tl.constexpr, CODEC: tl.constexpr, CENTROIDS, THRESHOLDS):
+    """``[M,128]`` -> unsigned indices and original or reconstruction-norm RMS; ``CENTROIDS`` and ``THRESHOLDS``:
+    float32 device copies of ``CENTROIDS_8`` and ``LIFTING_8``."""
 
     tl.static_assert(CODEC == 4 or CODEC == 8)
     unit, rms = _normalized(x.to(tl.float32), M)
-    code = _indices(rotate(unit, M, 128, CODEC), 8).to(tl.uint8)
+    code = _indices_8(rotate(unit, M, 128, CODEC), THRESHOLDS).to(tl.uint8)
     if CODEC == 8:
-        rms = correct_scale8(code, rms, M)
+        rms = correct_scale8(code, rms, CENTROIDS, M)
     return code, rms
 
 

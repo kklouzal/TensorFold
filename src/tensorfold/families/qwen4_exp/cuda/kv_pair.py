@@ -56,6 +56,16 @@ def validate_storage(data, scale, capacity, heads, head_dim, bits, codec, device
             raise ValueError("KV side metadata differs from its own group, precision or contiguous layout")
 
 
+def validate_tables(centroids, thresholds, device):
+    """Eight-bit RotorQuant encoders read an attention scratch's tables: CENTROIDS_6 + CENTROIDS_8 and LIFTING_8."""
+
+    if (centroids is None or thresholds is None or centroids.shape != (64 + 256,) or thresholds.shape != (255,)
+            or centroids.dtype != torch.float32 or thresholds.dtype != torch.float32
+            or centroids.device != device or thresholds.device != device
+            or not centroids.is_contiguous() or not thresholds.is_contiguous()):
+        raise ValueError("eight-bit RotorQuant sides need the attention scratch's centroid and threshold tables")
+
+
 @triton.jit
 def canonical_bf16_operand(x):
     """Preserve every BF16 bit and make its native tensor-core layout boundary explicit."""
@@ -104,8 +114,9 @@ def transform(x, M: tl.constexpr, D: tl.constexpr, BITS: tl.constexpr, CODEC: tl
 
 @triton.jit
 def store_side(x, DATA, SCALE, slot, STATUS, D: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr,
-               VALIDATE: tl.constexpr, LAYER: tl.constexpr):
-    """Store one BF16-source head using only this side's packed layout and metadata."""
+               VALIDATE: tl.constexpr, LAYER: tl.constexpr, CENTROIDS=None, THRESHOLDS=None):
+    """Store one BF16-source head using only this side's packed layout and metadata. Eight-bit RotorQuant sides
+    encode with the float32 tables ``CENTROIDS`` (``CENTROIDS_8``) and ``THRESHOLDS`` (``LIFTING_8``)."""
 
     if CODEC:
         M: tl.constexpr = D // 128
@@ -128,7 +139,7 @@ def store_side(x, DATA, SCALE, slot, STATUS, D: tl.constexpr, BITS: tl.constexpr
             tl.store(DATA + base + 64 + tl.arange(0, 32)[None, :], middle)
             tl.store(DATA + base + 96 + tl.arange(0, 16)[None, :], high)
         elif BITS == 8:
-            code, scale = rotor.quant_groups_8(block, M=M, CODEC=CODEC)
+            code, scale = rotor.quant_groups_8(block, M=M, CODEC=CODEC, CENTROIDS=CENTROIDS, THRESHOLDS=THRESHOLDS)
             base = slot * D + groups[:, None] * 128
             tl.store(DATA + base + tl.arange(0, 128)[None, :], code)
         else:

@@ -17,7 +17,7 @@ from .kvquant import dequant_group_4, dequant_group_8, h32
 from .rotorquant_kernel import dequant_group_3 as rotor_dequant_3, dequant_group_4 as rotor_dequant_4
 from .rotorquant_kernel import dequant_group_6 as rotor_dequant_6
 from .rotorquant_kernel import dequant_group_7 as rotor_dequant_7, dequant_group_8 as rotor_dequant_8
-from .rotorquant_kernel import rotate as rotor_rotate
+from .rotorquant_kernel import LIFTING_8, rotate as rotor_rotate
 from .rotorquant_ref import CENTROIDS_6, CENTROIDS_8
 
 CHUNK = 512
@@ -395,8 +395,16 @@ class AttnScratch:
         self.hist = torch.zeros((multi, 4, 256), dtype=torch.int32, device=device) if self.qsa else None
         self.suf = torch.zeros((multi, self.cw, 257), dtype=torch.int32, device=device) if self.qsa else None
         self.sms = torch.cuda.get_device_properties(device).multi_processor_count if self.qsa else 0
-        # ``_chunk_quarters``' centroid tables, CENTROIDS_6 then CENTROIDS_8 as float32 (the constants' exact values)
-        self.centroids = torch.tensor(CENTROIDS_6 + CENTROIDS_8, dtype=torch.float32, device=device)
+        self.centroids, self.thresholds = codebook(device)
+
+
+def codebook(device) -> tuple[torch.Tensor, torch.Tensor]:
+    """The RotorQuant constants kernels read from device memory, as float32 (the constants' exact values): the
+    centroids, CENTROIDS_6 at 0 and CENTROIDS_8 at 64 (``_chunk_quarters``, the eight-bit encoders of
+    ``glue._prep_row``), and the eight-bit lifting thresholds ``LIFTING_8`` (the eight-bit encoders)."""
+
+    return (torch.tensor(CENTROIDS_6 + CENTROIDS_8, dtype=torch.float32, device=device),
+            torch.tensor(LIFTING_8, dtype=torch.float32, device=device))
 
 
 def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch,
