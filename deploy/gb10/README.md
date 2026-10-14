@@ -49,7 +49,8 @@ build's tokens. On GB10 a staged test container reproduced the previous build's 
 ~650k, and a container A/B measured decode +5.9% (5.4 to 6.5%) and prompt passes 1.44 to 1.59x. After the swap,
 reference replies at ~30k and ~150k matched, live tokenization, thinking-off, thinking and tool-call checks passed,
 and Harness reports the provider compatible. Every Triton kernel run since the swap has machine code already run on
-this GB10. The replaced container is retained stopped as `qwen38-flash-next-tf-rollback-rq8-20261014`. See
+this GB10. The replaced container is retained stopped as `qwen38-flash-next-tf-rollback-rq8-20261014`. The
+memory reserve then rose from 6 to 8 GiB (owner decision): 110.11 GiB startup budget, 28.4 GiB for stream caches. See
 [the deployment receipt](deployment-bw-20261014.json) and the
 [selection evidence](../../docs/optimization-validation.md).
 

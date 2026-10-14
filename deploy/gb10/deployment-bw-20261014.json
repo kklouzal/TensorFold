@@ -45,5 +45,12 @@
   "harness_provider_status": "reachable, compatible, contextMaximum 1048576",
   "full_model_quality": "unchanged by construction (identical tokens)",
   "four_stream_gb10_throughput": "unmeasured"
+ },
+ "subsequent_change": {
+  "date": "2026-10-14T21:53:41Z",
+  "commit": "c82fba76",
+  "change": "TENSORFOLD_MEMORY_RESERVE_GIB 6 -> 8 (owner decision, capped at 8); container recreated as b55e56d3324b8f2eac8b1a4f2a07426a603c7b607b0271facf7fc02d56b109e3, healthy 21:54:15Z",
+  "startup_log": "startup estimate 100.01 GiB within 110.11 GiB (was 112.12); 28.4 GiB free for stream caches (was 30.4), 17.47 GiB for one at the full window",
+  "checks": "tokenize 55 + template sha, arithmetic off/low, tool call: pass; Harness provider compatible"
  }
 }
