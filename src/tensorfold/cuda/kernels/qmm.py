@@ -27,7 +27,7 @@ def _ext():
 
 
 @lru_cache(maxsize=None)
-def _chip(device: int) -> tuple[int, int, int]:
+def chip(device: int) -> tuple[int, int, int]:
     p = torch.cuda.get_device_properties(device)
     return p.major, p.minor, p.multi_processor_count
 
@@ -138,6 +138,9 @@ def bucket(m: int) -> int:
     return 16 if m <= 16 else 32 if m <= 32 else 64
 
 
+BUCKET_TILES = {16: 1, 32: 2, 64: 3}     # the row buckets' 64-column blocks (TENSORFOLD_QMM_LANE_TILES)
+
+
 @triton.jit
 def _group_sums(X, XS, ldx, KG: tl.constexpr, GS: tl.constexpr, GB: tl.constexpr):
     m = tl.program_id(0)
@@ -162,9 +165,13 @@ def group_sums(x: torch.Tensor, gs: int = 64) -> torch.Tensor:
 
 
 def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, sk: int | None = None, f32: bool = False,
-           out: torch.Tensor | None = None, part: torch.Tensor | None = None, reduce: bool = True) -> torch.Tensor:
+           out: torch.Tensor | None = None, part: torch.Tensor | None = None, reduce: bool = True, tile: int = 0,
+           clusters: bool = True) -> torch.Tensor:
     """x @ q.T as (M, n) bf16, or fp32; unreduced K slices are added in order.
 
+    ``tile`` (0: the row bucket's) picks the lane kernel's block (TENSORFOLD_QMM_LANE_TILES) and ``clusters`` False
+    keeps a reduced split K out of thread-block clusters (the buffer and reduce kernel add the same slices in the
+    same order); both are launch choices, never a row's bits. Groups of 64 on sm_12x take the grouped kernel.
     Written buffers must be disjoint from simultaneous kernel reads. A staged
     reduction may alias out with an input; unused out/part buffers are allowed.
     See ``docs/cuda-kernel-contracts.md`` for stream and scratch ownership.
@@ -182,11 +189,12 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, sk: int | 
         out = torch.empty((m, q.n), dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
     if q.gs == 64 and reduce and grouped(x.device.index):
         _ext().qmm_group(x, xs, [q.weight], [q.scales], [q.biases], [out], [q.n], [sk], f32,
-                         group_tile(m, *_chip(x.device.index)), -1)
+                         group_tile(m, *chip(x.device.index)), -1)
         return out
     if sk > 1 and not reduce and part is None:
         part = torch.empty((sk, m, q.n), dtype=torch.float32, device=x.device)
-    _ext().qmm(x, xs, q.weight, q.scales, q.biases, out, part, q.n, sk, q.gs, bucket(m), f32, reduce, pdl.ON)
+    _ext().qmm(x, xs, q.weight, q.scales, q.biases, out, part, q.n, sk, q.gs, tile or BUCKET_TILES[bucket(m)], f32,
+               reduce, clusters, pdl.ON)
     return out if sk == 1 or reduce else part.reshape(-1)[:sk * m * q.n].view(sk, m, q.n)
 
 
@@ -207,7 +215,7 @@ def matmul_group(x: torch.Tensor, qs: list[Q4], xs: torch.Tensor | None = None, 
         xs = group_sums(x, 64)
     dtype = torch.float32 if f32 else torch.bfloat16
     outs = [torch.empty((x.shape[0], q.n), dtype=dtype, device=x.device) for q in qs]
-    tile = tile or group_tile(x.shape[0], *_chip(x.device.index))
+    tile = tile or group_tile(x.shape[0], *chip(x.device.index))
     _ext().qmm_group(x, xs, [q.weight for q in qs], [q.scales for q in qs], [q.biases for q in qs], outs,
                      [q.n for q in qs], sks, f32, tile, early)
     return outs

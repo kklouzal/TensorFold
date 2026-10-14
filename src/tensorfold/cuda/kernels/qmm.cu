@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include "qmm_frag.cuh"
+#include "qmm_policy.cuh"
 #include "kernel_configuration.cuh"
 
 namespace {
@@ -326,12 +327,14 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
 }
 
 template <int GS, bool F32, bool CLUSTER>
-void dispatch(int bm, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& s,
+void dispatch(int tile, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& s,
               const at::Tensor& b, at::Tensor& out, const at::Tensor& part, int N, int SK, bool pdl) {
-    switch (bm) {
-        case 16: launch<GS, 16, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
-        case 32: launch<GS, 32, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
-        default: launch<GS, 64, 64, 1, 4, 4, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
+    switch (tile) {
+#define LANE_CASE(ID, BM, BN, WM, WN, STAGES) \
+        case ID: launch<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
+        TENSORFOLD_QMM_LANE_TILES(LANE_CASE)
+#undef LANE_CASE
+        default: TORCH_CHECK(false, "no lane matmul block ", tile);
     }
 }
 
@@ -353,17 +356,18 @@ void reduce_slices(const at::Tensor& part, at::Tensor& out, long long total, int
 
 } // namespace
 
-// Clusters hold up to 8 K slices (the portable size) from sm_90; more, unreduced slices or older GPUs use the buffer.
-bool qmm_clusters(int SK, bool reduce) {
-    return SK > 1 && SK <= 8 && reduce && at::cuda::getCurrentDeviceProperties()->major >= 9;
+// Clusters hold up to 8 K slices (the portable size) from sm_90 when the host allows them (``clusters``); more,
+// unreduced slices, older GPUs or a host's choice against them use the buffer and reduce_kernel (the same sums).
+bool qmm_clusters(int SK, bool reduce, bool clusters) {
+    return clusters && SK > 1 && SK <= 8 && reduce && at::cuda::getCurrentDeviceProperties()->major >= 9;
 }
 
 void qmm_cuda(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
-              const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK, int gs, int bm,
-              bool f32, bool reduce, bool pdl) {
+              const at::Tensor& biases, at::Tensor& out, const at::Tensor& part, int N, int SK, int gs, int tile,
+              bool f32, bool reduce, bool clusters, bool pdl) {
     const int M = x.size(0);
-    const bool cluster = qmm_clusters(SK, reduce);
-#define GO(G, F, C) dispatch<G, F, C>(bm, x, xs, w, scales, biases, out, part, N, SK, pdl)
+    const bool cluster = qmm_clusters(SK, reduce, clusters);
+#define GO(G, F, C) dispatch<G, F, C>(tile, x, xs, w, scales, biases, out, part, N, SK, pdl)
     if (gs == 64) {
         if (f32) { if (cluster) GO(64, true, true); else GO(64, true, false); }
         else { if (cluster) GO(64, false, true); else GO(64, false, false); }

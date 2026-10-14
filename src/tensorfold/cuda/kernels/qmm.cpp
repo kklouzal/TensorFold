@@ -46,9 +46,9 @@ static void check_packed_reads(const at::Tensor& write, const at::Tensor& w, con
                     !tensorfold::overlaps(write, *tensor, elements, -1, columns), "writes must not overlap loaded scale/bias columns");
 }
 
-bool qmm_clusters(int, bool);
+bool qmm_clusters(int, bool, bool);
 void qmm_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
-              at::Tensor&, const at::Tensor&, int, int, int, int, bool, bool, bool);
+              at::Tensor&, const at::Tensor&, int, int, int, int, bool, bool, bool, bool);
 void qmm_group_cuda(const at::Tensor&, const at::Tensor&, const std::vector<at::Tensor>&,
                     const std::vector<at::Tensor>&, const std::vector<at::Tensor>&, std::vector<at::Tensor>&,
                     const std::vector<int64_t>&, const std::vector<int64_t>&, bool, int, int);
@@ -60,12 +60,16 @@ void qmm_prefill8_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, 
                        const at::Tensor&, at::Tensor&, int, int, bool, int);
 
 // x (M, K) bf16 times a packed 4-bit weight; ``reduce`` false leaves the K slices unadded in ``part`` (SK, M, n).
+// ``tile``: the block (TENSORFOLD_QMM_LANE_TILES); ``clusters``: a reduced split K may sum in a cluster.
 // ``pdl``: programmatic dependent launch (the kernels wait for their predecessor before reading x or writing).
 void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& scales,
          const at::Tensor& biases, at::Tensor& out, const c10::optional<at::Tensor>& part, int64_t n, int64_t sk,
-         int64_t gs, int64_t bm, bool f32, bool reduce, bool pdl) {
+         int64_t gs, int64_t tile, bool f32, bool reduce, bool clusters, bool pdl) {
     TORCH_CHECK(gs == 32 || gs == 64, "groups of 32 or 64");
-    TORCH_CHECK(bm == 16 || bm == 32 || bm == 64, "row tile 16, 32 or 64");
+    TORCH_CHECK(tile >= 1 && tile <= std::numeric_limits<int>::max() &&
+                tensorfold::qmm_lane_tile(static_cast<int>(tile)).rows > 0, "no lane matmul block ", tile);
+    const auto block = tensorfold::qmm_lane_tile(static_cast<int>(tile));
+    const int64_t bm = block.rows, bn = block.columns;
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.size(0) >= 1 &&
                 x.stride(1) == 1 && x.stride(0) >= x.size(1), "x: (M, K) bf16 with contiguous rows");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0 && (x.size(0) == 1 || x.stride(0) % 8 == 0),
@@ -88,11 +92,11 @@ void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const a
     check_packed_alignment(w, scales, biases);
     c10::cuda::CUDAGuard guard(x.device());
     const auto* properties = at::cuda::getDeviceProperties(x.get_device());
-    tensorfold::check_grid((m + bm - 1) / bm * ((n + 63) / 64), static_cast<int>(sk), properties);
+    tensorfold::check_grid((m + bm - 1) / bm * ((n + bn - 1) / bn), static_cast<int>(sk), properties);
     at::Tensor p;
-    const bool staged = sk > 1 && !qmm_clusters(static_cast<int>(sk), reduce);
+    const bool staged = sk > 1 && !qmm_clusters(static_cast<int>(sk), reduce, clusters);
     if (staged && reduce) tensorfold::check_grid((m * n + 255) / 256, 1, properties);
-    const int64_t columns = (n + 63) / 64 * 64;
+    const int64_t columns = (n + bn - 1) / bn * bn;
     if (staged) {
         TORCH_CHECK(m <= std::numeric_limits<int64_t>::max() / sk / n,
                     "K-slice scratch dimensions exceed signed-int64 storage");
@@ -114,7 +118,7 @@ void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const a
         check_packed_reads(out, w, scales, biases, columns, k);
     }
     qmm_cuda(x, xs, w, scales, biases, out, p, static_cast<int>(n), static_cast<int>(sk), static_cast<int>(gs),
-             static_cast<int>(bm), f32, reduce, pdl);
+             static_cast<int>(tile), f32, reduce, clusters, pdl);
 }
 
 // Up to four packed 4-bit weights against one x in one sm_12x launch, each with its own K split (its own bits).
@@ -281,8 +285,18 @@ void qmm_prefill8w(const at::Tensor& x8, const at::Tensor& a, const at::Tensor& 
                        l64);
 }
 
+// The lane matmul's blocks as (id, rows, columns), from TENSORFOLD_QMM_LANE_TILES.
+std::vector<std::vector<int64_t>> lane_tiles() {
+    return {
+#define LANE_ROW(ID, BM, BN, WM, WN, STAGES) {ID, BM, BN},
+        TENSORFOLD_QMM_LANE_TILES(LANE_ROW)
+#undef LANE_ROW
+    };
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("qmm", &qmm);
+    m.def("lane_tiles", &lane_tiles);
     m.def("qmm_group", &qmm_group);
     m.def("qmm_prefill", &qmm_prefill);
     m.def("qmm_prefill8", &qmm_prefill8);

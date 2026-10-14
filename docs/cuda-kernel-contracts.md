@@ -92,7 +92,9 @@ so separate regions of one allocation and outputs in an unused row gap remain
 valid. Sharing read-only weight or scale tensors is allowed.
 
 For a direct or clustered matmul, output writes must be disjoint from every
-input read in that launch. With non-cluster split-K staging, the producer writes
+input read in that launch. A reduced split K sums in a cluster on sm_90 and
+newer unless the host's launch choice declines clusters; then, as on older GPUs
+and past 8 slices, it is staged. With non-cluster split-K staging, the producer writes
 only the used scratch prefix `(SK, M, n)`; that prefix must be disjoint from its
 inputs. A subsequent reduction reads scratch and writes an output disjoint from
 scratch. Because input reads have already completed, this staged output may
@@ -110,7 +112,8 @@ These metadata checks preserve K-slice addition order and existing bf16/fp32
 rounding.
 
 Outputs and split-K scratch may occupy packed padding that the selected kernel
-never reads. The direct lane kernel loads columns through n rounded up to 64.
+never reads. The direct lane kernel loads columns through n rounded up to its
+selected block's columns, 64 or 128.
 Grouped launches load through n rounded up to their selected column tile, 64 or
 128. BF16 prefill loads through its selected 64, 128 or 256-column tile, stopping
 at the allocation's 128-column padded width. FP8 prefill uses 128-column tiles

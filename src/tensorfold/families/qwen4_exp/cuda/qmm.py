@@ -273,6 +273,34 @@ def split_for(n: int, k: int) -> int:
     return SPLITS.get((n, k)) or split_k(n, k)
 
 
+# The frag lane matmul's launch by chip (major, minor, SMs) and shape, where measured: per (n, k), (up to rows, block
+# of TENSORFOLD_QMM_LANE_TILES, clusters allowed), the first that covers the window; else the row bucket's block with
+# clusters. Blocks and the cluster/reduce-kernel slice sum never change a row's bits (fixed K slices, groups in order).
+# dev-01 (RTX PRO 2000, sm_120, 34 SMs; data/qmm micro, DRAM-cold weights, vs the bucket blocks): 128 columns on 4
+# warps, 3 stages to 16 rows (0.90-0.96x the 64-column blocks' time; out projections 0.88x), 32 x 128 on 4 warps to
+# 32 rows (0.79-0.89x); the draft head (fp32 out) 2 stages (0.93x); the 2560 x 2560 K split staged instead of
+# clusters (at most 17 clusters of 4 fit at a time: 0.53-0.71x to 16 rows, with 32-row blocks 0.45-0.67x to 96 rows).
+LANE = {
+    (12, 0, 34): {
+        (16480, 2560): ((16, 4, True), (32, 5, True)),          # DeltaNet q/k/v, z, b, a
+        (13952, 2560): ((16, 4, True), (32, 5, True)),          # attention q|gate, k, v, indexer
+        (10240, 2560): ((16, 4, True), (32, 5, True)),          # PLE key
+        (2560, 6144): ((16, 4, True), (32, 5, True)),           # DeltaNet / attention output (unreduced slices)
+        (2560, 2560): ((16, 1, False), (96, 5, False)),         # PLE value, MTP fc_e / fc_h
+        (79591, 2560): ((16, 6, True),),                        # draft head
+    },
+}
+
+
+def lane_launch(n: int, k: int, m: int, chip: tuple[int, int, int]) -> tuple[int, bool]:
+    """(block, clusters allowed) for m rows of an (n, k) frag matrix on ``chip``: (0, True) is the row bucket's."""
+
+    for rows, tile, clusters in LANE.get(chip, {}).get((n, k), ()):
+        if m <= rows:
+            return tile, clusters
+    return 0, True
+
+
 def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch.Tensor | None = None,
            f32: bool = False, sk: int | None = None, part: torch.Tensor | None = None,
            pd: int | None = None, num_warps: int | None = None, num_stages: int | None = None,
@@ -286,8 +314,9 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     if q.layout == "frag":
         if x.shape[1] != q.k or x.stride(1) != 1:
             raise ValueError(f"matmul: x {tuple(x.shape)} does not match K={q.k}")
+        tile, clusters = lane_launch(q.n, q.k, x.shape[0], shared.chip(x.device.index))
         return shared.matmul(x, q, group_sums(x) if xs is None else xs, sk=int(sk) if sk else split_for(q.n, q.k),
-                             f32=f32, out=out, part=part, reduce=reduce)
+                             f32=f32, out=out, part=part, reduce=reduce, tile=tile, clusters=clusters)
     m, k = x.shape
     if k != q.k or x.stride(1) != 1:
         raise ValueError(f"matmul: x {tuple(x.shape)} does not match K={q.k}")
