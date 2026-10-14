@@ -114,7 +114,6 @@ class _Policy:
             self._empty = np.empty(capacity, dtype=np.bool_)
             self._scratch = np.empty(capacity, dtype=np.int64)
             self.victim = self._vector_victim
-        self.victim_selection_receipt = receipt
         self._batch_scan_limit = None
         if receipt is not None and receipt["scan_limit"] is not None:
             self.configure_victim_selection(receipt["scan_limit"])

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,28 +12,24 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten
 import numpy as np
-from mlx_lm.models.gated_delta import gated_delta_update
-from mlx_lm.models.switch_layers import SwitchGLU
 
 from tensorfold.families.qwen4_exp.host_table import ngrams_on_host
 from tensorfold.families.qwen4_exp.model_layers import (
     Config,
-    _derived,
     CenteredRMSNorm,
-    GatedRMSNorm,
     HyperConnection,
     _queue,
     _write_back,
     LinearCache,
     AttentionCache,
     GatedDeltaNet,
-    Indexer,
+    Indexer,  # noqa: F401 - tests reach it as ``model.Indexer``
     SparseAttention,
-    MLP,
     SparseMoE,
 )
 
-from tensorfold.kernels.qwen.flash_next.v1 import embed, prefill, prefill_hc, prefill_mm
+from tensorfold.kernels.qwen.flash_next.v1 import embed, prefill_hc, prefill_mm
+from tensorfold.kernels.qwen.flash_next.v1 import prefill  # noqa: F401 - tests patch it as ``model.prefill``
 
 MODEL_TYPE = "qwen4_exp"
 

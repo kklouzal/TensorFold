@@ -36,7 +36,7 @@ def test_f16_dynamic_pre_run_hook_retains_original_argument_packing():
     jit, calls = JIT(), []
     kernel = SimpleNamespace(src=SimpleNamespace(fn=jit))
     arguments = tuple(range(12))+(True,)
-    plan = fixed(kernel, lambda *args: calls.append(args), arguments, (), {'grid': (1, 2, 3)})
+    plan = fixed(kernel, lambda *args: calls.append(args), arguments, (), (1, 2, 3))
     plan()
     assert calls == [arguments] and not jit.calls
     jit.pre_run_hooks.append(object())
@@ -54,8 +54,8 @@ def test_hook_registered_during_down_is_honored_by_up():
     def down(*args):
         compiled.append('down')
         jit.pre_run_hooks.append(object())
-    a = fixed(kernel, down, arguments, (), {'grid': (1, 1, 1)})
-    b = fixed(kernel, lambda *args: compiled.append('up'), arguments, (), {'grid': (1, 1, 1)})
+    a = fixed(kernel, down, arguments, (), (1, 1, 1))
+    b = fixed(kernel, lambda *args: compiled.append('up'), arguments, (), (1, 1, 1))
     a()
     b()
     assert compiled == ['down'] and len(jit.calls) == 1

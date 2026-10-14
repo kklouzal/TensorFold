@@ -11,7 +11,6 @@ import numpy as np
 METHODS = ("modelopt", "compressed-tensors")
 E2M1 = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
                 dtype=np.float32)
-SCHEMES = ("nvfp4", "fp8", "fp8block", "mxfp8", "bf16")
 
 
 def config_block(config: dict) -> dict | None:

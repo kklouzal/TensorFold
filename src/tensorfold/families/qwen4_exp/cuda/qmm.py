@@ -102,10 +102,6 @@ def dequantize(words: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor) 
     return q * s + b
 
 
-def dequantize_q4(q: Q4) -> torch.Tensor:
-    return dequantize(*to_mlx(q))
-
-
 def split_k(n: int, k: int, target: int = 160) -> int:
     """K slices for an (n, k) weight: a function of the shape only (never of the row count)."""
 

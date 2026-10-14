@@ -25,13 +25,6 @@ from .mtp import mtp_forward
 from .weights import Weights
 
 
-def sample_mapped(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
-                  id_map: torch.Tensor) -> list[int]:
-    """Apply the shared exact candidate rule to the draft vocabulary's real token IDs."""
-
-    return sample_rows(logits, positions, sampling, id_map=id_map)
-
-
 class SamplingShard(ShardSampler):
     """Bind the shared shard owner to this model's communicator at startup."""
 

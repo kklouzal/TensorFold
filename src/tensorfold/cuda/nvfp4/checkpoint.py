@@ -87,7 +87,7 @@ def quant8(x: torch.Tensor, act: float, tb: int = 0) -> torch.Tensor:
 def pack4(weight: torch.Tensor, npad: int) -> torch.Tensor:
     """NVFP4 checkpoint bytes [N, K/2] -> the FP4 lane matmul's words [npad/64, K/64, 8, 32, 2] (int32)."""
 
-    n, k = weight.shape[0], weight.shape[1] * 2
+    k = weight.shape[1] * 2
     words = torch.empty((npad // 64, k // 64, 8, 32, 2), dtype=torch.int32, device=weight.device)
     _ext().pack4(weight.contiguous().view(torch.uint8), words)
     return words

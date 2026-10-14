@@ -31,8 +31,6 @@ class Buffers:
         self.rows, self.prefill = rows, prefill
         self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
         self.hc_plans = None
-        self.hc_plan_selection = {"status": "original", "reason": "unselected buffer region"}
-        self.rope_rows = None          # an image prompt chunk's [rows, 3] positions, else None
         head_rows = ENDS if prefill else rows
         bf, f32 = torch.bfloat16, torch.float32
         self.ids = torch.zeros((rows,), dtype=torch.int32, device=dev)
@@ -114,7 +112,6 @@ class Buffers:
         self.part = torch.empty((1 if prefill else 32 * max(rows, 4) * 2560,), dtype=f32, device=dev)
         # MTP
         self.mtp_e = torch.empty((rows, c.hidden), dtype=bf, device=dev)
-        self.mtp_xe = torch.empty((rows, c.hidden // 32), dtype=f32, device=dev)
         self.mtp_eo = torch.empty((rows, c.hidden), dtype=bf, device=dev)
         self.mtp_hn = torch.empty((rows, wide), dtype=bf, device=dev)
         self.mtp_xh = torch.empty((rows, wide // 32), dtype=f32, device=dev)
@@ -163,7 +160,6 @@ class State:
         self.kv_pair = kv_pair if kv_pair is not None else kvcache.get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
         self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
-        self.kv_format = self.kv_pair.key if self.kv_pair.symmetric else self.kv_pair
         self.kv_working_policy = "stored-basis-native64-v1"
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
