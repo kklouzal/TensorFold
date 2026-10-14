@@ -94,14 +94,14 @@ valid. Sharing read-only weight or scale tensors is allowed.
 For a direct or clustered matmul, output writes must be disjoint from every
 input read in that launch. A reduced split K sums in a cluster on sm_90 and
 newer unless the host's launch choice declines clusters; then, as on older GPUs
-and past 8 slices, it is staged. With non-cluster split-K staging, the producer writes
-only the used scratch prefix `(SK, M, n)`; that prefix must be disjoint from its
-inputs. A subsequent reduction reads scratch and writes an output disjoint from
-scratch. Because input reads have already completed, this staged output may
-alias an input. `reduce=False` with SK greater than one does not write `out`;
-SK equal to one writes `out` and does not use `part`. Buffers unused by the chosen
-path impose no alias restriction. Scratch capacity beyond its used prefix is
-not accessed.
+and past 8 slices, it is staged. With non-cluster split-K staging, the producer
+writes only the used scratch prefix `(SK, M, n)`; that prefix must be disjoint
+from its inputs. A subsequent reduction reads scratch and writes an output
+disjoint from scratch. Because input reads have already completed, this staged
+output may alias an input. `reduce=False` with SK greater than one does not
+write `out`; SK equal to one writes `out` and does not use `part`. Buffers
+unused by the chosen path impose no alias restriction. Scratch capacity beyond
+its used prefix is not accessed.
 
 Grouped QMM outputs must be mutually disjoint and disjoint from every group's
 actual input reads. Prefill and FP8 prefill outputs must be disjoint from their
