@@ -454,8 +454,8 @@ def dequant_half_6(low, high, scale, CENTROIDS, M: tl.constexpr):
     """One 64-coordinate half of six-bit groups: its 32 low-nibble bytes ``[M,32]``, 16 high-two-bit bytes ``[M,16]``
     and the group's scale ``[M]`` -> rotated BF16 ``[M,64]``.
 
-    Centroids load from ``CENTROIDS``, a float32 table of ``CENTROIDS_6`` (``centroid_table(6)``): the same
-    constants as ``_centroids``, so ``dequant_group_6``'s bits for these coordinates.
+    Centroids load from ``CENTROIDS``, the caller's float32 device copy of ``CENTROIDS_6``: the same constants as
+    ``_centroids``, so ``dequant_group_6``'s bits for these coordinates.
     """
 
     low = low.to(tl.int32)

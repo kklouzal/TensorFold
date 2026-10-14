@@ -192,7 +192,7 @@ full dependencies. Kernels compiled or launched without PDL keep their original 
 the lane matmul's template flag); the other extension kernels execute the two instructions as no-ops.
 `tests/test_pdl_kernel_contract.py` checks the wait-first rule over the converted sources.
 
-## Flash Next block selection and six-bit prompt passes
+## Flash Next block selection and six-bit centroid decoding
 
 A sparse-attention row keeps its `TOP` best-scoring complete blocks, in block order, ties to the lower block id,
 followed by its unfinished tail. `attention._launch_select` chooses the kernel that lists them: `_select` while a
@@ -208,8 +208,14 @@ the whole buffers with `_select_tiles`, `_select` and an independent sort (`test
 
 Prompt passes (`attention(prompt=True)`, the forward's prompt branch) decode six-bit RotorQuant sides through
 `rotorquant_kernel._centroids_lookup`, a register gather of the same canonical constants, so every element has
-the selection chain's bits; decode steps and the encoders keep the 63-selection chain (a gather in the sparse
-decode kernels spills its table and was slower on GB10, and an encoder's FP32 energy sum would change order).
-The folded six-bit selection hard-hung GB10 and is not used; re-qualify on GB10 before changing six-bit kernel
-code. `tests/cuda/test_flashnext_kv_pairs.py` checks the gather against captured-operand partials for every key and
-value format pair with a six-bit side.
+the selection chain's bits. Decode chunks with six-bit K and V at head width 256 (`attention._chunk_six`, both
+`_chunks` and `_chunks_multi`) decode 64-column quarters (`kv_pair.load_half6`) whose centroids load from the
+attention scratch's float32 `CENTROIDS_6` table (`rotorquant_kernel.dequant_half_6`; `geometry.CENTROID_TABLE_BYTES`
+in the memory plan): the four quarters' score MMAs accumulate in column order into one accumulator (the whole-tile
+dot's MMA sequence), the value update is per output column and the softmax runs on the same score tile, so the
+partials keep the whole-tile bits. Other pairs' decode and the encoders keep the 63-selection chain
+(a register gather in the sparse decode kernels spills its table and was slower on GB10, and an encoder's FP32
+energy sum would change order). The folded six-bit selection hard-hung GB10 and is not used; re-qualify on GB10
+before changing six-bit kernel code. `tests/cuda/test_flashnext_kv_pairs.py` checks against captured-operand
+partials the gather for every key and value format pair with a six-bit side and the quarter path (through
+`_chunks`) for every pair of six-bit sides.

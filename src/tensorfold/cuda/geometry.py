@@ -267,7 +267,7 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             scratch = (2 if mtp else 1) * (rows * (h * (hd + 2) * chunks + blocks) * 4 + qsa_select_bytes(rows, blocks))
             scratch += PREFILL_ATT_ROWS * (h * (hd + 2) * chunks + blocks) * 4
             scratch += qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
-            scratch += ((2 if mtp else 1) + 1) * CENTROID_TABLE_BYTES
+            scratch += (2 + int(mtp)) * CENTROID_TABLE_BYTES
         else:
             # Bound two retained prefixes, current KV state and a growth copy; speculative rows use separate workspace.
             rounded = 1 << (max(1024, capacity - reserve) - 1).bit_length()

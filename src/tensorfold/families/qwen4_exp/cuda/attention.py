@@ -65,9 +65,9 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR, CENTROIDS,
         sparse = tl.load(SPR + r) != 0
         n = tl.where(sparse, tl.load(NKR + r), n)
     if K_BITS >= 0:
-        _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
+        _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS,
                     H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP,
-                    GATHER6=GATHER6, CENTROIDS=CENTROIDS)
+                    GATHER6=GATHER6)
     else:
         _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
                H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS, CODEC=CODEC)
@@ -186,17 +186,18 @@ def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
 
 
 @triton.jit
-def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
+def _chunk_pair(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS,
                 H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
                 NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr,
                 K_BITS: tl.constexpr, K_CODEC: tl.constexpr, V_BITS: tl.constexpr, V_CODEC: tl.constexpr,
-                ROTOR_LOOKUP: tl.constexpr = False, GATHER6: tl.constexpr = False, CENTROIDS=None):
+                ROTOR_LOOKUP: tl.constexpr = False, GATHER6: tl.constexpr = False):
     """Canonical 64-key arithmetic with each side decoded in its own stored basis.
 
     Six-bit K and V at head width 256 outside prompt passes decode through ``_chunk_six`` (``CENTROIDS``: the
     scratch's centroid table), the same bits."""
 
     if K_BITS == 6 and V_BITS == 6 and D == 256 and not GATHER6:
+        tl.static_assert(not ROTOR_LOOKUP)      # the lookup is seven-bit only, as ``load_side`` asserts
         _chunk_six(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, CENTROIDS, H, HK, D, G, CH, NCH, SCALE,
                    IDW, QSA)
     else:

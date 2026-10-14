@@ -80,10 +80,10 @@ def _scores_multi(IQ, CP, POSR, SID, SC, NB, N, HI: tl.constexpr, DI: tl.constex
 
 
 @triton.jit
-def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr,
-                  G: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr,
-                  QSA: tl.constexpr, BITS: tl.constexpr, KT: tl.constexpr, RATIO: tl.constexpr, TOP: tl.constexpr,
-                  CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
+def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.constexpr, HK: tl.constexpr,
+                  D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr, SCALE: tl.constexpr,
+                  IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr, KT: tl.constexpr, RATIO: tl.constexpr,
+                  TOP: tl.constexpr, CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                   V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
                   ROTOR_LOOKUP: tl.constexpr = False, PDL: tl.constexpr = False):
     pdl_wait(PDL)
@@ -99,8 +99,8 @@ def _chunks_multi(Q, CP, POSR, SID, PO, PM, PL, IDS, NKR, CENTROIDS, N, H: tl.co
         VS_TYPE: tl.constexpr = tl.float32 if V_CODEC else tl.float16
         _chunk_pair(Q, _ptr(CP, s, KT), _ptr(CP + N, s, VT), _ptr(CP + 2 * N, s, KS_TYPE),
                     _ptr(CP + 3 * N, s, VS_TYPE), n, sparse, r, tl.program_id(1), tl.program_id(2),
-                    PO, PM, PL, IDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS, V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP,
-                    CENTROIDS=CENTROIDS)
+                    PO, PM, PL, IDS, CENTROIDS, H, HK, D, G, CH, NCH, SCALE, IDW, QSA, K_BITS, K_CODEC, V_BITS,
+                    V_CODEC, ROTOR_LOOKUP=ROTOR_LOOKUP)
     else:
         ST: tl.constexpr = tl.float32 if CODEC else tl.float16
         _chunk(Q, _ptr(CP, s, KT), _ptr(CP + N, s, KT), _ptr(CP + 2 * N, s, ST), _ptr(CP + 3 * N, s, ST),
@@ -265,10 +265,10 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
     g = c.heads // hk
     # every chunk (a fixed geometry): one past a row's keys writes nothing (start < n)
     _chunks_multi[(rows, hk, sc.nch)](b.q, cp, step.posr, step.sid, sc.po, sc.pm, sc.pl, sc.ids, sc.nk,
-                                      sc.centroids, n, H=c.heads,
-                                      HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch, SCALE=scale, IDW=sc.idw,
-                                      QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top, CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4,
-                                      num_stages=1, PDL=pdl.ON, launch_pdl=pdl.ON)
+                                      sc.centroids, n, H=c.heads, HK=hk, D=c.head_dim, G=g, CH=CHUNK, NCH=sc.nch,
+                                      SCALE=scale, IDW=sc.idw, QSA=sc.qsa, BITS=kb, KT=kt, RATIO=sc.ratio, TOP=top,
+                                      CODEC=0, ROTOR_LOOKUP=step.rotor_lookup, **pair, num_warps=4, num_stages=1,
+                                      PDL=pdl.ON, launch_pdl=pdl.ON)
     _merge_multi[(rows, hk)](sc.po, sc.pm, sc.pl, step.posr, b.attn_o, sc.nk, H=c.heads, HK=hk, D=c.head_dim, G=g,
                              CH=CHUNK, NCH=sc.nch, QSA=sc.qsa, BITS=vb, RATIO=sc.ratio, TOP=top, CODEC=0, **merge_pair,
                              num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
