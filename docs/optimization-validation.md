@@ -212,12 +212,16 @@ the removed path was slower):
 
 The host-wait and PDL intervals above zero are single unreplicated exclusions
 among many comparisons; the predeclared independent rerun of such a bucket did
-not run before testing closed. Both stages are kept under the owner's rule
-(keep unless a measured regression), without an established gain. Lean
-sampling packets were rejected: the original path was faster, one stream
-pooled +0.41% [+0.07, +0.77] and per stream in the second mix +0.74%
-[+0.07, +1.45]. The A/B's base arm also ran a cost-aware draft rule and a
-session suffix drafter; both were rejected, so drafting keeps the confidence
+not run before testing closed. A percentile bootstrap of three groups or six
+streams under-covers: paired-t 95% intervals of the same rows are -0.95 to
++2.92% (host wait, the mix's 3 aggregates) and -0.36 to +2.12% (PDL, the 6
+streams), so neither is a measured regression, and both stages are kept under
+the owner's rule (keep unless a measured regression), without an established
+gain. Lean sampling packets were rejected: the original path was faster, one
+stream pooled +0.41% [+0.07, +0.77] (paired-t [+0.01, +0.80]) and per stream
+in the second mix +0.74% [+0.07, +1.45], with the same sign at every
+one-stream context (30k to 650k) and in that mix's aggregate. The A/B's base
+arm also ran a cost-aware draft rule and a session suffix drafter; both were rejected, so drafting keeps the confidence
 rule, and this combination of kept stages is not itself measured. Prompt
 passes also launch with the decoder's PDL policy; prompt throughput under the
 kept round stages was not A/B-measured. Captured keys' memory is measured from

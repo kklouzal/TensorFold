@@ -288,8 +288,9 @@ Generic image defaults put compiled artifacts under
 Compose profile retains **ARM64-only, unsuffixed**
 `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/` directories for Torch
 extensions, Triton, CUDA, Inductor and XDG caches. Its default host bind is now
-`/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-audit-20261013`,
-separate from the earlier images' `cache-python-0.6-2edfaa51` and `cache` binds.
+`/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-perf-20261013`,
+separate from the earlier images' `cache-python-0.6-audit-20261013`,
+`cache-python-0.6-2edfaa51` and `cache` binds.
 Retain those old directories for rollback. Use a new `KERNEL_CACHE` directory for
 each subsequent image replacement; matching ABI or module names alone do not
 establish native artifact compatibility. These deployment overrides do not
