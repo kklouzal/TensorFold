@@ -31,7 +31,7 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
                 CODEC: tl.constexpr = 0, STATUS=None, LAYER: tl.constexpr = 0,
                 K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                 V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, VT: tl.constexpr = None,
-                PDL: tl.constexpr = False):
+                CENTROIDS=None, THRESHOLDS=None, PDL: tl.constexpr = False):
     pdl_wait(PDL)
     r = tl.program_id(0)
     s = tl.load(SID + r)
@@ -49,7 +49,8 @@ def _prep_multi(P, POSR, SID, CP, VP, QW, KW, IW, INV, Q, IQ, eps, N, PW: tl.con
                    _ptr(CP + 4 * N, s, tl.bfloat16), eps, PW, NQ, NKV, HD, NI, IHD, HALF, BITS,
                    ROPE=rope, DELTA=delta, length=length, MODE=2 if VISION else 0, S1=S1, S2=S2,
                    ROPE_SCALE=ROPE_SCALE, CODEC=CODEC, STATUS=status, VALIDATE=PAIR or CODEC != 0, LAYER=LAYER,
-                   K_BITS=K_BITS, K_CODEC=K_CODEC, V_BITS=V_BITS, V_CODEC=V_CODEC)
+                   K_BITS=K_BITS, K_CODEC=K_CODEC, V_BITS=V_BITS, V_CODEC=V_CODEC, CENTROIDS=CENTROIDS,
+                   THRESHOLDS=THRESHOLDS)
 
 
 @triton.jit
@@ -239,7 +240,7 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
     n, rows, cp = step.n, step.rows, step.ptrs[step.index[layer.index]]
     kb, vb, kt = step.k_bits, step.v_bits, step.kt
     pair, merge_pair = step.shader_args, step.merge_shader_args
-    heads = c.heads + c.kv_heads + c.index_heads + 1
+    heads = glue.prep_heads(c.heads, c.kv_heads, c.index_heads, not step.native)
     sections = w.cfg.mrope_section
     _prep_multi[(rows, heads)](b.pa[:rows], step.posr, step.sid, cp, step.vision_ptrs,
                                a.q_scale, a.k_scale, a.iq_scale, w.inv_freq,
@@ -247,7 +248,7 @@ def layer(layer, w, b, step: Step, scale: float) -> torch.Tensor:
                                NI=c.index_heads, IHD=c.index_dim, HALF=w.inv_freq.numel(), BITS=kb, KT=kt,
                                VISION=step.vision, S1=sections[1], S2=sections[2],
                                ROPE_SCALE=c.rope_attention_factor, CODEC=0, STATUS=step.status_ptrs,
-                               LAYER=layer.index, **pair,
+                               LAYER=layer.index, CENTROIDS=sc.centroids, THRESHOLDS=sc.thresholds, **pair,
                                num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
     top = sc.budget // sc.ratio
     if sc.qsa:

@@ -243,7 +243,8 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                        k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
                        v_bits=st.kv_value_bits, v_codec=st.kv_value_codec,
                        status=st.kv_status, layer=layer.index,
-                       rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+                       rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale,
+                       centroids=b.attn.centroids, thresholds=b.attn.thresholds)
         if b.prefill:
             if b.attn.qsa:
                 attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,

@@ -10,7 +10,7 @@ from tensorfold.cuda import pdl
 from tensorfold.cuda.pdl import wait as pdl_wait
 
 from .image_rows import rope_axis
-from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage
+from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage, validate_tables
 
 from .kvquant import h32, quant_groups_4, quant_groups_8
 from .rotorquant_kernel import quant_groups_3 as rotor_groups_3, quant_groups_4 as rotor_groups_4, rotate as rotor_rotate
@@ -323,7 +323,8 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
                S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
                CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
                K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
+               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None,
+               PDL: tl.constexpr = False):
     """Normalize stacked q/k/indexer heads in fp32, round to bf16, apply rotate-half RoPE and round again; store keys, values and raw indexer keys at POS0 + r; BITS 8 or 4 quantize keys and values and rotate q alike (q . Hk = Hq . k)."""
 
     pdl_wait(PDL)
@@ -331,7 +332,7 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
     _prep_row(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW, NQ,
               NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE, CODEC=CODEC,
               STATUS=STATUS, VALIDATE=VALIDATE, LAYER=LAYER, K_BITS=K_BITS, K_CODEC=K_CODEC,
-              V_BITS=V_BITS, V_CODEC=V_CODEC)
+              V_BITS=V_BITS, V_CODEC=V_CODEC, CENTROIDS=CENTROIDS, THRESHOLDS=THRESHOLDS)
 
 
 @triton.jit
@@ -341,10 +342,14 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
               S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
               CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
               K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
-              V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0):
-    """``_attn_prep``'s head ``head`` of row r at position ``pos``, into the caches given."""
+              V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None):
+    """``_attn_prep``'s head ``head`` of row r at position ``pos``, into the caches given. Pair formats store each
+    KV head's value side from a program of its own, head NQ + NKV + NI + 1 + j for KV head j (``prep_heads``): the
+    encoders are the longest path, and the sides share no arithmetic. ``CENTROIDS`` (the eight-bit centroids at 64,
+    as ``AttnScratch.centroids``) and ``THRESHOLDS`` (``AttnScratch.thresholds``) serve eight-bit RotorQuant sides."""
 
     PAIR: tl.constexpr = K_BITS >= 0
+    C8 = CENTROIDS + 64 if CENTROIDS is not None else None
     QB: tl.constexpr = K_BITS if PAIR else BITS
     QC: tl.constexpr = K_CODEC if PAIR else CODEC
     d = tl.arange(0, HD)
@@ -403,13 +408,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         elif head < NQ + NKV:
             slot = pos.to(tl.int64) * NKV + head - NQ
             if PAIR:
-                v = tl.load(P + r * PW + NQ * 2 * HD + NKV * HD + (head - NQ) * HD + d)
-                if VALIDATE:
-                    v = source_guard(v.to(tl.float32), STATUS, 4, LAYER).to(tl.bfloat16)
                 store_side(out, KC, KS, slot, STATUS, D=HD, BITS=K_BITS, CODEC=K_CODEC,
-                           VALIDATE=VALIDATE, LAYER=LAYER)
-                store_side(v, VC, VS, slot, STATUS, D=HD, BITS=V_BITS, CODEC=V_CODEC,
-                           VALIDATE=VALIDATE, LAYER=LAYER)
+                           VALIDATE=VALIDATE, LAYER=LAYER, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
             elif CODEC:
                 gg = tl.arange(0, HD // 128)
                 block = tl.reshape(out.to(tl.float32), (HD // 128, 128))
@@ -451,8 +451,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
                     tl.store(KC + base + 96 + hi[None, :], kh)
                     tl.store(VC + base + 96 + hi[None, :], vh)
                 elif BITS == 8:
-                    kc, ks = rotor_groups_8(block, M=HD // 128, CODEC=CODEC)
-                    vc, vs = rotor_groups_8(vblock, M=HD // 128, CODEC=CODEC)
+                    kc, ks = rotor_groups_8(block, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
+                    vc, vs = rotor_groups_8(vblock, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
                     gb = tl.arange(0, 128)
                     off = slot * HD + gg[:, None] * 128 + gb[None, :]
                     tl.store(KC + off, kc)
@@ -499,12 +499,26 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
                 tl.store(VC + slot * HD + d, v)
         else:
             tl.store(IQ + (r * NI + head - NQ - NKV) * IHD + d, out, mask=live)
-    else:
+    elif head == NQ + NKV + NI:
         live = d < IHD
         raw = tl.load(P + r * PW + NQ * 2 * HD + 2 * NKV * HD + NI * IHD + d, mask=live, other=0.0)
         if (PAIR or CODEC) and VALIDATE:
             raw = _kv_guard(raw.to(tl.float32), STATUS, 16, LAYER).to(tl.bfloat16)
         tl.store(IKC + pos.to(tl.int64) * IHD + d, raw, mask=live)
+    elif PAIR:
+        j = head - (NQ + NKV + NI + 1)
+        v = tl.load(P + r * PW + NQ * 2 * HD + NKV * HD + j * HD + d)
+        if VALIDATE:
+            v = source_guard(v.to(tl.float32), STATUS, 4, LAYER).to(tl.bfloat16)
+        store_side(v, VC, VS, pos.to(tl.int64) * NKV + j, STATUS, D=HD, BITS=V_BITS, CODEC=V_CODEC,
+                   VALIDATE=VALIDATE, LAYER=LAYER, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
+
+
+def prep_heads(q_heads: int, kv_heads: int, index_heads: int, pair: bool) -> int:
+    """``_prep_row``'s programs a row: query, KV and indexer heads, the indexer key, and a value side a KV head with
+    pair formats."""
+
+    return q_heads + kv_heads + index_heads + 1 + (kv_heads if pair else 0)
 
 
 def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc,
@@ -514,12 +528,14 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
               sections: tuple[int, int, int] = (11, 11, 10), rope_scale: float = 1.0, codec: int = 0,
               status: torch.Tensor | None = None, layer: int = 0,
               k_bits: int | None = None, k_codec: int | None = None,
-              v_bits: int | None = None, v_codec: int | None = None) -> None:
+              v_bits: int | None = None, v_codec: int | None = None,
+              centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None) -> None:
     """Write BF16 post-RMS/RoPE queries and independently encoded K/V rows.
 
     Symmetric native formats use the original kernel path. Mixed/Rotor formats
     require a two-int32 owning State status checked before publishing the frame;
     K controls query rotation and V never changes query or index preparation.
+    Eight-bit RotorQuant sides encode with an attention scratch's ``centroids`` and ``thresholds`` tables.
     """
 
     rows, pw = p.shape
@@ -537,14 +553,17 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
             raise ValueError("pair preparation requires BF16 source projections and a compatible BF16 query buffer")
         validate_storage(kc, ks, kc.shape[0], kv_heads, head_dim, kb, kf, p.device)
         validate_storage(vc, vs, kc.shape[0], kv_heads, head_dim, vb, vf, p.device)
+    if (kb == 8 and kf) or (vb == 8 and vf):
+        validate_tables(centroids, thresholds, p.device)
     pair = {} if native else dict(K_BITS=kb, K_CODEC=kf, V_BITS=vb, V_CODEC=vf)
     mode = 2 if rope is not None else 1 if delta is not None else 0
-    _attn_prep[(rows, q_heads + kv_heads + index_heads + 1)](
+    _attn_prep[(rows, prep_heads(q_heads, kv_heads, index_heads, not native))](
         p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, ks, vs, iq, ikc,
         rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
         NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), BITS=kb, MODE=mode,
         S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, CODEC=kf if native else 0, STATUS=status,
-        VALIDATE=status is not None, LAYER=layer, **pair, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)
+        VALIDATE=status is not None, LAYER=layer, CENTROIDS=centroids, THRESHOLDS=thresholds, **pair, num_warps=2,
+        PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
 @triton.jit

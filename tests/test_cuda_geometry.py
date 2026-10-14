@@ -227,14 +227,17 @@ def test_qsa_select_scratch_is_the_planned_bytes(monkeypatch, allocations, capac
 @pytest.mark.torch
 def test_centroid_tables_are_the_planned_bytes(monkeypatch, allocations):
     """Each Flash Next attention scratch's centroid tables (``AttnScratch.centroids``: 64 six-bit then 256 eight-bit
-    float32 centroids) take ``CENTROID_TABLE_BYTES``: their bytes in the caching allocator's 512-byte blocks."""
+    float32 centroids) and eight-bit thresholds (``AttnScratch.thresholds``: 255 float32) take
+    ``CENTROID_TABLE_BYTES`` and ``THRESHOLD_TABLE_BYTES``: their bytes in the caching allocator's 512-byte blocks."""
 
     _, fake = allocations
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.attention")
     monkeypatch.setattr(mod, "torch", fake)
     scratch = mod.AttnScratch(1, 8, 64, 4096, "cpu")
     assert scratch.centroids.shape == (64 + 256,) and scratch.centroids.dtype == fake.float32
+    assert scratch.thresholds.shape == (255,) and scratch.thresholds.dtype == fake.float32
     assert geometry.CENTROID_TABLE_BYTES == -(-bytes_in([scratch.centroids]) // 512) * 512
+    assert geometry.THRESHOLD_TABLE_BYTES == -(-bytes_in([scratch.thresholds]) // 512) * 512
 
 
 def test_mla_latent_estimate_grows_by_the_cache_and_counts_one_prompt_chunk_scratch(monkeypatch):
