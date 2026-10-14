@@ -40,14 +40,14 @@ def test_qmm_rows_do_not_depend_on_the_window(n, k):
 
 @pytest.mark.parametrize("n,k", SHAPES)
 def test_qmm_launch_settings_keep_the_bits(n, k):
-    """Program tile width, unrolling, warps and stages change the schedule, never a row's sums."""
+    """Program tile width, groups loaded ahead, warps and stages change the schedule, never a row's sums."""
 
     q = qmm.make_q4(*_mlx_weights(n, k, 3 * n + k))
     x = torch.randn((5, k), device=DEV).to(torch.bfloat16)
     ref = qmm.matmul(x, q)
-    for block_n, gpi, warps, stages in ((32, 1, 4, 2), (32, 4, 8, 4), (64, 2, 8, 2), (64, 1, 4, 4)):
-        got = qmm.matmul(x, q, gpi=gpi, num_warps=warps, num_stages=stages, block_n=block_n)
-        assert torch.equal(got, ref), (n, k, block_n, gpi, warps, stages)
+    for block_n, pd, warps, stages in ((32, 0, 4, 2), (32, 2, 8, 4), (64, 1, 8, 2), (64, 0, 4, 4)):
+        got = qmm.matmul(x, q, pd=pd, num_warps=warps, num_stages=stages, block_n=block_n)
+        assert torch.equal(got, ref), (n, k, block_n, pd, warps, stages)
 
 
 @pytest.mark.parametrize("n,k", SHAPES[:3])
@@ -472,73 +472,6 @@ def test_host_table_gathers_the_rows_across_shards_and_files(tmp_path):
     flat = ids.reshape(-1)
     assert table.rows == len(W)
     assert np.array_equal(w, W[flat]) and np.array_equal(s, S[flat]) and np.array_equal(b, B[flat])
-
-
-@pytest.mark.parametrize("rows", [1, 3, 7, 16])
-def test_hc_upmix_gives_the_bits_of_the_matmul_then_the_mix(rows):
-    """The fused up projection and stream mix give the bits of the matmul then glue.hc_mix."""
-
-    from tensorfold.families.qwen4_exp.cuda import glue
-
-    S, D, LOW = 4, 2560, 320
-    q = qmm.make_q4(*_mlx_weights(S * D, LOW, 11), "tiled")
-    g = torch.Generator(device=DEV).manual_seed(rows)
-    act = torch.randn((rows, LOW), generator=g, device=DEV).to(torch.bfloat16)
-    xs = qmm.group_sums(act)
-    normed = torch.randn((rows, S * D), generator=g, device=DEV).to(torch.bfloat16)
-    up = qmm.matmul(act, q, xs)
-    ref_mixed = torch.empty((rows, D), dtype=torch.bfloat16, device=DEV)
-    ref_xs = torch.empty((rows, D // 32), dtype=torch.float32, device=DEV)
-    glue.hc_mix(up, normed, ref_mixed, ref_xs, S)
-    mixed = torch.empty_like(ref_mixed)
-    xsm = torch.empty_like(ref_xs)
-    qmm.hc_upmix(act, xs, q, normed, mixed, xsm, S)
-    assert torch.equal(mixed, ref_mixed) and torch.equal(xsm, ref_xs)
-
-
-@pytest.mark.parametrize("rows", [1, 7, 16])
-@pytest.mark.parametrize("inject", [True, False])
-def test_hc_readout_fused_gives_the_separate_kernels_bits(rows, inject):
-    """A hyper-connection read-out in 3 kernels (decode windows) and in 5 (prefill chunks): the same normed
-    streams, mix, group sums and inject gates."""
-
-    from types import SimpleNamespace
-
-    from tensorfold.families.qwen4_exp.cuda import forward as fwd, glue
-    from tensorfold.families.qwen4_exp.cuda.weights import HC
-
-    S, D, LOW = 4, 2560, 320
-    down = qmm.stack_q4([_mlx_weights(LOW, S * D, 5)] + ([_mlx_weights(S, S * D, 6)] if inject else []), "tiled")
-    hc = HC(down, qmm.make_q4(*_mlx_weights(S * D, LOW, 7), "tiled"),
-            1 + 0.05 * torch.randn((S * D,), generator=torch.Generator(device=DEV).manual_seed(8), device=DEV), inject)
-    g = torch.Generator(device=DEV).manual_seed(rows + 100 * inject)
-    h = (torch.randn((rows, S * D), generator=g, device=DEV) * 3).to(torch.bfloat16)
-
-    def buffers():
-        f32, bf = torch.float32, torch.bfloat16
-        b = SimpleNamespace(pss=torch.empty((rows, D // 256, S), dtype=f32, device=DEV),
-                            normed=torch.empty((rows, S * D), dtype=bf, device=DEV),
-                            xs_normed=torch.empty((rows, S * D // 32), dtype=f32, device=DEV),
-                            dn=torch.empty((rows, LOW + S), dtype=bf, device=DEV),
-                            dn_mix=torch.empty((rows, LOW), dtype=bf, device=DEV),
-                            act=torch.empty((rows, LOW), dtype=bf, device=DEV),
-                            xs_act=torch.empty((rows, LOW // 32), dtype=f32, device=DEV),
-                            up=torch.empty((rows, S * D), dtype=bf, device=DEV),
-                            mixed=torch.empty((rows, D), dtype=bf, device=DEV),
-                            xs_mixed=torch.empty((rows, D // 32), dtype=f32, device=DEV),
-                            part=torch.empty((32 * 16 * 2560,), dtype=f32, device=DEV),
-                            inj=torch.empty((rows, S), dtype=bf, device=DEV), prefill=False,
-                            hc_plans=None)                    # no compiled read-out plans: the kernels themselves
-        glue.hc_writeback(h, h, b.pss, S, 0)
-        return b
-
-    fused, plain = buffers(), buffers()
-    fwd._readout_fused(hc, fused, h, rows, 1e-6, S, LOW, fused.inj if inject else None)
-    fwd._readout_plain(hc, plain, h, rows, 1e-6, S, LOW, plain.inj if inject else None)
-    assert torch.equal(fused.normed, plain.normed)
-    assert torch.equal(fused.mixed, plain.mixed) and torch.equal(fused.xs_mixed, plain.xs_mixed)
-    if inject:
-        assert torch.equal(fused.inj, plain.inj)
 
 
 def test_the_packaged_draft_vocabulary():

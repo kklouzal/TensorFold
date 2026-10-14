@@ -70,7 +70,9 @@ def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mod
     _readout(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None)
 
 
-FUSED_ROWS = 16      # decode windows: the read-out in 3 kernels; wider windows (prefill) in 5, the same bits
+# prompt chunks of more rows take the fused write-back and norm (``hc_check.fuser``) when it is enabled; every decode
+# window takes the separate read-out kernels, measured faster than a fused down/up read-out at 1-20 rows (same bits)
+FUSED_ROWS = 16
 
 
 def _readout(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject) -> None:
@@ -78,8 +80,6 @@ def _readout(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: i
 
     if getattr(hc.down, "kernel", "qmm") == "b16":     # an NVFP4 checkpoint: the same steps, bf16 kernels
         _readout_b16(hc, b, h, R, eps, streams, low, inject)
-    elif R <= FUSED_ROWS and not b.prefill and isinstance(hc.down, qmm.Q4):
-        _readout_fused(hc, b, h, R, eps, streams, low, inject)
     else:
         _readout_plain(hc, b, h, R, eps, streams, low, inject)
 
@@ -93,18 +93,6 @@ def _readout_b16(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stream
     glue.hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     _mm(b.act[:R], hc.up, b.xs_act[:R], b.up[:R], b)
     glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
-
-
-def _readout_fused(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject) -> None:
-    """The norm inside the down projection, the mix inside the up projection."""
-
-    out = b.dn[:R] if hc.down.n == b.dn.shape[1] else b.dn_mix[:R]
-    got = qmm.hc_down(h[:R], b.pss[:R], hc.scale, b.normed[:R], hc.down, eps, streams, out=out, part=b.part)
-    if got.dim() == 3:
-        glue.hc_reduce_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
-    else:
-        glue.hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
-    qmm.hc_upmix(b.act[:R], b.xs_act[:R], hc.up, b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
 
 
 def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject,
