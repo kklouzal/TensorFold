@@ -258,9 +258,10 @@ stream and 150k (pairs 0.894, 0.876, 0.892), 9.4% at four streams (0.907, 0.904)
 of ~30k to ~300k, 512-token replies) every reply equalled the previous build's tokens, decode rose 5.4 to 6.5%
 (mean +5.9%) and prompt passes 1.44 to 1.59x; the same build reproduced the previous build's reply tokens at
 ~30k, ~150k, ~300k and ~650k. On GB10 the trees' 8 x 4 shape ran ~0.3% faster than 4 x 4 in all five requests
-(not yet selected per device). Rejected: one pooled-key tile load per stream in concurrent index scoring (no
-measured gain: a tile's row programs already share it through L2). Full-model quality is unchanged by
-construction (identical tokens); four-stream throughput on GB10 was not measured.
+(this build runs 4 x 4 on every chip; later sources pick the chain shape by chip, `CHAIN_ROWS` in
+`src/tensorfold/cuda/kernels/gdn.py`: 4 on sm_120 with 34 SMs, else 8). Rejected: one pooled-key tile load per
+stream in concurrent index scoring (no measured gain: a tile's row programs already share it through L2). Full-model
+quality is unchanged by construction (identical tokens); four-stream throughput on GB10 was not measured.
 
 Current deployed RQ8-norm/YaRN-4 functional receipts and historical INT8/YaRN-2,
 EXL3, startup and transport comparisons keep their original image, target and

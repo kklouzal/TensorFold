@@ -43,7 +43,7 @@ def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
     for hk in (0, 4):
         bad_q = torch.empty((7, hk, 128), dtype=q.dtype, device='cuda')
         with pytest.raises(RuntimeError):
-            gdn._ext().tree(bad_q, bad_q, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, False)
+            gdn._ext().tree(bad_q, bad_q, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, 8, False)
     table = gdn.to_device(gdn.replay_table([k], [v], [gates], [beta], [[state]]), torch.int64, 'cuda')
     rows = torch.zeros((1, 7), dtype=torch.int32, device='cuda')
     counts = torch.zeros((1,), dtype=torch.int32, device='cuda')
@@ -55,7 +55,10 @@ def test_gdn_raw_zero_heads_rejected_before_modulo_and_replay_narrowing():
     with pytest.raises(RuntimeError):
         gdn._ext().replay(table, 1, 1, rows.cpu(), counts, 2, 6, 128, True, False, False)
     with pytest.raises(RuntimeError):
-        gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 2**63 - 1, None, None, False)
+        gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 2**63 - 1, None, None, 8, False)
+    for rows_a_warp in (0, 2, 6, 16):              # chains take 4 or 8 value rows a warp
+        with pytest.raises(RuntimeError):
+            gdn._ext().tree(q, k, v, gates, beta, state, None, None, p.entries, 0, 7, None, None, rows_a_warp, False)
     torch.cuda.synchronize()
 
 

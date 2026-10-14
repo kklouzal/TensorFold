@@ -290,7 +290,7 @@ LANE = {
         (2560, 6144): ((16, 4, True), (32, 5, True)),           # DeltaNet / attention output (unreduced slices)
         (2560, 2560): ((16, 1, False), (96, 5, False)),         # PLE value, MTP fc_e / fc_h
         (79591, 2560): ((16, 6, True),),                        # draft head
-        (248320, 2560): ((16, 0, True), (32, 5, True)),         # head: the bucket's block to 16 rows
+        (248320, 2560): ((16, 1, True), (32, 5, True)),         # head: the bucket's block to 16 rows
     },
 }
 

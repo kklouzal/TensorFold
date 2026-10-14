@@ -128,8 +128,8 @@ def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
 def test_every_lane_block_and_slice_sum_keep_the_bits(n, k, sk, wide):
     """Every lane block (TENSORFOLD_QMM_LANE_TILES), with a reduced split K in a cluster or in the buffer and reduce
     kernel, gives the row bucket's bits: bf16 and fp32 outputs and unreduced K slices, 1-20 rows and past a block's
-    rows, on normal and wide-range inputs and weights (every shape of Flash Next's lane table, the head and the draft
-    head's odd n among them, and a ragged n)."""
+    rows, on normal and wide-range inputs and weights (every shape of Flash Next's lane table, among them the head and
+    the draft head's odd n, and a ragged n)."""
 
     words, scales, biases = _weights(n, k, 32, 13 * n + k)
     if wide:
