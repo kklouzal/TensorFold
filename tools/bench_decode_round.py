@@ -174,8 +174,9 @@ def _summary(values) -> dict:
 
 
 def _source_sha() -> dict:
-    """The tensorfold package this process imports (sha256 over its .py/.cu/.cpp/.cuh/.c files) and the git sha the
-    wrapper recorded on the host (BENCH_GIT_SHA; the container holds a copy without .git)."""
+    """The tensorfold package this process imports (sha256 over its .py/.cu/.cpp/.cuh/.c/.h/.txt files), this tool's
+    own two files, and the git sha the wrapper recorded on the host (BENCH_GIT_SHA; the container holds a copy
+    without .git)."""
 
     import tensorfold
 
@@ -187,8 +188,11 @@ def _source_sha() -> dict:
             h.update(str(f.relative_to(root)).encode())
             h.update(f.read_bytes())
             n += 1
+    here = Path(__file__).resolve().parent
+    tools = {name: hashlib.sha256((here / name).read_bytes()).hexdigest()
+             for name in ("bench_decode_round.py", "flashnext_synthetic.py")}
     return {"git": os.environ.get("BENCH_GIT_SHA", "unknown"), "git_dirty": os.environ.get("BENCH_GIT_DIRTY", ""),
-            "package_root": str(root), "package_files": n, "package_sha256": h.hexdigest()}
+            "package_root": str(root), "package_files": n, "package_sha256": h.hexdigest(), "tools_sha256": tools}
 
 
 def _gpu(torch) -> dict:
@@ -219,11 +223,12 @@ def _gpu(torch) -> dict:
 
 class Probe:
     """Per-round counters, CUDA events and NVTX ranges around the decoder's verify forward, MTP chain and MTP steps,
-    installed as wrappers on the decoder instance and on ``multi.compute`` (no source edits). Events and ranges are
-    recorded only while ``on``; the wrappers never change arguments or results."""
+    installed as wrappers on the decoder instance and on ``multi.compute`` (no source edits). Events, counters and
+    these ranges are recorded only while ``on`` (``--nvtx-layers``' per-layer ranges: in every eager forward from
+    here on, the routing rounds' included); the wrappers never change arguments or results."""
 
     def __init__(self, dec, multi_mod, torch, nvtx_layers: bool) -> None:
-        self.dec, self.torch, self.on = dec, torch, False
+        self.on = False
         self.count: Counter = Counter()
         self.marks: dict[str, list] = {}
         nvtx = torch.cuda.nvtx
@@ -284,13 +289,13 @@ class Probe:
                 nvtx.range_pop()
 
         multi_mod.compute = compute
-        real_mtp = dec._mtp
+        timed_mtp = span("mtp_step", dec._mtp)
 
         def mtp(segs):
             if self.on:
                 self.count["mtp_steps"] += 1
                 self.count["mtp_rows"] += segs[-1][2]
-            return span("mtp_step", real_mtp)(segs)
+            return timed_mtp(segs)
 
         dec._mtp = mtp
         dec._draft_all = span("mtp_chain", dec._draft_all)
@@ -439,8 +444,8 @@ def main(argv=None) -> int:
     # -- config and byte plan --------------------------------------------------------------------------------------
     real = json.loads(Path(args.config).read_text()) if args.config else synth.REAL_CONFIG
     if args.config:   # the embedded copy must be the real one (text config)
-        mismatch = sorted(k for k in set(synth.text(real)) | set(synth.text(synth.REAL_CONFIG))
-                          if synth.text(real).get(k) != synth.text(synth.REAL_CONFIG).get(k))
+        given, embedded = synth.text(real), synth.text(synth.REAL_CONFIG)
+        mismatch = sorted(k for k in set(given) | set(embedded) if given.get(k) != embedded.get(k))
         report["config_check"] = {"file": args.config, "text_config_keys_differing_from_embedded": mismatch}
         log(f"[bench] --config text_config vs embedded copy: {mismatch or 'identical'}")
     raw = synth.synthetic_config(real, args.layers, args.experts, args.ngram_base, not args.no_ple)
@@ -451,16 +456,19 @@ def main(argv=None) -> int:
                                                      else args.draft_vocab)
     from tensorfold.families.qwen4_exp.cuda.weights import draft_token_ids
 
-    draft_rows = 0
+    draft_rows = head_rows = 0          # the draft logits' rows; the rows of a draft head of their own
     if mtp:
         ids = draft_token_ids(draft, cfg.vocab)
         draft_rows = cfg.vocab if ids is None else int(ids.size)
-    wplan = synth.plan_weight_bytes(cfg, mtp=mtp, draft_rows=draft_rows,
+        head_rows = 0 if ids is None else draft_rows        # no draft ids: the drafts read the LM head itself
+    wplan = synth.plan_weight_bytes(cfg, mtp=mtp, draft_rows=head_rows,
                                     share_mtp_experts=args.mtp_experts == "shared")
-    extra_rows = (args.warmup + args.rounds + args.profile_rounds + 4) * (args.depth + 2) + 64
-    splan = [synth.plan_state_bytes(cfg, args.kv_dtype, -(-(n + extra_rows) // 8192) * 8192, mtp=mtp)
+    # rows a stream may take in every round this tool runs (the routing rounds' too), grown before the first one
+    extra_rows = (args.warmup + args.rounds + args.profile_rounds + args.routing_rounds + 4) * (args.depth + 2) + 64
+    step = multi_mod.STEP                               # caches grow by this many rows; an idle slot keeps FIRST
+    splan = [synth.plan_state_bytes(cfg, args.kv_dtype, -(-(n + extra_rows) // step) * step, mtp=mtp)
              for n in contexts]
-    idle = synth.plan_state_bytes(cfg, args.kv_dtype, 256, mtp=mtp) * (args.slots - len(contexts))
+    idle = synth.plan_state_bytes(cfg, args.kv_dtype, multi_mod.FIRST, mtp=mtp) * (args.slots - len(contexts))
     # buffers: decode/MTP windows (small), the prompt pass (its rows' activations and its attention block scores
     # over the window), measured after construction; this is the estimate used for the refusal only
     pass_rows = args.prefill_rows + args.slots * (args.depth + 1)
@@ -518,12 +526,13 @@ def main(argv=None) -> int:
         pdl.select = real_select
     dec.memory_gate = MemoryGate(1 << 62, reserve=0, live=None)     # admission is this tool's budget (docstring)
     if accept is not None:
-        real_accept = multi_mod.accept
-
         def fixed_accept(tokens, parents, sampled, room, eos=()):
+            """The window's first k rows (a chain, as round() builds it) and the last one's sample; the streams take
+            no end tokens (stop_eos=False), so ``eos`` is empty."""
+
             k = max(1, min(accept, len(tokens), room))
             if any(parents[r] != r - 1 for r in range(1, k)):
-                return real_accept(tokens, parents, sampled, room, eos)
+                raise RuntimeError("--accept N needs chain windows (row r's parent is r - 1)")
             return list(range(k)), sampled[k - 1]
 
         multi_mod.accept = fixed_accept
@@ -579,9 +588,9 @@ def main(argv=None) -> int:
             if s.sid in dec.streams and s.sid not in joined:
                 joined[s.sid] = time.perf_counter() - t0
     del dec._pass
-    fill_s = time.perf_counter() - t0
     torch.cuda.synchronize()
-    for s in streams:                                   # room for every measured round: no resize while timing
+    fill_s = time.perf_counter() - t0
+    for s in streams:                                   # room for every round this tool runs: no resize in them
         dec._grow(s.st, max(s.st.pos, s.st.mtp_len) + extra_rows)
     torch.cuda.synchronize()
     mem["after_fill_allocated"] = torch.cuda.memory_allocated()
@@ -653,7 +662,9 @@ def main(argv=None) -> int:
     mem["end_free"] = torch.cuda.mem_get_info()[0]
     mem["process_device_bytes_estimate"] = free0 - mem["end_free"]
     mem["note"] = ("process_device_bytes_estimate = free at init - free at end: this process's allocations after "
-                   "CUDA init (its context's own bytes come before init's reading; the host pmon log has fb MB)")
+                   "CUDA init if no other process's use changed meanwhile (its context's own bytes come before init's "
+                   "reading; the host pmon log has fb MB per process); peak_allocated: torch's peak over the whole "
+                   "process (model build and prompt passes included)")
     report["memory"] = mem
 
     def stats(samples: list[dict]) -> dict:

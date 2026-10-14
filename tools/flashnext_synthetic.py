@@ -74,8 +74,8 @@ def text(raw: dict) -> dict:
 
 def synthetic_config(real: dict, pattern: str, experts: int, ngram_base: int, ple: bool) -> dict:
     """The real config with ``pattern`` ("L" linear / "A" full attention per layer), ``experts`` and a smaller n-gram
-    vocabulary base (``ngram_base``: the table's rows; nothing on the GPU depends on it). ``ple`` False drops the
-    n-gram layers."""
+    vocabulary base (``ngram_base``: it sets the table's row count; no GPU work depends on it). ``ple`` False drops
+    the n-gram layers."""
 
     raw = copy.deepcopy(real)
     t = text(raw)
@@ -108,7 +108,8 @@ Q4_BYTES = 0.625        # 4-bit words + bf16 scale + bf16 bias per 32 inputs, pe
 
 
 def plan_weight_bytes(c, *, mtp: bool, draft_rows: int, share_mtp_experts: bool) -> dict[str, int]:
-    """Device bytes of each weight group as ``build`` allocates them (MLX 4-bit at 0.625 B/weight)."""
+    """Device bytes of each weight group as ``build`` allocates them (MLX 4-bit at 0.625 B/weight); ``draft_rows``:
+    the rows of a draft head of its own (0: none, the drafts read the LM head)."""
 
     D, S, LOW = c.hidden, c.streams, c.low
 
@@ -170,10 +171,10 @@ class Rand:
         b = (-(s.float() * 7.5)).to(torch.bfloat16)
         return words, s, b
 
-    def q4(self, n: int, k: int, scale: float = SCALE, layout: str = "frag"):
+    def q4(self, n: int, k: int, scale: float = SCALE):
         from tensorfold.families.qwen4_exp.cuda import qmm
 
-        return qmm.make_q4(*self.mlx(n, k, scale=scale), layout)
+        return qmm.make_q4(*self.mlx(n, k, scale=scale))
 
     def norm(self, n: int) -> torch.Tensor:
         return (1 + 0.05 * torch.randn((n,), generator=self.g, device=DEV)).float()
@@ -355,10 +356,7 @@ def _bf16_to_f32(bits: np.ndarray) -> np.ndarray:
 # -- the model ------------------------------------------------------------------------------------------------------
 @dataclass
 class Built:
-    w: object               # weights.Weights
-    cfg: object             # weights.Config
-    rope: object
-    ple_tables: object      # ple_lifetime.PLETables owning the n-gram table(s)
+    w: object               # weights.Weights (w.meta["ple_tables"] owns the n-gram table(s))
     table_path: Path | None
     seconds: float
 
@@ -428,7 +426,7 @@ def build(c, rope, *, seed: int, mtp: bool, draft_vocab: str | int | None, share
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     log(f"[synthetic] model built in {time.perf_counter() - t0:.1f}s: {w.nbytes() / 2**30:.3f} GiB of weights")
-    return Built(w, c, rope, ple_tables, table_path, time.perf_counter() - t0)
+    return Built(w, table_path, time.perf_counter() - t0)
 
 
 def write_config(where: Path, raw: dict) -> Path:
@@ -437,5 +435,5 @@ def write_config(where: Path, raw: dict) -> Path:
     return where
 
 
-__all__ = ["REAL_CONFIG", "synthetic_config", "read_config", "plan_weight_bytes", "plan_state_bytes", "Rand",
-           "check_chunked_pack", "ngram_table", "build", "write_config"]
+__all__ = ["REAL_CONFIG", "text", "synthetic_config", "read_config", "plan_weight_bytes", "plan_state_bytes", "Rand",
+           "check_chunked_pack", "ngram_table", "Built", "build", "write_config"]
