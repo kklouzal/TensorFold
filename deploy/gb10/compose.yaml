@@ -21,7 +21,7 @@ services:
       - --yarn-factor
       - '4'
       - --kv-dtype
-      - rotorquant6-norm
+      - rotorquant8-norm
       - --mtp-drafts
       - '4'
       - --mtp-confidence
