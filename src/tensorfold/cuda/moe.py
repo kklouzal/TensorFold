@@ -94,11 +94,13 @@ def _topk_rows(L, PICK, WTS, NE: tl.constexpr, NL: tl.constexpr, TOPK: tl.conste
 
 
 class MoEBuffers:
-    """Static scratch for up to ``rows`` rows (CUDA-graph safe); ``prefill`` picks the experts' prefill arithmetic."""
+    """Static scratch for up to ``rows`` rows (CUDA-graph safe); ``prefill`` picks the experts' prefill arithmetic,
+    ``tile`` its plan's pairs an item (``select``'s default; the kernels' row tile, never a pair's bits)."""
 
-    def __init__(self, rows: int, cfg, device: torch.device | str, *, prefill: bool = False) -> None:
+    def __init__(self, rows: int, cfg, device: torch.device | str, *, prefill: bool = False,
+                 tile: int = grouped.PREFILL_TILE) -> None:
         slots = cfg.num_experts_per_tok + 1
-        self.rows, self.slots = rows, slots
+        self.rows, self.slots, self.tile = rows, slots, tile
         self.logits = torch.empty((rows, cfg.num_experts + 1), dtype=torch.float32, device=device)
         self.pick = torch.empty((rows, slots), dtype=torch.int32, device=device)
         self.wts = torch.empty((rows, slots), dtype=torch.float32, device=device)
@@ -117,12 +119,12 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
                         PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
-def select(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int,
-           tile: int = grouped.PREFILL_TILE) -> None:
-    """Each row's experts and weights (rows in parallel), then the pairs grouped by expert, ``tile`` a prompt's item."""
+def select(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int, tile: int | None = None) -> None:
+    """Each row's experts and weights (rows in parallel), then the pairs grouped by expert, ``tile`` (default the
+    buffer's) a prefill plan's item."""
 
     select_rows(logits, buf, top_k, experts)
-    grouped.route(buf.pick[:logits.shape[0]], buf.plan, tile)
+    grouped.route(buf.pick[:logits.shape[0]], buf.plan, buf.tile if tile is None else tile)
 
 
 def moe(x: torch.Tensor, router_rows: torch.Tensor, ex: grouped.Experts, buf: MoEBuffers, top_k: int,

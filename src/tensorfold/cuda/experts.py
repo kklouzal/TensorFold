@@ -15,6 +15,11 @@ COLS = 8 * NTW           # output columns a warp
 TILE = 16                # pairs an item holds (decode form), and the narrowest a prompt plan's consumer may take
 PREFILL_TILE = 64        # this kernel's prompt item: 16 ran 1.64x slower on Flash Next's routed prompts
 SMALL = 1024             # pairs the one-block plan takes; wider plans rank in blocks of 1024 pairs
+# A decode window's items on the prefill form (``moe_prefill``) by chip (major, minor, SMs), where measured on Flash
+# Next's experts: items of 16 run the 16-row prefill tiles (experts_window.cu), on dev-01's RTX PRO 2000 (sm_120, 34
+# SMs) 0.82-0.86x the 64-row tiles' time for the down projection and 0.82-0.94x for gate/up at 1-20 window rows. A
+# pair's bits never depend on its item, so this is a launch choice; other chips (the GB10 among them) keep PREFILL_TILE.
+WINDOW_TILES = {(12, 0, 34): TILE}
 
 
 @lru_cache(maxsize=1)
@@ -23,7 +28,8 @@ def _ext():
 
     here = Path(__file__).parent
     return load(name="tensorfold_experts_v8", sources=[str(here / "experts.cpp"), str(here / "experts.cu"),
-                                                        str(here / "experts_prefill.cu"), str(here / "experts_pack.cu")],
+                                                        str(here / "experts_prefill.cu"), str(here / "experts_window.cu"),
+                                                        str(here / "experts_pack.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
 
 
@@ -116,6 +122,16 @@ class Plan:
         self.hist = torch.zeros((-(-pairs // 1024) * experts if wide else 1,), dtype=torch.int32, device=device)
 
 
+def window_tile(device: torch.device | str) -> int:
+    """A decode window's prefill-form items (pairs an item) on ``device``; PREFILL_TILE off CUDA (no kernel runs)."""
+
+    device = torch.device(device)
+    if device.type != "cuda":
+        return PREFILL_TILE
+    p = torch.cuda.get_device_properties(device)
+    return WINDOW_TILES.get((p.major, p.minor, p.multi_processor_count), PREFILL_TILE)
+
+
 def route(picks: torch.Tensor, plan: Plan, tile: int = PREFILL_TILE) -> None:
     """``picks`` [R, slots] int32, contiguous: each pair's expert; a prompt plan's items hold ``tile``, its kernel's."""
 
@@ -134,7 +150,7 @@ def gate_up(x: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: i
     epi = 2 if ex.swiglu else 1
     if plan.prefill:
         _ext().prefill(ex.gs, epi, x, plan.slots, ex.up, ex.dims // ex.gs, ex.width // COLS, plan.items, plan.counts,
-                       plan.members, out, ex.width, ex.limit, items, pdl.ON)
+                       plan.members, out, ex.width, ex.limit, items, plan.tile, pdl.ON)
     else:
         _ext().run(ex.gs, epi, x, plan.slots, ex.up, ex.dims // ex.gs, ex.width // COLS, plan.items, plan.counts,
                    plan.members, out, ex.width, ex.limit, items * (ex.width // COLS), pdl.ON)
@@ -146,7 +162,8 @@ def down(act: torch.Tensor, ex: Experts, plan: Plan, out: torch.Tensor, rows: in
     items = max_items(rows * plan.slots, plan.experts, plan.tile)
     if plan.prefill:
         _ext().prefill(ex.gs, 3 if out.dtype == torch.bfloat16 else 0, act, 0, ex.down, ex.width // ex.gs,
-                       ex.dims // COLS, plan.items, plan.counts, plan.members, out, ex.dims, 0.0, items, pdl.ON)
+                       ex.dims // COLS, plan.items, plan.counts, plan.members, out, ex.dims, 0.0, items, plan.tile,
+                       pdl.ON)
     else:
         _ext().run(ex.gs, 0, act, 0, ex.down, ex.width // ex.gs, ex.dims // COLS, plan.items, plan.counts,
                    plan.members, out, ex.dims, 0.0, items * (ex.dims // COLS), pdl.ON)
