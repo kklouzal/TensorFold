@@ -13,11 +13,15 @@ from tensorfold.families.qwen4_exp.cuda import qmm  # noqa: E402
 POLICY = Path(qmm.__file__).parents[3] / "cuda" / "kernels" / "qmm_policy.cuh"
 
 
-def _lane_blocks() -> set[int]:
+def _lane_blocks() -> dict[int, tuple[int, ...]]:
+    """TENSORFOLD_QMM_LANE_TILES: {block: (rows, columns, warps down, warps across, stages)}."""
+
     text = POLICY.read_text()
     body = text[text.index("#define TENSORFOLD_QMM_LANE_TILES(X)"):]
     body = body[:body.index("\n\n")]
-    return {int(m) for m in re.findall(r"X\((\d+),", body)}
+    rows = re.findall(r"X\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", body)
+    assert rows and len(rows) == body.count("X("), body
+    return {int(r[0]): tuple(map(int, r[1:])) for r in rows}
 
 
 def test_other_chips_keep_the_row_buckets_with_clusters():
@@ -27,9 +31,16 @@ def test_other_chips_keep_the_row_buckets_with_clusters():
         assert {qmm.lane_launch(n, k, m, chip) for n, k in shapes for m in range(1, 129)} == {(0, True)}, chip
 
 
+def test_the_row_buckets_keep_their_launch():
+    """Every chip's default, the row bucket's block (``BUCKET_TILES``): 64 columns on one warp down and four across,
+    4 stages, the lane matmul's launch before the block table."""
+
+    blocks = _lane_blocks()
+    assert {b: blocks[t] for b, t in qmm.shared.BUCKET_TILES.items()} == {b: (b, 64, 1, 4, 4) for b in (16, 32, 64)}
+
+
 def test_the_table_names_existing_blocks_for_ascending_row_ranges():
     blocks = _lane_blocks()
-    assert {1, 2, 3} <= blocks
     for chip, table in qmm.LANE.items():
         for (n, k), entries in table.items():
             rows = [r for r, _, _ in entries]
