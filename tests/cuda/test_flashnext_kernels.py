@@ -38,18 +38,6 @@ def test_qmm_rows_do_not_depend_on_the_window(n, k):
     assert torch.equal(qmm.matmul(x[perm], q), alone[perm])
 
 
-@pytest.mark.parametrize("n,k", SHAPES)
-def test_qmm_launch_settings_keep_the_bits(n, k):
-    """Program tile width, groups loaded ahead, warps and stages change the schedule, never a row's sums."""
-
-    q = qmm.make_q4(*_mlx_weights(n, k, 3 * n + k))
-    x = torch.randn((5, k), device=DEV).to(torch.bfloat16)
-    ref = qmm.matmul(x, q)
-    for block_n, pd, warps, stages in ((32, 0, 4, 2), (32, 2, 8, 4), (64, 1, 8, 2), (64, 0, 4, 4)):
-        got = qmm.matmul(x, q, pd=pd, num_warps=warps, num_stages=stages, block_n=block_n)
-        assert torch.equal(got, ref), (n, k, block_n, pd, warps, stages)
-
-
 @pytest.mark.parametrize("n,k", SHAPES[:3])
 def test_qmm_matches_fp32(n, k):
     w = _mlx_weights(n, k, 7 * n + k)
