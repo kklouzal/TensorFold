@@ -134,9 +134,11 @@ def test_plan_groups_pairs_by_expert(rows, prefill, tile):
     assert plan.members.tolist() == want_members
 
 
+@pytest.mark.parametrize("y_dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("case", CASES)
-def test_a_pairs_bits_never_depend_on_its_item(case):
-    """A prompt plan grouped in items of 16 pairs and of 64 gives every pair the same bits."""
+def test_a_pairs_bits_never_depend_on_its_item(case, y_dtype):
+    """A prompt plan grouped in items of 16 pairs and of 64 (the 16- and 64-row kernels) gives every pair the same
+    bits, for every epilogue (bf16 or fp32 down)."""
 
     ex, _, _ = build(case, 31)
     rows = 300
@@ -148,7 +150,7 @@ def test_a_pairs_bits_never_depend_on_its_item(case):
         plan = experts.Plan(rows, slots, ex.count, DEV, prefill=True)
         experts.route(picks, plan, tile)
         act = torch.empty((rows * slots, ex.width), dtype=torch.bfloat16, device=DEV)
-        y = torch.empty((rows * slots, ex.dims), dtype=torch.bfloat16, device=DEV)
+        y = torch.empty((rows * slots, ex.dims), dtype=y_dtype, device=DEV)
         experts.gate_up(x, ex, plan, act, rows)
         experts.down(act, ex, plan, y, rows)
         got[tile] = (act, y, int(plan.counts[0]))
