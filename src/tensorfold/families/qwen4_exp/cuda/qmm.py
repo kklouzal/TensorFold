@@ -235,10 +235,25 @@ def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.con
         tl.store(OUT + offs, acc.to(tl.bfloat16), mask=ok)
 
 
-# The tiled kernel's (groups its scales/biases/group sums are loaded ahead, warps, stages) by row bucket, measured
-# on the hyper-connection shapes (dev-01, sm_120); every choice gives the same bits.
-CONFIG = {16: (2, 4, 3), 32: (1, 4, 3), 64: (1, 4, 2), 128: (0, 8, 2)}
-TUNED = {(10240, 320, 32): (2, 4, 3)}        # (n, k, bucket) exceptions: the up projection keeps 2 ahead at 32 rows
+# The tiled kernel's launch: (groups whose scales/biases/group sums are loaded ahead, warps, stages, columns per
+# program), measured on the hyper-connection shapes on dev-01 (sm_120); every choice gives the same bits. By row
+# bucket, and for those shapes by window rows: the smallest windows run narrow 2-warp programs without pipelining.
+CONFIG = {16: (2, 4, 3, 64), 32: (1, 4, 3, 64), 64: (1, 4, 2, 64), 128: (0, 8, 2, 64)}
+TUNED = {                   # (n, k): ((up to rows, launch), ...): the first that covers the window
+    (324, 10240): ((4, (1, 2, 1, 32)), (16, (2, 2, 3, 64)), (32, (0, 2, 1, 64))),
+    (320, 10240): ((4, (1, 2, 1, 32)), (16, (1, 4, 1, 64))),
+    (10240, 320): ((4, (1, 2, 1, 32)), (16, (1, 4, 1, 64)), (32, (2, 2, 3, 64))),
+}
+
+
+def launch_for(n: int, k: int, m: int) -> tuple[int, int, int, int]:
+    """The tiled kernel's (groups loaded ahead, warps, stages, columns per program) for m rows of an (n, k) matrix."""
+
+    for rows, got in TUNED.get((n, k), ()):
+        if m <= rows:
+            return got
+    return CONFIG[bucket(m)]
+
 
 # K slices are fixed per shape to preserve summation order.
 SPLITS = {
@@ -276,7 +291,7 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     if k != q.k or x.stride(1) != 1:
         raise ValueError(f"matmul: x {tuple(x.shape)} does not match K={q.k}")
     bm = bucket(m)
-    c_pd, c_warps, c_stages = TUNED.get((q.n, q.k, bm), CONFIG[bm])
+    c_pd, c_warps, c_stages, c_bn = launch_for(q.n, q.k, m)
     pd = c_pd if pd is None else int(pd)
     if pd not in (0, 1, 2):
         raise ValueError(f"matmul: pd {pd} must be 0, 1 or 2")
@@ -291,7 +306,7 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
         part = torch.empty((sk, m, q.n), dtype=torch.float32, device=x.device)
     if sk > 1 and part.numel() < sk * m * q.n:
         raise ValueError("matmul: split-K scratch too small")
-    bn = block_n or BN
+    bn = block_n or c_bn
     grid = (triton.cdiv(m, bm), triton.cdiv(q.n, bn), sk)
     _qmm[grid](x, xs, q.weight, q.scales, q.biases, out, part if sk > 1 else out, m, x.stride(0),
                N=q.n, K=k, SK=sk, BM=bm, BLOCK_N=bn, PD=pd, F32=f32, SBN=BN,
