@@ -109,3 +109,42 @@ def test_every_nibble_decodes_exactly(n, k, gs):
     for f32 in (False, True):
         assert torch.equal(qmm.matmul(eye, q, f32=f32).float(), want), f32
         assert torch.equal(qmm.prefill_matmul(eye, q, f32=f32).float(), want), f32
+
+
+def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
+    """bf16 values over a wide exponent range, both signs, with zeros and negative zeros."""
+
+    g = torch.Generator(device="cuda").manual_seed(seed)
+    mant = torch.rand(shape, generator=g, device="cuda") + 1.0
+    exp = torch.randint(lo, hi + 1, shape, generator=g, device="cuda").float()
+    sign = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.5, -1.0, 1.0)
+    v = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.03, sign * 0.0, sign * mant * torch.exp2(exp))
+    return v.to(torch.bfloat16)
+
+
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parametrize("n,k,sk", [(16480, 2560, 1), (2560, 6144, 8), (2560, 2560, 4), (1000, 2560, 2)])
+def test_every_lane_block_and_slice_sum_keep_the_bits(n, k, sk, wide):
+    """Every lane block (TENSORFOLD_QMM_LANE_TILES), with a reduced split K in a cluster or in the buffer and reduce
+    kernel, gives the row bucket's bits: bf16 and fp32 outputs and unreduced K slices, 1-20 rows and past a block's
+    rows, on normal and wide-range inputs and weights (Flash Next's group-32 decode shapes and a ragged n)."""
+
+    words, scales, biases = _weights(n, k, 32, 13 * n + k)
+    if wide:
+        scales, biases = _wide(scales.shape, -30, 6, 1), _wide(biases.shape, -30, 6, 2)
+    q = qmm.pack(words, scales, biases, 32)
+    tiles = [t[0] for t in qmm._ext().lane_tiles()]
+    assert tiles[:3] == [qmm.BUCKET_TILES[b] for b in (16, 32, 64)]
+    for m in list(range(1, 21)) + [33, 64, 80]:
+        x = _wide((m, k), -30, 10, m) if wide else torch.randn((m, k), device="cuda").bfloat16()
+        xs = qmm.group_sums(x, 32)
+        for f32, reduce in ((False, True), (True, True), (True, False)):
+            if not reduce and sk == 1:
+                continue
+            want = qmm.matmul(x, q, xs, sk=sk, f32=f32, reduce=reduce)
+            for tile in tiles:
+                for clusters in (True, False):
+                    got = qmm.matmul(x, q, xs, sk=sk, f32=f32, reduce=reduce, tile=tile, clusters=clusters)
+                    assert torch.equal(got.view(torch.int32) if got.dtype == torch.float32 else got.view(torch.int16),
+                                       want.view(torch.int32) if want.dtype == torch.float32 else
+                                       want.view(torch.int16)), (m, f32, reduce, tile, clusters)
