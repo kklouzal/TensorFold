@@ -215,7 +215,7 @@ def prep(pair, projection, *, capacity=None, position=0, delta=0):
     glue.attn_prep(projection, pos, scale, scale, index_scale, inv, q, cache.k, cache.v, iq, index,
                    1e-6, q_heads=H, kv_heads=HK, head_dim=D, index_heads=1, index_dim=128,
                    ks=cache.ks, vs=cache.vs, delta=rotary, status=status, **traits(pair),
-                   **dict(zip(("centroids", "thresholds"), CODEBOOK)))
+                   centroids=CODEBOOK[0], thresholds=CODEBOOK[1])
     return q, iq, index, cache, status
 
 

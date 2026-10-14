@@ -27,8 +27,21 @@ CODEBOOK = attn_mod.codebook("cuda")      # the eight-bit encoders' tables, made
 
 
 @triton.jit
+def _encode8_selected(x, M: tl.constexpr, CODEC: tl.constexpr):
+    """Oracle: the eight-bit encoder before its tables (2026-10-14), boundaries and centroids selected in registers."""
+    unit, rms = kernel._normalized(x.to(tl.float32), M)
+    code = kernel._indices(kernel.rotate(unit, M, 128, CODEC), 8).to(tl.uint8)
+    if CODEC == 8:
+        centroid = kernel._centroids(code.to(tl.int32), 8)
+        energy = tl.sum(kernel._mul_rn(centroid, centroid), axis=1)
+        correction = kernel._sqrt_rn(tl.math.div_rn(128.0, energy))
+        rms = kernel._mul_rn(rms, correction)
+    return code, rms
+
+
+@triton.jit
 def _encode(X, CODE, RMS, CENTROIDS, THRESHOLDS, N: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr,
-            M: tl.constexpr):
+            M: tl.constexpr, SELECTED: tl.constexpr = False):
     row = tl.program_id(0) * M + tl.arange(0, M)
     x = tl.load(X + row[:, None] * 128 + tl.arange(0, 128)[None, :], row[:, None] < N, other=0.0)
     if BITS == 3:
@@ -45,7 +58,10 @@ def _encode(X, CODE, RMS, CENTROIDS, THRESHOLDS, N: tl.constexpr, BITS: tl.const
         tl.store(CODE + row[:, None] * 112 + 64 + tl.arange(0, 32)[None, :], mid, row[:, None] < N)
         tl.store(CODE + row[:, None] * 112 + 96 + tl.arange(0, 16)[None, :], high, row[:, None] < N)
     elif BITS == 8:
-        code, rms = kernel.quant_groups_8(x, M, CODEC, CENTROIDS + 64, THRESHOLDS)
+        if SELECTED:
+            code, rms = _encode8_selected(x, M, CODEC)
+        else:
+            code, rms = kernel.quant_groups_8(x, M, CODEC, CENTROIDS + 64, THRESHOLDS)
         tl.store(CODE + row[:, None] * 128 + tl.arange(0, 128)[None, :], code, row[:, None] < N)
     else:
         code, rms = kernel.quant_groups_4(x, M, CODEC)
@@ -102,10 +118,17 @@ def _rotation(X, OUT, N: tl.constexpr, W: tl.constexpr, CODEC: tl.constexpr, INV
 
 
 @triton.jit
-def _midpoints(X, OUT, N: tl.constexpr, BITS: tl.constexpr, W: tl.constexpr):
+def _midpoints(X, OUT, THRESHOLDS, N: tl.constexpr, BITS: tl.constexpr, W: tl.constexpr,
+               SELECTED: tl.constexpr = False):
     i = tl.arange(0, W)
     x = tl.load(X + i, i < N, other=0.0)
-    q = kernel._indices(x, BITS)
+    if BITS == 8:
+        if SELECTED:
+            q = kernel._indices(x, 8)                # the oracle: boundaries selected in registers
+        else:
+            q = kernel._indices_8(x, THRESHOLDS)     # the encoder's: boundaries loaded from LIFTING_8
+    else:
+        q = kernel._indices(x, BITS)
     tl.store(OUT + i, q, i < N)
 
 
@@ -119,43 +142,9 @@ def _centroid_bits(CODE, OUT, BITS: tl.constexpr):
     tl.store(OUT + offset, kernel._centroids(q, BITS))
 
 
-@triton.jit
-def _lifting_indices(X, OUT, THRESHOLDS, N: tl.constexpr, W: tl.constexpr, TABLE: tl.constexpr):
-    i = tl.arange(0, W)
-    x = tl.load(X + i, i < N, other=0.0)
-    q = kernel._indices_8(x, THRESHOLDS) if TABLE else kernel._indices(x, 8)
-    tl.store(OUT + i, q, i < N)
-
-
-@triton.jit
-def _encode8_selected(x, M: tl.constexpr, CODEC: tl.constexpr):
-    """Oracle: the eight-bit encoder before its tables (2026-10-14), boundaries and centroids selected in registers."""
-    unit, rms = kernel._normalized(x.to(tl.float32), M)
-    code = kernel._indices(kernel.rotate(unit, M, 128, CODEC), 8).to(tl.uint8)
-    if CODEC == 8:
-        centroid = kernel._centroids(code.to(tl.int32), 8)
-        energy = tl.sum(kernel._mul_rn(centroid, centroid), axis=1)
-        correction = kernel._sqrt_rn(tl.math.div_rn(128.0, energy))
-        rms = kernel._mul_rn(rms, correction)
-    return code, rms
-
-
-@triton.jit
-def _encode8(X, CODE, RMS, CENTROIDS, THRESHOLDS, N, CODEC: tl.constexpr, M: tl.constexpr, TABLE: tl.constexpr):
-    row = tl.program_id(0) * M + tl.arange(0, M)
-    x = tl.load(X + row[:, None] * 128 + tl.arange(0, 128)[None, :], row[:, None] < N, other=0.0)
-    if TABLE:
-        code, rms = kernel.quant_groups_8(x, M, CODEC, CENTROIDS + 64, THRESHOLDS)
-    else:
-        code, rms = _encode8_selected(x, M, CODEC)
-    tl.store(CODE + row[:, None] * 128 + tl.arange(0, 128)[None, :], code, row[:, None] < N)
-    tl.store(RMS + row, rms, row < N)
-
-
 def test_eight_bit_lifting_table_selects_the_same_indices():
     """``_indices_8`` (boundaries loaded from ``LIFTING_8``) == ``_indices(x, 8)`` (selected) at every midpoint, its
     FP32 neighbours, signed zeros, infinities, NaN and spread values."""
-    assert kernel.LIFTING_8 == tuple(cell for row in kernel._BINARY_T8.value for cell in row)
     midpoint = torch.tensor(ref.thresholds(8), dtype=torch.float32, device="cuda")
     below = torch.nextafter(midpoint, torch.full_like(midpoint, -math.inf))
     above = torch.nextafter(midpoint, torch.full_like(midpoint, math.inf))
@@ -163,12 +152,12 @@ def test_eight_bit_lifting_table_selects_the_same_indices():
     spread = torch.randn(4096, generator=torch.Generator(device="cuda").manual_seed(8), device="cuda") * 3
     source = torch.cat((below, midpoint, above, special, spread))
     got = {}
-    for table in (False, True):
-        got[table] = torch.full_like(source, -1, dtype=torch.int32)
-        _lifting_indices[(1,)](source, got[table], CODEBOOK[1], source.numel(),
-                               triton.next_power_of_2(source.numel()), table)
-    assert torch.equal(got[True], got[False])
-    assert int(got[True].min()) == 0 and int(got[True].max()) == 255
+    for selected in (False, True):
+        got[selected] = torch.full_like(source, -1, dtype=torch.int32)
+        _midpoints[(1,)](source, got[selected], CODEBOOK[1], source.numel(), 8,
+                         triton.next_power_of_2(source.numel()), selected)
+    assert torch.equal(got[False], got[True])
+    assert int(got[False].min()) == 0 and int(got[False].max()) == 255
 
 
 @pytest.mark.parametrize("codec", (4, 8), ids=("rotorquant8", "rotorquant8-norm"))
@@ -189,14 +178,13 @@ def test_eight_bit_encoder_tables_keep_the_selected_encoder_bits(codec, m, warps
     x = torch.cat((normal, wide, sparse, tiny, zero)).to(torch.bfloat16)
     rows = x.shape[0]
     out = {}
-    for table in (False, True):
+    for selected in (False, True):
         code = torch.full((rows, 128), 7, dtype=torch.uint8, device="cuda")
         rms = torch.full((rows,), math.nan, dtype=torch.float32, device="cuda")
-        _encode8[(triton.cdiv(rows, m),)](x, code, rms, *CODEBOOK, rows, codec, m, table,
-                                          num_warps=warps)
-        out[table] = (code, rms)
-    assert torch.equal(out[True][0], out[False][0])
-    assert torch.equal(out[True][1].view(torch.int32), out[False][1].view(torch.int32))
+        _encode[(triton.cdiv(rows, m),)](x, code, rms, *CODEBOOK, rows, 8, codec, m, selected, num_warps=warps)
+        out[selected] = (code, rms)
+    assert torch.equal(out[False][0], out[True][0])
+    assert torch.equal(out[False][1].view(torch.int32), out[True][1].view(torch.int32))
 
 
 @pytest.mark.parametrize("bits", (7, 8), ids=("rotorquant7", "rotorquant8"))
@@ -371,7 +359,7 @@ def test_exact_midpoints_and_fp32_neighbors_use_lower_tie(bits):
     above = torch.nextafter(midpoint, torch.full_like(midpoint, math.inf))
     source = torch.stack((below, midpoint, above), -1).flatten()
     got = torch.empty_like(source, dtype=torch.int32)
-    _midpoints[(1,)](source, got, source.numel(), bits, triton.next_power_of_2(source.numel()))
+    _midpoints[(1,)](source, got, CODEBOOK[1], source.numel(), bits, triton.next_power_of_2(source.numel()))
     expected = torch.stack((torch.arange(len(midpoint)), torch.arange(len(midpoint)),
                             torch.arange(1, len(midpoint) + 1)), -1).flatten().cuda()
     assert torch.equal(got, expected)
@@ -526,7 +514,7 @@ def test_fused_prep_quantizes_post_rope_bf16_and_leaves_index_keys_unchanged(for
                        iq, index, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                        bits=cache.bits if cache.quantized else 0, codec=cache.codec, delta=delta, status=status,
-                       **dict(zip(("centroids", "thresholds"), CODEBOOK)))
+                       centroids=CODEBOOK[0], thresholds=CODEBOOK[1])
         if status is not None:
             assert status.cpu().tolist() == [0, -2]
         outputs.append((q, iq, index))
@@ -680,7 +668,7 @@ def test_fused_numeric_guard_reports_source_and_first_layer_without_publication(
                    q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                    index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                    bits=cache.bits, codec=cache.codec, status=st.kv_status, layer=17,
-                   **dict(zip(("centroids", "thresholds"), CODEBOOK)))
+                   centroids=CODEBOOK[0], thresholds=CODEBOOK[1])
     with pytest.raises(KVNumericError, match="layer=17"):
         st.kv_check()
     assert int(st.kv_status[0].item()) & bit
