@@ -164,11 +164,11 @@ def _sbx(S, B, XS, g, rn, n_ok, rm, m_ok, N: tl.constexpr, KG: tl.constexpr):
 def _qmm(X, XS, W, S, B, OUT, PART, M, x_stride,
          N: tl.constexpr, K: tl.constexpr, SK: tl.constexpr, BM: tl.constexpr,
          BLOCK_N: tl.constexpr, PD: tl.constexpr, F32: tl.constexpr, SBN: tl.constexpr, PDL: tl.constexpr = False):
-    """A K slice's groups one a loop step, summed in order. Triton pipelines the words and inputs (async copies)
-    but would load the scales, biases and group sums synchronously behind the dot's shared-memory barriers, one
-    memory latency a step: with PD 1 or 2 they are loaded PD groups ahead into loop-carried registers (the same
-    values; a slice's last steps reload its last group, in bounds and unused). The stored tile's rows past N
-    (``tile_words``' zero padding) are masked to the same zero words."""
+    """A K slice's groups one a loop step, summed in order. Triton pipelines the words and inputs (async copies;
+    Triton 3.9 leaves the PD 2 loop unpipelined) but would load the scales, biases and group sums synchronously
+    behind the dot's shared-memory barriers, one memory latency a step: with PD 1 or 2 they are loaded PD groups
+    ahead into loop-carried registers (the same values; a slice's last steps reload its last group, in bounds and
+    unused). The stored tile's rows past N (``tile_words``' zero padding) are masked to the same zero words."""
 
     pdl_wait(PDL)
     KG: tl.constexpr = K // 32
@@ -255,15 +255,17 @@ SPLITS = {
 def split_for(n: int, k: int) -> int:
     """The K slices of an (n, k) matrix: the shape constant when there is one, else ``split_k``."""
 
-    got = SPLITS.get((n, k))
-    return got if got else split_k(n, k)
+    return SPLITS.get((n, k)) or split_k(n, k)
 
 
 def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch.Tensor | None = None,
            f32: bool = False, sk: int | None = None, part: torch.Tensor | None = None,
            pd: int | None = None, num_warps: int | None = None, num_stages: int | None = None,
            block_n: int | None = None, reduce: bool = True) -> torch.Tensor:
-    """x (M, K) bf16 (rows may be strided) @ q.T -> (M, N) bf16 (or fp32 sums with ``f32``). ``reduce=False`` with a split K returns the unreduced fp32 slices [SK, M, N] (the caller sums them in slice order)."""
+    """x (M, K) bf16 (rows may be strided) @ q.T -> (M, N) bf16 (or fp32 sums with ``f32``). ``reduce=False`` with a
+    split K returns the unreduced fp32 slices [SK, M, N] (the caller sums them in slice order). ``pd``, ``num_warps``,
+    ``num_stages`` and ``block_n`` (dividing ``BN``) override the tiled kernel's launch, never its bits; the "frag"
+    layout ignores them."""
 
     if q.layout == "frag":
         if x.shape[1] != q.k or x.stride(1) != 1:

@@ -23,7 +23,9 @@ S, D, LOW = 4, 2560, 320
 SENTINEL = float.fromhex("0x1.5555p+100")        # outputs start here: a stray or a missing write shows
 
 
-# ---- oracle: 18a7c448 (qwen4_exp/cuda/qmm.py), verbatim but for the wrappers' names and the tiled-only matmul ----
+# ---- oracle: 18a7c448 (qwen4_exp/cuda/qmm.py), verbatim but for the wrappers' names, the tiled-only matmul and the
+# K split read from SHAPES16 (split_for's value at these shapes); qmm.bucket, qmm.group_sums and qmm._reduce are
+# production's, the same as at 18a7c448 ----
 
 @triton.jit
 def _deq(words, shifts, ROWS: tl.constexpr):
