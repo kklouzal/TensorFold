@@ -14,12 +14,12 @@ POLICY = Path(qmm.__file__).parents[3] / "cuda" / "kernels" / "qmm_policy.cuh"
 
 
 def _lane_blocks() -> dict[int, tuple[int, ...]]:
-    """TENSORFOLD_QMM_LANE_TILES: {block: (rows, columns, warps down, warps across, stages)}."""
+    """TENSORFOLD_QMM_LANE_TILES: {block: (rows, columns, warps down, warps across, stages, group size or 0)}."""
 
     text = POLICY.read_text()
     body = text[text.index("#define TENSORFOLD_QMM_LANE_TILES(X)"):]
     body = body[:body.index("\n\n")]
-    rows = re.findall(r"X\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", body)
+    rows = re.findall(r"X\((\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+),\s*(\d+)\)", body)
     assert rows and len(rows) == body.count("X("), body
     return {int(r[0]): tuple(map(int, r[1:])) for r in rows}
 
@@ -36,7 +36,7 @@ def test_the_row_buckets_keep_their_launch():
     4 stages, the lane matmul's launch before the block table."""
 
     blocks = _lane_blocks()
-    assert {b: blocks[t] for b, t in qmm.shared.BUCKET_TILES.items()} == {b: (b, 64, 1, 4, 4) for b in (16, 32, 64)}
+    assert {b: blocks[t] for b, t in qmm.shared.BUCKET_TILES.items()} == {b: (b, 64, 1, 4, 4, 0) for b in (16, 32, 64)}
 
 
 def test_the_table_names_existing_blocks_for_ascending_row_ranges():
@@ -45,5 +45,6 @@ def test_the_table_names_existing_blocks_for_ascending_row_ranges():
         for (n, k), entries in table.items():
             rows = [r for r, _, _ in entries]
             assert rows == sorted(set(rows)) and rows[0] >= 1, (chip, n, k)
-            assert all(tile in blocks and isinstance(clusters, bool) for _, tile, clusters in entries), (chip, n, k)
+            assert all(tile in blocks and blocks[tile][5] in (0, qmm.GS) and isinstance(clusters, bool)
+                       for _, tile, clusters in entries), (chip, n, k)
             assert qmm.lane_launch(n, k, rows[-1] + 1, chip) == (0, True)

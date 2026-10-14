@@ -330,8 +330,13 @@ template <int GS, bool F32, bool CLUSTER>
 void dispatch(int tile, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& s,
               const at::Tensor& b, at::Tensor& out, const at::Tensor& part, int N, int SK, bool pdl) {
     switch (tile) {
-#define LANE_CASE(ID, BM, BN, WM, WN, STAGES) \
-        case ID: launch<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); break;
+#define LANE_CASE(ID, BM, BN, WM, WN, STAGES, BLOCK_GS) \
+        case ID: \
+            if constexpr (BLOCK_GS == 0 || BLOCK_GS == GS) \
+                launch<GS, BM, BN, WM, WN, STAGES, F32, CLUSTER>(x, xs, w, s, b, out, part, N, SK, pdl); \
+            else \
+                TORCH_CHECK(false, "lane matmul block ", tile, " takes groups of ", BLOCK_GS); \
+            break;
         TENSORFOLD_QMM_LANE_TILES(LANE_CASE)
 #undef LANE_CASE
         default: TORCH_CHECK(false, "no lane matmul block ", tile);
