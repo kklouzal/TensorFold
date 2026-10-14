@@ -16,16 +16,17 @@
     X(11, 64, 128, 1, 8, 3, false, true) \
     X(12, 64, 128, 2, 4, 3, false, true)
 
-// The lane matmul's blocks (qmm.cu): rows and columns a block, warps down and across, stages. 1-3 are the row
-// buckets (16, 32, 64) every chip takes by default; a host table picks the others by chip and shape. A row's bits
-// never depend on its block: each output is one fp32 chain over its K slice's groups in order.
+// The lane matmul's blocks (qmm.cu): rows and columns a block, warps down and across, stages, and the group size it
+// is built for (0: both). 1-3 are the row buckets (16, 32, 64) every chip takes by default; a host table picks the
+// others by chip and shape (measured on groups of 32 only). A row's bits never depend on its block: each output is
+// one fp32 chain over its K slice's groups in order.
 #define TENSORFOLD_QMM_LANE_TILES(X) \
-    X(1, 16,  64, 1, 4, 4) \
-    X(2, 32,  64, 1, 4, 4) \
-    X(3, 64,  64, 1, 4, 4) \
-    X(4, 16, 128, 1, 4, 3) \
-    X(5, 32, 128, 1, 4, 4) \
-    X(6, 16, 128, 1, 4, 2)
+    X(1, 16,  64, 1, 4, 4, 0) \
+    X(2, 32,  64, 1, 4, 4, 0) \
+    X(3, 64,  64, 1, 4, 4, 0) \
+    X(4, 16, 128, 1, 4, 3, 32) \
+    X(5, 32, 128, 1, 4, 4, 32) \
+    X(6, 16, 128, 1, 4, 2, 32)
 
 #define TENSORFOLD_QMM_PREFILL_TILES(X) \
     X(0, 128, 128, 2, 4, 3) \
@@ -64,12 +65,18 @@ inline QMMTile qmm_group_tile(int tile) {
     }
 }
 
-inline QMMTile qmm_lane_tile(int tile) {
+struct QMMLaneTile {
+    int rows;
+    int columns;
+    int groups;      // the group size the block is built for, 0: both
+};
+
+inline QMMLaneTile qmm_lane_tile(int tile) {
     switch (tile) {
-#define LANE_COLUMNS(ID, BM, BN, WM, WN, STAGES) case ID: return {BM, BN, true};
+#define LANE_COLUMNS(ID, BM, BN, WM, WN, STAGES, GS) case ID: return {BM, BN, GS};
         TENSORFOLD_QMM_LANE_TILES(LANE_COLUMNS)
 #undef LANE_COLUMNS
-        default: return {0, 0, true};
+        default: return {0, 0, 0};
     }
 }
 

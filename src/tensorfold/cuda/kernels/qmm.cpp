@@ -69,6 +69,7 @@ void qmm(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const a
     TORCH_CHECK(tile >= 1 && tile <= std::numeric_limits<int>::max() &&
                 tensorfold::qmm_lane_tile(static_cast<int>(tile)).rows > 0, "no lane matmul block ", tile);
     const auto block = tensorfold::qmm_lane_tile(static_cast<int>(tile));
+    TORCH_CHECK(block.groups == 0 || block.groups == gs, "lane matmul block ", tile, " takes groups of ", block.groups);
     const int64_t bm = block.rows, bn = block.columns;
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.size(0) >= 1 &&
                 x.stride(1) == 1 && x.stride(0) >= x.size(1), "x: (M, K) bf16 with contiguous rows");
@@ -285,10 +286,10 @@ void qmm_prefill8w(const at::Tensor& x8, const at::Tensor& a, const at::Tensor& 
                        l64);
 }
 
-// The lane matmul's blocks as (id, rows, columns), from TENSORFOLD_QMM_LANE_TILES.
+// The lane matmul's blocks as (id, rows, columns, group size or 0), from TENSORFOLD_QMM_LANE_TILES.
 std::vector<std::vector<int64_t>> lane_tiles() {
     return {
-#define LANE_ROW(ID, BM, BN, WM, WN, STAGES) {ID, BM, BN},
+#define LANE_ROW(ID, BM, BN, WM, WN, STAGES, GS) {ID, BM, BN, GS},
         TENSORFOLD_QMM_LANE_TILES(LANE_ROW)
 #undef LANE_ROW
     };
