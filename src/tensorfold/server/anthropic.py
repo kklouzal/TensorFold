@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from typing import Any
 
 from tensorfold.server.anthropic_translate import Reply, error, translate
@@ -33,6 +34,12 @@ def post(handler: Any, app: Any) -> None:
     except (RequestError, ValueError, UnicodeDecodeError) as exc:
         status = status_of(exc)
         return _send(handler, status, error(str(exc), status))
+    except (ConnectionError, TimeoutError):     # the client has gone or stalled mid-body: the connection closes
+        raise
+    except Exception as exc:          # noqa: BLE001  a template's own refusal, say: refused, as the chat route does
+        print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exception(exc)
+        return _send(handler, 400, error(str(exc) or type(exc).__name__, 400))
 
     send = _event_writer(handler)
     reply = Reply(model, send)

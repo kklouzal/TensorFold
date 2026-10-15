@@ -295,6 +295,8 @@ def input_tokens(handler: Any, app: Any) -> None:
         return _refused(handler, exc, "input")
     except ValueError as exc:
         return _refuse(handler, str(exc))
+    except (ConnectionError, TimeoutError):     # the client has gone or stalled mid-body: the connection closes
+        raise
     except Exception as exc:          # noqa: BLE001  a template's own refusal, say: refused, as the chat route does
         print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
         traceback.print_exception(exc)

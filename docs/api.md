@@ -276,6 +276,9 @@ file there, readable by the server's user alone. The directory holds at most 32 
 would pass either is skipped with a line saying so, never written over an older one. Nothing is captured for any
 other reply, and capturing never changes the reply.
 
+A route that fails before its reply starts answers HTTP 500 with a `server_error` object on both servers; once a
+reply has started, a stream ends with an error event (or the connection closes).
+
 An error reply is OpenAI's error object, `{"error": {"message", "type", "param", "code"}}`, with `param` and `code`
 null where nothing names them. A capacity refusal (a full request queue under `--max-pending-requests`, the image queue)
 is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on
@@ -374,8 +377,9 @@ first). To draw independent repeats, send a `seed` per run, or start each run's 
 `GET /stats` and `GET /v1/stats` answer one JSON object, schema `tensorfold.stats` version 1, on both servers. A
 field the server cannot read is null, never a fabricated zero. A scrape reads counters and the sizes of tables the
 engine already keeps, a few dozen values and a pass over the live lanes and kept prefix points: no GPU call, no engine
-lock and no work in a round. Successful polls are not logged. The sections are read one after another, not as one
-atomic snapshot, and load and memory readings are advisory: admission decides. Times are seconds, sizes bytes.
+lock and no work in a round. Successful polls (of `/stats`, `/metrics` and `/health`) are not logged. The sections
+are read one after another, not as one atomic snapshot, and load and memory readings are advisory: admission decides.
+Times are seconds, sizes bytes.
 
 | Field | Meaning |
 | --- | --- |

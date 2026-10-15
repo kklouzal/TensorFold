@@ -358,9 +358,16 @@ def requested_model(app: Any, body: Any) -> str:
         asked = asked.split("@", 1)[0]
     ids = getattr(app, "model_ids", None) or [name]
     if asked not in ids:
-        raise ModelNotFound(f"The model `{asked}` does not exist on this server, which serves {', '.join(ids)} "
-                            "(GET /v1/models)")
+        raise ModelNotFound(f"The model `{_shown(asked)}` does not exist on this server, which serves "
+                            f"{', '.join(ids)} (GET /v1/models)")
     return asked
+
+
+SHOWN_ID = 256          # characters of an unknown model id its 404 repeats: an error stays small whatever is sent
+
+
+def _shown(model: str) -> str:
+    return model if len(model) <= SHOWN_ID else f"{model[:SHOWN_ID]}... ({len(model)} characters)"
 
 
 def model_route(path: str) -> str | None:
@@ -387,8 +394,8 @@ def models_reply(app: Any, model_id: str, max_model_len: int | None) -> tuple[in
     if not model_id:
         return 200, {"object": "list", "data": [entry(name) for name in app.model_ids]}
     if model_id not in app.model_ids:
-        return 404, {"error": error_body(ModelNotFound(f"The model `{model_id}` does not exist on this server "
-                                                       "(GET /v1/models)"))}
+        return 404, {"error": error_body(ModelNotFound(f"The model `{_shown(model_id)}` does not exist on this "
+                                                       "server (GET /v1/models)"))}
     return 200, entry(model_id)
 
 

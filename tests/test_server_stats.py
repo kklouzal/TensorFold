@@ -455,3 +455,21 @@ def test_in_flight_counts_requests_waiting_for_a_one_at_a_time_turn(tmp_path):
     with health.of(app).running(3, []):
         load = stats.snapshot(app)["load"]
     assert (load["requests_running"], load["requests_waiting"], load["requests_in_flight"]) == (1, 2, 3)
+
+
+def test_successful_polls_print_no_access_line_on_the_mac_either(capsys):
+    from tensorfold.server.live import ChunkRate, Meter
+
+    app = MacApp()
+    app.scheduler = SimpleNamespace(active=0, waiting=0, filling=[], cancelled=0, preemptions=0, decoded=Meter(),
+                                    prefilled=ChunkRate())
+    with mac_server(app) as port:
+        for path in ("/stats", "/v1/stats", "/metrics", "/v1/metrics?x=1", "/health"):
+            assert exchange(port, "GET", path)[0] == 200, path
+        assert exchange(port, "GET", "/v1/models")[0] == 200
+        assert exchange(port, "GET", "/stats/missing")[0] == 404
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("[tensorfold] 127.0.0.1 ")]
+    assert any('"GET /v1/models HTTP/1.1" 200' in line for line in lines), lines
+    assert any('"GET /stats/missing HTTP/1.1" 404' in line for line in lines), lines
+    assert not any(poll in line for line in lines for poll in ("/stats HTTP", "/v1/stats HTTP", "/metrics",
+                                                               "/health")), lines

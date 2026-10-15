@@ -394,3 +394,64 @@ def test_input_tokens_answers_an_unexpected_failure(tmp_path):
         status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {"input": "Hi"})
     check_error(json.loads(text))
     assert status == 400 and "looked up nothing" in json.loads(text)["error"]["message"]
+
+
+@pytest.mark.parametrize("name", BACKENDS)
+def test_a_messages_count_that_fails_unexpectedly_is_refused_in_anthropic_s_shape(name, tmp_path, monkeypatch):
+    """Not a dropped connection: the Messages routes answer every failure to read a request as Anthropic's error."""
+    from tensorfold.server import anthropic
+
+    def broken(app, chat):
+        raise LookupError("the template looked up nothing")
+
+    monkeypatch.setattr(anthropic, "count_chat", broken)
+    with backend(name, tmp_path) as (port, served):
+        status, _, text = exchange(port, "POST", "/v1/messages/count_tokens",
+                                   {"model": served, "messages": [{"role": "user", "content": "Hi"}]})
+    assert status == 400 and json.loads(text) == {
+        "type": "error", "error": {"type": "invalid_request_error", "message": "the template looked up nothing"}}
+
+
+@pytest.mark.parametrize("name", BACKENDS)
+def test_a_route_that_fails_before_answering_is_a_500_error_object(name, tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise LookupError("the snapshot looked up nothing")
+
+    monkeypatch.setattr(stats, "snapshot", broken)
+    with backend(name, tmp_path) as (port, _):
+        status, headers, text = exchange(port, "GET", "/stats", None, {"x-request-id": "scrape-1"})
+        check_error(json.loads(text))
+        assert status == 500 and json.loads(text)["error"]["type"] == "server_error"
+        assert "looked up nothing" in json.loads(text)["error"]["message"]
+        assert headers["x-request-id"] == "scrape-1" and headers["connection"] == "close"
+        assert exchange(port, "GET", "/v1/models")[0] == 200            # the server serves on
+
+
+@pytest.mark.parametrize("name", BACKENDS)
+def test_a_refusal_before_the_request_is_parsed_does_not_reuse_the_last_id(name, tmp_path):
+    """A request line past 64 KiB is refused (414) before ``parse_request`` runs, on a reused connection too."""
+    import re
+    import socket
+
+    with backend(name, tmp_path) as (port, _), socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
+        sock.sendall(b"GET /v1/models HTTP/1.1\r\nHost: test\r\nx-request-id: first-1\r\n\r\n")
+        first = http.client.HTTPResponse(sock)
+        first.begin()
+        first.read()
+        assert first.status == 200 and first.getheader("x-request-id") == "first-1"
+        sock.sendall(b"GET /" + b"a" * (65537 - 5))      # exactly what the server reads before it refuses: no reset
+        second = http.client.HTTPResponse(sock)
+        second.begin()
+        assert second.status == 414 and re.fullmatch(r"req-[0-9a-f]{32}", second.getheader("x-request-id"))
+
+
+@pytest.mark.parametrize("name", BACKENDS)
+def test_an_unknown_model_s_404_repeats_a_bounded_id(name, tmp_path):
+    with backend(name, tmp_path) as (port, _):
+        status, _, text = exchange(port, "POST", "/v1/chat/completions",
+                                   {"model": "m" * 100_000, "messages": HI, "max_tokens": 2})
+        error = json.loads(text)["error"]
+        assert status == 404 and error["code"] == "model_not_found" and len(error["message"]) < 1000
+        assert "(100000 characters)" in error["message"]
+        status, _, text = exchange(port, "GET", "/v1/models/" + "m" * 5000)
+        assert status == 404 and len(json.loads(text)["error"]["message"]) < 1000
