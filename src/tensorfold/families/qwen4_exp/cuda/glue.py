@@ -521,7 +521,7 @@ def _ple_embed(W, S, B, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: t
 
 def ple_embed(rows: int, weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, heads: int, dh: int,
               out: torch.Tensor, xs: torch.Tensor, *, scale: float = 1.0) -> None:
-    """Gathered rows (``weights.HostTable.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    """Gathered rows (the n-gram table's ``gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
 
     _ple_embed[(rows, heads)](weight, scales, biases, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
                               PDL=pdl.ON, launch_pdl=pdl.ON)

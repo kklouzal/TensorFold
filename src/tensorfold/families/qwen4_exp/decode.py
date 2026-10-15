@@ -92,7 +92,7 @@ def first(a: mx.array) -> mx.array:
     return a.reshape(a.shape[1:])
 
 
-# "lane": lane_qmm; "rows": per-row kernels; "simd": simd_qmm, selected by TF_FLASH_DENSE.
+# TF_FLASH_DENSE selects "lane": lane_qmm; "rows": per-row kernels; any other value (e.g. "matrix"): simd_qmm.
 DENSE = os.environ.get("TF_FLASH_DENSE") or ("lane" if tensor_units() else "rows")
 
 
@@ -310,7 +310,7 @@ class FusedDecode:
 
     def _select(self, iq: mx.array, raw: mx.array, cache: Any, complete: list[int], ends: list[int],
                 pool_scale: mx.array, top: int) -> mx.array:
-        """The rows' key ids (``kernels.index_select``), after pooling the blocks the last row completes."""
+        """The rows' key ids (``attention.index_select``), after pooling the blocks the last row completes."""
 
         cfg = self.cfg
         done = 0 if cache.pooled is None else int(cache.pooled.shape[1])

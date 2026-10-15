@@ -32,7 +32,7 @@ table, expert width 640, vocab 248,320 with the packaged 79,591-id draft head, h
 rotary 64 under the production YaRN-4 policy, DeltaNet nk 16 / nv 48 / dk = dv = 128 / conv 4, 4 hyper-connection
 streams of low rank 320, indexer 4 x 128 with budget 2048 and ratio 4, the MTP head with its own MoE layer). The
 decoder is ``multi.MultiDecoder`` built as ``engine.FlashNextEngine`` builds it for ``--parallel 4`` (4 slots, KEEP 8,
-the RQ6 pair, prefill rows, share), warmed and graph-captured by its own ``warm()``; rounds are its ``round()``.
+the ``--kv-dtype`` pair, prefill rows, share), warmed and graph-captured by its ``warm()``; rounds are its ``round()``.
 Each stream's state is built by the real prompt path (``admit``, then the decoder's prompt passes, ``_fill``, over a
 random-token prompt of the stream's context, all of them before any decode round, so every stream starts the rounds
 at exactly its context): the KV/indexer caches, pooled keys, DeltaNet/conv states and MTP cache hold what that path
@@ -461,7 +461,8 @@ def main(argv=None) -> int:
     rows_max = (args.depth if not args.no_mtp else 0) + 1                # a window's rows
     if accept is not None and not 1 <= accept <= rows_max:
         raise SystemExit(f"--accept: 1 to {rows_max} rows (depth + 1; 1 with --no-mtp), or 'model'")
-    # production's environment, read by the decoder and the n-gram reader at construction
+    # production's environment, read by the decoder and the n-gram reader at construction (TENSORFOLD_PREFILL_ROWS is
+    # the engine's: this decoder takes --prefill-rows directly, so here it only records production's value)
     os.environ["TENSORFOLD_MULTI_GRAPH_MIB"] = str(args.graph_mib)
     os.environ["TENSORFOLD_MTP_COPY"] = "0"
     os.environ["TENSORFOLD_PREFILL_ROWS"] = str(args.prefill_rows)

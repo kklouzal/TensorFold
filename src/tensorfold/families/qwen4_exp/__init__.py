@@ -7,7 +7,7 @@ from typing import Any
 
 from .kv_formats import DTYPES
 
-CUDA_KV_DTYPES = DTYPES
+CUDA_KV_DTYPES = DTYPES          # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
 
 MODEL_TYPES = ("qwen4_exp", "qwen3_8_flash_next")   # the second: the name newer exports (Mia-AiLab's NVFP4) carry
 TITLE = "Qwen3.8 Flash Next"
@@ -177,7 +177,6 @@ def kernel_version(model: Any) -> str:
 
 # the CUDA engine reads MLX affine weights of this (bits, group size), or NVFP4 (ModelOpt) routed experts
 CUDA_QUANTIZATION = (4, 32)
-# the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
 CUDA_DECODE_SHARE = True           # --parallel rounds size their prompt pass by --decode-share (0: whole passes)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: an NVFP4 checkpoint's MXFP8 linears have an FP8 prompt kernel
 CUDA_KV_PAIRS = True               # independent key/value storage, including asymmetric quantization
@@ -195,7 +194,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                 vram_experts: float | str | None = None, kv_key_dtype: str | None = None,
                 kv_value_dtype: str | None = None,
                 **options: Any):
-    """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with bf16, int8 or int4 KV storage."""
+    """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with any ``CUDA_KV_DTYPES`` KV storage."""
 
     if "ram_experts" in options:
         raise TypeError("ram_experts was renamed to vram_experts; specify the GPU expert-cache budget with that keyword")

@@ -55,7 +55,7 @@ class Q4:
         return sum(t.numel() * t.element_size() for t in (self.weight, self.scales, self.biases))
 
 
-# nibble slot p of a lane's word holds input 32 v + 2 (lane % 4) + OFFSETS[p] of the group (see ``pair`` in qmm.cu)
+# nibble slot p of a lane's word holds input 32 v + 2 (lane % 4) + OFFSETS[p] of the group (``pair`` in qmm_frag.cuh)
 OFFSETS = (0, 8, 16, 24, 1, 9, 17, 25)
 
 
