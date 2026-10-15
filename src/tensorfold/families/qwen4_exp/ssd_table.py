@@ -86,6 +86,19 @@ def _fill(reads: list[tuple[int, int, int, memoryview, int]]) -> None:
             done += len(data)
 
 
+def _read_runs(where: np.ndarray, offsets: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
+    """A gather's reads (rows nonempty): each run of rows adjacent in one file, cut every MAX_READ bytes, as its first
+    row and row count. The Python and native readers share it, so both coalesce alike."""
+
+    n = offsets.size
+    cut = np.ones(n, dtype=bool)
+    cut[1:] = (where[1:] != where[:-1]) | (offsets[1:] != offsets[:-1] + width)
+    first = np.flatnonzero(cut)
+    cut |= (np.arange(n) - first[np.cumsum(cut) - 1]) % max(1, MAX_READ // width) == 0
+    first = np.flatnonzero(cut)
+    return first, np.diff(first, append=n)
+
+
 class SSDTable:
     """HostTable's rows, byte for byte, read from the checkpoint at each gather: deduplicated, coalesced, parallel."""
 
@@ -201,15 +214,9 @@ class SSDTable:
     def _reads(self, where: np.ndarray, offsets: np.ndarray, width: int, out: np.ndarray) -> list[tuple]:
         """One read per run of rows adjacent in one file, each at most MAX_READ bytes, into ``out``'s rows."""
 
-        n = offsets.size
-        if not n:
+        if not offsets.size:
             return []
-        cut = np.ones(n, dtype=bool)
-        cut[1:] = (where[1:] != where[:-1]) | (offsets[1:] != offsets[:-1] + width)
-        first = np.flatnonzero(cut)
-        cut |= (np.arange(n) - first[np.cumsum(cut) - 1]) % max(1, MAX_READ // width) == 0
-        first = np.flatnonzero(cut)
-        rows = np.diff(first, append=n)
+        first, rows = _read_runs(where, offsets, width)
         view = memoryview(out.reshape(-1))
         return list(zip(self._fd_of[where[first]].tolist(), offsets[first].tolist(), (rows * width).tolist(),
                         [view] * first.size, (first * width).tolist()))

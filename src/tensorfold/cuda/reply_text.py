@@ -8,22 +8,14 @@ import uuid
 from typing import Any
 
 from tensorfold.server.stopping import StopPolicy
+from tensorfold.server.text import _STRAY_QWEN_CLOSES_RE, _partial_tag
 from tensorfold.server.tools import normalize_qwen_tool_markup, parse_glm_tool_call_block
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
 
 _CALL_OPEN, _CALL_CLOSE = "<tool_call>", "</tool_call>"
-_STRAY_CLOSES_RE = re.compile(r"(?:\s*</tool_call>)*")
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _TOOL_FUNCTION_BLOCK_RE = re.compile(r"^\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*$", re.IGNORECASE | re.DOTALL)
 _TOOL_PARAMETER_BLOCK_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.IGNORECASE | re.DOTALL)
-
-
-
-def _partial_tag(text: str, tag: str) -> int:
-    for k in range(min(len(tag) - 1, len(text)), 0, -1):
-        if text.endswith(tag[:k]):
-            return k
-    return 0
 
 
 class StreamDecoder:
@@ -53,7 +45,6 @@ class StreamDecoder:
 
         before = self._decode(self.ids[self.prefix:self.read])
         return self.text + self._decode(self.ids[self.prefix:])[len(before):]
-
 
 
 class StopStrings:
@@ -91,7 +82,7 @@ def hide_tool_calls(text: str, *, finished: bool) -> str:
         if end < 0:
             return "".join(out)
         # a doubled closer after a call is part of its markup (the end parser collapses it), not visible text
-        pos = _STRAY_CLOSES_RE.match(text, end + len(_CALL_CLOSE)).end()
+        pos = _STRAY_QWEN_CLOSES_RE.match(text, end + len(_CALL_CLOSE)).end()
         if not finished and _CALL_CLOSE.startswith(text[pos:].lstrip()):
             return "".join(out)          # a doubled closer may still be arriving: hold the whitespace before it too
 
