@@ -34,7 +34,7 @@ def snapshot(app: Any, *, server: Any = None, reading: metrics.Metrics | None = 
     """The /stats body. ``reading`` is a scrape's copy of the counters (``metrics.counters_now``), else one is taken."""
 
     if reading is None:
-        reading = metrics.counters_now(app)[0]
+        reading = metrics.counters_now(app)
     fixed = _fixed(app)
     engine = getattr(app, "engine", None)
     sched = getattr(engine, "scheduler", None) if engine is not None else None     # a CUDA concurrent engine's

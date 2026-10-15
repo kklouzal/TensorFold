@@ -245,7 +245,7 @@ def capacity_snapshot(app: Any, *, server: Any = None) -> dict[str, dict[str, in
     return result
 
 
-def counters_now(app: Any) -> tuple[Metrics, dict[tuple[str, int], int], dict[int, int]]:
+def counters_now(app: Any) -> Metrics:
     """One scrape's copy of the app's counters, its key-label series reconciled with the configured keys."""
 
     counters = of(app)
@@ -254,8 +254,7 @@ def counters_now(app: Any) -> tuple[Metrics, dict[tuple[str, int], int], dict[in
     with labels_scope as labels, counters.lock:
         if labels is not None:
             counters.reconcile_http_labels(labels)
-        reading = counters.reading()
-    return reading, reading.http_requests, reading.http_replies
+        return counters.reading()
 
 
 def render(app: Any, *, server: Any = None) -> str:
@@ -263,7 +262,8 @@ def render(app: Any, *, server: Any = None) -> str:
 
     from tensorfold.server import stats
 
-    reading, requests, replies = counters_now(app)
+    reading = counters_now(app)
+    requests, replies = reading.http_requests, reading.http_replies
     snap = stats.snapshot(app, server=server, reading=reading)
     load, kv, prefix, totals = snap["load"], snap["kv"], snap["prefix_cache"], snap["totals"]
     lines: list[str] = []
@@ -477,7 +477,7 @@ def _disconnects(app: Any, reading: Metrics) -> int | None:
 
     scheduler = getattr(app, "scheduler", None)
     if scheduler is not None and hasattr(scheduler, "active") and hasattr(scheduler, "waiting"):
-        return count(scheduler, "cancelled")
+        return _count(scheduler, "cancelled")
     return reading.outcomes["abort"] if getattr(app, "engine", None) is not None else None
 
 
@@ -486,13 +486,13 @@ def preemptions(app: Any) -> int | None:
 
     scheduler = getattr(app, "scheduler", None)
     if scheduler is not None and hasattr(scheduler, "active") and hasattr(scheduler, "waiting"):
-        return count(scheduler, "preemptions")
+        return _count(scheduler, "preemptions")
     engine = getattr(app, "engine", None)
     sched = getattr(engine, "scheduler", None) if engine is not None else None
-    return count(sched, "yields") if sched is not None else None
+    return _count(sched, "yields") if sched is not None else None
 
 
-def count(owner: Any, name: str) -> int | None:
+def _count(owner: Any, name: str) -> int | None:
     """A scheduler's own count, or None where this server keeps no such count."""
 
     value = getattr(owner, name, None)
@@ -574,6 +574,6 @@ def _label(value: Any) -> str:
     return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
-__all__ = ["BUCKETS", "OUTCOMES", "PREFIX", "Histogram", "Metrics", "begin", "bind", "capacity_snapshot", "count",
+__all__ = ["BUCKETS", "OUTCOMES", "PREFIX", "Histogram", "Metrics", "begin", "bind", "capacity_snapshot",
            "counters_now", "ended", "finish_request", "note", "of", "preemptions", "render", "requests_now", "send",
            "stream_tokens", "tokens"]
