@@ -364,7 +364,7 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         out = rot.to(tl.bfloat16)
         if PAIR and VALIDATE:
             out = source_guard(out.to(tl.float32), STATUS,
-                            tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER).to(tl.bfloat16)
+                               tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER).to(tl.bfloat16)
         if head < NQ:
             if PAIR:
                 out = tl.reshape(transform(tl.reshape(out.to(tl.float32), (1, HD)),
