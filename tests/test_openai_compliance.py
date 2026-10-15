@@ -369,3 +369,28 @@ def test_mac_input_tokens_renders_as_tokenize_does():
                                         {"messages": [{"role": "user", "content": "Say hello."}]})[2])
     check(counted, "TokenCountsResource")
     assert status == 200 and counted["input_tokens"] == tokenized["count"] > 0
+
+
+def test_input_tokens_refuses_a_prompt_the_context_cannot_hold_on_both_servers(tmp_path):
+    for name in BACKENDS:
+        app = app_for(tmp_path) if name == "cuda" else MacApp()
+        app.context_window = 4
+        app.reasoning_effort = None
+        with backend(name, tmp_path, app) as (port, _):
+            status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {"input": "a long prompt indeed"})
+        error = json.loads(text)["error"]
+        check_error(json.loads(text))
+        assert status == 400 and (error["code"], error["param"]) == ("context_length_exceeded", "input"), name
+
+
+def test_input_tokens_answers_an_unexpected_failure(tmp_path):
+    app = app_for(tmp_path)
+
+    def broken(body, chat):
+        raise LookupError("the template looked up nothing")
+
+    app.prepare = broken
+    with http_server(app) as port:
+        status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {"input": "Hi"})
+    check_error(json.loads(text))
+    assert status == 400 and "looked up nothing" in json.loads(text)["error"]["message"]

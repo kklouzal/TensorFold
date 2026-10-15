@@ -447,3 +447,11 @@ def test_a_scrape_stays_the_same_size_however_many_requests_finished(tmp_path):
                          outcome="stop")
         sizes.append((len(json.dumps(stats.snapshot(app))), len(metrics.render(app).splitlines())))
     assert sizes[0][1] == sizes[1][1] and abs(sizes[0][0] - sizes[1][0]) < 64 and sizes[1][0] < 4096
+
+
+def test_in_flight_counts_requests_waiting_for_a_one_at_a_time_turn(tmp_path):
+    app = app_for(tmp_path)                   # no concurrent scheduler: requests take turns
+    app.turns = SimpleNamespace(parked=2)
+    with health.of(app).running(3, []):
+        load = stats.snapshot(app)["load"]
+    assert (load["requests_running"], load["requests_waiting"], load["requests_in_flight"]) == (1, 2, 3)

@@ -344,7 +344,7 @@ object keeps its own keys and adds the same `stats_version`, `request_id`, `prep
 `decode_s`, `ttft_s` and `decode_tps` (a replayed background reply's last run). The server's `done` line names the
 request by the same id.
 
-A streamed request may send `return_progress: true` (llama.cpp's field; a boolean, else HTTP 400) to receive
+A streamed request may send `return_progress: true` (llama.cpp's field; on CUDA a boolean, else HTTP 400) to receive
 llama.cpp's `prompt_progress` frames while its prompt prefills: a chunk with no output (`delta` `{"role":
 "assistant", "content": null}`, `finish_reason` null) and `prompt_progress` `{"total", "cache", "processed",
 "time_ms"}`: the prompt's tokens, those its resumed prefix cache held, those its state holds now (cached ones

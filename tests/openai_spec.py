@@ -2,7 +2,7 @@
 
 The subset (tools/openai_spec_subset.py) keeps only constraining JSON Schema keywords; this validator implements exactly
 those: type, properties, required, enum, const, items, anyOf, oneOf, allOf, $ref, additionalProperties, minimum,
-maximum, minItems and maxItems. Unknown properties are allowed unless a schema says otherwise, as the spec allows the
+maximum, minItems, maxItems and nullable. Unknown properties are allowed unless a schema says otherwise, as the spec allows the
 server's own extensions (``tensorfold``, ``reasoning_content``).
 """
 
@@ -32,6 +32,8 @@ def errors(value: Any, schema: dict[str, Any], path: str = "$") -> list[str]:
     ref = schema.get("$ref")
     if ref is not None:
         return errors(value, schemas()[ref.rsplit("/", 1)[1]], path)
+    if value is None and schema.get("nullable"):        # OpenAPI 3.0's null, which the subset keeps
+        return []
     found: list[str] = []
     kinds = schema.get("type")
     if kinds is not None:

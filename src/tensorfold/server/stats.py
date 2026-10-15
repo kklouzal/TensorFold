@@ -61,7 +61,9 @@ def snapshot(app: Any, *, server: Any = None, reading: metrics.Metrics | None = 
         "object": "tensorfold.stats", "schema_version": SCHEMA_VERSION,
         "time": {"unix_s": round(time.time(), 3), "uptime_s": round(time.monotonic() - STARTED_MONOTONIC, 3)},
         "server": fixed["server"], "model": fixed["model"], "limits": limits,
-        "load": {"requests_in_flight": reading.live_requests if cuda else running + waiting,
+        # CUDA: requests in its run (a concurrent engine's queue included) and those waiting for a one-at-a-time turn
+        "load": {"requests_in_flight": reading.live_requests + (waiting if decoder is None else 0) if cuda
+                 else running + waiting,
                  "requests_running": running, "requests_waiting": waiting, "lanes": lanes,
                  "held_for_memory": (getattr(sched, "held", None) is not None) if decoder is not None else None,
                  "http_connections_in_use": transport["in_use"] if transport is not None else None,

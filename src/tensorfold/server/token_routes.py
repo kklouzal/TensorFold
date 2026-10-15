@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tensorfold.server.errors import RequestError
+from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError
 from tensorfold.server.messages import normalize_messages
 from tensorfold.server.prompts import has_images, prepare_prompt
 from tensorfold.server.request_options import thinking_fields
@@ -60,40 +60,34 @@ def token_ids(value: Any, vocab: int | None, field: str = "tokens") -> list[int]
 
 def count_chat(app: Any, chat: dict[str, Any]) -> int:
     """A chat request's prompt tokens, rendered as generation renders them (the same tokenizer, template, tools,
-    thinking controls and image expansion), without running generation: CUDA's own preparation, or the Mac's."""
+    thinking controls and image expansion), without running generation: CUDA's own preparation, or the Mac's. A
+    prompt that leaves no room for a reply in the context is refused (``context_length_exceeded``) on both, as
+    generation refuses it."""
 
     if hasattr(app, "prepare"):                   # CUDA's preparation includes vision token expansion
         return len(app.prepare(chat, True).prompt)
-    from tensorfold.server.prompts import prepare_images
     from tensorfold.server.request_options import heard_effort
-    from tensorfold.vision.images import DEFAULT_LIMITS
 
     fields = thinking_fields(chat, app.effort_levels)
     thinking = fields.get("enable_thinking", app.enable_thinking)
-    effort = heard_effort(fields.get("reasoning_effort"), app.reasoning_effort, app.effort_levels)
     try:
         tools = active_tool_specs(chat.get("tools"), chat.get("tool_choice"))
     except ValueError as exc:
         raise RequestError(str(exc)) from None
     msgs = normalize_messages(chat["messages"], allow_images=getattr(app, "vision", None) is not None)
-    if has_images(msgs):
-        from tensorfold.server.messages import _normalize_tool_call_arguments
-        msgs = _normalize_tool_call_arguments(msgs)
-
-        def render(messages):
-            kwargs = {"tokenize": False, "add_generation_prompt": True, "enable_thinking": thinking}
-            if tools:
-                kwargs["tools"] = tools
-            if thinking and effort:
-                kwargs["reasoning_effort"] = effort
-            with app.tokenizer_lock:
-                return app.tokenizer.apply_chat_template(messages, **kwargs)
-
-        return len(prepare_images(app.vision, msgs, render, context_limit=app.context_window or None,
-                                  limits=getattr(app, "image_limits", DEFAULT_LIMITS)).tokens)
-    with app.tokenizer_lock:
-        return len(render_prompt_ids(app.tokenizer, msgs, tools=tools, enable_thinking=thinking,
-                                     reasoning_effort=effort, late_system=app.late_system))
+    if has_images(msgs):                          # as /tokenize and generation prepare an image prompt
+        count = len(prepare_prompt(app, msgs, tools, thinking, None, fields).tokens)
+    else:
+        effort = heard_effort(fields.get("reasoning_effort"), app.reasoning_effort, app.effort_levels)
+        with app.tokenizer_lock:
+            count = len(render_prompt_ids(app.tokenizer, msgs, tools=tools, enable_thinking=thinking,
+                                          reasoning_effort=effort, late_system=app.late_system))
+    window = int(getattr(app, "context_window", 0) or 0)
+    if window and count >= window:
+        raise ContextLengthError(f"{CONTEXT_LIMIT} {window} tokens, but the rendered prompt has {count} tokens and "
+                                 "leaves no room for a reply, which exceeds the context window. Compact or shorten "
+                                 "the conversation.")
+    return count
 
 
 def tokenize(app: Any, body: Any) -> dict[str, Any]:

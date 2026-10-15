@@ -145,6 +145,8 @@ class App:
         answers to it, else ``--name``. (The id a reply names is ``server.http.requested_model``'s.)"""
 
         asked = body.get("model") if isinstance(body, dict) else None
+        if isinstance(asked, str) and getattr(self, "model_policies", False):     # GLM's ID@POLICY names ID
+            asked = asked.split("@", 1)[0]
         return asked if isinstance(asked, str) and asked in self.model_ids else self.served
 
     def _check_fields(self, body: dict[str, Any]) -> str | None:

@@ -252,6 +252,7 @@ def test_tool_image_reaches_the_vision_renderer_as_its_tool_result(backend, tmp_
         else:
             app.tokenizer = Tokenizer()
             app.effort_levels, app.enable_thinking, app.reasoning_effort = frozenset(), False, None
+            app.effort_for = lambda explicit: explicit           # ChatApp's: an image prompt renders as generation's
             app.late_system, app.context_window = "system", 32
         status, raw = call(port, "POST", "/v1/messages/count_tokens", body)
         assert status == 200 and json.loads(raw)["input_tokens"] == 4

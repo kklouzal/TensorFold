@@ -8,6 +8,7 @@ import io
 import json
 import threading
 import time
+import traceback
 import weakref
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -134,10 +135,11 @@ def _refuse(handler: Any, message: str, status: int = 400, param: str | None = N
     _send(handler, status, {"error": invalid_request(message, param)})
 
 
-def _refused(handler: Any, exc: RequestError) -> None:
-    """A refusal's own status and error object (404 for an unknown model)."""
+def _refused(handler: Any, exc: RequestError, param: str | None = None) -> None:
+    """A refusal's own status and error object (404 for an unknown model); ``param``, the field a context-length
+    refusal names."""
 
-    _send(handler, status_of(exc), {"error": error_body(exc)})
+    _send(handler, status_of(exc), {"error": error_body(exc, param)})
 
 
 def _read(handler: Any, app: Any) -> tuple[Any, str]:
@@ -290,9 +292,13 @@ def input_tokens(handler: Any, app: Any) -> None:
         body, _model = _read(handler, app)
         count = count_chat(app, translate(body, store_for(app)).chat)
     except RequestError as exc:
-        return _refused(handler, exc)
+        return _refused(handler, exc, "input")
     except ValueError as exc:
         return _refuse(handler, str(exc))
+    except Exception as exc:          # noqa: BLE001  a template's own refusal, say: refused, as the chat route does
+        print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exception(exc)
+        return _refuse(handler, str(exc) or type(exc).__name__)
     _send(handler, 200, {"object": "response.input_tokens", "input_tokens": count})
 
 
