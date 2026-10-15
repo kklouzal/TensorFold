@@ -190,17 +190,19 @@ class RequestOptions:
             return None
         if beside is not None:
             raise RequestError(f"{beside.field} cannot be combined with strict function tools: send one")
-        if self.__dict__.get("_strict_markup") is None:
+        if self.__dict__.get("_strict_markup") is None:            # (supported, why not), read once
             with self.tokenizer_lock:
                 try:
                     text = self.tokenizer.decode(render_prompt_ids(self.tokenizer, strict_tools.PROBE,
                                                                    add_generation_prompt=False))
-                except Exception:  # noqa: BLE001 - a template that renders no calls cannot be held to them
-                    text = ""
-            self.__dict__["_strict_markup"] = strict_tools.template_supported(text)
-        if not self.__dict__["_strict_markup"]:
+                    found = (strict_tools.template_supported(text), "writes calls otherwise")
+                except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them
+                    found = (False, f"could not render a call ({exc})")
+            self.__dict__["_strict_markup"] = found
+        supported, why = self.__dict__["_strict_markup"]
+        if not supported:
             raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
-                               "and this model's chat template writes calls otherwise: send strict false")
+                               f"and this model's chat template {why}: send strict false")
         return strict_tools.Plan(tools, required=required, parallel=parallel, offered=offered)
 
     def _strict_accepts(self, plan: Any, text: str) -> bool:

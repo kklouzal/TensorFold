@@ -950,7 +950,13 @@ def test_engines_or_templates_that_cannot_hold_calls_refuse_strict(tmp_path, gra
     hermes = QWEN_CALLS.replace("'<tool_call>\\n<function='", "'<tool_call><function='")
     with http_server(_app(tmp_path, ScriptEngine("x"), grammars, hermes)) as port:
         status, text = post(port, _body(False), True)
-    assert status == 400 and "Qwen XML tool calls" in text
+    assert status == 400 and "Qwen XML tool calls" in text and "writes calls otherwise" in text
+    refusing = QWEN_CALLS.replace("{% for tc in (m.tool_calls or []) %}",
+                                  "{% if m.tool_calls %}{{ raise_exception('no calls here') }}{% endif %}"
+                                  "{% for tc in (m.tool_calls or []) %}")
+    with http_server(_app(tmp_path, ScriptEngine("x"), grammars, refusing)) as port:
+        status, text = post(port, _body(False), True)
+    assert status == 400 and "could not render a call (no calls here)" in text
 
 
 @pytest.mark.parametrize("stream", [False, True])

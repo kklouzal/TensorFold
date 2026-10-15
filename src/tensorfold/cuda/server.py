@@ -334,15 +334,15 @@ class App:
             raise RequestError("this model's engine does not enforce strict function tools: send strict false")
         if getattr(self.engine, "refuses_structured_output", None):
             raise RequestError(self.engine.refuses_structured_output)
-        if getattr(self, "_strict_markup", None) is None:
+        if getattr(self, "_strict_markup", None) is None:          # (supported, why not), read once
             try:
                 rendered = self.template.render(strict_tools.PROBE, tools=None, enable_thinking=False)
-            except Exception:  # noqa: BLE001 - a template that renders no calls cannot be held to them
-                rendered = ""
-            self._strict_markup = strict_tools.template_supported(rendered)
-        if not self._strict_markup:
+                self._strict_markup = (strict_tools.template_supported(rendered), "writes calls otherwise")
+            except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them
+                self._strict_markup = (False, f"could not render a call ({exc})")
+        if not self._strict_markup[0]:
             raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
-                               "and this model's chat template writes calls otherwise: send strict false")
+                               f"and this model's chat template {self._strict_markup[1]}: send strict false")
         return strict_tools.Plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
                                  parallel=not policy.single, offered=body.get("tools"))
 
