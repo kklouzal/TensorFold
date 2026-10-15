@@ -14,6 +14,7 @@ void exl3x_gateup_epilogue_cuda(const at::Tensor&, const at::Tensor&, const at::
                                 double, int64_t);
 void exl3x_down_epilogue_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, int64_t, int64_t,
                               int64_t, int64_t, int64_t, int64_t);
+void exl3x_combine_cuda(const at::Tensor&, const at::Tensor&, at::Tensor&, int64_t, int64_t, int64_t);
 void exl3x_down_combine_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, const at::Tensor&,
                              at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
 
@@ -106,6 +107,14 @@ void down_epilogue(const at::Tensor& Z, const at::Tensor& pick, const at::Tensor
     exl3x_down_epilogue_cuda(Z, pick, svh_d, y, rows, P, D, SK, slots, E);
 }
 
+void combine(const at::Tensor& y, const at::Tensor& wts, at::Tensor out, int64_t rows, int64_t D, int64_t slots) {
+    check(y, at::kFloat, "y");
+    check(wts, at::kFloat, "wts");
+    check(out, at::kFloat, "out");
+    c10::cuda::CUDAGuard guard(y.device());
+    exl3x_combine_cuda(y, wts, out, rows, D, slots);
+}
+
 void down_combine(const at::Tensor& Z, const at::Tensor& pick, const at::Tensor& svh_d, at::Tensor y,
                   const at::Tensor& wts, at::Tensor out, int64_t rows, int64_t P, int64_t D, int64_t SK, int64_t slots,
                   int64_t E) {
@@ -127,5 +136,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("rot_in", &rot_in);
     m.def("gateup_epilogue", &gateup_epilogue);
     m.def("down_epilogue", &down_epilogue);
+    m.def("combine", &combine);
     m.def("down_combine", &down_combine);
 }

@@ -179,8 +179,18 @@ __global__ void down_epilogue_kernel(const float* __restrict__ Z, const int* __r
     for (int j = 0; j < 4; ++j) o[j] = v[j] * HAD_SCALE * __half2float(svh_d[(size_t)e * D + n + j]);
 }
 
-// down_epilogue_kernel then the slots' weighted sum out[r][d] = sum over slots in order of wts[r][k] * y[r * slots +
-// k][d] (fp32, fma chain from 0) in one launch.
+// out[r][d] = sum over slots in order of wts[r][k] * y[r * slots + k][d] (fp32, fma chain from 0).
+__global__ void combine_kernel(const float* __restrict__ y, const float* __restrict__ wts, float* __restrict__ out,
+                               int D, int slots) {
+    const int r = blockIdx.x;
+    const int d = blockIdx.y * blockDim.x + threadIdx.x;
+    if (d >= D) return;
+    float acc = 0.f;
+    for (int k = 0; k < slots; ++k) acc = fmaf(wts[r * slots + k], y[((size_t)r * slots + k) * D + d], acc);
+    out[(size_t)r * D + d] = acc;
+}
+
+// down_epilogue_kernel then combine_kernel in one launch, the same arithmetic in the same order (the same bits).
 __global__ void down_combine_kernel(const float* __restrict__ Z, const int* __restrict__ pick,
                                     const half* __restrict__ svh_d, float* __restrict__ y,
                                     const float* __restrict__ wts, float* __restrict__ out, int P, int D, int SK,
@@ -337,6 +347,14 @@ void exl3x_down_epilogue_cuda(const at::Tensor& Z, const at::Tensor& pick, const
     down_epilogue_kernel<<<grid, 32, 0, at::cuda::getCurrentCUDAStream()>>>(
         Z.data_ptr<float>(), pick.data_ptr<int>(), reinterpret_cast<const half*>(svh_d.data_ptr()),
         y.data_ptr<float>(), (int)P, (int)D, (int)SK, (int)E);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void exl3x_combine_cuda(const at::Tensor& y, const at::Tensor& wts, at::Tensor& out, int64_t rows, int64_t D,
+                        int64_t slots) {
+    dim3 grid((unsigned)rows, (unsigned)((D + 255) / 256));
+    combine_kernel<<<grid, 256, 0, at::cuda::getCurrentCUDAStream()>>>(y.data_ptr<float>(), wts.data_ptr<float>(),
+                                                                        out.data_ptr<float>(), (int)D, (int)slots);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
