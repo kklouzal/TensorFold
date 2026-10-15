@@ -611,10 +611,11 @@ The profile sets `TENSORFOLD_FAILURE_CAPTURE_DIR=/cache/failure-captures`, insid
 host it is the `failure-captures` directory under `KERNEL_CACHE`. The server writes there only when a reply fails in
 a way it names: a reply that ended at an end token with its think block still open (finish `stop`, reasoning and
 no answer) prints one warning line with its request id, and is captured there with its request (image and video parts
-redacted), generated token IDs and statistics. Normal replies are never logged or captured. The directory holds at
-most 32 captures and 256 MiB; a capture that would pass either is skipped with a line saying so, so remove captures
-once read. Files are readable by the container's user only; the captured prompts are the user's data. Remove the
-variable to keep the warning line alone.
+redacted), generated token IDs and statistics. A normal reply's request is never logged or captured (its `done` line
+carries its request id, counts, timings and a token hash only). The directory holds at most 32 files and 256 MiB; a
+capture that would pass either is skipped with a line saying so, so remove captures once read. Files are readable by
+the container's user only; the captured prompts are the user's data. Remove the variable to keep the warning line
+alone.
 
 `GET /stats` (JSON) and `GET /metrics` (Prometheus) report load, KV memory, prefix-cache occupancy and totals for
 monitoring and for Harness's background-work gating; neither is logged when it succeeds.

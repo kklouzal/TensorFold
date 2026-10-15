@@ -127,3 +127,36 @@ def test_the_request_log_redaction_covers_videos_too():
     redacted = failure_capture.redact_images(body)["messages"][0]["content"]
     assert redacted[0]["image_url"] == redacted[1]["video_url"] == {"url": "<redacted>"}
     assert redacted[2] == {"type": "text", "text": "keep"} and body["messages"][0]["content"][0] == IMAGE
+
+
+def test_capture_off_builds_no_record(tmp_path, monkeypatch):
+    monkeypatch.delenv(failure_capture.ENV, raising=False)
+    monkeypatch.setattr(failure_capture, "capture", lambda *a, **k: (_ for _ in ()).throw(AssertionError("built")))
+    assert ask(tmp_path, closes=False)[0] == 200
+
+
+def test_a_body_too_deep_to_record_is_skipped_never_raised(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv(failure_capture.ENV, str(tmp_path / "captures"))
+    deep = []
+    for _ in range(5000):                     # past the recursion limit, as an ignored field of a request may be
+        deep = [deep]
+    assert failure_capture.capture("ended_in_think", "req-deep", {"metadata": deep}, {}) is None
+    out = capsys.readouterr().out
+    assert "failure capture for req-deep" in out and "RecursionError" in out
+    folder = tmp_path / "captures"
+    assert not folder.exists() or not any(folder.iterdir())
+
+
+def test_a_capture_is_synced_before_its_name_appears_and_left_temporaries_count(tmp_path, monkeypatch):
+    folder = tmp_path / "captures"
+    monkeypatch.setenv(failure_capture.ENV, str(folder))
+    order = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda a, b: (order.append("replace"), real_replace(a, b))[1])
+    path = failure_capture.capture("ended_in_think", "../up/and:out", {}, {"token_ids": [1]})
+    assert order == ["fsync", "replace"]
+    assert path.parent == folder and "-.._up_and_out-" in path.name       # a caller's id cannot leave the folder
+    (folder / ".capture-left-by-a-crash").write_bytes(b"x" * 64)
+    monkeypatch.setattr(failure_capture, "MAX_BYTES", path.stat().st_size + 32)
+    assert failure_capture.capture("ended_in_think", "req-2", {}, {"token_ids": [1]}) is None    # 64 bytes held

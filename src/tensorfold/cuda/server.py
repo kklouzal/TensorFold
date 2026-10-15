@@ -699,6 +699,8 @@ class App:
             return
         text = self.tok.id_to_token(end)
         print(ended_thinking_note(request_id, len(prompt), len(out), end, text), flush=True)
+        if failure_capture.directory() is None:                    # capture off: no record is built
+            return
         failure_capture.capture("ended_in_think", request_id, body, {
             "finish": finish, "prompt_tokens": len(prompt), "end_token": {"id": int(end), "text": text},
             "token_ids": [int(t) for t in out], "stats": stats})
