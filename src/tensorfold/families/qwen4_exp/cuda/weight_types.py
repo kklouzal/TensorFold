@@ -143,8 +143,8 @@ class Config:
 
     def ngram(self, ple_index: int = 0) -> NGram:
         return NGram(vocab=self.vocab, ngram_size=self.ngram_size, heads_per_ngram=self.heads_per_ngram,
-                     vocab_base=self.ngram_base, divisor=self.ngram_divisor, shards=self.ngram_shards,
-                     seed=self.seed, eos=self.ple_eos, embed_dim=self.ple_dim, ple_index=ple_index)
+                     vocab_base=self.ngram_base, divisor=self.ngram_divisor, seed=self.seed,
+                     eos=self.ple_eos, embed_dim=self.ple_dim, ple_index=ple_index)
 
 
 @dataclass

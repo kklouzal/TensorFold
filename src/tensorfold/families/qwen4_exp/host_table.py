@@ -64,16 +64,6 @@ def windows_lock_pages(arrays, kernel32=None):
         return False
 
 
-def _note(primary, message):
-    """A failed diagnostic cannot replace an established operation failure."""
-    try:
-        BaseException.add_note(primary, message)
-    except BaseException as annotation:
-        if annotation is primary:
-            raise primary
-        raise primary from annotation
-
-
 def _failure_roots(primary):
     return (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
             BaseException.__suppress_context__.__get__(primary))

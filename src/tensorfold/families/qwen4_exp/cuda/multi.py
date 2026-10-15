@@ -479,7 +479,7 @@ class MultiDecoder:
                   for (s, a, n), (_, a0, _) in zip(pieces, segs) if self.fills[s.sid][1] and a + 1 < len(s.prompt)]
         if absorb:                   # the MTP head absorbs each prompt's rows (its cache in position order)
             absorb = [(st, nxt, streams[:len(nxt)]) for st, nxt, streams in absorb]
-            mtp_compute(self.w, mtp_stage(self.w, self.pbuf, absorb), self.pbuf, logits=False)
+            mtp_compute(self.w, mtp_stage(self.pbuf, absorb), self.pbuf, logits=False)
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
@@ -704,7 +704,7 @@ class MultiDecoder:
                 st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                 st.mtp_drafted = 0
         windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
-        segs = mtp_stage(self.w, self.mbuf, windows)
+        segs = mtp_stage(self.mbuf, windows)
         logits = self._mtp(segs)
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
@@ -743,7 +743,7 @@ class MultiDecoder:
             if not nxt:
                 return
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
-            segs = mtp_stage(self.w, self.mbuf, windows)
+            segs = mtp_stage(self.mbuf, windows)
             logits = self._mtp(segs)
 
             def chained(nxt=nxt):                        # the step's entries, once its status words are valid

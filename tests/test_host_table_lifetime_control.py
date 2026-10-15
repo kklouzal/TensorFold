@@ -345,7 +345,7 @@ class HostTableControl(unittest.TestCase):
         self.assertFalse(any(thread.is_alive() for thread in set(threading.enumerate()) - before))
 
     def owner(self, extra=None):
-        namespace = definitions("_note", "_release_unpublished_file", "_retire_local_file", "_release_mapped", "_unlock_pins", "_joined_copy", "_MappedTable", "_random_access",
+        namespace = definitions("_release_unpublished_file", "_retire_local_file", "_release_mapped", "_unlock_pins", "_joined_copy", "_MappedTable", "_random_access",
                                 extra={"np": SimpleNamespace(memmap=Array), "_span": self.span, **(extra or {})})
         return namespace["_MappedTable"](), namespace
 
@@ -746,7 +746,7 @@ class HostTableControl(unittest.TestCase):
                 namespace["read_header"](path)
 
     def prefetch_namespace(self, **extra):
-        return definitions("_note", "_retain_prefetch_lifetime", "_release_unpublished_file", "_retire_local_file", "_release_prefetch_files", "_joined_copy",
+        return definitions("_retain_prefetch_lifetime", "_release_unpublished_file", "_retire_local_file", "_release_prefetch_files", "_joined_copy",
                            "_prefetch_file", "_prefetch", extra=extra)
 
     def test_prefetch_finishes_real_short_reads_and_drains_owned_files(self):
@@ -851,7 +851,7 @@ class HostTableControl(unittest.TestCase):
             table = SimpleNamespace(close=actual.close)
             def failed(_):
                 raise primary
-            namespace = definitions("_note", "_ssd_table", extra={"SSDTable": lambda _: table,
+            namespace = definitions("_ssd_table", extra={"SSDTable": lambda _: table,
                                                                     "ReadAhead": failed})
             with patch.dict(os.environ, {"TENSORFOLD_SSD_NATIVE_THREADS": ""}):
                 with self.assertRaises(MemoryError) as caught:
@@ -866,19 +866,6 @@ class HostTableControl(unittest.TestCase):
             namespace["open"] = function
             yield
         prefetch_dual_failure(self, namespace["_prefetch"], replace_open)
-
-    def test_annotation_provider_raising_same_primary_does_not_create_self_cause(self):
-        namespace = definitions("_note")
-        class Same(RuntimeError):
-            def __getattribute__(self, name):
-                if name == "__notes__":
-                    raise self
-                return super().__getattribute__(name)
-        primary = Same("primary")
-        with self.assertRaises(Same) as caught:
-            namespace["_note"](primary, "cleanup note")
-        self.assertIs(caught.exception, primary)
-        self.assertIsNot(primary.__cause__, primary)
 
     def test_prefetch_worker_admission_precedes_pool_or_file_acquisition(self):
         namespace = self.prefetch_namespace(ThreadPoolExecutor=lambda *a, **k: self.fail("pool acquired"))

@@ -12,7 +12,7 @@ from .state import Buffers, State
 from .weights import Weights
 
 
-def mtp_stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor]]) -> list:
+def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor]]) -> list:
     """Host work before an MTP step (next tokens, input streams); returns each stream's segment."""
 
     segs: list = []
@@ -81,4 +81,4 @@ def mtp_forward(w: Weights, st: State, b: Buffers, next_tokens: Sequence[int], s
                 *, last_only: bool = True, logits: bool = True) -> torch.Tensor | None:
     """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``. ``logits=False`` skips the unused draft-vocabulary projection."""
 
-    return mtp_compute(w, mtp_stage(w, b, [(st, next_tokens, streams)]), b, last_only=last_only, logits=logits)
+    return mtp_compute(w, mtp_stage(b, [(st, next_tokens, streams)]), b, last_only=last_only, logits=logits)

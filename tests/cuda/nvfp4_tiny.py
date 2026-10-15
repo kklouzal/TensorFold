@@ -25,7 +25,7 @@ def tiny_ngram(vocab: int) -> NGram:
     (one head a step over a three-gram table, the config's seed and vocab base): the real checkpoint ships
     its own, and the loader's ``NGram.check`` compares them value for value."""
 
-    return NGram(vocab=vocab, ngram_size=3, heads_per_ngram=1, vocab_base=vocab, divisor=1, shards=1,
+    return NGram(vocab=vocab, ngram_size=3, heads_per_ngram=1, vocab_base=vocab, divisor=1,
                  seed=1234, eos=0, embed_dim=64, ple_index=0)
 
 

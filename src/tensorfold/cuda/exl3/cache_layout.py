@@ -40,9 +40,6 @@ class Layout:
     publication_host_bytes: int
     safe_lease_count: int
     resident_capacity: int
-    payload_budget: int
-    device_budget: int
-    reason: str
 
 
 def integer(value, name, minimum=0):
@@ -82,7 +79,6 @@ def plan(specs, payload_budget, device_budget):
         raise ValueError('budget cannot admit a bounded original fixed GPU cell')
     small_sizes, large_sizes = {x.size for x in routed}, {x.size for x in shared}
     eligible = len(small_sizes) == len(large_sizes) == 1 and next(iter(small_sizes)) < next(iter(large_sizes))
-    reason = 'distribution outside exact two-size routed/shared REGION'
     if eligible:
         small, large = next(iter(small_sizes)), next(iter(large_sizes))
         nlarge = len(shared)
@@ -95,8 +91,9 @@ def plan(specs, payload_budget, device_budget):
             base = nsmall*small
             cells += [Cell(nsmall+i, base+i*large, large, (x.layer,x.expert)) for i,x in enumerate(specs_shared)]
             size = nsmall*small+nlarge*large
-            return Layout('two-size',tuple(cells),size,len(cells)*32,len(cells)*64,nsmall,len(cells),
-                          payload_budget,device_budget,'all shared entries admitted without reducing safe wave capacity')
-        reason = 'shared reservation would reduce the original safe wave capacity'
+            # all shared entries admitted without reducing the safe wave capacity
+            return Layout('two-size',tuple(cells),size,len(cells)*32,len(cells)*64,nsmall,len(cells))
     cells = tuple(Cell(i,i*largest,largest,None) for i in range(fixed))
-    return Layout('fixed',cells,fixed*largest,fixed*32,fixed*64,fixed,fixed,payload_budget,device_budget,reason)
+    # a distribution outside the exact two-size routed/shared region, or a shared reservation that would reduce the
+    # original safe wave capacity
+    return Layout('fixed',cells,fixed*largest,fixed*32,fixed*64,fixed,fixed)

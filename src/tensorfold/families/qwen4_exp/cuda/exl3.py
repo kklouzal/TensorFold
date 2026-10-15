@@ -157,7 +157,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         cache = Exl3HostExpertCache(plan.entry_bytes, plan.entry_bytes, device)
     try:
         weights = _load(model_dir, device, mtp=mtp, tp=tp, _config=cfg, _draft_ids=ids,
-                        table_reads=table_reads, rope=rope, expert_cache=cache, _ple_tables=tables)
+                        table_reads=table_reads, expert_cache=cache, _ple_tables=tables)
         weights.meta["ple_tables"] = tables
         if cache is not None and not plan.automatic:
             # _load has sealed every registration, drained its read owner and
@@ -182,7 +182,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
 def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
           _config: object, _draft_ids: object, table_reads: list | None = None,
-          rope: RopeParameters | None = None, expert_cache=None, _ple_tables: PLETables):
+          expert_cache=None, _ple_tables: PLETables):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 

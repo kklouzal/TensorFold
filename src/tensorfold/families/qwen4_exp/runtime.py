@@ -41,8 +41,6 @@ class FlashNext:
 
     fused_rows = 16
     lane_family = True
-    # Draw with gpu_sampling's keyed rule on the GPU.
-    gpu_sampling = True
     # the engine fills a prompt a chunk a forward: a pass holds every chunk's layer temporaries (+44-60 GiB served)
     prompt_pass = False
 

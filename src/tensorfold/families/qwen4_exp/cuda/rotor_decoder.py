@@ -13,7 +13,6 @@ from dataclasses import dataclass
 # qualify this startup/request envelope; see docs/optimization-validation.md.
 SERIAL_FORMATS: tuple[str, ...] = ("rotorquant7",)
 MTP_FORMATS: tuple[str, ...] = ("rotorquant7",)
-FORMATS = ("rotorquant6", "rotorquant6-norm", "rotorquant6-outlier-norm", "rotorquant7")
 RUNTIME = (
     ("torch", "2.16.0.dev20261006+cu134"),
     ("torch_git", "1a66f68165eb1685c14874588d9a2e0cd475e116"),
@@ -55,7 +54,8 @@ class RotorDecoderPolicy:
 def select(*, mode, symmetric, head_dim, context, slots, depth, confidence, exl3,
            graphs, prefetch, automatic_experts, vision, tp, yarn_factor, runtime):
     """Originals remain selected outside the measured startup envelope."""
-    if (mode not in FORMATS or symmetric is not True or exl3 is not True or head_dim != 256 or context != 2048
+    if (mode not in SERIAL_FORMATS + MTP_FORMATS or symmetric is not True or exl3 is not True or head_dim != 256
+            or context != 2048
             or slots != 4 or depth != 4 or confidence != .5 or graphs or prefetch
             or not automatic_experts or vision or tp != 1 or yarn_factor != 2
             or runtime != dict(RUNTIME)

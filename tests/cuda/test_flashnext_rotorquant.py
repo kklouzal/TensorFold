@@ -48,7 +48,7 @@ def _indices8_selected(x):
 @triton.jit
 def _encode8_selected(x, M: tl.constexpr, CODEC: tl.constexpr):
     """Oracle: the eight-bit encoder before its tables (2026-10-14), boundaries and centroids selected in registers."""
-    unit, rms = kernel._normalized(x.to(tl.float32), M)
+    unit, rms = kernel._normalized(x.to(tl.float32))
     code = _indices8_selected(kernel.rotate(unit, M, 128, CODEC)).to(tl.uint8)
     if CODEC == 8:
         centroid = kernel._centroids(code.to(tl.int32), 8)

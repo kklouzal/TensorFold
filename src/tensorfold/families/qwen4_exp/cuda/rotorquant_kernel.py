@@ -16,9 +16,10 @@ CODEC 8 uses the same signed Iso128 basis and norm-corrected eight-bit metadata.
 Quantization normalizes each 128-coordinate group by its original FP32 RMS.
 Three-bit groups store 32 low-two-bit bytes followed by 16 high-bit bytes;
 four-bit groups store 64 bytes, even coordinate in the low nibble; six-bit groups
-store 64 low-nibble bytes followed by 32 high-two-bit bytes. RMS is
-stored separately as FP32; CODECs 3/5/6/7 multiply it by the reciprocal RMS of the
-selected centroid vector. Exact zero groups have scale zero and the lower
+store 64 low-nibble bytes followed by 32 high-two-bit bytes; seven-bit groups
+64 low-nibble, 32 middle-two-bit and 16 high-bit bytes; eight-bit groups 128
+index bytes. RMS is stored separately as FP32; CODECs 3/5/6/7/8 multiply it by
+the reciprocal RMS of the selected centroid vector. Exact zero groups have scale zero and the lower
 central centroid index.  Attention keeps decoded K/V in the rotated frame;
 only the final weighted value sum is inverse-rotated.
 
@@ -63,7 +64,6 @@ _C7 = tl.constexpr(CENTROIDS_7)
 _C8 = tl.constexpr(CENTROIDS_8)
 _T3 = tl.constexpr(THRESHOLDS_3)
 _T4 = tl.constexpr(THRESHOLDS_4)
-_T6 = tl.constexpr(THRESHOLDS_6)
 _BINARY_T6 = tl.constexpr(tuple(tuple(THRESHOLDS_6[2 * step * cell + step - 1]
                                       for cell in range(64 // (2 * step)))
                                for step in (32, 16, 8, 4, 2, 1)))
@@ -201,7 +201,7 @@ def rotate(x, M: tl.constexpr, W: tl.constexpr, CODEC: tl.constexpr, INVERSE: tl
 
 
 @triton.jit
-def _normalized(x, M: tl.constexpr):
+def _normalized(x):
     """FP32 ``[M,128]`` -> unit-RMS coordinates and original FP32 RMS.
 
     The absmax scale prevents squaring large finite inputs from overflowing.
@@ -313,7 +313,7 @@ def quant_groups_3(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> low plane ``[M,32]``, high plane ``[M,16]``, RMS ``[M]``."""
 
     tl.static_assert(CODEC == 1 or CODEC == 2)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 3)
     low = tl.sum(tl.reshape(q & 3, (M, 32, 4)) << (tl.arange(0, 4) * 2)[None, None, :], axis=2)
     high = tl.sum(tl.reshape(q >> 2, (M, 16, 8)) << tl.arange(0, 8)[None, None, :], axis=2)
@@ -324,7 +324,7 @@ def quant_groups_3(x, M: tl.constexpr, CODEC: tl.constexpr):
 def quant_groups_4(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> nibble bytes ``[M,64]`` and FP32 scale ``[M]``."""
 
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 4)
     if CODEC == 3 or CODEC == 5:
         c = _centroids(q, 4)
@@ -346,7 +346,7 @@ def quant_groups_6(x, M: tl.constexpr, CODEC: tl.constexpr):
     """
 
     tl.static_assert(CODEC == 4 or CODEC == 6 or CODEC == 7)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     rotated = rotate(unit, M, 128, CODEC)
     if CODEC == 7:
         alpha = tl.maximum(1.0, tl.math.div_rn(tl.max(tl.abs(rotated), axis=1), _C6[63]))
@@ -367,7 +367,7 @@ def quant_groups_7(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> low4/mid2/high1 planes and original FP32 RMS."""
 
     tl.static_assert(CODEC == 4)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 7)
     a, b = tl.split(tl.reshape(q & 15, (M, 64, 2)))
     middle = tl.sum(tl.reshape((q >> 4) & 3, (M, 32, 4)) << (tl.arange(0, 4) * 2)[None, None, :], axis=2)
@@ -412,7 +412,7 @@ def quant_groups_8(x, M: tl.constexpr, CODEC: tl.constexpr, CENTROIDS, THRESHOLD
     float32 device copies of ``CENTROIDS_8`` and ``LIFTING_8``."""
 
     tl.static_assert(CODEC == 4 or CODEC == 8)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     code = _indices_8(rotate(unit, M, 128, CODEC), THRESHOLDS).to(tl.uint8)
     if CODEC == 8:
         rms = correct_scale8(code, rms, CENTROIDS, M)

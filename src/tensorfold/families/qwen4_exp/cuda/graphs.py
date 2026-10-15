@@ -76,7 +76,7 @@ class Graphs:
         e = self.e
         w, st, b = e.w, e.st, e.mbuf
         self._check_owner()
-        segs = mtp_stage(w, b, [(st, next_tokens, streams)])
+        segs = mtp_stage(b, [(st, next_tokens, streams)])
         n = segs[-1][2]
         if n > self.max_rows:
             return mtp_compute(w, segs, b)

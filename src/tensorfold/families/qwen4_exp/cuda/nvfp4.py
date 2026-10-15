@@ -251,6 +251,8 @@ try:
     import triton                             # noqa: E402
     import triton.language as tl              # noqa: E402
 
+    from .bf16 import _reduce                 # noqa: E402 - the K slices summed in slice order, as the BF16 matmul
+
     @triton.jit
     def _e2m1_pattern(code):
         """An E2M1 code (sign in bit 3) as its bf16 pattern, from the code's fields as ``e2m1_bits``' table."""
@@ -317,16 +319,6 @@ try:
         else:
             tl.store(PART + (pid_s * M + rm[:, None]) * N + rn[None, :], acc, mask=out_mask)
 
-    @triton.jit
-    def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.constexpr):
-        """The K slices summed in slice order, one fp32 add a slice, in one launch for either output face."""
-
-        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-        ok = offs < total
-        acc = tl.load(PART + offs, mask=ok, other=0.0)
-        for s in tl.static_range(1, SK):
-            acc = acc + tl.load(PART + s * total + offs, mask=ok, other=0.0)
-        tl.store(OUT + offs, acc if F32 else acc.to(tl.bfloat16), mask=ok)
 except ModuleNotFoundError:                   # the CPU tests of the format import this module without Triton
     HAS_TRITON = False
 

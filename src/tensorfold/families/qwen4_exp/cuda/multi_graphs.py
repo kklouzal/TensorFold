@@ -268,7 +268,7 @@ class RoundGraphs:
             for st, c in zip(states, counts):
                 windows.append((st, [0] * c, zeros[at:at + c]))
                 at += c
-            segs = mtp_stage(w, b, windows)
+            segs = mtp_stage(b, windows)
             b.attn_step = attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables)
             run = partial(mtp_compute, w, segs, b, check=False)
         b.rotor_lookup = False

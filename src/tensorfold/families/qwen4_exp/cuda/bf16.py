@@ -115,7 +115,7 @@ def matmul(x: torch.Tensor, b: B16, *, out: torch.Tensor | None = None, f32: boo
     return out
 
 
-def quantize4(w: torch.Tensor, chunk: int = 8192, out: str = "q4"):
+def quantize4(w: torch.Tensor, chunk: int = 8192):
     """bf16 (N, K) -> MLX affine 4-bit in groups of 32, for weights that only draft (the MTP head's lm_head copy)."""
 
     from . import qmm
