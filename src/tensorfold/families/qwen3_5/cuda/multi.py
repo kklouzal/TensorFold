@@ -305,7 +305,6 @@ class MultiDecoder:
             newest.st = None                         # its caches go now (a cached prompt end may still view them)
             torch.cuda.empty_cache()
             return [newest, *self._make_room(live[:-1])]
-        self.memory_gate.waits += any(s.waiting for s in live)
         return []
 
     def _fill(self) -> list[Stream]:

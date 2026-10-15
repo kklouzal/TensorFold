@@ -239,7 +239,6 @@ class MultiDecoder:
         for s in live:
             if s.waiting:
                 self._flush(s)                 # shared scratch will be reused while this stream waits
-        self.memory_gate.waits += any(s.waiting for s in live)
         return ended
 
     def _slot_for(self, prompt: list[int], reuse: bool):
