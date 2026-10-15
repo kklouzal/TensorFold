@@ -148,7 +148,8 @@ def test_malformed_requests_get_400_before_any_stream_or_generate(tmp_path, case
         status, kind, text = request(port, {**body, "stream": stream}, chat="messages" in body)
         after = request(port, {"messages": HI, "max_tokens": 8, "stream": stream})
     assert (status, kind) == (400, "application/json")
-    assert json.loads(text) == {"error": {"message": message, "type": "invalid_request_error"}}
+    assert json.loads(text) == {"error": {"message": message, "type": "invalid_request_error", "param": None,
+                                          "code": None}}
     assert after[0] == 200 and len(app.engine.calls) == 1
 
 
@@ -194,7 +195,8 @@ def test_unexpected_error_while_preparing_gets_400_and_is_logged(tmp_path, strea
         status, kind, text = request(port, {"messages": [{"role": "user", "content": "BOOM"}], "stream": stream})
         after = request(port, {"messages": HI, "max_tokens": 8})
     assert (status, kind) == (400, "application/json")
-    assert json.loads(text) == {"error": {"message": "tokenizer stand-in failed"}}
+    assert json.loads(text) == {"error": {"message": "tokenizer stand-in failed", "type": "invalid_request_error",
+                                          "param": None, "code": None}}
     assert after[0] == 200 and len(app.engine.calls) == 1
     err = capsys.readouterr()
     assert "[tensorfold] request error: RuntimeError: tokenizer stand-in failed" in err.out
@@ -220,7 +222,8 @@ def test_engine_failure_non_streamed_gets_500(tmp_path, chat, emitted, capsys):
         app.engine.fail, app.engine.before_fail = None, ""
         after = request(port, {**body, "max_tokens": 8}, chat=chat)
     assert (status, kind) == (500, "application/json")
-    assert json.loads(text) == {"error": {"message": "CUDA out of memory (stand-in)"}}
+    assert json.loads(text) == {"error": {"message": "CUDA out of memory (stand-in)", "type": "server_error",
+                                          "param": None, "code": None}}
     assert after[0] == 200 and len(app.engine.calls) == 2      # the lock was released
     err = capsys.readouterr()
     assert "[tensorfold] request error: RuntimeError: CUDA out of memory (stand-in)" in err.out
@@ -239,7 +242,8 @@ def test_engine_failure_streamed_gets_an_error_event_then_done(tmp_path, chat, e
         after = request(port, {**body, "max_tokens": 8}, chat=chat)
     assert (status, kind) == (200, "text/event-stream")
     got = events(text)
-    assert got[-2:] == [{"error": {"message": "CUDA out of memory (stand-in)", "type": "server_error"}}, "[DONE]"]
+    assert got[-2:] == [{"error": {"message": "CUDA out of memory (stand-in)", "type": "server_error", "param": None,
+                                   "code": None}}, "[DONE]"]
     chunks = got[:-2]
     if chat:
         assert chunks[0]["choices"][0]["delta"] == {"role": "assistant"}
@@ -259,7 +263,8 @@ def test_an_error_without_a_message_names_its_type(tmp_path, capsys):
     app.engine.fail = AssertionError()
     with http_server(app) as port:
         status, _, text = request(port, {"messages": HI})
-    assert status == 500 and json.loads(text) == {"error": {"message": "AssertionError"}}
+    assert status == 500 and json.loads(text) == {"error": {"message": "AssertionError", "type": "server_error",
+                                                            "param": None, "code": None}}
     capsys.readouterr()
 
 
