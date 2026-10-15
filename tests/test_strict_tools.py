@@ -206,14 +206,14 @@ def test_a_plan_reads_each_parameters_mode():
     ({"type": "object", "properties": {"s": {"oneOf": [{"type": "integer"}]}}}, "do not support oneOf"),
     ({"type": "object", "properties": {"s": {"allOf": [{"type": "integer"}]}}}, "do not support allOf"),
     ({"type": "object", "properties": {"s": {"type": "integer", "not": {"const": 1}}}}, "do not support not"),
-    ({"type": "object", "properties": {"s": {"type": "number", "multipleOf": 0.5}}}, "integers only"),
+    ({"type": "object", "properties": {"s": {"type": "number", "multipleOf": 0.5}}}, "type integer without"),
     ({"type": "object", "properties": {"s": {"anyOf": [{"type": "string"}, {"type": "integer"}]}}}, "ambiguous"),
     ({"type": "object", "properties": {"s": {}}}, "ambiguous"),
     ({"type": "object", "properties": {"s": {"type": "string", "pattern": "^.*$"}}}, "pattern can spell"),
     ({"type": "object", "properties": {"s": {"type": "string", "pattern": "^[a-z<>/]+$"}}}, "pattern can spell"),
     ({"type": "object", "properties": {"s": {"type": "string", "format": "uri"}}}, "format must be one of"),
     ({"type": "object", "properties": {"s": {"type": "string", "enum": ["a</parameter>"]}}}, "cannot contain"),
-    ({"type": "object", "properties": {"s": {"type": "string", "enum": ["a"], "pattern": "a"}}}, "takes one of"),
+    ({"type": "object", "properties": {"s": {"type": "string", "enum": ["a"], "pattern": "a"}}}, "take only type"),
     ({"type": "object", "properties": {"s": {"$ref": "#/$defs/missing"}}}, "does not resolve"),
     ({"type": "object", "properties": {"s": {"$ref": "other.json#/x"}}}, "same schema"),
     ({"type": "object", "properties": {"s": {"type": "integer"}}, "required": ["t"]}, "does not declare"),
@@ -221,8 +221,26 @@ def test_a_plan_reads_each_parameters_mode():
     ({"anyOf": [{"type": "object"}]}, "must be an object schema"),
     ({"type": "object", "properties": {"bad name": {"type": "integer"}}}, "cannot be written"),
     ({"type": "object", "properties": {"s": {"type": "integer", "minimum": "1"}}}, "must be a number"),
+    # shapes xgrammar 0.2.8 would not enforce whole (it lets enum, const, $ref and anyOf override their neighbours)
+    ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"minimum": 5}, {"maximum": 1}]}}},
+     "admit only the types"),
+    ({"type": "object", "properties": {"s": {"anyOf": [{"type": "integer"}, {"minimum": 1}]}}},
+     "need a type beside them"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"type": "string"}]}}},
+     "admit only the types"),
+    ({"type": "object", "properties": {"s": {"type": "object", "properties": {"a": {"type": "integer"}},
+                                             "anyOf": [{"type": "object"}]}}}, "anyOf takes only type"),
+    ({"type": "object", "properties": {"s": {"type": "string", "enum": ["a", 1]}}}, "every enum and const value"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "enum": [3, 9], "maximum": 5}}},
+     "enum and const take only type"),
+    ({"type": "object", "properties": {"s": {"$ref": "#/$defs/n", "minimum": 3}}, "$defs": {"n": {"type": "integer"}}},
+     "$ref takes no constraints"),
+    ({"type": "object", "properties": {"s": {"minimum": 3}}}, "need a type beside them"),
+    ({"type": "object", "properties": {"s": {"type": ["integer", "array"], "minimum": 3}}}, "need a single type"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "multipleOf": 3, "minimum": 1}}},
+     "without minimum or maximum"),
     ({"type": "object", "properties": {"s": {"type": "texty"}}}, "JSON type name"),
-    ({"type": "object", "properties": {"s": {"type": "string", "enum": [1]}}}, "no value satisfies"),
+    ({"type": "object", "properties": {"s": {"type": "string", "enum": [1]}}}, "every enum and const value"),
 ])
 def test_unsupported_or_malformed_schemas_are_refused_with_their_path(schema, words):
     with pytest.raises(RequestError, match=re.escape(words)) as err:
@@ -369,6 +387,28 @@ def test_the_grammar_accepts_the_templates_calls_and_refuses_others(grammars):
     assert not grammars.accepts(single, CALL + " post")
 
 
+def test_refs_into_the_tools_schema_resolve_inside_a_json_parameter(grammars):
+    """A JSON parameter's grammar keeps refs to its tool's root (``#/properties/...``, recursion) and ``$defs``, also
+    under a property whose name is a keyword."""
+
+    tree = {"type": "object", "additionalProperties": False, "required": ["kids"],
+            "properties": {"kids": {"type": "array", "maxItems": 2, "items": {"$ref": "#/properties/tree"}}}}
+    schema = {"type": "object", "additionalProperties": False, "required": ["tree", "copy", "enum"],
+              "properties": {"tree": tree, "copy": {"$ref": "#/properties/tree"},
+                             "enum": {"type": "array", "items": {"$ref": "#/$defs/n"}}},
+              "$defs": {"n": {"type": "integer", "enum": [1, 2]}}}
+    plan = st.Plan([tool("t", schema)], required=False, parallel=True)
+    compiled = grammars.compile(plan.spec)
+    call = ('<tool_call>\n<function=t>\n<parameter=tree>\n{"kids": [{"kids": []}, {"kids": [{"kids": []}]}]}\n'
+            '</parameter>\n<parameter=copy>\n{"kids": []}\n</parameter>\n<parameter=enum>\n[1, 2]\n</parameter>\n'
+            '</function>\n</tool_call>')
+    assert grammars.accepts(compiled, call)
+    assert conforms(json.loads(plan.parse(call)[1][0]["function"]["arguments"]), schema)
+    for bad in (call.replace("[1, 2]", "[3]"), call.replace('{"kids": []}\n</par', '{"kids": [], "x": 1}\n</par'),
+                call.replace('[{"kids": []}, {"kids": [{"kids": []}]}]', '[{"kids": []}, {"kids": []}, {"kids": []}]')):
+        assert not grammars.accepts(compiled, bad)
+
+
 @pytest.mark.parametrize("fmt", sorted(st.FORMATS))
 def test_raw_formats_match_xgrammars_json_formats(grammars, fmt):
     """The raw format regexes accept exactly what xgrammar's own JSON-schema formats accept (a corpus of samples)."""
@@ -469,6 +509,36 @@ def test_a_named_tool_is_the_only_call_and_thinking_stays_free(grammars):
     text = _text(tokens)
     answer = text.split("</think>", 1)[1]
     assert plan.parse(answer)[1][0]["function"]["name"] == "now" and plan.parse(answer)[0] == ""
+
+
+def test_a_fresh_copy_starts_the_grammar_again_and_the_other_rank_follows_the_same_one(grammars):
+    """``Constraint.fresh`` (a yielded stream's replay) and ``pack``/``follow`` (rank 1 of two) give the grammar of
+    the original: the same masks along the same tokens."""
+
+    import numpy as np
+
+    from tensorfold.cuda import rank_protocol
+    from tensorfold.engine import grammar
+
+    plan = st.Plan(TOOLS[:3], required=False, parallel=True)
+    words = _vocab()
+    think_end = words.index("</think>")
+    original = grammars.constraint(grammars.compile(plan.spec), think_end=think_end, spec=plan.spec)
+    tokens = [ord("a"), think_end] + MarkupTokenizer().encode(CALL).ids + [STOP]
+    original.advance(tokens[:20])
+    again = original.fresh()
+    packed = rank_protocol.grammar(grammar.pack(again), V)
+    follower = grammars.follow(packed)
+    assert again.spec == plan.spec and (follower.spec.kind, follower.spec.text) == (plan.spec.kind, plan.spec.text)
+    assert again.think_end == follower.think_end == think_end
+    assert not again.active and again.m is not original.m
+    for t in tokens:
+        a, b = again.window([t], [-1]), follower.window([t], [-1])
+        assert a.rows == b.rows and (a.bits is None) == (b.bits is None)
+        assert a.bits is None or np.array_equal(a.bits, b.bits)
+        again.advance([t])
+        follower.advance([t])
+    assert again.finished and follower.finished
 
 
 def test_identical_requests_decode_identical_tokens(grammars):
@@ -702,3 +772,72 @@ def test_requests_without_strict_tools_decode_as_before(tmp_path, grammars, stre
         assert engine.calls[0]["constraint"] is None
         _, calls, finish = _reply(stream, text)
         assert [name for name, _ in calls] == ["get_weather"] and finish == "tool_calls"
+
+
+# -- the Mac server's shared pieces (its MLX engine cannot run here: these are the parts Linux can exercise) ----------
+class TemplateTokenizer(MarkupTokenizer):
+    """A Hugging Face-like tokenizer over the toy vocabulary, rendering ``template`` as ``apply_chat_template``."""
+
+    def __init__(self, template):
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+
+        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        env.filters["tojson"] = lambda x: json.dumps(x, ensure_ascii=False)
+        self.template = env.from_string(template)
+
+    def apply_chat_template(self, messages, *, add_generation_prompt=False, enable_thinking=False, tools=None,
+                            tokenize=True, **kwargs):
+        text = self.template.render(messages=messages, tools=tools, enable_thinking=enable_thinking)
+        return text if not tokenize else self.encode(text)
+
+    def encode(self, text, **kwargs):
+        return super().encode(text).ids
+
+    def decode(self, ids, **kwargs):
+        return super().decode(ids)
+
+
+def _mac_owner(grammars, template=QWEN_CALLS):
+    from tensorfold.server.request_options import RequestOptions
+
+    owner = RequestOptions()
+    owner.tokenizer, owner.tokenizer_lock = TemplateTokenizer(template), threading.Lock()
+    owner.grammars, owner.model_dir, owner.stop_ids = grammars, None, (STOP,)
+    return owner
+
+
+def test_the_mac_refusal_checks_strict_tools_before_a_stream(grammars):
+    from tensorfold.engine import grammar
+
+    owner = _mac_owner(grammars)
+    body = {"messages": [{"role": "user", "content": "Hi"}], "tools": TOOLS[:3]}
+    assert grammar.refusal(body, owner) is None and grammar.refusal(body) is None
+    assert "cannot be combined with strict" in grammar.refusal({**body, "response_format": {"type": "json_object"}},
+                                                               owner)
+    bad = {**body, "tools": [tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": 2}}})]}
+    assert "do not support maxLength" in grammar.refusal(bad, owner)
+    assert "Qwen XML tool calls" in grammar.refusal(body, _mac_owner(grammars, QWEN_CALLS.replace("'\\n</par", "'</par")))
+    assert "does not enforce strict" in grammar.refusal(body, object())
+    assert grammar.refusal({**body, "tools": [tool("f", strict=False)]}, object()) is None
+    plan = owner.strict_calls(TOOLS[:3], required=True, parallel=False)
+    assert plan.spec == st.Plan(TOOLS[:3], required=True, parallel=False).spec
+    assert owner.strict_calls([tool("f", strict=False)], required=False, parallel=True) is None
+    assert owner._strict_accepts(plan, CALL) and not owner._strict_accepts(plan, "text " + CALL)
+
+
+def test_the_mac_policy_reads_strict_calls_with_their_plan_and_flush_shows_their_text():
+    from tensorfold.server.stopping import StopPolicy
+    from tensorfold.server.tool_policy import ToolCallPolicy
+    from tensorfold.server.tools import parse_tool_calls_from_content
+
+    plan = st.Plan(TOOLS, required=False, parallel=True)
+    reply = {"content": "Let me look.\n\n" + CALL, "finish_reason": "stop", "strict_calls": plan}
+    done = ToolCallPolicy({}).finish(reply, TOOLS, parse_tool_calls_from_content)
+    assert done["finish_reason"] == "tool_calls" and done["content"] == "Let me look."
+    assert json.loads(done["tool_calls"][0]["function"]["arguments"]) == ARGS
+    lenient = ToolCallPolicy({}).finish({**reply, "strict_calls": None}, TOOLS, parse_tool_calls_from_content)
+    assert json.loads(lenient["tool_calls"][0]["function"]["arguments"]) != ARGS    # a value holding </parameter>
+    sent = []
+    StopPolicy({}, None, None, frozenset()).flush(sent.append, "Hi" + CALL + " bye", None, "Hi", "",
+                                                  lambda answer: plan.content(answer, finished=True))
+    assert sent == [" bye"]

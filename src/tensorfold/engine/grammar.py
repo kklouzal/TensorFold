@@ -221,28 +221,49 @@ def compiler(owner, model_dir: str | Path, stop_ids: Sequence[int]) -> Grammars:
     return found
 
 
-def request_constraint(owner, fields: dict[str, Any], think_end: int | None) -> "Constraint | None":
-    """A fresh constraint for a request's grammar fields (``owner`` has ``model_dir`` and ``stop_ids``), or None."""
+def request_constraint(owner, fields: dict[str, Any], think_end: int | None, spec: Spec | None = None
+                       ) -> "Constraint | None":
+    """A fresh constraint for a request's grammar fields, or ``spec`` (strict tools' calls), or None (``owner`` has
+    ``model_dir`` and ``stop_ids``)."""
 
-    spec = request_spec(fields)
+    spec = spec if spec is not None else request_spec(fields)
     if spec is None:
         return None
     grammars = compiler(owner, owner.model_dir, owner.stop_ids)
     return grammars.constraint(grammars.compile(spec), think_end=think_end, spec=spec)
 
 
-FIELDS = ("response_format", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs")
+SPECS = ("response_format", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs")
+# every request field a reply's grammar reads (the HTTP layer hands these to the engine app): the specs above, and
+# strict tools' parallel_tool_calls (one call or many; the tools themselves travel on their own)
+FIELDS = (*SPECS, "parallel_tool_calls")
 
 
 def refusal(body: dict[str, Any], owner=None) -> str | None:
-    """Why the body's grammar cannot run (HTTP 400): malformed, beside a required call, or (``owner``) not compiling."""
+    """Why the body's grammar cannot run (HTTP 400): malformed, beside a required call, or (``owner``) not compiling;
+    an ``owner`` with ``strict_calls`` (the Mac's chat app) also checks the request's strict tools."""
 
-    from tensorfold.server.tools import tool_choice_requires_call
+    from tensorfold.server.tools import active_tool_specs, tool_choice_requires_call
 
     try:
         spec = request_spec(body)
-        if spec is not None and body.get("tools") and tool_choice_requires_call(body.get("tool_choice")):
+        required = tool_choice_requires_call(body.get("tool_choice"))
+        if spec is not None and body.get("tools") and required:
             return f'{spec.field} cannot be combined with tool_choice "required" or a named function: send one'
+        if owner is not None:
+            from tensorfold.server import strict_tools
+
+            try:
+                tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
+            except ValueError as exc:
+                return str(exc)
+            if not hasattr(owner, "strict_calls"):
+                if strict_tools.wanted(tools):
+                    return "this server does not enforce strict function tools: send strict false"
+            else:
+                plan = owner.strict_calls(tools, required=required,
+                                          parallel=body.get("parallel_tool_calls") is not False, beside=spec)
+                spec = plan.spec if plan is not None else spec
         if spec is not None and getattr(owner, "model_dir", None) is not None:
             compiler(owner, owner.model_dir, owner.stop_ids).compile(spec)   # cached for the request's own compile
     except RequestError as exc:
@@ -264,7 +285,7 @@ class Constraint:
     """One reply's grammar at its chosen tokens: keeps and masks verify rows, follows the chosen tokens."""
 
     def __init__(self, xgr, compiled, vocab_size: int, *, think_end: int | None = None) -> None:
-        self.xgr = xgr
+        self.xgr, self.compiled = xgr, compiled
         self.m = xgr.GrammarMatcher(compiled)
         self.vocab = int(vocab_size)
         self.words = (self.vocab + 31) // 32
@@ -272,6 +293,13 @@ class Constraint:
         self.active = think_end is None               # with thinking on: from the token after </think>
         self.spec: Spec | None = None                 # what ``pack`` sends another rank
         self._shifts: dict[Any, Any] = {}
+
+    def fresh(self) -> "Constraint":
+        """This grammar from its start again, for a reply decoded again from its prompt (a yielded stream's replay)."""
+
+        again = Constraint(self.xgr, self.compiled, self.vocab, think_end=self.think_end)
+        again.spec = self.spec
+        return again
 
     @property
     def finished(self) -> bool:
@@ -406,5 +434,5 @@ def _mask_mlx(logits, window: Window, offset: int = 0):
     return rows.reshape(shape)
 
 
-__all__ = ["Constraint", "EXTRA", "FIELDS", "GrammarError", "Grammars", "KINDS", "Spec", "Window", "compiler",
+__all__ = ["Constraint", "EXTRA", "FIELDS", "GrammarError", "Grammars", "KINDS", "SPECS", "Spec", "Window", "compiler",
            "for_model", "pack", "refusal", "request_constraint", "request_spec", "vocab_size"]

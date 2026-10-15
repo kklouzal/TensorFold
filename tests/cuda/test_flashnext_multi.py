@@ -491,3 +491,78 @@ def test_several_kept_points_in_one_pass_each_keep_a_fresh_prefills_state(kv_dty
     while dec.live():
         dec.finish(dec.round())
     assert t.cached == 333 and t.out == fresh(branch)
+
+
+def _conforming_calls(plan, tokens):
+    """The calls a reply's toy-spelled text reads as, each checked against ``toy_grammar.TOOL`` independently."""
+
+    from toy_grammar import tool_spell
+
+    text = "".join(tool_spell(t) for t in tokens if t != 0)
+    _, calls = plan.parse(text)
+    for call in calls or ():
+        args = __import__("json").loads(call["function"]["arguments"])
+        if call["function"]["name"] == "go":
+            assert args == {}, args
+            continue
+        assert set(args) - {"z"} == {"n", "u", "o"} and set(args) <= {"n", "u", "o", "z"}, args
+        assert type(args["n"]) is int and 0 <= args["n"] <= 99 and args["u"] in ("c", "ff"), args
+        assert args["o"].keys() == {"k"} and type(args["o"]["k"]) is bool, args
+        assert type(args.get("z", False)) is bool, args
+    return calls or []
+
+
+@pytest.mark.parametrize("graphs,kv_dtype", [(False, "bf16"), (True, "rotorquant8-norm")])
+def test_strict_tool_streams_together_equal_each_alone(graphs, kv_dtype):
+    """Strict tool-call grammars (``server.strict_tools``: forced calls, free text and calls, one call) beside a plain
+    stream: each stream emits its serial constrained tokens under MTP drafting, the grammar takes every token, and the
+    replies read as calls whose arguments satisfy the tool's schema."""
+
+    pytest.importorskip("xgrammar")
+    from toy_grammar import toy_tools
+
+    w = _model()
+    variants = [toy_tools(V, required=True), toy_tools(V), toy_tools(V, required=True, parallel=False), None]
+    samplings = [Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=0.95), None, None]
+    count = 96
+
+    def fresh(i):
+        if variants[i] is None:
+            return {}
+        grammars, plan, compiled = variants[i]
+        return {"constraint": grammars.constraint(compiled, spec=plan.spec)}
+
+    refs = []
+    for i, (prompt, sampling) in enumerate(zip(PROMPTS, samplings)):
+        e = Engine(w, capacity=4096, max_rows=8, prefill_rows=256, kv_dtype=kv_dtype)
+        c = fresh(i)
+        out = serial_decode(e, prefill(e, prompt, sampling, **c), count, sampling, **c).tokens
+        refs.append(out[:out.index(0) + 1] if 0 in out else out)          # the serial reference decodes past the end
+    dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=kv_dtype, graphs=graphs)
+    if graphs:
+        dec.capture_graphs()
+    streams = [Stream(p, count, smp, **fresh(i)) for i, (p, smp) in enumerate(zip(PROMPTS, samplings))]
+    for s in streams:
+        dec.admit(s)
+    while dec.live():
+        dec.finish(dec.round())
+    assert [s.out for s in streams] == refs
+    assert all(s.error is None for s in streams) and streams[3].min_rows >= 2   # the plain one verifies drafts
+    assert sum(s.drafted for s in streams[:3]) > 0       # constrained rounds drafted too (the grammar cuts the rest)
+    for i in (0, 1):                                     # the same prompts again, resumed from their kept slots
+        again = Stream(PROMPTS[i], count, samplings[i], **fresh(i))
+        dec.admit(again)
+        while dec.live():
+            dec.finish(dec.round())
+        assert again.cached > 0 and again.out == refs[i], i
+    for i, (variant, out) in enumerate(zip(variants, refs)):
+        if variant is None:
+            continue
+        grammars, plan, compiled = variant
+        m = grammars.xgr.GrammarMatcher(compiled)
+        assert all(m.accept_token(t) for t in out), i
+        calls = _conforming_calls(plan, out)
+        if plan.required:
+            assert calls, i                                   # forced: a finished call within the reply
+        if not plan.parallel:
+            assert len(calls) <= 1

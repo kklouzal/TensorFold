@@ -85,10 +85,12 @@ class Stream:
         return {**own, **both, "cached": self.carry["cached"], "min_rows": min(rows, default=0)}
 
     def continued(self) -> "Stream":
-        """This stream again from its prompt, for later (as the Mac replays): what it sent is owed, not sent again."""
+        """This stream again from its prompt, for later (as the Mac replays): what it sent is owed, not sent again; its
+        grammar starts again with it."""
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
                       background=self.background, probabilities=self.probabilities,
+                      constraint=self.constraint.fresh() if self.constraint is not None else None,
                       carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)
 
 

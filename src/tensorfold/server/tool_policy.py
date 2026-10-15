@@ -96,9 +96,14 @@ class ToolCallPolicy:
         return text
 
     def finish(self, reply, tools, parse):
+        """The reply's calls, read by ``parse`` (the lenient parsers), or by the reply's ``strict_calls``
+        (``server.strict_tools.Plan``) when its grammar wrote them."""
+
         if not tools:
             return reply
-        content, calls = parse(str(reply.get("content") or ""), tools, max_calls=self.max_calls)
+        plan = reply.get("strict_calls")
+        reader = plan.parse if plan is not None else lambda text, max_calls: parse(text, tools, max_calls=max_calls)
+        content, calls = reader(str(reply.get("content") or ""), max_calls=self.max_calls)
         calls = calls or reply.get("tool_calls")
         if not calls:
             return {**reply, "content": self.content(content)} if self.single else reply

@@ -72,7 +72,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | Field | Meaning | Backend |
 | --- | --- | --- |
 | `messages` | Text messages, including system, developer, assistant tool calls and tool results | Both |
-| `tools` | OpenAI function tools | Both |
+| `tools` | OpenAI function tools; `function.strict: true` holds each call to its schema ([strict function tools](#strict-function-tools)) | Both |
 | `tool_choice` | `none` hides tools from the template; `required` or a named function makes the reply call a tool | Both |
 | `parallel_tool_calls` | False returns at most one completed call | Both |
 | `max_tokens`, `max_completion_tokens` | Explicit reply limit; rejected if prompt plus reply exceeds the window | Both |
@@ -187,7 +187,8 @@ tool name, then holds the name to the offered tools: a token that leaves them is
 offered name its written part starts. The template's own rendered call gives that text. A named function is the
 only tool the template offers. Each fix depends only on the tokens before it, so drafted, serial and concurrent
 decoding write the same call. The MLX engine fixes tokens inside its rounds; CUDA stops the engine at a fix and
-decodes on from the reply. The model writes the arguments; a malformed call returns as content.
+decodes on from the reply. The model writes the arguments; a malformed call returns as content. A request with strict
+tools uses their grammar instead (below), which also holds the arguments.
 
 ## Structured output
 
@@ -205,9 +206,57 @@ is complete; a reply cut at `max_tokens` is incomplete, with `finish_reason: "le
 its reply with whitespace inside an unfinished value.
 
 HTTP 400 comes before any token for a malformed field, a grammar xgrammar cannot compile (with xgrammar's reason), a
-server without xgrammar (with the install command), and a grammar sent with `tool_choice: "required"` or a named
-function. A reply whose grammar fails while decoding ends with HTTP 500 (an error event when streaming); the other
-requests go on.
+server without xgrammar (with the install command), and a grammar sent with `tool_choice: "required"`, a named
+function or strict function tools. A reply whose grammar fails while decoding ends with HTTP 500 (an error event when
+streaming); the other requests go on.
+
+## Strict function tools
+
+A request whose active tools (after `tool_choice`) include `"strict": true` (`tools[].function.strict` in chat,
+`tools[].strict` in Responses) decodes under one xgrammar grammar built from them, with the structured-output machinery
+above: drafting stays on, a reply equals its `"draft": false` and solo replies, and a background request still yields
+its lane (it replays under the grammar from the start). `strict` must be a boolean or null. With thinking on, the
+grammar starts after `</think>`, so reasoning is never constrained, and a thinking budget's close stops at that token.
+The grammar holds only the calls and what `tool_choice` asks; prose is the model's own.
+
+- **Calls** are the chat template's Qwen XML markup to an offered tool,
+  `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n…</function>\n</tool_call>`. Parameters come
+  in the schema's order; ones not in `required` may be left out, never repeated or added. A string parameter's value
+  is its raw text, as the template renders arguments; a string-or-null parameter is raw text or `null` (read as
+  null); any other value is JSON per the parameter's schema, with at most 32 blank characters in a run.
+- **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
+  `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
+  `parallel_tool_calls: false` ends the reply after its first call.
+- **Tools without `strict`** in the same request keep their names and markup well formed; their values are not
+  checked and decode as for any request.
+- **Reading:** the server reads strict replies exactly as the grammar wrote them, not with the lenient parser above.
+  `arguments` keeps each JSON value as the model wrote it (spacing included), and streamed deltas add up to the same
+  string. A call cut short by `max_tokens` or a stop string stays text. A call written inside a think block that never
+  closes becomes the answer only when the grammar accepts the whole answer, and otherwise stays reasoning.
+
+The supported schemas are [OpenAI's strict-mode
+subset](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas): types (or a list of
+them), `enum`, `const`, `anyOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
+`pattern` (matched whole, as `response_format` does), `format` (`date-time`, `time`, `date`, `duration`, `email`,
+`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers, `$defs`
+with local `$ref` and recursion, and annotations (`title`, `description`, `default`, `examples`, `$comment`,
+`deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties are accepted; a reply never adds
+undeclared ones. HTTP 400 names the keyword and its path for anything else, including `minLength`/`maxLength` (put
+length limits in the description), `uniqueItems`, `oneOf`, `allOf`, `not`, `if`/`then`/`else`, `patternProperties`,
+`prefixItems`, `multipleOf` on numbers and references to other documents, and past OpenAI's limits (10 nesting
+levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and values). Shapes xgrammar would not
+enforce whole are refused too: constraints beside `$ref`, anything but `type` beside `enum`, `const` or `anyOf` (an
+`anyOf` branch must admit only the types listed beside it), type-specific keywords without a `type` or with several
+non-null types, and `multipleOf` with a range. The call markup refuses a
+parameter that admits strings and non-string values other than null (raw text could be either), a string parameter's
+`pattern` that can spell `</parameter>`, `enum`/`const` strings containing it or combined with a `pattern` or
+`format`, and tool or parameter names with whitespace, `<` or `>`. Strict tools are also refused beside
+`response_format` or the `guided_*` fields, on an engine without grammar support (or Flash Next on two GPUs under
+`--parallel`), and for a template whose call markup is not Qwen XML; `strict: false` keeps the lenient path.
+
+The CUDA server is verified on synthetic Flash Next, Qwen3.6-35B-A3B and two-rank models; the Mac server checks the
+same requests before a stream opens and runs the same grammar and reader, but its MLX engine has not been exercised
+with them yet.
 
 ## Reasoning
 

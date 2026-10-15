@@ -64,6 +64,10 @@ _KEYWORDS = _ANNOTATIONS | {"type", "enum", "const", "anyOf", "$ref", "$defs", "
 # OpenAI's strict-mode limits (developers.openai.com/api/docs/guides/structured-outputs#supported-schemas)
 MAX_NESTING, MAX_PROPERTIES, MAX_ENUM_VALUES, MAX_SCHEMA_CHARS = 10, 5000, 1000, 120_000
 _LENGTHS = {"minLength", "maxLength"}
+_RANGES = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
+# keywords that constrain one JSON type: xgrammar 0.2.8 applies them only beside an explicit type
+_TYPED = {"pattern", "format", "multipleOf", "items", "minItems", "maxItems", "properties", "required",
+          "additionalProperties", *_RANGES}
 
 _HEX = "[0-9a-fA-F]"
 _OCTET = "(25[0-5]|(2[0-4]|1?[0-9])?[0-9])"
@@ -112,6 +116,18 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _value_type(value: Any) -> str:
+    """A JSON value's type, integers (1.0 included) apart from other numbers."""
+
+    if isinstance(value, float) and value.is_integer():
+        return "integer"
+    return "integer" if type(value) is int else _kind(value)
+
+
+def _within(types: set[str], declared: set[str]) -> bool:
+    return all(t in declared or (t == "integer" and "number" in declared) for t in types)
+
+
 class _Schema:
     """One tool's ``parameters``: checked against the supported subset, refs resolved within it."""
 
@@ -149,11 +165,35 @@ class _Schema:
                     if _LENGTHS & set(unknown) else "")
             raise _refuse(where, f"strict function schemas do not support {', '.join(unknown)}{hint}")
         kinds = node.get("type")
+        declared = set(TYPES)
         if kinds is not None:
             listed = kinds if isinstance(kinds, list) else [kinds]
             if not listed or any(not isinstance(k, str) or k not in TYPES for k in listed) or len(set(listed)) < len(
                     listed):
                 raise _refuse(where, "type must be one JSON type name or a list of distinct ones")
+            declared = set(listed)
+        # xgrammar 0.2.8 lets enum, const, $ref and anyOf override what stands beside them, and drops type-specific
+        # keywords without a type: those shapes are refused rather than left unenforced
+        own = set(node) - _ANNOTATIONS - {"$defs", "definitions"}
+        if "$ref" in node and own - {"$ref"}:
+            raise _refuse(where, "$ref takes no constraints beside it here: put them in the schema it names")
+        if ("enum" in node or "const" in node) and own - {"enum", "const", "type"}:
+            raise _refuse(where, "enum and const take only type beside them here")
+        if "anyOf" in node:
+            if own - {"anyOf", "type"}:
+                raise _refuse(where, "anyOf takes only type beside it here: put the other constraints in each branch")
+            if kinds is not None and isinstance(node["anyOf"], list) and not all(
+                    isinstance(b, dict) and _within(self.types(b), declared) for b in node["anyOf"]):
+                raise _refuse(where, "each anyOf branch must admit only the types listed beside it")
+        typed = own & _TYPED
+        if typed and kinds is None:
+            raise _refuse(where, f"{', '.join(sorted(typed))} need a type beside them")
+        if typed and len(declared - {"null"}) > 1:
+            raise _refuse(where, f"{', '.join(sorted(typed))} need a single type (besides null)")
+        for values in ([node["enum"]] if isinstance(node.get("enum"), list) else []) + (
+                [[node["const"]]] if "const" in node else []):
+            if kinds is not None and not _within({_value_type(v) for v in values}, declared):
+                raise _refuse(where, "every enum and const value must have a type listed beside it")
         if "enum" in node:
             if not isinstance(node["enum"], list) or not node["enum"]:
                 raise _refuse(where, "enum must be a non-empty list")
@@ -165,11 +205,10 @@ class _Schema:
             if key in node and not _number(node[key]):
                 raise _refuse(where, f"{key} must be a number")
         if "multipleOf" in node:
-            types = node.get("type")
             if not _number(node["multipleOf"]) or node["multipleOf"] <= 0:
                 raise _refuse(where, "multipleOf must be a positive number")
-            if types not in ("integer", ["integer"], ["integer", "null"], ["null", "integer"]):
-                raise _refuse(where, "multipleOf is enforced for integers only (give the schema type integer)")
+            if kinds not in ("integer", ["integer"]) or _RANGES & set(node):
+                raise _refuse(where, "multipleOf is enforced for type integer without minimum or maximum only")
         for key in ("minItems", "maxItems"):
             if key in node and (type(node[key]) is not int or node[key] < 0):
                 raise _refuse(where, f"{key} must be a non-negative integer")
@@ -220,6 +259,26 @@ class _Schema:
         if self.properties > MAX_PROPERTIES or self.enums > MAX_ENUM_VALUES or self.chars > MAX_SCHEMA_CHARS:
             raise _refuse(self.where, f"strict schemas are limited to {MAX_PROPERTIES} properties, {MAX_ENUM_VALUES} "
                                       f"enum values and {MAX_SCHEMA_CHARS} characters of names and values")
+
+    def types(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> set[str]:
+        """The JSON types ``node`` admits (integer apart from number), its refs followed."""
+
+        if id(node) in seen:
+            return set(TYPES)
+        seen = seen | {id(node)}
+        found = set(TYPES)
+        if "$ref" in node:
+            found &= self.types(self.resolve(node["$ref"], self.where), seen)
+        if "type" in node:
+            listed = set(node["type"] if isinstance(node["type"], list) else [node["type"]])
+            found = {t for t in found if t in listed or (t == "integer" and "number" in listed)}
+        for values in ([node["enum"]] if isinstance(node.get("enum"), list) else []) + (
+                [[node["const"]]] if "const" in node else []):
+            found &= {_value_type(v) for v in values} | ({"number"} if any(
+                _value_type(v) == "number" for v in values) else set())
+        if isinstance(node.get("anyOf"), list):
+            found &= set().union(*(self.types(b, seen) for b in node["anyOf"] if isinstance(b, dict)))
+        return found
 
     def admits(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> tuple[bool, bool, bool]:
         """Whether ``node`` admits (strings, null, any other JSON value), its refs followed."""
@@ -288,7 +347,7 @@ class _Schema:
         """``node`` as a schema of its own (refs into the tool's schema kept), for a JSON value's grammar."""
 
         defs = {key: _rebase(self.root[key]) for key in ("$defs", "definitions") if isinstance(self.root.get(key), dict)}
-        refs = _refs(node) | _refs(list(defs.values()))
+        refs = _refs(node).union(*(_refs(sub) for d in defs.values() for sub in d.values()))
         if any(not r.startswith(("#/$defs/", "#/definitions/")) for r in refs):     # "#" or "#/properties/...": the root
             if "__tf_root" in defs.get("$defs", {}):
                 raise _refuse(self.where, "$defs may not name __tf_root")
@@ -299,34 +358,43 @@ class _Schema:
         return sub
 
 
-def _refs(node: Any) -> set[str]:
-    if isinstance(node, dict):
-        found = {node["$ref"]} if isinstance(node.get("$ref"), str) else set()
-        for key, value in node.items():
-            if key not in ("enum", "const", "default", "examples"):
-                found |= _refs(value)
-        return found
-    if isinstance(node, list):
-        return set().union(*map(_refs, node)) if node else set()
-    return set()
+def _subschemas(node: dict[str, Any]) -> list[tuple[str, Any, Any]]:
+    """(keyword, key or index, subschema) of each schema directly inside a checked ``node``; other values are data."""
+
+    found = []
+    for keyword in ("properties", "$defs", "definitions"):
+        found += [(keyword, name, sub) for name, sub in (node.get(keyword) or {}).items()]
+    found += [("anyOf", i, sub) for i, sub in enumerate(node.get("anyOf") or ())]
+    found += [(keyword, None, node[keyword]) for keyword in ("items", "additionalProperties")
+              if isinstance(node.get(keyword), dict)]
+    return found
 
 
-def _rebase(node: Any) -> Any:
-    """A copy of ``node`` whose refs into the tool's schema root point at ``#/$defs/__tf_root`` instead."""
+def _refs(node: dict[str, Any]) -> set[str]:
+    """Every ``$ref`` in a checked schema."""
 
-    if isinstance(node, dict):
-        out = {}
-        for key, value in node.items():
-            if key == "$ref" and isinstance(value, str) and not value.startswith(("#/$defs/", "#/definitions/")):
-                out[key] = "#/$defs/__tf_root" + ("" if value in ("#", "#/") else value[1:])
-            elif key in ("enum", "const", "default", "examples"):
-                out[key] = value
-            else:
-                out[key] = _rebase(value)
-        return out
-    if isinstance(node, list):
-        return [_rebase(v) for v in node]
-    return node
+    found = {node["$ref"]} if "$ref" in node else set()
+    for _, _, sub in _subschemas(node):
+        found |= _refs(sub)
+    return found
+
+
+def _rebase(node: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a checked schema whose refs into the tool's schema root point at ``#/$defs/__tf_root`` instead."""
+
+    out = dict(node)
+    ref = node.get("$ref")
+    if ref is not None and not ref.startswith(("#/$defs/", "#/definitions/")):
+        out["$ref"] = "#/$defs/__tf_root" + ("" if ref in ("#", "#/") else ref[1:])
+    for keyword in ("properties", "$defs", "definitions"):
+        if keyword in node:
+            out[keyword] = {name: _rebase(sub) for name, sub in node[keyword].items()}
+    if "anyOf" in node:
+        out["anyOf"] = [_rebase(sub) for sub in node["anyOf"]]
+    for keyword in ("items", "additionalProperties"):
+        if isinstance(node.get(keyword), dict):
+            out[keyword] = _rebase(node[keyword])
+    return out
 
 
 def _may_match(pattern: str, char: str) -> bool:
@@ -478,7 +546,7 @@ class Plan:
             raise _refuse(where, "a strict tool's parameters must be an object schema (not anyOf, $ref, enum or const)")
         if parameters.get("type", "object") != "object":
             raise _refuse(where, 'a strict tool\'s parameters must have type "object"')
-        top = {k: v for k, v in parameters.items() if k != "$schema"}
+        top = {"type": "object", **{k: v for k, v in parameters.items() if k != "$schema"}}
         schema = _Schema(top, where)
         schema.check(top, where, 0)
         required = set(top.get("required") or ())
@@ -491,8 +559,6 @@ class Plan:
             if strings and other:
                 raise _refuse(at, "a parameter that admits strings and non-string values is ambiguous in this model's "
                                   "call markup, which writes strings raw (only string-or-null is supported)")
-            if not (strings or null or other):
-                raise _refuse(at, "no value satisfies this parameter's schema")
             if strings:
                 value = schema.raw(sub, at)
                 mode = NULLABLE if null else RAW

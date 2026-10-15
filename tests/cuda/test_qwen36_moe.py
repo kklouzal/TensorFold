@@ -631,16 +631,18 @@ def test_a_stream_alone_grows_the_graph_buffers_while_others_run(expandable, sam
         assert s.out == refs[tuple(s.prompt)], s.prompt
 
 
-def test_constrained_streams_together_equal_solo_and_serial():
-    """A grammar per stream cuts the drafts it rejects and masks each row by its path: beside plain streams, and alone
-    in the one-stream graphs, a constrained stream emits its serial constrained tokens, which the grammar takes."""
+@pytest.mark.parametrize("kind", ["json-like", "strict-tools"])
+def test_constrained_streams_together_equal_solo_and_serial(kind):
+    """A grammar per stream (a JSON-like rule, or ``server.strict_tools``' forced calls) cuts the drafts it rejects and
+    masks each row by its path: beside plain streams, and alone in the one-stream graphs, a constrained stream emits
+    its serial constrained tokens, which the grammar takes."""
 
     from tensorfold.families.qwen3_5_moe.cuda.graphs import Graphs
 
     pytest.importorskip("xgrammar")
-    from toy_grammar import toy
+    from toy_grammar import toy, toy_tools
 
-    grammars, compiled = toy(V)
+    grammars, compiled = toy(V) if kind == "json-like" else toy_tools(V, required=True)[::2]
     w, head = _model()
     shaped = {0, 2, 3}
 

@@ -407,6 +407,39 @@ def test_tp_grammar_drafts_give_serial_tokens_on_both_ranks(models, sampling):
     assert all(m.accept_token(t) for t in serial)
 
 
+@pytest.mark.parametrize("sampling", [None, Sampling(seed=1234, top_k=20, top_p=0.95)])
+def test_tp_strict_tool_grammar_reaches_rank_one_and_drafts_give_serial_tokens(models, sampling):
+    """A strict tool-call grammar (``server.strict_tools``) on two ranks, rank 1's compiled from what rank 0 packs (as
+    ``rank_protocol`` carries it): drafted == serial on both ranks, and the grammar takes every token."""
+
+    pytest.importorskip("xgrammar")
+    from toy_grammar import toy_tools
+
+    from tensorfold.engine.grammar import pack
+
+    grammars, plan, compiled = toy_tools(V, required=True)
+    _, ranks, _ = models
+
+    def constraint(r):
+        c = grammars.constraint(compiled, spec=plan.spec)
+        return c if r == 0 else grammars.follow(pack(c))
+
+    def body(r, e):
+        c = constraint(r)
+        out = {"serial": serial_decode(e, prefill(e, PROMPT, sampling, constraint=c), 48, sampling, constraint=c).tokens}
+        for depth in (1, 3):
+            c = constraint(r)
+            first = prefill(e, PROMPT, sampling, constraint=c)
+            out[depth] = mtp_decode(e, first, 48, sampling, depth=depth, confidence=0.0, constraint=c).tokens
+        return out
+
+    a, b = _run_ranks(body, ranks, capacity=1024, max_rows=8, prefill_rows=16)
+    assert a == b and all(a[d] == a["serial"] for d in (1, 3))
+    serial = a["serial"][:a["serial"].index(0) + 1] if 0 in a["serial"] else a["serial"]
+    m = grammars.xgr.GrammarMatcher(compiled)
+    assert all(m.accept_token(t) for t in serial)
+
+
 @pytest.mark.parametrize("sampling", [None, Sampling(seed=77, top_k=20, top_p=0.95)])
 def test_tp_kept_drafts_give_serial_tokens(models, sampling, monkeypatch):
     """The random MTP head's drafts all miss, so rounds here draft serial decoding's own tokens with every fifth

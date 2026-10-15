@@ -1,6 +1,6 @@
 """Request stop strings remain active when model EOS stopping is disabled."""
 
-from typing import Any
+from typing import Any, Callable
 
 from tensorfold.server.errors import RequestError
 from tensorfold.server.text import hide_tool_calls
@@ -43,14 +43,16 @@ class StopPolicy:
             return text[:len(text) - held]
         return text
 
-    def flush(self, callback: Any, content: str, reasoning: str | None, sent: str, thought: str, tools: bool) -> None:
-        """Stream what the final reply adds to what streamed: text held back as a possible stop string or tag."""
+    def flush(self, callback: Any, content: str, reasoning: str | None, sent: str, thought: str,
+              tools: bool | Callable[[str], str]) -> None:
+        """Stream what the final reply adds to what streamed: text held back as a possible stop string or tag;
+        ``tools`` hides streamed calls' markup (a function: the reader of strict calls shows the text)."""
 
         if callback is None:
             return
         if reasoning and reasoning.startswith(thought) and len(reasoning) > len(thought):
             callback({"reasoning_content": reasoning[len(thought):]})
-        shown = hide_tool_calls(content, finished=True) if tools else content
+        shown = (tools(content) if callable(tools) else hide_tool_calls(content, finished=True)) if tools else content
         if shown.startswith(sent) and len(shown) > len(sent):
             callback(shown[len(sent):])
 
