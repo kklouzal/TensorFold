@@ -223,7 +223,11 @@ def test_a_plan_reads_each_parameters_mode():
     ({"type": "object", "properties": {"s": {"type": "integer", "minimum": "1"}}}, "must be a number"),
     # shapes xgrammar 0.2.8 would not enforce whole (it lets enum, const, $ref and anyOf override their neighbours)
     ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"minimum": 5}, {"maximum": 1}]}}},
+     "need a type beside them"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"enum": [1, "a"]}]}}},
      "admit only the types"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"$ref": "#/$defs/t"}]}},
+      "$defs": {"t": {"type": "string"}}}, "admit only the types"),
     ({"type": "object", "properties": {"s": {"anyOf": [{"type": "integer"}, {"minimum": 1}]}}},
      "need a type beside them"),
     ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"type": "string"}]}}},
@@ -275,6 +279,117 @@ def test_openai_limits_and_name_rules_are_refused():
     with pytest.raises(RequestError, match="strict must be a boolean"):
         st.wanted([{"type": "function", "function": {"name": "f", "strict": "yes"}}])
     assert not st.wanted([tool("f", strict=False), tool("g", strict=None)]) and st.wanted([tool("f")])
+
+
+def _defs_chain(n, step, leaf):
+    """A schema whose one parameter ``x`` refers to ``d0``; ``d_k`` is ``step(k)``, which refers on to ``d_k+1``."""
+
+    defs = {f"d{k}": step(k) for k in range(n)}
+    defs[f"d{n}"] = leaf
+    return {"type": "object", "$defs": defs, "properties": {"x": {"$ref": "#/$defs/d0"}}, "required": ["x"]}
+
+
+def test_hostile_schemas_cost_linear_work_and_are_refused_explicitly(monkeypatch):
+    """Untrusted schemas never cost exponential work, recurse without bound or crash: shared ref chains are solved once,
+    a self-referring string parameter, nesting past the limits and unreadable patterns are refused with their path."""
+
+    resolved = []
+    real = st._Schema.resolve
+    monkeypatch.setattr(st._Schema, "resolve", lambda self, ref, where: resolved.append(ref) or real(self, ref, where))
+
+    def value(plan):                     # the one parameter's value grammar (tool f, parameter x, required)
+        tag = json.loads(plan.spec.text)["format"]
+        tags = tag["elements"][1]["tags"] if plan.required else tag["tags"]
+        return tags[0]["content"]["elements"][0]["elements"][1]
+
+    # each definition refers twice to the next: 2^40 paths, each definition solved and written once
+    two = lambda k: {"anyOf": [{"$ref": f"#/$defs/d{k + 1}"}, {"$ref": f"#/$defs/d{k + 1}"}]}   # noqa: E731
+    for leaf, mode in (({"type": "string", "pattern": "^a+$"}, "raw"), ({"type": "integer"}, "json")):
+        resolved.clear()
+        plan = st.Plan([tool("f", _defs_chain(40, two, leaf))], required=True, parallel=True)
+        assert plan.tools["f"].params[0].mode == mode and len(resolved) <= 8 * 81, len(resolved)
+        if mode == "raw":
+            assert value(plan) == {"type": "regex", "pattern": "^a+$"}
+    # 3,000 chained references (past Python's recursion limit): followed without recursion
+    resolved.clear()
+    one = lambda k: {"anyOf": [{"$ref": f"#/$defs/d{k + 1}"}, {"const": f"c{k}"}]}             # noqa: E731
+    plan = st.Plan([tool("f", _defs_chain(3000, one, {"const": "end"}))], required=False, parallel=True)
+    assert plan.tools["f"].params[0].mode == "raw" and len(resolved) <= 4 * 3001, len(resolved)
+    assert {e["value"] for e in value(plan)["elements"]} == {"end", *(f"c{k}" for k in range(3000))}
+    # a JSON parameter's grammar holds at most MAX_SUBSCHEMAS subschemas, its definitions included: xgrammar 0.2.8
+    # compiles a reference chain recursively and overflowed its stack on longer ones
+    ref = lambda k: {"$ref": f"#/$defs/d{k + 1}"}                                               # noqa: E731
+    st.Plan([tool("f", _defs_chain(st.MAX_SUBSCHEMAS - 2, ref, {"type": "integer"}))], required=False, parallel=True)
+    with pytest.raises(RequestError, match=rf"properties\.x: this parameter's schema holds {st.MAX_SUBSCHEMAS + 2} subs"):
+        st.Plan([tool("f", _defs_chain(st.MAX_SUBSCHEMAS, ref, {"type": "integer"}))], required=False, parallel=True)
+    looped = {"type": "object", "properties": {"x": {"$ref": "#/$defs/a"}},
+              "$defs": {"a": {"type": "string", "anyOf": [{"$ref": "#/$defs/a"}, {"type": "string", "pattern": "^a$"}]}}}
+    with pytest.raises(RequestError, match=r"properties\.x\.anyOf\[0\]: a string parameter's schema may not refer back"):
+        st.Plan([tool("f", looped)], required=False, parallel=True)
+
+    def nest(levels, wrap):
+        node = {"type": "integer"}
+        for _ in range(levels):
+            node = wrap(node)
+        return node
+
+    def any_of(levels):                  # the innermost schema ``levels`` anyOf levels deep
+        return {"type": "object", "properties": {"x": nest(levels, lambda s: {"anyOf": [s]})}}
+
+    def defs(levels):                    # the innermost definition ``levels`` $defs levels deep
+        inner = nest(levels - 1, lambda s: {"type": "integer", "$defs": {"a": s}})
+        return {"type": "object", "properties": {"x": {"type": "integer"}}, "$defs": {"a": inner}}
+
+    for shape in (any_of, defs):
+        st.Plan([tool("f", shape(10))], required=False, parallel=True)
+        with pytest.raises(RequestError, match="anyOf and \\$defs nest at most 10 levels"):
+            st.Plan([tool("f", shape(11))], required=False, parallel=True)
+    for pattern, words in (("(" * 600 + "a" + ")" * 600, "nests its groups too deeply"),
+                           ("(a", "not a regular expression this server reads")):
+        for where in ({"type": "string", "pattern": pattern},                       # a raw value
+                      {"type": "array", "items": {"type": "string", "pattern": pattern}}):     # inside JSON
+            with pytest.raises(RequestError, match=words):
+                st.Plan([tool("f", {"type": "object", "properties": {"x": where}})], required=False, parallel=True)
+
+
+def test_const_beside_an_enum_must_be_one_of_its_values():
+    """xgrammar 0.2.8 enforces const alone when enum stands beside it: a const outside the enum is refused, one inside
+    it keeps the grammar that both describe."""
+
+    for value, enum in ((2, [1]), ("b", ["a"]), (1, [True]), ({"k": 1}, [{"k": 2}])):
+        schema = {"type": "object", "properties": {"x": {"enum": enum, "const": value}}}
+        with pytest.raises(RequestError, match="const must be one of the enum values"):
+            st.Plan([tool("f", schema)], required=False, parallel=True)
+    for value, enum in ((2, [1, 2]), ("b", ["a", "b"]), ({"k": 1, "j": 2}, [{"j": 2, "k": 1}])):
+        st.Plan([tool("f", {"type": "object", "properties": {"x": {"enum": enum, "const": value}}})],
+                required=False, parallel=True)
+
+
+def test_definitions_are_copied_only_where_referred_and_the_grammar_size_is_capped(monkeypatch):
+    """A JSON parameter's grammar copies the definitions it refers to (all of them, with the root, when it refers to
+    the root), so shared definitions grow the grammar only where used; past ``MAX_GRAMMAR_BYTES`` it is refused, as
+    the two-rank transport would refuse it later."""
+
+    from tensorfold.cuda import rank_protocol
+
+    assert st.MAX_GRAMMAR_BYTES == rank_protocol.MAX_MESSAGE_BYTES
+    item = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"], "additionalProperties": False}
+    defs = {f"d{k}": item for k in range(200)}
+    props = {f"p{i}": {"type": "integer"} for i in range(200)}
+    props["used"] = {"type": "array", "items": {"$ref": "#/$defs/d7"}}
+    plan = st.Plan([tool("f", {"type": "object", "$defs": defs, "properties": props})], required=False, parallel=True)
+    params = json.loads(plan.spec.text)["format"]["tags"][0]["content"]["elements"]
+    schemas = [p["content"]["elements"][1]["json_schema"] for p in params]
+    assert all("$defs" not in s for s in schemas[:200]) and list(schemas[200]["$defs"]) == ["d7"]
+    rooted = {"type": "object", "$defs": {"n": {"type": "integer"}},
+              "properties": {f"p{i}": {"type": "array", "items": {"$ref": "#"}, "maxItems": 1} for i in range(40)}}
+    plan = st.Plan([tool("f", rooted)], required=False, parallel=True)
+    size = len(plan.spec.text.encode())
+    monkeypatch.setattr(st, "MAX_GRAMMAR_BYTES", size)
+    st.Plan([tool("f", rooted)], required=False, parallel=True)
+    monkeypatch.setattr(st, "MAX_GRAMMAR_BYTES", size - 1)
+    with pytest.raises(RequestError, match=r"^tools: the strict tools' call grammar exceeds"):
+        st.Plan([tool("f", rooted)], required=False, parallel=True)
 
 
 def test_patterns_that_cannot_spell_the_value_close_are_kept():
@@ -408,6 +523,21 @@ def test_the_grammar_accepts_the_templates_calls_and_refuses_others(grammars):
     single = grammars.compile(st.Plan(TOOLS, required=False, parallel=False).spec)
     assert grammars.accepts(single, "pre " + CALL) and not grammars.accepts(single, CALL + "\n" + CALL)
     assert not grammars.accepts(single, CALL + " post")
+
+
+def test_the_longest_reference_chains_allowed_compile(grammars):
+    """At ``MAX_SUBSCHEMAS`` a JSON parameter's reference chain still compiles in xgrammar 0.2.8 (its compiler recurses
+    along references: much longer chains overflowed its stack and killed the process), and the grammar holds it."""
+
+    levels = (st.MAX_SUBSCHEMAS - 2) // 3            # per level: the definition, its reference and its const branch
+    step = lambda k: {"anyOf": [{"$ref": f"#/$defs/d{k + 1}"}, {"const": k}]}                  # noqa: E731
+    for schema in (_defs_chain(levels, step, {"const": -1}),
+                   _defs_chain(st.MAX_SUBSCHEMAS - 2, lambda k: {"$ref": f"#/$defs/d{k + 1}"}, {"type": "integer"})):
+        plan = st.Plan([tool("f", schema)], required=True, parallel=True)
+        compiled = grammars.compile(plan.spec)
+        call = "<tool_call>\n<function=f>\n<parameter=x>\n{}\n</parameter>\n</function>\n</tool_call>"
+        assert grammars.accepts(compiled, call.format(-1 if "anyOf" in schema["$defs"]["d0"] else 7))
+        assert not grammars.accepts(compiled, call.format('"x"'))
 
 
 def test_refs_into_the_tools_schema_resolve_inside_a_json_parameter(grammars):
@@ -789,6 +919,26 @@ def test_unsupported_strict_requests_are_refused_before_generation(tmp_path, gra
             status, text = post(port, {**body, "stream": stream}, True)
         assert status == 400 and words in json.loads(text)["error"]["message"], text
     assert engine.calls == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_reply_that_leaves_the_grammar_fails_the_request_instead_of_returning_a_call(tmp_path, grammars, stream):
+    """An engine fault that writes markup the strict grammar never allows is an internal error (HTTP 500, or an error
+    event once streaming), never a call read leniently or text passed off as the answer."""
+
+    from tests.test_cuda_admission import http_server, post
+
+    class Ignoring(ScriptEngine):                    # takes the constraint but never masks with it
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, constraint=None):
+            return super().generate(prompt, max_tokens, sampling, on_tokens, draft)
+
+    with http_server(_app(tmp_path, Ignoring('<tool_call>\n<function=now>\n{"x": 1}</tool_call>'), grammars)) as port:
+        status, text = post(port, _body(stream), True)
+    if stream:                                       # the call's head went out before its body left the grammar
+        assert status == 200 and '"type": "server_error"' in text and "left its grammar" in text, text
+        assert '"finish_reason": "tool_calls"' not in text and '"arguments": "{' not in text, text
+    else:
+        assert status == 500 and "left its grammar" in json.loads(text)["error"]["message"], text
 
 
 def test_engines_or_templates_that_cannot_hold_calls_refuse_strict(tmp_path, grammars):

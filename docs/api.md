@@ -223,7 +223,9 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n…</function>\n</tool_call>`. Parameters come
   in the schema's order; ones not in `required` may be left out, never repeated or added. A string parameter's value
   is its raw text, as the template renders arguments; a string-or-null parameter is raw text or `null` (read as
-  null); any other value is JSON per the parameter's schema, with at most 32 blank characters in a run.
+  null); any other value is JSON per the parameter's schema (`true`, `null`), with at most 32 blank characters in a
+  run. Flash Next's template renders such values as JSON too; a template that renders them as Python (`True`, `None`,
+  as Qwen3.5's does) still gets JSON under strict.
 - **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
   `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
   `parallel_tool_calls: false` ends the reply after its first call.
@@ -238,25 +240,37 @@ The supported schemas are [OpenAI's strict-mode
 subset](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas): types (or a list of
 them), `enum`, `const`, `anyOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
 `pattern` (matched whole, as `response_format` does), `format` (`date-time`, `time`, `date`, `duration`, `email`,
-`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers,
-`$defs` with local `$ref` to a subschema and recursion, and annotations (`title`, `description`, `default`,
-`examples`, `$comment`, `deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties are
-accepted; a reply never adds undeclared ones. HTTP 400 names the keyword and its path for anything else, including
+`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers, `$defs`
+with local `$ref` to a subschema and recursion, and annotations (`title`, `description`, `default`, `examples`,
+`$comment`, `deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties are accepted. A call
+never adds parameters its tool does not declare; a nested object adds properties only as its `additionalProperties`
+allows (none when it is absent). HTTP 400 names the keyword and its path for anything else, including
 `minLength`/`maxLength` (put length limits in the description), `uniqueItems`, `oneOf`, `allOf`, `not`,
-`if`/`then`/`else`, `patternProperties`, `prefixItems`, `multipleOf` on numbers and references to other documents,
-and past OpenAI's limits (10 nesting levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and
-values). Shapes xgrammar would not enforce whole are refused too: constraints beside `$ref`, anything but `type`
-beside `enum`, `const` or `anyOf` (an `anyOf` branch must admit only the types listed beside it), type-specific
-keywords without a `type` or with several non-null types, `pattern` beside `format`, and `multipleOf` with a range.
-The call markup refuses a parameter that admits strings and non-string values other than null (raw text could be
-either), a string parameter's `pattern` that can spell `</parameter>`, `enum`/`const` strings containing it, and
-tool or parameter names with whitespace, `<` or `>`. Strict tools are also refused beside `response_format` or the
-`guided_*` fields, on an engine without grammar support (or Flash Next on two GPUs under `--parallel`), and for a
-template whose call markup is not Qwen XML; `strict: false` keeps the lenient path.
+`if`/`then`/`else`, `patternProperties`, `prefixItems`, `multipleOf` on numbers and references to other documents, and
+past OpenAI's limits (10 nesting levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and values).
+The server also bounds what OpenAI leaves open: `anyOf` and `$defs` nest at most 10 levels in one another, a JSON
+parameter's schema holds at most 2,000 subschemas with the definitions it refers to (xgrammar 0.2.8 compiles
+references recursively; a chain of 8,000 overflowed an 8 MB thread stack and killed the process), a `pattern` must be
+a regular expression Python's `re` reads (which also bounds how deeply its groups nest), and the whole call grammar
+must stay within 96 MiB (each JSON parameter carries the definitions and root schema it refers to). Shapes xgrammar
+would not enforce whole are refused too: constraints beside `$ref`, anything but `type` beside `enum`, `const` or
+`anyOf` (an `anyOf` branch must admit only the types listed beside it), a `const` beside an `enum` that does not list
+it, type-specific keywords without a `type` or with several non-null types, `pattern` beside `format`, and
+`multipleOf` with a range. The call markup refuses a parameter that admits strings and non-string values other than
+null (raw text could be either), a string parameter whose schema refers back to itself, a string parameter's `pattern`
+that can spell `</parameter>`, `enum`/`const` strings containing it, and tool or parameter names with whitespace, `<`
+or `>`. Strict tools are also refused beside `response_format` or the `guided_*` fields, on an engine without grammar
+support (or Flash Next on two GPUs under `--parallel`), and for a template whose call markup is not Qwen XML;
+`strict: false` keeps the lenient path.
 
-The CUDA server is verified on synthetic Flash Next, Qwen3.6-35B-A3B and two-rank models; the Mac server checks the
-same requests before a stream opens and runs the same grammar and reader, but its MLX engine has not been exercised
-with them yet.
+Verification so far: CPU tests of the schema checks, the grammar (compiled by xgrammar 0.2.8 and fuzzed against an
+independent validator), the reader and the CUDA server's requests with a scripted engine; and GPU tests of the engines
+under strict grammars with synthetic random-weight models (Flash Next lanes, Flash Next on two ranks, a Qwen3.6
+MoE-shaped model: drafted, concurrent and resumed replies equal serial ones) on an RTX PRO 2000 Blackwell 16 GB with
+the verification image `2edfaa51` (the lanes test at source `1bbe1653`, the others on an earlier tree of the same
+change). Pending: those GPU tests at the current source, the test on the Flash Next checkpoint's own tokenizer and
+vocabulary (model cut to 4 layers), full-model replies, and the Mac server's MLX engine, which checks the same
+requests before a stream opens and runs the same grammar and reader but has not been exercised with them.
 
 ## Reasoning
 

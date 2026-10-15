@@ -62,8 +62,19 @@ _ANNOTATIONS = frozenset({"title", "description", "default", "examples", "$comme
 _KEYWORDS = _ANNOTATIONS | {"type", "enum", "const", "anyOf", "$ref", "$defs", "definitions", "properties", "required",
                             "additionalProperties", "items", "minItems", "maxItems", "pattern", "format", "minimum",
                             "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"}
-# OpenAI's strict-mode limits (developers.openai.com/api/docs/guides/structured-outputs#supported-schemas)
+# OpenAI's strict-mode limits (developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); the nesting
+# limit also bounds anyOf and $defs nested in one another between two property or items levels
 MAX_NESTING, MAX_PROPERTIES, MAX_ENUM_VALUES, MAX_SCHEMA_CHARS = 10, 5000, 1000, 120_000
+# The most grammar text one request's strict tools may make: the CUDA HTTP body cap, which is also the two-rank
+# transport envelope (``cuda.rank_protocol.MAX_MESSAGE_BYTES``, kept equal by a test). Definitions and root references
+# are copied into every JSON parameter's schema, so the text can outgrow the request; past this it is refused.
+MAX_GRAMMAR_BYTES = 96 << 20
+# The most subschemas one JSON parameter's grammar holds, the definitions and root it refers to included. xgrammar
+# 0.2.8 compiles a schema recursively along its references, and a long chain overflows the thread's stack and kills the
+# process: in an 8 MB worker thread (amd64 verification image) a chain of objects did so at 8,000 subschemas (4,000
+# objects, compiled at 6,000), plain references at 20,000, anyOf references not yet at 21,000. A quarter of the
+# smallest: other builds (the GB10's ARM64) and stack sizes were not measured.
+MAX_SUBSCHEMAS = 2000
 _LENGTHS = {"minLength", "maxLength"}
 _RANGES = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
 # keywords that constrain one JSON type: xgrammar 0.2.8 applies them only beside an explicit type
@@ -143,11 +154,19 @@ def _side(kind: str) -> str:
 
 
 class _Schema:
-    """One tool's ``parameters``: checked against the supported subset, refs resolved within it."""
+    """One tool's ``parameters``: checked against the supported subset, refs resolved within it.
+
+    Every walk is bounded by the request: ``check`` recurses only along the schema's own nesting (at most
+    ``MAX_NESTING`` property/items levels, each holding at most ``MAX_NESTING`` anyOf/$defs levels), and whatever follows
+    ``$ref`` (``types``, ``raw``, ``json``) runs without recursion, each node or definition once, so shared and long ref
+    chains cost linear time and cycles end."""
 
     def __init__(self, root: dict[str, Any], where: str) -> None:
         self.root, self.where = root, where
         self.properties = self.chars = self.enums = 0
+        self._typed_anyof: list[tuple[dict[str, Any], set[str], str]] = []   # checked once all nodes are
+        self._types: dict[int, frozenset[str]] = {}       # solved node types by id (the request holds the nodes)
+        self._copies: dict[tuple[str, str], tuple[dict[str, Any], set[str], int, int]] = {}   # rebased defs, root
 
     def resolve(self, ref: Any, where: str) -> dict[str, Any]:
         """The subschema a local ``$ref`` names, its JSON pointer read through schema keywords only: data such as
@@ -159,7 +178,7 @@ class _Schema:
             return self.root
         if not ref.startswith("#/"):
             raise _refuse(where, f"$ref {ref!r} is not a JSON pointer")
-        parts = [part.replace("~1", "/").replace("~0", "~") for part in ref[2:].split("/")]
+        parts = [_unescape(part) for part in ref[2:].split("/")]
         node: Any = self.root
         while parts and isinstance(node, dict):
             keyword = parts.pop(0)
@@ -177,11 +196,22 @@ class _Schema:
             raise _refuse(where, f"$ref {ref!r} does not resolve to a subschema")
         return node
 
-    def check(self, node: Any, where: str, depth: int) -> None:
-        """Every keyword of ``node`` (and its subschemas) supported, well formed and within OpenAI's limits."""
+    def check(self) -> None:
+        """The whole schema supported, well formed and within OpenAI's limits (RequestError naming the path)."""
+
+        self._check(self.root, self.where, 0, 0)
+        for node, declared, where in self._typed_anyof:      # types follow refs: every node is checked by now
+            if not all(_within(self.types(b), declared) for b in node["anyOf"]):
+                raise _refuse(where, "each anyOf branch must admit only the types listed beside it")
+
+    def _check(self, node: Any, where: str, depth: int, chain: int) -> None:
+        """``node`` and its subschemas; ``depth`` counts property/items levels, ``chain`` anyOf/$defs levels within
+        the current one."""
 
         if not isinstance(node, dict):
             raise _refuse(where, "a schema must be a JSON object")
+        if chain > MAX_NESTING:
+            raise _refuse(where, f"anyOf and $defs nest at most {MAX_NESTING} levels in one another here")
         unknown = sorted(k for k in node if k not in _KEYWORDS)
         if unknown:
             hint = (" (strict schemas follow OpenAI's subset: put length limits in the description)"
@@ -205,9 +235,8 @@ class _Schema:
         if "anyOf" in node:
             if own - {"anyOf", "type"}:
                 raise _refuse(where, "anyOf takes only type beside it here: put the other constraints in each branch")
-            if kinds is not None and isinstance(node["anyOf"], list) and not all(
-                    isinstance(b, dict) and _within(self.types(b), declared) for b in node["anyOf"]):
-                raise _refuse(where, "each anyOf branch must admit only the types listed beside it")
+            if kinds is not None:
+                self._typed_anyof.append((node, declared, where))
         if "pattern" in node and "format" in node:
             raise _refuse(where, "pattern and format are not enforced together here: use one")
         typed = own & _TYPED
@@ -223,6 +252,14 @@ class _Schema:
                 raise _refuse(where, "enum must be a non-empty list")
             self.enums += len(node["enum"])
             self.chars += sum(len(v) for v in node["enum"] if isinstance(v, str))
+            # xgrammar 0.2.8 enforces const alone when both stand: const must be one of the enum's values (written
+            # alike, so 1 beside 1.0 is refused too)
+            try:
+                outside = "const" in node and _canonical(node["const"]) not in {_canonical(v) for v in node["enum"]}
+            except RecursionError:
+                raise _refuse(where, "enum and const values nest too deeply") from None
+            if outside:
+                raise _refuse(where, "const must be one of the enum values here (no value satisfies both)")
         if isinstance(node.get("const"), str):
             self.chars += len(node["const"])
         for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
@@ -236,8 +273,8 @@ class _Schema:
         for key in ("minItems", "maxItems"):
             if key in node and (type(node[key]) is not int or node[key] < 0):
                 raise _refuse(where, f"{key} must be a non-negative integer")
-        if "pattern" in node and not isinstance(node["pattern"], str):
-            raise _refuse(where, "pattern must be a string")
+        if "pattern" in node:
+            _regex(node["pattern"], where)
         if "format" in node and node["format"] not in FORMATS:
             raise _refuse(where, f"format must be one of {', '.join(FORMATS)}")
         if "$ref" in node:
@@ -248,12 +285,12 @@ class _Schema:
                     raise _refuse(where, f"{key} must be an object of schemas")
                 for name, sub in node[key].items():
                     self.chars += len(name)
-                    self.check(sub, f"{where}.{key}.{name}", depth)
+                    self._check(sub, f"{where}.{key}.{name}", depth, chain + 1)
         if "anyOf" in node:
             if not isinstance(node["anyOf"], list) or not node["anyOf"]:
                 raise _refuse(where, "anyOf must be a non-empty list of schemas")
             for i, sub in enumerate(node["anyOf"]):
-                self.check(sub, f"{where}.anyOf[{i}]", depth)
+                self._check(sub, f"{where}.anyOf[{i}]", depth, chain + 1)
         nested = "properties" in node or "items" in node or isinstance(node.get("additionalProperties"), dict)
         if nested and depth >= MAX_NESTING:
             raise _refuse(where, f"strict schemas nest at most {MAX_NESTING} levels")
@@ -264,7 +301,7 @@ class _Schema:
             self.properties += len(props)
             for name, sub in props.items():
                 self.chars += len(name)
-                self.check(sub, f"{where}.properties.{name}", depth + 1)
+                self._check(sub, f"{where}.properties.{name}", depth + 1, 0)
         if "required" in node:
             required = node["required"]
             if (not isinstance(required, list) or any(not isinstance(r, str) for r in required)
@@ -275,92 +312,212 @@ class _Schema:
                 raise _refuse(where, f"required names {', '.join(missing)}, which properties does not declare")
         extra = node.get("additionalProperties")
         if isinstance(extra, dict):
-            self.check(extra, f"{where}.additionalProperties", depth + 1)
+            self._check(extra, f"{where}.additionalProperties", depth + 1, 0)
         elif extra is not None and not isinstance(extra, bool):
             raise _refuse(where, "additionalProperties must be a boolean or a schema")
         if "items" in node:
-            self.check(node["items"], f"{where}.items", depth + 1)
+            self._check(node["items"], f"{where}.items", depth + 1, 0)
         if self.properties > MAX_PROPERTIES or self.enums > MAX_ENUM_VALUES or self.chars > MAX_SCHEMA_CHARS:
             raise _refuse(self.where, f"strict schemas are limited to {MAX_PROPERTIES} properties, {MAX_ENUM_VALUES} "
                                       f"enum values and {MAX_SCHEMA_CHARS} characters of names and values")
 
-    def types(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> set[str]:
-        """The JSON types ``node`` admits (integer apart from number), its refs followed; ``node`` may be unchecked."""
+    def _next(self, node: dict[str, Any]) -> list[dict[str, Any]]:
+        """The schemas a checked ``node``'s value must also satisfy: its ref's target, else its anyOf branches."""
 
-        if id(node) in seen:
-            return set(TYPES)
-        seen = seen | {id(node)}
-        found = set(TYPES)
-        if "$ref" in node:
-            found &= self.types(self.resolve(node["$ref"], self.where), seen)
-        if "type" in node:
-            listed = node["type"] if isinstance(node["type"], list) else [node["type"]]
-            found = {t for t in found if t in listed or (t == "integer" and "number" in listed)}
-        for values in _literals(node):
-            found &= {_value_type(v) for v in values}
-        if isinstance(node.get("anyOf"), list):
-            found &= set().union(*(self.types(b, seen) for b in node["anyOf"] if isinstance(b, dict)))
-        return found
+        return [self.resolve(node["$ref"], self.where)] if "$ref" in node else list(node.get("anyOf") or ())
 
-    def admits(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> set[str]:
+    def types(self, node: dict[str, Any]) -> frozenset[str]:
+        """The JSON types a checked ``node`` admits (integer apart from number), refs and anyOf followed.
+
+        The greatest solution over the ref graph, so a ref cycle constrains nothing by itself (a type is excluded only
+        when the node's own type, enum or const, its ref's target, or every anyOf branch excludes it). Solved without
+        recursion, each node and type at most once, and kept for later calls."""
+
+        known = self._types
+        if id(node) in known:
+            return known[id(node)]
+        order: list[dict[str, Any]] = []            # the unsolved nodes ``node`` reaches, and what each reads
+        reads: dict[int, list[dict[str, Any]]] = {}
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if id(n) in reads or id(n) in known:
+                continue
+            reads[id(n)] = self._next(n)
+            order.append(n)
+            stack.extend(reads[id(n)])
+        readers: dict[int, list[dict[str, Any]]] = {}   # who reads each unsolved node
+        for n in order:
+            for m in reads[id(n)]:
+                if id(m) not in known:
+                    readers.setdefault(id(m), []).append(n)
+        excluded: dict[int, set[str]] = {id(n): set() for n in order}
+        open_branches = {id(n): dict.fromkeys(TYPES, len(reads[id(n)])) for n in order if "anyOf" in n}
+        queue: list[tuple[dict[str, Any], str]] = []
+
+        def exclude(n: dict[str, Any], t: str) -> None:
+            if t not in excluded[id(n)]:
+                excluded[id(n)].add(t)
+                queue.append((n, t))
+
+        def lost(n: dict[str, Any], t: str) -> None:     # one more of an anyOf's branches excludes ``t``
+            if "anyOf" not in n:                      # a ref: its target's exclusion is its own
+                exclude(n, t)
+                return
+            open_branches[id(n)][t] -= 1
+            if not open_branches[id(n)][t]:
+                exclude(n, t)
+
+        for n in order:
+            for t in TYPES - _own_types(n):
+                exclude(n, t)
+            for m in reads[id(n)]:
+                if id(m) in known:
+                    for t in TYPES - known[id(m)]:
+                        lost(n, t)
+        while queue:
+            m, t = queue.pop()
+            for n in readers.get(id(m), ()):
+                lost(n, t)
+        for n in order:
+            known[id(n)] = TYPES - excluded[id(n)]
+        return known[id(node)]
+
+    def admits(self, node: dict[str, Any]) -> set[str]:
         """What a checked ``node`` admits as the raw call markup sees it (string, null, other), its refs followed."""
 
-        if id(node) in seen:                                  # a ref cycle without a type: anything
-            return {"string", "null", "other"}
-        seen = seen | {id(node)}
-        found = {"string", "null", "other"}
-        if "$ref" in node:
-            found &= self.admits(self.resolve(node["$ref"], self.where), seen)
-        if "type" in node:
-            found &= {_side(t) for t in (node["type"] if isinstance(node["type"], list) else [node["type"]])}
-        for values in _literals(node):
-            found &= {_side(_kind(v)) for v in values}
-        if "anyOf" in node:
-            found &= set().union(*(self.admits(b, seen) for b in node["anyOf"]))
-        return found
+        return {_side(t) for t in self.types(node)}
 
     def raw(self, node: dict[str, Any], where: str) -> dict[str, Any]:
-        """The grammar of the strings a checked ``node`` admits, as raw text inside a parameter (``check`` refused
-        constraints beside ``$ref``, ``anyOf``, ``enum`` or ``const``, and pattern beside format)."""
+        """The grammar of the strings a checked ``node`` admits, as raw text inside a parameter: the alternatives of its
+        string branches (``check`` refused constraints beside ``$ref``, ``anyOf``, ``enum`` or ``const``, and pattern
+        beside format), each once; a schema that refers back to itself is refused."""
 
-        if "$ref" in node:
-            return self.raw(self.resolve(node["$ref"], where), where)
-        if "anyOf" in node:
-            branches = [self.raw(b, f"{where}.anyOf[{i}]") for i, b in enumerate(node["anyOf"])
-                        if "string" in self.admits(b)]
-            return branches[0] if len(branches) == 1 else {"type": "or", "elements": branches}
-        if "enum" in node or "const" in node:
-            allowed = node["enum"] if "enum" in node else [node["const"]]
-            literals = [v for v in allowed if isinstance(v, str) and ("const" not in node or v == node["const"])]
-            if not literals:
-                raise _refuse(where, "no string satisfies this parameter's enum/const")
-            if any(VALUE_END in v for v in literals):
-                raise _refuse(where, f"a string parameter's value cannot contain {VALUE_END}")
-            options = [_const(v) for v in dict.fromkeys(literals)]
-            return options[0] if len(options) == 1 else {"type": "or", "elements": options}
-        if "pattern" in node:
-            if all(_may_match(node["pattern"], ch) for ch in set(VALUE_END)):
-                raise _refuse(where, f"this string parameter's pattern can spell {VALUE_END}, which ends a raw value "
-                                     "in this model's call markup: narrow the pattern")
-            return {"type": "regex", "pattern": node["pattern"]}
-        if "format" in node:
-            return {"type": "regex", "pattern": FORMATS[node["format"]]}
-        return {"type": "any_text", "excludes": [VALUE_END]}
+        options: dict[str, dict[str, Any]] = {}     # by grammar text: the same alternative once, in schema order
+        done: set[int] = set()
+        path: set[int] = set()
+        stack: list[tuple[dict[str, Any], str, bool]] = [(node, where, False)]
+        while stack:
+            n, at, leaving = stack.pop()
+            if leaving:
+                path.discard(id(n))
+                done.add(id(n))
+                continue
+            if id(n) in path:
+                raise _refuse(at, "a string parameter's schema may not refer back to itself")
+            if id(n) in done:
+                continue
+            path.add(id(n))
+            stack.append((n, at, True))
+            if "$ref" in n:
+                stack.append((self.resolve(n["$ref"], at), at, False))
+            elif "anyOf" in n:
+                stack.extend((b, f"{at}.anyOf[{i}]", False) for i, b in reversed(list(enumerate(n["anyOf"])))
+                             if "string" in self.admits(b))
+            else:
+                for option in _raw_options(n, at):
+                    options.setdefault(json.dumps(option, sort_keys=True), option)
+        found = list(options.values())
+        return found[0] if len(found) == 1 else {"type": "or", "elements": found}
 
-    def json(self, node: dict[str, Any]) -> dict[str, Any]:
-        """``node`` as a schema of its own (refs into the tool's schema kept), for a JSON value's grammar."""
+    def json(self, node: dict[str, Any], where: str) -> tuple[dict[str, Any], int]:
+        """``node`` as a schema of its own (refs into the tool's schema kept), for a JSON value's grammar, and how many
+        characters of the tool's definitions and root it copies in: the definitions it refers to (all of them with the
+        root, when it refers to the root); RequestError past ``MAX_SUBSCHEMAS``."""
 
+        refs = _refs(node)
+        names: dict[str, list[str]] = {}            # the root definitions it needs, by keyword, in schema order
+        rooted = False
+        while refs and not rooted:
+            ref = refs.pop()
+            if not ref.startswith(("#/$defs/", "#/definitions/")):     # "#" or "#/properties/...": the root
+                rooted = True
+                break
+            keyword, name = ref[2:].split("/", 2)[:2]
+            name = _unescape(name)
+            if name not in names.setdefault(keyword, []):
+                names[keyword].append(name)
+                refs |= self._copy(keyword, name)[1]
         own = {key: self.root[key] for key in ("$defs", "definitions") if isinstance(self.root.get(key), dict)}
-        refs = _refs(node).union(*(_refs(sub) for d in own.values() for sub in d.values()))
-        defs = {key: {name: _rebase(sub) for name, sub in d.items()} for key, d in own.items()}
-        if any(not r.startswith(("#/$defs/", "#/definitions/")) for r in refs):     # "#" or "#/properties/...": the root
+        if rooted:
+            names = {key: list(d) for key, d in own.items()}
+        defs = {key: {name: self._copy(key, name)[0] for name in own[key] if name in names.get(key, ())}
+                for key in own}
+        copied = sum(self._copy(key, name)[2] for key in defs for name in defs[key])
+        nodes = _count(node) + sum(self._copy(key, name)[3] for key in defs for name in defs[key])
+        if rooted:
             if "__tf_root" in defs.get("$defs", {}):
                 raise _refuse(self.where, "$defs may not name __tf_root")
-            defs["$defs"] = {**defs.get("$defs", {}), "__tf_root": _rebase(self.root)}
+            root = self._copy("", "")
+            defs["$defs"] = {**defs.get("$defs", {}), "__tf_root": root[0]}
+            copied, nodes = copied + root[2], nodes + root[3]
+        if nodes > MAX_SUBSCHEMAS:
+            raise _refuse(where, f"this parameter's schema holds {nodes} subschemas with the definitions it refers to: "
+                                 f"strict schemas are limited to {MAX_SUBSCHEMAS} per parameter")
         sub = _rebase(node)
         for key, value in defs.items():             # the tool's own definitions win: its refs were written for them
-            sub[key] = {**sub[key], **value} if isinstance(sub.get(key), dict) else value
-        return sub
+            if value:
+                sub[key] = {**sub[key], **value} if isinstance(sub.get(key), dict) else value
+        return sub, copied
+
+    def _copy(self, keyword: str, name: str) -> tuple[dict[str, Any], set[str], int, int]:
+        """A root definition (``keyword`` ``$defs``/``definitions``), or the root itself (``""``), rebased once: (copy,
+        the refs it holds, its grammar characters, its subschemas)."""
+
+        key = (keyword, name)
+        if key not in self._copies:
+            node = self.root[keyword][name] if keyword else self.root
+            copy = _rebase(node)
+            self._copies[key] = (copy, _refs(node), len(json.dumps(copy, ensure_ascii=False, separators=(",", ":"))),
+                                 _count(node))
+        return self._copies[key]
+
+
+def _unescape(part: str) -> str:
+    """A JSON pointer segment's text (RFC 6901)."""
+
+    return part.replace("~1", "/").replace("~0", "~")
+
+
+def _canonical(value: Any) -> str:
+    """A JSON value's text with sorted keys: equal texts are equal values (booleans apart from numbers)."""
+
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _own_types(node: dict[str, Any]) -> frozenset[str]:
+    """The JSON types a checked ``node``'s own ``type``, ``enum`` and ``const`` admit (integer apart from number)."""
+
+    found = TYPES
+    if "type" in node:
+        listed = node["type"] if isinstance(node["type"], list) else [node["type"]]
+        found = frozenset(t for t in found if t in listed or (t == "integer" and "number" in listed))
+    for values in _literals(node):
+        found &= {_value_type(v) for v in values}
+    return found
+
+
+def _raw_options(node: dict[str, Any], where: str) -> list[dict[str, Any]]:
+    """The raw-text grammar of a checked string ``node`` without ``$ref`` or ``anyOf``: its literals, its pattern or
+    format, or any text that does not end the value."""
+
+    if "enum" in node or "const" in node:
+        allowed = node["enum"] if "enum" in node else [node["const"]]
+        literals = [v for v in allowed if isinstance(v, str) and ("const" not in node or v == node["const"])]
+        if not literals:
+            raise _refuse(where, "no string satisfies this parameter's enum/const")
+        if any(VALUE_END in v for v in literals):
+            raise _refuse(where, f"a string parameter's value cannot contain {VALUE_END}")
+        return [_const(v) for v in dict.fromkeys(literals)]
+    if "pattern" in node:
+        tree = _regex(node["pattern"], where)
+        if all(_may_match(tree, ch) for ch in VALUE_END):
+            raise _refuse(where, f"this string parameter's pattern can spell {VALUE_END}, which ends a raw value in this "
+                                 "model's call markup: narrow the pattern")
+        return [{"type": "regex", "pattern": node["pattern"]}]
+    if "format" in node:
+        return [{"type": "regex", "pattern": FORMATS[node["format"]]}]
+    return [{"type": "any_text", "excludes": [VALUE_END]}]
 
 
 def _subschemas(node: dict[str, Any]) -> list[tuple[str, Any, Any]]:
@@ -373,6 +530,12 @@ def _subschemas(node: dict[str, Any]) -> list[tuple[str, Any, Any]]:
     found += [(keyword, None, node[keyword]) for keyword in ("items", "additionalProperties")
               if isinstance(node.get(keyword), dict)]
     return found
+
+
+def _count(node: dict[str, Any]) -> int:
+    """How many schemas a checked schema holds, itself included."""
+
+    return 1 + sum(_count(sub) for _, _, sub in _subschemas(node))
 
 
 def _refs(node: dict[str, Any]) -> set[str]:
@@ -402,15 +565,28 @@ def _rebase(node: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _may_match(pattern: str, char: str) -> bool:
-    """Whether the regex ``pattern`` could match a string holding ``char`` (True when it cannot be analysed)."""
+def _regex(pattern: Any, where: str) -> Any:
+    """``pattern``'s syntax tree from CPython's regex parser (3.11+); RequestError when it is not a string or not a
+    regular expression Python reads. Python's parser recurses once per group, so this also bounds the nesting xgrammar
+    0.2.8's regex compiler sees (it overflowed an 8 MB thread stack on 50,000 nested groups and killed the server)."""
 
-    from re import _constants as C, _parser as P       # CPython's regex parser (3.11+): the pattern's syntax tree
+    from re import _parser as P
 
+    if not isinstance(pattern, str):
+        raise _refuse(where, "pattern must be a string")
     try:
-        tree = P.parse(pattern)
-    except Exception:  # noqa: BLE001 - a pattern Python cannot read: assume the worst
-        return True
+        return P.parse(pattern)
+    except RecursionError:
+        raise _refuse(where, "pattern nests its groups too deeply") from None
+    except Exception as exc:  # noqa: BLE001 - re.error and the parser's other refusals of a malformed pattern
+        raise _refuse(where, f"pattern is not a regular expression this server reads: {exc}") from None
+
+
+def _may_match(tree: Any, char: str) -> bool:
+    """Whether the regex ``tree`` (``_regex``) could match a string holding ``char`` (True when it cannot tell)."""
+
+    from re import _constants as C
+
     code = ord(char)
     digit, space, word, line = char.isdigit(), char.isspace(), char.isalnum() or char == "_", char in "\n\r"
     categories = {C.CATEGORY_DIGIT: digit, C.CATEGORY_NOT_DIGIT: not digit, C.CATEGORY_SPACE: space,
@@ -432,28 +608,30 @@ def _may_match(pattern: str, char: str) -> bool:
                 return True
         return hit != negate
 
-    def walk(items: Any) -> bool:
-        for op, av in items:
-            if op is C.LITERAL and av == code or op is C.NOT_LITERAL and av != code or op is C.ANY:
-                return True
-            if op is C.IN and within(av):
-                return True
-            if op is C.BRANCH and any(walk(b) for b in av[1]):
-                return True
-            if op is C.SUBPATTERN and walk(av[-1]):
-                return True
-            if op in (C.MAX_REPEAT, C.MIN_REPEAT, C.POSSESSIVE_REPEAT) and walk(av[2]):
-                return True
-            if op is C.ATOMIC_GROUP and walk(av):
-                return True
-            if op in (C.GROUPREF, C.GROUPREF_EXISTS, C.ASSERT, C.ASSERT_NOT):
-                return True
+    def walk() -> bool:                        # every item of the tree, without recursion (groups nest deeply)
+        stack = [tree]
+        while stack:
+            for op, av in stack.pop():
+                if op is C.LITERAL and av == code or op is C.NOT_LITERAL and av != code or op is C.ANY:
+                    return True
+                if op is C.IN and within(av):
+                    return True
+                if op in (C.GROUPREF, C.GROUPREF_EXISTS, C.ASSERT, C.ASSERT_NOT):
+                    return True
+                if op is C.BRANCH:
+                    stack.extend(av[1])
+                elif op is C.SUBPATTERN:
+                    stack.append(av[-1])
+                elif op in (C.MAX_REPEAT, C.MIN_REPEAT, C.POSSESSIVE_REPEAT):
+                    stack.append(av[2])
+                elif op is C.ATOMIC_GROUP:
+                    stack.append(av)
         return False
 
-    found = walk(tree)
+    found = walk()
     if not found and char.swapcase() != char:      # a case-insensitive pattern matches either case: assume it may
         code = ord(char.swapcase())
-        found = walk(tree)
+        found = walk()
     return found
 
 
@@ -510,9 +688,10 @@ class Plan:
         self.required, self.parallel = bool(required), bool(parallel)
         self.tools: dict[str, Tool] = {}
         tags = []
+        index = {id(t): k for k, t in reversed(list(enumerate(offered or ())))}    # a tool's first place in the request
+        copied = 0                                       # grammar characters of definitions copied into parameters
         for i, spec in enumerate(tools):
-            at = next((k for k, t in enumerate(offered or ()) if t is spec), i)
-            where = f"tools[{at}].function"
+            where = f"tools[{index.get(id(spec), i)}].function"
             name = tool_spec_name(spec)
             if not _NAME.fullmatch(name):
                 raise RequestError(f"{where}.name {name!r} cannot be written in this model's call markup")
@@ -523,7 +702,10 @@ class Plan:
             if not isinstance(parameters, dict):
                 raise RequestError(f"{where}.parameters must be a JSON schema object")
             if strict_flag(spec, where):
-                tool, content = self._strict(name, parameters, f"{where}.parameters")
+                tool, content, copies = self._strict(name, parameters, f"{where}.parameters")
+                copied += copies
+                if copied > MAX_GRAMMAR_BYTES:
+                    raise _too_large()
             else:
                 props = parameters.get("properties")
                 tool = Tool(name, False, schemas={k: v for k, v in props.items() if isinstance(v, dict)}
@@ -541,19 +723,23 @@ class Plan:
             body = {"type": "triggered_tags", "triggers": [OPEN], "tags": tags,
                     "stop_after_first": not self.parallel}
         text = json.dumps({"type": "structural_tag", "format": body}, ensure_ascii=False, separators=(",", ":"))
+        if len(text.encode()) > MAX_GRAMMAR_BYTES:
+            raise _too_large()
         self.spec = Spec("tools", text, "tools")
 
     @staticmethod
-    def _strict(name: str, parameters: dict[str, Any], where: str) -> tuple[Tool, dict[str, Any]]:
+    def _strict(name: str, parameters: dict[str, Any], where: str) -> tuple[Tool, dict[str, Any], int]:
+        """A strict tool, its parameters' grammar, and how many characters of its definitions that grammar copies."""
+
         if {"anyOf", "$ref", "enum", "const"} & set(parameters):
             raise _refuse(where, "a strict tool's parameters must be an object schema (not anyOf, $ref, enum or const)")
         if parameters.get("type", "object") != "object":
             raise _refuse(where, 'a strict tool\'s parameters must have type "object"')
         top = {"type": "object", **{k: v for k, v in parameters.items() if k != "$schema"}}
         schema = _Schema(top, where)
-        schema.check(top, where, 0)
+        schema.check()
         required = set(top.get("required") or ())
-        params, parts = [], []
+        params, parts, copied = [], [], 0
         for key, sub in (top.get("properties") or {}).items():
             at = f"{where}.properties.{key}"
             if not _NAME.fullmatch(key):
@@ -568,14 +754,14 @@ class Plan:
                 if mode == NULLABLE:
                     value = {"type": "or", "elements": [value, _const("null")]}
             else:
-                value = {"type": "json_schema", "json_schema": schema.json(sub), "style": "json",
-                         "max_whitespace_cnt": BLANKS}
-                mode = JSON
+                own, copies = schema.json(sub, at)
+                value = {"type": "json_schema", "json_schema": own, "style": "json", "max_whitespace_cnt": BLANKS}
+                mode, copied = JSON, copied + copies
             part = _seq(_const(f"{PARAMETER}{key}{NAME_END}"), value, _const(VALUE_CLOSE))
             parts.append(part if key in required else {"type": "optional", "content": part})
             params.append(Param(key, key in required, mode))
         content = _seq(*parts) if parts else _const("")
-        return Tool(name, True, tuple(params)), content
+        return Tool(name, True, tuple(params)), content, copied
 
     # -- reading replies in this grammar --------------------------------------------------------------------------------
     def reader(self) -> "Reader":
@@ -595,6 +781,11 @@ class Plan:
         reader = Reader(self)
         reader.read(answer, finished=finished)
         return "".join(reader.text)
+
+
+def _too_large() -> RequestError:
+    return RequestError(f"tools: the strict tools' call grammar exceeds {MAX_GRAMMAR_BYTES >> 20} MiB (each JSON "
+                        "parameter copies the definitions and root schema it refers to): send fewer or smaller tools")
 
 
 def _const(value: str) -> dict[str, Any]:
