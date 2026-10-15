@@ -434,11 +434,11 @@ def _histogram(lines: list[str], name: str, help_text: str, hist: Histogram) -> 
     full = PREFIX + name
     lines.append(f"# HELP {full} {help_text}")
     lines.append(f"# TYPE {full} histogram")
-    cumulative = 0
-    for edge, count in zip(BUCKETS, hist.counts):
+    cumulative, bucket = 0, full + "_bucket"
+    for label, count in zip(_LE, hist.counts):
         cumulative += count
-        lines.append(f'{full}_bucket{{le="{_edge(edge)}"}} {cumulative}')
-    lines.append(f'{full}_bucket{{le="+Inf"}} {cumulative + hist.counts[-1]}')
+        lines.append(f"{bucket}{label}{cumulative}")
+    lines.append(f'{bucket}{{le="+Inf"}} {cumulative + hist.counts[-1]}')
     lines.append(f"{full}_sum {_num(hist.total)}")
     lines.append(f"{full}_count {hist.n}")
 
@@ -563,6 +563,9 @@ def _num(value: float) -> str:
 
 def _edge(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+_LE = tuple(f'{{le="{_edge(edge)}"}} ' for edge in BUCKETS)        # each bucket's label, formatted once
 
 
 def _label(value: Any) -> str:
