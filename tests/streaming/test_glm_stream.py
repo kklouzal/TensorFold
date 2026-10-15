@@ -11,7 +11,7 @@ mx = pytest.importorskip("mlx.core")
 
 import glm5_fakes  # noqa: E402
 from tensorfold.families import glm5_next  # noqa: E402
-from tensorfold.families.glm5_next import config, stream, weights  # noqa: E402
+from tensorfold.families.glm5_next import stream, weights  # noqa: E402
 from tensorfold.kernels.glm.flash.v1 import moe as MK  # noqa: E402
 from tensorfold.kernels.glm.flash.v1 import stream_moe  # noqa: E402
 from tensorfold.streaming.pool import Slots, expert_nbytes, sources  # noqa: E402

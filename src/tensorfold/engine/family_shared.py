@@ -163,9 +163,9 @@ class SharedRounds:
         from tensorfold.engine.lane_engine import RoundStats
 
         self.round_stats.append(RoundStats(
-            streams=len(plans), width=max(lengths), rows=sum(lengths), ragged=len(set(lengths)) > 1,
+            streams=len(plans), width=max(lengths), rows=sum(lengths),
             rollbacks=sum(1 for n, k in zip(lengths, keeps) if k < n), committed=sum(len(v[0]) for v in out.values()),
-            forward_ms=ms, finalize_ms=0.0, rollback_ms=0.0, total_ms=ms, started_at=started))
+            forward_ms=ms, total_ms=ms))
         if _ROUND_LOG:
             with open(_ROUND_LOG, "a") as handle:
                 for plan, n, keep in zip(plans, lengths, keeps):

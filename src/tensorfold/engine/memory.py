@@ -139,7 +139,6 @@ def measure(engine: Any, probe: tuple[int, int, int] | None = None) -> StreamMem
     for n in probe:
         tokens = [1000 + i for i in range(n)]
         mx.eval(mx.zeros((1,)))
-        before = mx.get_active_memory()
         mx.reset_peak_memory()
         cache = engine.prefill_prefix(tokens, cache=None, cached_tokens=0)
         mx.eval(*cache_arrays(cache))

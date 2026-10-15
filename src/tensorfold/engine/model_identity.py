@@ -186,7 +186,6 @@ class FileContent:
     sha256: str
     size: int
     stat_identity: tuple[int, ...]
-    hash_seconds: float
 
 
 @dataclass(frozen=True)
@@ -277,7 +276,6 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
                 raise ValueError("model execution inputs exceed total byte budget")
             before = _identity(info)
             old = previous.get(name)
-            hash_started = time.perf_counter()
             if old is not None and old.path == str(path) and old.stat_identity == before:
                 digest = old.sha256
                 reused += 1
@@ -296,8 +294,7 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
                 digest = hasher.hexdigest()
             if _identity(os.fstat(fd)) != before or _identity(path.stat(follow_symlinks=False)) != before:
                 raise ValueError("model execution input changed during identity capture")
-            contents.append(FileContent(name, str(path), digest, info.st_size, before,
-                                        time.perf_counter() - hash_started))
+            contents.append(FileContent(name, str(path), digest, info.st_size, before))
         except BaseException as error:
             primary = error
             raise

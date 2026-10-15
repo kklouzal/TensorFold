@@ -305,7 +305,6 @@ def _fragment_source(mma: str) -> str:
     return out
 
 
-SGS = 2          # simdgroups a threadgroup in the scalar kernel
 NR = 2           # outputs a lane in the scalar kernel
 XB = 32          # scalar kernel: groups of inputs staged at a time (one row)
 SCALAR_ROWS = 4  # rows the scalar kernel can take (each row its own FMA chains over the same weight loads)

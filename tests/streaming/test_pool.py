@@ -22,7 +22,6 @@ class FakeSync:
 
     def __init__(self) -> None:
         self.mirror: dict[int, np.ndarray] = {}
-        outer = self
 
         class Channel:
             def __init__(self) -> None:

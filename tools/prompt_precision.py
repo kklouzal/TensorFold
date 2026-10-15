@@ -8,7 +8,6 @@ dequantized weight. KL is KL(reference || path) over the vocabulary at every row
 from __future__ import annotations
 
 import argparse
-import sys
 import sysconfig
 import tempfile
 from pathlib import Path
@@ -238,7 +237,7 @@ def install_fp32_glm() -> None:
     import mlx.core as mx
 
     from tensorfold.families.glm5_next import kda, linear, mla, mlp, model, mtp
-    from tensorfold.families.glm5_next.linear import Dense, Q, QSplit
+    from tensorfold.families.glm5_next.linear import Dense, QSplit
 
     def project(x, q, *, rows_exact: bool = False):
         del rows_exact

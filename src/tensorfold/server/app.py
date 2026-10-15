@@ -42,12 +42,6 @@ from tensorfold.server.text import (
 )
 
 
-def _mlx_version() -> str:
-    import mlx.core as mx
-
-    return str(mx.__version__)
-
-
 def _token_sha(tokens: list[int]) -> str:
     """A short fingerprint of a reply's tokens: two runs match byte for byte iff these match."""
 

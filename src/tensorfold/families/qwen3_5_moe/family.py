@@ -169,19 +169,6 @@ class Qwen36Family(Qwen35Family):
 
         self._absorb(cache[-1], hidden, next_tokens, self._last[id(cache)][2] + int(start), "none")
 
-    def absorb_kept(self, cache: list[Any], tokens: Any, position: int, start: int = 0,
-                    rows: Sequence[int] | None = None) -> None:
-        """A plain round's kept rows (from ``start``, at ``position`` on) into the head's context, drafting nothing."""
-
-        import mlx.core as mx
-
-        if rows is not None:
-            start = int(rows[0])
-        tokens = tokens.reshape(-1)
-        count = int(tokens.shape[0])
-        self._absorb(cache[-1], self._last_hidden[:, start:start + count], tokens, int(position), "none")
-        mx.async_eval(*_buffers(cache[-1]))
-
     def speculate(self, cache: list[Any], tokens: Any, position: int, sampling: Any, start: int = 0,
                   last_only: bool = False, rows: Sequence[int] | None = None) -> Any:
         """Absorb rows from ``start`` (at ``position`` on) with their next tokens; lazy first drafts after them."""

@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import ipaddress
 import json
-import os
 from pathlib import Path
 import re
 import sys

@@ -259,17 +259,3 @@ class TPEngine(Engine):
             logits = logits + self.bias[:rows]
         self._sample_shards(logits, self.meta, self.sampled[:rows])
         self._host_sampled[:rows].copy_(self.sampled[:rows], non_blocking=True)
-
-
-def nccl_gather(group=None):
-    """An all-gather along rows (rank 0 first) over NCCL, capturable in CUDA graphs."""
-
-    import torch.distributed as dist
-
-    def gather(local: torch.Tensor) -> torch.Tensor:
-        local = local.contiguous()
-        out = torch.empty((WORLD * local.shape[0], *local.shape[1:]), dtype=local.dtype, device=local.device)
-        dist.all_gather_into_tensor(out, local, group=group)
-        return out
-
-    return gather

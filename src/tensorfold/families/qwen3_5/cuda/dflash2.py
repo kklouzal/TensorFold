@@ -124,10 +124,6 @@ def _rope(x: torch.Tensor, positions: torch.Tensor, inv_freq: torch.Tensor) -> t
     return torch.cat((a * cos - b * sin, b * cos + a * sin), dim=-1).to(torch.bfloat16)
 
 
-def _linear(x: torch.Tensor, weights: dict[str, torch.Tensor], name: str) -> torch.Tensor:
-    return F.linear(x, weights[name])
-
-
 def quantize4(w: torch.Tensor) -> QLinear:
     """bf16 (N, K) -> MLX-style affine 4-bit, groups of 64 along K: q = round((w - min) / scale)."""
 

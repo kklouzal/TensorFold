@@ -60,10 +60,6 @@ class Config:
     num_nextn_predict_layers: int
     eos_token_id: list[int]
 
-    @property
-    def nope_dim(self) -> int:
-        return self.head_dim - self.qk_rope_head_dim
-
     def ratio(self, layer: int) -> int:
         return int(self.compress_ratios[layer]) if layer < len(self.compress_ratios) else 0
 

@@ -86,7 +86,6 @@ def install_row_decoder(model: Any) -> bool:
     # prompt chains of up to PROMPT_ROWS attend query by query too, so a prompt gets the bits decoding gives it
     exact_attention.EXACT_MAX_QUERIES = max(exact_attention.EXACT_MAX_QUERIES, row_forward.PROMPT_ROWS)
     row_matmul.install(model, backend)
-    model._tensorfold_row_decoder = True
     return True
 
 

@@ -14,7 +14,6 @@ MODELS = ("TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP", "mlx-community/Qwen3.6-35B-
 REQUIRED_FILES = {MODELS[0]: ("mtp-4bit.safetensors",)}
 DRAFTER = "z-lab/Qwen3.6-35B-A3B-DFlash"      # Preserve the fork's implicit Mac drafter pending native MTP selection.
 CUDA_DRAFTER = ""                             # CUDA drafts with the checkpoint's MTP layer.
-DFLASH = DRAFTER
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.dense.v1"
 KERNEL_VERSION = "v1"
 MLX_MODEL_FILE = True

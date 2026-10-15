@@ -4,9 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-import sys
 import time
-from typing import Any
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.filters import Condition

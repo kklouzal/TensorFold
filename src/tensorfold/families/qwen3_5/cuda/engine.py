@@ -56,7 +56,6 @@ class Qwen27Engine:
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
         self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
         self.vision = None
-        self.vision_enabled = bool(vision)
         torch.cuda.set_device(0)
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
             torch.cuda.memory._set_allocator_settings("expandable_segments:True")

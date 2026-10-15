@@ -51,10 +51,6 @@ def stack_q4(parts: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]) -> Q4
                    torch.cat([p[2] for p in parts]))
 
 
-def to_mlx(q: Q4) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    return shared.unpack(q)
-
-
 def dequantize(words: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor) -> torch.Tensor:
     """Reference: MLX (..., N, K/8) words -> (..., N, K) fp32 values s * q + b."""
 
@@ -65,11 +61,6 @@ def dequantize(words: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor) 
     s = scales.to(torch.float32).repeat_interleave(GS, dim=-1)
     b = biases.to(torch.float32).repeat_interleave(GS, dim=-1)
     return q * s + b
-
-
-def dequantize_q4(q: Q4) -> torch.Tensor:
-    w, s, b = to_mlx(q)
-    return dequantize(w.contiguous(), s.contiguous(), b.contiguous())
 
 
 # K split rule for shapes without a table entry: split until the column tiles times slices reach this many programs
