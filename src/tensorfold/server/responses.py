@@ -13,7 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from tensorfold.server.errors import RequestError, error_body, retry_headers, status_of
+from tensorfold.server.errors import RequestError, error_body, invalid_request, retry_headers, server_error, status_of
 from tensorfold.server.request_body import read_body
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 
@@ -131,14 +131,27 @@ def _send(handler: Any, status: int, payload: dict[str, Any]) -> None:
 
 
 def _refuse(handler: Any, message: str, status: int = 400, param: str | None = None) -> None:
-    _send(handler, status, {"error": {"message": message, "type": "invalid_request_error", "param": param,
-                                      "code": None}})
+    _send(handler, status, {"error": invalid_request(message, param)})
 
 
 def _refused(handler: Any, exc: RequestError) -> None:
     """A refusal's own status and error object (404 for an unknown model)."""
 
     _send(handler, status_of(exc), {"error": error_body(exc)})
+
+
+def _read(handler: Any, app: Any) -> tuple[Any, str]:
+    """A request's JSON body and the served id it names; RequestError for a body that is not JSON, ModelNotFound for
+    an id this endpoint does not serve."""
+
+    from tensorfold.server.http import requested_model     # http imports this module
+
+    payload = read_body(handler, limit=LIMIT)
+    try:
+        body = json.loads(payload or b"{}")
+    except (ValueError, UnicodeDecodeError):
+        raise RequestError("the request body is not JSON") from None
+    return body, requested_model(app, body)
 
 
 class Wire:
@@ -231,16 +244,9 @@ def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
 def post(handler: Any, app: Any) -> None:
     """POST /v1/responses."""
 
-    from tensorfold.server.http import requested_model     # http imports this module
-
     store = store_for(app)
     try:
-        payload = read_body(handler, limit=LIMIT)
-        try:
-            body = json.loads(payload or b"{}")
-        except (ValueError, UnicodeDecodeError):
-            raise RequestError("the request body is not JSON") from None
-        model = requested_model(app, body)
+        body, model = _read(handler, app)
         request = translate(body, store)
     except RequestError as exc:
         return _refused(handler, exc)
@@ -266,8 +272,7 @@ def post(handler: Any, app: Any) -> None:
         try:
             payload = json.loads(bytes(wire.data) or b"{}")
         except ValueError:
-            payload = {"error": {"message": bytes(wire.data).decode("utf-8", "replace"), "type": "server_error",
-                                 "param": None, "code": None}}
+            payload = {"error": server_error(bytes(wire.data).decode("utf-8", "replace"))}
         problem = payload.get("error") if isinstance(payload, dict) else None
         if isinstance(problem, dict) and problem.get("param") == "messages":    # the chat field is this one's input
             problem["param"] = "input"
@@ -279,16 +284,10 @@ def input_tokens(handler: Any, app: Any) -> None:
     """POST /v1/responses/input_tokens: the request's input tokens as its chat completion renders them, without
     generating (OpenAI's ``response.input_tokens``)."""
 
-    from tensorfold.server.http import requested_model     # http imports this module
     from tensorfold.server.token_routes import count_chat
 
     try:
-        payload = read_body(handler, limit=LIMIT)
-        try:
-            body = json.loads(payload or b"{}")
-        except (ValueError, UnicodeDecodeError):
-            raise RequestError("the request body is not JSON") from None
-        requested_model(app, body)
+        body, _model = _read(handler, app)
         count = count_chat(app, translate(body, store_for(app)).chat)
     except RequestError as exc:
         return _refused(handler, exc)

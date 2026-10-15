@@ -67,10 +67,11 @@ def error_body(exc: BaseException, param: str | None = None) -> dict:
             "param": named, "code": getattr(exc, "code", None)}
 
 
-def invalid_request(message: str) -> dict:
-    """The error object of a malformed request that no refusal names (HTTP 400)."""
+def invalid_request(message: str, param: str | None = None) -> dict:
+    """The error object of a request refused without a ``RequestError`` (a malformed body, an unknown route or stored
+    response), ``param`` the field it is about."""
 
-    return {"message": message, "type": "invalid_request_error", "param": None, "code": None}
+    return {"message": message, "type": "invalid_request_error", "param": param, "code": None}
 
 
 def server_error(message: str) -> dict:
