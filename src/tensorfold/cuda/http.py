@@ -137,6 +137,8 @@ def make_handler(app: App):
                 return anthropic.post(self, app)
             if responses.route(self.path) == "":         # a Response: this handler's chat completion, translated
                 return responses.post(self, app)
+            if responses.route(self.path) == "input_tokens":
+                return responses.input_tokens(self, app)
             chat = path.endswith("/chat/completions")
             tokenizer = path in token_routes.ROUTES
             if not chat and not tokenizer and not path.endswith("/completions"):

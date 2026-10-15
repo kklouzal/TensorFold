@@ -40,6 +40,7 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /detokenize`, `POST /v1/detokenize` | vLLM's: the text of `tokens`, special tokens included |
 | `POST /v1/responses` | OpenAI's Responses API, run as the equivalent chat completion; streamed or non-streamed |
 | `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}` | A stored response, or remove it |
+| `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
@@ -459,6 +460,11 @@ same handler and engine path. A response has that chat completion's prompt and t
 - `text.format` takes `json_schema` or `json_object` through the structured-output path, with drafts.
 - `stream`, `store` (default true) and `metadata` (up to 16 string pairs). The chat extensions `draft`,
   `thinking_budget`, `stop`, `ignore_eos`, `chat_template_kwargs` and `priority` pass through.
+
+`POST /v1/responses/input_tokens` takes the same request and answers OpenAI's `{"object": "response.input_tokens",
+"input_tokens": N}`: the tokens of the prompt that request would run (template, tools, reasoning and images included),
+counted by the same preparation without generating, so a prompt too long for the context is refused as generation
+would refuse it.
 
 A response carries `access_programs: null`. A refusal of its chat completion names `input` as its `param`.
 `output` holds a `reasoning` item (its text as `reasoning_text` content, with an empty `summary`), a `message` with

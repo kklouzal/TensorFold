@@ -402,7 +402,7 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | `GET /stats` | One JSON snapshot for clients: server identity and start, model, limits, load, KV memory, prefix cache and totals (schema 1). |
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |
-| `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations. |
+| `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations; `POST /v1/responses/input_tokens` counts a request's input without generating. |
 | `POST /v1/tokenize` | CUDA Harness extension: native chat prompt counting without generation, including supported image expansion. Successful replies also carry Harness model-discovery metadata: canonical reasoning efforts, the active chat template's fingerprint and loaded-code provenance. |
 
 Structured output uses xgrammar: supported `response_format` JSON/schema fields, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, and `structured_outputs` aliases. It works with supported draft verification. Malformed/uncompilable constraints, a missing dependency, or incompatible required-tool/grammar combinations are refused before generation. A minimal constrained request is:

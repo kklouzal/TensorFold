@@ -58,6 +58,44 @@ def token_ids(value: Any, vocab: int | None, field: str = "tokens") -> list[int]
     return list(value)
 
 
+def count_chat(app: Any, chat: dict[str, Any]) -> int:
+    """A chat request's prompt tokens, rendered as generation renders them (the same tokenizer, template, tools,
+    thinking controls and image expansion), without running generation: CUDA's own preparation, or the Mac's."""
+
+    if hasattr(app, "prepare"):                   # CUDA's preparation includes vision token expansion
+        return len(app.prepare(chat, True).prompt)
+    from tensorfold.server.prompts import prepare_images
+    from tensorfold.server.request_options import heard_effort
+    from tensorfold.vision.images import DEFAULT_LIMITS
+
+    fields = thinking_fields(chat, app.effort_levels)
+    thinking = fields.get("enable_thinking", app.enable_thinking)
+    effort = heard_effort(fields.get("reasoning_effort"), app.reasoning_effort, app.effort_levels)
+    try:
+        tools = active_tool_specs(chat.get("tools"), chat.get("tool_choice"))
+    except ValueError as exc:
+        raise RequestError(str(exc)) from None
+    msgs = normalize_messages(chat["messages"], allow_images=getattr(app, "vision", None) is not None)
+    if has_images(msgs):
+        from tensorfold.server.messages import _normalize_tool_call_arguments
+        msgs = _normalize_tool_call_arguments(msgs)
+
+        def render(messages):
+            kwargs = {"tokenize": False, "add_generation_prompt": True, "enable_thinking": thinking}
+            if tools:
+                kwargs["tools"] = tools
+            if thinking and effort:
+                kwargs["reasoning_effort"] = effort
+            with app.tokenizer_lock:
+                return app.tokenizer.apply_chat_template(messages, **kwargs)
+
+        return len(prepare_images(app.vision, msgs, render, context_limit=app.context_window or None,
+                                  limits=getattr(app, "image_limits", DEFAULT_LIMITS)).tokens)
+    with app.tokenizer_lock:
+        return len(render_prompt_ids(app.tokenizer, msgs, tools=tools, enable_thinking=thinking,
+                                     reasoning_effort=effort, late_system=app.late_system))
+
+
 def tokenize(app: Any, body: Any) -> dict[str, Any]:
     """A prompt's or a chat request's ids, rendered as ``ChatApp.chat`` renders them."""
 

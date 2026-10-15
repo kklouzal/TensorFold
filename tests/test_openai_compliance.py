@@ -335,3 +335,37 @@ def test_every_reply_carries_an_x_request_id(name, tmp_path):
             assert len(set(ids)) == 2 and all(generated.fullmatch(i) for i in ids)
         finally:
             connection.close()
+
+
+def test_cuda_input_tokens_counts_the_prompt_a_response_would_run_without_generating(tmp_path):
+    from tensorfold.server.responses import store_for
+    from tensorfold.server.responses_translate import translate
+
+    app = app_for(tmp_path)
+    body = {"model": "fake-cuda", "input": "Say hello.", "instructions": "Be brief.", "max_output_tokens": 4}
+    expected = len(app.prepare(translate(body, store_for(app)).chat, True).prompt)
+    with http_server(app) as port:
+        status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", body)
+        counted = json.loads(text)
+        check(counted, "TokenCountsResource")
+        assert status == 200 and counted == {"object": "response.input_tokens", "input_tokens": expected}
+        assert not app.engine.calls                                    # nothing generated
+        status, _, text = exchange(port, "POST", "/v1/responses", body)
+        assert json.loads(text)["usage"]["input_tokens"] == expected   # the prompt the response ran
+        status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {**body, "model": "other"})
+        assert status == 404 and json.loads(text)["error"]["code"] == "model_not_found"
+        status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {"model": "fake-cuda"})
+        check_error(json.loads(text))
+        assert status == 400
+
+
+def test_mac_input_tokens_renders_as_tokenize_does():
+    app = MacApp()
+    app.reasoning_effort = None                 # the server's --reasoning-effort, as ChatApp keeps it
+    with mac_server(app) as port:
+        status, _, text = exchange(port, "POST", "/v1/responses/input_tokens", {"input": "Say hello."})
+        counted = json.loads(text)
+        tokenized = json.loads(exchange(port, "POST", "/tokenize",
+                                        {"messages": [{"role": "user", "content": "Say hello."}]})[2])
+    check(counted, "TokenCountsResource")
+    assert status == 200 and counted["input_tokens"] == tokenized["count"] > 0

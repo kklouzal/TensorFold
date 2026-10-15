@@ -275,6 +275,28 @@ def post(handler: Any, app: Any) -> None:
     _send(handler, 200, reply.completion(json.loads(bytes(wire.data))))
 
 
+def input_tokens(handler: Any, app: Any) -> None:
+    """POST /v1/responses/input_tokens: the request's input tokens as its chat completion renders them, without
+    generating (OpenAI's ``response.input_tokens``)."""
+
+    from tensorfold.server.http import requested_model     # http imports this module
+    from tensorfold.server.token_routes import count_chat
+
+    try:
+        payload = read_body(handler, limit=LIMIT)
+        try:
+            body = json.loads(payload or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            raise RequestError("the request body is not JSON") from None
+        requested_model(app, body)
+        count = count_chat(app, translate(body, store_for(app)).chat)
+    except RequestError as exc:
+        return _refused(handler, exc)
+    except ValueError as exc:
+        return _refuse(handler, str(exc))
+    _send(handler, 200, {"object": "response.input_tokens", "input_tokens": count})
+
+
 def get(handler: Any, app: Any, rid: str | None) -> None:
     """GET /v1/responses/{id}."""
 

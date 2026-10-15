@@ -545,6 +545,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 return anthropic.post(self, app)
             if responses.route(route) == "":         # a Response: this handler's chat completion, translated
                 return responses.post(self, app)
+            if responses.route(route) == "input_tokens":
+                return responses.input_tokens(self, app)
             if route in token_routes.ROUTES:         # vLLM's /tokenize and /detokenize
                 return self._post_tokenizer(route.endswith("/detokenize"))
 
