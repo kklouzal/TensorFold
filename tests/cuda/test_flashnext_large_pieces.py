@@ -7,7 +7,8 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA state comparisons require an NVIDIA GPU", allow_module_level=True)
 
 from test_flashnext_forward import _model
-from test_flashnext_prompt_cache import _assert_same_state, _prompt, _same_bits, _same_snap
+from prefix_checks import same_bits
+from test_flashnext_prompt_cache import _assert_same_state, _prompt, _same_snap
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_decode
 
@@ -23,12 +24,12 @@ def test_2048_and_4096_pieces_keep_state_and_interior_resume_bits(mtp, sampling)
     assert prefill(large, prompt, sampling, mtp=mtp, keep_at=cut) == first
     _assert_same_state(small.st, large.st)
     assert _same_snap(small.kept["state"], large.kept["state"])
-    assert _same_bits(small.last_streams, large.last_streams)
+    assert same_bits(small.last_streams, large.last_streams)
     fresh = Engine(w, capacity=8192, max_rows=8, prefill_rows=2048)
     prefill(fresh, prompt[:cut], sampling, mtp=mtp)
     assert _same_snap(large.kept["state"], fresh.st.snapshot())
     if mtp:
-        assert _same_bits(large.kept["tail"], fresh.last_streams)
+        assert same_bits(large.kept["tail"], fresh.last_streams)
     extended = prompt[:cut] + _prompt(111, seed=7)
     got = prefill(large, extended, sampling, mtp=mtp, resume=large.kept)
     want = prefill(fresh, extended, sampling, mtp=mtp)

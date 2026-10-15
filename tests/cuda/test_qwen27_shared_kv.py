@@ -10,7 +10,8 @@ if not torch.cuda.is_available():
 
 from tensorfold.families.qwen3_5.cuda.decode import clone_state, draft_decode, prefill  # noqa: E402
 
-from test_qwen27_prefill import _model, _prompt, _same_state  # noqa: E402
+from qwen_engine_checks import same_state  # noqa: E402
+from test_qwen27_prefill import _model, _prompt  # noqa: E402
 
 ATT = 1                                                  # the tiny model's attention layer
 
@@ -30,5 +31,5 @@ def test_a_grow_moves_every_clone_and_frees_the_old_buffers(grow_by):
     assert kept.kv[ATT][0].shape[0] == 2048 and old() is None           # one buffer for every clone
     resumed, first_resumed = prefill(w, prompt[:1200], None, state=kept)
     fresh, first_fresh = prefill(w, prompt[:1200], None)
-    _same_state(fresh, resumed)
+    same_state(fresh, resumed)
     assert first_fresh == first_resumed

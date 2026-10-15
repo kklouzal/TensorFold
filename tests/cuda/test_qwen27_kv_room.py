@@ -9,7 +9,8 @@ if not torch.cuda.is_available():
 from tensorfold.cuda.streams import KVRoom, PrefixCache  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.decode import prefill  # noqa: E402
 
-from test_qwen27_prefill import _model, _prompt, _same_state  # noqa: E402
+from qwen_engine_checks import same_state  # noqa: E402
+from test_qwen27_prefill import _model, _prompt  # noqa: E402
 
 BUFFER = 1024 * 128 * 2 * 2                              # the tiny model's 1,024-row attention keys and values
 
@@ -28,5 +29,5 @@ def test_a_serial_run_evicts_the_drafted_conversation_only_for_room(budget, kept
     assert (hit is not None) == kept
     resumed, first = prefill(w, drafted, None, state=hit[1] if hit else None, room=room)
     fresh, first_fresh = prefill(w, drafted, None)
-    _same_state(fresh, resumed)
+    same_state(fresh, resumed)
     assert first == first_fresh
