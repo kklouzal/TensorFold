@@ -12,7 +12,7 @@ from typing import Any, Sequence
 from tensorfold.server.errors import RequestError
 
 EXTRA = "tensorfold[grammar]"             # the optional dependency that brings xgrammar
-KINDS = ("json", "json_schema", "regex", "choice", "grammar")
+KINDS = ("json", "json_schema", "regex", "choice", "grammar", "tools")   # tools: strict calls (server.strict_tools)
 CACHE_BYTES = 256 << 20                   # compiled grammars kept for repeated schemas
 OBJECT = '{"type": "object"}'             # json_object: any JSON object (OpenAI's contract), not an array
 BLANKS = 32                               # the most blank characters between JSON tokens: pretty-printing, not endless
@@ -20,7 +20,8 @@ BLANKS = 32                               # the most blank characters between JS
 
 @dataclass(frozen=True)
 class Spec:
-    """A request's structured output: ``kind`` json, json_schema, regex, choice or grammar (EBNF), and its text."""
+    """A request's structured output: ``kind`` json, json_schema, regex, choice, grammar (EBNF) or tools (an xgrammar
+    structural tag for strict function calls), and its text."""
 
     kind: str
     text: str = ""
@@ -143,9 +144,17 @@ class Grammars:
                 if spec.kind == "choice":
                     options = " | ".join(json.dumps(v, ensure_ascii=False) for v in json.loads(spec.text))
                     return c.compile_grammar("root ::= " + options)
+                if spec.kind == "tools":
+                    return c.compile_structural_tag(spec.text)
                 return c.compile_grammar(spec.text)
         except (RuntimeError, ValueError, TypeError) as exc:
             raise RequestError(f"{spec.field}: the grammar cannot be enforced: {_message(exc)}") from None
+
+    def accepts(self, compiled, text: str) -> bool:
+        """Whether ``text`` is a complete reply of the compiled grammar (a fresh matcher reads it whole)."""
+
+        m = self.xgr.GrammarMatcher(compiled)
+        return bool(m.accept_string(text)) and bool(m.is_completed())
 
     def constraint(self, compiled, *, think_end: int | None = None, spec: Spec | None = None) -> "Constraint":
         """A fresh reply's grammar state; with ``think_end`` (thinking on) it starts at the token after that one."""

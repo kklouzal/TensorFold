@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tensorfold.engine import grammar
+from tensorfold.server import strict_tools
 from tensorfold.server.cancellation import RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
 from tensorfold.server.messages import validate_modalities
@@ -52,8 +53,9 @@ class PreparedRequest:
     ignore_eos: bool = False
     stop: tuple[str, ...] = ()
     vision: Any = None
-    grammar: Any = None     # (spec, compiled grammar) of the request's response_format, or None
+    grammar: Any = None     # (spec, compiled grammar) of the request's response_format or strict tools, or None
     think_budget: int = 0   # reply tokens before the server closes a think block the reply leaves open (0: no limit)
+    calls: Any = None       # strict tools' call grammar and reader (server.strict_tools.Plan), or None
 
 
 def _native_context(model_dir: Path) -> int:
@@ -248,7 +250,7 @@ class App:
         from jinja2.exceptions import TemplateError
 
         validate_modalities(body)
-        ToolCallPolicy(body)
+        policy = ToolCallPolicy(body)
         ignore_eos, stop = stop_options(body)
         max_tokens = self._requested_tokens(body)
         try:
@@ -273,6 +275,8 @@ class App:
         budget = parse_numbers({"thinking_budget": body.get("thinking_budget")})["thinking_budget"]
         budget = int(budget or getattr(self, "thinking_budget", 0)) if chat and thinking else 0     # 0: the default
         spec = grammar.request_spec(body)
+        calls = self._strict_calls(body, tools, spec, policy)
+        spec = calls.spec if calls is not None else spec
         top = probability_options(body, supported=bool(getattr(self.engine, "supports_logprobs", False)))
         if top is not None:
             if not chat or body.get("stream") or thinking or tools or stop or spec is not None or budget:
@@ -301,7 +305,7 @@ class App:
                                           max_visual_tokens=getattr(self, "vision_image_tokens", None))
                 return PreparedRequest(rendered.tokens, max_tokens, tools, thinking,
                                        self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
-                                       vision=rendered.vision, grammar=compiled, think_budget=budget)
+                                       vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls)
             text = render(body["messages"])
             prompt = (self.segments.encode(text) if self.segments is not None
                       else self.tok.encode(text, add_special_tokens=False).ids)
@@ -316,7 +320,40 @@ class App:
             raise RequestError("rendered prompt is empty")
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
-                               ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget)
+                               ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls)
+
+    def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
+                      policy: ToolCallPolicy) -> "strict_tools.Plan | None":
+        """The call grammar of a request whose active tools ask for strict arguments, else None (RequestError: 400)."""
+
+        if not tools or not strict_tools.wanted(tools):
+            return None
+        if spec is not None:
+            raise RequestError(f"{spec.field} cannot be combined with strict function tools: send one")
+        if "constraint" not in inspect.signature(self.engine.generate).parameters:
+            raise RequestError("this model's engine does not enforce strict function tools: send strict false")
+        if getattr(self.engine, "refuses_structured_output", None):
+            raise RequestError(self.engine.refuses_structured_output)
+        if getattr(self, "_strict_markup", None) is None:
+            try:
+                rendered = self.template.render(strict_tools.PROBE, tools=None, enable_thinking=False)
+            except Exception:  # noqa: BLE001 - a template that renders no calls cannot be held to them
+                rendered = ""
+            self._strict_markup = strict_tools.template_supported(rendered)
+        if not self._strict_markup:
+            raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
+                               "and this model's chat template writes calls otherwise: send strict false")
+        return strict_tools.Plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
+                                 parallel=not policy.single)
+
+    def _thought(self, prepared: PreparedRequest, text: str, finished: bool) -> tuple[str, str]:
+        """A strict reply's (reasoning, answer): a call written in a think block that never closed is the answer only
+        when the reply's grammar accepts it (as if the grammar had held it)."""
+
+        reasoning, answer = split_thinking(text, finished=finished)
+        if finished and answer and "</think>" not in text and not self._grammars().accepts(prepared.grammar[1], answer):
+            return text, ""
+        return reasoning, answer
 
     def token_ids(self, value: Any, field: str = "prompt") -> list[int]:
         """Token ids as a request gives them (a list, or a list holding one list); RequestError outside the
@@ -440,14 +477,18 @@ class App:
         failed: list[Exception] = []
         stream = StreamDecoder(self.tok, ends)
         # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
-        calls_stream = ToolCallStreamer(tools) if tools and not policy.single and body.get("stream") else None
+        strict = prepared.calls
+        calls_stream = ((strict.reader() if strict is not None else ToolCallStreamer(tools))
+                        if tools and not policy.single and body.get("stream") else None)
         answer_raw = [""]
 
         def visible(finished: bool) -> tuple[str, str]:
             raw = stream.final() if finished else stream.text
             # stop strings match the generated text, reasoning included, before it is split (as on the Mac)
             raw = stops.visible(raw, partial=not finished) if stops.strings else raw
-            if chat and thinking:
+            if chat and thinking and strict is not None:
+                reasoning, answer = self._thought(prepared, raw, finished)
+            elif chat and thinking:
                 reasoning, answer = split_thinking(raw, finished=finished)
                 if finished and tools and not answer:
                     # the end parser's split (below): a call missing only its closer, in a block that never closed,
@@ -458,7 +499,9 @@ class App:
             else:
                 reasoning, answer = "", raw
             answer_raw[0] = answer
-            if tools:
+            if strict is not None:
+                answer = strict.content(answer, finished=finished)
+            elif tools:
                 answer = (policy.content(answer, finished=finished) if policy.single
                           else hide_tool_calls(answer, finished=finished))
             return reasoning, answer
@@ -511,7 +554,8 @@ class App:
             return stopped["client"] or stopped["stop"]
 
         draft = body.get("draft", True) is not False
-        gate = self._call_gate(prompt, tools) if tools and tool_choice_requires_call(body.get("tool_choice")) else None
+        required = tools and strict is None and tool_choice_requires_call(body.get("tool_choice"))
+        gate = self._call_gate(prompt, tools) if required else None      # strict calls: the grammar requires them
 
         options: dict[str, Any] = {} if draft else {"draft": False}
         probabilities = None
@@ -585,11 +629,15 @@ class App:
             final["reasoning_content"] = reasoning[sent["reasoning"]:]
         raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
         text = stops.visible(raw_text)
-        if tools:                   # a call missing only its closer is a call before the think split decides
+        if tools and strict is None:    # a call missing only its closer is a call before the think split decides
             text = normalize_qwen_tool_markup(text)
-        raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
-        content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
-        if tools:
+        if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
+            raw_answer = self._thought(prepared, text, True)[1] if chat and thinking else text
+            content, calls = strict.parse(raw_answer, max_calls=policy.max_calls)
+        else:
+            raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
+            content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
+        if tools and strict is None:
             shown = policy.content(content)
             # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
             content = shown if calls or shown.strip() else content

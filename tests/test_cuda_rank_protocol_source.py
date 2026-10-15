@@ -50,13 +50,15 @@ class RankProtocolTests(unittest.TestCase):
                            ("max_tokens", 0), ("max_tokens", 63), ("max_tokens", True), ("cached", 2),
                            ("draft", 1), ("stop_eos", None), ("sampling", [1, float("nan"), 20, 1.0, 0]),
                            ("sampling", [True, 1.0, 20, 1.0, 0]), ("sampling", [1, 1.0, -1, 1.0, 0]),
-                           ("sampling", [1, 1.0, 20, 1.0, 2]), ("grammar", [5, 0]),
+                           ("sampling", [1, 1.0, 20, 1.0, 2]), ("grammar", [6, 0]),
                            ("grammar", [0, 31]), ("grammar", [0, 0, 256]), ("grammar", [0, 0, 255])):
             body = {**self.body, key: value}
             with self.assertRaises((ValueError, UnicodeDecodeError), msg=(key, value)):
                 self.unpack(json.dumps(body), maximum=64, vocab=30)
         with self.assertRaises(ValueError):
             self.unpack(json.dumps({**self.body, "extra": 1}), maximum=64, vocab=30)
+        tools = [5, 0, *b'{"type":"structural_tag"}']      # kind 5: strict tools' structural tag (engine.grammar.KINDS)
+        self.assertEqual(self.unpack(json.dumps({**self.body, "grammar": tools}), maximum=64, vocab=30)[5], tools)
 
     def test_size_and_nesting_refused_before_json_allocation(self):
         with patch.object(protocol, "MAX_MESSAGE_BYTES", 64):
