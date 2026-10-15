@@ -22,6 +22,7 @@ from tensorfold.server import anthropic, live, request_body, responses, token_ro
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
                                      tool_choice_requires_call)
 from tensorfold.server.decisions import DecisionError
+from tensorfold.server.failure_capture import redact_images
 from tensorfold.server.errors import (ModelNotFound, RequestError, error_body, invalid_request, retry_headers,
                                      server_error, status_of, unknown_route)
 from tensorfold.server.request_options import parse_numbers, thinking_fields
@@ -340,18 +341,6 @@ class Server(ThreadingHTTPServer):
                 failure = self._handler_failure
             if failure is not None:
                 raise failure
-
-
-def redact_images(value: Any) -> Any:
-    """A request body for the request log: every image part's URL or data replaced, the rest kept."""
-
-    if isinstance(value, list):
-        return [redact_images(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    if value.get("type") == "image_url":
-        return {**value, "image_url": {"url": "<redacted>"}}
-    return {key: redact_images(item) for key, item in value.items()}
 
 
 def requested_model(app: Any, body: Any) -> str:

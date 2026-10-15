@@ -268,6 +268,14 @@ its `x-request-id`, is used when it is 1 to 128 letters, digits, `.`, `_`, `:` o
 (`req-` and 32 hex digits). The same id is the reply's `tensorfold.request_id` and names it in the server's `done`
 line.
 
+A reply that ends at an end token with its think block still open (thinking on,
+finish `stop`, reasoning but no answer and no call) prints one warning line naming its request id, prompt and reply
+token counts and the end token. On CUDA, with `TENSORFOLD_FAILURE_CAPTURE_DIR` set, the server also writes that one
+request (its body with image and video parts redacted, its generated token IDs and its `tensorfold` statistics) to a
+file there, readable by the server's user alone. The directory holds at most 32 captures and 256 MiB: a capture that
+would pass either is skipped with a line saying so, never written over an older one. Nothing is captured for any
+other reply, and capturing never changes the reply.
+
 An error reply is OpenAI's error object, `{"error": {"message", "type", "param", "code"}}`, with `param` and `code`
 null where nothing names them. A capacity refusal (a full request queue under `--max-pending-requests`, the image queue)
 is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on

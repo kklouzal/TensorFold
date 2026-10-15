@@ -20,7 +20,8 @@ from tensorfold.server.request_options import heard_effort, parse_numbers, think
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
 from tensorfold.server.stopping import matched_stop, stop_options
-from tensorfold.server.thinking_notes import unanswered
+from tensorfold.server import failure_capture
+from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
 from tensorfold.server.token_routes import flag, token_ids
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
@@ -665,6 +666,8 @@ class App:
         warning = unanswered(finish, chat and thinking, content, calls)
         if warning:
             print(warning, flush=True)
+        self._ended_thinking(request_id, body, prompt, out, finish, chat and thinking, content, calls, reasoning,
+                             raw_text, stopped["stop"], ends, stats)
         print_done(request_id, len(prompt), (cached or [0])[0], thinking, out, finish, stats, request)
         if body.get("return_token_ids"):              # the reply's ids in the "tensorfold" block, for exactness checks
             stats = {**(stats or {}), "token_ids": [int(t) for t in out]}
@@ -676,6 +679,26 @@ class App:
                 "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
                 "reasoning_tokens": reasoning_count(out, self.tok.token_to_id("</think>") if chat and thinking else None),
                 "stats": stats, "calls_streamed": streamed}
+
+    def _ended_thinking(self, request_id: str, body: dict[str, Any], prompt: list[int], out: list[int], finish: str,
+                        thinking: bool, content: str, calls: Any, reasoning: str, raw_text: str, stop_string: bool,
+                        ends: tuple[int, ...], stats: dict[str, Any]) -> None:
+        """A reply that ended at an end token inside its think block (no answer, no call): one warning line, and with
+        TENSORFOLD_FAILURE_CAPTURE_DIR set the request, its token ids and stats captured (``failure_capture``). The
+        reply is not changed."""
+
+        end = out[-1] if out and out[-1] in ends and not stop_string else None
+        if not thinking or end is None or finish != "stop":         # the common replies: nothing to look up
+            return
+        close = self.tok.token_to_id("</think>")
+        closed = close in out if close is not None else "</think>" in raw_text
+        if not ended_thinking(finish, thinking, content, calls, reasoning, True, closed):
+            return
+        text = self.tok.id_to_token(end)
+        print(ended_thinking_note(request_id, len(prompt), len(out), end, text), flush=True)
+        failure_capture.capture("ended_in_think", request_id, body, {
+            "finish": finish, "prompt_tokens": len(prompt), "end_token": {"id": int(end), "text": text},
+            "token_ids": [int(t) for t in out], "stats": stats})
 
     def _turns(self) -> Turns:
         """The engine's turns (one request at a time, background ones last), made on first use."""

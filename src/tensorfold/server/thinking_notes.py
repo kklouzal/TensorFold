@@ -1,4 +1,5 @@
-"""The server's two thinking notes: thinking is on at startup, and a reply that ran out of tokens while thinking."""
+"""The server's thinking notes: thinking is on at startup, a reply that ran out of tokens while thinking, and a reply
+that ended at an end token while its think block was still open (a model failure; ``failure_capture`` records it)."""
 
 from __future__ import annotations
 
@@ -40,4 +41,20 @@ def unanswered(finish: str, thinking: bool, content: Any, calls: Any = None) -> 
             f"text is all in reasoning_content; raise max_tokens, or send {OFF} (server: --no-thinking)")
 
 
-__all__ = ["startup", "template_thinks", "unanswered"]
+def ended_thinking(finish: str, thinking: bool, content: Any, calls: Any, reasoning: Any, end_token: bool,
+                   closed: bool) -> bool:
+    """Whether a reply ended at an end token (``end_token``) inside its think block: thinking on, finish "stop", no
+    answer and no call, reasoning written, and no closing think marker (``closed``) in the reply."""
+
+    return (finish == "stop" and thinking and end_token and not closed and not calls
+            and not str(content or "").strip() and bool(str(reasoning or "").strip()))
+
+
+def ended_thinking_note(request_id: str, prompt: int, reply: int, token: int, text: str | None) -> str:
+    """The warning line for ``ended_thinking``: the request, its sizes and the end token that closed it."""
+
+    return (f"[tensorfold] warning: {request_id} ended at end token {text or '?'} (id {token}) inside its think "
+            f"block, so it has no answer: prompt={prompt} reply={reply} tokens")
+
+
+__all__ = ["ended_thinking", "ended_thinking_note", "startup", "template_thinks", "unanswered"]
