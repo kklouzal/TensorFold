@@ -178,7 +178,8 @@ class RequestOptions:
                                      think_end=self._token_id(closes), text=self._text, encode=self._encode,
                                      lead=form[1] or "", names=names if form[1] is not None else (), tail=form[2] or "")
 
-    def strict_calls(self, tools: Any, *, required: bool, parallel: bool, beside: Any = None) -> Any:
+    def strict_calls(self, tools: Any, *, required: bool, parallel: bool, beside: Any = None,
+                     offered: Any = None) -> Any:
         """The call grammar (``server.strict_tools.Plan``) when the active ``tools`` ask for strict arguments, else None;
         RequestError when this template's calls or another grammar (``beside``) rule them out."""
 
@@ -200,7 +201,7 @@ class RequestOptions:
         if not self.__dict__["_strict_markup"]:
             raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
                                "and this model's chat template writes calls otherwise: send strict false")
-        return strict_tools.Plan(tools, required=required, parallel=parallel)
+        return strict_tools.Plan(tools, required=required, parallel=parallel, offered=offered)
 
     def _strict_accepts(self, plan: Any, text: str) -> bool:
         """Whether a whole answer is a reply of ``plan``'s grammar (a call written where no grammar held it)."""

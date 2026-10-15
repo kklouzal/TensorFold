@@ -241,6 +241,17 @@ def test_a_plan_reads_each_parameters_mode():
      "without minimum or maximum"),
     ({"type": "object", "properties": {"s": {"type": "texty"}}}, "JSON type name"),
     ({"type": "object", "properties": {"s": {"type": "string", "enum": [1]}}}, "every enum and const value"),
+    ({"type": "object", "properties": {"s": {"type": "integer", "anyOf": [{"type": {"x": 1}}]}}}, "JSON type name"),
+    ({"type": "object", "properties": {"s": {"type": "array", "items": {"type": "string", "pattern": "^a+@a+$",
+                                                                        "format": "email"}}}}, "pattern and format"),
+    # a $ref names a subschema, never data the checks do not read as one
+    ({"type": "object", "properties": {"a": {"type": "string", "default": {"type": "string", "minLength": 5}},
+                                       "s": {"$ref": "#/properties/a/default"}}}, "does not resolve to a subschema"),
+    ({"type": "object", "properties": {"a": {"type": "integer", "examples": [{"enum": 5}]},
+                                       "s": {"$ref": "#/properties/a/examples/0"}}}, "does not resolve to a subschema"),
+    ({"type": "object", "properties": {"s": {"$ref": "#/properties"}}}, "does not resolve to a subschema"),
+    ({"type": "object", "properties": {"s": {"anyOf": [{"type": "integer"}]}, "t": {"$ref": "#/properties/s/anyOf/²"}}},
+     "does not resolve to a subschema"),
 ])
 def test_unsupported_or_malformed_schemas_are_refused_with_their_path(schema, words):
     with pytest.raises(RequestError, match=re.escape(words)) as err:
@@ -317,6 +328,18 @@ def test_the_reader_parses_calls_text_and_streams_the_same_arguments():
     assert plan.content("Hi <tool_c", finished=False) == "Hi "
     assert plan.content("Hi <tool_c", finished=True) == "Hi <tool_c"
     assert plan.content("Hi " + CALL[:40], finished=False) == "Hi "
+
+
+def test_a_tool_without_strict_keeps_the_lenient_arguments_and_errors_name_the_requests_tool():
+    plan = st.Plan(TOOLS, required=False, parallel=True)
+    repeated = ('<tool_call>\n<function=loose>\n<parameter=n>\n5\n</parameter>\n<parameter=s>\nx\n</parameter>\n'
+                '<parameter=n>\n6\n</parameter>\n</function>\n</tool_call>')
+    calls = plan.parse(repeated)[1]
+    assert calls[0]["function"]["arguments"] == '{"n":6,"s":"x"}'              # the last value, as the lenient parser
+    assert [(s["name"], s["arguments"]) for s in _streamed(plan, repeated)] == [("loose", '{"n":6,"s":"x"}')]
+    bad = [tool("ok"), tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": 3}}})]
+    with pytest.raises(RequestError, match=r"^tools\[1\]\.function\.parameters"):
+        st.Plan(bad[1:], required=True, parallel=True, offered=bad)          # a named tool_choice's one active tool
 
 
 def test_an_unfinished_call_stays_text_and_a_raw_null_is_null():
@@ -406,6 +429,29 @@ def test_refs_into_the_tools_schema_resolve_inside_a_json_parameter(grammars):
     assert conforms(json.loads(plan.parse(call)[1][0]["function"]["arguments"]), schema)
     for bad in (call.replace("[1, 2]", "[3]"), call.replace('{"kids": []}\n</par', '{"kids": [], "x": 1}\n</par'),
                 call.replace('[{"kids": []}, {"kids": [{"kids": []}]}]', '[{"kids": []}, {"kids": []}, {"kids": []}]')):
+        assert not grammars.accepts(compiled, bad)
+
+
+def test_definitions_keep_their_refs_to_the_tools_root_inside_a_json_parameter(grammars):
+    """Inside a JSON parameter's grammar, a ``$defs`` entry's ``#`` still names the tool's schema (not the parameter's),
+    and a definition may be named like a schema keyword."""
+
+    schema = {"type": "object", "additionalProperties": False, "required": ["a", "b"],
+              "properties": {"a": {"$ref": "#/$defs/wrap"}, "b": {"$ref": "#/$defs/properties"}},
+              "$defs": {"wrap": {"type": "object", "additionalProperties": False, "required": ["inner"],
+                                 "properties": {"inner": {"anyOf": [{"$ref": "#"}, {"type": "null"}]}}},
+                        "properties": {"type": "integer", "enum": [1, 2]}}}
+    plan = st.Plan([tool("t", schema)], required=False, parallel=True)
+    compiled = grammars.compile(plan.spec)
+
+    def call(a, b):
+        return (f"<tool_call>\n<function=t>\n<parameter=a>\n{a}\n</parameter>\n<parameter=b>\n{b}\n</parameter>\n"
+                "</function>\n</tool_call>")
+
+    good = call('{"inner": {"a": {"inner": null}, "b": 2}}', "1")
+    assert grammars.accepts(compiled, good)
+    assert conforms(json.loads(plan.parse(good)[1][0]["function"]["arguments"]), schema)
+    for bad in (call('{"inner": {"inner": null}}', "1"), call('{"inner": null}', "3")):
         assert not grammars.accepts(compiled, bad)
 
 

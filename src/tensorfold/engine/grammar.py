@@ -255,15 +255,15 @@ def refusal(body: dict[str, Any], owner=None) -> str | None:
 
             try:
                 tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
-            except ValueError as exc:
-                return str(exc)
-            if not hasattr(owner, "strict_calls"):
-                if strict_tools.wanted(tools):
-                    return "this server does not enforce strict function tools: send strict false"
-            else:
+            except ValueError:             # malformed tools: the chat route refuses them itself; others ignore them
+                tools = []
+            if hasattr(owner, "strict_calls"):
                 plan = owner.strict_calls(tools, required=required,
-                                          parallel=body.get("parallel_tool_calls") is not False, beside=spec)
+                                          parallel=body.get("parallel_tool_calls") is not False, beside=spec,
+                                          offered=body.get("tools"))
                 spec = plan.spec if plan is not None else spec
+            elif strict_tools.wanted(tools):
+                return "this server does not enforce strict function tools: send strict false"
         if spec is not None and getattr(owner, "model_dir", None) is not None:
             compiler(owner, owner.model_dir, owner.stop_ids).compile(spec)   # cached for the request's own compile
     except RequestError as exc:

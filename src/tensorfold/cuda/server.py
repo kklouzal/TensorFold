@@ -344,7 +344,7 @@ class App:
             raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
                                "and this model's chat template writes calls otherwise: send strict false")
         return strict_tools.Plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
-                                 parallel=not policy.single)
+                                 parallel=not policy.single, offered=body.get("tools"))
 
     def _thought(self, prepared: PreparedRequest, text: str, finished: bool) -> tuple[str, str]:
         """A strict reply's (reasoning, answer): a call written in a think block that never closed is the answer only
@@ -629,18 +629,18 @@ class App:
             final["reasoning_content"] = reasoning[sent["reasoning"]:]
         raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
         text = stops.visible(raw_text)
-        if tools and strict is None:    # a call missing only its closer is a call before the think split decides
-            text = normalize_qwen_tool_markup(text)
         if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
             raw_answer = self._thought(prepared, text, True)[1] if chat and thinking else text
             content, calls = strict.parse(raw_answer, max_calls=policy.max_calls)
-        else:
+        elif tools:
+            text = normalize_qwen_tool_markup(text)    # a call missing only its closer is a call before the think split
             raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
-            content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
-        if tools and strict is None:
+            content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls)
             shown = policy.content(content)
             # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
             content = shown if calls or shown.strip() else content
+        else:
+            content, calls = answer, None
         # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
         streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
         if streamed > len(calls or ()):

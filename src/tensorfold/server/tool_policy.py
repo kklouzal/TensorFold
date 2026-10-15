@@ -101,9 +101,9 @@ class ToolCallPolicy:
 
         if not tools:
             return reply
-        plan = reply.get("strict_calls")
-        reader = plan.parse if plan is not None else lambda text, max_calls: parse(text, tools, max_calls=max_calls)
-        content, calls = reader(str(reply.get("content") or ""), max_calls=self.max_calls)
+        text, plan = str(reply.get("content") or ""), reply.get("strict_calls")
+        content, calls = (plan.parse(text, max_calls=self.max_calls) if plan is not None
+                          else parse(text, tools, max_calls=self.max_calls))
         calls = calls or reply.get("tool_calls")
         if not calls:
             return {**reply, "content": self.content(content)} if self.single else reply

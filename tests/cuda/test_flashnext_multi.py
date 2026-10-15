@@ -496,16 +496,18 @@ def test_several_kept_points_in_one_pass_each_keep_a_fresh_prefills_state(kv_dty
 def _conforming_calls(plan, tokens):
     """The calls a reply's toy-spelled text reads as, each checked against ``toy_grammar.TOOL`` independently."""
 
+    import json
+
     from toy_grammar import tool_spell
 
     text = "".join(tool_spell(t) for t in tokens if t != 0)
     _, calls = plan.parse(text)
     for call in calls or ():
-        args = __import__("json").loads(call["function"]["arguments"])
+        args = json.loads(call["function"]["arguments"])
         if call["function"]["name"] == "go":
             assert args == {}, args
             continue
-        assert set(args) - {"z"} == {"n", "u", "o"} and set(args) <= {"n", "u", "o", "z"}, args
+        assert set(args) - {"z"} == {"n", "u", "o"}, args
         assert type(args["n"]) is int and 0 <= args["n"] <= 99 and args["u"] in ("c", "ff"), args
         assert args["o"].keys() == {"k"} and type(args["o"]["k"]) is bool, args
         assert type(args.get("z", False)) is bool, args

@@ -24,10 +24,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
+from tensorfold.engine.grammar import BLANKS, Spec   # BLANKS: blanks around required calls and in JSON values
 from tensorfold.server.errors import RequestError
+from tensorfold.server.text import _partial_tag
+from tensorfold.server.tools import tool_spec_name
 from tensorfold.tool_parameters import decode_parameter
-
-BLANKS = 32                      # blank characters allowed around required calls and in JSON values (as response_format)
 
 # -- the template's call markup (Qwen's XML calls) ------------------------------------------------------------------
 OPEN = "<tool_call>"                         # every call begins with it; free text never holds it otherwise
@@ -128,6 +129,19 @@ def _within(types: set[str], declared: set[str]) -> bool:
     return all(t in declared or (t == "integer" and "number" in declared) for t in types)
 
 
+def _literals(node: dict[str, Any]) -> list[list[Any]]:
+    """The value lists ``node``'s ``enum`` and ``const`` each allow (an unchecked enum that is not a list: none)."""
+
+    enum = [node["enum"]] if isinstance(node.get("enum"), list) else []
+    return enum + ([[node["const"]]] if "const" in node else [])
+
+
+def _side(kind: str) -> str:
+    """A JSON type as the raw call markup sees it: string, null or other."""
+
+    return kind if kind in ("string", "null") else "other"
+
+
 class _Schema:
     """One tool's ``parameters``: checked against the supported subset, refs resolved within it."""
 
@@ -136,22 +150,31 @@ class _Schema:
         self.properties = self.chars = self.enums = 0
 
     def resolve(self, ref: Any, where: str) -> dict[str, Any]:
+        """The subschema a local ``$ref`` names, its JSON pointer read through schema keywords only: data such as
+        ``default``, ``examples``, ``enum`` or ``const`` is never checked as a schema, so no ref may name it."""
+
         if not isinstance(ref, str) or not ref.startswith("#"):
             raise _refuse(where, "$ref must point into the same schema (#...)")
+        if ref in ("#", "#/"):
+            return self.root
+        if not ref.startswith("#/"):
+            raise _refuse(where, f"$ref {ref!r} is not a JSON pointer")
+        parts = [part.replace("~1", "/").replace("~0", "~") for part in ref[2:].split("/")]
         node: Any = self.root
-        if ref not in ("#", "#/"):
-            if not ref.startswith("#/"):
-                raise _refuse(where, f"$ref {ref!r} is not a JSON pointer")
-            for part in ref[2:].split("/"):
-                part = part.replace("~1", "/").replace("~0", "~")
-                if isinstance(node, dict) and part in node:
-                    node = node[part]
-                elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
-                    node = node[int(part)]
-                else:
-                    raise _refuse(where, f"$ref {ref!r} does not resolve")
-        if not isinstance(node, dict):
-            raise _refuse(where, f"$ref {ref!r} does not name a schema object")
+        while parts and isinstance(node, dict):
+            keyword = parts.pop(0)
+            inner = node.get(keyword)
+            if keyword in ("items", "additionalProperties"):
+                node = inner
+            elif keyword in ("properties", "$defs", "definitions") and parts and isinstance(inner, dict):
+                node = inner.get(parts.pop(0))
+            elif (keyword == "anyOf" and parts and isinstance(inner, list) and parts[0].isascii() and parts[0].isdigit()
+                  and int(parts[0]) < len(inner)):
+                node = inner[int(parts.pop(0))]
+            else:
+                node = None
+        if parts or not isinstance(node, dict):
+            raise _refuse(where, f"$ref {ref!r} does not resolve to a subschema")
         return node
 
     def check(self, node: Any, where: str, depth: int) -> None:
@@ -172,8 +195,8 @@ class _Schema:
                     listed):
                 raise _refuse(where, "type must be one JSON type name or a list of distinct ones")
             declared = set(listed)
-        # xgrammar 0.2.8 lets enum, const, $ref and anyOf override what stands beside them, and drops type-specific
-        # keywords without a type: those shapes are refused rather than left unenforced
+        # xgrammar 0.2.8 lets enum, const, $ref and anyOf override what stands beside them, format override pattern, and
+        # drops type-specific keywords without a type: those shapes are refused rather than left unenforced
         own = set(node) - _ANNOTATIONS - {"$defs", "definitions"}
         if "$ref" in node and own - {"$ref"}:
             raise _refuse(where, "$ref takes no constraints beside it here: put them in the schema it names")
@@ -185,13 +208,14 @@ class _Schema:
             if kinds is not None and isinstance(node["anyOf"], list) and not all(
                     isinstance(b, dict) and _within(self.types(b), declared) for b in node["anyOf"]):
                 raise _refuse(where, "each anyOf branch must admit only the types listed beside it")
+        if "pattern" in node and "format" in node:
+            raise _refuse(where, "pattern and format are not enforced together here: use one")
         typed = own & _TYPED
         if typed and kinds is None:
             raise _refuse(where, f"{', '.join(sorted(typed))} need a type beside them")
         if typed and len(declared - {"null"}) > 1:
             raise _refuse(where, f"{', '.join(sorted(typed))} need a single type (besides null)")
-        for values in ([node["enum"]] if isinstance(node.get("enum"), list) else []) + (
-                [[node["const"]]] if "const" in node else []):
+        for values in _literals(node):
             if kinds is not None and not _within({_value_type(v) for v in values}, declared):
                 raise _refuse(where, "every enum and const value must have a type listed beside it")
         if "enum" in node:
@@ -261,7 +285,7 @@ class _Schema:
                                       f"enum values and {MAX_SCHEMA_CHARS} characters of names and values")
 
     def types(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> set[str]:
-        """The JSON types ``node`` admits (integer apart from number), its refs followed."""
+        """The JSON types ``node`` admits (integer apart from number), its refs followed; ``node`` may be unchecked."""
 
         if id(node) in seen:
             return set(TYPES)
@@ -270,69 +294,49 @@ class _Schema:
         if "$ref" in node:
             found &= self.types(self.resolve(node["$ref"], self.where), seen)
         if "type" in node:
-            listed = set(node["type"] if isinstance(node["type"], list) else [node["type"]])
+            listed = node["type"] if isinstance(node["type"], list) else [node["type"]]
             found = {t for t in found if t in listed or (t == "integer" and "number" in listed)}
-        for values in ([node["enum"]] if isinstance(node.get("enum"), list) else []) + (
-                [[node["const"]]] if "const" in node else []):
-            found &= {_value_type(v) for v in values} | ({"number"} if any(
-                _value_type(v) == "number" for v in values) else set())
+        for values in _literals(node):
+            found &= {_value_type(v) for v in values}
         if isinstance(node.get("anyOf"), list):
             found &= set().union(*(self.types(b, seen) for b in node["anyOf"] if isinstance(b, dict)))
         return found
 
-    def admits(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> tuple[bool, bool, bool]:
-        """Whether ``node`` admits (strings, null, any other JSON value), its refs followed."""
+    def admits(self, node: dict[str, Any], seen: frozenset[int] = frozenset()) -> set[str]:
+        """What a checked ``node`` admits as the raw call markup sees it (string, null, other), its refs followed."""
 
         if id(node) in seen:                                  # a ref cycle without a type: anything
-            return True, True, True
+            return {"string", "null", "other"}
         seen = seen | {id(node)}
-        result = (True, True, True)
-
-        def meet(other: tuple[bool, bool, bool]) -> None:
-            nonlocal result
-            result = tuple(a and b for a, b in zip(result, other))  # type: ignore[assignment]
-
+        found = {"string", "null", "other"}
         if "$ref" in node:
-            meet(self.admits(self.resolve(node["$ref"], self.where), seen))
+            found &= self.admits(self.resolve(node["$ref"], self.where), seen)
         if "type" in node:
-            types = set(node["type"] if isinstance(node["type"], list) else [node["type"]])
-            meet(("string" in types, "null" in types, bool(types - {"string", "null"})))
-        for values in ([node["enum"]] if "enum" in node else []) + ([[node["const"]]] if "const" in node else []):
-            kinds = {_kind(v) for v in values}
-            meet(("string" in kinds, "null" in kinds, bool(kinds - {"string", "null"})))
+            found &= {_side(t) for t in (node["type"] if isinstance(node["type"], list) else [node["type"]])}
+        for values in _literals(node):
+            found &= {_side(_kind(v)) for v in values}
         if "anyOf" in node:
-            branches = [self.admits(b, seen) for b in node["anyOf"]]
-            meet(tuple(any(b[i] for b in branches) for i in range(3)))  # type: ignore[arg-type]
-        return result
+            found &= set().union(*(self.admits(b, seen) for b in node["anyOf"]))
+        return found
 
     def raw(self, node: dict[str, Any], where: str) -> dict[str, Any]:
-        """The grammar of the strings ``node`` admits, as raw text inside a parameter."""
+        """The grammar of the strings a checked ``node`` admits, as raw text inside a parameter (``check`` refused
+        constraints beside ``$ref``, ``anyOf``, ``enum`` or ``const``, and pattern beside format)."""
 
         if "$ref" in node:
-            if set(node) - _ANNOTATIONS - {"$ref"}:
-                raise _refuse(where, "a string parameter's $ref cannot have sibling constraints")
             return self.raw(self.resolve(node["$ref"], where), where)
         if "anyOf" in node:
-            if {"enum", "const", "pattern", "format"} & set(node):
-                raise _refuse(where, "a string parameter cannot combine anyOf with enum, const, pattern or format")
             branches = [self.raw(b, f"{where}.anyOf[{i}]") for i, b in enumerate(node["anyOf"])
-                        if self.admits(b)[0]]
+                        if "string" in self.admits(b)]
             return branches[0] if len(branches) == 1 else {"type": "or", "elements": branches}
-        literals = None
-        if "enum" in node:
-            literals = [v for v in node["enum"] if isinstance(v, str)]
-        if isinstance(node.get("const"), str):
-            literals = [v for v in (literals if literals is not None else [node["const"]]) if v == node["const"]]
-        shapes = [k for k in ("pattern", "format") if k in node] + (["enum/const"] if literals is not None else [])
-        if len(shapes) > 1:
-            raise _refuse(where, f"a string parameter takes one of enum/const, pattern or format, not {shapes}")
-        if literals is not None:
+        if "enum" in node or "const" in node:
+            allowed = node["enum"] if "enum" in node else [node["const"]]
+            literals = [v for v in allowed if isinstance(v, str) and ("const" not in node or v == node["const"])]
             if not literals:
                 raise _refuse(where, "no string satisfies this parameter's enum/const")
             if any(VALUE_END in v for v in literals):
                 raise _refuse(where, f"a string parameter's value cannot contain {VALUE_END}")
-            unique = list(dict.fromkeys(literals))
-            options = [{"type": "const_string", "value": v} for v in unique]
+            options = [_const(v) for v in dict.fromkeys(literals)]
             return options[0] if len(options) == 1 else {"type": "or", "elements": options}
         if "pattern" in node:
             if all(_may_match(node["pattern"], ch) for ch in set(VALUE_END)):
@@ -346,8 +350,9 @@ class _Schema:
     def json(self, node: dict[str, Any]) -> dict[str, Any]:
         """``node`` as a schema of its own (refs into the tool's schema kept), for a JSON value's grammar."""
 
-        defs = {key: _rebase(self.root[key]) for key in ("$defs", "definitions") if isinstance(self.root.get(key), dict)}
-        refs = _refs(node).union(*(_refs(sub) for d in defs.values() for sub in d.values()))
+        own = {key: self.root[key] for key in ("$defs", "definitions") if isinstance(self.root.get(key), dict)}
+        refs = _refs(node).union(*(_refs(sub) for d in own.values() for sub in d.values()))
+        defs = {key: {name: _rebase(sub) for name, sub in d.items()} for key, d in own.items()}
         if any(not r.startswith(("#/$defs/", "#/definitions/")) for r in refs):     # "#" or "#/properties/...": the root
             if "__tf_root" in defs.get("$defs", {}):
                 raise _refuse(self.where, "$defs may not name __tf_root")
@@ -400,19 +405,17 @@ def _rebase(node: dict[str, Any]) -> dict[str, Any]:
 def _may_match(pattern: str, char: str) -> bool:
     """Whether the regex ``pattern`` could match a string holding ``char`` (True when it cannot be analysed)."""
 
+    from re import _constants as C, _parser as P       # CPython's regex parser (3.11+): the pattern's syntax tree
+
     try:
-        from re import _constants as C, _parser as P   # CPython's regex parser: the pattern's syntax tree
         tree = P.parse(pattern)
     except Exception:  # noqa: BLE001 - a pattern Python cannot read: assume the worst
         return True
     code = ord(char)
-
-    def category(cat: Any) -> bool:
-        tests = {C.CATEGORY_DIGIT: char.isdigit(), C.CATEGORY_SPACE: char.isspace(),
-                 C.CATEGORY_WORD: char.isalnum() or char == "_", C.CATEGORY_LINEBREAK: char in "\n\r"}
-        for name, value in list(tests.items()):
-            tests[getattr(C, str(name).replace("CATEGORY_", "CATEGORY_NOT_"), None)] = not value
-        return tests.get(cat, True)
+    digit, space, word, line = char.isdigit(), char.isspace(), char.isalnum() or char == "_", char in "\n\r"
+    categories = {C.CATEGORY_DIGIT: digit, C.CATEGORY_NOT_DIGIT: not digit, C.CATEGORY_SPACE: space,
+                  C.CATEGORY_NOT_SPACE: not space, C.CATEGORY_WORD: word, C.CATEGORY_NOT_WORD: not word,
+                  C.CATEGORY_LINEBREAK: line, C.CATEGORY_NOT_LINEBREAK: not line}
 
     def within(items: Any) -> bool:
         hit, negate = False, False
@@ -424,7 +427,7 @@ def _may_match(pattern: str, char: str) -> bool:
             elif op is C.RANGE:
                 hit |= av[0] <= code <= av[1]
             elif op is C.CATEGORY:
-                hit |= category(av)
+                hit |= categories.get(av, True)
             else:
                 return True
         return hit != negate
@@ -439,9 +442,9 @@ def _may_match(pattern: str, char: str) -> bool:
                 return True
             if op is C.SUBPATTERN and walk(av[-1]):
                 return True
-            if op in (C.MAX_REPEAT, C.MIN_REPEAT, getattr(C, "POSSESSIVE_REPEAT", None)) and walk(av[2]):
+            if op in (C.MAX_REPEAT, C.MIN_REPEAT, C.POSSESSIVE_REPEAT) and walk(av[2]):
                 return True
-            if op is getattr(C, "ATOMIC_GROUP", None) and walk(av):
+            if op is C.ATOMIC_GROUP and walk(av):
                 return True
             if op in (C.GROUPREF, C.GROUPREF_EXISTS, C.ASSERT, C.ASSERT_NOT):
                 return True
@@ -462,7 +465,7 @@ RAW, NULLABLE, JSON = "raw", "nullable", "json"
 class Param:
     name: str
     required: bool
-    mode: str                    # RAW, NULLABLE (raw or null) or JSON
+    mode: str                    # RAW, NULLABLE (raw or null), JSON, or "" (a tool that is not strict: as before)
 
 
 @dataclass(frozen=True, eq=False)
@@ -473,17 +476,16 @@ class Tool:
     schemas: dict[str, Any] = field(default_factory=dict)   # a tool that is not strict: its properties, decoded as before
 
 
-def _tool_name(tool: Any) -> str:
-    function = tool.get("function") if isinstance(tool, dict) else None
-    return str((function if isinstance(function, dict) else tool).get("name") or "").strip()
+def _function(tool: dict[str, Any]) -> dict[str, Any]:
+    """A tool's function object (``tools[].function``, else the tool itself), as ``server.tools`` reads it."""
+
+    return tool["function"] if isinstance(tool.get("function"), dict) else tool
 
 
-def strict_flag(tool: Any, where: str) -> bool:
+def strict_flag(tool: dict[str, Any], where: str) -> bool:
     """A tool's ``function.strict`` (true, false or absent/null); RequestError for any other value."""
 
-    function = tool.get("function") if isinstance(tool, dict) else None
-    function = function if isinstance(function, dict) else tool
-    value = function.get("strict") if isinstance(function, dict) else None
+    value = _function(tool).get("strict")
     if value is not None and not isinstance(value, bool):
         raise RequestError(f"{where}.strict must be a boolean")
     return value is True
@@ -501,21 +503,22 @@ _NAME = re.compile(r"[^\s<>]+")
 class Plan:
     """A request's call grammar (``spec``, an ``engine.grammar.Spec``) and its reader, from the active tools."""
 
-    def __init__(self, tools: Sequence[dict[str, Any]], *, required: bool, parallel: bool) -> None:
-        from tensorfold.engine.grammar import Spec
+    def __init__(self, tools: Sequence[dict[str, Any]], *, required: bool, parallel: bool,
+                 offered: Sequence[Any] | None = None) -> None:
+        """``tools``: the active ones (after ``tool_choice``); ``offered``: the request's list, for error paths."""
 
         self.required, self.parallel = bool(required), bool(parallel)
         self.tools: dict[str, Tool] = {}
         tags = []
         for i, spec in enumerate(tools):
-            where = f"tools[{i}].function"
-            name = _tool_name(spec)
+            at = next((k for k, t in enumerate(offered or ()) if t is spec), i)
+            where = f"tools[{at}].function"
+            name = tool_spec_name(spec)
             if not _NAME.fullmatch(name):
                 raise RequestError(f"{where}.name {name!r} cannot be written in this model's call markup")
             if name in self.tools:
                 raise RequestError(f"{where}.name {name!r} is offered twice")
-            function = spec["function"] if isinstance(spec.get("function"), dict) else spec
-            parameters = function.get("parameters")
+            parameters = _function(spec).get("parameters")
             parameters = {} if parameters is None else parameters
             if not isinstance(parameters, dict):
                 raise RequestError(f"{where}.parameters must be a JSON schema object")
@@ -555,14 +558,14 @@ class Plan:
             at = f"{where}.properties.{key}"
             if not _NAME.fullmatch(key):
                 raise _refuse(at, "this parameter name cannot be written in this model's call markup")
-            strings, null, other = schema.admits(sub)
-            if strings and other:
+            admitted = schema.admits(sub)
+            if {"string", "other"} <= admitted:
                 raise _refuse(at, "a parameter that admits strings and non-string values is ambiguous in this model's "
                                   "call markup, which writes strings raw (only string-or-null is supported)")
-            if strings:
+            if "string" in admitted:
                 value = schema.raw(sub, at)
-                mode = NULLABLE if null else RAW
-                if null:
+                mode = NULLABLE if "null" in admitted else RAW
+                if mode == NULLABLE:
                     value = {"type": "or", "elements": [value, _const("null")]}
             else:
                 value = {"type": "json_schema", "json_schema": schema.json(sub), "style": "json",
@@ -602,15 +605,6 @@ def _seq(*elements: dict[str, Any]) -> dict[str, Any]:
     return {"type": "sequence", "elements": list(elements)}
 
 
-def _partial(text: str, tag: str) -> int:
-    """How many characters at the end of ``text`` could begin ``tag``."""
-
-    for k in range(min(len(tag) - 1, len(text)), 0, -1):
-        if text.endswith(tag[:k]):
-            return k
-    return 0
-
-
 class CallMarkupError(RuntimeError):
     """A reply under the strict grammar left its markup (an internal fault): the request ends with this error."""
 
@@ -637,6 +631,7 @@ class Reader:
         self._tool: Tool | None = None
         self._next = 0                         # the strict tool's next declared parameter
         self._args: list[str] = []             # the current call's argument fragments
+        self._loose: dict[str, Any] | None = None   # a tool that is not strict: its arguments, sent whole at its close
         self._param: Param | None = None
         self._start = 0                        # where the current value's text begins
         self._sent = 0                         # how much of a raw value has gone out as deltas
@@ -650,7 +645,7 @@ class Reader:
         while True:
             if self._state == "text":
                 at = answer.find(OPEN, self.pos)
-                end = at if at >= 0 else len(answer) - (0 if finished else _partial(answer[self.pos:], OPEN))
+                end = at if at >= 0 else len(answer) - (0 if finished else _partial_tag(answer[self.pos:], OPEN))
                 if end > self.pos:
                     self.text.append(answer[self.pos:end])
                     self.pos = end
@@ -671,10 +666,14 @@ class Reader:
                               "function": {"name": name, "arguments": ""}}
                 self.deltas.append({"tool_calls": [self._head]})
                 self._tool, self._next, self._args = tool, 0, []
+                self._loose = None if tool.strict else {}
                 self.pos, self._state = end + len(NAME_END), "params"
             elif self._state == "params":
                 if answer.startswith(CLOSE, self.pos):
-                    self._emit("}" if self._args else "{}")
+                    if self._loose is not None:        # as the lenient parser: a repeated name keeps its last value
+                        self._emit(json.dumps(self._loose, ensure_ascii=False, separators=(",", ":")))
+                    else:
+                        self._emit("}" if self._args else "{}")
                     self.calls.append({"id": self._head["id"], "type": "function",
                                        "function": {"name": self._head["function"]["name"],
                                                     "arguments": "".join(self._args)}})
@@ -716,6 +715,7 @@ class Reader:
             self._param, self._next = tool.params[at], at + 1
         else:
             self._param = Param(key, False, "")
+            return
         raw = self._param.mode == RAW
         self._emit(("," if self._args else "{") + json.dumps(key, ensure_ascii=False) + (':"' if raw else ":"))
         self._sent = 0
@@ -737,7 +737,7 @@ class Reader:
         if close < 0 or close >= len(answer):
             if param.mode == RAW:              # stream raw text, holding back what may begin its closing line
                 tail = answer[max(self._start, len(answer) - len(VALUE_END)):]
-                upto = end if close >= 0 else len(answer) - _partial(tail, "\n" + VALUE_END)
+                upto = end if close >= 0 else len(answer) - _partial_tag(tail, "\n" + VALUE_END)
                 if upto - self._start > self._sent:
                     self._emit(json.dumps(answer[self._start + self._sent:upto], ensure_ascii=False)[1:-1])
                     self._sent = upto - self._start
@@ -755,8 +755,8 @@ class Reader:
         elif param.mode == JSON:
             self._emit(value)
         else:                                  # a tool that is not strict: decoded as the lenient parser does
-            schema = self._tool.schemas.get(param.name, {})
-            self._emit(json.dumps(decode_parameter(value, schema), ensure_ascii=False, separators=(",", ":")))
+            assert self._loose is not None
+            self._loose[param.name] = decode_parameter(value, self._tool.schemas.get(param.name, {}))
         self.pos, self._state = close + 1, "params"
         return True
 

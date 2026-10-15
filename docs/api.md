@@ -238,21 +238,21 @@ The supported schemas are [OpenAI's strict-mode
 subset](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas): types (or a list of
 them), `enum`, `const`, `anyOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
 `pattern` (matched whole, as `response_format` does), `format` (`date-time`, `time`, `date`, `duration`, `email`,
-`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers, `$defs`
-with local `$ref` and recursion, and annotations (`title`, `description`, `default`, `examples`, `$comment`,
-`deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties are accepted; a reply never adds
-undeclared ones. HTTP 400 names the keyword and its path for anything else, including `minLength`/`maxLength` (put
-length limits in the description), `uniqueItems`, `oneOf`, `allOf`, `not`, `if`/`then`/`else`, `patternProperties`,
-`prefixItems`, `multipleOf` on numbers and references to other documents, and past OpenAI's limits (10 nesting
-levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and values). Shapes xgrammar would not
-enforce whole are refused too: constraints beside `$ref`, anything but `type` beside `enum`, `const` or `anyOf` (an
-`anyOf` branch must admit only the types listed beside it), type-specific keywords without a `type` or with several
-non-null types, and `multipleOf` with a range. The call markup refuses a
-parameter that admits strings and non-string values other than null (raw text could be either), a string parameter's
-`pattern` that can spell `</parameter>`, `enum`/`const` strings containing it or combined with a `pattern` or
-`format`, and tool or parameter names with whitespace, `<` or `>`. Strict tools are also refused beside
-`response_format` or the `guided_*` fields, on an engine without grammar support (or Flash Next on two GPUs under
-`--parallel`), and for a template whose call markup is not Qwen XML; `strict: false` keeps the lenient path.
+`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers,
+`$defs` with local `$ref` to a subschema and recursion, and annotations (`title`, `description`, `default`,
+`examples`, `$comment`, `deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties are
+accepted; a reply never adds undeclared ones. HTTP 400 names the keyword and its path for anything else, including
+`minLength`/`maxLength` (put length limits in the description), `uniqueItems`, `oneOf`, `allOf`, `not`,
+`if`/`then`/`else`, `patternProperties`, `prefixItems`, `multipleOf` on numbers and references to other documents,
+and past OpenAI's limits (10 nesting levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and
+values). Shapes xgrammar would not enforce whole are refused too: constraints beside `$ref`, anything but `type`
+beside `enum`, `const` or `anyOf` (an `anyOf` branch must admit only the types listed beside it), type-specific
+keywords without a `type` or with several non-null types, `pattern` beside `format`, and `multipleOf` with a range.
+The call markup refuses a parameter that admits strings and non-string values other than null (raw text could be
+either), a string parameter's `pattern` that can spell `</parameter>`, `enum`/`const` strings containing it, and
+tool or parameter names with whitespace, `<` or `>`. Strict tools are also refused beside `response_format` or the
+`guided_*` fields, on an engine without grammar support (or Flash Next on two GPUs under `--parallel`), and for a
+template whose call markup is not Qwen XML; `strict: false` keeps the lenient path.
 
 The CUDA server is verified on synthetic Flash Next, Qwen3.6-35B-A3B and two-rank models; the Mac server checks the
 same requests before a stream opens and runs the same grammar and reader, but its MLX engine has not been exercised
