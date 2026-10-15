@@ -14,8 +14,6 @@ from kernel_inputs import gdn_inputs  # noqa: E402
 DEV = "cuda"
 
 
-
-
 def _chain(p, cs, cw, state, a_log, dt, nw, rows):
     sc = gdn.GDNScratch(rows, DEV)
     out = torch.empty((rows, gdn.NV * gdn.DV), dtype=torch.bfloat16, device=DEV)

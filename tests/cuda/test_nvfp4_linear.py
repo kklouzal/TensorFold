@@ -17,8 +17,6 @@ from tensorfold.cuda.nvfp4.linear import Concat, Fp4Linear, Fp8BlockLinear, Fp8L
 from kernel_inputs import fp4_weight
 
 
-
-
 def _fp8(n, k, seed):
     rng = np.random.default_rng(seed)
     w = rng.integers(0, 256, size=(n, k), dtype=np.uint8)

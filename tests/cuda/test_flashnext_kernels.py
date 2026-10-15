@@ -144,8 +144,6 @@ def test_moe_rows_with_few_finite_logits_pick_distinct_experts():
     assert pick[2][:top_k] == sorted(range(experts), key=lambda e: (-logits[2, e].item(), e))[:top_k]
 
 
-
-
 def _gdn_out(rows: int, nv: int = gdn.NV):
     return (torch.empty((rows, nv * gdn.DV), dtype=torch.bfloat16, device=DEV),
             torch.empty((rows, nv * gdn.DV // 32), dtype=torch.float32, device=DEV))

@@ -51,8 +51,6 @@ def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
     return q.view(m, k // 16, 16)[:, :, src].reshape(m, k)
 
 
-
-
 def _rows(m, k, seed, spread=1.0):
     g = torch.Generator().manual_seed(seed)
     x = torch.randn((m, k), generator=g) * spread
