@@ -141,7 +141,8 @@ class App:
         return ids
 
     def reply_model(self, body: Any) -> str:
-        """The id a reply names: the one the request asked for when this endpoint answers to it, else ``--name``."""
+        """The id ``--name-priority`` keys a request's default priority by: the one it asked for when this endpoint
+        answers to it, else ``--name``. (The id a reply names is ``server.http.requested_model``'s.)"""
 
         asked = body.get("model") if isinstance(body, dict) else None
         return asked if isinstance(asked, str) and asked in self.model_ids else self.served

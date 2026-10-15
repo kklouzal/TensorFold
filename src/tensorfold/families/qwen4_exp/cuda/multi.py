@@ -278,7 +278,7 @@ class MultiDecoder:
 
         gate = self.memory_gate
         budget = gate.room - gate.reserve
-        busy = [s.st for s in [*list(self.streams.values()), *list(self.filling)] if s.st is not None]
+        busy = [s.st for s in [*self.streams.values(), *self.filling] if s.st is not None]
         first = min(self.capacity, FIRST)
         active = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in {id(st): st for st in busy}.values())
         per_token = -(-self.window_bytes // self.capacity) if self.capacity else 0

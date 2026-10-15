@@ -77,8 +77,6 @@ class _App:
     def prepare(self, body, chat):
         self.preparations += 1
         return body
-    def reply_model(self, body):
-        return self.served_name
     def _admit(self):
         if self.busy:
             raise _sources()[3]('configured request capacity is full; retry shortly')

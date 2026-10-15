@@ -15,7 +15,8 @@ _MADE = threading.Lock()
 
 
 class Request:
-    """One running request: its prompt length and the server's own list of its reply tokens (only ever read here).
+    """One running request: its prompt length and the server's own list of its reply tokens (only ever read here and by
+    a scrape's ``Metrics.reading``).
     ``started`` is its arrival (the handler's clock), ``first`` its first generated token, ``outcome`` how it ended
     (``metrics.OUTCOMES``: the run sets its finish_reason; an exception makes it ``abort`` or ``error``)."""
 
