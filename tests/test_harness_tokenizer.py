@@ -619,3 +619,13 @@ def test_a_count_checks_sampling_without_keying_a_seed_to_the_prompt(bridge, app
     assert hashed == [0]
     with pytest.raises(RequestError, match="top_p"):
         bridge.count_request(app, request(temperature=0.7, top_p=1.5), RequestError)
+
+
+def test_a_failed_preparation_is_a_spec_server_error_without_request_data(bridge, app, monkeypatch):
+    from tests.openai_spec import check_error
+
+    monkeypatch.setattr(bridge, "count_request", lambda *a, **k: (_ for _ in ()).throw(KeyError("private-prompt")))
+    payload = json.dumps(request()).encode()
+    status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))})
+    check_error(result)
+    assert status == 500 and result["error"]["type"] == "server_error" and "private-prompt" not in json.dumps(result)

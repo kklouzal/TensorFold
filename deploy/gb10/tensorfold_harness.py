@@ -267,7 +267,7 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
     def make_handler(app: Any) -> type:
         from tensorfold.server import request_body
         from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
-        from tensorfold.server.errors import CapacityError, RequestError, error_body
+        from tensorfold.server.errors import CapacityError, RequestError, error_body, server_error
 
         if app.thinking_budget != 0:
             raise ValueError("Harness requires TensorFold --thinking-budget 0; budgets are selected per request")
@@ -317,7 +317,7 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                     import traceback
                     print(f"TensorFold token preparation failed: {type(sys.exception()).__name__}", file=sys.stderr)
                     traceback.print_list(traceback.extract_tb(sys.exc_info()[2]), file=sys.stderr)
-                    return self._json(500, {"error": {"type": "server_error", "message": "TensorFold token preparation failed"}})
+                    return self._json(500, {"error": server_error("TensorFold token preparation failed")})
 
         return Handler
     return make_handler
