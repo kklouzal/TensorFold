@@ -31,17 +31,23 @@ _SELECTED_8 = tl.constexpr(tuple(tuple(ref.THRESHOLDS_8[2 * step * cell + step -
 
 
 @triton.jit
+def _step8_selected(x, q, LEVEL: tl.constexpr):
+    """One binary-lifting decision, its boundary selected in registers from the level's compile-time row."""
+    step: tl.constexpr = 128 >> LEVEL
+    row: tl.constexpr = _SELECTED_8[LEVEL]
+    boundary = tl.full(x.shape, row[0], tl.float32)
+    for cell in tl.static_range(1, len(row)):
+        boundary = tl.where(q >= 2 * step * cell, row[cell], boundary)
+    return q + (x > boundary).to(tl.int32) * step
+
+
+@triton.jit
 def _indices8_selected(x):
-    """Oracle: eight-bit indices by binary lifting with each level's boundary selected in registers from its
-    compile-time row (``rotorquant_kernel._indices(x, 8)`` until 2026-10-14)."""
+    """Oracle: eight-bit indices by binary lifting with each level's boundary selected in registers
+    (``rotorquant_kernel._indices(x, 8)`` until 2026-10-14)."""
     q = tl.full(x.shape, 0, tl.int32)
     for level in tl.static_range(8):
-        step: tl.constexpr = 128 >> level
-        row: tl.constexpr = _SELECTED_8[level]
-        boundary = tl.full(x.shape, row[0], tl.float32)
-        for cell in tl.static_range(1, len(row)):
-            boundary = tl.where(q >= 2 * step * cell, row[cell], boundary)
-        q = q + (x > boundary).to(tl.int32) * step
+        q = _step8_selected(x, q, level)
     return q
 
 
