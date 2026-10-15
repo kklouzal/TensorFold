@@ -293,6 +293,8 @@ class Constraint:
         self.active = think_end is None               # with thinking on: from the token after </think>
         self.spec: Spec | None = None                 # what ``pack`` sends another rank
         self._shifts: dict[Any, Any] = {}
+        self._pinned: Any = None                      # host staging for the bits a GPU mask reads
+        self._landed: Any = None                      # the event after the staging buffer's last copy
 
     def fresh(self) -> "Constraint":
         """This grammar from its start again, for a reply decoded again from its prompt (a yielded stream's replay)."""
@@ -375,11 +377,31 @@ class Constraint:
         if shifts is None:
             shifts = self._shifts[device] = torch.arange(8, dtype=torch.uint8, device=device)
         # token t is bit t % 8 of byte t // 8 (xgrammar's int32 words, little-endian)
-        packed = torch.from_numpy(window.bits).to(device).view(torch.uint8)
+        packed = self._staged(window.bits, device).view(torch.uint8)
         allowed = ((packed.unsqueeze(-1) >> shifts) & 1).view(len(window.rows), -1)[:, offset:offset + width].bool()
         if allowed.shape[1] < width:                  # logits past the grammar's vocabulary: never allowed
             allowed = torch.nn.functional.pad(allowed, (0, width - allowed.shape[1]), value=False)
         return allowed
+
+    def _staged(self, bits, device):
+        """``bits`` on ``device``; to a GPU through a pinned buffer, copied in stream order without the host waiting for
+        the work queued before it (the forward), and rewritten only once its previous copy has landed."""
+
+        import torch
+
+        if torch.device(device).type != "cuda":
+            return torch.from_numpy(bits).to(device)
+        rows, words = bits.shape
+        if self._pinned is None or self._pinned.shape[0] < rows or self._pinned.shape[1] != words:
+            self._pinned = torch.empty((max(rows, 8), words), dtype=torch.int32, pin_memory=True)
+        elif self._landed is not None:
+            self._landed.synchronize()
+        staged = self._pinned[:rows]
+        staged.numpy()[:] = bits
+        out = staged.to(device, non_blocking=True)
+        self._landed = torch.cuda.Event()
+        self._landed.record()
+        return out
 
     def _mask_torch(self, logits, window: Window, offset: int = 0):
         import torch

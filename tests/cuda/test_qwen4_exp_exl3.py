@@ -294,8 +294,9 @@ def test_cut_model_strict_tool_calls_on_the_real_vocabulary(cut_model, required)
         assert all(m.accept_token(t) for t in runs[0]), sampling
         text = tok.decode([t for t in runs[0] if t not in eos], skip_special_tokens=False)
         content, calls = plan.parse(text)
-        if required:
-            assert calls and not content, (sampling, text)
+        if required:                              # forced: blanks, then a call (finished if the reply ended)
+            assert text.lstrip(" \t\r\n").startswith("<tool_call>\n<function="), (sampling, text)
+            assert runs[0][-1] not in eos or (calls and not content), (sampling, text)
         for call in calls or ():
             args = json.loads(call["function"]["arguments"])
             if call["function"]["name"] == "file_read":
