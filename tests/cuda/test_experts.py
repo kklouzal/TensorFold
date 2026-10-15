@@ -7,7 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda import experts  # noqa: E402
-from wide_bf16 import wide as _wide  # noqa: E402
+from kernel_inputs import wide as _wide  # noqa: E402
 
 DEV = "cuda"
 

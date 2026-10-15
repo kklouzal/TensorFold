@@ -14,13 +14,9 @@ from tensorfold.cuda import prompt_precision
 from tensorfold.cuda.kernels.qmm import quantize_rows
 from tensorfold.cuda.nvfp4 import format as fmt
 from tensorfold.cuda.nvfp4.linear import Concat, Fp4Linear, Fp8BlockLinear, Fp8Linear, Mx8Linear
+from kernel_inputs import fp4_weight
 
 
-def _fp4(n, k, seed):
-    rng = np.random.default_rng(seed)
-    packed = rng.integers(0, 256, size=(n, k // 2), dtype=np.uint8)
-    scale = rng.integers(0x20, 0x50, size=(n, k // 16), dtype=np.uint8)           # e4m3 0.03-4
-    return packed, scale, 0.0123
 
 
 def _fp8(n, k, seed):
@@ -46,7 +42,7 @@ def test_slices_meet_in_part_with_the_clusters_bits(kind):
 
     n, k, m = 5120, 17408, 37                                                   # 4 slices (a down projection)
     if kind == "fp4":
-        packed, scale, g = _fp4(n, k, 7)
+        packed, scale, g = fp4_weight(n, k, 7)
         lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
         mode, w, bs = linear.FP4, lin.words, lin.bs
     else:
@@ -65,7 +61,7 @@ def test_slices_meet_in_part_with_the_clusters_bits(kind):
 
 @pytest.mark.parametrize("n,k", [(128, 256), (320, 1024), (1000, 5120)])
 def test_fp4_decode_is_the_dequantized_product_and_rows_are_independent(n, k):
-    packed, scale, g = _fp4(n, k, n)
+    packed, scale, g = fp4_weight(n, k, n)
     lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
     x = (torch.randn((16, k), generator=torch.Generator().manual_seed(1)) * 0.5).to(torch.bfloat16).cuda()
     full = _check_rows(lin, x)
@@ -108,7 +104,7 @@ def _bf16_prompts(lin, x, ref):
 
 def test_prompt_gemms_track_decode_and_keep_rows_in_any_chunk():
     n, k, m = 320, 1024, 300
-    packed, scale, g = _fp4(n, k, 7)
+    packed, scale, g = fp4_weight(n, k, 7)
     fp4 = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
     w, s = _fp8(n, k, 8)
     fp8 = Fp8Linear.from_checkpoint(torch.from_numpy(w).cuda().view(torch.float8_e4m3fn), s)

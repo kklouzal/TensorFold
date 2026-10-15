@@ -10,6 +10,7 @@ if not torch.cuda.is_available():
 from tensorfold.cuda import experts as grouped  # noqa: E402
 from tensorfold.cuda import moe  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import gdn, qmm  # noqa: E402
+from kernel_inputs import gdn_inputs  # noqa: E402
 
 DEV = "cuda"
 
@@ -143,16 +144,6 @@ def test_moe_rows_with_few_finite_logits_pick_distinct_experts():
     assert pick[2][:top_k] == sorted(range(experts), key=lambda e: (-logits[2, e].item(), e))[:top_k]
 
 
-def _gdn_inputs(rows: int, seed: int):
-    g = torch.Generator(device=DEV).manual_seed(seed)
-    p = (torch.randn((rows, gdn.PW), generator=g, device=DEV) * 0.5).to(torch.bfloat16)
-    cs = (torch.randn((3, gdn.CONV), generator=g, device=DEV) * 0.5).to(torch.bfloat16)
-    cw = (torch.randn((gdn.CONV, 4), generator=g, device=DEV) * 0.3).to(torch.bfloat16)
-    state = torch.randn((gdn.NV, gdn.DV, gdn.DK), generator=g, device=DEV) * 0.05
-    a_log = torch.randn((gdn.NV,), generator=g, device=DEV) * 0.5
-    dt = torch.randn((gdn.NV,), generator=g, device=DEV) * 0.5
-    nw = (1 + 0.1 * torch.randn((gdn.DV,), generator=g, device=DEV)).to(torch.bfloat16)
-    return p, cs, cw, state, a_log, dt, nw
 
 
 def _gdn_out(rows: int, nv: int = gdn.NV):
@@ -162,7 +153,7 @@ def _gdn_out(rows: int, nv: int = gdn.NV):
 
 def test_gdn_window_rows_and_replay_match_serial_steps():
     rows = 6
-    p, cs, cw, state, a_log, dt, nw = _gdn_inputs(rows, 21)
+    p, cs, cw, state, a_log, dt, nw = gdn_inputs(rows, 21)
     win, (out, xs) = gdn.GDNScratch(rows, DEV), _gdn_out(rows)
     out_state = torch.empty_like(state)
     gdn.chain(p, cs, cw, state, a_log, dt, nw, 1e-6, rows, win, out_state, out, xs)
@@ -188,7 +179,7 @@ def test_gdn_window_rows_and_replay_match_serial_steps():
 
 def test_gdn_matches_fp32():
     rows = 3
-    p, cs, cw, state, a_log, dt, nw = _gdn_inputs(rows, 22)
+    p, cs, cw, state, a_log, dt, nw = gdn_inputs(rows, 22)
     win, (out, xs) = gdn.GDNScratch(rows, DEV), _gdn_out(rows)
     out_state = torch.empty_like(state)
     gdn.chain(p, cs, cw, state, a_log, dt, nw, 1e-6, rows, win, out_state, out, xs)

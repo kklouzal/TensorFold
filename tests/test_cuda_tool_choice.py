@@ -9,6 +9,7 @@ import pytest
 
 from tensorfold.cuda import server
 from tests.test_cuda_admission import http_server, post
+from cuda_http_fixtures import events
 
 EOS, OPEN, CLOSE, THINK, END = 0, 1000, 1001, 1002, 1003
 SPECIAL = {"<tool_call>": OPEN, "</tool_call>": CLOSE, "<think>": THINK, "</think>": END}
@@ -85,10 +86,6 @@ def ask(app, stream=False, **body):
             "stream": stream, **body}
     with http_server(app) as port:
         return post(port, body, True)
-
-
-def events(text):
-    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
 
 
 @pytest.mark.parametrize("stops", [True, False])

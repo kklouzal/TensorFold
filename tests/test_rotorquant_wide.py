@@ -44,10 +44,6 @@ def wide_matrix(codec, *, mathematical=False):
     return matrix
 
 
-def f32(value):
-    return struct.unpack("<f", struct.pack("<f", value))[0]
-
-
 def wide_index_envelope(values, codec, thresholds):
     """Analytic normal-domain FP32 bin envelope, without stored-scale inference.
 

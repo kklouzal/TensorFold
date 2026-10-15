@@ -23,6 +23,7 @@ from tensorfold.families.qwen3_5.cuda.dflash2 import _sub_parts
 from tensorfold.families.qwen3_5.cuda.forward import State, commit, tree_forward
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import Plain8
 from tensorfold.families.qwen3_5.cuda.weights import GDN, Config, Layer, Plain, Weights
+from qwen_engine_checks import generated_ids
 
 MODEL = os.environ.get("TENSORFOLD_QWEN27_NVFP4", "")
 DRAFTER = os.environ.get("TENSORFOLD_QWEN27_DRAFTER", "")
@@ -158,12 +159,6 @@ def engine(request):
     torch.cuda.empty_cache()
 
 
-def _ids(engine, prompt, sampling, draft, tokens=48):
-    out: list[int] = []
-    stats = engine.generate(list(prompt), tokens, sampling, lambda new: out.extend(new) and False, draft=draft)
-    return out, stats
-
-
 @pytest.mark.parametrize("seed", [None, 1234, 1237], ids=["greedy", "seed1234", "seed1237"])
 def test_checkpoint_drafted_equals_serial(engine, seed):
     """The real checkpoint with DFlash2: drafted replies are serial's token ids (SHA-256 of the ids compared)."""
@@ -176,8 +171,8 @@ def test_checkpoint_drafted_equals_serial(engine, seed):
     prompt = tok.encode("Write a short Python function that computes the Fibonacci sequence and explain it.",
                         add_special_tokens=False).ids
     sampling = None if seed is None else Sampling(seed, 1.0, 20, 0.95)
-    serial, s_stats = _ids(engine, prompt, sampling, draft=False)
-    drafted, d_stats = _ids(engine, prompt, sampling, draft=True)
+    serial, s_stats = generated_ids(engine, prompt, sampling, draft=False)
+    drafted, d_stats = generated_ids(engine, prompt, sampling, draft=True)
     digest = [hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest() for ids in (serial, drafted)]
     print(seed, tok.decode(serial)[:200].replace("\n", " "), s_stats, d_stats)
     assert len(serial) == 48 and digest[0] == digest[1]

@@ -1,4 +1,4 @@
-"""Shared CPU-only checkpoint files for real CUDA HTTP preparation/admission tests."""
+"""Shared CPU-only checkpoint files for real CUDA HTTP preparation/admission tests, and their streams' events."""
 import json
 
 from tokenizers import Tokenizer, models, pre_tokenizers
@@ -14,3 +14,8 @@ def model_directory(directory):
                 "{% if suffix %} {{ suffix }}{% endif %}")
     (directory / "tokenizer_config.json").write_text(json.dumps({"chat_template": template}))
     return directory
+
+
+def events(text):
+    """A streamed reply's JSON ``data:`` events, in order."""
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]

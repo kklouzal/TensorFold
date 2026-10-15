@@ -12,6 +12,7 @@ if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
 from tensorfold.cuda.nvfp4 import checkpoint
 from tensorfold.cuda.nvfp4 import format as fmt
 from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear
+from kernel_inputs import fp4_weight
 
 E2M1 = torch.tensor(fmt.E2M1[:8].tolist(), dtype=torch.float32)
 
@@ -50,11 +51,6 @@ def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
     return q.view(m, k // 16, 16)[:, :, src].reshape(m, k)
 
 
-def _fp4_weight(n, k, seed):
-    rng = np.random.default_rng(seed)
-    packed = rng.integers(0, 256, size=(n, k // 2), dtype=np.uint8)
-    scale = rng.integers(0x20, 0x50, size=(n, k // 16), dtype=np.uint8)           # e4m3 0.03-4
-    return packed, scale, 0.0123
 
 
 def _rows(m, k, seed, spread=1.0):
@@ -128,7 +124,7 @@ ROWS = (1, 2, 3, 5, 12, 16, 17, 31, 33, 64, 65, 100, 128)
 
 @pytest.mark.parametrize("n,k", [(128, 256), (1000, 5120), (320, 17408)])
 def test_fp4_lane_is_the_quantized_product_and_rows_are_independent(n, k):
-    packed, scale, g = _fp4_weight(n, k, n)
+    packed, scale, g = fp4_weight(n, k, n)
     act = 0.0123
     lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g, act=act)
     x = _rows(128, k, 3, 0.7)
@@ -173,7 +169,7 @@ def test_slices_meet_in_part_with_the_clusters_bits(mode):
 
     n, k, m = 5120, 17408, 37                                                   # 4 slices (a down projection)
     if mode == checkpoint.A4:
-        packed, scale, g = _fp4_weight(n, k, 7)
+        packed, scale, g = fp4_weight(n, k, 7)
         weight, scales = torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda()
         lin = Fp4Linear.from_checkpoint(weight, scales, g, act=0.0123)
     else:
@@ -197,7 +193,7 @@ def test_head_tiles_keep_the_checkpoint_math():
     """The drafter's head slices (64-column tiles as views) keep the input scale and the FP4 mma's word order."""
 
     n, k = 640, 512
-    packed, scale, g = _fp4_weight(n, k, 11)
+    packed, scale, g = fp4_weight(n, k, 11)
     lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g, act=0.02)
     x = _rows(9, k, 12)
     part = lin.tiles(2, 7)
@@ -225,7 +221,7 @@ def test_fp4_prompt_rows_are_chunk_invariant_and_the_quantized_product(n, k):
 
     from tensorfold.cuda.kernels import qmm
 
-    packed, scale, g = _fp4_weight(n, k, 7 * n)
+    packed, scale, g = fp4_weight(n, k, 7 * n)
     act = 0.0123
     lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g, act=act)
     x = _rows(300, k, 5, 0.7)
@@ -272,7 +268,7 @@ def test_fused_mlp_is_swiglu_then_down_and_chunk_invariant(monkeypatch, fp32):
     hidden, inter, act, act_d = 256, 384, 0.0123, 0.0071
     lins, raw = [], []
     for n, k, a in ((inter, hidden, act), (inter, hidden, act), (hidden, inter, act_d)):
-        packed, scale, g = _fp4_weight(n, k, n + k + len(lins))
+        packed, scale, g = fp4_weight(n, k, n + k + len(lins))
         raw.append((packed, scale, g))
         lins.append(Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g,
                                               act=a))

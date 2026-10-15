@@ -12,6 +12,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from tensorfold.cuda import server
 from tensorfold.families.glm5_next.cuda.app import GlmApp, ThinkingOffTemplate
 from tests.test_cuda_admission import http_server, post
+from cuda_http_fixtures import events
 from tests.test_request_policy import CALL, TOOLS
 
 WIDTHS = (1, 3, 5, 2, 7, 4)            # a drafted reply's rounds; "draft": false delivers one token a round
@@ -104,10 +105,6 @@ def make_app(tmp_path, engine, cls=server.App):
 def body(chat, stream, **fields):
     prompt = {"messages": [{"role": "user", "content": "x"}]} if chat else {"prompt": "x"}
     return {**prompt, "stream": stream, "stream_options": {"include_usage": True}, "temperature": 0, **fields}
-
-
-def events(text):
-    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
 
 
 def reply(port, chat, stream, **fields):

@@ -8,7 +8,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.cuda import experts as grouped, prompt_precision  # noqa: E402
+from tensorfold.cuda import experts as grouped  # noqa: E402
 from tensorfold.cuda.moe import Routed  # noqa: E402
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.decode import draft_decode, prefill as serial_prefill  # noqa: E402
@@ -17,6 +17,7 @@ from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Lay
 from tensorfold.families.qwen3_5_moe.cuda import decode  # noqa: E402
 from tensorfold.families.qwen3_5_moe.cuda.mtp import Head  # noqa: E402
 from tensorfold.families.qwen3_5_moe.cuda.weights import MTP  # noqa: E402
+from qwen_engine_checks import points_after  # noqa: E402
 
 V, D, E, WIDTH, TOP = 256, 256, 16, 64, 4
 
@@ -100,14 +101,6 @@ def test_mtp_decode_equals_serial(monkeypatch, oracle):
         if oracle:
             assert res.accepted > 0 and res.rounds < 23
             monkeypatch.undo()
-
-
-@pytest.fixture(params=[False, True], ids=["bf16", "fp8"])
-def fp8(request):
-    """bf16 prompts (the default), then --prefill-fp8."""
-
-    with prompt_precision.using(request.param):
-        yield request.param
 
 
 def test_prefill_chunks_give_the_same_state_and_head_cache(monkeypatch, fp8):
@@ -438,10 +431,6 @@ def test_copied_windows_of_16_rows_keep_serial_tokens(monkeypatch):
     assert sum(s.rounds for s in streams) < sum(counts) // 2           # long runs of copied rows were kept
 
 
-def _points_after(k):
-    return lambda ids: [k] if len(ids) > k + 1 else []
-
-
 @pytest.mark.parametrize("step", [1024, 3])
 def test_prompts_resume_a_kept_start_and_equal_fresh(monkeypatch, step):
     """A prompt resuming another's state kept at a message start, or at a finished prompt's end, decodes a fresh
@@ -456,7 +445,7 @@ def test_prompts_resume_a_kept_start_and_equal_fresh(monkeypatch, step):
     shared = [11, 12, 13, 14, 15, 16]
     prompts = [shared + [21, 22, 23], shared + [31, 32], shared + [41, 42, 43, 44, 45], [7, 8, 9, 10, 11]]
     refs = [_serial(w, p, smp, 16) for p, smp in zip(prompts, SAMPLED)]
-    dec = MultiDecoder(w, head, depth=3, confidence=0.3, keep=8, points=_points_after(len(shared)))
+    dec = MultiDecoder(w, head, depth=3, confidence=0.3, keep=8, points=points_after(len(shared)))
     first = Stream(prompts[0], 16, SAMPLED[0])
     dec.admit(first)
     _drain(dec)

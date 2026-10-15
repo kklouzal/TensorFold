@@ -13,10 +13,7 @@ import struct
 import pytest
 
 from tensorfold.families.qwen4_exp.cuda import rotorquant_ref as rq
-
-
-def _phi(x):
-    return 0.0 if math.isinf(x) else math.exp(-x * x / 2) / math.sqrt(2 * math.pi)
+from rotorquant_math import f32 as _f32, phi as _phi
 
 
 def _cdf(x):
@@ -266,10 +263,6 @@ def test_tensor_reference_rejects_malformed_shapes_types_scales_and_nonfinite_va
         rq.dequant_ref(torch.zeros((1, 64), dtype=torch.uint8), torch.full((1, 1), -1.0))
     with pytest.raises(ValueError, match="finite FP32"):
         rq.dequant_ref(torch.full((1, 64), 255, dtype=torch.uint8), torch.full((1, 1), 3e38))
-
-
-def _f32(value):
-    return struct.unpack("<f", struct.pack("<f", value))[0]
 
 
 def _float32_tree_rotated(values, variant, tree):

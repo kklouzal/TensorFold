@@ -7,7 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda.kernels import qmm  # noqa: E402
-from wide_bf16 import wide as _wide  # noqa: E402
+from kernel_inputs import wide as _wide  # noqa: E402
 
 ROWS = [1, 2, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 200, 256, 384, 512, 700, 1024, 1500, 2048]
 

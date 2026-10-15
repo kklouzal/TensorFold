@@ -18,6 +18,7 @@ from tensorfold.families.qwen3_5.cuda.forward import (State, commit, commit_stre
 from tensorfold.families.qwen3_5.cuda.draft_tree import allocate  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.multi import TREE, MultiDecoder, private, viewed  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
+from qwen_engine_checks import points_after  # noqa: E402
 
 V = 256
 
@@ -290,12 +291,6 @@ def test_commit_streams_equals_each_stream_alone():
         assert all(a is b for a, b in zip(in_place[k].rec, held[k]))     # the same tensors, overwritten
 
 
-def _points_after(k):
-    """Snapshot points for the test prompts: position ``k`` when a prompt is longer."""
-
-    return lambda ids: [k] if len(ids) > k + 1 else []
-
-
 @pytest.mark.parametrize("step", [1024, 3])
 def test_prompts_resume_a_shared_start_and_equal_fresh(monkeypatch, step):
     """A prompt resuming another's kept state at a message start decodes a fresh prefill's tokens, prefill steps interleaved or not."""
@@ -310,7 +305,7 @@ def test_prompts_resume_a_shared_start_and_equal_fresh(monkeypatch, step):
     shared = [11, 12, 13, 14, 15, 16]
     prompts = [shared + [21, 22, 23], shared + [31, 32], shared + [41, 42, 43, 44, 45], [7, 8, 9, 10, 11]]
     refs = {tuple(p): _serial(w, p, smp, 16) for p, smp in zip(prompts, SAMPLINGS)}
-    dec = _Oracle(w, refs, seed=5, points=_points_after(len(shared)))
+    dec = _Oracle(w, refs, seed=5, points=points_after(len(shared)))
     first = Stream(prompts[0], 16, SAMPLINGS[0])
     dec.admit(first)
     while dec.live():

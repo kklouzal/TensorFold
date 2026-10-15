@@ -9,20 +9,11 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.families.qwen4_exp.cuda import gdn, gdn_io  # noqa: E402
+from kernel_inputs import gdn_inputs  # noqa: E402
 
 DEV = "cuda"
 
 
-def _inputs(rows: int, seed: int):
-    g = torch.Generator(device=DEV).manual_seed(seed)
-    p = (torch.randn((rows, gdn.PW), generator=g, device=DEV) * 0.5).to(torch.bfloat16)
-    cs = (torch.randn((3, gdn.CONV), generator=g, device=DEV) * 0.5).to(torch.bfloat16)
-    cw = (torch.randn((gdn.CONV, 4), generator=g, device=DEV) * 0.3).to(torch.bfloat16)
-    state = torch.randn((gdn.NV, gdn.DV, gdn.DK), generator=g, device=DEV) * 0.05
-    a_log = torch.randn((gdn.NV,), generator=g, device=DEV) * 0.5
-    dt = torch.randn((gdn.NV,), generator=g, device=DEV) * 0.5
-    nw = (1 + 0.1 * torch.randn((gdn.DV,), generator=g, device=DEV)).to(torch.bfloat16)
-    return p, cs, cw, state, a_log, dt, nw
 
 
 def _chain(p, cs, cw, state, a_log, dt, nw, rows):
@@ -49,7 +40,7 @@ def _front(p, conv_states, windows, sid, cw, a_log, dt):
 
 def test_front_gives_the_chain_kernels_replay_inputs():
     rows = 7
-    p, cs, cw, state, a_log, dt, nw = _inputs(rows, 3)
+    p, cs, cw, state, a_log, dt, nw = gdn_inputs(rows, 3)
     sc, _, _, _ = _chain(p, cs, cw, state, a_log, dt, nw, rows)
     _, k, v, g, beta = _front(p, [cs], _chain_windows(rows), [0] * rows, cw, a_log, dt)
     assert torch.equal(k, sc.k[:rows]) and torch.equal(v, sc.v[:rows])
@@ -57,8 +48,8 @@ def test_front_gives_the_chain_kernels_replay_inputs():
 
 
 def test_front_takes_each_rows_own_stream():
-    p1, cs1, cw, state, a_log, dt, nw = _inputs(5, 4)
-    p2, cs2, _, _, _, _, _ = _inputs(3, 5)
+    p1, cs1, cw, state, a_log, dt, nw = gdn_inputs(5, 4)
+    p2, cs2, _, _, _, _, _ = gdn_inputs(3, 5)
     alone = [_front(p1, [cs1], _chain_windows(5), [0] * 5, cw, a_log, dt),
              _front(p2, [cs2], _chain_windows(3), [0] * 3, cw, a_log, dt)]
     p = torch.cat([p1, p2])
@@ -74,7 +65,7 @@ def test_front_recurrence_back_give_the_chain_kernels_layer():
     from tensorfold.cuda.kernels import gdn as shared
 
     rows = 6
-    p, cs, cw, state, a_log, dt, nw = _inputs(rows, 6)
+    p, cs, cw, state, a_log, dt, nw = gdn_inputs(rows, 6)
     _, out, xs, state_out = _chain(p, cs, cw, state, a_log, dt, nw, rows)
     q, k, v, g, beta = _front(p, [cs], _chain_windows(rows), [0] * rows, cw, a_log, dt)
     plan = shared.plan([list(range(-1, rows - 1))], DEV)
@@ -90,7 +81,7 @@ def test_shared_replay_gives_the_chain_kernels_states():
     from tensorfold.cuda.kernels import gdn as shared
 
     rows, keep = 6, 4
-    p, cs, cw, state, a_log, dt, nw = _inputs(rows, 7)
+    p, cs, cw, state, a_log, dt, nw = gdn_inputs(rows, 7)
     sc, _, _, state_all = _chain(p, cs, cw, state, a_log, dt, nw, rows)
     state_keep = torch.empty_like(state)
     gdn.replay(state, sc, keep, state_keep)
