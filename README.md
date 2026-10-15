@@ -245,7 +245,7 @@ Use `tensorfold serve --help` from your checkout for the authoritative parser. A
 | `--backend auto\|mlx\|cuda` | `auto`: MLX on macOS, CUDA elsewhere. |
 | `--host`, `--port` | `127.0.0.1`, `8080`; container port publication needs `--host 0.0.0.0` inside. |
 | `--api-key KEY`, `--api-key-file FILE` | Require bearer authentication; repeat static keys or load a restricted-permission key file. Configuration is bound at startup; key-file contents reload during operation and invalid configuration refuses authenticated routes. Both backends. |
-| `--metrics-open` | Permit unauthenticated `/metrics` when keys are configured. |
+| `--metrics-open` | Permit unauthenticated `/metrics` and `/stats` when keys are configured. |
 | `--name-priority ID=background` | Give CUDA requests for that served model ID background priority by default. |
 | `--vision-image-tokens N` | Explicit CUDA Qwen visual-token budget, 1 through 65,536; frontend image/resource limits remain active. Flash Next retains its 16,384-token default. |
 | `--name`, `--alias` | Model's own name; aliases are repeatable additional IDs on both backends. |
@@ -398,7 +398,8 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | --- | --- |
 | `GET /health` | Readiness, effective configuration and configured admission counters. |
 | `GET /v1/models`, `GET /v1/models/{model}` | Advertised model IDs/aliases with their `max_model_len`; an unknown ID is 404, as it is on every generation route. |
-| `GET /metrics` | Prometheus-compatible service metrics. |
+| `GET /metrics` | Prometheus-compatible service metrics, vLLM's names and meanings where they apply. |
+| `GET /stats` | One JSON snapshot for clients: server identity and start, model, limits, load, KV memory, prefix cache and totals (schema 1). |
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |
 | `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations. |
@@ -707,6 +708,7 @@ These report client-observed streamed arrival/first-token timing; they do not me
 ```bash
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/metrics
+curl -fsS http://127.0.0.1:8080/stats
 docker logs --tail 100 tensorfold-local
 docker inspect tensorfold-local --format '{{json .State}}'
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
+import time
 from typing import Any, Callable
 
 from tensorfold.cleanup import finish, raise_failures, rollback
@@ -188,16 +189,21 @@ class Scheduler:
 
     def submit(self, prompt: list[int], count: int, sampling: Any, draft: bool,
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
-               constraint: Any = None, background: bool = False, probabilities: Any = None) -> dict:
+               constraint: Any = None, background: bool = False, probabilities: Any = None,
+               progress: Callable[[int, int, int, float], bool] | None = None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
-        connection alive and says whether its client left, and a request whose client left stops even mid-prompt."""
+        connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
+        ``progress(total, cached, processed, ms since admission)``, also on the calling thread, hears the prompt's
+        rows when a lane takes it and after each prefill pass a decoder reports (``Stream.on_fill``); True stops it."""
 
         box: queue.Queue = queue.Queue()
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
                         constraint=constraint, background=background, probabilities=probabilities, cancel=cancel)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
+        if progress is not None:
+            stream.on_fill = lambda rows: box.put(("filled", rows))
         try:
             # Publication can succeed before an interrupt is delivered. Own
             # cancellation before entering the acceptance scope, so accepted
@@ -233,6 +239,10 @@ class Scheduler:
                 if kind == "tokens":
                     if not cancel.is_set() and emit(value):
                         cancel.set()                # the client left: the stream ends after its next round
+                elif kind == "filled":
+                    if not cancel.is_set() and progress(len(stream.prompt), stream.cached, value,
+                                                         (time.perf_counter() - stream.admitted) * 1000.0):
+                        cancel.set()
                 elif kind == "error":
                     raise value
                 else:
@@ -263,6 +273,10 @@ class Scheduler:
                 continue
             try:
                 self.decoder.admit(stream)
+                stream.admitted = time.perf_counter()             # one clock read an admission, not a round
+                stream.queue_s += stream.admitted - stream.queued
+                if stream.on_fill is not None:                    # its prefill starts from the rows it resumed
+                    stream.on_fill(stream.cached)
             except NoRoom as exc:
                 self.boxes.pop(id(stream))
                 if self.decoder.live():              # waits, first in line, until a live stream finishes

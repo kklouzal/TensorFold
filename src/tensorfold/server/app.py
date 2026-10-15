@@ -14,10 +14,11 @@ from tensorfold.engine import grammar
 from tensorfold.server.admission import concurrency
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.checkpoints import CheckpointStore, prune_conversations, save_conversations, spill_conversation
-from tensorfold.server.cancellation import Cancellation
+from tensorfold.server.cancellation import Cancellation, RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
 from tensorfold.server.decision_requests import DecisionRequests
 from tensorfold.server.prompt_blocks import PromptBlocks, _REQUEST
+from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.request_options import RequestOptions
 from tensorfold.server.http import served_model_ids
 from tensorfold.server import metrics
@@ -55,6 +56,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
 
     accepts_sampling = True
     accepts_cancellation = True
+    accepts_request_ids = True          # ``chat`` takes the handler's request id and arrival clock
     accepts_raw_prompt = True
     # the request's tool list never stops prose from streaming
     streams_prose_with_tools = True
@@ -361,8 +363,12 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         sampling: dict[str, Any] | None = None,
         cancellation: Cancellation | None = None,
         prompt: str | list[int] | None = None,
+        request_id: str | None = None,
+        arrived: float | None = None,
     ) -> dict[str, Any]:
-        """A reply to ``messages``, or with ``prompt`` (text or token ids) a raw completion: no template, no thinking."""
+        """A reply to ``messages``, or with ``prompt`` (text or token ids) a raw completion: no template, no thinking.
+        ``request_id`` names it in its ``tensorfold`` block and ``done`` line; ``arrived`` (perf_counter) is when the
+        handler read it, which its timings start from."""
 
         previous_sampling = getattr(_REQUEST, "sampling", None)
         _REQUEST.sampling = sampling  # request-scoped; nested calls restore their outer request
@@ -370,7 +376,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         primary = None
         cleanup_failures = []
         try:
-            received_at = time.perf_counter()
+            received_at = time.perf_counter() if arrived is None else float(arrived)
             fields = sampling or {}
             limit = max(1, int(max_tokens or self.default_max_tokens))
             background = is_title_request(messages, tools) or fields.get("priority") == "background"
@@ -388,9 +394,12 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 reply_limit_explicit=max_tokens is not None,
                 cancellation=cancellation,
                 prompt=prompt,
+                request_id=request_id or new_request_id(),
             )
         except BaseException as error:
             primary = error
+            metrics.ended("abort" if isinstance(error, (RequestCancelled, BrokenPipeError, ConnectionResetError))
+                          else "error")
             if cancellation is not None:
                 try:
                     self.scheduler.cancel(cancellation)
@@ -445,6 +454,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         reply_limit_explicit: bool = True,
         cancellation: Cancellation | None = None,
         prompt: str | list[int] | None = None,
+        request_id: str = "",
     ) -> dict[str, Any]:
         # a request's chat_template_kwargs.enable_thinking (via the sampling fields) overrides the server's
         cancellation = cancellation or Cancellation()
@@ -630,6 +640,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         seconds = max(0.0, job.finished_at - job.submitted_at)
         decode_seconds = max(0.0, job.finished_at - job.prefilled_at) if job.prefilled_at else 0.0
         decode_tokens = max(0, len(collected) - 1)
+        queue_s = max(0.0, job.started_at - job.submitted_at) if job.started_at else None
+        prefill_s = max(0.0, job.prefilled_at - job.started_at) if job.started_at and job.prefilled_at else None
         reply: dict[str, Any] = {
             "content": content,
             "stop_sequence": matched_stop(raw_text, stops.strings),
@@ -659,6 +671,16 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 "token_sha": _token_sha(collected),
                 # the narrowest verify window of the reply's rounds (drafted replies: 2 or more)
                 "min_rows": int(getattr(job.stream, "min_rows", 0) or 0),
+                # the CUDA block's version-2 keys (its last run's, for a replayed background reply)
+                "stats_version": 2,
+                "request_id": request_id,
+                "prepare_s": round(max(0.0, job.submitted_at - received_at), 4),
+                **({"queue_s": round(queue_s, 4)} if queue_s is not None else {}),
+                **({"prefill_s": round(prefill_s, 4)} if prefill_s is not None else {}),
+                "decode_s": round(decode_seconds, 4),
+                **({"ttft_s": round(first_token_at - received_at, 4)} if first_token_at else {}),
+                **({"decode_tps": round(decode_tokens / decode_seconds, 2)}
+                   if decode_seconds > 0 and decode_tokens > 0 else {}),
             },
         }
         if stream is not None:
@@ -673,12 +695,14 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 speculative["proposer"] = stream.proposer.telemetry()
             reply["speculative"] = speculative
         self.requests_completed += 1
+        metrics.ended(reply["finish_reason"], cached=int(job.cached_tokens),
+                      rounds=int(stream.rounds) if stream is not None else 0, queue=queue_s, prefill=prefill_s)
         store = self.checkpoints
         warning = unanswered(reply["finish_reason"], thinking, content)
         if warning:
             print(warning, flush=True)
         print(
-            f"[tensorfold] done {job.job_id} prompt={len(prompt_ids)} cached={job.cached_tokens} "
+            f"[tensorfold] done {request_id} prompt={len(prompt_ids)} cached={job.cached_tokens} "
             f"thinking={thinking} effort={reply['runtime']['reasoning_effort']} "
             f"tokens={len(collected)} sha={_token_sha(collected)} finish={reply['finish_reason']} "
             f"tok/s={reply['runtime']['tokens_per_second']:.1f} "

@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
-from tensorfold.server import anthropic, metrics, request_body, responses, token_routes
+from tensorfold.server import anthropic, metrics, request_body, responses, stats, token_routes
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
 from tensorfold.server.errors import (RequestError, error_body, invalid_request, retry_headers, server_error, status_of,
@@ -17,6 +17,7 @@ from tensorfold.server.http import Server, model_route, models_reply, requested_
 from tensorfold.server.request_body import read_body
 from tensorfold.server.request_ids import RequestIds
 from tensorfold.server.stacks import Rearming
+from tensorfold.server.token_routes import flag
 
 if TYPE_CHECKING:
     from tensorfold.cuda.server import App
@@ -40,7 +41,7 @@ def _log_error(exc: BaseException) -> None:
     traceback.print_exception(exc)
 
 
-POLLED = ("/metrics", "/v1/metrics", "/health", "/v1/health")
+POLLED = ("/metrics", "/v1/metrics", "/health", "/v1/health", "/stats", "/v1/stats")
 
 
 def make_handler(app: App):
@@ -102,6 +103,8 @@ def make_handler(app: App):
             route = self.path.split("?", 1)[0].rstrip("/")
             if route in ("/metrics", "/v1/metrics"):
                 return metrics.send(self, app)
+            if route in stats.ROUTES:
+                return stats.send(self, app)
             model_id = model_route(route)
             if model_id is not None:
                 self._json(*models_reply(app, model_id, getattr(app, "max_model_len", None)))
@@ -143,6 +146,8 @@ def make_handler(app: App):
             try:
                 body = json.loads(read_body(self, limit=(32 if tokenizer else 96) << 20) or b"{}")
                 model = requested_model(app, body)          # an id this endpoint does not serve: 404
+                # llama.cpp's opt-in prefill progress frames, on a stream
+                progress = isinstance(body, dict) and flag(body, "return_progress", False) and bool(body.get("stream"))
             except RequestError as error:
                 return self._refuse(error)
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -187,6 +192,7 @@ def make_handler(app: App):
 
             if stream:
                 opened = False
+                said_role = not chat                # a chat stream's reply opens with the assistant's role chunk
 
                 def open_stream() -> None:
                     nonlocal opened
@@ -198,8 +204,22 @@ def make_handler(app: App):
                         self.end_headers()
                         opened = True
 
-                if not defer_headers:
+                def write(frame: dict[str, Any] | None) -> None:
+                    """Open the stream if it is not, write the role chunk if it is not out yet, then ``frame``."""
+                    nonlocal said_role
                     open_stream()
+                    if not said_role:
+                        said_role = True
+                        self.wfile.write(f"data: {json.dumps(chunk({'role': 'assistant'}))}\n\n".encode())
+                    if frame is not None:
+                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                    self.wfile.flush()
+
+                if not defer_headers:
+                    try:
+                        write(None)
+                    except OSError:                 # the client has gone: the run notices at its first write
+                        pass
 
                 def emit(delta: dict[str, Any] | None) -> bool:
                     """Write one delta (None: an SSE comment that keeps an open stream's connection alive)."""
@@ -209,20 +229,27 @@ def make_handler(app: App):
                                 self.wfile.write(b": keepalive\n\n")
                                 self.wfile.flush()
                             return True
-                        if not opened:
-                            open_stream()
-                            if chat:
-                                self.wfile.write(f"data: {json.dumps(chunk({'role': 'assistant'}))}\n\n".encode())
-                        self.wfile.write(f"data: {json.dumps(chunk(delta))}\n\n".encode())
-                        self.wfile.flush()
+                        write(chunk(delta))
                         return True
                     except OSError:             # reset, broken pipe, timed out, host unreachable: the client has gone
                         return False
 
-                if chat and not defer_headers:
-                    emit({"role": "assistant"})
+                def show_progress(progress: dict[str, Any]) -> bool:
+                    """llama.cpp's ``prompt_progress`` frame, which carries no output; False: the client has gone."""
+                    frame = chunk({"role": "assistant", "content": None} if chat else {})
+                    frame["prompt_progress"] = progress
+                    try:
+                        open_stream()
+                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                        self.wfile.flush()
+                        return True
+                    except OSError:
+                        return False
+
                 try:
-                    result = app.run(body, chat, emit, prepared=prepared, cancelled=cancelled)
+                    result = app.run(body, chat, emit, prepared=prepared, cancelled=cancelled,
+                                     request_id=self.request_id, arrived=self.arrived,
+                                     **({"progress": show_progress} if progress else {}))
                 except RequestCancelled:
                     self.close_connection = True
                     return
@@ -235,10 +262,10 @@ def make_handler(app: App):
                     if not opened:
                         return self._json(500, {"error": server_error(_error_message(exc))})
                     return self._stream_error(server_error(_error_message(exc)))
-                if not opened:
-                    open_stream()
-                    if chat:
-                        emit({"role": "assistant"})
+                try:
+                    write(None)                         # a reply with no token yet: its headers and role now
+                except OSError:
+                    pass
                 if result["final"]:
                     emit(result["final"])
                 if result["calls"]:
@@ -254,8 +281,9 @@ def make_handler(app: App):
                 end["tensorfold"] = result["stats"]
                 frames = [end]
                 if separate_usage:                              # the spec: usage rides its own chunk before [DONE]
+                    # with the stats too, so a client pairs usage with the timings on one frame (llama.cpp's place)
                     frames.append({"id": rid, "object": kind, "created": created, "model": model,
-                                   "choices": [], "usage": usage_of(result)})
+                                   "choices": [], "usage": usage_of(result), "tensorfold": result["stats"]})
                 else:
                     end["usage"] = usage_of(result)      # every stream, as the Mac server's: clients count from it
                 try:
@@ -267,7 +295,8 @@ def make_handler(app: App):
                 self.close_connection = True
                 return
             try:
-                result = app.run(body, chat, lambda delta: True, prepared=prepared, cancelled=cancelled)
+                result = app.run(body, chat, lambda delta: True, prepared=prepared, cancelled=cancelled,
+                                 request_id=self.request_id, arrived=self.arrived)
             except RequestCancelled:
                 self.close_connection = True
                 return

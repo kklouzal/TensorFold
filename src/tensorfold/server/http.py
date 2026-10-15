@@ -464,6 +464,11 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 return responses.get(self, app, responses.route(route))
             if route in {"/metrics", "/v1/metrics"}:
                 return metrics.send(self, app)
+            if route in stats.ROUTES:               # the Mac's own: MLX memory (no peak reset) and the live meters
+                scheduler = getattr(app, "scheduler", None)
+                return stats.send(self, app, {"mlx": {
+                    "memory": _memory(False, admission=getattr(app, "prompt_memory", None)),
+                    "live": live.snapshot(scheduler) if hasattr(scheduler, "decoded") else None}})
             if route in {"", "/health"}:
                 if getattr(getattr(app, "auth", None), "enabled", False):
                     self._send_json({"status": "ok"})
@@ -592,6 +597,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                                if getattr(app, "accepts_sampling", False) else {})
                 if getattr(app, "accepts_cancellation", False):
                     sampling_kw["cancellation"] = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))
+                if getattr(app, "accepts_request_ids", False):      # the reply's request id; timings from arrival
+                    sampling_kw.update(request_id=self.request_id, arrived=self.arrived)
                 stream = bool(body.get("stream", False))
                 separate_usage = wants_usage_chunk(body)      # usage then rides its own chunk before [DONE]
                 tool_policy = ToolCallPolicy(body)
@@ -693,8 +700,9 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                             if extras:
                                 payload.update(extras)
                         emit(payload)
-                        if usage is not None:
-                            emit({**stream_chunk(), "choices": [], "usage": usage})   # the spec's own usage chunk
+                        if usage is not None:                   # the spec's own usage chunk, with the stats
+                            emit({**stream_chunk(), "choices": [], "usage": usage,
+                                  **({"tensorfold": extras["tensorfold"]} if extras and "tensorfold" in extras else {})})
                         self.wfile.write(b"data: [DONE]\n\n")
                         self.wfile.flush()
 

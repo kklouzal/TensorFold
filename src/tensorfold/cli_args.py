@@ -62,7 +62,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "priority: background; CUDA only, repeatable")
     endpoint.add_argument("--api-key", action="append", default=[], help="require this API key; repeat for more keys")
     endpoint.add_argument("--api-key-file", help="restricted key file, one key or label: key per line; # comments")
-    endpoint.add_argument("--metrics-open", action="store_true", help="allow metrics without an API key")
+    endpoint.add_argument("--metrics-open", action="store_true", help="allow /metrics and /stats without an API key")
     endpoint.add_argument("--vision", action="store_true",
                           help="enable image input for supported GLM and Qwen vision checkpoints; "
                                "Flash Next CUDA requires one GPU and --parallel 2 or more")
