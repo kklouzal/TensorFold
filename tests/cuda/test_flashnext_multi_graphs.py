@@ -212,7 +212,7 @@ def test_mtp_steps_replay_the_eager_bits(captured, n, split):
         for st, k, tok in zip(sts, split, tokens):
             windows.append((st, tok, streams[at:at + k]))
             at += k
-        segs = mtp_stage(w, b, windows)
+        segs = mtp_stage(b, windows)
         b.attn_step = None if mode == "alone" else attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables)
         try:
             out = dec.graphs.mtp_step(segs) if mode == "graph" else mtp_compute(w, segs, b, check=False)

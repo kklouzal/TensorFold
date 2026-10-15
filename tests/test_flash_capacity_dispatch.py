@@ -77,7 +77,7 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.graphs")
     captures, computes = [], []
     monkeypatch.setattr(mod, "stage", lambda w, b, windows: [(windows[0][0], 0, len(windows[0][1]))])
-    monkeypatch.setattr(mod, "mtp_stage", lambda w, b, windows: [(windows[0][0], 0, len(windows[0][1]))])
+    monkeypatch.setattr(mod, "mtp_stage", lambda b, windows: [(windows[0][0], 0, len(windows[0][1]))])
     def compute(*args, **kw):
         computes.append(kw.get("context"))
         return None
