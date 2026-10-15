@@ -413,13 +413,13 @@ def send(handler: Any, app: Any) -> None:
     """Write ``render`` as Prometheus text, version 0.0.4."""
 
     body = render(app, server=getattr(handler, "server", None)).encode()
-    handler.send_response(200)
-    handler.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
     try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
         handler.wfile.write(body)
-    except (BrokenPipeError, ConnectionResetError):
+    except ConnectionError:                 # the scraper has gone
         handler.close_connection = True
 
 
@@ -531,7 +531,8 @@ def stream_tokens(app: Any) -> list[int]:
     live = getattr(engine, "_live", None) if engine is not None else None
     if not live:
         return []
-    return [_occupied(stream) for stream, _cache in live if not getattr(stream, "finished", False)]
+    # the Mac engine changes ``_live`` in place: one list() copies it whole before it is iterated (stats module)
+    return [_occupied(stream) for stream, _cache in list(live) if not getattr(stream, "finished", False)]
 
 
 def _occupied(stream: Any) -> int:

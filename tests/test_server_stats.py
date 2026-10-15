@@ -457,6 +457,49 @@ def test_in_flight_counts_requests_waiting_for_a_one_at_a_time_turn(tmp_path):
     assert (load["requests_running"], load["requests_waiting"], load["requests_in_flight"]) == (1, 2, 3)
 
 
+def documented_fields():
+    """docs/api.md's /stats table, its shorthand expanded: ``.x`` continues the previous field's section and
+    ``{a,b}`` lists siblings."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "docs" / "api.md").read_text()
+    table = text.split("\n## Statistics\n", 1)[1].split("\n## ", 1)[0]
+    fields, last = set(), ""
+    for line in table.splitlines():
+        if not line.startswith("| `"):
+            continue
+        for name in re.findall(r"`([^`]+)`", line.split("|")[1]):
+            name = last.rsplit(".", 1)[0] + name if name.startswith(".") else name
+            last = name
+            head, _, siblings = name.partition("{")
+            fields.update([head + part for part in siblings.rstrip("}").split(",")] if siblings else [name])
+    return fields
+
+
+def field_paths(value, prefix=""):
+    """{dotted path: value} of every field of a /stats body, sections and their fields alike."""
+
+    found = {}
+    for key, item in value.items():
+        found[prefix + key] = item
+        if isinstance(item, dict):
+            found.update(field_paths(item, prefix + key + "."))
+    return found
+
+
+def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
+    cuda = field_paths(stats.snapshot(concurrent_app(tmp_path)))     # kv and prefix_cache filled (usage's keys)
+    app = MacApp()
+    app.scheduler = SimpleNamespace(active=1, waiting=0, filling=[], cancelled=0, preemptions=0)
+    with mac_server(app) as port:
+        mac = field_paths(get_json(port, "/stats")[2])
+    documented = documented_fields()
+    assert documented <= set(cuda) | set(mac), documented - set(cuda) - set(mac)
+    for path in (*cuda, *mac):          # a field, a field inside a documented one, or a section of documented fields
+        assert any(path == name or path.startswith(name + ".") or name.startswith(path + ".")
+                   for name in documented), f"/stats field {path} is not in docs/api.md"
+
+
 def test_successful_polls_print_no_access_line_on_the_mac_either(capsys):
     from tensorfold.server.live import ChunkRate, Meter
 

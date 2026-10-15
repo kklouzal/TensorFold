@@ -6,6 +6,11 @@ worker already keeps (a few dozen loads, O(lanes) and O(kept prefix points)); it
 lock and adds no work to a round. Each reading is taken on its own, as /metrics' are: the snapshot is not atomic
 across sections, and its load and memory readings are advisory, never an admission promise.
 
+A table the worker changes in place (a decoder's ``streams`` dict, its ``filling`` list) is copied whole by one
+``list()`` call before anything iterates it: under CPython's GIL (3.12, the CUDA image's) that copy is one C loop no
+other thread interleaves with, so a scrape never iterates a table mid-change. Lists the worker replaces rather than
+changes (``kept``) are read as published.
+
 The process's identity is fixed when this module first loads (before the model): ``INSTANCE_ID`` and the start time
 name the serving process, whose prefix cache and counters a restart empties.
 """
@@ -91,13 +96,13 @@ def send(handler: Any, app: Any, extra: dict[str, Any] | None = None) -> None:
     if extra:
         body.update(extra)
     data = json.dumps(body).encode()
-    handler.send_response(200)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
     try:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
         handler.wfile.write(data)
-    except (BrokenPipeError, ConnectionResetError):
+    except ConnectionError:                 # the scraper has gone
         handler.close_connection = True
 
 

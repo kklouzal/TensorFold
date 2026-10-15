@@ -267,8 +267,9 @@ class MultiDecoder:
         return len(self.streams) + len(self.filling)
 
     def usage(self) -> dict:
-        """/stats' KV-memory and prefix-cache readings, from another thread: ints and lists this worker publishes by
-        one store each (``kept`` is replaced, never changed in place), read without a lock, each on its own.
+        """/stats' KV-memory and prefix-cache readings, from another thread, without a lock, each on its own: the gate's
+        ints, ``kept`` as published (this worker replaces it, never changes it in place), and ``streams``/``filling``
+        each copied whole by one unpacking before it is iterated (one C loop under the GIL: ``server.stats``).
 
         ``kv``: the memory gate's budget for growing stream caches (``room`` less ``reserve``), what they hold (kept
         prefix-cache slots included), and what the slots of running requests hold beyond their first rows (vLLM's

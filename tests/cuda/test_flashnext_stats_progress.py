@@ -55,6 +55,11 @@ def test_usage_reads_the_gate_the_live_slots_and_the_kept_points(w):
     gate = dec.memory_gate
     for usage, live in usages:
         kv, prefix = usage["kv"], usage["prefix_cache"]
+        # docs/api.md's /stats fields (tests/test_server_stats.py's Decoder reports the same keys)
+        assert set(usage) == {"kv", "prefix_cache", "memory_waits", "memory_stops"}
+        assert set(kv) == {"budget_bytes", "held_bytes", "active_bytes", "usage_ratio", "bytes_per_token",
+                           "free_tokens_estimate"}
+        assert set(prefix) == {"entries", "capacity", "slots", "tokens"}
         assert kv["budget_bytes"] == gate.room - gate.reserve
         first = min(dec.capacity, FIRST)
         assert kv["active_bytes"] == sum(st.cache_bytes() - st.cache_bytes(first) for st in live)
