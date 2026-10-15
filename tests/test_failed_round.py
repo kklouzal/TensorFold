@@ -71,7 +71,7 @@ def test_handler_emits_an_error_event_without_a_success_finish(route):
                                                   "prompt": "hi", "stream": True}, route)
     events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: {")]
     assert status == 200
-    assert events[-1].get("error") == {"message": "boom", "type": "server_error"}
+    assert events[-1].get("error") == {"message": "boom", "type": "server_error", "param": None, "code": None}
     assert all(c["finish_reason"] is None for e in events for c in e.get("choices", []))
     assert body.count("data: [DONE]") == 1
 

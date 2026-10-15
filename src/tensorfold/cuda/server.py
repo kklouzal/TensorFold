@@ -198,6 +198,14 @@ class App:
 
         return self._context_limit()
 
+    @property
+    def max_model_len(self) -> int | None:
+        """The context length /v1/models and /stats report: the effective window, else the checkpoint's own (None
+        when neither is known)."""
+
+        limit = self._context_limit()
+        return limit if limit is not None else (self.native_context_window or None)
+
     def decisions(self, body: dict[str, Any]) -> dict[str, Any]:
         """Answer typed questions from next-token label logits. No text is generated."""
 
@@ -525,9 +533,15 @@ class App:
         shaped = prepared.grammar is not None or prepared.think_budget > 0
         think_end = self.tok.token_to_id("</think>") if chat and thinking and shaped else None
         budget = self._think_budget(prepared, think_end)
-        # background: the request's own priority, else --name-priority's default for its id; title requests always
-        by_name = "priority" not in body and self.reply_model(body) in getattr(self, "background_ids", ())
-        background = body.get("priority") == "background" or by_name or (chat and is_title_request(body.get("messages"), tools))
+        # background: the request's own priority (OpenAI's service_tier "flex" when it sends none), else
+        # --name-priority's default for its id; title requests always
+        if "priority" in body:
+            priority = body["priority"]
+        elif body.get("service_tier") == "flex":
+            priority = "background"
+        else:
+            priority = "background" if self.reply_model(body) in getattr(self, "background_ids", ()) else None
+        background = priority == "background" or (chat and is_title_request(body.get("messages"), tools))
         concurrent = getattr(self.engine, "concurrent", False)
         turns = None if concurrent else self._turns()
         if concurrent and background and "background" in inspect.signature(self.engine.generate).parameters:

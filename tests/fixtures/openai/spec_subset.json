@@ -1,0 +1,1171 @@
+{
+ "provenance": {
+  "commit": "aeb6a041dc56c011ca9f12127ec898f911100aa0",
+  "generator": "tools/openai_spec_subset.py",
+  "sha256": "11ba25585913f3f889fad6ee2578c9b666af617b5d8a4c6d59a72d5de5b0112b",
+  "source": "https://github.com/openai/openai-openapi (openapi.json)",
+  "version": "2.3.0"
+ },
+ "schemas": {
+  "ChatCompletionMessageCustomToolCall": {
+   "properties": {
+    "custom": {
+     "properties": {
+      "input": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "input"
+     ],
+     "type": "object"
+    },
+    "id": {
+     "type": "string"
+    },
+    "type": {
+     "enum": [
+      "custom"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "id",
+    "type",
+    "custom"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionMessageToolCall": {
+   "properties": {
+    "function": {
+     "properties": {
+      "arguments": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "arguments"
+     ],
+     "type": "object"
+    },
+    "id": {
+     "type": "string"
+    },
+    "type": {
+     "enum": [
+      "function"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "id",
+    "type",
+    "function"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionMessageToolCallChunk": {
+   "properties": {
+    "function": {
+     "properties": {
+      "arguments": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "id": {
+     "type": "string"
+    },
+    "index": {
+     "type": "integer"
+    },
+    "type": {
+     "enum": [
+      "function"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "index"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionMessageToolCalls": {
+   "items": {
+    "oneOf": [
+     {
+      "$ref": "#/components/schemas/ChatCompletionMessageToolCall"
+     },
+     {
+      "$ref": "#/components/schemas/ChatCompletionMessageCustomToolCall"
+     }
+    ]
+   },
+   "type": "array"
+  },
+  "ChatCompletionModeration": {
+   "properties": {
+    "input": {
+     "oneOf": [
+      {
+       "$ref": "#/components/schemas/ChatCompletionModerationResults"
+      },
+      {
+       "$ref": "#/components/schemas/ChatCompletionModerationError"
+      }
+     ]
+    },
+    "output": {
+     "oneOf": [
+      {
+       "$ref": "#/components/schemas/ChatCompletionModerationResults"
+      },
+      {
+       "$ref": "#/components/schemas/ChatCompletionModerationError"
+      }
+     ]
+    }
+   },
+   "required": [
+    "input",
+    "output"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionModerationError": {
+   "properties": {
+    "code": {
+     "type": "string"
+    },
+    "message": {
+     "type": "string"
+    },
+    "type": {
+     "enum": [
+      "error"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "code",
+    "message"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionModerationResults": {
+   "properties": {
+    "model": {
+     "type": "string"
+    },
+    "results": {
+     "items": {
+      "$ref": "#/components/schemas/ModerationResultBody"
+     },
+     "type": "array"
+    },
+    "type": {
+     "enum": [
+      "moderation_results"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "model",
+    "results"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionResponseMessage": {
+   "properties": {
+    "annotations": {
+     "items": {
+      "properties": {
+       "type": {
+        "enum": [
+         "url_citation"
+        ],
+        "type": "string"
+       },
+       "url_citation": {
+        "properties": {
+         "end_index": {
+          "type": "integer"
+         },
+         "start_index": {
+          "type": "integer"
+         },
+         "title": {
+          "type": "string"
+         },
+         "url": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "end_index",
+         "start_index",
+         "url",
+         "title"
+        ],
+        "type": "object"
+       }
+      },
+      "required": [
+       "type",
+       "url_citation"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "audio": {
+     "anyOf": [
+      {
+       "properties": {
+        "data": {
+         "type": "string"
+        },
+        "expires_at": {
+         "type": "integer"
+        },
+        "id": {
+         "type": "string"
+        },
+        "transcript": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "expires_at",
+        "data",
+        "transcript"
+       ],
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "content": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "function_call": {
+     "properties": {
+      "arguments": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "name",
+      "arguments"
+     ],
+     "type": [
+      "object",
+      "null"
+     ]
+    },
+    "refusal": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "role": {
+     "enum": [
+      "assistant"
+     ],
+     "type": "string"
+    },
+    "tool_calls": {
+     "anyOf": [
+      {
+       "$ref": "#/components/schemas/ChatCompletionMessageToolCalls"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "role",
+    "content"
+   ],
+   "type": "object"
+  },
+  "ChatCompletionStreamResponseDelta": {
+   "properties": {
+    "audio": {
+     "properties": {
+      "data": {
+       "type": "string"
+      },
+      "expires_at": {
+       "type": "integer"
+      },
+      "id": {
+       "type": "string"
+      },
+      "transcript": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "content": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "function_call": {
+     "properties": {
+      "arguments": {
+       "type": "string"
+      },
+      "name": {
+       "type": "string"
+      }
+     },
+     "type": "object"
+    },
+    "refusal": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "role": {
+     "enum": [
+      "developer",
+      "system",
+      "user",
+      "assistant",
+      "tool"
+     ],
+     "type": "string"
+    },
+    "tool_calls": {
+     "items": {
+      "$ref": "#/components/schemas/ChatCompletionMessageToolCallChunk"
+     },
+     "type": "array"
+    }
+   },
+   "type": "object"
+  },
+  "ChatCompletionTokenLogprob": {
+   "properties": {
+    "bytes": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "logprob": {
+     "type": "number"
+    },
+    "token": {
+     "type": "string"
+    },
+    "top_logprobs": {
+     "items": {
+      "properties": {
+       "bytes": {
+        "anyOf": [
+         {
+          "items": {
+           "type": "integer"
+          },
+          "type": "array"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "logprob": {
+        "type": "number"
+       },
+       "token": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "token",
+       "logprob",
+       "bytes"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    }
+   },
+   "required": [
+    "token",
+    "logprob",
+    "bytes",
+    "top_logprobs"
+   ],
+   "type": "object"
+  },
+  "CompletionUsage": {
+   "properties": {
+    "completion_tokens": {
+     "type": "integer"
+    },
+    "completion_tokens_details": {
+     "properties": {
+      "accepted_prediction_tokens": {
+       "type": "integer"
+      },
+      "audio_tokens": {
+       "type": "integer"
+      },
+      "reasoning_tokens": {
+       "type": "integer"
+      },
+      "rejected_prediction_tokens": {
+       "type": "integer"
+      },
+      "text_tokens": {
+       "type": "integer"
+      }
+     },
+     "type": "object"
+    },
+    "prompt_tokens": {
+     "type": "integer"
+    },
+    "prompt_tokens_details": {
+     "properties": {
+      "audio_tokens": {
+       "type": "integer"
+      },
+      "cache_write_tokens": {
+       "type": "integer"
+      },
+      "cached_tokens": {
+       "type": "integer"
+      },
+      "image_tokens": {
+       "type": "integer"
+      },
+      "text_tokens": {
+       "type": "integer"
+      }
+     },
+     "type": "object"
+    },
+    "total_tokens": {
+     "type": "integer"
+    }
+   },
+   "required": [
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens"
+   ],
+   "type": "object"
+  },
+  "CreateChatCompletionResponse": {
+   "properties": {
+    "choices": {
+     "items": {
+      "properties": {
+       "finish_reason": {
+        "enum": [
+         "stop",
+         "length",
+         "tool_calls",
+         "content_filter",
+         "function_call"
+        ],
+        "type": "string"
+       },
+       "index": {
+        "type": "integer"
+       },
+       "logprobs": {
+        "anyOf": [
+         {
+          "properties": {
+           "content": {
+            "anyOf": [
+             {
+              "items": {
+               "$ref": "#/components/schemas/ChatCompletionTokenLogprob"
+              },
+              "type": "array"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           },
+           "refusal": {
+            "anyOf": [
+             {
+              "items": {
+               "$ref": "#/components/schemas/ChatCompletionTokenLogprob"
+              },
+              "type": "array"
+             },
+             {
+              "type": "null"
+             }
+            ]
+           }
+          },
+          "required": [
+           "content",
+           "refusal"
+          ],
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "message": {
+        "$ref": "#/components/schemas/ChatCompletionResponseMessage"
+       }
+      },
+      "required": [
+       "finish_reason",
+       "index",
+       "message",
+       "logprobs"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "created": {
+     "type": "integer"
+    },
+    "id": {
+     "type": "string"
+    },
+    "metadata": {
+     "$ref": "#/components/schemas/Metadata"
+    },
+    "model": {
+     "type": "string"
+    },
+    "moderation": {
+     "anyOf": [
+      {
+       "$ref": "#/components/schemas/ChatCompletionModeration"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "object": {
+     "enum": [
+      "chat.completion"
+     ],
+     "type": "string"
+    },
+    "service_tier": {
+     "$ref": "#/components/schemas/ServiceTier"
+    },
+    "system_fingerprint": {
+     "type": "string"
+    },
+    "usage": {
+     "$ref": "#/components/schemas/CompletionUsage"
+    }
+   },
+   "required": [
+    "choices",
+    "created",
+    "id",
+    "model",
+    "object"
+   ],
+   "type": "object"
+  },
+  "CreateChatCompletionStreamResponse": {
+   "properties": {
+    "choices": {
+     "items": {
+      "properties": {
+       "delta": {
+        "$ref": "#/components/schemas/ChatCompletionStreamResponseDelta"
+       },
+       "finish_reason": {
+        "enum": [
+         "stop",
+         "length",
+         "tool_calls",
+         "content_filter",
+         "function_call",
+         null
+        ],
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "index": {
+        "type": "integer"
+       },
+       "logprobs": {
+        "properties": {
+         "content": {
+          "items": {
+           "$ref": "#/components/schemas/ChatCompletionTokenLogprob"
+          },
+          "type": [
+           "array",
+           "null"
+          ]
+         },
+         "refusal": {
+          "items": {
+           "$ref": "#/components/schemas/ChatCompletionTokenLogprob"
+          },
+          "type": [
+           "array",
+           "null"
+          ]
+         }
+        },
+        "required": [
+         "content",
+         "refusal"
+        ],
+        "type": [
+         "object",
+         "null"
+        ]
+       }
+      },
+      "required": [
+       "delta",
+       "index"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "created": {
+     "type": "integer"
+    },
+    "id": {
+     "type": "string"
+    },
+    "model": {
+     "type": "string"
+    },
+    "moderation": {
+     "anyOf": [
+      {
+       "$ref": "#/components/schemas/ChatCompletionModeration"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "obfuscation": {
+     "type": "string"
+    },
+    "object": {
+     "enum": [
+      "chat.completion.chunk"
+     ],
+     "type": "string"
+    },
+    "service_tier": {
+     "$ref": "#/components/schemas/ServiceTier"
+    },
+    "system_fingerprint": {
+     "type": "string"
+    },
+    "usage": {
+     "anyOf": [
+      {
+       "$ref": "#/components/schemas/CompletionUsage"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "choices",
+    "created",
+    "id",
+    "model",
+    "object"
+   ],
+   "type": "object"
+  },
+  "CreateCompletionResponse": {
+   "properties": {
+    "choices": {
+     "items": {
+      "properties": {
+       "finish_reason": {
+        "anyOf": [
+         {
+          "enum": [
+           "stop",
+           "length",
+           "content_filter"
+          ],
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "index": {
+        "type": "integer"
+       },
+       "logprobs": {
+        "anyOf": [
+         {
+          "properties": {
+           "text_offset": {
+            "items": {
+             "type": "integer"
+            },
+            "type": "array"
+           },
+           "token_logprobs": {
+            "items": {
+             "type": "number"
+            },
+            "type": "array"
+           },
+           "tokens": {
+            "items": {
+             "type": "string"
+            },
+            "type": "array"
+           },
+           "top_logprobs": {
+            "items": {
+             "additionalProperties": {
+              "type": "number"
+             },
+             "type": "object"
+            },
+            "type": "array"
+           }
+          },
+          "type": "object"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "text": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "finish_reason",
+       "index",
+       "logprobs",
+       "text"
+      ],
+      "type": "object"
+     },
+     "type": "array"
+    },
+    "created": {
+     "type": "integer"
+    },
+    "id": {
+     "type": "string"
+    },
+    "model": {
+     "type": "string"
+    },
+    "object": {
+     "enum": [
+      "text_completion"
+     ],
+     "type": "string"
+    },
+    "system_fingerprint": {
+     "type": "string"
+    },
+    "usage": {
+     "$ref": "#/components/schemas/CompletionUsage"
+    }
+   },
+   "required": [
+    "id",
+    "object",
+    "created",
+    "model",
+    "choices"
+   ],
+   "type": "object"
+  },
+  "DeleteResponseResponse": {
+   "properties": {
+    "deleted": {
+     "type": "boolean"
+    },
+    "id": {
+     "type": "string"
+    },
+    "object": {
+     "enum": [
+      "response.deleted"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "object",
+    "deleted",
+    "id"
+   ],
+   "type": "object"
+  },
+  "Error": {
+   "properties": {
+    "code": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "message": {
+     "type": "string"
+    },
+    "misalignment": {
+     "$ref": "#/components/schemas/MisalignmentErrorDetailsResource"
+    },
+    "param": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "type": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "message",
+    "param",
+    "code"
+   ],
+   "type": "object"
+  },
+  "ErrorResponse": {
+   "properties": {
+    "error": {
+     "$ref": "#/components/schemas/Error"
+    }
+   },
+   "required": [
+    "error"
+   ],
+   "type": "object"
+  },
+  "ListModelsResponse": {
+   "properties": {
+    "data": {
+     "items": {
+      "$ref": "#/components/schemas/Model"
+     },
+     "type": "array"
+    },
+    "object": {
+     "enum": [
+      "list"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "object",
+    "data"
+   ],
+   "type": "object"
+  },
+  "Metadata": {
+   "anyOf": [
+    {
+     "additionalProperties": {
+      "type": "string"
+     },
+     "type": "object"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "MisalignmentErrorDetailsResource": {
+   "properties": {
+    "detailed_explanation": {
+     "type": "string"
+    },
+    "error_type": {
+     "$ref": "#/components/schemas/_MisalignmentErrorType"
+    },
+    "review_target": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "steer": {
+     "$ref": "#/components/schemas/_MisalignmentSteer"
+    }
+   },
+   "required": [],
+   "type": "object"
+  },
+  "Model": {
+   "properties": {
+    "created": {
+     "type": "integer"
+    },
+    "id": {
+     "type": "string"
+    },
+    "object": {
+     "enum": [
+      "model"
+     ],
+     "type": "string"
+    },
+    "owned_by": {
+     "type": "string"
+    },
+    "shutdown_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "id",
+    "object",
+    "created",
+    "owned_by"
+   ]
+  },
+  "ModerationInputType": {
+   "enum": [
+    "text",
+    "image"
+   ],
+   "type": "string"
+  },
+  "ModerationResultBody": {
+   "properties": {
+    "categories": {
+     "additionalProperties": {
+      "type": "boolean"
+     },
+     "type": "object"
+    },
+    "category_applied_input_types": {
+     "additionalProperties": {
+      "items": {
+       "$ref": "#/components/schemas/ModerationInputType"
+      },
+      "type": "array"
+     },
+     "type": "object"
+    },
+    "category_scores": {
+     "additionalProperties": {
+      "type": "number"
+     },
+     "type": "object"
+    },
+    "flagged": {
+     "type": "boolean"
+    },
+    "model": {
+     "type": "string"
+    },
+    "type": {
+     "enum": [
+      "moderation_result"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "type",
+    "model",
+    "flagged",
+    "categories",
+    "category_scores",
+    "category_applied_input_types"
+   ],
+   "type": "object"
+  },
+  "Response": {
+   "required": [
+    "access_programs",
+    "created_at",
+    "error",
+    "id",
+    "incomplete_details",
+    "instructions",
+    "metadata",
+    "model",
+    "object",
+    "output",
+    "parallel_tool_calls",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ]
+  },
+  "ServiceTier": {
+   "anyOf": [
+    {
+     "enum": [
+      "auto",
+      "default",
+      "flex",
+      "scale",
+      "priority",
+      "fast"
+     ],
+     "type": "string"
+    },
+    {
+     "type": "null"
+    }
+   ]
+  },
+  "TokenCountsResource": {
+   "properties": {
+    "input_tokens": {
+     "type": "integer"
+    },
+    "object": {
+     "enum": [
+      "response.input_tokens"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "object",
+    "input_tokens"
+   ],
+   "type": "object"
+  },
+  "_MisalignmentErrorType": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "enum": [
+      "potentially_unintended_data_transfer",
+      "potentially_unintended_data_access",
+      "potentially_unintended_destructive_activity",
+      "other"
+     ],
+     "type": "string"
+    }
+   ]
+  },
+  "_MisalignmentSteer": {
+   "properties": {
+    "message": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "message"
+   ],
+   "type": "object"
+  }
+ }
+}

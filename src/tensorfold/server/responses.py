@@ -13,7 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from tensorfold.server.errors import RequestError
+from tensorfold.server.errors import RequestError, error_body, retry_headers, status_of
 from tensorfold.server.request_body import read_body
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 
@@ -120,6 +120,8 @@ def _send(handler: Any, status: int, payload: dict[str, Any]) -> None:
         handler.send_response(status)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Content-Length", str(len(data)))
+        for name, value in retry_headers(status):       # a capacity refusal: when to retry
+            handler.send_header(name, value)
         if handler.close_connection:                 # so a pooling client does not reuse the socket
             handler.send_header("Connection", "close")
         handler.end_headers()
@@ -131,6 +133,12 @@ def _send(handler: Any, status: int, payload: dict[str, Any]) -> None:
 def _refuse(handler: Any, message: str, status: int = 400, param: str | None = None) -> None:
     _send(handler, status, {"error": {"message": message, "type": "invalid_request_error", "param": param,
                                       "code": None}})
+
+
+def _refused(handler: Any, exc: RequestError) -> None:
+    """A refusal's own status and error object (404 for an unknown model)."""
+
+    _send(handler, status_of(exc), {"error": error_body(exc)})
 
 
 class Wire:
@@ -223,7 +231,7 @@ def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
 def post(handler: Any, app: Any) -> None:
     """POST /v1/responses."""
 
-    from tensorfold.server.http import reply_model     # http imports this module
+    from tensorfold.server.http import requested_model     # http imports this module
 
     store = store_for(app)
     try:
@@ -232,12 +240,15 @@ def post(handler: Any, app: Any) -> None:
             body = json.loads(payload or b"{}")
         except (ValueError, UnicodeDecodeError):
             raise RequestError("the request body is not JSON") from None
+        model = requested_model(app, body)
         request = translate(body, store)
-    except (RequestError, ValueError) as exc:
+    except RequestError as exc:
+        return _refused(handler, exc)
+    except ValueError as exc:
         return _refuse(handler, str(exc))
     base = {"id": _id("resp"), "object": "response", "created_at": int(time.time()), "status": "in_progress",
-            "error": None, "incomplete_details": None, "model": reply_model(app, body), "output": [], "usage": None,
-            **request.echo}
+            "error": None, "incomplete_details": None, "model": model, "output": [], "usage": None,
+            "access_programs": None, **request.echo}
     reply = Reply(base, _event_writer(handler) if request.stream else None,
                   (lambda final: store.put(final, request.added)) if request.store else None)
     wire = _event_wire(handler, reply)
@@ -255,7 +266,11 @@ def post(handler: Any, app: Any) -> None:
         try:
             payload = json.loads(bytes(wire.data) or b"{}")
         except ValueError:
-            payload = {"error": {"message": bytes(wire.data).decode("utf-8", "replace")}}
+            payload = {"error": {"message": bytes(wire.data).decode("utf-8", "replace"), "type": "server_error",
+                                 "param": None, "code": None}}
+        problem = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(problem, dict) and problem.get("param") == "messages":    # the chat field is this one's input
+            problem["param"] = "input"
         return _send(handler, wire.status, payload)
     _send(handler, 200, reply.completion(json.loads(bytes(wire.data))))
 
@@ -274,4 +289,4 @@ def delete(handler: Any, app: Any, rid: str | None) -> None:
 
     if not rid or not store_for(app).delete(rid):
         return _refuse(handler, f"no stored response has id {rid!r}", 404, "response_id")
-    _send(handler, 200, {"id": rid, "object": "response", "deleted": True})
+    _send(handler, 200, {"id": rid, "object": "response.deleted", "deleted": True})

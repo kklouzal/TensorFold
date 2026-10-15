@@ -27,7 +27,8 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 
 | Route | Behavior |
 | --- | --- |
-| `GET /v1/models` | Served model ID and any configured aliases (both servers) |
+| `GET /v1/models` | Served model ID and any configured aliases (both servers), each with `created` (this server's start) and vLLM's `max_model_len` (the served context length) |
+| `GET /v1/models/{model}` | One served ID's model object; 404 `model_not_found` for any other |
 | `GET /health` | Server health and available status information |
 | `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV occupancy, drafts and latency (both servers) |
 | `POST /v1/chat/completions` | Text chat, optional image input, tools and reasoning; streamed or non-streamed |
@@ -41,7 +42,15 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
-take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given.
+take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given. Both servers serve
+one prompt a request: a batch of several prompts receives HTTP 400.
+
+`model` names the served ID (`--name`) or an `--alias`, as `/v1/models` lists them; a request that omits it (or sends
+null) is served as `--name`. Any other ID receives HTTP 404 with OpenAI's `model_not_found` error on every generation
+and tokenization route (chat, completions, Responses and its `input_tokens`, Messages and their token count,
+`/tokenize`, `/detokenize`, decisions); Messages routes answer Anthropic's `not_found_error`. Point a client that asks for
+several IDs (Claude Code's background model, say) at served IDs, or add them with `--alias`. On GLM-5.3 a draft policy
+follows the served ID after `@` (`ID@POLICY`).
 
 `/tokenize` takes vLLM's fields: a `prompt` string (`add_special_tokens`, default true), or `messages` with the
 chat fields that shape the prompt (`tools`, `reasoning_effort`, `chat_template_kwargs`) and `add_generation_prompt`
@@ -88,8 +97,17 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` | Both |
 | `thinking_budget` | Token-count limit inside reasoning | Both |
 | `priority` | `background` yields to foreground requests | Both |
+| `service_tier` | `flex` is `priority: "background"` when the request sends no `priority`; other tiers change nothing | Both |
 
 `n` must be 1; multiple choices receive HTTP 400.
+
+These fields are accepted and ignored, as `frequency_penalty` and `presence_penalty` are: the reply is the one the
+request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
+`web_search_options`, `moderation` (no moderation result is returned), `prediction`, `store`, `metadata`, `user`,
+`safety_identifier`, `prompt_cache_key`, `prompt_cache_retention` and `stream_options.include_obfuscation`;
+`tool_choice: {"type": "allowed_tools", ...}` runs as `auto` over every offered tool (the Responses API applies the
+allowed list). Completions: `echo`, `suffix` and `best_of`. The prefix cache is automatic, and replies do not depend on
+it.
 
 CUDA Flash Next on one GPU supports `logprobs: true` and `top_logprobs` from 0 through 20 for nonstreamed text chat
 with thinking off, without tools, stop strings or structured output. Each visible token has its `token`, `bytes`,
@@ -242,6 +260,15 @@ decodes on from the reply, as for a required tool call.
 
 ## Context and errors
 
+Every reply carries an `x-request-id` header. A request's own `X-Client-Request-Id` (OpenAI's client header), else
+its `x-request-id`, is used when it is 1 to 128 letters, digits, `.`, `_`, `:` or `-`; otherwise the server makes one
+(`req-` and 32 hex digits).
+
+An error reply is OpenAI's error object, `{"error": {"message", "type", "param", "code"}}`, with `param` and `code`
+null where nothing names them. A capacity refusal (a full request queue under `--max-pending-requests`, the image queue)
+is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on
+both servers, streamed or not, as long as no reply has started. An unknown route is HTTP 404.
+
 The rendered prompt and reserved reply must fit the effective context. In 0.3.5, an explicit `max_tokens`
 or `max_completion_tokens` that would put prompt plus reply beyond the window is rejected with counts
 and fitting guidance before generation. MLX returns HTTP 400 for non-streamed requests or an
@@ -279,6 +306,10 @@ reserve also carries CUDA context, NCCL and workspace memory the estimate does n
 GPU's memory can freeze the host, so lower it only with room to spare.
 
 ## Responses
+
+Replies follow OpenAI's schemas: `choices[0].logprobs` is null unless probabilities were requested, and a probability
+reply's `logprobs.refusal` is null. With `stream_options.include_usage`, every chunk before the usage chunk carries
+`"usage": null`.
 
 `choices[0].message.content` holds the answer. Reasoning uses `reasoning_content`, or
 `delta.reasoning_content` while streaming. Tools use `tool_calls` and `finish_reason: "tool_calls"`.
@@ -343,6 +374,7 @@ same handler and engine path. A response has that chat completion's prompt and t
 - `stream`, `store` (default true) and `metadata` (up to 16 string pairs). The chat extensions `draft`,
   `thinking_budget`, `stop`, `ignore_eos`, `chat_template_kwargs` and `priority` pass through.
 
+A response carries `access_programs: null`. A refusal of its chat completion names `input` as its `param`.
 `output` holds a `reasoning` item (its text as `reasoning_text` content, with an empty `summary`), a `message` with
 `output_text`, and `function_call` items (`call_id`, `name` and JSON `arguments`). A reply cut by the token limit has
 `status: "incomplete"` and `incomplete_details.reason: "max_output_tokens"`. `usage` has `input_tokens` (with
@@ -356,7 +388,8 @@ output item `response.output_item.added`, `response.content_part.added`, its del
 `response.incomplete` or `response.failed`.
 
 With `store` true, a finished response is kept in memory (the newest 1,024, up to 256 MiB) before its last event or
-body is sent. `GET /v1/responses/{id}` returns it, `DELETE /v1/responses/{id}` removes it, and
+body is sent. `GET /v1/responses/{id}` returns it (`stream=true` is ignored), `DELETE /v1/responses/{id}` removes it
+and answers `{"id", "object": "response.deleted", "deleted": true}`, and
 `previous_response_id` continues its conversation: the server rebuilds the messages a chat client would send, so the
 prompt cache resumes the shared prefix as it does for chat. `store: false` keeps nothing, and a restart forgets every
 response.

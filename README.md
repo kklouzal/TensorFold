@@ -397,7 +397,7 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Readiness, effective configuration and configured admission counters. |
-| `GET /v1/models` | Advertised model IDs/aliases. |
+| `GET /v1/models`, `GET /v1/models/{model}` | Advertised model IDs/aliases with their `max_model_len`; an unknown ID is 404, as it is on every generation route. |
 | `GET /metrics` | Prometheus-compatible service metrics. |
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |

@@ -27,6 +27,7 @@ class ThinkingOffTemplate:
 
 class GlmApp(App):
     reads_ignore_eos = True             # ``run`` hands it to the engine's request
+    model_policies = True               # a served id may carry ``@POLICY`` (the recipe's draft policies)
 
     def __init__(self, engine, model_dir, served: str, **kwargs: Any) -> None:
         super().__init__(engine, model_dir, served, **kwargs)
@@ -56,8 +57,8 @@ class GlmApp(App):
                 f"{self._restart(need, ' both ranks')}")
 
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
-            prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
+            prepared: PreparedRequest | None = None, **request: Any) -> dict[str, Any]:
         model = str(body.get("model") or "")
         self.engine.request.policy = body.get("tf_policy") or (model.split("@", 1)[1] if "@" in model else None)
         self.engine.request.stop_eos = not bool(body.get("ignore_eos", False))
-        return super().run(body, chat, emit, prepared=prepared, cancelled=cancelled)
+        return super().run(body, chat, emit, prepared=prepared, **request)

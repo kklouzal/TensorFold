@@ -255,7 +255,9 @@ class HTTPServiceLimits(unittest.TestCase):
             second = None
             try:
                 first.request('GET', '/v1/models')
-                self.assertEqual(first.getresponse().read(), b'{"object": "list", "data": [{"id": "source-fixture", "object": "model", "owned_by": "tensorfold"}]}')
+                listed = json.loads(first.getresponse().read())
+                self.assertEqual([(m['id'], m['object'], m['owned_by']) for m in listed['data']],
+                                 [('source-fixture', 'model', 'tensorfold')])
                 self.assertEqual(server.connection_snapshot(), {'in_use': 1, 'limit': 1})
                 second = socket.create_connection(('127.0.0.1', server.server_port), timeout=3)
                 second.sendall(b'GET /v1/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')

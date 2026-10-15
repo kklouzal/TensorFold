@@ -12,7 +12,7 @@ def gated(path, metrics_open=False):
     return (path == "/v1" or path.startswith("/v1/") or
             path in {"/metrics", "/tokenize", "/detokenize", "/models", "/messages",
                      "/messages/count_tokens", "/chat/completions", "/completions", "/decisions"} or
-            path == "/responses" or path.startswith("/responses/") or
+            path == "/responses" or path.startswith(("/responses/", "/models/")) or
             path.endswith(("/chat/completions", "/completions", "/decisions", "/models")))
 
 
