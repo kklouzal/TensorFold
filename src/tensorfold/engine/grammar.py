@@ -15,6 +15,8 @@ EXTRA = "tensorfold[grammar]"             # the optional dependency that brings 
 KINDS = ("json", "json_schema", "regex", "choice", "grammar", "tools")   # tools: strict calls (server.strict_tools)
 CACHE_BYTES = 256 << 20                   # compiled grammars kept for repeated schemas
 OBJECT = '{"type": "object"}'             # json_object: any JSON object (OpenAI's contract), not an array
+MAX_SCHEMA_NODES = 2000                    # native recursive schema compiler: quarter of measured stack-crash size
+MAX_GRAMMAR_BYTES = 96 << 20               # the rank/HTTP source envelope
 BLANKS = 32                               # the most blank characters between JSON tokens: pretty-printing, not endless
 
 
@@ -36,13 +38,64 @@ def _schema_text(value: Any, where: str) -> str:
     if isinstance(value, str):
         try:
             value = json.loads(value)
+        except RecursionError:
+            raise RequestError(f"{where}: schema JSON nests too deeply") from None
         except json.JSONDecodeError as exc:
             raise RequestError(f"{where} is not valid JSON: {exc.msg}") from None
     if isinstance(value, bool):
         value = {} if value else None
     if not isinstance(value, dict):
         raise RequestError(f"{where} must be a JSON schema object")
-    return json.dumps(value, ensure_ascii=False)
+    _schema_resources(value, where)
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (RecursionError, ValueError) as exc:
+        raise RequestError(f"{where}: schema data cannot be encoded: {_message(exc)}") from None
+
+
+def _schema_resources(schema: Any, where: str) -> None:
+    """Bound native schema recursion before crossing into xgrammar, including chains hidden in definitions.
+
+    The 2000-node envelope is shared with strict JSON parameters, based on the pinned native compiler's measured
+    8000-node stack crash. Annotation/enum values are data, not schema graph edges. Local refs add no new nodes.
+    """
+
+    stack, seen = [schema], set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if len(seen) > MAX_SCHEMA_NODES:
+            raise RequestError(f"{where}: schemas are limited to {MAX_SCHEMA_NODES} subschemas")
+        pattern = node.get("pattern")
+        if isinstance(pattern, str):
+            _regex_resources(pattern, where)
+        for keyword in ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas"):
+            children = node.get(keyword)
+            if isinstance(children, dict):
+                stack.extend(children.values())
+        for keyword in ("items", "additionalProperties", "additionalItems", "contains", "not", "if", "then", "else",
+                        "propertyNames", "unevaluatedProperties", "unevaluatedItems"):
+            child = node.get(keyword)
+            stack.extend(child if isinstance(child, list) else [child])
+        for keyword in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            children = node.get(keyword)
+            if isinstance(children, list):
+                stack.extend(children)
+
+
+def _regex_resources(pattern: str, where: str) -> None:
+    """Reject recursive regex parser exhaustion before the pinned C++ parser can overflow its process stack."""
+
+    from re import _parser
+
+    try:
+        _parser.parse(pattern)
+    except RecursionError:
+        raise RequestError(f"{where}: the pattern nests its groups too deeply") from None
+    except (re.error, OverflowError):
+        pass                                     # native parser owns syntax/feature diagnostics for admitted patterns
 
 
 def _text(value: Any, where: str) -> str:
@@ -71,7 +124,15 @@ def request_spec(body: dict[str, Any]) -> Spec | None:
             js = rf.get("json_schema")
             if not isinstance(js, dict) or js.get("schema") is None:
                 raise RequestError("response_format json_schema needs json_schema.schema (a JSON schema object)")
-            return Spec("json_schema", _schema_text(js["schema"], "response_format json_schema.schema"))
+            text = _schema_text(js["schema"], "response_format json_schema.schema")
+            strict = js.get("strict")
+            if strict is not None and not isinstance(strict, bool):
+                raise RequestError("response_format json_schema.strict must be a boolean or null")
+            if strict is True:
+                from tensorfold.server.strict_tools import validate_response_schema
+
+                validate_response_schema(json.loads(text), "response_format json_schema.schema")
+            return Spec("json_schema", text)
         if kind != "text":
             raise RequestError(f"response_format type must be text, json_object or json_schema, not {kind!r}")
     guided = {"guided_json": ("json_schema", _schema_text), "guided_regex": ("regex", _text),
@@ -135,6 +196,12 @@ class Grammars:
 
         c = self.compiler
         try:
+            if not isinstance(spec.text, str) or len(spec.text.encode("utf-8")) > MAX_GRAMMAR_BYTES:
+                raise RequestError(f"{spec.field}: grammar source exceeds the 96 MiB envelope")
+            if spec.kind == "json_schema":
+                _schema_resources(json.loads(spec.text), spec.field)
+            elif spec.kind == "regex":
+                _regex_resources(spec.text, spec.field)
             with self.lock:
                 if spec.kind in ("json", "json_schema"):
                     schema = OBJECT if spec.kind == "json" else spec.text
@@ -147,7 +214,9 @@ class Grammars:
                 if spec.kind == "tools":
                     return c.compile_structural_tag(spec.text)
                 return c.compile_grammar(spec.text)
-        except (RuntimeError, ValueError, TypeError) as exc:
+        except RequestError:
+            raise
+        except (RuntimeError, ValueError, TypeError, RecursionError) as exc:
             raise RequestError(f"{spec.field}: the grammar cannot be enforced: {_message(exc)}") from None
 
     def accepts(self, compiled, text: str) -> bool:

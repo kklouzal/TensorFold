@@ -176,6 +176,9 @@ def test_the_probe_recognizes_qwen_xml_calls_only():
               "{{ {'name': tc.function.name, 'arguments': tc.function.arguments}|tojson }}\n</tool_call>"
               "{% endfor %}{% endfor %}")
     assert not st.template_supported(env.from_string(hermes).render(messages=st.PROBE))
+    # Integer 7 alone cannot distinguish JSON from Python's True/None string formatting.
+    python_values = QWEN_CALLS.replace("v|tojson", "v|string")
+    assert not st.template_supported(env.from_string(python_values).render(messages=st.PROBE))
     assert not st.template_supported(env.from_string(QWEN_CALLS.replace("'\\n</parameter>", "'</parameter>")).render(
         messages=st.PROBE, enable_thinking=False))
 
@@ -202,7 +205,7 @@ def test_a_plan_reads_each_parameters_mode():
 @pytest.mark.parametrize("schema, words", [
     ({"type": "object", "properties": {"s": {"type": "string", "maxLength": 3}}}, "do not support maxLength"),
     ({"type": "object", "properties": {"s": {"type": "string", "minLength": 1}}}, "put length limits"),
-    ({"type": "object", "properties": {"s": {"type": "array", "uniqueItems": True}}}, "do not support uniqueItems"),
+    ({"type": "object", "properties": {"s": {"type": "array", "uniqueItems": True}}}, "uniqueItems needs"),
     ({"type": "object", "properties": {"s": {"oneOf": [{"type": "integer"}]}}}, "do not support oneOf"),
     ({"type": "object", "properties": {"s": {"allOf": [{"type": "integer"}]}}}, "do not support allOf"),
     ({"type": "object", "properties": {"s": {"type": "integer", "not": {"const": 1}}}}, "do not support not"),
@@ -750,6 +753,9 @@ class MarkupTokenizer:
     def token_to_id(self, text):
         return self.ids.get(text, ord(text) if len(text) == 1 else None)
 
+    def id_to_token(self, token):
+        return self.words[token]
+
 
 class ScriptEngine:
     """Writes ``script`` where its grammar lets it; elsewhere the allowed token it likes best: the end, closing markup,
@@ -951,6 +957,10 @@ def test_engines_or_templates_that_cannot_hold_calls_refuse_strict(tmp_path, gra
     with http_server(_app(tmp_path, ScriptEngine("x"), grammars, hermes)) as port:
         status, text = post(port, _body(False), True)
     assert status == 400 and "Qwen XML tool calls" in text and "writes calls otherwise" in text
+    python_values = QWEN_CALLS.replace("v|tojson", "v|string")
+    with http_server(_app(tmp_path, ScriptEngine("x"), grammars, python_values)) as port:
+        status, text = post(port, _body(False), True)
+    assert status == 400 and "writes calls otherwise" in text
     refusing = QWEN_CALLS.replace("{% for tc in (m.tool_calls or []) %}",
                                   "{% if m.tool_calls %}{{ raise_exception('no calls here') }}{% endif %}"
                                   "{% for tc in (m.tool_calls or []) %}")
