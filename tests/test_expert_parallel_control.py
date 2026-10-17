@@ -1,6 +1,7 @@
 """Expert ownership, bounded work wire and rank-process failure contracts; no GPU emulation."""
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tensorfold.cuda.expert_launch import supervise
+from tensorfold.cuda.expert_launch import rank_commands, supervise
 from tensorfold.cuda.expert_parallel import Ownership, ownership
 from tensorfold.families.qwen4_exp.cuda.expert_parallel import Follower, Session, decode_frame
 
@@ -142,6 +143,28 @@ def test_exited_rank_does_not_leave_a_compiler_in_another_process_group(tmp_path
         assert stat.read_bytes().rsplit(b") ", 1)[1].split()[0] in (b"Z", b"X")
 
 
+def test_partial_spawn_preserves_error_and_retires_already_started_rank(tmp_path, monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+    marker = tmp_path / "started.pid"
+    real_spawn = subprocess.Popen
+    spawned = []
+    def spawn(command, **kwargs):
+        if spawned:
+            deadline = time.monotonic() + 3
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            raise FileNotFoundError("second rank executable absent")
+        child = real_spawn(command, **kwargs)
+        spawned.append(child)
+        return child
+    monkeypatch.setattr(launcher.subprocess, "Popen", spawn)
+    writer = (f"import os,pathlib,time;pathlib.Path({str(marker)!r}).write_text(str(os.getpid()));time.sleep(60)")
+    with pytest.raises(FileNotFoundError, match="second rank executable absent"):
+        launcher.supervise([[sys.executable, "-c", writer], ["absent"]], [dict(os.environ)] * 2, grace=.1)
+    with pytest.raises(ProcessLookupError):
+        os.kill(spawned[0].pid, 0)
+
+
 def test_unsharded_and_indexed_inventory_identify_the_same_tensor(tmp_path):
     torch = pytest.importorskip("torch")
     from safetensors.torch import save_file
@@ -159,3 +182,51 @@ def test_pin_geometry_is_scaled_from_the_authoritative_layout():
     layout = SimpleNamespace(format="affine4", authority_allocations=(600, 300, 600, 300))
     assert allocations({"num_experts": 5}, layout, owned=2, shared=True) == (300, 150, 300, 150)
     assert allocations({"num_experts": 5}, layout, owned=3, shared=False) == (300, 150, 300, 150)
+
+
+@pytest.mark.parametrize("active", [False, True], ids=["idle-control", "accepted-native-borrow"])
+def test_follower_close_waits_for_accepted_control_or_native_borrow(active):
+    """Injected CPU operations prove lease ordering; real NCCL fault execution still needs two GPUs."""
+    entered, released = threading.Event(), threading.Event()
+    errors = []
+    session = _session_owner(SimpleNamespace(close=lambda **kw: None))
+    session.rank, session.sequence, session.keys = 1, 0, ["bank"]
+    session.store = SimpleNamespace(set=lambda *a: None, delete_key=lambda *a: None)
+    def blocked():
+        entered.set()
+        assert session.abort_requested.wait(3)
+        released.set()
+        raise RuntimeError("borrow interrupted")
+    def receive(*args, **kwargs):
+        return b"[0,0,1,0]" if active else blocked()
+    session._receive = receive
+    if active:
+        session.x = [None]
+        session.comm.broadcast = lambda value: blocked()
+    session.cache = SimpleNamespace(close=lambda: released.is_set() or pytest.fail("premature cache retirement"))
+    def work():
+        try:
+            session.follow()
+        except RuntimeError as error:
+            errors.append(str(error))
+    thread = threading.Thread(target=work)
+    thread.start()
+    assert entered.wait(3)
+    session.close(abort=True)
+    thread.join(3)
+    assert not thread.is_alive() and session.retired and errors == ["borrow interrupted"]
+
+
+def test_rank_commands_preserve_owned_harness_entrypoint_and_argument_boundaries(monkeypatch):
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/approved/cuda/compat")
+    commands, envs = rank_commands(["GPU-leader", "GPU-worker"],
+                                   ["serve", "/models/with spaces", "--vram-experts", "auto"],
+                                   "341,171", 29551, entrypoint="/owned/serving harness.py")
+    assert commands[0][:5] == [sys.executable, "/owned/serving harness.py", "serve", "/models/with spaces",
+                               "--vram-experts"]
+    assert commands[0][-7:] == ["341,171", "--rank", "0", "--master", "127.0.0.1", "--master-port", "29551"]
+    assert envs[0]["CUDA_VISIBLE_DEVICES"] == "GPU-leader"
+    assert envs[1]["CUDA_VISIBLE_DEVICES"] == "GPU-worker"
+    assert all(e["LD_LIBRARY_PATH"] == "/approved/cuda/compat" for e in envs)
+    ordinary, _ = rank_commands(["0"], ["serve", "fixture"], "512", 29551)
+    assert ordinary[0][:4] == [sys.executable, "-m", "tensorfold", "serve"]

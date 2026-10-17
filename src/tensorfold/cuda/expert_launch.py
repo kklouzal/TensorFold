@@ -129,24 +129,24 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--devices", required=True, help="distinct CUDA GPU UUIDs or ordinal device IDs")
     parser.add_argument("--expert-shards", required=True)
+    parser.add_argument("--rank-entrypoint", default=os.environ.get("TENSORFOLD_EXPERT_ENTRYPOINT"),
+                        help="trusted Python serving script for each rank; default package CLI outside container")
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("command", nargs=argparse.REMAINDER, help="serve MODEL and ordinary serving options")
     args = parser.parse_args(argv)
-    devices = args.devices.split(",")
-    if not 2 <= len(devices) <= 4 or any(not d.strip() for d in devices) or len(set(devices)) != len(devices):
-        parser.error("--devices requires two through four distinct GPU identities")
+    devices = [device.strip() for device in args.devices.split(",")]
+    if not 1 <= len(devices) <= 4 or any(not d.strip() for d in devices) or len(set(devices)) != len(devices):
+        parser.error("--devices requires one through four distinct GPU identities")
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if command[:1] != ["serve"] or any(flag.split("=", 1)[0] in
             {"--expert-ranks", "--expert-shards", "--rank", "--master", "--master-port", "--tp"} for flag in command):
         parser.error("supply serve MODEL options without rank/topology flags; the launcher owns those")
     if not 1 <= args.master_port <= 65535:
         parser.error("--master-port must be 1 through 65535")
-    commands, environments = [], []
-    for rank, device in enumerate(devices):
-        commands.append([sys.executable, "-m", "tensorfold", *command,
-                         "--expert-ranks", str(len(devices)), "--expert-shards", args.expert_shards,
-                         "--rank", str(rank), "--master", "127.0.0.1", "--master-port", str(args.master_port)])
-        environments.append({**os.environ, "CUDA_VISIBLE_DEVICES": device.strip()})
+    if args.rank_entrypoint is not None and not Path(args.rank_entrypoint).is_file():
+        parser.error("--rank-entrypoint must name a trusted existing Python serving script")
+    commands, environments = rank_commands(devices, command, args.expert_shards, args.master_port,
+                                           entrypoint=args.rank_entrypoint)
     def terminate(signum, frame):
         raise SystemExit(128 + signum)
     previous = signal.signal(signal.SIGTERM, terminate)
@@ -154,6 +154,18 @@ def main(argv=None):
         return supervise(commands, environments)
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def rank_commands(devices, command, shards, port, *, entrypoint=None):
+    """Preserve serving entrypoint and argv boundaries; operator-controlled paths never enter a shell."""
+    prefix = [sys.executable, str(entrypoint)] if entrypoint is not None else [sys.executable, "-m", "tensorfold"]
+    commands, environments = [], []
+    for rank, device in enumerate(devices):
+        commands.append([*prefix, *command,
+                         "--expert-ranks", str(len(devices)), "--expert-shards", shards,
+                         "--rank", str(rank), "--master", "127.0.0.1", "--master-port", str(port)])
+        environments.append({**os.environ, "CUDA_VISIBLE_DEVICES": device.strip()})
+    return commands, environments
 
 
 if __name__ == "__main__":

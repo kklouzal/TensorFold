@@ -21,20 +21,6 @@ from tensorfold.cuda.expert_parallel import MAX_ROWS, MAX_SLOTS, AffineBank, own
 TIMEOUT = 600.0
 
 
-def scope_architecture_cache(torch):
-    """Scope process-local JIT artifacts before imports can build on a heterogeneous peer's path."""
-    from torch.utils.cpp_extension import get_default_build_root
-
-    major, minor = torch.cuda.get_device_capability(0)
-    suffix = f"sm{major}{minor}"
-    default = Path(get_default_build_root())
-    for key, fallback in (("TORCH_EXTENSIONS_DIR", default), ("TRITON_CACHE_DIR", default / "triton"),
-                          ("CUDA_CACHE_PATH", default / "cuda"), ("TORCHINDUCTOR_CACHE_DIR", default / "inductor")):
-        path = Path(os.environ.get(key, str(fallback))) / suffix
-        path.mkdir(parents=True, exist_ok=True)
-        os.environ[key] = str(path)
-
-
 def decode_frame(raw, *, sequence, banks):
     if not isinstance(raw, bytes) or len(raw) > 512:
         raise ValueError("expert control frame exceeds its 512-byte envelope")
@@ -92,6 +78,7 @@ class Session:
         self.running = threading.Event()
         self.following = threading.Event()
         self.banks = {}
+        self.nv_workspace = {}
         self.packed_cache = None
         self.model_dir, self.budget, self.mtp = Path(model_dir), budget, mtp
         self.pin_mode = pin_mode
@@ -106,7 +93,6 @@ class Session:
         if budget is None:
             raise ValueError("expert parallelism requires --vram-experts GIB|auto on each rank")
         torch.cuda.set_device(0)
-        scope_architecture_cache(torch)
         self.torch = torch
         self.slots, self.dims = self.cfg.top_k + 1, self.cfg.hidden
         base = layout(model_dir, budget, mtp=mtp)
@@ -246,8 +232,9 @@ class Session:
                                      + self.layout.metadata_host_bytes + self.layout.control_host_bytes
                                      + self.pin_future_bytes)
             self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda", pin_policy=policy)
-            from tensorfold.cuda.packed_experts import PackedExpertCache
-            self.packed_cache = PackedExpertCache.from_environment()
+            if kind == "mlx":
+                from tensorfold.cuda.packed_experts import PackedExpertCache
+                self.packed_cache = PackedExpertCache.from_environment()
         key = prefix + name
         if key in self.banks:
             raise ValueError("expert layer registered twice")
@@ -259,7 +246,8 @@ class Session:
         else:
             from tensorfold.cuda.nvfp4.host_experts import load_moe_host
             local = load_moe_host(self.reader, key, cfg, "cuda", cache=self.cache,
-                                  owned_ids=self.owner.ids, include_shared=self.rank == 0)
+                                  owned_ids=self.owner.ids, include_shared=self.rank == 0,
+                                  workspace=self.nv_workspace)
         self.banks[key] = local
         return DistributedExperts(self, key, local)
 
@@ -321,8 +309,8 @@ class Session:
                     self.comm.broadcast(self.x[:rows])
                     self.comm.broadcast(self.pick[:rows])
                     target = self.low[:rows] if prefill else self.output[:rows]
-                    distributed.local.run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
-                                                prefill=prefill)
+                    borrowed = distributed.local.run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
+                                                           prefill=prefill)
                     self.output[:rows].copy_(target)
                     for rank in range(1, self.world):
                         self.comm.recv(self.peer[:rows], rank)
@@ -331,6 +319,7 @@ class Session:
                         self.output[:rows].copy_(self.torch.where(mask, self.peer[:rows], self.output[:rows]))
                     out[start:start + rows].copy_(self.output[:rows])
                     self._wait()
+                    del borrowed
                     self.sequence += 1
             except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
                 rollback(self, error, lambda: self.close(abort=True))
@@ -340,29 +329,33 @@ class Session:
     def follow(self):
         if self.rank == 0:
             raise RuntimeError("expert leader cannot enter the follower loop")
-        self.following.set()
-        try:
-            while True:
-                raw = self._receive(f"ep/work/{self.rank}", idle=True)
-                self.store.delete_key(f"ep/work/{self.rank}")
-                work = decode_frame(raw, sequence=self.sequence, banks=len(self.keys))
-                self.store.set(f"ep/ready/{self.rank}", str(self.sequence))
-                if work is None:
-                    break
-                bank, rows, prefill = work
-                self.comm.broadcast(self.x[:rows])
-                self.comm.broadcast(self.pick[:rows])
-                target = self.low[:rows] if prefill else self.output[:rows]
-                self.banks[self.keys[bank]].run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
-                                                     prefill=prefill)
-                self.output[:rows].copy_(target)
-                self.comm.send(self.output[:rows], 0)
-                self._wait()
-                self.sequence += 1
-        except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
-            rollback(self, error, lambda: self.close(abort=True))
-        finally:
-            self.following.clear()
+        with self.lock:
+            if self.closed:
+                raise RuntimeError("expert follower admission is closed")
+            self.following.set()
+            try:
+                while True:
+                    raw = self._receive(f"ep/work/{self.rank}", idle=True)
+                    self.store.delete_key(f"ep/work/{self.rank}")
+                    work = decode_frame(raw, sequence=self.sequence, banks=len(self.keys))
+                    self.store.set(f"ep/ready/{self.rank}", str(self.sequence))
+                    if work is None:
+                        break
+                    bank, rows, prefill = work
+                    self.comm.broadcast(self.x[:rows])
+                    self.comm.broadcast(self.pick[:rows])
+                    target = self.low[:rows] if prefill else self.output[:rows]
+                    borrowed = self.banks[self.keys[bank]].run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
+                                                                    prefill=prefill)
+                    self.output[:rows].copy_(target)
+                    self.comm.send(self.output[:rows], 0)
+                    self._wait()
+                    del borrowed
+                    self.sequence += 1
+            except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
+                rollback(self, error, lambda: self.close(abort=True))
+            finally:
+                self.following.clear()
 
     def close(self, *, abort=False):
         if abort or self.running.is_set() or self.following.is_set():
