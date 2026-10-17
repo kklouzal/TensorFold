@@ -1,7 +1,7 @@
 {
   "source_sha256": "d75271f476fb9293625ca391d5a3de65dd7b7d5198f5f256b4752126ba3f4e93",
-  "target_sha256": "eb8997c45e2755657ccbdaffb7ce3aad7d512201a237063a796dfbc6c20ba695",
-  "generator_sha256": "a6d578af81102b05bbc85af04cfd9189b8701f463f397245c30cd26e15f13582",
+  "target_sha256": "be014114c4e7f839df60bcb83045a7a45b302d94f53715f6d62517ab54993d09",
+  "generator_sha256": "155ec18699f52bbaed78503ec29c19a66c4d0c41a548f216e22377594ea269eb",
   "unchanged_function_ast": [
     "body",
     "reply_tokens",
@@ -9,6 +9,9 @@
     "cache_receipt",
     "module_identity"
   ],
-  "run_body_equal_after_reversing_only_variant_validation_and_note": true,
+  "unchanged_class_ast": [
+    "Loop"
+  ],
+  "run_body_equal_after_reversing_variant_checks_and_receipt_labels": true,
   "scope": "private labelled kernel binding only; all HTTP/token/evidence/cleanup behavior retained"
 }

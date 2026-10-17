@@ -49,6 +49,13 @@ def generate(source, target, proof):
     new_note = "'PRIVATE single-blob-grouped engine default, one H2D per miss; unselected for production'"
     assert value.count(old_note) == 1
     value = value.replace(old_note, new_note)
+    old_cache = "'first HTTP request follows constructor calibration; first requested prefix, not cold expert/kernel state; later repetitions reuse the same chat'"
+    new_cache = "('concurrent constructor ran decode calibration; first HTTP uses the first requested prefix; later repetitions reuse the same chat' if args.streams > 1 else 'serial constructor did not run decode calibration; first HTTP uses the first requested prefix and may include first-use JIT/cache work; later repetitions reuse the same chat')"
+    old_calibration = "'selected kernel installed during target loading, before constructor calibration'"
+    new_calibration = "('selected kernel bound during target loading before concurrent constructor calibration' if args.streams > 1 else 'selected kernel bound during target loading; serial constructor did not run decode calibration')"
+    if value.count(old_cache) != 1 or value.count(old_calibration) != 1:
+        raise ValueError('frozen calibration receipt wording changed')
+    value = value.replace(old_cache, new_cache).replace(old_calibration, new_calibration)
     compile(value, str(target), 'exec')
     old_functions = {n.name: n for n in ast.parse(original).body if isinstance(n, ast.FunctionDef)}
     new_functions = {n.name: n for n in ast.parse(value).body if isinstance(n, ast.FunctionDef)}
@@ -61,7 +68,8 @@ def generate(source, target, proof):
                for name, node in old_classes.items())
     # Reverse only the explicit variant checks/labels, retaining all original
     # request, numerical comparison, evidence and lifetime/error behavior.
-    restored = value.replace(new_validation, old_validation).replace(new_note, old_note)
+    restored = (value.replace(new_validation, old_validation).replace(new_note, old_note)
+                .replace(new_cache, old_cache).replace(new_calibration, old_calibration))
     restored_run = next(n for n in ast.parse(restored).body if isinstance(n, ast.FunctionDef) and n.name == 'run')
     assert ast.dump(restored_run, include_attributes=False) == ast.dump(old_functions['run'], include_attributes=False)
     target.write_text(value)
@@ -69,7 +77,8 @@ def generate(source, target, proof):
         'target_sha256': hashlib.sha256(value.encode()).hexdigest(),
         'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'unchanged_function_ast': unchanged,
-        'run_body_equal_after_reversing_only_variant_validation_and_note': True,
+        'unchanged_class_ast': list(old_classes),
+        'run_body_equal_after_reversing_variant_checks_and_receipt_labels': True,
         'scope': 'private labelled kernel binding only; all HTTP/token/evidence/cleanup behavior retained'}, indent=2) + '\n')
 
 

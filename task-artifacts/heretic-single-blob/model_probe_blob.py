@@ -181,7 +181,7 @@ def run(args):
     report = {'configuration': vars(args) | {'model': str(args.model), 'drafter': None if args.drafter is None else str(args.drafter),
                                              'output': str(args.output)},
               'workload_note': f'context{args.context} is an explicit representative workload override, not a model default',
-              'cache_condition': 'first HTTP request follows constructor calibration; first requested prefix, not cold expert/kernel state; later repetitions reuse the same chat',
+              'cache_condition': ('concurrent constructor ran decode calibration; first HTTP uses the first requested prefix; later repetitions reuse the same chat' if args.streams > 1 else 'serial constructor did not run decode calibration; first HTTP uses the first requested prefix and may include first-use JIT/cache work; later repetitions reuse the same chat'),
               'kernel_note': 'PRIVATE single-blob-grouped engine default, one H2D per miss; unselected for production',
               'records': records, 'prepared_requests': prepared, 'comparisons': {}}
     started = time.perf_counter()
@@ -210,7 +210,7 @@ def run(args):
             bound_banks.extend(targets)
         loaded = time.perf_counter()
         report['bound_target_banks'] = len(bound_banks)
-        report['kernel_calibration'] = 'selected kernel installed during target loading, before constructor calibration'
+        report['kernel_calibration'] = ('selected kernel bound during target loading before concurrent constructor calibration' if args.streams > 1 else 'selected kernel bound during target loading; serial constructor did not run decode calibration')
         app_class = getattr(family.package, 'CUDA_APP', None) or App
         app = app_class(engine, args.model, MODEL, default_thinking=False, thinking_budget=0,
                         context_window=args.context, max_tokens=args.max_tokens)
