@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from copy import copy
 from typing import Sequence
 
 import numpy as np
@@ -17,6 +16,7 @@ from tensorfold.cuda.pdl import wait as pdl_wait
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda import experts as grouped
 from tensorfold.cuda.expert_cache import CachedExperts
+from tensorfold.cuda.expert_window import ExpertWindow
 from tensorfold.cuda.kernels import gdn as shared_gdn
 
 from . import attention as attn_mod
@@ -360,54 +360,6 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
 
 
-class _ExpertWindow:
-    """One MoE buffer's bounded plan snapshot and reusable item-window uploads.
-
-    The original plan owns members and pair order. A window changes only item
-    expert IDs and the valid item count; its consumers keep the original tile
-    arithmetic. Copy completion protects pinned host data before it is reused.
-    Like the owning MoE buffers, this scratch serves one CUDA stream at a time.
-    """
-
-    def __init__(self, source: grouped.Plan) -> None:
-        self.plan = copy(source)
-        # These copy destinations outlive the caller's inference/ordinary mode.
-        with torch.inference_mode(False):
-            self.plan.items = torch.empty_like(source.items)
-            self.plan.counts = torch.empty_like(source.counts)
-            self.report = torch.empty((source.items.numel() + 2,), dtype=torch.int32, device=source.items.device)
-            self.host = torch.empty(self.report.shape, dtype=torch.int32, device="cpu", pin_memory=True)
-        self.ready = torch.cuda.Event()
-        self.uploaded = torch.cuda.Event()
-        self.pending = False
-
-    def read(self, source: grouped.Plan) -> torch.Tensor:
-        # One bounded D2H transfer obtains both the valid count and item IDs.
-        self.report[:2].copy_(source.counts)
-        self.report[2:].copy_(source.items.reshape(-1))
-        self.host.copy_(self.report, non_blocking=True)
-        self.ready.record(torch.cuda.current_stream(source.items.device))
-        self.ready.synchronize()
-        count = int(self.host[0])
-        if not 0 <= count <= source.items.shape[0]:
-            raise RuntimeError(f"expert plan has {count} valid items outside its bounded scratch")
-        self.plan.tile = source.tile
-        return self.host[2:].view(-1, 3)[:count]
-
-    def stage(self, items: torch.Tensor, mapping: dict[int, int], capacity: int) -> grouped.Plan:
-        if self.pending:
-            self.uploaded.synchronize()
-        ids = items[:, 0].numpy()
-        ids[:] = [mapping[int(expert)] for expert in ids]
-        self.host[0], self.host[1] = items.shape[0], len(mapping)
-        self.plan.experts = capacity
-        self.plan.items[:items.shape[0]].copy_(items, non_blocking=True)
-        self.plan.counts.copy_(self.host[:2], non_blocking=True)
-        self.uploaded.record(torch.cuda.current_stream(self.plan.items.device))
-        self.pending = True
-        return self.plan
-
-
 def _cached_moe(x: torch.Tensor, m, buf, top_k: int, experts: int):
     """Run every logical pair with its native kernel, in bounded resident item windows."""
 
@@ -416,7 +368,7 @@ def _cached_moe(x: torch.Tensor, m, buf, top_k: int, experts: int):
     moe_mod.select(buf.logits[:rows], buf, top_k, experts)
     scratch = getattr(buf, "expert_window", None)
     if scratch is None:
-        scratch = buf.expert_window = _ExpertWindow(buf.plan)
+        scratch = buf.expert_window = ExpertWindow(buf.plan)
     items = scratch.read(buf.plan)
     cached = m.experts
     at = 0

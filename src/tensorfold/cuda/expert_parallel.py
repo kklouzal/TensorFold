@@ -133,14 +133,14 @@ class AffineBank:
     def run_picks(self, x, picks, out, *, prefill):
         import torch
 
-        from tensorfold.families.qwen4_exp.cuda.forward import _ExpertWindow
+        from .expert_window import ExpertWindow
 
         from . import experts as grouped
 
         rows, slots = picks.shape
         plan = plan_owned(picks, self.count, prefill=prefill,
                           tile=grouped.window_tile(x.device) if prefill else grouped.TILE)
-        scratch = _ExpertWindow(plan)
+        scratch = ExpertWindow(plan)
         items = scratch.read(plan)
         act = torch.empty((rows * slots, self.width), dtype=torch.bfloat16, device=x.device)
         out.zero_()
