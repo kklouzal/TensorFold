@@ -161,7 +161,7 @@ def rotate(x, M: tl.constexpr, W: tl.constexpr, CODEC: tl.constexpr, INVERSE: tl
     """FP32 ``[M, W]`` fixed transform; W is a multiple of 128."""
 
     tl.static_assert(W % 128 == 0)
-    tl.static_assert(1 <= CODEC <= 8)
+    tl.static_assert(CODEC >= 1 and CODEC <= 8)
     # Six-bit scale policies share exactly the existing signed Iso128 basis.
     BASIS: tl.constexpr = 4 if CODEC == 6 or CODEC == 7 or CODEC == 8 else CODEC
     x = x.to(tl.float32)
