@@ -5,8 +5,8 @@ expert bytes between starts. Enable it explicitly in a writable persistent
 service cache, outside the read-only model mount:
 
 ```bash
-TENSORFOLD_PACKED_EXPERT_CACHE=/cache/packed-experts
-TENSORFOLD_PACKED_EXPERT_CACHE_BYTES=<positive-byte-budget>
+export TENSORFOLD_PACKED_EXPERT_CACHE=/cache/packed-experts
+export TENSORFOLD_PACKED_EXPERT_CACHE_BYTES=<positive-byte-budget>
 ```
 
 Both variables are required when enabling persistence. Set the byte budget from

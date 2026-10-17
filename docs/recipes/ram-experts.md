@@ -43,6 +43,29 @@ budgeted future state and workspace. It sizes the pool once before the first
 expert lease; it does not compete with requests for memory at runtime. Unified
 memory devices retain the existing numeric-budget behavior and reject `auto`.
 
+An explicit `TENSORFOLD_CUDA_MEMORY_LIMIT_GB` is an absolute allocation cap:
+automatic sizing subtracts existing allocations and retains its future workspace
+and 512 MiB margin within that cap as well as physical free memory.
+`--kv-full-windows N` can reserve fewer full windows than concurrent slots with
+`--vram-experts auto`; the slots then share an enforced growth budget. Requests
+can wait or fail explicitly under pressure. Omit it to retain every slot's full
+window reservation. Existing memory-wait/stop metrics expose that pressure.
+
+`--vram-experts-pin off|auto|on` defaults to `off`. The other modes admit the
+complete page-backed host allocation geometry against host and cgroup room,
+then register model-owned authority in separate allocations. `auto` retains
+pageable storage on a declared resource/capability refusal; `on` requires
+registration. Unknown CUDA failures stop loading. Registered sources upload
+directly; pageable sources retain pinned staging. Startup identifies actual
+pinned, pageable or mixed authority and retains its admission receipt.
+Pages stay registered until all copy/compute consumers retire.
+
+For optional persistent affine packing and same-host asymmetric NCCL expert
+ranks, see the [desktop guide](../desktop-report-remediation.md) and
+[packed cache contract](../packed-expert-cache.md). Rank 0 owns the backbone,
+shared experts, vision and request state; followers load their routed shards.
+EXL3 expert ranks are refused. Real two-GPU execution needs its own qualification.
+
 ```bash
 tensorfold serve /models/Qwen3.8-Flash-Next-exl3 \
   --backend cuda --vram-experts auto \
@@ -266,8 +289,9 @@ its [zero-copy guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guid
 
 The grouped kernels reuse weight tiles across up to 16 routed rows in decode
 and 64 rows in prefill. Additional tiles and later requests can reuse an expert
-again. The current miss path stages immutable packed weights and queues their
-upload before the consuming kernels. Ordinary CPU tensors cannot be passed to
+again. The current miss path uploads immutable packed weights, using direct DMA
+for registered authority or pinned staging for pageable authority, before the
+consuming kernels. Ordinary CPU tensors cannot be passed to
 these kernels: they require CUDA weight tensors. Direct access would require a
 validated mapped allocation/alias and matching lifetime rules, or hardware and
 driver support for another host-access mode. Unified-memory page faults may
