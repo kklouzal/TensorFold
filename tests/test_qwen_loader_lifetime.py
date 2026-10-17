@@ -8,11 +8,11 @@ retain the current failure, interruption, drain and clean-success contracts.
 import ast
 import contextlib
 import json
-from pathlib import Path
 import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tensorfold.checkpoint_metadata import read_config
@@ -168,7 +168,7 @@ class OwnershipControls(unittest.TestCase):
         self.loader = name
         path = PATH / name
         tree = ast.parse(path.read_text())
-        function = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4")))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4"))
         helper_tree = ast.parse((PATH / "weights.py").read_text())
         helpers = [n for n in helper_tree.body if isinstance(n, ast.FunctionDef)
                    and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill",

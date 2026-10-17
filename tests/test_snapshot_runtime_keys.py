@@ -3,13 +3,11 @@
 from importlib import metadata
 from types import SimpleNamespace
 
-
-from tests.cli_server_fixture import prepared_tokenizer
-from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
-
 from tensorfold import cli, families
 from tensorfold.families import qwen4_exp
 from tensorfold.server import app
+from tests.cli_server_fixture import prepared_tokenizer
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
 
 
 def test_snapshot_identity_changes_with_mlx_lm_version(monkeypatch, tmp_path, mlx_host_protocol):

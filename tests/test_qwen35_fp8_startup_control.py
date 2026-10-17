@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 import ast
-from contextlib import contextmanager
 import importlib.abc
-from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from tests.nvfp4_host_protocol import linear_metadata_class

@@ -5,8 +5,8 @@ class and scheme function without importing that numerical runtime; the actual
 shared quantization-policy class remains authoritative.
 """
 from __future__ import annotations
-
 import __future__
+
 import ast
 from pathlib import Path
 
