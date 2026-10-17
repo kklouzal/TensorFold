@@ -10,6 +10,45 @@ from hashlib import sha256
 from types import SimpleNamespace
 
 
+class PreparedTokenizer:
+    """MLX metadata protocol backed by real HF text operations, not array math.
+
+    The MLX wrapper owns its EOS-set property separately from HF's singular
+    special-token setter. Keep that boundary explicit in these host controls.
+    """
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+        self.eos_token_ids = (tokenizer.eos_token_id,)
+
+    @property
+    def chat_template(self):
+        return self._tokenizer.chat_template
+
+    @chat_template.setter
+    def chat_template(self, value):
+        self._tokenizer.chat_template = value
+
+    @property
+    def added_tokens_decoder(self):
+        return self._tokenizer.added_tokens_decoder
+
+    @property
+    def all_special_ids(self):
+        return self._tokenizer.all_special_ids
+
+    def get_vocab(self):
+        return self._tokenizer.get_vocab()
+
+    def encode(self, *args, **kwargs):
+        return self._tokenizer.encode(*args, **kwargs)
+
+    def decode(self, *args, **kwargs):
+        return self._tokenizer.decode(*args, **kwargs)
+
+    def apply_chat_template(self, *args, **kwargs):
+        return self._tokenizer.apply_chat_template(*args, **kwargs)
+
+
 def prepared_chat_template(directory, source="fixture"):
     """Actual captured template protocol, with isolated regular-file metadata."""
     from tensorfold.cuda.chat_template import ChatTemplate
@@ -35,7 +74,7 @@ def prepared_tokenizer(directory, tokenizer_type):
     config = directory / "config.json"
     if not config.exists():
         config.write_text(json.dumps({"model_type": "fixture", "vocab_size": len(vocab), "eos_token_id": 2}))
-    return tokenizer
+    return PreparedTokenizer(tokenizer)
 
 
 def cuda_cli_engine(**members):
