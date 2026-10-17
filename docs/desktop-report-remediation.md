@@ -248,3 +248,179 @@ full pretrained ModelOpt/vision workload require their actual inputs and
 hardware; those regions remain unqualified by single-GPU fixtures. Apple and
 new ARM64 execution are separate as well. No reported desktop speed target,
 blanket latency gain or unchanged-capacity claim follows from these features.
+
+
+## Controlled performance comparisons and selection
+
+These component comparisons used one Linux AMD64 RTX PRO 2000 Blackwell/SM120
+host, approximately 62 GiB host RAM, CUDA 13.4.1, PyTorch
+`2.16.0.dev20261006+cu134`, and the pinned verification dependency image
+`sha256:3d6a57cf578884d60ad360d632dc6be98a082aaceb8a6f869fd39a74752a9cb6`
+with recorded source overlays. GPU jobs were serialized; typical limits were
+four CPUs, 12 GiB host RAM without additional swap and an 8 GiB device-allocation
+cap. WI6 used a 12-decimal-GB host cap. Clocks and thermals were not locked;
+the routing record observed a 70 W power limit and Gen3 x8 link.
+Each study retained exact output/byte checks and its own preparation, ordering
+and uncertainty; gains from separate studies cannot be added together. These
+measurements identify their component sources below. Installed qualification
+of frozen runtime `b551e68f` is a separate record.
+
+### WI1: registered authority and direct DMA
+
+Source `dbe143e7` compared registered direct uploads with the retained pageable,
+two-stage path in a complete generated affine Flash Next workload: two main
+layers plus MTP, hidden width 2560, expert width 640, 176 routed experts per
+bank, 531 logical expert entries and a fixed 32-cell cache. Each entry was
+3,072,000 bytes. Replies contained 32 greedy tokens, context capacity was 128,
+graphs were off, and MTP used depth 2/confidence 0. The measured objective was
+wall time through complete replies with synchronized GPU completion.
+
+| Workload | Registered/pageable latency ratio | Conditional interval |
+| --- | ---: | --- |
+| One request, serial | 0.883706 | 0.879684–0.887747 |
+| One request, MTP | 0.931315 | 0.928525–0.934114 |
+| Four requests, serial | 0.942278 | 0.936870–0.947718 |
+| Four requests, MTP | 0.958868 | 0.954882–0.962869 |
+
+Ratios below 1 indicate lower elapsed time. Single-request rows used 24 balanced
+four-arm blocks and 99.1667% paired log-ratio intervals for a six-comparison
+family. Four-request rows used 12 balanced Williams-order blocks and 99.6429%
+intervals for a 14-comparison family. Both used the larger of ordinary and
+predeclared Bartlett lag-4 variance. Kernels were warm; every complete token
+sequence and copied-byte count matched its reference. The four-request test
+used the maintained **MultiDecoder/Stream combined prompt/decode/MTP path**;
+HTTP and outer scheduler-queue costs were excluded. These finite-run intervals
+are conditional on this host and workload, not population or tail guarantees.
+
+Direct registered uploads are selected for this controlled region.
+`--vram-experts-pin` stays opt-in/default `off`: the trained/full-scale affine
+authority and other hardware still require qualification. The existing
+pageable copy/lease body is retained; comparisons whose intervals cross 1 are
+not treated as proof of equivalence. The records are
+`transfer/synthetic.json`, `pageable-parallel.json` and `disposition.json`.
+
+### WI6: verified packed-affine cache hits
+
+At source `c11fb828`, a complete generated affine model with two main layers,
+shared experts and MTP used 64 experts, hidden width 1024, expert width 128,
+a 108,431,424-byte checkpoint and 47,923,200 bytes of packed authority. Fresh
+engines read warm source pages and compiler caches, with MTP2 and eight
+completed sampled reply tokens. After two warmups per arm, seven fixed AB/BA
+pairs compared canonical packing with verified owned-copy hits.
+
+Constructor medians were **562.817 → 384.236 ms**; the paired median saving was
+178.300 ms, conditional 95% bootstrap interval **170.363–203.924 ms**.
+Constructor plus completed first reply was **759.455 → 568.361 ms**, with a
+paired saving of 190.670 ms **[169.740, 206.695]**. Both improved in all seven
+pairs. First-reply-only evidence remained inconclusive: its saving interval
+was **−0.622–19.951 ms**. The separate first cache-publication constructor took
+818.066 ms; no cold-disk or first-start gain is claimed. All authority bytes
+matched native packing and every complete reply matched the resident teacher.
+
+Persistence is selected for this measured warm-start region and remains
+explicitly configured with a disk quota. The source, payload hashes, raw pairs
+and resource observations are recorded in `packed/receipt.json` and
+`startup.json`. This does not qualify the reported 72-GiB affine checkpoint or
+predict its startup time.
+
+### NVFP4: common owned-item grouping
+
+Delta `a380e599`, measured in source `8b9bb6a8`, replaced duplicate grouping
+with the common owned-item helper. The reference was the exact `run_picks`
+method from `2d7c5dd5` in the same dependency/runtime context. A generated
+64-expert ModelOpt model, hidden width 512, two main layers plus MTP, used a
+two-cell expert pool, context 128, SSD n-gram reads, graphs/prefetch off and
+16-token greedy replies; MTP used depth 2/confidence 0. Native NCCL world size
+was **one**, exercising the real local Session/engine path without qualifying
+two GPUs.
+
+| Workload | Common/reference latency ratio | Conditional 95% interval |
+| --- | ---: | --- |
+| One request, serial | 0.837470 | 0.833888–0.841068 |
+| One request, MTP | 0.845145 | 0.840705–0.849609 |
+| Four requests, MTP | 0.896214 | 0.890276–0.902193 |
+| Four requests, first cohort in fresh process | 0.935020 | 0.925032–0.945116 |
+| Four requests, warm process mean | 0.900611 | 0.883091–0.918479 |
+
+The first three rows used eight ABBA blocks/32 timed operations after warmup.
+Initial four-request serial evidence was inconclusive
+(**0.956762 [0.823250, 1.111927]**); its 485.286-ms candidate cohort was retained.
+One predeclared follow-up used **12 alternating-order fresh-process pairs**:
+one first cohort, two untimed preparation cohorts and four timed warm cohorts
+per process, starting from the same frozen compiler-cache snapshot. Every one
+of the 168 measured/preparation cohorts matched the resident teacher; none
+was excluded. First and warm intervals use paired log-ratio Student-t analysis
+with 11 degrees of freedom.
+
+A separately labeled prior-inclusive sensitivity retained all eight earlier
+block ratios, including that slow cohort: **0.922665 [0.874035, 0.974000]**.
+Its mixed block/process units are supplemental to the separately reported
+first/warm strata. All three upper bounds met the predeclared selection rule;
+the common helper is selected within these distributions. Records:
+`nvfp4/common-benchmark.json`, `common-modes.json` and
+`serial-four-followup/{predeclare,analysis}.json`. Full pretrained ModelOpt,
+SM89 and actual second-GPU performance remain unqualified.
+
+### WI2: preserve the serial gain; do not ship the complete policies
+
+A dedicated copy stream alone was slower than registered current-stream DMA:
+serial ratio **1.003639 [1.001547, 1.005737]**, MTP
+**1.001853 [1.000775, 1.002933]**, at 99.1667% interval coverage. Stronger
+advisory-prefetch variants then retained current-stream foreground DMA and
+predicted at most four or eight cells on a separate stream. Fresh seed-23
+holdouts used 24 balanced single-request blocks and 12 actual four-request
+blocks, with 99.5833% family-adjusted intervals and the same lag-4 sensitivity.
+
+| Predicted-cell limit | Serial latency ratio | MTP ratio | Four serial ratio | Four MTP ratio |
+| --- | ---: | ---: | ---: | ---: |
+| 4 | 0.982619 | 1.005116 | 1.008468 | 1.008205 |
+| 8 | 0.992126 | 1.005250 | 1.013304 | 1.013179 |
+
+Both serial gains are established; all three other required-region intervals
+lie above 1. Those regressions prevent selection of either complete policy.
+The stronger four-cell serial gain is **1.74%**, interval
+**0.980336–0.984908** for its latency ratio. It remains a positive result for a
+possible serial-only dispatch, **blocked on trained/full-scale affine input
+qualification and required dispatch/retirement verification**. The reported
+71.92-GiB authority exceeds this host's RAM; the available trained checkpoint
+is EXL3. No serial-only dispatch, prefetch backend or experimental toggle ships.
+
+Eight pageable staging buffers were also inconclusive in all four tested
+regions; no equivalence or replacement is inferred. Four CPU copy workers
+regressed all four. Exact active-prediction, output, copy and lifetime controls
+are retained in `transfer/disposition.json`; copy-byte-per-wall-time counters
+are diagnostic and do not establish physical PCIe bandwidth or its causal
+contribution. The bounded exploration is closed without a global-optimum claim.
+
+### WI3: retain CPU-owned residency
+
+The private GPU-residency/mapped-fill prototype was corrected to preserve the
+incumbent touch-based aging policy; earlier wins with different aging semantics
+are excluded from selection. The corrected model repeated seeded layer payloads under distinct logical keys:
+32 main layers plus MTP, 2,145 keys, 6,325,862,400 authority bytes and a 128-cell
+pool, with eight decoded tokens. It compared complete synchronized functions against CPU-owned
+residency/direct DMA: real serial/MTP graph execution and an eager two-stream
+concurrent region, six alternating-order paired blocks each.
+
+| Region | GPU-residency/CPU-DMA latency ratio | Conditional 95% bootstrap interval |
+| --- | ---: | --- |
+| serial | 1.022667 | 1.015350–1.029602 |
+| mtp | 1.043388 | 1.038664–1.047446 |
+| concurrent | 1.053673 | 1.051622–1.055568 |
+
+All token sequences, tested logical plans and exact policy checks passed, but
+every measured required region regressed. Even these optimistic prototype
+timings excluded a final status oracle and did not qualify production boundary,
+lifetime or capture validation. No mapped-residency backend is selected.
+Independent registered-memory mapping controls establish capability on this
+host; they do not qualify the rejected prototype for the new allocator.
+This is a decision about the measured complete designs, not every possible
+device-residency algorithm or another interconnect. Records and limitations:
+`routing/disposition.json`, `experiment-policy/model-results.json` and the
+sealed `routing/evidence-manifest.json`.
+
+Raw records referenced above are members of the retained
+`tensorfold-report-remediation-20261017` evidence packet; transfer/routing
+manifests and the packed receipt identify their content hashes. These controlled
+comparisons establish no 5090/4080, PCIe5, full trained affine/ModelOpt,
+long-context, HTTP tail-latency or general combined speedup prediction.
