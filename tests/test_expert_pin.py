@@ -30,6 +30,8 @@ class Native:
             return self.close_status
 
         owner.pin, owner.close = register, close
+        owner.contains = lambda t: owner.active and owner.pages.data_ptr() <= t.data_ptr() and \
+            t.data_ptr() + t.nbytes <= owner.pages.data_ptr() + owner.pages.nbytes
         self.owners.append(owner)
         return owner
 
@@ -104,6 +106,8 @@ def test_source_geometry_and_page_bound_are_validated_before_registration(monkey
     assert result.data_ptr() == owner.pages.data_ptr()
     assert owner.pages.untyped_storage().nbytes() <= pin.backing_bytes(8)
     assert policy.receipt()["pinned_bytes"] == 8
+    assert policy.owns(result) and policy.owns(result[1:])
+    assert not policy.owns(torch.empty_like(result))
     policy.close()
     assert not owner.active and result.tolist() == [17, -3]
 

@@ -153,6 +153,14 @@ class ExpertPinPolicy:
             self._count += 1
         return result
 
+    def owns(self, tensor: torch.Tensor) -> bool:
+        """Registration capability for an immutable CPU subrange; resolved before HOT use."""
+
+        with self._lock:
+            if self._closed or self._failure is not None:
+                raise RuntimeError("expert pin policy is closed or failed")
+            return any(owner is not None and owner.contains(tensor) for owner in self._pins)
+
     def receipt(self) -> dict:
         with self._lock:
             return {**asdict(self.admission), "allocated_bytes": self.allocated_bytes,

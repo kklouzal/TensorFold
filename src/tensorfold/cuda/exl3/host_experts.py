@@ -219,7 +219,8 @@ class Exl3HostExpertCache(HostExpertCache):
             layers = dict(self._layers)
             layers[layer_id] = _CompactLayer(authority, source, tuple(t._version for t in source),
                                             (self._cells,), authority.count, shared_id=shared_id,
-                                            pinned=authority.data.is_pinned())
+                                            pinned=(self.pin_policy is not None and self.pin_policy.owns(authority.data))
+                                                or authority.data.is_pinned())
             self._policy.register(layer_id, authority.count)
             self._layers = layers
 
