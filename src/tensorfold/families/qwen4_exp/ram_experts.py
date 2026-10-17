@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from tensorfold.cuda.capacity import config, headers
@@ -12,6 +12,33 @@ from tensorfold.cuda.capacity import config, headers
 GIB = 2**30
 AUTO_HEADROOM_BYTES = 512 * 2**20
 MAX_ROUTED_EXPERTS = 1023  # experts.cu's EMAX=1024 includes the shared expert.
+
+
+def check_kv_full_windows(value: int | None, *, streams: int, vram_experts: float | str | None,
+                          tp: int = 1) -> None:
+    """An explicit shared allowance changes concurrent capacity, never model precision."""
+
+    if value is None:
+        return
+    if type(value) is not int or value < 1:
+        raise ValueError("--kv-full-windows must be a positive whole number")
+    if vram_experts != "auto" or type(streams) is not int or streams <= 1 or tp != 1:
+        raise ValueError("--kv-full-windows requires Flash Next CUDA --vram-experts auto, --parallel 2 or more "
+                         "and --tp 1")
+
+
+def reserved_growth(each: list[int], full_windows: int | None = None) -> tuple[int, int]:
+    """Reserve the largest N slot growths; unchanged snapshots and resize overlap are separate.
+
+    The caller validates the public policy before loading. Every actual slot
+    still exists, with its initial cache already allocated. At least one full
+    window remains available, and explicit sharing requires runtime gate
+    enforcement even for a lone decoder beside filling prompts.
+    """
+
+    if full_windows is None or full_windows >= len(each):
+        return sum(each), len(each)
+    return sum(sorted(each, reverse=True)[:full_windows]), full_windows
 
 
 def check(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
@@ -194,7 +221,8 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
         raise ValueError("--vram-experts: unrecognized EXL3 expert layer")
     width, dims, total, largest, count = text["moe_intermediate_size"], text["hidden_size"], 0, 0, 0
     expected, specs = set(), []
-    from tensorfold.cuda.exl3.cache_layout import ExpertSpec, plan as arena_plan
+    from tensorfold.cuda.exl3.cache_layout import ExpertSpec
+    from tensorfold.cuda.exl3.cache_layout import plan as arena_plan
 
     for layer_id, base in enumerate(sorted(bases)):
         codebooks = set()

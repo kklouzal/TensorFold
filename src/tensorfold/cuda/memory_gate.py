@@ -14,9 +14,13 @@ class NoRoom(RuntimeError):
 class MemoryGate:
     """``room`` bytes for every stream's growing caches; ``fits`` also asks the host (MemAvailable on a unified GPU)."""
 
-    def __init__(self, room: int, reserve: int, live: Callable[[], int] | None = None) -> None:
+    def __init__(self, room: int, reserve: int, live: Callable[[], int] | None = None, *,
+                 allow_lone_growth: bool = True) -> None:
         self.room, self.reserve, self.held = int(room), int(reserve), 0
         self.live = live
+        # Flash Next's default admits a whole lone window separately. An
+        # explicitly shared reservation must never borrow outside this gate.
+        self.allow_lone_growth = allow_lone_growth
         self.waits = self.ends = 0
 
     def fits(self, extra: int) -> bool:
