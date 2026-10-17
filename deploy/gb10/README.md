@@ -620,6 +620,14 @@ alone.
 `GET /stats` (JSON) and `GET /metrics` (Prometheus) report load, KV memory, prefix-cache occupancy and totals for
 monitoring and for Harness's background-work gating; neither is logged when it succeeds.
 
+When updating this service alongside Harness, deploy the consumer's
+[explicit tool-enforcement selection](https://github.com/kklouzal/Harness/commit/410bbbf8222c8f75e469b5a019dc88c712e54b66)
+first. Older consumers mark every tool strict, including schemas with unsupported string-length constraints; the
+enforcing server returns HTTP 400 for those requests. The updated consumer keeps every schema and execution-time
+validator, explicitly relaxes only the audited ordinary tools, and retains strict private submissions. TensorFold
+never retries a strict request without enforcement. The 2026-10-17 qualification uses the local AMD64 host; it does
+not replace the dated GB10 deployment receipts or perform a GB10 rollout.
+
 Initial kernel compilation and full-model loading can take minutes. Read startup
 logs and use the health endpoint to establish readiness before sending requests.
 The profile's health check allows a 15-minute initial startup period. `stop` and

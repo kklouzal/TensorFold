@@ -1,0 +1,824 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "scope": "Owner-selected local AMD64 verification; commit/push only, no production rollout",
+  "qualified_runtime_revision": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+  "runtime_image": "sha256:0768e447d8b135089a1f2a185398d1c9aa0a9fcfcc14711478d990c74cb3a1c3",
+  "verification_image": "sha256:9f1004f96f51ee9e21c39d661dc6bf64fc44856224a9c033ac4a4303dd61abe0",
+  "artifact_identity_note": "Later documentation changes do not alter qualified runtime/test/build files; README edits change metadata of any future wheel. These IDs identify the tested images only.",
+  "host": {
+    "platform": "Linux AMD64",
+    "gpu": "NVIDIA RTX PRO 2000 Blackwell 16 GB",
+    "compute_capability": "12.0",
+    "host_ram_gib_approx": 62,
+    "power_limit_w": 70,
+    "kernel_driver": "595.91.07",
+    "container_compat_driver": "615.71.09"
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "packages": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0"
+    }
+  },
+  "model": {
+    "name": "Qwen3.8-Flash-Next",
+    "format": "EXL3",
+    "input_identity_scope": "Config/tokenizer/index SHA256; weight file size/mtime/uid/mode recorded in model-inputs.json; read-only container bind mount; no new full-weight hash",
+    "input_hashes": {
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "config.json": "d4a35225fc5236c8a2d64d01fd273f2f41192be5ff43e5c50ef1ef50e28ccda2",
+      "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "model.safetensors.index.json": "c17e08f4e7fe1fece39ba7c8144ad6b15f2c76520b3add6c6f9b98aaccfb51ed",
+      "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "qbench_prompts.json": "80b3b8c6d41ec54da40f79d593ab91bcac42d638a5d96e069cb4e01e31666467",
+      "quantization_config.json": "c057f732f92379dac8b345ee065d3f07c72df77fead15ee4ec972e8e9831bef5",
+      "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+      "tokenizer_config.json": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+      "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+    },
+    "provenance_correction": "The original model-inputs.json scope text says root-owned; its actual file records show uid1000/mode0644. Those measured records and the read-only container mount are authoritative; root ownership is not claimed."
+  },
+  "service_profile": {
+    "context": 16384,
+    "parallel": 4,
+    "kv_dtype": "rotorquant8-norm",
+    "mtp_drafts": 4,
+    "mtp_confidence": 0.5,
+    "vram_experts": "auto",
+    "prefill": "BF16",
+    "thinking_budget": 0,
+    "max_http_connections": 32,
+    "max_pending_requests": 8,
+    "cpus": 6,
+    "ram_bytes": 56000000000,
+    "swap_bytes": 0,
+    "shm_bytes": 2147483648,
+    "network": "none; internal loopback HTTP checks",
+    "request_chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "gates": [
+    {
+      "name": "installed affected CPU",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "passed": 476,
+      "skipped": 1,
+      "failed": 0,
+      "exit_code": 0,
+      "log": "gates-integrated/cpu-affected-final.log"
+    },
+    {
+      "name": "earlier full installed CPU",
+      "source": "8583d43bb07c1f24f4e6d9d3bc36cf0bb72fadd0",
+      "passed": 7596,
+      "skipped": 168,
+      "failed": 2,
+      "exit_code": 1,
+      "log": "gates-integrated/cpu-installed.log",
+      "disposition": "Both failing test/package defects corrected; final-image affected gate covers optional build-source label and packaged statistics API reference. Full unchanged passes reused with their original identity."
+    },
+    {
+      "name": "unprivileged installed controls",
+      "source": "8583d43bb07c1f24f4e6d9d3bc36cf0bb72fadd0",
+      "uid": 65534,
+      "passed": 231,
+      "skipped": 6,
+      "failed": 0,
+      "exit_code": 0,
+      "log": "gates-integrated/public-control.log"
+    },
+    {
+      "name": "final installed GPU",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "passed": 29,
+      "deselected": 111,
+      "failed": 0,
+      "exit_code": 0,
+      "log": "gates-integrated/gpu-installed.log"
+    },
+    {
+      "name": "final installed KV preparation/encoder/oracles",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "passed": 1666,
+      "deselected": 3430,
+      "failed": 0,
+      "warnings": 1,
+      "exit_code": 0,
+      "log": "gates-integrated/kvprep-installed.log",
+      "warning_disposition": "Configured Torch disk-kernel cache directory could not be created; selected correctness cases passed with that disk caching disabled. No timing conclusion."
+    },
+    {
+      "name": "final installed synthetic three-format exactness",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "exit_code": 0,
+      "log": "gates-integrated/e2e-installed.log",
+      "reference_all": "67a762f3ac80e419",
+      "formats": {
+        "rotorquant8-norm": {
+          "token_sha": "426d56f8d391",
+          "kv_sha": "455fd43290bc"
+        },
+        "rotorquant8": {
+          "token_sha": "426d56f8d391",
+          "kv_sha": "6d72b797b135"
+        },
+        "rotorquant6-norm": {
+          "token_sha": "426d56f8d391",
+          "kv_sha": "a4394b71adb9"
+        }
+      },
+      "workload": "Synthetic FlashNext two streams, prompts2600/3100,64outputs each,depth3/confidence0.3,greedy and seed99 top_k20/top_p.95,context8192",
+      "script": "gates-integrated/e2e_formats.py"
+    },
+    {
+      "name": "broad CUDA non-matrix",
+      "source": "05d053c11b2d00a9665763ef9f84ff5db15514cd",
+      "passed": 1871,
+      "skipped": 97,
+      "failed": 41,
+      "errors": 45,
+      "exit_code": 1,
+      "log": "gates-integrated/cuda.log",
+      "baseline": "1a2836b0",
+      "new_failure_error_ids": 0,
+      "resolved_baseline_ids": 5,
+      "comparison": "gates-integrated/cuda-vs-baseline.json",
+      "disposition": "Retained baseline numerical/family/build-lock failures and invalid-vocabulary TP fixtures; failing broad suite, no all-GPU-pass claim."
+    },
+    {
+      "name": "ordinary installed full-model HTTP",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "exit_code": 0,
+      "log": "native/api.log",
+      "response_record": "native/api.json",
+      "checks": [
+        "model list/retrieve/unknown404",
+        "native tokenize",
+        "Responses input_tokens",
+        "repeat/serial/drafted token identity",
+        "stream usage/progress/request IDs",
+        "forced strict call",
+        "unsupported strict bound400",
+        "actual31-tool catalog",
+        "four concurrent replies equal solo",
+        "stats/metrics;zero final logical owners",
+        "no normal-request failure captures",
+        "SIGINT exit0/noOOM"
+      ]
+    },
+    {
+      "name": "installed source audit",
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "matched_files": 501,
+      "mismatches": 0,
+      "missing_readmes": 3,
+      "native_fd_owner_present": true,
+      "record": "build/installed-source-audit-final.json"
+    },
+    {
+      "name": "Harness affected integration",
+      "source": "410bbbf8222c8f75e469b5a019dc88c712e54b66",
+      "passed": 323,
+      "failed": 0,
+      "skipped": 0,
+      "exit_code": 0,
+      "log": "harness/main-integrated-tests.log",
+      "format": "scoped format exit0;build zero warnings/errors"
+    },
+    {
+      "name": "final maintained statistics documentation oracle",
+      "source": "qualified2dd installed runtime with final docs/api.md mounted read-only",
+      "passed": 1,
+      "exit_code": 0,
+      "log": "gates-integrated/docs-final.log"
+    }
+  ],
+  "consumer": {
+    "repository": "https://github.com/kklouzal/Harness",
+    "revision": "410bbbf8222c8f75e469b5a019dc88c712e54b66",
+    "foreground_tools": 31,
+    "foreground_strict": 9,
+    "foreground_explicit_nonstrict": 22,
+    "private_strict_functions": 5,
+    "private_strict_json_requests": 4,
+    "schema_preservation": "All foreground schema bytes and execution validators retained; other providers unchanged",
+    "deployment_order": "Deploy Harness consumer first, then enforcing TensorFold server",
+    "deployed": false
+  },
+  "local_evidence_root": "/home/kklouzal/tensorfold-resume-20261017",
+  "unrun": [
+    "new ARM64/GB10 qualification",
+    "Apple MLX native execution",
+    "actual two-GPU execution",
+    "exhaustive full-model quality",
+    "filled-context capacity/performance",
+    "source-instrumentation overhead versus prior release"
+  ],
+  "static_analysis": {
+    "ruff_version": "0.17.0",
+    "selected_rules": "E4,E7,E9,F,B018",
+    "baseline_findings": 55,
+    "qualified8583_findings": 17,
+    "final2dd_findings": 20,
+    "final_new_reported": 3,
+    "final_new_defects_after_review": 0,
+    "selected_disposition": "3 reported fixture-discovery/shadowing false positives in EOS regression test; explicit import registers pytest fixture, used by dependency injection. No source or lint configuration weakened.",
+    "broader_default_scan": {
+      "baseline": 693,
+      "integrated": 708,
+      "disposition": "New advisory categories reviewed; synchronous regexcallback closure, eager full-list validation, pytest fixture discovery, checked childresults and read-only testclass tables intentional. Style/import/annotation/order/noqa suggestions not selected as runtime changes. Full diagnostic records and D13 rationale retained."
+    }
+  },
+  "exact_gate_invocations": "gates-integrated/exact-gate-tool-calls.json",
+  "statistics_fresh_connection_stress": {
+    "qualified": false,
+    "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+    "estimand": "geometric full-batch wall-latency ratio, scrape-on versus scrape-off",
+    "acceptance": [
+      0.995,
+      1.005
+    ],
+    "confirmation_blocks_per_region": 80,
+    "coverage": 0.975,
+    "variance": "max(IID, Bartlett HAC bandwidth4 with n/(n-1) correction)",
+    "results": {
+      "1": {
+        "ratio": 1.0023890405881977,
+        "ci97_5": [
+          0.9993037221878607,
+          1.005483884810785
+        ],
+        "ci95": [
+          0.9997008164745411,
+          1.005084493413451
+        ],
+        "within_half_percent": false,
+        "iid_sem": 0.0013491518872170236,
+        "hac_variance": 1.6549694296469928e-06,
+        "conservative_sem": 0.0013491518872170236,
+        "lag_correlations": [
+          -0.10975381665403755,
+          0.03148636134226008,
+          0.02187829999843725,
+          0.07384594651858548
+        ],
+        "order_parity_ratios": {
+          "ABBA": 1.0027021242988852,
+          "BAAB": 1.002076054634768
+        }
+      },
+      "4": {
+        "ratio": 1.0061044506518948,
+        "ci97_5": [
+          1.0017929049890935,
+          1.0104345524712728
+        ],
+        "ci95": [
+          1.0026662791150607,
+          1.0095544117779103
+        ],
+        "within_half_percent": false,
+        "iid_sem": 0.0017197933701066888,
+        "hac_variance": 3.532646339025704e-06,
+        "conservative_sem": 0.0018795335429371044,
+        "lag_correlations": [
+          0.014812364219215893,
+          0.025310832074773353,
+          0.1722491138296135,
+          0.006304871515572294
+        ],
+        "order_parity_ratios": {
+          "ABBA": 1.0087735328934992,
+          "BAAB": 1.0034424304512544
+        }
+      }
+    },
+    "disposition": "Unqualified stress region. Four-request positive slowdown established; neither interval proves the declared bound. No exclusions or margin changes. Does not represent Harness pooled, two-second reused stats reads.",
+    "poll_protocol": "Fresh HTTP connections; immediate stats+metrics at each Bbatch start; stats every0.5s,metrics everysecondnominally; short batches increase realized rates",
+    "realized_rates_hz": {
+      "n1": {
+        "stats": 2.6687700454683525,
+        "metrics": 1.779180030312235
+      },
+      "n4": {
+        "stats": 2.164329356703503,
+        "metrics": 1.0832907602230852
+      }
+    },
+    "records": "native/stats-confirm.json",
+    "summary": "native/stats-confirm.summary.json",
+    "pilot": "native/stats-ab.json",
+    "shutdown": "native/refine-container.json",
+    "exit_code": 0,
+    "oom_killed": false
+  },
+  "statistics_consumer_shaped_steady_state": {
+    "qualified": false,
+    "protocol": "One warm persistent stats-only HTTP1.1 connection retained idle in A; >=2s from priorcompletion to nextfetch, due phase retained across B batches; no Prometheus requests",
+    "blocks_per_region": 80,
+    "coverage": 0.975,
+    "acceptance": [
+      0.995,
+      1.005
+    ],
+    "estimand": "geometric full-batch wall-latency ratio, stats-on versus stats-off",
+    "variance": "max(IID, Bartlett HAC bandwidth4, n/(n-1) correction); df79 Studentt",
+    "independence_limit": "Fixed lag-four sensitivity does not prove absence of longer-range correlation",
+    "validation": {
+      "batches": 640,
+      "generation_requests": 1600,
+      "connections": 1,
+      "fetches": 446,
+      "max_fetch_s": 0.0020160929998382926,
+      "minimum_completion_spacing_s": 2.0000286729773507,
+      "raw_sha256": "ab9bf9436130a63e6790cef54c9ef838d42aa38262d8f3d95dfbc02d98797b41",
+      "regions": {
+        "1": {
+          "ratio": 0.9997535874561941,
+          "ci97_5": [
+            0.998013185927325,
+            1.0014970240125802
+          ],
+          "within_half_percent": true,
+          "order_parity_ratios": {
+            "ABBA": 1.0002331188534201,
+            "BAAB": 0.9992742859557358
+          },
+          "lag_correlations": [
+            -0.15598682465874178,
+            0.021241309236990216,
+            -0.003710540446969533,
+            -0.05406260674500835
+          ],
+          "measured_stats_fetches": 160
+        },
+        "4": {
+          "ratio": 0.9981978676107507,
+          "ci97_5": [
+            0.994721171894356,
+            1.0016867148862414
+          ],
+          "within_half_percent": false,
+          "order_parity_ratios": {
+            "ABBA": 0.998957855647803,
+            "BAAB": 0.9974384577580663
+          },
+          "lag_correlations": [
+            -0.19259732647568675,
+            -0.06347285140966138,
+            0.07767408269592758,
+            0.048964391868785644
+          ],
+          "measured_stats_fetches": 280
+        }
+      }
+    },
+    "results": {
+      "1": {
+        "ratio": 0.9997535874561941,
+        "ci97_5": [
+          0.998013185927325,
+          1.0014970240125802
+        ],
+        "ci95": [
+          0.9982373142630777,
+          1.001272163793426
+        ],
+        "within_half_percent": true,
+        "iid_sem": 0.0007625401425605112,
+        "hac_variance": 4.36866497091363e-07,
+        "conservative_sem": 0.0007625401425605112,
+        "lag_correlations": [
+          -0.15598682465874178,
+          0.021241309236990216,
+          -0.003710540446969533,
+          -0.05406260674500835
+        ],
+        "order_parity_ratios": {
+          "ABBA": 1.0002331188534201,
+          "BAAB": 0.9992742859557358
+        }
+      },
+      "4": {
+        "ratio": 0.9981978676107507,
+        "ci97_5": [
+          0.994721171894356,
+          1.0016867148862414
+        ],
+        "ci95": [
+          0.9951685589559579,
+          1.0012363975284575
+        ],
+        "within_half_percent": false,
+        "iid_sem": 0.0015269872043158846,
+        "hac_variance": 1.6261249326027897e-06,
+        "conservative_sem": 0.0015269872043158846,
+        "lag_correlations": [
+          -0.19259732647568675,
+          -0.06347285140966138,
+          0.07767408269592758,
+          0.048964391868785644
+        ],
+        "order_parity_ratios": {
+          "ABBA": 0.998957855647803,
+          "BAAB": 0.9974384577580663
+        }
+      }
+    },
+    "disposition": "n1 meets unchanged criterion; n4 remains inconclusive for two-sided equivalence (loweredge below.995;upperedge1.001686715). No established speedup. Does not satisfy/erase failedfreshstress or unrun instrumentation-vs-prior-release gate.",
+    "scope_exclusions": [
+      "first monitoring connection",
+      "factory-handler rotation",
+      "native.NET reader execution"
+    ],
+    "raw": "native/stats-consumer.json",
+    "summary": "native/stats-consumer.summary.json",
+    "independent_validation": "native/stats-consumer.validation.json",
+    "exit_code": 0,
+    "shutdown": "native/consumer-container.json",
+    "oom_killed": false,
+    "read_count_scope": {
+      "unrecorded_setup_reads": 2,
+      "recorded_post_setup_reads": 446,
+      "measured_reads": 440,
+      "workload_warmup_reads": 6,
+      "duration_spacing_scope": "Recorded post-setup reads only; first-connection setup excluded by protocol"
+    }
+  },
+  "completion_status": {
+    "source_integration": "verified;runtime files unchanged since qualified2dd",
+    "local_functional_gates": "verified with reused evidence and explicit baseline failures",
+    "performance_qualification": "incomplete: freshstress unqualified; consumer-shaped n4 two-sided equivalence inconclusive",
+    "rollout": "not performed;owner scope localverification/commit/push only",
+    "next_performance_action": "New predeclared adequately powered required-region study; retain all failed/inconclusive records and unchanged owner margin"
+  },
+  "evidence_manifest": {
+    "algorithm": "sha256",
+    "path": "evidence-sha256.json",
+    "sha256": "65a548b83101b99671ac262bd8591955c1cb1d908177f7d9e17eb88130c4341d",
+    "files": {
+      "build/installed-source-audit-final.json": {
+        "bytes": 376,
+        "sha256": "5d55cb047e58920443aa7446bc255da6ebf571150b9308db819cf5ec2816039a"
+      },
+      "build/runtime-final.id": {
+        "bytes": 72,
+        "sha256": "e120fa3f07ad98a719751e297dda5f74bd984cf8b580ed533ff2d8294f333b3a"
+      },
+      "build/runtime-versions.json": {
+        "bytes": 269,
+        "sha256": "c71453289c6798970081d1ffa2ca3bdfe0d157d27ed79723215175bc5d655a4a"
+      },
+      "build/source.json": {
+        "bytes": 62513,
+        "sha256": "e63ce26e9b78e7724eb01bf417d730b88fc9f321888293e6eb3dfdf1977e87ae"
+      },
+      "build/verification-final.id": {
+        "bytes": 72,
+        "sha256": "7c95cd80c107e0b8a3e7709078c5ce7d6d217f986c55718dda3c1d6d87b12539"
+      },
+      "d13/lint-triage.md": {
+        "bytes": 4152,
+        "sha256": "d8d51bec67cc1572f77a77c9509add10908908662cc66b83611591d98de18b30"
+      },
+      "d14/harness-review.md": {
+        "bytes": 3264,
+        "sha256": "a370f3e4b4a75df38105f582d3ae22fada283f2c9b18c0ed65ba014976aef900"
+      },
+      "d14/independent-student-t-check.txt": {
+        "bytes": 525,
+        "sha256": "bf7e7953d92c499780ba54b07143636bcfe3c2f2cf41ed3b8c4bb9a24005a24b"
+      },
+      "embedding-restored.json": {
+        "bytes": 916,
+        "sha256": "8de7d36fe63be028ea80c91cbfa8a1ccbba97670bd918d6624574b4fa2dbcf26"
+      },
+      "gates-integrated/cpu-affected-final.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/cpu-affected-final.log": {
+        "bytes": 763,
+        "sha256": "1d71476f49dfb89d0190cd3d7a4ca178b22180bed51afc704abf8c05ea296fe7"
+      },
+      "gates-integrated/cpu-installed.exit": {
+        "bytes": 2,
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "gates-integrated/cpu-installed.log": {
+        "bytes": 25299,
+        "sha256": "7152af7942ccf2b9765fbd00572b35fef6f14c34906786d2b83ffd3d84400ad1"
+      },
+      "gates-integrated/cuda-vs-baseline.json": {
+        "bytes": 9093,
+        "sha256": "2615deeb5ea6cc18ae2cf3dc1535a0bceb0db355d4dc168803514fe6ed338b21"
+      },
+      "gates-integrated/cuda.exit": {
+        "bytes": 2,
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "gates-integrated/cuda.log": {
+        "bytes": 139038,
+        "sha256": "78d94f14b2b5b927d6c64d3010a92a28f0b003cdbf92151c3aac2c01d52b41d5"
+      },
+      "gates-integrated/docs-final.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/docs-final.log": {
+        "bytes": 98,
+        "sha256": "3dd8a455f93386b2d78b9d5605f1c2f52fd55f0962f89b0bd7d602cae0ead952"
+      },
+      "gates-integrated/e2e-installed.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/e2e-installed.log": {
+        "bytes": 226,
+        "sha256": "7a7c0a00c5c8fb109172a996330fc90da5bff46e67db88fdcede5123f63dc6c1"
+      },
+      "gates-integrated/e2e_formats.py": {
+        "bytes": 1638,
+        "sha256": "7a3685d188c9dced6e6f1f22ffd92094c29fa522c1151dc26e0fec13ad39b39c"
+      },
+      "gates-integrated/exact-gate-tool-calls.json": {
+        "bytes": 3627,
+        "sha256": "4059bb29e1960e45b5772c870c57d67b0696e880c46b7eb87dbcce91c6444734"
+      },
+      "gates-integrated/gpu-installed.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/gpu-installed.log": {
+        "bytes": 1207,
+        "sha256": "2166aff49d67a6f5708f6d3373feba6c271b650207fd76a953f39aba3bef7fad"
+      },
+      "gates-integrated/kvprep-installed.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/kvprep-installed.log": {
+        "bytes": 3607,
+        "sha256": "fa36ea664afbdba4625cc51260fec497f06231d6db8fb2b2b556af4cada47db9"
+      },
+      "gates-integrated/public-control.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "gates-integrated/public-control.log": {
+        "bytes": 351,
+        "sha256": "bb244bc124478bd389d770e11b99cb7183f32010abe9ab6df41f76cf81a33432"
+      },
+      "harness/catalog-diff.json": {
+        "bytes": 801,
+        "sha256": "ad3e7ac415763c93944d4c9e55bd46ac4e7f0521a1471f55fae29d69e280d8fc"
+      },
+      "harness/committed-format.log": {
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "harness/ledger.md": {
+        "bytes": 11876,
+        "sha256": "74551937c652684d8b94c1266f1d07697393fddbb603d482b36b09ce267bac99"
+      },
+      "harness/main-integrated-tests.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "harness/main-integrated-tests.log": {
+        "bytes": 348,
+        "sha256": "991b6f3fc37260525e7f53a3672f38651eeb99f056d8248217203b87dab8ad47"
+      },
+      "harness/tensorfold-private-requests.json": {
+        "bytes": 27860,
+        "sha256": "389400ffd0d17b4c6c49838cca1158ef4ea60cc82a87809b081eb397b40998d6"
+      },
+      "harness/tensorfold-shared-validator.log": {
+        "bytes": 596,
+        "sha256": "26990f2a53d7a65215556fe2bd6475e892634a066f734005e7e193bc9dc5c8b0"
+      },
+      "harness/tensorfold-tools-selected.json": {
+        "bytes": 27826,
+        "sha256": "859aa7a3f8ca1905845170f39cec5a04d57871e3e6413ad992248f12c3eb4948"
+      },
+      "model-inputs.json": {
+        "bytes": 4447,
+        "sha256": "b26c2926895686334f7aaf1509a82cb50d85831a964d0fb329d91ac0a298f827"
+      },
+      "native/api.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "native/api.json": {
+        "bytes": 56249,
+        "sha256": "7eab2e71f930c3db0228aac36922cf3887d6515d732fa5a6351376378d985c9d"
+      },
+      "native/api.log": {
+        "bytes": 16,
+        "sha256": "c214e76da4845c2089694c1bd464e5756a99e887cf5081b3e4c1e3abb6828001"
+      },
+      "native/consumer-container.json": {
+        "bytes": 16504,
+        "sha256": "77dc9f8a980c24b330711cfe305369a28448921463a2fa163417a24ee17fad13"
+      },
+      "native/consumer-gpu-samples.csv": {
+        "bytes": 83373,
+        "sha256": "f71ea68ce9ef9a069710f57d5fade37aa5153931b6666f6c21e89e6be9e5f652"
+      },
+      "native/consumer-service.log": {
+        "bytes": 962223,
+        "sha256": "79bcba2fcb70f5bebf586761516f9453a33bfd51766a869a91f53ee9696b8125"
+      },
+      "native/consumer-start.log": {
+        "bytes": 31,
+        "sha256": "0903017d0e77c9216e2176182c28d2c425051ad52e1b25f8905265fe24957a8b"
+      },
+      "native/consumer-stop.log": {
+        "bytes": 31,
+        "sha256": "0903017d0e77c9216e2176182c28d2c425051ad52e1b25f8905265fe24957a8b"
+      },
+      "native/container.json": {
+        "bytes": 16504,
+        "sha256": "31e6ccc4d2372a00de765469ac4ec7e6f07dd4b15a73dc6c6cc8f2d9fa2dac06"
+      },
+      "native/gpu-samples.csv": {
+        "bytes": 27829,
+        "sha256": "0409523ffb7f955b99971d0abb2e886d19653eb7c49f33a0fdd7da3e7b17010b"
+      },
+      "native/refine-container.json": {
+        "bytes": 16504,
+        "sha256": "e63b5d88b8083eec3aa59916c715b72b5c29b19c1ac7a31be4e61d66d6f96573"
+      },
+      "native/refine-gpu-samples.csv": {
+        "bytes": 83884,
+        "sha256": "2fb92c1e59ccbf5abe7ce3c7196a3ba4887621028ada64422e8ce97ae3700fa2"
+      },
+      "native/refine-service.log": {
+        "bytes": 538610,
+        "sha256": "bfc4a8f6c077409e8ac99edb78323ef13eba79b21887f5ac91ff0a0df8f4c748"
+      },
+      "native/refine-start.log": {
+        "bytes": 31,
+        "sha256": "0903017d0e77c9216e2176182c28d2c425051ad52e1b25f8905265fe24957a8b"
+      },
+      "native/refine-stop.log": {
+        "bytes": 31,
+        "sha256": "0903017d0e77c9216e2176182c28d2c425051ad52e1b25f8905265fe24957a8b"
+      },
+      "native/service.log": {
+        "bytes": 112582,
+        "sha256": "afaa82ca36d074339f28df046a619628f841fe9872207f009087e969a6555949"
+      },
+      "native/stats-ab.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "native/stats-ab.json": {
+        "bytes": 162223,
+        "sha256": "af8786055d87db9b36f4e1ca21fbc2dd40a13828ebd5afde586fde3eca4cb6ce"
+      },
+      "native/stats-ab.log": {
+        "bytes": 2053,
+        "sha256": "ffd2e224312625d9f9e76cfa29b3981e8854bfb852676d00137642d88dd2a739"
+      },
+      "native/stats-ab.summary.json": {
+        "bytes": 1518,
+        "sha256": "b4b7711b12d971777e3c05889e6fbf558aedc5af17d44072375e05de98d3cb30"
+      },
+      "native/stats-confirm-preflight-failed.exit": {
+        "bytes": 2,
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "native/stats-confirm-preflight-failed.log": {
+        "bytes": 278,
+        "sha256": "0e8cc08ae80d7d5bac0cb04212ddfbca97828460f0b80c0ebf997e33181cc091"
+      },
+      "native/stats-confirm.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "native/stats-confirm.json": {
+        "bytes": 648893,
+        "sha256": "672540848bc989712b0f7c9c1e9b154e3f681bbf572286d3abcb813882a97c8b"
+      },
+      "native/stats-confirm.log": {
+        "bytes": 8413,
+        "sha256": "fe61bbdc359933bb69b3872060661364d5cc04bb8be8bd4c5e3955358954a457"
+      },
+      "native/stats-confirm.summary.json": {
+        "bytes": 5810,
+        "sha256": "548ad3fb2f015568fbab6df3af8eb01f71e5bb063eef5e6b41197d60ff62c95d"
+      },
+      "native/stats-consumer.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "native/stats-consumer.json": {
+        "bytes": 684892,
+        "sha256": "ab9bf9436130a63e6790cef54c9ef838d42aa38262d8f3d95dfbc02d98797b41"
+      },
+      "native/stats-consumer.log": {
+        "bytes": 8505,
+        "sha256": "7e24a39b885dba4760209cbf92977552ee6d7b4778c901524a44c90cceb874e1"
+      },
+      "native/stats-consumer.summary.json": {
+        "bytes": 5902,
+        "sha256": "7c2083a9731d3da470694ef90aec756291f33894db05a69d57bb3443ff353f14"
+      },
+      "native/stats-consumer.validation.exit": {
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "native/stats-consumer.validation.json": {
+        "bytes": 1231,
+        "sha256": "1dbaed8e68f71fc5d0094504262aa33ea47293292d2c781bc21c9abae68e2526"
+      },
+      "native/stats-consumer.validation.log": {
+        "bytes": 1231,
+        "sha256": "1dbaed8e68f71fc5d0094504262aa33ea47293292d2c781bc21c9abae68e2526"
+      },
+      "native/stop.log": {
+        "bytes": 31,
+        "sha256": "0903017d0e77c9216e2176182c28d2c425051ad52e1b25f8905265fe24957a8b"
+      },
+      "native_check.py": {
+        "bytes": 6904,
+        "sha256": "574f4f26eb121706ea0d85b2c31e6f0013b81d4c11b30c506633f31966ac84a7"
+      },
+      "ruff-base-final.json": {
+        "bytes": 42230,
+        "sha256": "6eb9ea165ab7fb5a5dcb94dfce92ffe78615d90f3132ed265cae8ef6e32c867b"
+      },
+      "ruff-closing-baseline.json": {
+        "bytes": 566367,
+        "sha256": "b59a46721c84ee09ad160d2d70e0f83ccf631c98d759abfcc9122782cef2ce6f"
+      },
+      "ruff-closing-comparison.json": {
+        "bytes": 9672,
+        "sha256": "588ec7bd77f3db76e0826a8c99266c5ff4da28b78bc27a5f2c3dd7fd4d1f6d1f"
+      },
+      "ruff-closing-integrated.json": {
+        "bytes": 580189,
+        "sha256": "bb4c4da5f9eb8f7c05088d9ca242b80ab974eb647ba5acfde38d1ebe6bd91ffc"
+      },
+      "ruff-integrated-final.json": {
+        "bytes": 10825,
+        "sha256": "73157ad7b0c932b63d1fcfcacffc3a9255487c7e58b38d378e223abfe473717c"
+      },
+      "ruff-selected-closing-baseline.json": {
+        "bytes": 42230,
+        "sha256": "6eb9ea165ab7fb5a5dcb94dfce92ffe78615d90f3132ed265cae8ef6e32c867b"
+      },
+      "ruff-selected-closing-comparison.json": {
+        "bytes": 338,
+        "sha256": "7e77e969b0e12560980a414143ed9e08338b008373f782a7a1d7c68bafa40d49"
+      },
+      "ruff-selected-closing-integrated.json": {
+        "bytes": 12799,
+        "sha256": "e9a5dfe834f981ce32a8b63d0ac5ed2ccf9888fccb7e0533f0a0b5d9ecf234f7"
+      },
+      "run-consumer.sh": {
+        "bytes": 2398,
+        "sha256": "a203071f7ab1a10c848f53799483b84d1d68e6b9d572a3b8a9b374ffe126df88"
+      },
+      "run-final-gpu.sh": {
+        "bytes": 1206,
+        "sha256": "a929f62bb0e95e91c1a865149be542a72a3093e9fc03c0409bdad3c6c94b65b1"
+      },
+      "run-native.sh": {
+        "bytes": 3676,
+        "sha256": "ec9afe8dbd731fae168268664dcdb6a4731ef14b118435c0bf76f11f1f3c8c5a"
+      },
+      "run-refine.sh": {
+        "bytes": 2375,
+        "sha256": "ced72c92cb22a9d2c14beba7c21ec96a439a04aefeb6a1e389aeb0f7e0a4656b"
+      },
+      "stats_bench.py": {
+        "bytes": 5391,
+        "sha256": "4932de5be5b42729a24820943b9b22a285e069955e094854c45b5a7e5386c22b"
+      },
+      "stats_consumer.py": {
+        "bytes": 8760,
+        "sha256": "fe100e7b3289ed8a5afca872b016f75dd781865332518bc26a740b87c39ed684"
+      },
+      "stats_refine.py": {
+        "bytes": 7505,
+        "sha256": "1e457db18bcb3b343453d2c217e3b3f88d3c7d230eb7cf44e80a9d66dfb0ef9a"
+      },
+      "validate_consumer.py": {
+        "bytes": 3418,
+        "sha256": "bc037002bfee81c3853c96afe3e486bd909a1e8d56eb557f998a8d6a79660932"
+      }
+    }
+  }
+}

@@ -18,6 +18,114 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## API/statistics and strict tools: local qualification, 2026-10-17
+
+Runtime source `2dd77a9a794a9d2349c43adf487b12f21a0a5d0f` integrates the interrupted cleanup,
+API/statistics and strict-function work. Subsequent qualification documentation changes leave its runtime,
+test and build files unchanged. The immutable AMD64 runtime is
+`sha256:0768e447d8b135089a1f2a185398d1c9aa0a9fcfcc14711478d990c74cb3a1c3`;
+verification is `sha256:9f1004f96f51ee9e21c39d661dc6bf64fc44856224a9c033ac4a4303dd61abe0`.
+README changes affect future wheel metadata; these image IDs identify the tested artifacts, not a later rebuild.
+The [machine-readable receipt](verification-api-stats-20261017.json) records inputs, gate scope and evidence hashes.
+Raw local evidence is retained in `/home/kklouzal/tensorfold-resume-20261017`; it is not part of the ordinary build.
+
+The host is Linux AMD64, RTX PRO 2000 Blackwell 16 GB (SM120), approximately 62 GiB host RAM,
+70 W GPU power cap. The normal installed Python 3.12.3 image uses the existing CUDA 13.4.1 pins:
+Torch `2.16.0.dev20261006+cu134`, Triton `3.9.0+gitaad2a60d`, xgrammar 0.2.8,
+tokenizers 0.23.1, Jinja 3.1.6 and NumPy 2.1.0. The NVIDIA compatibility userspace driver is
+615.71.09 over host kernel driver 595.91.07. Other GPU workloads were stopped during qualification;
+GPU tasks used one shared lock. This local scope was explicitly selected by the owner; no GB10 service was changed.
+
+| Gate | Result and scope |
+|---|---|
+| Final installed affected CPU | 476 passed, one MLX-only skip; API/error/schema/reader, statistics, metrics, deployment and packaging contracts |
+| Earlier full installed CPU at `8583d43b` | 7,596 passed, 168 skipped, two failures; both defects corrected and covered by the final affected gate (optional build-label oracle and packaged API reference) |
+| Unprivileged installed controls at `8583d43b` | 231 passed, six explicit platform/control skips; final packaging changes also covered above |
+| Final installed GPU | 29 passed; statistics/progress, mask and staging-lifetime oracles, strict synthetic lanes/two-rank/MoE and real-checkpoint four-layer serial/MTP equality |
+| Final installed KV preparation/encoder/oracles | 1,666 passed, 3,430 deselected; one kernel-cache write warning retained in the full log |
+| Final installed synthetic three-format exactness | RQ8-norm/RQ8/RQ6-norm reference `ALL 67a762f3ac80e419` unchanged |
+| Broad CUDA non-matrix at `05d053c1` | 1,871 passed, 97 skipped, 41 failed, 45 errors; exact comparison with pristine `1a2836b0` has zero new failure/error IDs and five resolved cases |
+| Installed runtime audit | 501 owned source files hash-identical; zero mismatches; three README-only omissions and native file-owner extension recorded |
+| Harness at `410bbbf` | 323 affected tests passed, zero failures/skips; build and scoped formatting passed |
+
+The broad CUDA gate's retained failures belong to existing numerical/family tests and a build-lock fixture; its 45 errors are old
+invalid-vocabulary TP fixtures. This remains a failing broad suite, not an all-GPU pass. Detailed identities and
+baseline comparisons are retained; no tests were disabled to change those results. Five old cases resolve with
+isolated memory-limit execution and exclusive GPU capacity. Earlier unchanged passing coverage is reused only
+with its actual source/configuration identity; the final affected checks qualify later fixes. The KV gate warned that its configured Torch disk-kernel cache directory could not be created. It completed
+all selected correctness cases with disk caching disabled for that kernel path; it supplies no timing claim.
+
+The ordinary PID-1 CLI served the actual local EXL3 Flash Next checkpoint with automatic RAM experts,
+RQ8-norm KV, BF16 prompts, context 16,384, four slots, MTP-4/confidence 0.5, requests explicitly disabling thinking,
+HTTP/pending caps 32/8, six CPUs, 56 decimal GB RAM/no swap and 2 GiB shared memory. It loaded in 142.4 s
+and reserved all four slots and 24 snapshots within its startup plan. Models/list/retrieve/unknown-model 404,
+native tokenization, Responses input counting, JSON/SSE usage and request IDs, progress, exact repeated/serial/drafted
+token IDs, a forced strict call, unsupported-bound HTTP 400, the actual 31-tool Harness prompt (8,225 tokens),
+four concurrent replies matching solo references, statistics and Prometheus all passed. Final logical owners were
+zero and normal requests produced no failure captures. SIGINT/container retirement passed with exit zero and no OOM.
+These bounded requests do not establish filled-context capacity or broad model quality.
+
+TensorFold never weakens an active strict request. Unsupported strict schemas and active grammar plus
+`ignore_eos: true` are refused before generation/SSE. The consumer change
+[Harness `410bbbf`](https://github.com/kklouzal/Harness/commit/410bbbf8222c8f75e469b5a019dc88c712e54b66)
+keeps every schema and execution validator, explicitly chooses non-strict decoding for 22 audited executable tools,
+and retains strict decoding for nine foreground tools, all five private function submissions and four memory JSON
+requests. Generation, counting and runtime probes share that choice; other providers retain their prior payloads.
+The curator's `anyOf` replaces disjoint `oneOf` branches with identical accepted values (required, distinct action
+constants). All actual exported requests pass the server validator; the full vocabulary/template and mixed-tool
+stream checks pass. Deploy this consumer before the enforcing server: older Harness marks unsupported schemas strict.
+No Harness deployment or provider-database change was performed here.
+
+String-length candidates remain rejected: native fast JSON bounds do not preserve the required escape/control-character
+domain; an exact escape-aware grammar took approximately 0.4 s per token and a raw-string DFA approximately 3.1 s per
+mask in the recorded prototypes. Those candidates remain private evidence, not production paths. Finite uniqueness
+for arrays over at most ten distinct string enum values uses the exact selected grammar. General unsupported
+constraints still fail explicitly. No new decoder/kernel optimization is selected by this qualification.
+
+The statistics readout experiment compares no background scraping against `/v1/stats` at 2 Hz plus `/metrics` at 1 Hz
+on the same warm installed service, with the unchanged actual tool catalog and equal output token IDs.
+One-request and four-request regions have separate, nonoverlapping paired ABBA/BAAB blocks, fixed prompts/seeds and a 16-token
+maximum with normal EOS. The objective measured here is the geometric full-batch wall-latency ratio; it does not
+measure the entire instrumentation change against an older release, nor claim arithmetic mean decode-round equivalence.
+The initial 20-block pilots are retained separately. Confirmation uses 80 fresh blocks per region, fixed in advance,
+97.5% Student-t intervals for a two-look alpha budget, and the larger of IID variance and a fixed Bartlett HAC
+bandwidth-four variance (finite-sample correction included). The unchanged acceptance interval is [0.995, 1.005].
+Order parity and lag correlations are reported; no observations are removed. The completed fresh-connection
+confirmation is **unqualified**: n1 ratio 1.002389, 97.5% interval [0.999304, 1.005484]; n4 ratio 1.006104,
+interval [1.001793, 1.010435]. Positive overhead is established in n4; neither interval proves the declared bound.
+ABBA/BAAB point ratios are 1.002702/1.002076 (n1) and 1.008774/1.003442 (n4). Fixed lag-four HAC widens n4's
+interval; it does not establish absence of longer-range dependence. Immediate polling at every short B-batch start
+made realized n1 rates approximately 2.67/1.78 Hz (stats/metrics) and n4 2.16/1.08 Hz, above nominal timer rates.
+All 640 measured batches (1,600 generation requests) completed with equal tokens; retirement passed exit zero/no OOM.
+
+A separate, predeclared consumer-shaped steady-state region follows authoritative Harness source: shared stats-only
+reads, at least two seconds after the preceding fetch completes, with one warmed reusable HTTP/1.1 connection
+retained idle in A. The same fixed 80 blocks, margin, conservative interval method and quality settings apply.
+This region excludes first connection, factory-handler rotation and native .NET reader execution. It cannot qualify
+or erase the failed fresh-connection stress or the unrun source-instrumentation comparison. Its results are recorded
+below. The closing validator independently checks sample order/counts, token identity, interval arithmetic,
+connection count, completion spacing and the actual reader's two-second timeout.
+
+The consumer-shaped n1 ratio is 0.9997535875, with 97.5% interval [0.9980131859, 1.0014970240]: it meets the
+unchanged criterion. The n4 ratio is 0.9981978676, with interval [0.9947211719, 1.0016867149]: it remains
+**inconclusive for two-sided equivalence**, since its lower edge is below 0.995. The upper edge is +0.169%, but
+that is not a pass of the declared two-sided criterion. Neither region establishes a speedup. Order-parity point
+ratios are 1.0002331189/0.9992742860 (n1) and 0.9989578556/0.9974384578 (n4); lag correlations remain in the
+receipt. Exactly one monitoring connection recorded 446 post-setup reads (440 measured and six workload-warmup reads),
+after two unrecorded setup reads. The recorded reads have minimum completion-to-next-start spacing
+2.000028673 s and maximum duration 0.002016093 s. All 640 measured batches/1,600 generation requests
+preserved their token sequences; the server retired exit zero/no OOM.
+
+Local functional integration is verified; the general overhead qualification remains incomplete. Fresh-connection
+stress shows positive n4 overhead, while the narrow consumer-shaped n4 interval lacks the precision required by
+the symmetric margin. No additional samples, exclusions, changed margins, production optimization or rollout are
+used to declare a pass. A future performance qualification needs a new predeclared study with enough power and
+its required hardware/workload, preserving these outcomes.
+
+Apple/MLX native execution, new ARM64/GB10 qualification, actual multi-GPU execution, exhaustive model quality and
+large/full-context performance remain unrun for this source. Historical deployment and performance records below
+retain their original source, images, hardware and workloads.
+
 ## Python-line integration, 2026-10-11
 
 The integration joins fork `2f8089a7b59588875d639a7efa860117168a29d0` with

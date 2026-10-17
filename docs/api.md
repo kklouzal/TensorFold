@@ -213,10 +213,11 @@ tools uses their grammar instead (below), which also holds the arguments.
 
 ## Structured output
 
-Every model on both backends enforces `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
+Supported model/backend configurations enforce `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
 or `{"type": "json_object"}`) and vLLM's `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar` (EBNF) and
 `structured_outputs` (`json`, `json_object`, `regex`, `choice` or `grammar`): on the Mac, and on CUDA with one or two
-GPUs, alone or under `--parallel N`. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
+GPUs, alone or under supported `--parallel N` modes. Flash Next on two CUDA ranks refuses structured output
+under `--parallel`; other engine/mode support follows its family contract. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
 installs torch, Macs included. Drafting stays on. Before each verify forward the engine cuts the drafts the grammar
 rejects, then masks each remaining row's logits to the tokens the grammar allows after that row's path, so a
 constrained reply equals its `"draft": false` reply and its solo run. Two GPUs compile the same grammar and mask
@@ -303,14 +304,16 @@ keyword behavior. All JSON-schema compilation is limited to 2,000 subschemas, re
 the native parser, and grammar source is capped at 96 MiB. These are resource admission limits, not compile-time or
 memory-use guarantees for every admitted grammar.
 
-Verification so far: CPU tests of the schema checks, the grammar (compiled by xgrammar 0.2.8 and fuzzed against an
-independent validator), the reader and the CUDA server's requests with a scripted engine; and GPU tests of the engines
-under strict grammars with synthetic random-weight models (Flash Next lanes, Flash Next on two ranks, a Qwen3.6
-MoE-shaped model: drafted, concurrent and resumed replies equal serial ones) on an RTX PRO 2000 Blackwell 16 GB with
-the verification image `2edfaa51` (the lanes test at source `1bbe1653`, the others on an earlier tree of the same
-change). Pending: those GPU tests at the current source, the test on the Flash Next checkpoint's own tokenizer and
-vocabulary (model cut to 4 layers), full-model replies, and the Mac server's MLX engine, which checks the same
-requests before a stream opens and runs the same grammar and reader but has not been exercised with them.
+Verification at source `2dd77a9a` on the local RTX PRO 2000 Blackwell 16 GB uses the installed images in the
+[2026-10-17 qualification](optimization-validation.md#apistatistics-and-strict-tools-local-qualification-2026-10-17).
+The affected CPU gate passed 476 tests (one MLX-only skip); the focused GPU gate passed 29, including synthetic
+strict lanes/two-rank/MoE cases and the real Flash Next checkpoint's tokenizer/vocabulary with a four-layer model
+cut. Drafted, concurrent and resumed replies match their serial references in those checks. The ordinary full-model
+HTTP server also completed a forced strict call, refused an unsupported string bound before generation, and accepted
+the actual Harness 31-tool catalog with its nine strict tools and 22 explicitly non-strict tools. All five private
+function requests and four strict JSON requests pass the shared boundary validator. These results do not establish
+exhaustive model quality, actual two-GPU execution, ARM64/GB10 behavior or MLX execution for this change. The Mac
+server shares admission, grammar and reader code; its native engine remains unrun.
 
 ## Reasoning
 
