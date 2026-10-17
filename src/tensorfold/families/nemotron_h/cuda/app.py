@@ -48,6 +48,14 @@ class NemotronEngine:
         """``draft_ids``: "default" (the family's ``draft_ids.txt``, the Mac engine's list), a list, or None (all)."""
         from tensorfold.cuda.chat_template import prepare_chat_template
 
+        if type(tp) is not int or tp not in (1, 2) or type(rank) is not int or rank not in range(tp):
+            raise ValueError(f"rank {rank} of {tp}: Nemotron runs on one GPU or two")
+        if not 0 <= int(drafts) <= 8:
+            raise ValueError(f"MTP drafts a round: 0 to 8, not {drafts}")
+        if not 0 <= float(confidence) <= 1:
+            raise ValueError("MTP confidence must be a probability between zero and one")
+        if tp == 2 and not master:
+            raise ValueError("two ranks need rank 0's address (master)")
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         import torch
@@ -60,12 +68,6 @@ class NemotronEngine:
         from .mtp import MTPHead
         from .weights import MTP_FILE, load
 
-        if type(tp) is not int or tp not in (1, 2) or type(rank) is not int or rank not in range(tp):
-            raise ValueError(f"rank {rank} of {tp}: Nemotron runs on one GPU or two")
-        if not 0 <= int(drafts) <= 8:
-            raise ValueError(f"MTP drafts a round: 0 to 8, not {drafts}")
-        if not 0 <= float(confidence) <= 1:
-            raise ValueError("MTP confidence must be a probability between zero and one")
         self.torch = torch
         torch.cuda.set_device(0)
         if draft_ids == "default":
@@ -79,8 +81,6 @@ class NemotronEngine:
         if tp == 2:
             from tensorfold.cuda.comm import open_comm
 
-            if not master:
-                raise ValueError("two ranks need rank 0's address (master)")
             self.comm = open_comm(rank, 2, master, port)
             self.comm.barrier()
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None

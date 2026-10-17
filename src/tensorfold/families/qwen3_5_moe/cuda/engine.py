@@ -49,6 +49,7 @@ class Qwen36Engine:
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
+        self.depth, self.confidence = int(depth), float(confidence)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         import torch
@@ -62,7 +63,6 @@ class Qwen36Engine:
         from .weights import MTP_FILE, load, load_mtp
 
         torch.cuda.set_device(0)
-        self.depth, self.confidence = int(depth), float(confidence)
         many = streams > 1
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
             torch.cuda.memory._set_allocator_settings("expandable_segments:True")

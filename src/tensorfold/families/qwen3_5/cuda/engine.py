@@ -33,6 +33,8 @@ class Qwen27Engine:
                  keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
         from tensorfold.cuda.chat_template import prepare_chat_template
 
+        self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
+        keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         import torch
@@ -58,12 +60,10 @@ class Qwen27Engine:
 
         self.torch = torch
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
-        self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
         self.vision = None
         torch.cuda.set_device(0)
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
             torch.cuda.memory._set_allocator_settings("expandable_segments:True")
-        keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
         if tp == 2:
             import torch.distributed as dist
 

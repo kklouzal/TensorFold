@@ -85,3 +85,47 @@ def test_true_absence_still_allows_bare_model_api_without_template(tmp_path):
 def test_absent_tokenizer_does_not_hide_invalid_model_root(tmp_path):
     with pytest.raises(FileNotFoundError):
         prepare_chat_template(tmp_path / "missing-root")
+
+
+@pytest.mark.parametrize("family,relative,classname,options", [
+    ("qwen3_5", "cuda.engine", "Qwen27Engine", {"tree_rows": "invalid"}),
+    ("qwen3_5", "cuda.engine", "Qwen27Engine", {"keep": "invalid"}),
+    ("qwen3_5_moe", "cuda.engine", "Qwen36Engine", {"depth": "invalid"}),
+    ("qwen3_5_moe", "cuda.engine", "Qwen36Engine", {"confidence": "invalid"}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"depth": -1}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"confidence": 2}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"tp": 3}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"rank": 2}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"streams": 2, "tp": 2}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"tp": 2}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"vram_experts_pin": "on"}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"vram_experts": 0}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"vram_experts": True}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"vram_experts": "invalid"}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"vision": True}),
+    ("qwen4_exp", "cuda.engine", "FlashNextEngine", {"kv_dtype": "unknown"}),
+    ("glm5_next", "cuda.engine", "GlmEngine", {"policy": "unknown"}),
+    ("glm5_next", "cuda.engine", "GlmEngine", {"world": 3}),
+    ("glm5_next", "cuda.engine", "GlmEngine", {"rank": 2}),
+    ("nemotron_h", "cuda.app", "NemotronEngine", {"drafts": 9}),
+    ("nemotron_h", "cuda.app", "NemotronEngine", {"confidence": 2}),
+    ("nemotron_h", "cuda.app", "NemotronEngine", {"rank": 2}),
+    ("nemotron_h", "cuda.app", "NemotronEngine", {"tp": 2}),
+])
+def test_cheap_invalid_options_refuse_before_template_or_device_work(
+        tmp_path, monkeypatch, family, relative, classname, options):
+    import tensorfold.cuda.chat_template as templates
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid launch options reached template metadata or CUDA device setup")
+    monkeypatch.setattr(templates, "prepare_chat_template", unexpected)
+    monkeypatch.setattr(torch.cuda, "set_device", unexpected)
+    monkeypatch.setattr(torch.cuda, "synchronize", unexpected)
+    backend = importlib.import_module(f"tensorfold.families.{family}.{relative}")
+    constructor = getattr(backend, classname)
+    missing = tmp_path / "unavailable-checkpoint"
+    args = (missing, None) if family == "qwen3_5" else (missing,)
+    keywords = {"rank": 0, "master": "127.0.0.1", "port": 29551} if family == "glm5_next" else {}
+    keywords.update(options)
+    with pytest.raises(ValueError):
+        constructor(*args, **keywords)
