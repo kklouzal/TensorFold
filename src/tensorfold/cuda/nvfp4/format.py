@@ -165,7 +165,7 @@ class LinearMetadata:
 
 
 def calibration(value, *, name, reciprocal=False):
-    """A scalar calibration used by native math: finite, positive, and invertible."""
+    """A finite positive FP32 scalar, taking a reciprocal only when requested."""
     import math
 
     value = float(value)
@@ -219,3 +219,20 @@ def dequant(scheme_name: str, weight: np.ndarray, scale: np.ndarray | None = Non
         s = np.asarray(scale, dtype=np.float32)
         return e4m3(weight) * np.repeat(np.repeat(s, 128, axis=0)[:n], k // s.shape[1], axis=1)
     return weight.astype(np.float32)
+
+
+def native_calibration(act: float, weight_scale: float, *, name: str) -> float:
+    """Admit the exact FP32 inverse/product used by checkpoint native math.
+
+    Called only for an actually selected native projection. Reuse the owned
+    arithmetic helpers so validation and subsequent native preparation share
+    their rounding and subnormal contract; return the original scale unchanged.
+    """
+    import math
+
+    from .checkpoint import _inv, alpha
+
+    inverse, product = _inv(act), alpha(act, weight_scale)
+    if not (math.isfinite(inverse) and inverse > 0 and math.isfinite(product) and product > 0):
+        raise ValueError(f"{name}: native FP32 inverse and joint calibration must remain finite and positive")
+    return act

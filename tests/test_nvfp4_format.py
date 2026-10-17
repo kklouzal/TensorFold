@@ -190,3 +190,38 @@ def test_weight_scale_representation_metadata_is_not_silently_ignored(key, value
         "weights": weights, "input_activations": None}}})
     with pytest.raises(ValueError):
         policy.validate("mlp", _projection(), checkpoint=False)
+
+
+@pytest.mark.parametrize("additional", [{"dynamic": True}, {"group_size": 32},
+                                        {"scale_dtype": "torch.float32"}, {"strategy": "channel"}])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_constraints_in_later_matching_groups_reach_native_refusal_before_payload(additional, reverse):
+    first = {"targets": ["Linear"], "weights": {"num_bits": 4, "type": "float"}}
+    second = {"targets": ["Linear"], "weights": additional}
+    records = [second, first] if reverse else [first, second]
+    policy = fmt.LinearMetadata({"quant_method": "compressed-tensors",
+                                "config_groups": dict(zip(("a", "b"), records))})
+    # Only immutable storage headers are supplied; no payload exists to read.
+    with pytest.raises(ValueError):
+        policy.validate("mlp", _projection(reciprocal=True), checkpoint=False)
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("act,weight", [(1e-40, 1.), (1e30, 1e30), (1e-30, 1e-30)])
+def test_native_calibration_refuses_actual_fp32_inverse_or_product_exhaustion(act, weight):
+    torch = pytest.importorskip("torch")
+    inverse = torch.tensor(1., dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)
+    product = torch.tensor(act, dtype=torch.float32) * torch.tensor(weight, dtype=torch.float32)
+    assert not (torch.isfinite(inverse) and inverse > 0 and torch.isfinite(product) and product > 0)
+    with pytest.raises(ValueError, match="native FP32"):
+        fmt.native_calibration(act, weight, name="mlp")
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("act,weight", [(1., .5), (.037, .13), (1e-30, 1e-8)])
+def test_native_calibration_keeps_admissible_scale_values_without_reassociation(act, weight):
+    torch = pytest.importorskip("torch")
+    inverse = torch.tensor(1., dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)
+    product = torch.tensor(act, dtype=torch.float32) * torch.tensor(weight, dtype=torch.float32)
+    assert torch.isfinite(inverse) and inverse > 0 and torch.isfinite(product) and product > 0
+    assert fmt.native_calibration(act, weight, name="mlp") == act

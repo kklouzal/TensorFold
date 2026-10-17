@@ -159,3 +159,61 @@ def test_bounded_glob_matcher_agrees_with_stdlib_over_all_small_patterns():
             matcher = _Pattern(pattern)
             for name in names:
                 assert bool(matcher.match(name)) == fnmatch.fnmatchcase(name, pattern), (pattern, name)
+
+
+@pytest.mark.parametrize("method,targets", [
+    ("compressed-tensors", (["Linear"], ["Linear"])),
+    ("compressed-tensors", (["model.mlp"], ["re:^model\\.mlp$"])),
+    ("modelopt", (["model"], ["model.mlp"])),
+])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_every_matching_semantic_constraint_is_returned_as_an_independent_union(method, targets, reverse):
+    first = {"targets": targets[0], "weights": {"num_bits": 4, "type": "float"},
+             "input_activations": None}
+    later = {"targets": targets[1], "weights": {"group_size": 32, "dynamic": True},
+             "input_activations": None, "pre_quant_scale": True}
+    records = [later, first] if reverse else [first, later]
+    raw = {"quant_method": method, "config_groups": dict(zip(("a", "b"), records))}
+    before = deepcopy(raw)
+    policy = LinearQuantization(raw)
+    got = policy.resolve("model.mlp")
+    assert got == {"weights": {"num_bits": 4, "type": "float", "group_size": 32, "dynamic": True},
+                   "input_activations": None, "output_activations": None, "pre_quant_scale": True}
+    got["weights"].clear()
+    assert raw == before
+    assert policy.resolve("model.mlp")["weights"]["dynamic"] is True
+
+
+def test_optional_group_format_inherits_global_before_matching_union():
+    policy = LinearQuantization({"quant_method": "compressed-tensors", "format": "nvfp4-pack-quantized",
+        "config_groups": {"a": {"weights": {"num_bits": 4}, "format": None},
+                          "b": {"weights": {"num_bits": 4}, "format": "nvfp4-pack-quantized"}}})
+    assert policy.resolve("mlp")["format"] == "nvfp4-pack-quantized"
+
+
+def test_missing_activation_is_still_weight_only_and_conflicts_with_later_quantization():
+    policy = LinearQuantization({"quant_method": "compressed-tensors", "config_groups": {
+        "a": {"weights": {"num_bits": 4}},
+        "b": {"weights": {"num_bits": 4}, "input_activations": {"num_bits": 4}}}})
+    with pytest.raises(ValueError, match="conflicting"):
+        policy.resolve("mlp")
+
+
+def test_class_default_is_only_used_when_no_explicit_module_target_matches():
+    policy = LinearQuantization({"quant_method": "compressed-tensors", "config_groups": {
+        "default": {"targets": ["Linear"], "weights": {"num_bits": 8}},
+        "specific": {"targets": ["model.mlp"], "weights": {"num_bits": 4}}}})
+    assert policy.resolve("model.mlp")["weights"]["num_bits"] == 4
+    assert policy.resolve("model.attn")["weights"]["num_bits"] == 8
+
+
+def test_exclusions_cannot_silently_erase_explicit_layer_declarations():
+    with pytest.raises(ValueError, match="exclusion"):
+        LinearQuantization({"quant_method": "compressed-tensors", "ignore": ["model.*"],
+                            "config_groups": {"g": {"targets": ["model.mlp"], "weights": {"num_bits": 4}}}})
+    with pytest.raises(ValueError, match="exclusion"):
+        effective_config({}, side("MIXED_PRECISION", exclude_modules=["model.*"], quantized_layers={
+            "model.mlp": {"quant_algo": "NVFP4"}}), where="mixed")
+    default = LinearQuantization({"quant_method": "compressed-tensors", "ignore": ["model.mlp"],
+                                  "config_groups": {"g": {"targets": ["Linear"], "weights": {"num_bits": 4}}}})
+    assert default.resolve("model.mlp") is None
