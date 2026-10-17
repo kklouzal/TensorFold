@@ -165,6 +165,43 @@ def test_partial_spawn_preserves_error_and_retires_already_started_rank(tmp_path
         os.kill(spawned[0].pid, 0)
 
 
+def test_unresolved_session_retains_explicit_owner_and_still_retires_other_ranks(monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+    real_retire = launcher._retire
+    owners = []
+    def retire(child, deadline):
+        owners.append(child)
+        if len(owners) == 1:
+            raise OSError("injected session retirement failure")
+        real_retire(child, deadline)
+    monkeypatch.setattr(launcher, "_retire", retire)
+    try:
+        with pytest.raises(launcher.UnresolvedRankSessions) as caught:
+            launcher.supervise([[sys.executable, "-c", "pass"]] * 2, [dict(os.environ)] * 2, grace=.1)
+        assert len(owners) == 2
+        assert caught.value.sessions == (owners[0],)
+        assert isinstance(caught.value.__cause__, OSError)
+        assert owners[0].returncode is None and owners[1].returncode is not None
+    finally:
+        if owners and owners[0].returncode is None:
+            real_retire(owners[0], time.monotonic())
+
+
+def test_lost_direct_child_reservation_never_signals_or_rescans_numeric_session(monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+    child = SimpleNamespace(pid=12345, returncode=None)
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *a, **kw: child)
+    def missing(process):
+        raise ChildProcessError("direct child reservation lost")
+    monkeypatch.setattr(launcher, "_exited", missing)
+    monkeypatch.setattr(launcher.os, "killpg", lambda *a: pytest.fail("unowned numeric group signal"))
+    monkeypatch.setattr(launcher, "_retire", lambda *a: pytest.fail("unowned numeric session scan"))
+    with pytest.raises(ChildProcessError, match="reservation lost") as caught:
+        launcher.supervise([["ignored"]], [dict(os.environ)], grace=0)
+    assert isinstance(caught.value.__cause__, launcher.UnresolvedRankSessions)
+    assert caught.value.__cause__.sessions == (child,)
+
+
 def test_unsharded_and_indexed_inventory_identify_the_same_tensor(tmp_path):
     torch = pytest.importorskip("torch")
     from safetensors.torch import save_file
