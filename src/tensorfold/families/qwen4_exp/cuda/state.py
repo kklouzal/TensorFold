@@ -349,12 +349,12 @@ class State:
             raise ValueError(f"a {rows}-row cache can't keep {keep} committed rows")
         try:
             self._resize_caches(rows, self.pos, self.mtp_len)
+            self.capacity = rows
+            self.version += 1
+            return self.cache_bytes() - before
         except BaseException as error:
             self._poison_resize(error)
             raise
-        self.capacity = rows
-        self.version += 1
-        return self.cache_bytes() - before
 
     def _resize_caches(self, rows: int, pos: int, mtp_len: int) -> None:
         """Commit one complete layer at a time; at most one layer's replacement overlaps its old storage."""
@@ -411,11 +411,11 @@ class State:
             self.capacity = rows
             self._resize_error = self._kv_error = None
             self.reset(w)
+            self.version += 1
+            return self.cache_bytes() - before
         except BaseException as error:
             self._poison_resize(error)
             raise
-        self.version += 1
-        return self.cache_bytes() - before
 
     def reset(self, w: Weights) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
