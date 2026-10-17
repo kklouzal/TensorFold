@@ -7,8 +7,8 @@ import pytest
 
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows, reserved_growth
+from tests import test_flashnext_absolute_grow_host
 from tests.test_cuda_geometry import allocations  # noqa: F401 - pytest fixture
-from tests.test_flashnext_absolute_grow_host import AbsoluteGrowthTests as _GrowthCase
 
 
 @pytest.mark.parametrize("pinned,label", [(0, "pageable host authority"), (2**30, "pinned host authority"),
@@ -51,7 +51,7 @@ def test_reservation_keeps_largest_windows_and_leaves_input_unchanged(windows, e
 
 @pytest.fixture
 def growth():
-    case = _GrowthCase()
+    case = test_flashnext_absolute_grow_host.AbsoluteGrowthTests()
     case.setUp()
     try:
         yield case
