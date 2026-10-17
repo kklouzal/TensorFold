@@ -150,9 +150,10 @@ measurement. All measurements used the pinned
 PyTorch `2.16.0.dev20261006+cu134`/CUDA 13.4 runtime.
 
 The adapters support Flash Next MLX affine 4-bit/group-32, EXL3 and ModelOpt NVFP4 checkpoints
-on one CUDA GPU; affine and NVFP4 also have same-host expert-rank adapters. A single-rank authority includes
-every routed expert, the shared expert in each layer,
-and the MTP expert layer when drafts are enabled. EXL3 retains each original
+on one CUDA GPU; affine and NVFP4 also have same-host expert-rank adapters. Every format's CPU authority
+includes all routed experts and the MTP routed bank when drafts are enabled.
+Affine and EXL3 also keep shared-expert weights in that authority; NVFP4 keeps
+shared-expert weights resident on the GPU. EXL3 retains each original
 trellis stream and bit width, including supported half-bit widths; all experts
 within a layer must use the same native codebook. Tensor parallelism,
 MLX, and other model families refuse this flag. `--ssd-experts` remains the MLX
