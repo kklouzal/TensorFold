@@ -165,35 +165,42 @@ class ExpertPinPolicy:
         with self._lock:
             if self._closed:
                 return
-            errors = []
-            primary = None
-            for owner in reversed(self._pins):
-                if owner is not None:
-                    try:
-                        code = owner.close()
-                    except BaseException as error:
-                        if primary is None:
-                            primary = error
-                        else:
-                            errors.append(error)
-                    else:
-                        if code:
-                            errors.append(PinCleanupError(self, code))
-            active = any(owner is not None and owner.active for owner in self._pins)
-            if active:
-                # Keep the model owner in the transported outcome even when
-                # the primary was an opaque exception or KeyboardInterrupt.
-                errors.append(PinCleanupError(self, "unretired registration"))
-            if errors or primary is not None:
+            try:
+                self._retire_all()
+            except BaseException:
                 self._failure = "host_unregister_failed"
-                from tensorfold.cleanup import raise_failures
+                raise
 
-                if not active:
-                    self._pins.clear()
-                    self._closed = True
-                raise_failures(primary, errors)
-            self._pins.clear()
-            self._closed = True
+    def _retire_all(self):
+        errors = []
+        primary = None
+        for owner in reversed(self._pins):
+            if owner is not None:
+                try:
+                    code = owner.close()
+                except BaseException as error:
+                    if primary is None:
+                        primary = error
+                    else:
+                        errors.append(error)
+                else:
+                    if code:
+                        errors.append(PinCleanupError(self, code))
+        active = any(owner is not None and owner.active for owner in self._pins)
+        if active:
+            # Keep the model owner in the transported outcome even when
+            # the primary was an opaque exception or KeyboardInterrupt.
+            errors.append(PinCleanupError(self, "unretired registration"))
+        if errors or primary is not None:
+            self._failure = "host_unregister_failed"
+            from tensorfold.cleanup import raise_failures
+
+            if not active:
+                self._pins.clear()
+                self._closed = True
+            raise_failures(primary, errors)
+        self._pins.clear()
+        self._closed = True
 
 
 @lru_cache(maxsize=1)

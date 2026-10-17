@@ -163,6 +163,24 @@ def test_partial_fill_poison_preserves_opaque_primary_and_last_use_fence():
     assert stream.synchronizations == 1 and cache._last_use.waits == 0 and cache._closed
 
 
+def test_pin_retirement_failure_poison_preserves_owner_before_any_new_lease():
+    cache, _, _ = cache_fixture()
+    primary = OpaqueFailure()
+
+    def failed_retirement():
+        raise primary
+
+    cache.pin_policy = SimpleNamespace(close=failed_retirement)
+    try:
+        cache.close()
+    except OpaqueFailure as error:
+        assert error is primary
+    else:
+        raise AssertionError("registration retirement failure was hidden")
+    assert not cache._closed and cache._layers and cache._pool is not None
+    rejected(cache)
+
+
 def test_failed_stream_dependency_poison_preserves_opaque_primary():
     cache, stream, _ = cache_fixture()
     cache._last_stream = Stream()
