@@ -81,7 +81,8 @@ def fixture():
     node = next(
         n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "load_nvfp4"
     )
-    helper_names = {"_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill"}
+    helper_names = {"_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill",
+                    "_rotary_frequencies"}
     helpers = [n for n in ast.parse((SOURCE.parent / "weights.py").read_text()).body
                if isinstance(n, ast.FunctionDef) and n.name in helper_names]
     if {n.name for n in helpers} != helper_names:
@@ -140,6 +141,7 @@ def fixture():
         Weights=lambda **kw: SimpleNamespace(attention_origin=object(), **kw),
         _Tensors=Reader,
         _close_failed_checkpoint=namespace["_close_failed_checkpoint"],
+        _rotary_frequencies=namespace["_rotary_frequencies"],
         _validate_fp8_prefill=namespace["_validate_fp8_prefill"],
     )
     capacity = ModuleType("tensorfold.cuda.capacity")

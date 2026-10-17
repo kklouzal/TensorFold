@@ -112,6 +112,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         Layer,
         Weights,
         _close_failed_checkpoint,
+        _rotary_frequencies,
         _Tensors,
         _validate_fp8_prefill,
     )
@@ -218,9 +219,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         else:
             line = FULL_LINE
         print(f"[tensorfold] precision: {line}", flush=True)
-        half = cfg.rope_dims // 2
-        inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)
-        w.inv_freq = inv.to(torch.float32).to(device)
+        w.inv_freq = _rotary_frequencies(cfg, device)
         if any(not layer.linear for layer in w.layers):
             _ = w.attention_origin                    # resolve before an attention runtime/capture
         left = list(t)
