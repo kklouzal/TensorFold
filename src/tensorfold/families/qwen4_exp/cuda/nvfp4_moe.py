@@ -68,18 +68,24 @@ class CachedMoE4:
     kernel = "nvfp4"
     capturable = False
 
-    def __init__(self, routed, shared, width, dims, count, slots):
+    def __init__(self, routed, shared, width, dims, count, slots, *, workspace=None):
         self.routed_experts, self.shared = routed, shared
         self.width, self.dims, self.routed = width, dims, count
         self.slots = slots
-        self._scratch = {}
+        # EP passes one model-owned dictionary to all main/MTP banks. Its
+        # callers serialize every consumer on the same CUDA compute stream.
+        # Standalone use owns one bank's profile; the ordinary MoE path uses
+        # the existing shared MoEBuffers and never allocates this workspace.
+        self._workspace = {} if workspace is None else workspace
 
     @property
     def count(self):
         return self.routed + int(self.shared is not None)
 
     def device_tensors(self):
-        return ((self.routed_experts.device_tensors() if self.routed_experts is not None else ()), self.shared)
+        scratch = tuple(t for plan, act in self._workspace.values()
+                        for t in (plan.members, plan.items, plan.counts, plan.rank, plan.hist, act))
+        return ((self.routed_experts.device_tensors() if self.routed_experts is not None else ()), self.shared, scratch)
 
     shared_act = MoE4.shared_act
 
@@ -113,14 +119,15 @@ class CachedMoE4:
             cpu = picks[lo:hi].cpu()
             if bool(((cpu < -1) | (cpu >= self.count)).any()):
                 raise ValueError("NVFP4 local picks contain an out-of-range expert")
-            key = (slots, bool(prefill))
-            scratch = self._scratch.get(key)
+            key = (x.device, self.width, self.dims, self.routed, slots)
+            scratch = self._workspace.get(key)
             if scratch is None:
                 with torch.inference_mode(False):
-                    plan = grouped.Plan(128, slots, max(1, self.routed), x.device, prefill=prefill)
+                    plan = grouped.Plan(128, slots, max(1, self.routed), x.device)
                     act = torch.empty((128 * slots, self.width), dtype=torch.bfloat16, device=x.device)
-                scratch = self._scratch[key] = (plan, act)
+                scratch = self._workspace[key] = (plan, act)
             plan, act = scratch
+            plan.prefill = bool(prefill)
             plan.tile = nvx.PREFILL_TILE if prefill else grouped.TILE
             members, items = [], []
             # Deterministic expert/row-slot ordering agrees with grouped.route;
