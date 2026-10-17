@@ -13,6 +13,12 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 implementation (2026-10-17):** original compressed-tensors NVFP4 experts and their native activation math now have a separate CUDA loader, resident/RAM expert banks and a DFlash v1 draft adapter. The [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1) records the hardware restrictions, flags and pending full-model/installed-image qualification. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
+NVFP4 host-authority loading packs original routed payload on CUDA and completes
+its CPU transfer before publication. ModelOpt scalar conversion and CT native
+scale/calibration admission stay on CPU; loading admission includes the GPU
+packing peak. Exact-byte, peak-allocation and startup qualification of this
+loading change is pending; no startup-speed claim is made here.
+
 Concurrent Qwen prompt batches now run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head also reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Final installed concurrency and performance qualification of these increments remains pending.
 
 Required-tool format discovery now follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. The existing HTTP enforcement regressions pass without changing their assertions; installed-image qualification of this correction is pending.

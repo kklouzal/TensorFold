@@ -100,6 +100,13 @@ first borrow and rebuilt transactionally when startup sizes the pool. For this
 checkpoint, each record is 1,769,536 bytes, including 40 bytes of initialized
 padding; admission charges the padding and host registration geometry.
 
+Loading validates original block-scale bytes and scalar calibration on CPU,
+then permutes one projection's packed bytes on CUDA. Its synchronous CPU
+transfer finishes before writing authority or starting the next projection.
+The GPU loading bound includes raw, permuted and output planes, including
+projections taller than the dense packer's chunk size. No temporary device
+storage is retained by the host bank. Loading-speed selection is pending.
+
 The cache owns the CPU authority and GPU pool. Cached banks retain geometry and
 cache identity, with no separate CPU calibration copies. A lease fences native
 consumers before reuse or close. Failed allocation or view preparation before

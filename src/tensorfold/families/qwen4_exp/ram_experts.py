@@ -212,15 +212,16 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
     slots = min(count, requested // entry)
     if not slots:
         raise ValueError(f"--vram-experts needs at least one packed NVFP4 expert ({entry / GIB:.6f} GiB)")
-    # One expert's exact CPU bit packing or GPU draft-only quantization at a
-    # time. Quantization's eight-magnitude temporary dominates this bound.
+    # One expert's original routed bit packing or draft-only quantization runs
+    # on its selected CUDA device. Both retain only that expert's raw fields and
+    # pack temporaries; quantization's eight-magnitude plane dominates this bound.
     loading = max(64 * 2**20, 128 * width * dims + 8 * entry)
     e = text["num_experts"]
     tiles = (width // 32) * (dims // 32) * 144 * 4
     allocations = (e * 2 * tiles, e * tiles, e * 8, e * 4) * len(banks)
     return Layout(entry, slots, slots * entry, sum(allocations), 2 * entry, loading,
                   "nvfp4", automatic=gib == "auto",
-                  loading_device_bytes=loading if any(b.startswith("mtp.") for b in banks) else 0,
+                  loading_device_bytes=loading,
                   authority_allocations=allocations)
 
 
