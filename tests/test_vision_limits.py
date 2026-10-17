@@ -8,14 +8,13 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tests.cli_server_fixture import install_cli_server
-
 from tensorfold import cli, serve_options
 from tensorfold.cuda.http import make_handler as cuda_handler
 from tensorfold.server.errors import RequestError
 from tensorfold.server.http import make_handler as mlx_handler
 from tensorfold.server.prompts import prepare_images, prepare_prompt
 from tensorfold.vision.images import ImageLimits
+from tests.cli_server_fixture import install_cli_server
 from tests.test_server_openai_compat import FakeApp, post_json
 from tests.test_vision_server import Frontend, cuda_app, image_messages, prompt_app
 

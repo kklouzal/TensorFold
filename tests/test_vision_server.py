@@ -6,7 +6,8 @@ import base64
 import io
 import sys
 import threading
-from types import ModuleType, SimpleNamespace as NS
+from types import ModuleType
+from types import SimpleNamespace as NS
 
 import numpy as np
 import pytest

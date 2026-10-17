@@ -3,10 +3,10 @@
 No tensor runtime/math result or real checkpoint/model validity is claimed.
 """
 import ast
-from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from test_qwen_loader_lifetime import Value
