@@ -37,7 +37,7 @@ def pack_projection_a4(weight, scale):
     return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
 
 
-def projection_a4(blob, n, k, weight_scale, input_inverse):
+def projection_a4(blob, n, k, weight_scale, input_inverse, *, prepared_act=None):
     """Borrow admitted code/scale bytes and original CT input multiplier.
 
     Payload admission belongs to loading; this HOT view never rescans scales.
@@ -47,8 +47,8 @@ def projection_a4(blob, n, k, weight_scale, input_inverse):
     cut = n * k // 2
     words = blob[:cut].view(torch.int32).view(n // 64, k // 64, 8, 32, 2)
     scales = blob[cut:].view(n // 64, k // 64, 64, 4)
-    return Fp4Linear(words, scales, weight_scale, n, k, act=checkpoint._inv(input_inverse),
-                     act_inverse=input_inverse)
+    act = checkpoint._inv(input_inverse) if prepared_act is None else prepared_act
+    return Fp4Linear(words, scales, weight_scale, n, k, act=act, act_inverse=input_inverse)
 
 
 def _span(t):
@@ -88,6 +88,19 @@ class ExpertsA4:
         if self.device.type != "cuda" or any(t.device != self.device for t in fields):
             raise ValueError("native A4 resident fields require one CUDA device")
         self._validate_scalars(geometry)
+        self._prepare_inputs()
+
+    def _prepare_inputs(self):
+        """Prepare the same scalar FP32 reciprocal once; retained bytes=12*count.
+
+        These ordinary CPU tensors are immutable model-owned derived metadata.
+        Original input multipliers remain unchanged in authority and on device.
+        """
+        self.prepared_inputs = tuple(torch.empty_like(source) for source in self.scalars[2:])
+        for source, target in zip(self.scalars[2:], self.prepared_inputs):
+            for expert in range(self.count):
+                for projection in range(source.shape[1]):
+                    target[expert, projection] = checkpoint._inv(float(source[expert, projection]))
 
     def _validate_scalars(self, geometry):
         for t, (shape, _) in zip(self.scalars, geometry[2:]):
@@ -132,12 +145,16 @@ class ExpertsA4:
                 pairs = groups[expert]
                 with self._expert(expert) as (fields, cell):
                     gu_scale, dn_scale, gu_input, dn_input = self.scalars
+                    gu_act, dn_act = self.prepared_inputs
                     gate = projection_a4(fields[0][cell, 0], self.width, self.dims,
-                                         float(gu_scale[expert, 0]), float(gu_input[expert, 0]))
+                                         float(gu_scale[expert, 0]), float(gu_input[expert, 0]),
+                                         prepared_act=float(gu_act[expert, 0]))
                     up = projection_a4(fields[0][cell, 1], self.width, self.dims,
-                                       float(gu_scale[expert, 1]), float(gu_input[expert, 1]))
+                                       float(gu_scale[expert, 1]), float(gu_input[expert, 1]),
+                                       prepared_act=float(gu_act[expert, 1]))
                     down = projection_a4(fields[1][cell], self.dims, self.width,
-                                         float(dn_scale[expert, 0]), float(dn_input[expert, 0]))
+                                         float(dn_scale[expert, 0]), float(dn_input[expert, 0]),
+                                         prepared_act=float(dn_act[expert, 0]))
                     for at in range(0, len(pairs), PAIRS):
                         block = pairs[at:at + PAIRS]
                         indices = torch.tensor(block, dtype=torch.int64, device=self.device)
@@ -157,6 +174,7 @@ class CachedExpertsA4(ExpertsA4):
         self.cache, self.layer_id, self.device = cache, layer_id, cache.device
         self.scalars, self.swiglu = tuple(authority[2:]), swiglu
         self._validate_scalars(authority_fields_a4(self.count, width, dims))
+        self._prepare_inputs()
         if not callable(swiglu):
             raise TypeError("native A4 requires the prepared BF16 SiLU/product callable")
         cache.register(layer_id, tuple(authority))
