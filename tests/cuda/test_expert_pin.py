@@ -20,7 +20,11 @@ def test_registered_authority_direct_dma_orders_cross_stream_eviction_and_unpins
         for i, tensor in enumerate(source):
             tensor.copy_(torch.arange(tensor.numel(), dtype=torch.int32).reshape(shape) + 1000 * i)
         originals = tuple(t.clone() for t in source)
-        assert all(t.is_pinned() for t in source)
+        # Torch's allocator pin metadata need not recognize an externally
+        # registered range. The native owner records actual CUDA success.
+        assert all(policy.owns(t) for t in source)
+        owners = tuple(policy._pins)
+        assert all(owner.active for owner in owners)
         assert entry_bytes_for(source) == cache.entry_bytes
         cache.register(0, source)
         assert cache._layers[0].pinned == (True, True)
@@ -33,7 +37,7 @@ def test_registered_authority_direct_dma_orders_cross_stream_eviction_and_unpins
                 results.append((expert, tuple(t[mapping[expert]].clone() for t in views)))
         cache.close()
         assert not any(cache._stage_pending)
-        assert all(not t.is_pinned() for t in source)
+        assert all(not owner.active for owner in owners)
         assert policy.receipt()["closed"]
         assert cache.copied_bytes == 60 * 2 * shape[1] * 4
         for expert, values in results:
@@ -48,13 +52,15 @@ def test_partial_startup_registration_rollback_retains_usable_cpu_bytes():
     try:
         first = cache.allocate_authority((8,), dtype=torch.int32)
         first.fill_(17)
-        assert first.is_pinned()
+        assert policy.owns(first)
+        owners = tuple(policy._pins)
         # Model/header failure before cache.register must still retire the first allocation.
         with pytest.raises(ValueError, match="geometry"):
             cache.allocate_authority((4,), dtype=torch.int32)
     finally:
         cache.close()
-    assert not first.is_pinned() and first.tolist() == [17] * 8
+    assert all(owner is None or not owner.active for owner in owners)
+    assert first.tolist() == [17] * 8
 
 
 @pytest.mark.parametrize("cb,widths", [("3inst", ((4, 6, 4), (2, 4, 8), (8, 8, 8))),
@@ -76,7 +82,8 @@ def test_registered_compact_exl3_waves_keep_native_float_bits(cb, widths):
     try:
         _, _, cached = make_cached(pk, capacity=1, cache=cache)
         payload = cache._layers[0].authority.data
-        assert payload.is_pinned() and torch.equal(payload, authority.data)
+        assert policy.owns(payload) and torch.equal(payload, authority.data)
+        owners = tuple(policy._pins)
         cache.finish_loading()
         base = resident(pk)
         x, picks = inputs(pk)
@@ -90,7 +97,7 @@ def test_registered_compact_exl3_waves_keep_native_float_bits(cb, widths):
             actual = host.routed_cached(x, picks, cached, actual_scratch, len(x)).clone()
             assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
         cache.close()
-        assert not payload.is_pinned() and not any(cache._stage_pending)
+        assert all(not owner.active for owner in owners) and not any(cache._stage_pending)
     finally:
         cache.close()
 
