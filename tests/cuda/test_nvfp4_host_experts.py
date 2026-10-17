@@ -1,5 +1,7 @@
 """RAM-backed NVFP4 retains stored bytes, native slots and complete-model output."""
 
+from copy import deepcopy
+
 import pytest
 import torch
 
@@ -30,6 +32,28 @@ def test_nvfp4_ram_layout_sizes_exact_payload_and_keeps_shared_resident(tmp_path
     transform = layout.transform(lambda *_: (99, 0))
     assert transform("model.layers.0.mlp.experts.0.gate_proj.weight", {}) == (0, 0)
     assert transform("model.layers.0.mlp.shared_expert.gate_proj.weight", {}) == (99, 0)
+
+
+@pytest.mark.parametrize("field,damage", [
+    ("model.layers.0.mlp.experts.1.down_proj.weight_scale", None),
+    ("model.layers.0.mlp.experts.0.gate_proj.weight", {"shape": [64, 512]}),
+    ("model.layers.0.mlp.experts.0.up_proj.weight_scale_2", {"shape": [2]}),
+    ("model.layers.1.mlp.experts.1.down_proj.weight", {"dtype": "F8_E4M3"}),
+    ("mtp.layers.0.mlp.experts.1.gate_proj.weight_scale", {"shape": [2]}),
+])
+def test_invalid_nvfp4_headers_stop_before_any_authority_allocation(tmp_path, monkeypatch, field, damage):
+    from tensorfold.cuda.capacity import headers
+
+    model = write(tmp_path, hidden=512, mtp_experts="fp8", mtp_scale="row")
+    infos = deepcopy(headers(model))
+    if damage is None:
+        infos.pop(field)
+    else:
+        infos[field].update(damage)
+    monkeypatch.setattr(ram_experts, "headers", lambda _: infos)
+    monkeypatch.setattr(torch, "empty", lambda *a, **k: pytest.fail("allocated before validating headers"))
+    with pytest.raises(ValueError, match="--vram-experts"):
+        ram_experts.layout(model, "auto")
 
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="native CUDA NVFP4 execution")
