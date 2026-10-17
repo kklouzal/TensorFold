@@ -494,3 +494,67 @@ def test_rank_commands_preserve_owned_harness_entrypoint_and_argument_boundaries
     assert all(e["LD_LIBRARY_PATH"] == "/approved/cuda/compat" for e in envs)
     ordinary, _ = rank_commands(["0"], ["serve", "fixture"], "512", 29551)
     assert ordinary[0][:4] == [sys.executable, "-m", "tensorfold", "serve"]
+
+
+@pytest.fixture
+def expert_factory(monkeypatch):
+    from tensorfold.cuda.exl3 import format as exl3_format
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp.cuda import engine, expert_parallel
+    monkeypatch.setattr(exl3_format, "is_exl3", lambda directory: False)
+    sessions = []
+    class FakeSession:
+        close_error = None
+        def __init__(self, *args, **kwargs):
+            self.close_calls = []
+            sessions.append(self)
+        def close(self, **kwargs):
+            self.close_calls.append(kwargs)
+            if self.close_error is not None:
+                raise self.close_error
+    monkeypatch.setattr(expert_parallel, "Session", FakeSession)
+    return SimpleNamespace(create=qwen4_exp.cuda_engine, sessions=sessions, session_type=FakeSession,
+                           engine=engine, ep=expert_parallel, patch=monkeypatch)
+
+
+@pytest.mark.parametrize("option", [{"parallel": "invalid"}, {"decode_share": "invalid"},
+                                    {"master_port": "invalid"}])
+def test_expert_factory_validates_call_arguments_before_session_acquisition(expert_factory, tmp_path, option):
+    with pytest.raises(ValueError):
+        expert_factory.create(tmp_path, no_drafts=True, expert_ranks=2, vram_experts="auto", **option)
+    assert expert_factory.sessions == []
+
+
+@pytest.mark.parametrize("rank", [0, 1], ids=["engine-new", "follower-new"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_expert_factory_retires_session_if_consumer_allocation_fails(expert_factory, tmp_path, rank, cleanup_fails):
+    primary, cleanup = MemoryError("consumer allocation failed"), OSError("native retirement unresolved")
+    if cleanup_fails:
+        expert_factory.session_type.close_error = cleanup
+    class RejectedConsumer:
+        def __new__(cls, *args, **kwargs):
+            raise primary
+    if rank:
+        expert_factory.patch.setattr(expert_factory.ep, "Follower", RejectedConsumer)
+    else:
+        expert_factory.patch.setattr(expert_factory.engine, "FlashNextEngine", RejectedConsumer)
+    with pytest.raises(MemoryError) as caught:
+        expert_factory.create(tmp_path, no_drafts=True, expert_ranks=2, rank=rank, vram_experts="auto")
+    assert caught.value is primary and len(expert_factory.sessions) == 1
+    owner = expert_factory.sessions[0]
+    assert owner.close_calls == [{"abort": True}]
+    if cleanup_fails:
+        assert primary.__cause__ is cleanup and owner in primary._tensorfold_retained_owners
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_expert_factory_hands_successful_consumer_the_live_session(expert_factory, tmp_path, rank):
+    token = object()
+    def consumer(*args, **kwargs):
+        owner = args[0] if rank else kwargs["expert_session"]
+        assert owner is expert_factory.sessions[0]
+        return token
+    expert_factory.patch.setattr(expert_factory.ep if rank else expert_factory.engine,
+                                 "Follower" if rank else "FlashNextEngine", consumer)
+    assert expert_factory.create(tmp_path, no_drafts=True, expert_ranks=2, rank=rank, vram_experts="auto") is token
+    assert expert_factory.sessions[0].close_calls == []

@@ -28,6 +28,7 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
     """Resolve text RoPE without accelerator imports or modifying the checkpoint."""
 
     from tensorfold.families import read_config
+
     from .rope import RopeParameters
 
     return RopeParameters.from_config(read_config(Path(model_dir)), yarn_factor)
@@ -209,7 +210,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError(f"{TITLE} drafts with its own MTP head on CUDA: a separate draft model does not apply")
     from .cuda import CONFIDENCE, DEPTH
     from .cuda.engine import FlashNextEngine
-
     from .kv_formats import get_pair
 
     get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # validate before weights or Torch are loaded
@@ -225,26 +225,37 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         from tensorfold.cuda.capacity import config
         from tensorfold.cuda.expert_parallel import ownership
         ownership(expert_ranks, expert_shards, rank, int(config(model_dir)["num_experts"]))
-    session = None
+    # Prepare every conversion/optional argument before acquiring a live expert
+    # session. The guarded handoff below also covers constructor allocation and
+    # argument-unpacking failures before a consumer can own its rollback.
+    directory = Path(model_dir)
+    engine_options = {"depth": depth, "confidence": confidence, "max_len": context,
+                      "context_explicit": options.get("context_explicit"), "tp": int(tp), "rank": int(rank),
+                      "master": master, "port": int(master_port), "streams": max(1, int(options.get("parallel") or 1)),
+                      "ple_on_ssd": ple_on_ssd, "kv_dtype": kv_dtype,
+                      "kv_key_dtype": kv_key_dtype, "kv_value_dtype": kv_value_dtype,
+                      "share": 0.0 if decode_share is None else float(decode_share),
+                      "vision": bool(options.get("vision", False)),
+                      "vision_urls": bool(options.get("vision_urls", False)), "yarn_factor": yarn_factor,
+                      "vram_experts": vram_experts}
+    if vram_experts_pin != "off":
+        engine_options["vram_experts_pin"] = vram_experts_pin
+    if options.get("kv_full_windows") is not None:
+        engine_options["kv_full_windows"] = options["kv_full_windows"]
     if expert_ranks > 1:
         if tp != 1:
             raise ValueError("expert parallelism and tensor parallelism cannot be combined")
+        from tensorfold.cleanup import rollback
+
         from .cuda.expert_parallel import Follower, Session
         session = Session(model_dir, ranks=expert_ranks, shards=expert_shards, rank=rank,
                           master=master or "127.0.0.1", port=master_port, budget=vram_experts, mtp=depth > 0,
                           pin_mode=vram_experts_pin)
-        if rank:
-            return Follower(session)
-    return FlashNextEngine(Path(model_dir), depth=depth, confidence=confidence, max_len=context,
-                           context_explicit=options.get("context_explicit"), tp=int(tp), rank=int(rank),
-                           master=master, port=int(master_port), streams=max(1, int(options.get("parallel") or 1)),
-                           ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype,
-                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype,
-                           share=0.0 if decode_share is None else float(decode_share),
-                           vision=bool(options.get("vision", False)),
-                           vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor,
-                           vram_experts=vram_experts,
-                           **({"vram_experts_pin": vram_experts_pin} if vram_experts_pin != "off" else {}),
-                           **({"expert_session": session} if session is not None else {}),
-                           **({"kv_full_windows": options["kv_full_windows"]}
-                              if options.get("kv_full_windows") is not None else {}))
+        try:
+            if rank:
+                return Follower(session)
+            engine_options["expert_session"] = session
+            return FlashNextEngine(directory, **engine_options)
+        except BaseException as error:  # noqa: BLE001 - rollback preserves cancellation and the original failure
+            rollback(session, error, lambda: session.close(abort=True))
+    return FlashNextEngine(directory, **engine_options)
