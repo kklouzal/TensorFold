@@ -118,37 +118,40 @@ class ExpertPinPolicy:
                 raise ValueError("expert authority allocation exceeds its admitted payload budget")
             if size and self._remaining is not None and not self._remaining[size]:
                 raise ValueError("expert authority allocation differs from its admitted geometry")
-            if self._enabled and size:
-                extent = ((size + PAGESIZE - 1) // PAGESIZE) * PAGESIZE
-                backing = torch.empty((extent + PAGESIZE - 1,), dtype=torch.uint8, device="cpu")
-                offset = (-backing.data_ptr()) % PAGESIZE
-                pages = backing.narrow(0, offset, extent)
-                result = pages[:size].view(dtype).view(shape)
-                native = _native()
-                owner = native.Registration(pages)
-                self._pins[self._count] = owner  # publish before the native registration can succeed
-                try:
-                    code = owner.pin()
-                except BaseException:
-                    # The native owner records success before returning. Keep
-                    # it published even if Python is interrupted at that boundary.
-                    self._failure = "host_registration_interrupted"
-                    raise
-                if code:
-                    if self.admission.mode != "auto" or code not in (native.memory_allocation, native.not_supported):
-                        self._failure = "host_registration_failed"
-                        raise PinUnavailable(f"expert host registration failed ({tag[:160]}): {native.error_text(code)}")
-                    self.refusals += 1
-                    self._enabled = False
-                else:
-                    self.pinned_bytes += size
+            try:
+                return self._allocate_and_commit(shape, dtype, size, tag)
+            except BaseException:
+                # Includes the interval after successful registration and
+                # before every Python bookkeeping update has committed.
+                self._failure = "authority_allocation_failed"
+                raise
+
+    def _allocate_and_commit(self, shape, dtype, size, tag):
+        if self._enabled and size:
+            extent = ((size + PAGESIZE - 1) // PAGESIZE) * PAGESIZE
+            backing = torch.empty((extent + PAGESIZE - 1,), dtype=torch.uint8, device="cpu")
+            offset = (-backing.data_ptr()) % PAGESIZE
+            pages = backing.narrow(0, offset, extent)
+            result = pages[:size].view(dtype).view(shape)
+            native = _native()
+            owner = native.Registration(pages)
+            self._pins[self._count] = owner  # publish before the native registration can succeed
+            code = owner.pin()
+            if code:
+                if self.admission.mode != "auto" or code not in (native.memory_allocation, native.not_supported):
+                    self._failure = "host_registration_failed"
+                    raise PinUnavailable(f"expert host registration failed ({tag[:160]}): {native.error_text(code)}")
+                self.refusals += 1
+                self._enabled = False
             else:
-                result = torch.empty(shape, dtype=dtype, device="cpu")
-            self.allocated_bytes += size
-            if size and self._remaining is not None:
-                self._remaining[size] -= 1
-                self._count += 1
-            return result
+                self.pinned_bytes += size
+        else:
+            result = torch.empty(shape, dtype=dtype, device="cpu")
+        self.allocated_bytes += size
+        if size and self._remaining is not None:
+            self._remaining[size] -= 1
+            self._count += 1
+        return result
 
     def receipt(self) -> dict:
         with self._lock:
