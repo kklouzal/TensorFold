@@ -337,7 +337,9 @@ class MultiDecoder:
         """Foreground prompts for one prefill forward, oldest first, each to its next kept state or its end: STEP rows
         in all while streams decode, a forward's prompt rows otherwise; the last one in takes the rows left."""
 
-        room = STEP if any(not x.done for x in self.streams.values()) else getattr(self.w, "prompt_rows", CHUNK)
+        room = getattr(self.w, "prompt_rows", CHUNK)
+        if any(not x.done for x in self.streams.values()):
+            room = min(STEP, room)
         out = []
         for s in self.filling:
             if s.background:

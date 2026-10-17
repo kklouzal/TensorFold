@@ -244,6 +244,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
     Projections, norms and MLPs run over every row at once, each row's bits its own; each stream's convolution
     windows, DeltaNet chains and attention read its own state. Per item: (last row normed, taps, the state at cut)."""
 
+    if tp and any(layer.moe is not None for layer in w.layers):
+        raise ValueError("routed experts run on one GPU")
     c = w.config
     tap_layers = w.draft_taps if capture_taps else ()
     pg = prefill_glue if w.fast_prefill and prompt_precision.fp8() else prefill_bf16
