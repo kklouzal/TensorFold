@@ -343,7 +343,7 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         buf = b.moe
         moe_mod.router(b.mixed[:R], m.router, buf.logits[:R])
         moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
-        m.experts.session.run(m.experts, b.mixed[:R], buf.pick[:R], buf.y[:R], prefill=b.prefill)
+        m.experts.session.run(m.experts, b.mixed[:R], buf.pick[:R], buf.y[:R], prefill=buf.plan.prefill)
         return 2, buf.y[:R], buf.wts[:R]
     if getattr(m.experts, "kernel", "qmm") == "nvfp4":      # an NVFP4 checkpoint: the FP4 experts
         buf = b.moe

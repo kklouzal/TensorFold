@@ -166,6 +166,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "40 GiB less at peak (the tables are 29.8 GiB); a 128 GB Mac needs it")
     speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
                        help="Flash Next CUDA RAM experts auto: reserve N full KV windows across concurrent slots")
+    speed.add_argument("--vram-experts-pin", choices=("off", "auto", "on"), default="off",
+                       help="RAM expert authority: off keeps pageable bytes; auto admits host page registration, "
+                            "on requires it; allocation and full host capacity are checked before loading")
 
     speed.add_argument("--no-update-check", action="store_true",
                        help="don't ask GitHub whether a newer release exists (also TENSORFOLD_NO_UPDATE_CHECK=1)")
@@ -174,7 +177,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--backend", choices=("auto", "mlx", "cuda"), default="auto",
                       help="auto: MLX on macOS, CUDA elsewhere")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
-                      help="GPUs (one per machine) the model is split over; run the same command on each")
+                      help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
