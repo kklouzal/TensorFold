@@ -1,8 +1,7 @@
-"""Bit-exact pageable host storage in the existing grouped CUDA expert format.
+"""Bit-exact owned host storage in the existing grouped CUDA expert format.
 
-Only expert residency changes. Packing rearranges integer bits and never
-dequantizes weights, converts BF16 scales, prunes experts, or pins the cold store.
-The cache owns its separately bounded pinned transfer staging.
+Packing rearranges integer bits without numerical conversion. Optional model-
+owned authority allocation and verified disk artifacts preserve these bytes.
 """
 
 from __future__ import annotations
@@ -83,15 +82,18 @@ def pack_cpu(
     return out
 
 
-def load_host_experts(reader, name: str, *, prefix: str = "", chunk_experts: int = 2) -> grouped.Experts:
-    """Load affine group-32 MoE directly into pageable CPU grouped.Experts.
+def load_host_experts(reader, name: str, *, prefix: str = "", chunk_experts: int = 2,
+                      owned_ids: range | list[int] | None = None, include_shared: bool = True,
+                      authority=None, packed_cache=None) -> grouped.Experts:
+    """Load exact affine group-32 bytes into final owned CPU authority.
 
-    ``name`` is the MoE base (for example ``model.layers.0.mlp``); ``prefix`` is
-    the checkpoint's optional language-model prefix. The shared expert retains
-    logical ID E after all routed experts. The final packed buffers are allocated
-    once. At most ``chunk_experts`` raw experts of one projection and that
-    projection's packing temporaries exist at a time; no whole stacked input,
-    pinned cold copy, CUDA upload, or read-ahead future is consumed here.
+    Returned compact local order is ``owned_ids`` followed by shared expert E
+    when requested; omitted IDs allocate/read no source rows. ``None`` preserves
+    all routed IDs and shared E. Metadata is validated before source reads.
+    ``authority.allocate_authority`` is the model-owned pin policy; absent it,
+    storage is pageable. Packing temporaries remain bounded by chunk_experts.
+    A configured PackedExpertCache hashes exact contributing bytes at each
+    startup and verifies cached bytes while filling the same final authority.
     """
 
     if type(chunk_experts) is not int or chunk_experts <= 0:
@@ -99,8 +101,11 @@ def load_host_experts(reader, name: str, *, prefix: str = "", chunk_experts: int
     base = prefix + name
     projections = ("gate_proj", "up_proj", "down_proj")
     components = ("weight", "scales", "biases")
-    metadata = {}
-    for part in ("switch_mlp", "shared_expert"):
+    if type(include_shared) is not bool:
+        raise ValueError("include_shared must be a boolean")
+    metadata, infos = {}, {}
+    parts = ("switch_mlp", "shared_expert") if include_shared else ("switch_mlp",)
+    for part in parts:
         for projection in projections:
             triple = [reader.info(f"{base}.{part}.{projection}.{component}") for component in components]
             rank = 3 if part == "switch_mlp" else 2
@@ -119,6 +124,8 @@ def load_host_experts(reader, name: str, *, prefix: str = "", chunk_experts: int
             ):
                 raise ValueError(f"{base}.{part}.{projection}: affine group-32 shapes do not match")
             metadata[part, projection] = shape
+            for component, info in zip(components, triple):
+                infos[f"{base}.{part}.{projection}.{component}"] = info
     e, width, d8 = metadata["switch_mlp", "gate_proj"]
     dims = d8 * 8
     expected = {
@@ -130,36 +137,81 @@ def load_host_experts(reader, name: str, *, prefix: str = "", chunk_experts: int
         dims % 32
         or width % 32
         or any(
-            metadata["switch_mlp", p] != expected[p] or metadata["shared_expert", p] != expected[p][1:]
+            metadata["switch_mlp", p] != expected[p]
+            or (include_shared and metadata["shared_expert", p] != expected[p][1:])
             for p in projections
         )
     ):
         raise ValueError(f"{base}: routed/shared projections must have equal compatible widths")
-    block = 160
-    up = torch.empty((e + 1, width // 32, dims // 32, 2, block), dtype=torch.int32, device="cpu")
-    down = torch.empty((e + 1, dims // 32, width // 32, 1, block), dtype=torch.int32, device="cpu")
-
-    for projection_index, projection in enumerate(projections):
-        for lo in range(0, e, chunk_experts):
-            hi = min(e, lo + chunk_experts)
-            source = [
-                reader.get_rows(f"{base}.switch_mlp.{projection}.{component}", lo, hi) for component in components
-            ]
-            packed = pack_cpu(*source, 32)
-            if projection_index < 2:
-                up[lo:hi, :, :, projection_index, :].copy_(packed)
-            else:
-                down[lo:hi, :, :, 0, :].copy_(packed)
-            del source, packed
-        n = expected[projection][1]
-        source = [
-            reader.get_rows(f"{base}.shared_expert.{projection}.{component}", 0, n).unsqueeze(0)
-            for component in components
-        ]
-        packed = pack_cpu(*source, 32)
-        if projection_index < 2:
-            up[e : e + 1, :, :, projection_index, :].copy_(packed)
+    if owned_ids is not None and not isinstance(owned_ids, (range, list)):
+        raise ValueError("owned_ids must be a range or list of unique routed expert IDs")
+    ids = tuple(range(e) if owned_ids is None else owned_ids)
+    if any(type(i) is not int or not 0 <= i < e for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError("owned_ids must contain unique in-range routed expert IDs")
+    count = len(ids) + int(include_shared)
+    if not count:
+        raise ValueError("a host expert bank must own at least one expert")
+    # Consecutive source runs preserve caller order, never reading gaps owned by
+    # another rank. Cache identity is independent of packing chunk size.
+    runs = []
+    for i in ids:
+        if runs and i == runs[-1][1]:
+            runs[-1] = (runs[-1][0], i + 1)
         else:
-            down[e : e + 1, :, :, 0, :].copy_(packed)
-        del source, packed
-    return grouped.Experts(up, down, 32, width, dims)
+            runs.append((i, i + 1))
+    block = 160
+    shapes = ((count, width // 32, dims // 32, 2, block),
+              (count, dims // 32, width // 32, 1, block))
+    def allocate(shape, tag):
+        if authority is None:
+            return torch.empty(shape, dtype=torch.int32, device="cpu")
+        return authority.allocate_authority(shape, dtype=torch.int32, tag=tag)
+    up, down = (allocate(shape, base + suffix) for shape, suffix in zip(shapes, (".up", ".down")))
+    for tensor, shape in zip((up, down), shapes):
+        if (not isinstance(tensor, torch.Tensor) or tensor.device.type != "cpu" or tensor.dtype != torch.int32
+                or tuple(tensor.shape) != shape or not tensor.is_contiguous()):
+            raise ValueError("expert authority allocator must return contiguous CPU int32 arrays with the requested shape")
+    if up.data_ptr() < down.data_ptr() + down.numel() * 4 and down.data_ptr() < up.data_ptr() + up.numel() * 4:
+        raise ValueError("expert authority allocations must be disjoint")
+    def pack():
+        for projection_index, projection in enumerate(projections):
+            local = 0
+            for begin, end in runs:
+                for lo in range(begin, end, chunk_experts):
+                    hi = min(end, lo + chunk_experts)
+                    source = [reader.get_rows(f"{base}.switch_mlp.{projection}.{c}", lo, hi) for c in components]
+                    packed = pack_cpu(*source, 32)
+                    target = up[..., projection_index, :] if projection_index < 2 else down[..., 0, :]
+                    target[local:local + hi - lo].copy_(packed)
+                    local += hi - lo
+                    del source, packed
+            if include_shared:
+                n = expected[projection][1]
+                source = [reader.get_rows(f"{base}.shared_expert.{projection}.{c}", 0, n).unsqueeze(0)
+                          for c in components]
+                packed = pack_cpu(*source, 32)
+                target = up[..., projection_index, :] if projection_index < 2 else down[..., 0, :]
+                target[len(ids):].copy_(packed)
+                del source, packed
+    if packed_cache is None:
+        pack()
+    else:
+        from .packed_experts import SourceIdentity
+
+        ranges = []
+        for field, info in infos.items():
+            for lo, hi in (runs if ".switch_mlp." in field else [(0, info["shape"][0])]):
+                ranges.append((field, info, lo, hi))
+        geometry = {"name": base, "ids": list(ids), "shared": include_shared,
+                    "width": width, "dims": dims, "group": 32}
+        with SourceIdentity(ranges, geometry) as identity:
+            status = packed_cache.read(identity, (up, down))
+            if status != "hit":
+                print(f"Packed expert cache {base}: {status}", flush=True)
+                pack()
+                identity.verify()
+                status += "; " + packed_cache.write(identity, (up, down))
+            print(f"Packed expert cache {base}: {status}", flush=True)
+    result = grouped.Experts(up, down, 32, width, dims)
+    result.logical_ids = ids + ((e,) if include_shared else ())
+    return result

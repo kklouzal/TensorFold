@@ -414,3 +414,65 @@ def test_reader_release_reports_close_failure_without_retrying_owned_fd(tmp_path
             os.fstat(opened[0])
     finally:
         reader.close()
+
+
+@pytest.mark.parametrize("ids,shared", [([2, 0], False), (range(1, 3), True), ([], True)])
+def test_rank_local_authority_keeps_order_and_reads_no_unowned_payload(ids, shared):
+    tensors = checkpoint_tensors()
+    reader = RecordingReader(tensors)
+    full = load_host_experts(RecordingReader(tensors), "model.layers.0.mlp")
+    if not shared:
+        reader.tensors = {k: v for k, v in tensors.items() if ".shared_expert." not in k}
+    host = load_host_experts(reader, "model.layers.0.mlp", owned_ids=ids, include_shared=shared)
+    order = list(ids) + ([3] if shared else [])
+    assert host.logical_ids == tuple(order)
+    assert torch.equal(host.up, full.up[order]) and torch.equal(host.down, full.down[order])
+    for name, lo, hi in reader.reads:
+        if ".switch_mlp." in name:
+            assert set(range(lo, hi)) <= set(ids)
+        else:
+            assert shared
+
+
+@pytest.mark.parametrize("ids,shared", [([0, 0], True), ([3], True), ([-1], True), ([True], True),
+                                       ((0, 1), True), ([], False), ([0], 1)])
+def test_rank_local_invalid_ids_fail_before_payload_reads(ids, shared):
+    reader = RecordingReader(checkpoint_tensors())
+    with pytest.raises(ValueError):
+        load_host_experts(reader, "model.layers.0.mlp", owned_ids=ids, include_shared=shared)
+    assert not reader.reads
+
+
+def test_authority_allocator_receives_final_buffers_once():
+    class Authority:
+        def __init__(self):
+            self.calls = []
+        def allocate_authority(self, shape, *, dtype, tag):
+            result = torch.empty(shape, dtype=dtype)
+            self.calls.append((shape, dtype, tag, result))
+            return result
+    authority = Authority()
+    host = load_host_experts(RecordingReader(checkpoint_tensors()), "model.layers.0.mlp", authority=authority)
+    assert len(authority.calls) == 2
+    assert host.up is authority.calls[0][-1] and host.down is authority.calls[1][-1]
+    assert [call[2] for call in authority.calls] == ["model.layers.0.mlp.up", "model.layers.0.mlp.down"]
+
+
+@pytest.mark.parametrize("invalid", ["shape", "dtype", "overlap"])
+def test_invalid_authority_allocator_fails_before_payload_read(invalid):
+    class Authority:
+        def __init__(self):
+            self.raw = torch.empty(2560, dtype=torch.int32)
+        def allocate_authority(self, shape, *, dtype, tag):
+            if invalid == "shape":
+                return torch.empty((1,), dtype=dtype)
+            if invalid == "dtype":
+                return torch.empty(shape, dtype=torch.float32)
+            count = 1
+            for n in shape:
+                count *= n
+            return self.raw[:count].reshape(shape)
+    reader = RecordingReader(checkpoint_tensors())
+    with pytest.raises(ValueError, match="allocator|disjoint"):
+        load_host_experts(reader, "model.layers.0.mlp", authority=Authority())
+    assert not reader.reads
