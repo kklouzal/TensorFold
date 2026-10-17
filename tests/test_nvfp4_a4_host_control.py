@@ -57,7 +57,7 @@ def test_cpu_pack_is_scalar_foreign_layout_permutation(n, k):
     linear = projection_a4(got, n, k, .25, .125)
     assert linear.words.data_ptr() == got.data_ptr()
     assert linear.bs.data_ptr() == got.data_ptr() + n * k // 2
-    assert linear.scale == .25 and linear.act == .125
+    assert linear.scale == .25 and linear.act == 8. and linear.act_inverse == .125
 
 
 def test_owned_loader_reads_only_selected_original_fields_and_prepares_exact_calibrations():
@@ -76,7 +76,9 @@ def test_owned_loader_reads_only_selected_original_fields_and_prepares_exact_cal
             assert torch.equal(authority[0][local, p] if p < 2 else authority[1][local], expected)
             for source, target in (("weight_global_scale", authority[2] if p < 2 else authority[3]),
                                    ("input_global_scale", authority[4] if p < 2 else authority[5])):
-                direct = struct.unpack("f", struct.pack("f", 1.0 / float(ctx.payload[base + "." + source][0])))[0]
+                raw = float(ctx.payload[base + "." + source][0])
+                expected_scale = 1.0 / raw if source == "weight_global_scale" else raw
+                direct = struct.unpack("f", struct.pack("f", expected_scale))[0]
                 assert float(target[local, p if p < 2 else 0]) == direct
             read = ctx.reads.index(base + ".weight_packed")
             assert ctx.reads.index(base + ".weight_global_scale") < read
@@ -177,3 +179,32 @@ def test_valid_zero_max_scales_are_preserved_and_unowned_invalid_payload_is_neve
     assert untouched not in ctx.reads
     expected = oracle_blob(ctx.payload[base + ".weight_packed"], scale)
     assert torch.equal(cache._layers[0][0][0, 0], expected)
+
+
+
+def test_raw_ct_multiplier_boundary_has_independent_encoded_scale_expectation():
+    from nvfp4_a4_inputs import ct_quant_reference
+
+    def f32(value):
+        return struct.unpack("f", struct.pack("f", value))[0]
+
+    raw = struct.unpack("f", struct.pack("I", 0x3e63ffff))[0]
+    reconstructed = f32(1.0 / f32(1.0 / raw))
+    x = torch.full((1, 64), .5, dtype=torch.bfloat16)
+    _, direct = ct_quant_reference(x, raw)
+    _, roundtrip = ct_quant_reference(x, reconstructed)
+    assert torch.equal(direct, torch.full_like(direct, 0x0a))
+    assert torch.equal(roundtrip, torch.full_like(roundtrip, 0x09))
+    assert not torch.equal(direct, roundtrip)
+
+
+def test_ct_native_calibration_admits_finite_original_multiplier_without_roundtrip_overflow():
+    from tensorfold.cuda.nvfp4 import checkpoint
+    from tensorfold.cuda.nvfp4.format import native_calibration
+
+    raw = float(torch.finfo(torch.float32).max)
+    act = float(torch.tensor(1., dtype=torch.float32) / torch.tensor(raw, dtype=torch.float32))
+    assert checkpoint._inv(act) == float("inf")
+    assert native_calibration(act, 1., name="original CT multiplier", act_inverse=raw) == act
+    with pytest.raises(ValueError, match="native FP32"):
+        native_calibration(act, 1., name="legacy inverse boundary")

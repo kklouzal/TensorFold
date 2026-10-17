@@ -37,12 +37,18 @@ def pack_projection_a4(weight, scale):
     return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
 
 
-def projection_a4(blob, n, k, weight_scale, input_scale):
-    """Borrow a packed projection without repacking or reading device scalars."""
+def projection_a4(blob, n, k, weight_scale, input_inverse):
+    """Borrow admitted code/scale bytes and original CT input multiplier.
+
+    Payload admission belongs to loading; this HOT view never rescans scales.
+    The dequantization scale is prepared separately for the selected alpha
+    contract; quantization consumes the original multiplier without roundtrip.
+    """
     cut = n * k // 2
     words = blob[:cut].view(torch.int32).view(n // 64, k // 64, 8, 32, 2)
     scales = blob[cut:].view(n // 64, k // 64, 64, 4)
-    return Fp4Linear(words, scales, weight_scale, n, k, act=input_scale)
+    return Fp4Linear(words, scales, weight_scale, n, k, act=checkpoint._inv(input_inverse),
+                     act_inverse=input_inverse)
 
 
 def _span(t):

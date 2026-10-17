@@ -1,5 +1,6 @@
 """Tiny CT experts with deliberately unequal per-projection calibrations."""
 
+import struct
 from types import SimpleNamespace
 
 import torch
@@ -34,6 +35,10 @@ class Context:
                                       .to(torch.uint8).view(n, k // 16).view(torch.float8_e4m3fn),
                     "weight_global_scale": torch.tensor([37 + 3 * expert + 7 * p], dtype=torch.float32),
                     "input_global_scale": torch.tensor([19 + 5 * expert + 11 * p], dtype=torch.float32)}
+                if expert == 0 and p == 0:
+                    # BF16amax0.5 produces an E4M3 rounding boundary for this
+                    # original multiplier; reciprocal roundtrip changes0x0a to0x09.
+                    values["input_global_scale"][0] = struct.unpack("f", struct.pack("I", 0x3e63ffff))[0]
                 for suffix, value in values.items():
                     name = base + "." + suffix
                     self.payload[name] = value
@@ -45,3 +50,29 @@ class Context:
             raise AssertionError("duplicate checkpoint consumption: " + name)
         self.reads.append(name)
         return self.payload[name].to(device)
+
+
+def ct_quant_reference(x, raw_multiplier):
+    """Independent CPU FP32/per16 reference consuming original CT globals.
+
+    This deliberately does not call checkpoint/calibration/reciprocal helpers.
+    E4M3 conversion uses Torch's CPU encoding; E2M1 ties use explicit decision
+    intervals rather than a native quantizer or table implementation.
+    """
+    if x.device.type != "cpu":
+        raise ValueError("CT quantizer reference requires CPU input")
+    m, k = x.shape
+    blocks = x.float().view(m, k // 16, 16)
+    raw = torch.tensor(raw_multiplier, dtype=torch.float32)
+    local = (raw * (blocks.abs().amax(-1) * torch.tensor(1.0 / 6.0, dtype=torch.float32))).clamp(max=448.)
+    encoded = local.to(torch.float8_e4m3fn)
+    local = encoded.float()
+    multiplier = torch.where(local != 0, raw / local, torch.zeros_like(local))
+    v = blocks * multiplier[..., None]
+    absolute = v.abs()
+    code = torch.zeros(v.shape, dtype=torch.uint8)
+    for next_code, (edge, exclusive) in enumerate(((.25, True), (.75, False), (1.25, True), (1.75, False),
+                                                  (2.5, True), (3.5, False), (5., True)), start=1):
+        code = torch.where(absolute > edge if exclusive else absolute >= edge, next_code, code)
+    code = torch.where((v < 0) & (code != 0), code | 8, code).view(m, k)
+    return (code[:, ::2] | (code[:, 1::2] << 4)), encoded.view(torch.uint8)

@@ -70,8 +70,9 @@ def authority_fields_a4(count, width, dims):
     """Native-A4 CPU authority fields, separate from Flash Next's W4A16 blocks.
 
     A projection blob holds checkpoint FP4 code words, then its tiled E4M3
-    block scales. Per-expert global/input fields hold the direct FP32 values
-    consumed by native checkpoint math, with CT reciprocal convention resolved.
+    block scales. Weight global fields hold prepared FP32 reciprocals; input
+    fields retain original CT FP32 multipliers exactly. Native alpha separately
+    uses FP32(1/input_multiplier) times the prepared weight reciprocal.
     """
     if type(count) is not int or not 1 <= count <= 1023:
         raise ValueError("native A4 expert count must lie in [1, 1023]")

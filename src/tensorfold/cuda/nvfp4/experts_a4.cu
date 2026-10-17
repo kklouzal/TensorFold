@@ -18,7 +18,7 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
     if (blk >= k / 16) return;
     const int row = paired ? pair : plan[3 * pair], cell = plan[3 * pair + 2];
     if (row < 0 || row >= rows || cell < 0 || cell >= cells) { __trap(); return; }
-    const float inverse = __fdiv_rn(1.f, input[static_cast<int64_t>(cell) * projections + projection]);
+    const float inverse = input[static_cast<int64_t>(cell) * projections + projection];
     float values[16], amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
@@ -79,7 +79,7 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
         for (int v = 0; v < 4; ++v) total[v] = slice == 0 ? acc[v] : __fadd_rn(total[v], acc[v]);
     }
     const int64_t scale_at = static_cast<int64_t>(cell) * projections + projection;
-    const float alpha = __fmul_rn(input[scale_at], weight[scale_at]);
+    const float alpha = __fmul_rn(__fdiv_rn(1.f, input[scale_at]), weight[scale_at]);
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
         const int r = first + g + h * 8;
