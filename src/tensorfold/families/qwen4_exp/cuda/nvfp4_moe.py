@@ -9,6 +9,7 @@ import torch
 from tensorfold.cuda import experts as grouped
 from tensorfold.cuda.expert_parallel import owned_items
 from tensorfold.cuda.nvfp4 import experts as nvx
+from tensorfold.cuda.expert_window import ExpertWindow
 
 from . import nvfp4
 
@@ -227,11 +228,9 @@ def moe(x: torch.Tensor, xs: torch.Tensor, router_rows: torch.Tensor, ex: MoE4, 
     moe_mod.select(buf.logits[:rows], buf, top_k, ex.routed, nvx.PREFILL_TILE)
     prompt = buf.y.dtype != torch.float32                  # a prompt's buffers keep bf16 slots
     if isinstance(ex, CachedMoE4):
-        from .forward import _ExpertWindow
-
         scratch = getattr(buf, "expert_window", None)
         if scratch is None:
-            scratch = buf.expert_window = _ExpertWindow(buf.plan)
+            scratch = buf.expert_window = ExpertWindow(buf.plan)
         items = scratch.read(buf.plan)
         # The shared expert has its own exact resident representation; filter
         # it before compact slot remapping rather than treating it as FP4.
