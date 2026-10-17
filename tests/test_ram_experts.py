@@ -107,6 +107,24 @@ def test_expert_count_limit_matches_native_plan_contract(tmp_path):
         ram_experts.layout(tmp_path, 1)
 
 
+@pytest.mark.parametrize("layers", [2**62, 3])
+def test_affine_layer_coverage_rejects_configured_counts_without_expanding_them(tmp_path, layers):
+    text, _ = checkpoint(tmp_path)
+    text["num_hidden_layers"] = layers
+    (tmp_path / "config.json").write_text(json.dumps(text))
+    with pytest.raises(ValueError, match="every configured main expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
+def test_affine_layer_coverage_requires_contiguous_ids_inside_the_count(tmp_path, monkeypatch):
+    checkpoint(tmp_path)
+    entries = capacity.headers(tmp_path)
+    changed = {name.replace("model.layers.1.", "model.layers.3."): info for name, info in entries.items()}
+    monkeypatch.setattr(ram_experts, "headers", lambda _: changed)
+    with pytest.raises(ValueError, match="every configured main expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
 def test_cli_rejects_unsupported_backends_and_silent_cuda_ssd_flag(tmp_path):
     checkpoint(tmp_path)
     family = NS(title=qwen4_exp.TITLE, model_type="qwen4_exp", package=qwen4_exp)
