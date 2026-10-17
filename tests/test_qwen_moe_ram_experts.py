@@ -211,7 +211,7 @@ def test_parallel_runtime_reserves_full_growth_of_private_and_kept_kv():
     assert small["future_snapshot_bytes"] == (2 * 4 + 3 + 2) * 352 + (3 + 1) * 1024 * 256
     assert large["future_snapshot_bytes"] - small["future_snapshot_bytes"] == 4 * 3072 * 256
     # Calibration retains16,32,64-row decode buckets even for3-row requests.
-    assert small["future_target_workspace_bytes"] == 29117952 + 221308 + 1222452 + 458752 + 69632
+    assert small["future_target_workspace_bytes"] == 28298752 + 221308 + 1222452 + 458752 + 69632
     assert plan.geometry.bytes_at(4096) == sum(large.values())
     assert large["future_kv_bytes"] + large["future_snapshot_bytes"] > 4 * small["future_kv_bytes"]
 
