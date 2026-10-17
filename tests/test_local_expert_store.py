@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from tensorfold.cuda import local_store
+from tensorfold.cleanup import finish, rollback
 
 
 @pytest.mark.parametrize("options", [dict(master="0.0.0.0"), dict(master="192.0.2.1"), dict(master="remote.invalid"),
@@ -98,6 +99,8 @@ def test_bind_and_cleanup_failures_keep_primary_and_unresolved_owner(monkeypatch
     primary, cleanup = OSError("bind failure"), OSError("socket close failure")
 
     class Listener:
+        def setsockopt(self, *options):
+            assert options == (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         def bind(self, address):
             raise primary
         def fileno(self):
@@ -124,6 +127,8 @@ def test_failed_unresolved_owner_diagnostic_preserves_primary_and_retained_liste
     captured = []
 
     class Listener:
+        def setsockopt(self, *options):
+            assert options == (socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         def bind(self, address):
             if not native:
                 raise primary
@@ -227,3 +232,109 @@ def test_pinned_native_loopback_client_and_server_exchange_control_values():
     assert client.get("server-control") == b"typed-server"
     client.set("client-control", b"typed-client")
     assert server.get("client-control") == b"typed-client"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX listener reuse policy")
+def test_reuse_option_failure_closes_only_the_python_owned_listener(monkeypatch):
+    primary, closed = OSError("controlled reuse option failure"), []
+    class Listener:
+        def setsockopt(self, *options):
+            raise primary
+        def fileno(self):
+            return 99
+        def close(self):
+            closed.append(True)
+    monkeypatch.setattr(socket, "socket", lambda *args: Listener())
+    monkeypatch.setattr(local_store, "_store_type", lambda: lambda *a, **k: pytest.fail("native handoff entered"))
+    with pytest.raises(OSError) as caught:
+        local_store.open_store("127.0.0.1", 0, 1, 0, timeout_s=1)
+    assert caught.value is primary and closed == [True]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="TIME_WAIT oracle reads Linux procfs")
+def test_new_listeners_rebind_same_port_after_accepted_side_time_wait(monkeypatch):
+    # The controlled Store adopts the actual native-handoff descriptor. The
+    # TCP handshake/FINs and TIME_WAIT observation are real, not socket mocks.
+    def adopt(*args, master_listen_fd, **options):
+        return socket.socket(fileno=master_listen_fd)
+    monkeypatch.setattr(local_store, "_store_type", lambda: adopt)
+    owned = [None] * 4
+    retirement = tuple(lambda index=index: owned[index].close() if owned[index] is not None else None
+                       for index in range(4))
+    def retire():
+        finish(retirement)
+    try:
+        owned[0] = listener = local_store.open_store("127.0.0.1", 0, 1, 0, timeout_s=1)
+        port = listener.getsockname()[1]
+        assert listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 1
+        owned[1] = peer = socket.create_connection(("127.0.0.1", port), timeout=1)
+        owned[2], _ = listener.accept()
+        accepted = owned[2]
+        accepted.settimeout(1)
+        accepted.shutdown(socket.SHUT_WR)  # server side actively closes first
+        assert peer.recv(1) == b""
+        peer.close()
+        owned[1] = None
+        assert accepted.recv(1) == b""
+        accepted.close()
+        owned[2] = None
+        listener.close()
+        owned[0] = None
+        rows = Path("/proc/net/tcp").read_text().splitlines()[1:]
+        assert any(int(row.split()[1].split(":")[1], 16) == port and row.split()[3] == "06" for row in rows)
+        owned[3] = replacement = local_store.open_store("127.0.0.1", port, 1, 0, timeout_s=1)
+        assert replacement.getsockname() == ("127.0.0.1", port)
+    except BaseException as primary:
+        rollback(owned, primary, retire)
+    else:
+        retire()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="same-host NCCL listener target")
+def test_active_native_store_listener_still_refuses_a_second_owner():
+    pytest.importorskip("torch.distributed")
+    server = local_store.open_store("127.0.0.1", 0, 1, 0, timeout_s=1)
+    try:
+        with pytest.raises(OSError) as caught:
+            local_store.open_store("127.0.0.1", server.port, 1, 0, timeout_s=1)
+        assert caught.value.errno == errno.EADDRINUSE
+        assert not isinstance(caught.value.__cause__, local_store.UnresolvedStoreOwner)
+        server.set("still-owned", b"ready")
+        assert server.get("still-owned") == b"ready"
+    finally:
+        del server
+        gc.collect()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="same-host NCCL listener target")
+def test_native_followers_report_close_and_missing_key_then_join_restarted_store():
+    distributed = pytest.importorskip("torch.distributed")
+    # Ephemeral port selection is advisory; the real exclusive bind is final.
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    server = client = None
+    try:
+        for generation in range(3):
+            server = local_store.open_store("127.0.0.1", port, 2, 0, timeout_s=.1)
+            client = local_store.open_store("127.0.0.1", port, 2, 1, timeout_s=.1)
+            assert server.port == client.port == port
+            assert not server.check(["retired-generation"])
+            with pytest.raises(distributed.DistStoreError, match="timeout"):
+                client.get("absent-control-key")
+            client.set("current-generation", str(generation))
+            assert server.get("current-generation") == str(generation).encode()
+            server.set("retired-generation", "present")
+            server = None
+            gc.collect()
+            with pytest.raises(distributed.DistNetworkError):
+                client.get("closed-server")
+            client = None
+            gc.collect()
+    finally:
+        client = server = None
+        gc.collect()
+    # Both stores' native RAII retired; no listener owner remains on this port.
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        probe.bind(("127.0.0.1", port))

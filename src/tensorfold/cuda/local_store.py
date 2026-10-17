@@ -88,6 +88,10 @@ def open_store(master: str, port: int, world: int, rank: int, *, timeout_s: floa
     try:
         owner.socket = socket.socket(socket.AF_INET6 if address.version == 6 else socket.AF_INET,
                                      socket.SOCK_STREAM)
+        # POSIX permits retired TIME_WAIT sessions to rebind, without enabling
+        # SO_REUSEPORT. Windows gives SO_REUSEADDR different sharing semantics.
+        if os.name == "posix":
+            owner.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         owner.socket.bind((host, port))
         owner.socket.listen()
         actual_port = owner.socket.getsockname()[1]
