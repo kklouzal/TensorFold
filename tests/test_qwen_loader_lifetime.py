@@ -15,6 +15,9 @@ import types
 import unittest
 from unittest.mock import patch
 
+from tensorfold.checkpoint_metadata import read_config
+from tests.nvfp4_host_protocol import linear_metadata_class
+
 REPO = Path(__file__).resolve().parents[1]
 PATH = REPO / "src/tensorfold/families/qwen3_5/cuda"
 
@@ -120,7 +123,8 @@ class OwnershipControls(unittest.TestCase):
         module("tensorfold.families.qwen3_5.cuda.exl3_load", quant_config=lambda _: None, load_exl3=lambda *a: None)
         module("tensorfold.families.qwen3_5.cuda.nvfp4_load", quantized=lambda _: False, load_nvfp4=lambda *a: None)
         module("tensorfold.quantization", resolve_affine=lambda *a: None, validate_shapes=lambda *a: None)
-        module("tensorfold.cuda", prompt_precision=types.SimpleNamespace(fp8=lambda: False))
+        module("tensorfold.cuda", prompt_precision=types.SimpleNamespace(fp8=lambda: False),
+               precision=types.SimpleNamespace(CHECKPOINT="checkpoint", mode=lambda: "checkpoint"))
         module(
             "tensorfold.cuda.capacity",
             headers=lambda _: {
@@ -129,7 +133,8 @@ class OwnershipControls(unittest.TestCase):
                 "lm_head.weight": {"dtype": "BF16", "shape": [2, 2]},
             },
         )
-        fmt = module("tensorfold.cuda.nvfp4.format", config_block=lambda _: None, scheme=lambda _: "bf16")
+        fmt = module("tensorfold.cuda.nvfp4.format", config_block=lambda _: None, scheme=lambda _: "bf16",
+                     LinearMetadata=linear_metadata_class())
         module("tensorfold.cuda.nvfp4", format=fmt)
         module("tensorfold.cuda.nvfp4.linear", Fp4Linear=object, Fp8Linear=object, Staging=lambda: None)
 
@@ -182,6 +187,7 @@ class OwnershipControls(unittest.TestCase):
             "json": json,
             "checkpoint_path": lambda root, name: Path(root) / name,
             "read_metadata_json": lambda path: json.loads(path.read_text()),
+            "read_config": read_config,
             "torch": self.torch,
             "prompt_precision": self.modules["tensorfold.cuda"].prompt_precision,
             "_Tensors": self.reader,

@@ -10,6 +10,8 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from tests.nvfp4_host_protocol import linear_metadata_class
+
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS = ROOT / 'src/tensorfold/families/qwen3_5/cuda/weights.py'
 NVFP4 = WEIGHTS.with_name('nvfp4_load.py')
@@ -75,7 +77,8 @@ def imports(*, fp8=True, spec=None, exl3=False, nvfp4=False, own=False, headers=
         modules[name] = result
         return result
     module('tensorfold')
-    module('tensorfold.cuda', prompt_precision=SimpleNamespace(fp8=lambda: fp8))
+    module('tensorfold.cuda', prompt_precision=SimpleNamespace(fp8=lambda: fp8),
+           precision=SimpleNamespace(CHECKPOINT='checkpoint', mode=lambda: 'checkpoint'))
     module('tensorfold.quantization', resolve_affine=lambda raw, name: spec, validate_shapes=lambda *args: None)
     module('tensorfold.families')
     module('tensorfold.families.qwen3_5')
@@ -88,7 +91,8 @@ def imports(*, fp8=True, spec=None, exl3=False, nvfp4=False, own=False, headers=
     module('triton.language')
     module('triton.language.core', TRITON_MAX_TENSOR_NUMEL=1 << 20)
     module('tensorfold.cuda.capacity', headers=lambda path: headers or {})
-    module('tensorfold.cuda.nvfp4', format=SimpleNamespace(config_block=lambda raw: {}, scheme=lambda parts: 'bf16'))
+    module('tensorfold.cuda.nvfp4', format=SimpleNamespace(config_block=lambda raw: {}, scheme=lambda parts: 'bf16',
+                                                        LinearMetadata=linear_metadata_class()))
     module('tensorfold.cuda.nvfp4.linear', Fp4Linear=object, Fp8Linear=object, Staging=lambda: object())
     with patch.dict(sys.modules, modules):
         yield modules
@@ -254,6 +258,7 @@ class Controls(unittest.TestCase):
                                  Path=Path, skipped=lambda name: False, SUFFIXES=('weight',),
                                  prompt_precision=SimpleNamespace(fp8=lambda: fp8),
                                  read_metadata_json=lambda path: {}, checkpoint_path=lambda path, name: path / name,
+                                 read_config=lambda path: {},
                                  maths=lambda: ({'nvfp4': own, 'fp8': own}, 'labeled mode'))
             metadata = {'model.layers.0.linear_attn.in_proj_qkv.weight': {'dtype': 'BF16', 'shape': [1, 1]}}
             with imports(headers=metadata) as modules:
