@@ -549,7 +549,13 @@ class HostExpertCache:
                 else:
                     self._last_use.synchronize()
             if self.pin_policy is not None:
-                self.pin_policy.close()
+                try:
+                    self.pin_policy.close()
+                except BaseException:
+                    # Some fields may already be unregistered. Do not lend
+                    # views using the registration capabilities captured earlier.
+                    self._failure = "expert host registration retirement failed"
+                    raise
             self._layers.clear()
             self._pool = self._staging = None
             self._closed = True
