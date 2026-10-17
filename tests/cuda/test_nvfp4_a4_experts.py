@@ -123,6 +123,17 @@ def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_proje
             run(bank, x, picks, out[:, :slots], prefill=prefill)
             assert torch.equal(out[:, :slots], expected)
             assert torch.count_nonzero(out[:, slots:]) == 0
+        # Odd row/slot strides and a one-element storage offset are legal
+        # public views; BF16 stores cannot assume bfloat162 alignment here.
+        slot_stride = 2049
+        row_stride = slots * slot_stride + 1
+        storage = torch.full((rows * row_stride + 1,), 17., dtype=out.dtype, device="cuda")
+        odd = storage.as_strided((rows, slots, 2048), (row_stride, slot_stride, 1), 1)
+        run(cached, x, picks, odd, prefill=prefill)
+        assert torch.equal(odd, expected)
+        mask = torch.zeros(storage.shape, dtype=torch.bool, device="cuda")
+        mask.as_strided(odd.shape, odd.stride(), 1).fill_(True)
+        assert torch.equal(storage[~mask], torch.full_like(storage[~mask], 17.))
         # Independent activation-quantizer oracle: standard quant4's byte
         # representation is row-major, while its scale layout is K-major.
         plan = torch.tensor([[0, 0, 3], [2, 1, 1], [1, 0, 0]], dtype=torch.int32, device="cuda")
