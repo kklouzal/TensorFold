@@ -255,6 +255,8 @@ class _Layer:
     views: tuple[torch.Tensor, ...]
     fields: tuple[_Field, ...]
     count: int
+    pinned: tuple[bool, ...]
+    staging_required: bool
 
 
 class HostExpertCache:
@@ -274,7 +276,12 @@ class HostExpertCache:
     capturable = False
 
     def __init__(self, gpu_bytes: int, entry_bytes: int, device: torch.device | str, *,
-                 staging_slots: int = 2) -> None:
+                 staging_slots: int = 2, pin_policy=None) -> None:
+        from .expert_pin import ExpertPinPolicy
+
+        if pin_policy is not None and not isinstance(pin_policy, ExpertPinPolicy):
+            raise ValueError("expert authority pin policy must be model-owned ExpertPinPolicy")
+        self.pin_policy = pin_policy
         self.budget_bytes = _integer(gpu_bytes, "gpu_bytes")
         self.entry_bytes = _integer(entry_bytes, "entry_bytes")
         self.staging_slots = _integer(staging_slots, "staging_slots")
@@ -307,6 +314,18 @@ class HostExpertCache:
         self._last_stream = None
         self._configured_before_use = False
         self.hits = self.misses = self.copied_bytes = self.evictions = 0
+
+    def allocate_authority(self, shape, *, dtype, tag: str = ""):
+        """Allocate final CPU storage before use; registered pages live through close."""
+
+        with self._lock, torch.inference_mode(False):
+            self._usable()
+            if self._last_stream is not None:
+                raise RuntimeError("expert authority allocation must precede the first lease")
+            if self.pin_policy is None:
+                return torch.empty(shape, dtype=dtype, device="cpu")
+            with torch.cuda.device(self.device):
+                return self.pin_policy.empty(shape, dtype=dtype, tag=tag)
 
     def _replacement_views(self, pool, capacity):
         views = {key: tuple(pool.narrow(0, capacity * field.offset, capacity * field.size)
@@ -389,23 +408,29 @@ class HostExpertCache:
             # aliases obey the same immutable-authority contract as all sources.
             versions = tuple(None if torch.is_inference(t) else t._version for t in payloads)
             layers = dict(self._layers)
-            layers[layer_id] = _Layer(payloads, versions, views, fields, count)
+            pinned = tuple(t.is_pinned() for t in payloads)
+            layers[layer_id] = _Layer(payloads, versions, views, fields, count, pinned, not all(pinned))
             self._policy.register(layer_id, count)
             self._layers = layers
             self._fields = fields
 
     def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> int:
-        staging = self._next_stage
-        self._next_stage = (staging + 1) % self.staging_slots
-        event = self._stage_events[staging]
-        if self._stage_pending[staging] and not event.query():
-            event.synchronize()  # CPU must not overwrite an in-flight pinned H2D source
-        for source, target, field in zip(layer.source, layer.views, layer.fields):
-            pinned = self._staging[staging].narrow(0, field.offset, field.size).view(field.dtype).view(field.shape)
-            pinned.copy_(source[expert])
-            target[slot].copy_(pinned, non_blocking=True)
-        event.record(stream)
-        self._stage_pending[staging] = True
+        if layer.staging_required:
+            staging = self._next_stage
+            self._next_stage = (staging + 1) % self.staging_slots
+            event = self._stage_events[staging]
+            if self._stage_pending[staging] and not event.query():
+                event.synchronize()  # CPU must not overwrite an in-flight pinned H2D source
+        for source, target, field, direct in zip(layer.source, layer.views, layer.fields, layer.pinned):
+            if direct:
+                target[slot].copy_(source[expert], non_blocking=True)
+            else:
+                pinned = self._staging[staging].narrow(0, field.offset, field.size).view(field.dtype).view(field.shape)
+                pinned.copy_(source[expert])
+                target[slot].copy_(pinned, non_blocking=True)
+        if layer.staging_required:
+            event.record(stream)
+            self._stage_pending[staging] = True
         return sum(field.size for field in layer.fields)
 
     @contextmanager
@@ -495,7 +520,7 @@ class HostExpertCache:
     def close(self) -> None:
         """Finish owned GPU work before releasing staging and cache storage; idempotent."""
 
-        with self._lock:
+        with self._lock, torch.cuda.device(self.device):
             if self._active:
                 raise RuntimeError("cannot close an active expert lease")
             if self._closed:
@@ -505,6 +530,8 @@ class HostExpertCache:
                     self._last_stream.synchronize()
                 else:
                     self._last_use.synchronize()
+            if self.pin_policy is not None:
+                self.pin_policy.close()
             self._layers.clear()
             self._pool = self._staging = None
             self._closed = True
