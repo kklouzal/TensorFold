@@ -51,12 +51,12 @@ def routed(prefix: str, get: Callable, top_k: int) -> Routed:
     return Routed(router.to(torch.bfloat16).contiguous(), experts, int(top_k))
 
 
-def load(model_dir: str | Path) -> Weights:
+def load(model_dir: str | Path, *, eos_token_ids=None) -> Weights:
     """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels."""
 
     return load_dense(model_dir, tiled=True,
                       mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)},
-                      prefill_mlp=())
+                      prefill_mlp=(), **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
 
 
 @dataclass

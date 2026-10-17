@@ -47,6 +47,19 @@ def test_explicit_file_takes_precedence_without_reading_unused_embedded_metadata
     assert default is tools and default.source == "explicit source" and default.origin == str(path)
 
 
+def test_explicit_operator_symlink_authorizes_its_exact_regular_target(tmp_path):
+    target_dir = tmp_path / "external"
+    target_dir.mkdir()
+    target = target_dir / "operator.jinja"
+    target.write_text("operator source")
+    flag_dir = tmp_path / "flags"
+    flag_dir.mkdir()
+    link = flag_dir / "selected.jinja"
+    link.symlink_to(target)
+    selected, _ = resolve_chat_templates(tmp_path, template_file=link)
+    assert selected.source == "operator source" and selected.origin == str(target)
+
+
 def test_legacy_processor_file_can_supply_an_absent_default(tmp_path):
     (tmp_path / "chat_template.json").write_text(json.dumps({"chat_template": "legacy source"}))
     assert resolve_chat_templates(tmp_path)[0].source == "legacy source"

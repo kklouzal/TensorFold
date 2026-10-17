@@ -2,25 +2,38 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tensorfold.chat_metadata import MissingChatTemplate, TemplateSource, resolve_chat_templates
+from tensorfold.checkpoint_metadata import read_json
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
 from tensorfold.server.request_options import effort_levels
+
+
+@dataclass(frozen=True)
+class CompiledTemplate:
+    source: TemplateSource
+    template: Any
+    efforts: frozenset[str]
+    late_system: str | None
+    sha256: str
 
 
 class ChatTemplate:
     """The model's own Jinja chat template, rendered the way Hugging Face's apply_chat_template does."""
 
-    def __init__(self, model_dir: Path):
+    def __init__(self, model_dir: Path, *, template_file=None, template_name=None):
         import jinja2
         import jinja2.ext
         from jinja2.sandbox import ImmutableSandboxedEnvironment
 
-        cfg = json.loads((model_dir / "tokenizer_config.json").read_text())
-        source_path = model_dir / "chat_template.jinja"
-        source = source_path.read_text() if source_path.exists() else cfg["chat_template"]
+        cfg = read_json(model_dir, "tokenizer_config.json") or {}
+        self.options = (None if template_file is None else str(Path(template_file).expanduser().resolve()), template_name)
+        special = read_json(model_dir, "special_tokens_map.json") or {}
+        sources = resolve_chat_templates(model_dir, template_file=template_file, template_name=template_name)
 
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
@@ -33,18 +46,53 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
-        self.template = env.from_string(source)
-        self.efforts = effort_levels(source)          # the reasoning efforts it names (the Mac reads the same ones)
-        self.specials = {k: (v.get("content") if isinstance(v, dict) else v)
-                         for k, v in cfg.items() if k in ("bos_token", "eos_token", "pad_token", "unk_token")}
-        self.late_system = late_system_role(
-            lambda messages: self.template.render(**self.specials, messages=messages, add_generation_prompt=False))
+        self.specials = {key: (value.get("content") if isinstance(value, dict) else value)
+                         for key in ("bos_token", "eos_token", "pad_token", "unk_token")
+                         if (value := cfg.get(key, special.get(key))) is not None}
+        if any(type(value) is not str for value in self.specials.values()):
+            raise ValueError("template special tokens must be strings or AddedToken content")
+        compiled, routes = {}, []
+        probe_tools = [{"type": "function", "function": {"name": "tf_template_probe",
+                        "parameters": {"type": "object", "properties": {}}}}]
+        for route, source in enumerate(sources):
+            if source not in compiled:
+                template = env.from_string(source.source)
+                compiled[source] = template, effort_levels(source.source), source.sha256
+            template, efforts, fingerprint = compiled[source]
+            late = late_system_role(lambda messages, template=template, tools=probe_tools if route else None:
+                template.render(**self.specials, messages=messages, tools=tools, add_generation_prompt=False))
+            routes.append(CompiledTemplate(source, template, efforts, late, fingerprint))
+        self._routes = tuple(routes)
+        active = self._routes[0]
+        self.template, self.efforts, self.late_system = active.template, active.efforts, active.late_system
+        self.source_name, self.source_sha256, self.selected_name = active.source.origin, active.sha256, active.source.name
+
+    def selected(self, *, tools=False):
+        """The captured compilation used by this request route; no metadata I/O or compilation."""
+        return self._routes[int(bool(tools))]
+
+    def provenance(self, *, tools=False):
+        active = self.selected(tools=tools)
+        return {"name": active.source.name, "source": active.source.origin, "sha256": active.sha256}
 
     def render(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None,
                enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False) -> str:
-        messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=self.late_system,
+        active = self.selected(tools=tools)
+        messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=active.late_system,
                                                                      allow_images=allow_images))
         kwargs = dict(self.specials, messages=messages, tools=tools or None, add_generation_prompt=True,
                       enable_thinking=enable_thinking)
         kwargs.update(extra or {})
-        return self.template.render(**kwargs)
+        return active.template.render(**kwargs)
+
+
+def prepare_chat_template(model_dir, *, template_file=None, template_name=None):
+    """Capture before engine preparation; bare model APIs may have no chat metadata."""
+    if template_file is None and template_name is None and not (Path(model_dir) / "tokenizer.json").is_file():
+        return None
+    try:
+        return ChatTemplate(model_dir, template_file=template_file, template_name=template_name)
+    except MissingChatTemplate:
+        if template_file is not None or template_name is not None:
+            raise
+        return None

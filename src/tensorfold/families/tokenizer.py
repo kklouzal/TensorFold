@@ -84,9 +84,10 @@ def apply_model_metadata(tokenizer, model_dir, *, eos_token_ids=None, chat_templ
     values = () if current is None else current if isinstance(current, (list, tuple, set, frozenset)) else (current,)
     # mlx-lm's unset HF role may yield {None}; that is absence, not token zero.
     values = [value for value in values if value is not None]
+    values = token_ids(values, field="configured tokenizer EOS", vocab_size=vocab_size)
     if isinstance(current, (set, frozenset)):
-        values.sort()
-    current = token_ids(values, field="configured tokenizer EOS", vocab_size=vocab_size)
+        values = tuple(sorted(values))
+    current = values
     stops = resolve_eos(model_dir, raw.get("eos_token_id", text.get("eos_token_id")), vocab_size=vocab_size,
                         override=eos_token_ids, fallback=current, tokenizer=receiver)
     if eos_token_ids is None:

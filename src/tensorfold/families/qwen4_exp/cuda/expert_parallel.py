@@ -58,7 +58,7 @@ class Session:
     Ready acknowledgements precede collectives. Native events plus async error
     checks bound host waits; cleanup aborts first on failure and preserves owners.
     """
-    def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp, pin_mode="off"):
+    def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp, pin_mode="off", eos_token_ids=None):
         # Prepare all cleanup recording before acquiring native/model owners.
         # Slots: notification, communicator, reader, cache, source, payloads.
         self._close_outcomes = [None] * 6
@@ -89,7 +89,7 @@ class Session:
         self.model_dir, self.budget, self.mtp = Path(model_dir), budget, mtp
         self.pin_mode = pin_mode
         self.rank, self.world, self.timeout = rank, ranks, TIMEOUT
-        self.cfg = Config.read(self.model_dir)
+        self.cfg = Config.read(self.model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
         text = config(model_dir)
         self.owner = ownership(ranks, shards, rank, self.cfg.experts)
         if self.cfg.top_k + 1 > MAX_SLOTS:

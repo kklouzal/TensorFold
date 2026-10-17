@@ -369,6 +369,35 @@ def fast_gather(comm: Comm, send: torch.Tensor, recv: torch.Tensor) -> None:
         fast(send, recv)
 
 
+def agree_eos(comm: Comm, stops, *, world: int, device) -> None:
+    """Exact startup stop-set agreement before any rank enters a decoder.
+
+    All ranks gather validity/count first and take the same refusal branch;
+    differing lengths never cause incompatible payload collectives. IDs cross
+    the existing int64 tensor boundary only after validating their native range.
+    Stop membership ignores declaration order and duplicate IDs.
+    """
+    if type(world) is not int or not 1 <= world <= 4:
+        raise ValueError("EOS agreement requires one through four participants")
+    valid = (type(stops) in (tuple, list) and bool(stops)
+             and all(type(value) is int and 0 <= value <= 2**63 - 1 for value in stops))
+    ids = sorted(set(stops)) if valid else []
+    header = torch.tensor((int(valid), len(ids)), dtype=torch.int64, device=device)
+    headers = torch.empty((world * 2,), dtype=torch.int64, device=device)
+    comm.all_gather(header, headers)
+    participants = headers.cpu().view(world, 2).tolist()
+    if any(accepted != 1 or not 1 <= count <= 2**63 - 1 for accepted, count in participants):
+        raise ValueError("a rank supplied invalid native EOS token IDs")
+    if any(count != participants[0][1] for _, count in participants):
+        raise RuntimeError("ranks have different effective EOS stop sets")
+    source = torch.tensor(ids, dtype=torch.int64, device=device)
+    gathered = torch.empty((world * len(ids),), dtype=torch.int64, device=device)
+    comm.all_gather(source, gathered)
+    sets = gathered.cpu().view(world, len(ids)).tolist()
+    if any(values != sets[0] for values in sets):
+        raise RuntimeError("ranks have different effective EOS stop sets")
+
+
 def check(comm: Comm) -> None:
     """Raise a failure the communicator's transport recorded (call it after a synchronizing exchange)."""
 
