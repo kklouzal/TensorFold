@@ -39,6 +39,26 @@ def _content(value, field, *, required=False):
     return value
 
 
+def resolve_token_roles(model_dir, *, config=None):
+    """Resolve existing named roles with HF's modern/legacy loading precedence.
+
+    An added_tokens_decoder key selects modern tokenizer_config roles, even for
+    an empty decoder. Otherwise legacy special_tokens_map roles replace those
+    declarations, including an explicit null. Unused legacy metadata is not read.
+    """
+    config = (read_json(model_dir, "tokenizer_config.json") or {}) if config is None else config
+    keys = ("bos_token", "eos_token", "pad_token", "unk_token")
+    roles = {key: config[key] for key in keys if key in config}
+    if "added_tokens_decoder" in config:
+        if not isinstance(config["added_tokens_decoder"], dict):
+            raise ValueError("added_tokens_decoder must be an object")
+    else:
+        legacy = read_json(model_dir, "special_tokens_map.json") or {}
+        roles.update((key, legacy[key]) for key in keys if key in legacy)
+    return {key: content for key, value in roles.items()
+            if (content := _content(value, f"tokenizer {key}")) is not None}
+
+
 def _lookup_eos(model_dir, config, token, vocab_size):
     """Resolve exact token content, including added tokens; never encode to an unknown-token fallback."""
     tokenizer = read_json(model_dir, "tokenizer.json")
@@ -107,8 +127,7 @@ def resolve_eos(model_dir, configured=None, *, vocab_size=None, override=None, f
     generation = read_json(model_dir, "generation_config.json") or {}
     found.extend(token_ids(generation.get("eos_token_id"), field="generation eos_token_id", vocab_size=vocab_size))
     config = read_json(model_dir, "tokenizer_config.json") or {}
-    special = read_json(model_dir, "special_tokens_map.json") or {}
-    token = _content(config.get("eos_token", special.get("eos_token")), "tokenizer eos_token")
+    token = resolve_token_roles(model_dir, config=config).get("eos_token")
     if token is not None:
         if tokenizer is None:
             found.extend(_lookup_eos(model_dir, config, token, vocab_size))

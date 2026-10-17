@@ -89,9 +89,8 @@ def test_null_eos_role_is_distinct_from_malformed_added_token_object(tmp_path):
     assert resolve_eos(tmp_path, 1, vocab_size=4) == (1,)
 
 
-def test_legacy_special_map_and_decoder_only_metadata_resolve_named_eos(tmp_path):
-    write(tmp_path, "special_tokens_map.json", {"eos_token": "end"})
-    write(tmp_path, "tokenizer_config.json", {"added_tokens_decoder": {"2": {"content": "end"}}})
+def test_modern_decoder_only_metadata_resolves_its_named_eos(tmp_path):
+    write(tmp_path, "tokenizer_config.json", {"eos_token": "end", "added_tokens_decoder": {"2": {"content": "end"}}})
     assert resolve_eos(tmp_path, 1, vocab_size=4) == (1, 2)
 
 
