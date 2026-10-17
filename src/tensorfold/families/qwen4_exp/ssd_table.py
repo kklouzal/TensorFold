@@ -246,6 +246,8 @@ class EncodedSSDTable(SSDTable):
     No full table mapping, page pinning or startup prefetch is performed.
     """
 
+    bits = 16  # Consumers stage decoded BF16 rows, regardless of source encoding.
+
     def __init__(self, files, kind, decode, *, nocache=True, weight_scale=1.0):
         self.kind, self.decode = kind, decode
         self.weight_scale = weight_scale

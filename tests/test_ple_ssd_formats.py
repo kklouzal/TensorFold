@@ -58,6 +58,7 @@ def test_encoded_positional_rows_match_independent_decoder(tmp_path, kind, monke
     table = open_table(tmp_path, [(path.name, "ngram.shard_0")], lambda _: .073, ssd=True)
     try:
         assert isinstance(table, EncodedSSDTable)
+        assert table.bits == 16
         assert table.width == expected.shape[1] and table.rows == expected.shape[0]
         assert table.weight_scale == (.073 if kind == "bf16" else 1.)
         assert table.prefetch() == 0 and not table.lock()
