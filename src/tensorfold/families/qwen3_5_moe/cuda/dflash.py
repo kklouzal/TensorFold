@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+from triton.language.core import TRITON_MAX_TENSOR_NUMEL
 
 from tensorfold.cleanup import rollback
 from tensorfold.cuda.direct_read import SafeTensors
@@ -54,6 +55,9 @@ class DFlash:
         self.block = cfg.block if block is None else positive(block, "block")
         if not 2 <= self.block <= 128:
             raise ValueError("DFlash blocks require 2 through128 rows, matching the target tree verifier")
+        padded = max(16, 1 << (self.block - 1).bit_length())
+        if max(cfg.heads // cfg.kv_heads * padded * cfg.head_dim, 64 * cfg.head_dim) > TRITON_MAX_TENSOR_NUMEL:
+            raise ValueError("DFlash grouped attention tile exceeds installed Triton tensor capacity")
         self.config, self.device, self.bits = cfg, target.norm.device, bits
         self.hidden, self.layers, self.trained = cfg.hidden, cfg.layers, cfg.block
         self.tap_layers, self.mask_id = cfg.tap_layers, cfg.mask_id

@@ -72,7 +72,7 @@ def fixture(tmp_path, monkeypatch):
     class Target:
         config = NS(hidden=cfg.hidden, layers=cfg.target_layers, vocab=cfg.vocab)
         norm = torch.ones(cfg.hidden, dtype=torch.bfloat16)
-        embed = torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16()
+        embed = CpuLinear(torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16())
         head = CpuLinear(torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16())
         binding = None
 
@@ -82,7 +82,7 @@ def fixture(tmp_path, monkeypatch):
             self.binding = tuple(layers)
 
     monkeypatch.setattr(dflash, "Plain", CpuLinear)
-    monkeypatch.setattr(dflash, "embedding", lambda ids, table: F.embedding(ids.long(), table))
+    monkeypatch.setattr(dflash, "embedding", lambda ids, table: F.embedding(ids.long(), table.weight))
     monkeypatch.setattr(dflash, "block_attention", attend)
     target = Target()
     return tmp_path, raw, cfg, arrays, target
@@ -167,6 +167,19 @@ def test_checkpoint_auto_map_python_is_inert(fixture):
     (directory / "config.json").write_text(json.dumps(raw))
     (directory / "dflash.py").write_text("raise RuntimeError('checkpoint Python must never execute')")
     assert dflash.DFlash(directory, target, context_limit=64).tap_layers == (0, 2)
+
+
+def test_native_tile_capacity_refuses_before_payload_allocation(fixture, monkeypatch):
+    directory, raw, _cfg, _arrays, target = fixture
+    raw.update(num_attention_heads=8192)
+    cfg = DraftConfig.from_dict(raw)
+    monkeypatch.setattr(dflash, "checked_headers", lambda path: (cfg, {}))
+
+    def unexpected(*args):
+        pytest.fail("unsupported Triton geometry reached checkpoint payload allocation")
+    monkeypatch.setattr(dflash, "SafeTensors", unexpected)
+    with pytest.raises(ValueError, match="installed Triton tensor capacity"):
+        dflash.DFlash(directory, target, context_limit=64, block=128)
 
 
 @pytest.mark.parametrize("close_failure", [False, True])
@@ -279,7 +292,7 @@ def test_failed_restore_copy_leaves_previous_context_coherent_and_usable(fixture
 def reference_block(taps, anchor, target, cfg, arrays, inv):
     """Direct published v1 equations over complete raw context; no adapter cache/layer helper."""
     context = norm(F.linear(taps, arrays["fc.weight"]), arrays["hidden_norm.weight"], cfg.eps)
-    x = F.embedding(torch.tensor([anchor] + [cfg.mask_id] * (cfg.block - 1)), target.embed)
+    x = F.embedding(torch.tensor([anchor] + [cfg.mask_id] * (cfg.block - 1)), target.embed.weight)
     context_pos, noise_pos = torch.arange(len(taps)), torch.arange(len(taps), len(taps) + cfg.block)
     for layer in range(cfg.layers):
         base = f"layers.{layer}."
