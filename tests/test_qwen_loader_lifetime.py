@@ -200,6 +200,12 @@ class OwnershipControls(unittest.TestCase):
             "Plain": weights,
             "skipped": lambda _: False,
         }
+        # The isolated entry point uses this immutable preparation label too.
+        # Read its actual source literal rather than importing Torch to bind it.
+        for node in tree.body:
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "FULL_LINE" for target in node.targets)):
+                scope["FULL_LINE"] = ast.literal_eval(node.value)
         scope.update(self.transport_globals)
         with patch.dict(sys.modules, self.modules), contextlib.redirect_stdout(__import__("io").StringIO()):
             exec(compile(module, str(path), "exec", flags=__import__("__future__").annotations.compiler_flag), scope)
