@@ -28,6 +28,11 @@ the distinct backbone and expert readers owned by a multi-rank leader.
 
 Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 
+RotorQuant's codec-range assertion now uses syntax accepted by Triton 3.8 while
+preserving the same inclusive 1–8 range. The ordinary container retains its pinned
+Torch 2.16/Triton 3.9 stack; verification of the reported Torch 2.14/Triton 3.8
+combination is a separate compatibility check, not a dependency downgrade.
+
 Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
 CUDA strict tools recognize exact XML templates that render scalar `True`, `False` and `None`, while preserving canonical JSON containers and API arguments. Ambiguous nullable raw strings and unsupported formats are refused before generation. An unfinished strict call reports `stop` or `length`, preserving partial streaming evidence. Installed Heretic checks verified scalar booleans/null and literal strings through ordinary and streamed strict calls.
