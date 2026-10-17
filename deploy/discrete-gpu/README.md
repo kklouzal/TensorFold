@@ -16,6 +16,12 @@ checkpoint sampling defaults remain enabled; the Harness requires
 total context alongside the prompt. The HTTP and unfinished-request caps are
 32 and eight; accepted requests beyond the two active slots can queue.
 
+The explicit reply, thinking and KV flags in this profile remain authoritative.
+Omitted model settings use [checkpoint metadata](../../docs/model-metadata.md),
+including quantization sidecars and tokenizer EOS. Mount the complete ancillary
+files with the weights, particularly for offline operation. Template overrides
+must also be mounted read-only and supplied explicitly to the launch command.
+
 Three-bit KV is an explicit accuracy/memory tradeoff and can change output.
 `TF_RAM_BYTES` defaults to **56,000,000,000 bytes** (about 52.2 GiB), the
 recorded EXL3 profile. The same value sets RAM and RAM-plus-swap limits, adding

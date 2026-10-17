@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .config_metadata import check_metadata as check_metadata
+
 MODEL_TYPES = ("qwen3_5",)
 TITLE = "Qwen3.8 dense"
 LANES = True

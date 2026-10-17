@@ -170,7 +170,7 @@ def validate_cuda_metadata(raw: dict[str, Any]) -> None:
         raise ValueError("config must be a JSON object")  # noqa: TRY004
     selected = raw.get("text_config")
     if selected is not None and not isinstance(selected, dict):
-        raise ValueError("text_config must be a JSON object or null")  # noqa: TRY004
+        raise ValueError("text_config must be a JSON object or null")
     text = selected or raw
     if text.get("hidden_act", "silu") != "silu":
         raise ValueError("Qwen3.5 CUDA supports hidden_act='silu' only")
@@ -208,3 +208,9 @@ def validate_cuda_metadata(raw: dict[str, Any]) -> None:
         return
     if attention is not False:
         _finite_frequencies(rope)
+
+
+def check_metadata(raw: dict[str, Any], backend: str) -> None:
+    """Family preflight hook; other backends retain their own math capabilities."""
+    if backend == "cuda":
+        validate_cuda_metadata(raw)

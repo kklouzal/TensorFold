@@ -9,7 +9,6 @@ from jinja2 import TemplateSyntaxError
 
 from tensorfold.cuda.chat_template import prepare_chat_template
 
-
 FAMILIES = [
     ("qwen3_5", "cuda.engine", "Qwen27Engine", {}),
     ("qwen3_5_moe", "cuda.engine", "Qwen36Engine", {}),

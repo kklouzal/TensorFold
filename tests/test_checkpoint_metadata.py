@@ -1,7 +1,7 @@
 """Metadata is optional only when absent, and never authorizes arbitrary files."""
 
-import json
 import errno
+import json
 import os
 import subprocess
 import sys
@@ -135,6 +135,7 @@ def test_model_override_flags_preserve_omission_and_zero():
 def test_hub_fetches_ancillary_files_before_preflight_at_cached_revision(tmp_path, monkeypatch):
     import huggingface_hub
     from huggingface_hub import constants
+
     from tensorfold import hub
 
     snapshot = tmp_path / "models--Vontra--name--with-dashes" / "snapshots" / ("a" * 40)
@@ -178,6 +179,7 @@ def test_hub_fetches_ancillary_files_before_preflight_at_cached_revision(tmp_pat
 def test_online_metadata_failure_cannot_become_cached_absence(tmp_path, monkeypatch):
     import huggingface_hub
     from huggingface_hub import constants
+
     from tensorfold import hub
 
     snapshot = tmp_path / "snapshots" / ("a" * 40)
@@ -200,6 +202,7 @@ def test_online_metadata_failure_cannot_become_cached_absence(tmp_path, monkeypa
 def test_latest_metadata_resolves_new_revision_then_pins_download(tmp_path, monkeypatch):
     import huggingface_hub
     from huggingface_hub import constants
+
     from tensorfold import hub
 
     old = tmp_path / "models--owner--model" / "snapshots" / ("a" * 40)
@@ -226,6 +229,7 @@ def test_latest_metadata_resolves_new_revision_then_pins_download(tmp_path, monk
 def test_hub_metadata_inventory_and_revision_are_binding(tmp_path, monkeypatch, scenario):
     import huggingface_hub
     from huggingface_hub import constants
+
     from tensorfold import hub
 
     snapshot = tmp_path / ("a" * 40)
@@ -253,6 +257,7 @@ def test_hub_metadata_inventory_and_revision_are_binding(tmp_path, monkeypatch, 
 def test_cache_preserves_selected_partial_revision_and_io_error(tmp_path, monkeypatch):
     import huggingface_hub
     from huggingface_hub.utils import LocalEntryNotFoundError
+
     from tensorfold import hub
 
     snapshot = tmp_path / "models--owner--model" / "snapshots" / ("a" * 40)
@@ -283,6 +288,7 @@ def test_cache_preserves_selected_partial_revision_and_io_error(tmp_path, monkey
 def test_offline_metadata_never_looks_up_unknown_revision(tmp_path, monkeypatch):
     import huggingface_hub
     from huggingface_hub import constants
+
     from tensorfold import hub
 
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)

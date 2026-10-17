@@ -5,11 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from typing import Any
 
 import torch
+
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
 
 @dataclass
@@ -138,9 +138,12 @@ class Config:
     @classmethod
     def read(cls, model_dir: str | Path, *, eos_token_ids=None) -> "Config":
         from tensorfold.checkpoint_metadata import read_config
+        from tensorfold.families.qwen3_5.config_metadata import (
+            resolve_default_rope,
+            resolve_layer_types,
+            validate_cuda_metadata,
+        )
         from tensorfold.token_metadata import resolve_eos
-        from tensorfold.families.qwen3_5.config_metadata import (resolve_default_rope, resolve_layer_types,
-                                                                validate_cuda_metadata)
 
         raw = read_config(model_dir)
         validate_cuda_metadata(raw)

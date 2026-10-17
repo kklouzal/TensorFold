@@ -16,7 +16,7 @@ from .bf16 import b16_from_rows, quantize4, stack_b16
 from .qmm import Q4, dequantize, make_q4, stack_q4
 from .reader import _DT, _groups, _Reader, _rows, _rows_at, norms_around_one  # noqa: F401
 from .weight_types import (
-    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids)  # noqa: F401 (re-exported)
+    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids)
 
 
 _PLAIN = (torch.bfloat16, torch.float16, torch.float32)

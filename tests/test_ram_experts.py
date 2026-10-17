@@ -12,6 +12,7 @@ from tensorfold.cuda import capacity
 from tensorfold.cuda.geometry import indexed_weights
 from tensorfold.families import qwen4_exp
 from tensorfold.families.qwen4_exp import ram_experts
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine
 
 
 def checkpoint(path, *, mtp=True, missing=None, bits=4, group=32):
@@ -160,8 +161,8 @@ def test_vram_option_name_default_and_help_match_gpu_cache_budget(capsys):
 def test_vram_option_reaches_cuda_engine_only_when_set(tmp_path, monkeypatch, budget):
     from tensorfold.cuda import server
     received, retired = [], []
-    engine = NS(max_len=128, close=lambda: retired.append("engine"))
-    app = NS(effective_context_window=128)
+    engine = cuda_cli_engine(max_len=128, close=lambda: retired.append("engine"))
+    app = cuda_cli_app(effective_context_window=128)
     owned_server = NS(server_close=lambda: retired.append("server"), handlers_drained=True)
     handler = object()
     family = NS(title="test", model_type="test", package=NS(cuda_engine=lambda *a, **k:

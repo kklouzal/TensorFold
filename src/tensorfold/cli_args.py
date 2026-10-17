@@ -79,7 +79,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                           help="with --vision on CUDA Qwen checkpoints, the visual tokens a request's images share "
                                "(default: 4096, at most 65536); each image keeps at most 4096")
 
-    generation = serve.add_argument_group("generation (requests can override each of these)")
+    generation = serve.add_argument_group("model defaults and generation")
     generation.add_argument("--context", type=int, default=None,
                             help="prompt plus reply window (default: model config; CUDA default/0: "
                                  "affordable native capacity; Metal 0: remove metadata cap)")
@@ -87,8 +87,17 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="Flash Next CUDA: static YaRN text RoPE extension (2: 524288 tokens for the "
                                  "262144-token checkpoint); overrides the checkpoint factor, requires >=1. "
                                  "Short-context quality may change; --context still controls admission")
-    generation.add_argument("--max-tokens", type=int, default=4096,
-                            help="reply tokens when a request does not say")
+    generation.add_argument("--max-tokens", type=int, default=None,
+                            help="reply tokens when a request does not say (default: generation_config.json "
+                                 "max_new_tokens, else 4096)")
+    generation.add_argument("--eos-token-id", dest="eos_token_ids", type=int, action="append", default=None,
+                            help="replace metadata EOS IDs (repeat for multiple IDs); defaults reconcile model, "
+                                 "generation and tokenizer EOS declarations")
+    templates = generation.add_mutually_exclusive_group()
+    templates.add_argument("--chat-template", dest="chat_template_file", type=Path, default=None,
+                           help="use this UTF-8 Jinja template instead of checkpoint templates")
+    templates.add_argument("--chat-template-name", default=None,
+                           help="select a named checkpoint template; otherwise default/tool_use are selected automatically")
     generation.add_argument("--temperature", type=float, default=None,
                             help="0 decodes greedily (default: the model's generation_config.json, else 0)")
     generation.add_argument("--top-p", type=float, default=None,

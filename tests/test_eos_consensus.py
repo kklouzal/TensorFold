@@ -22,7 +22,7 @@ def participants(stops):
     def run(rank):
         try:
             agree_eos(Comm(rank), stops[rank], world=world, device="cpu")
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 - publish every worker failure to the asserting owner
             outcomes[rank] = error
     threads = [threading.Thread(target=run, args=(rank,), daemon=True) for rank in range(world)]
     for thread in threads:

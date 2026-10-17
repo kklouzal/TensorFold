@@ -135,6 +135,11 @@ the request samples: booleans, non-finite numbers, non-numeric strings, non-inte
 disables the nucleus cut; `top_p` 0 keeps only the likeliest token, as Transformers' top-p filter always keeps one,
 so the reply is greedy. Fields that the request, the server flags and `generation_config.json` all leave unset
 fall back alike on both backends: temperature 0 (greedy), and top-k, top-p and min-p off.
+The omitted reply limit uses the launch `--max-tokens`, then checkpoint
+`max_new_tokens`, then 4096. Reply EOS defaults also include the tokenizer's
+declared EOS; repeatable launch `--eos-token-id` replaces that set before engine
+initialization. Template source/name launch overrides apply to rendering, strict
+format checks and counting together. See [model metadata](model-metadata.md).
 With top-k off, a CUDA draw cuts the top-p nucleus by each token's probability mass in 40-bit fixed point, so one GPU
 and two GPUs holding halves of the vocabulary draw the same token: each GPU reads its 1,024 best candidates, and its
 whole vocabulary shard when a row's nucleus runs past them (or with `top_p` 1 and no `min_p`).

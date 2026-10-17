@@ -20,6 +20,13 @@ whose CUDA engine reads it declares `EXL3_VARIANT = "any"`, and TensorFold check
 downloading. The dense linear layer, its plan and its measured throughput are in [EXL3 weights](exl3.md);
 `python -m tensorfold.cuda.exl3.inspect MODEL_DIR` prints what a checkpoint holds.
 
+The shared [metadata resolver](../model-metadata.md) reconciles recognized
+quantization sidecars before format preflight. NVFP4 activation selection follows
+per-projection declarations and validated scales; W4A16 remains weight-only even
+when a stored input scale exists. Explicit precision flags remain authoritative.
+Reply EOS also includes the tokenizer's declared EOS, and template file/name
+overrides use the same captured source for rendering, probes and counting.
+
 ## Checkpoints
 
 On CUDA, TensorFold serves NVFP4 and EXL3 checkpoints, usually the ones Mia-AiLab's DGX Spark recipes run or your

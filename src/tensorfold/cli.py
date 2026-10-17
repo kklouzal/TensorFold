@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import functools
-import json
 import os
 from pathlib import Path
 import signal
@@ -50,8 +49,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-def _config_dir(model: str) -> Path:
-    """Resolve config.json without downloading weights so family compatibility checks run first."""
+def _config_dir(model: str, *, latest: bool = False) -> Path:
+    """Resolve model/ancillary metadata before downloading weights for preflight."""
 
     from tensorfold import hub
 
@@ -60,12 +59,7 @@ def _config_dir(model: str) -> Path:
         return path
     if not hub.is_repo_id(model):
         raise FileNotFoundError(f"{model} is neither a directory nor a Hugging Face repo id (owner/name)")
-    found = hub.cached(model)
-    if found is not None and (found / "config.json").is_file():
-        return found
-    from huggingface_hub import hf_hub_download
-
-    return Path(hf_hub_download(model, "config.json")).parent
+    return hub.metadata(model, **({"latest": True} if latest else {}))
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
@@ -74,7 +68,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
     for repo in args.repos:
         if not hub.is_repo_id(repo):
             raise ValueError(f"{repo} is not a Hugging Face repo id (owner/name)")
-        config = _config_dir(repo)
+        config = _config_dir(repo, latest=True)
         try:
             family = families.detect(config)
         except ValueError:
@@ -92,7 +86,7 @@ def cmd_pull(args: argparse.Namespace) -> int:
             check = getattr(family.package, "check", None)
             if check is not None:
                 check(config)
-        path = hub.pull(repo)
+        path = hub.pull(repo, revision=config.name)
         required_files = getattr(family.package, "REQUIRED_FILES", {}).get(repo, ()) if family is not None else ()
         if required_files and not hub._cached_weights_complete(path, required_files=required_files):
             raise FileNotFoundError(f"{repo} is missing required files: {', '.join(required_files)}")
@@ -192,19 +186,70 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return plan(args)
 
 
-def _generation_config(model_dir: Path) -> dict[str, Any]:
-    path = Path(model_dir) / "generation_config.json"
-    config = json.loads(path.read_text()) if path.exists() else {}
-    if not isinstance(config, dict):
-        raise ValueError("generation_config.json must contain an object")
+def _generation_config(model_dir: Path, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    from tensorfold.checkpoint_metadata import read_json
+
+    config = read_json(model_dir, "generation_config.json") or {}
+    if config.get("do_sample") is not None and type(config["do_sample"]) is not bool:
+        raise ValueError("generation_config.json do_sample must be a boolean or null")
     sampling = {k: config[k] for k in ("temperature", "top_k", "top_p", "min_p") if config.get(k) is not None}
     if config.get("do_sample") is False:
         sampling["temperature"] = 0.0
     elif config.get("do_sample") is True and "temperature" not in sampling:
         sampling["temperature"] = 1.0
+    sampling.update({name: value for name, value in (overrides or {}).items() if value is not None})
     from tensorfold.server.request_options import parse_numbers
 
     return parse_numbers(sampling)
+
+
+def _sampling_defaults(args: argparse.Namespace, model_dir: Path) -> dict[str, Any]:
+    return _generation_config(model_dir, overrides={
+        name: getattr(args, name, None) for name in ("temperature", "top_k", "top_p", "min_p")
+    })
+
+
+def _model_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    """Pass explicit model bindings before constructors acquire model state."""
+    options = {name: getattr(args, name) for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+               if getattr(args, name, None) is not None}
+    if "chat_template_file" in options:
+        options["chat_template_file"] = str(options["chat_template_file"])
+    return options
+
+
+def _check_model_overrides(args: argparse.Namespace, model_dir: Path, config: dict[str, Any]) -> None:
+    """Reject invalid explicit bindings from metadata before downloading weights."""
+    options = _model_overrides(args)
+    if "eos_token_ids" in options:
+        from tensorfold.token_metadata import token_ids
+
+        text = config.get("text_config") or config
+        token_ids(options["eos_token_ids"], field="--eos-token-id", vocab_size=text.get("vocab_size"), required=True)
+    if "chat_template_file" in options or "chat_template_name" in options:
+        from tensorfold.chat_metadata import resolve_chat_templates
+
+        resolve_chat_templates(model_dir, template_file=options.get("chat_template_file"),
+                               template_name=options.get("chat_template_name"))
+
+
+def _reply_tokens(args: argparse.Namespace, model_dir: Path) -> int:
+    """Explicit launch limit, then HF's reply-only limit, then the server default.
+
+    HF max_length includes the input, so it is not a reply-token default.
+    """
+    if args.max_tokens is not None:
+        return int(args.max_tokens)  # existing request owners clamp explicit limits to at least one
+    from tensorfold.checkpoint_metadata import read_json
+
+    generation = read_json(model_dir, "generation_config.json") or {}
+    value = generation.get("max_new_tokens")
+    source = "generation_config.json max_new_tokens"
+    if value is None:
+        value, source = 4096, "default max tokens"
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{source} must be a positive integer")
+    return value
 
 
 def _model_context(model_dir: Path) -> int:
@@ -274,7 +319,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
 
     from tensorfold import hub
 
-    sampling = _generation_config(model_dir)  # refuse invalid defaults before acquiring the engine
+    sampling = _sampling_defaults(args, model_dir)  # refuse invalid defaults before acquiring the engine
+    reply_tokens = _reply_tokens(args, model_dir)
     started = time.perf_counter()
     drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda")
     options: dict[str, Any] = {
@@ -285,6 +331,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "master_port": int(args.master_port),
         "no_drafts": bool(args.no_drafts),
     }
+    options.update(_model_overrides(args))
     if getattr(args, "expert_ranks", 1) > 1:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
@@ -355,14 +402,6 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             return 0
         from tensorfold.cuda.server import App, Server, make_handler, serve
 
-        for key, value in (
-            ("temperature", args.temperature),
-            ("top_p", args.top_p),
-            ("top_k", args.top_k),
-            ("min_p", args.min_p),
-        ):
-            if value is not None:
-                sampling[key] = value
         app_class = getattr(family.package, "CUDA_APP", None) or App
         app = app_class(
             engine,
@@ -370,7 +409,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             served,
             default_thinking=bool(args.thinking),
             sampling=sampling,
-            max_tokens=int(args.max_tokens),
+            max_tokens=reply_tokens,
             context_window=context if context is not None else args.context,
             reasoning_effort=args.reasoning_effort,
             thinking_budget=int(args.thinking_budget),
@@ -380,6 +419,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             aliases=list(args.alias),
             background_ids=frozenset(_name_priority(args)),
             max_pending_requests=getattr(args, "max_pending_requests", None),
+            **{name: value for name, value in _model_overrides(args).items() if name != "eos_token_ids"},
         )
         shown = (
             "greedy"
@@ -387,6 +427,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             else ", ".join(f"{k} {v}" for k, v in sampling.items())
         )
         effective_context = app.effective_context_window
+        _show_model_bindings(engine.eos, app.template.provenance(), reply_tokens)
         own = getattr(weights, "precision", "") == precision.CHECKPOINT
         prompts = "FP8 activations" if fp8 else "the checkpoint math" if own else "bf16 activations"
         print(
@@ -460,7 +501,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 "this checkpoint's model_file executes Python code; use a maintained TensorFold "
                 "family recipe or explicitly authorize it with --trust-model-code"
             )
-    families.require_readable(family, families.read_config(config_dir), backend)
+    settings = families.read_config(config_dir)
+    families.require_readable(family, settings, backend)
+    _check_model_overrides(args, config_dir, settings)
+    _sampling_defaults(args, config_dir)
+    _reply_tokens(args, config_dir)
     _note_untested(family, args.model)
     required_files = getattr(family.package, "REQUIRED_FILES", {}).get(args.model, ())
     native_context = _model_context(config_dir)
@@ -482,7 +527,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     needs_full_snapshot = hub.is_repo_id(args.model) and not hub._cached_weights_complete(
         config_dir, required_files=required_files
     )
-    model_dir = hub.resolve(args.model, required_files=required_files)
+    model_dir = hub.resolve(args.model, required_files=required_files,
+                            **({"revision": config_dir.name} if hub.is_repo_id(args.model) else {}))
     if needs_full_snapshot and check is not None:
         check(model_dir)  # checks that need the complete index, such as an MTP head
     if backend == "mlx" and getattr(family.package, "MLX_MODEL_FILE", False):
@@ -574,6 +620,12 @@ def _close_serving(owners: dict[str, Any], primary: BaseException | None, unwire
         raise error
 
 
+def _show_model_bindings(eos: Any, template: dict[str, str], reply_tokens: int) -> None:
+    """Report preparation-owned bindings, never reread files to describe active state."""
+    print(f"[tensorfold] model metadata: EOS {list(eos)}; template {template['source']} "
+          f"({template['name']}, sha256 {template['sha256']}); default reply {max(1, reply_tokens)} tokens", flush=True)
+
+
 def _serve_mlx(
     args: argparse.Namespace,
     family: Any,
@@ -619,7 +671,8 @@ def _serve_mlx_start(
     from tensorfold.engine.lane_engine import LaneEngine
     from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
 
-    sampling = _generation_config(model_dir)  # before model loading or background workers
+    sampling = _sampling_defaults(args, model_dir)  # before model loading or background workers
+    reply_tokens = _reply_tokens(args, model_dir)
     started = time.perf_counter()
     if args.no_drafts:
         drafter = ""
@@ -650,6 +703,8 @@ def _serve_mlx_start(
     data_closure = data_identity = code_closure = code_identity = None
     identity_passes = {"model": [], "runtime": []}
     roots, extra = {"model": Path(model_dir)}, {}
+    if getattr(args, "chat_template_file", None) is not None:
+        extra["chat-template"] = Path(args.chat_template_file).expanduser()
     if drafter:
         roots["drafter"] = Path(drafter)
     if snapshot_dir is not None:
@@ -690,6 +745,7 @@ def _serve_mlx_start(
             "mlx_lm": version("mlx-lm"),
             "tensorfold": __version__,
             "load_options": options,
+            "model_overrides": _model_overrides(args),
         }
         code_identity = capture_model_identity(
             code_closure.files,
@@ -702,6 +758,9 @@ def _serve_mlx_start(
     print(f"[tensorfold] loading {served}: {family.title} ({family.model_type})", flush=True)
     model, tokenizer = family.package.load(model_dir, **options)
     owners["model"] = model
+    from tensorfold.families.tokenizer import apply_model_metadata
+
+    apply_model_metadata(tokenizer, model_dir, **_model_overrides(args))
     if data_closure is not None:
         data_identity.verify_unchanged()
         code_identity.verify_unchanged()
@@ -785,14 +844,6 @@ def _serve_mlx_start(
         prefill_pass=max(1, int(args.prefill_pass)),
         pass_cache=int(float(args.pass_cache_gib) * 1024**3),
     )
-    for key, value in (
-        ("temperature", args.temperature),
-        ("top_p", args.top_p),
-        ("top_k", args.top_k),
-        ("min_p", args.min_p),
-    ):
-        if value is not None:
-            sampling[key] = value
     from importlib.metadata import version
 
     resolve_prefill = getattr(model, "resolve_prefill_identity", None)
@@ -832,7 +883,7 @@ def _serve_mlx_start(
         memory_fraction=fraction if parallel > 1 else None,
         max_rows=int(engine_kwargs.get("max_rows", 16)),
         max_draft=int(engine_kwargs.get("max_draft", 32)),
-        default_max_tokens=int(args.max_tokens),
+        default_max_tokens=reply_tokens,
         context_window=context,
         enable_thinking=bool(args.thinking),
         reasoning_effort=args.reasoning_effort,

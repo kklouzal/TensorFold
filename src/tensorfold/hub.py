@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from fnmatch import fnmatchcase
 from pathlib import Path
-import re
 from typing import Any
 
 _REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -83,6 +83,7 @@ def metadata(repo_id: str, *, cache_dir: Any = None, latest: bool = False) -> Pa
     discover an optional file that was never downloaded.
     """
     from huggingface_hub import HfApi, constants, snapshot_download
+
     from tensorfold.checkpoint_metadata import read_json
     from tensorfold.cuda.tensor_file import checkpoint_path
 
@@ -107,12 +108,12 @@ def metadata(repo_id: str, *, cache_dir: Any = None, latest: bool = False) -> Pa
     if revision is not None and info.sha != revision:
         raise ValueError("the Hub metadata response differs from the selected cached revision")
     if not isinstance(info.siblings, list):
-        raise ValueError("the Hub metadata response must include the model file inventory")
+        raise ValueError("the Hub metadata response must include the model file inventory")  # noqa: TRY004 - remote schema
     filenames = []
     for sibling in info.siblings:
         filename = sibling.rfilename
         if not isinstance(filename, str):
-            raise ValueError("the Hub file inventory must contain relative file names")
+            raise ValueError("the Hub file inventory must contain relative file names")  # noqa: TRY004 - remote schema
         if any(fnmatchcase(filename, pattern) for pattern in METADATA_FILES):
             # Validate names before the downloader can create any local files.
             relative = Path(filename)

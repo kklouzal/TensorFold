@@ -202,6 +202,15 @@ def test_empty_or_null_text_config_keeps_existing_outer_config_semantics(nested)
         validate_cuda_metadata({"text_config": nested, "hidden_act": "gelu"})
 
 
+def test_cuda_preflight_does_not_impose_its_math_limits_on_other_backends():
+    from tensorfold.families.qwen3_5.config_metadata import check_metadata
+
+    raw = {"hidden_act": "gelu", "rope_parameters": {"rope_type": "linear", "factor": 2}}
+    check_metadata(raw, "mlx")
+    with pytest.raises(ValueError, match="hidden_act"):
+        check_metadata(raw, "cuda")
+
+
 def test_early_interval_validation_does_not_expand_an_untrusted_scalar_count():
     # Resource fitting owns admission; this pure preflight stays constant-space.
     validate_cuda_metadata({"num_hidden_layers": 10**100, "head_dim": 256})

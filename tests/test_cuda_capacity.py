@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import install_cli_server
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 from tensorfold import cli
 from tensorfold.families.glm5_next.cuda import LATENT
@@ -85,9 +85,9 @@ def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch, re
     observed = []
     def engine(path, **options):
         observed.append(options)
-        return SimpleNamespace(context_window=options.get("context", 8192))
+        return cuda_cli_engine(context_window=options.get("context", 8192))
     family = SimpleNamespace(title="Test", model_type="test", package=SimpleNamespace(cuda_engine=engine))
-    monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=a[0].context_window))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=a[0].context_window))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     cli._serve_cuda(args, family, tmp_path, 262144)
@@ -131,9 +131,9 @@ def test_glm_nonfit_refuses_before_weight_load(tmp_path, monkeypatch):
 def test_cli_preserves_default_vs_explicit_context(tmp_path, monkeypatch, request, override):
     from tensorfold.cuda import server
     seen = []
-    package = SimpleNamespace(cuda_engine=lambda *a, **kw: seen.append(kw) or SimpleNamespace(context_window=99))
+    package = SimpleNamespace(cuda_engine=lambda *a, **kw: seen.append(kw) or cuda_cli_engine(context_window=99))
     family = SimpleNamespace(title="Test", model_type="test", package=package)
-    monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=99))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=99))
     install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"]
     if override is not None:
@@ -491,3 +491,29 @@ def test_a_4bit_drafter_is_admitted_at_its_packed_bytes(tmp_path):
                                                                 + 2 * 5120 * 64)
     assert packed_draft("a.weight", [5120, 5120]) and not packed_draft("a.weight", [5120, 64])
     assert not packed_draft("a.bias", [5120, 5120]) and not packed_draft("a.weight", [5120])
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_capacity_counts_only_declared_main_qwen_layers(tmp_path, model_type):
+    from tensorfold.cuda.capacity import config
+    from tensorfold.cuda.geometry import layer_counts
+
+    raw = {"model_type": model_type, "text_config": {
+        "num_hidden_layers": 3, "num_nextn_predict_layers": 1,
+        "layer_types": ["full_attention", "linear_attention", "linear_attention", "full_attention"]}}
+    path = tmp_path / "config.json"
+    original = json.dumps(raw)
+    path.write_text(original)
+    actual = config(tmp_path)
+    assert actual["layer_types"] == raw["text_config"]["layer_types"][:3]
+    assert layer_counts(actual) == (2, 1)
+    assert path.read_text() == original
+
+
+def test_capacity_null_layout_keeps_arithmetic_pattern(tmp_path):
+    from tensorfold.cuda.capacity import config
+    from tensorfold.cuda.geometry import layer_counts
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5", "num_hidden_layers": 4,
+                                                     "layer_types": None, "full_attention_interval": 4}))
+    actual = config(tmp_path)
+    assert "layer_types" not in actual
+    assert layer_counts(actual) == (3, 1)

@@ -6,6 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..qwen3_5.config_metadata import check_metadata as check_metadata
+
 MODEL_TYPES = ("qwen3_5_moe",)
 TITLE = "Qwen3.6 MoE"
 LANES = True

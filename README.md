@@ -252,6 +252,11 @@ MLX shares rounds across supported requests, with per-request state and sampling
 
 Use `tensorfold serve --help` from your checkout for the authoritative parser. A request can override supported generation defaults. Unsupported backend/family combinations are refused; a listed flag is not available for every model. GiB flags use binary GiB; Docker's example RAM limit above uses bytes.
 
+Model defaults now reconcile supported [checkpoint and ancillary metadata](docs/model-metadata.md),
+including quantization sidecars, declared activation formats, tokenizer EOS and
+named chat templates. Explicit launch flags take precedence. Metadata is resolved
+before loading; it does not authorize model code or silently change precision.
+
 ### Service, generation and admission
 
 | Flags | Default / contract |
@@ -268,7 +273,9 @@ Use `tensorfold serve --help` from your checkout for the authoritative parser. A
 | `--max-pending-requests N` | Unset: uncapped. Positive cap counts unfinished logical generation requests, including preparation, queued/running work and work retained after cancellation. Excess receives HTTP 503 before a configured stream opens. |
 | `--max-engine-calls N` | MLX only; unset: uncapped. Positive cap counts queued/running engine RPC callbacks, including callbacks retained after caller timeout. CUDA refuses it. |
 | `--context N` | Omitted: fitted model capacity. CUDA omitted/0 targets affordable native capacity; MLX 0 removes the metadata cap, while finite memory/engine limits remain. |
-| `--max-tokens N` | `4096` when a request does not specify a reply limit. |
+| `--max-tokens N` | Checkpoint `generation_config.json` `max_new_tokens`, otherwise `4096`, when a request omits its reply limit. |
+| `--eos-token-id ID` | Omitted: reconcile model/generation/tokenizer reply EOS. Repeat to replace the reply EOS set; PLE training EOS is unchanged. |
+| `--chat-template FILE`, `--chat-template-name NAME` | Omitted: checkpoint template, with automatic `default`/`tool_use` selection for named templates. Mutually exclusive explicit source/name overrides. |
 | `--temperature`, `--top-p`, `--top-k`, `--min-p` | Checkpoint `generation_config.json`; on both backends temperature falls back to 0, top-k to 0 (off), top-p to 1 (off), min-p to 0. Temperature 0 or top-p 0 is greedy; top-p and min-p outside 0 to 1 are refused at startup. |
 | `--thinking`, `--no-thinking` | Thinking enabled by default when the template supports it. |
 | `--reasoning-effort low\|medium\|high\|xhigh` | Template default when unset; unnamed levels map to the nearest named level, ties upward. |

@@ -80,13 +80,21 @@ class Plan:
 
 
 def config(model_dir: str | Path) -> dict:
-    from .tensor_file import checkpoint_path, read_metadata_json
+    from tensorfold.checkpoint_metadata import read_config
 
-    raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
+    raw = read_config(model_dir)
     selected = raw.get("text_config")
     if selected is not None and not isinstance(selected, dict):
         raise ValueError("checkpoint text_config must be an object or null")
     text = dict(selected or raw)
+    if raw.get("model_type") in ("qwen3_5", "qwen3_5_moe"):
+        from tensorfold.families.qwen3_5.config_metadata import resolve_layer_types, validate_cuda_metadata
+
+        validate_cuda_metadata(raw)
+        if text.get("layer_types") is not None:
+            text["layer_types"] = list(resolve_layer_types(text, layers=int(text["num_hidden_layers"])))
+        else:
+            text.pop("layer_types", None)  # generic geometry uses the arithmetic interval pattern
     for name in ("quantization", "quantization_config"):
         if raw.get(name) is not None and not isinstance(raw[name], dict):
             raise ValueError(f"checkpoint {name} metadata must be an object or null")

@@ -5,9 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
-
 from tensorfold import cli
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 
 def _family(**members):
@@ -485,6 +484,7 @@ def test_auth_and_image_budget_reach_the_owned_cuda_listener(tmp_path, monkeypat
 def test_explicit_model_bindings_and_generation_defaults_reach_cuda_owners(tmp_path, monkeypatch, request,
                                                                          template_option):
     import json
+
     from tensorfold.cuda import server
 
     (tmp_path / "generation_config.json").write_text(json.dumps({
@@ -525,6 +525,7 @@ def test_explicit_model_bindings_and_generation_defaults_reach_cuda_owners(tmp_p
 @pytest.mark.parametrize("metadata, expected", [({}, 4096), ({"max_length": 71}, 4096), ({"max_new_tokens": 41}, 41)])
 def test_cuda_app_inherits_only_the_reply_limit_metadata(tmp_path, monkeypatch, request, metadata, expected):
     import json
+
     from tensorfold.cuda import server
 
     (tmp_path / "generation_config.json").write_text(json.dumps(metadata))
@@ -549,8 +550,7 @@ def test_invalid_metadata_defaults_are_refused_before_cuda_engine_acquisition(tm
         cli._serve_cuda(args, family, tmp_path, 8192)
 
 
-@pytest.mark.parametrize("flags, message", [(["--eos-token-id", "-1"], "--eos-token-id"),
-                                          (["--max-tokens", "0"], "--max-tokens")])
+@pytest.mark.parametrize("flags, message", [(["--eos-token-id", "-1"], "--eos-token-id")])
 def test_invalid_model_binding_flags_are_refused_before_metadata_or_authentication(tmp_path, monkeypatch, flags,
                                                                                 message):
     from tensorfold.server import authentication
@@ -560,6 +560,25 @@ def test_invalid_model_binding_flags_are_refused_before_metadata_or_authenticati
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
     with pytest.raises(ValueError, match=message):
         cli.cmd_serve(args)
+
+
+@pytest.mark.parametrize("maximum", [0, -7])
+def test_explicit_cli_reply_limit_keeps_existing_owner_clamp(tmp_path, monkeypatch, request, maximum):
+    from tensorfold.cuda import server
+
+    actual_app = server.App
+    # A launch override still wins over malformed inherited reply metadata.
+    (tmp_path / "generation_config.json").write_text('{"max_new_tokens":0}')
+    seen = []
+    family = _family(cuda_engine=lambda *a, **k: cuda_cli_engine(max_len=8192))
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", lambda *a, **k: seen.append(k) or cuda_cli_app(effective_context_window=8192))
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
+                                        "--max-tokens", str(maximum)])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert seen[0]["max_tokens"] == maximum
+    assert actual_app._requested_tokens(SimpleNamespace(max_tokens=maximum), {}) == 1
 
 
 @pytest.mark.parametrize("flags, kind, message", [
@@ -601,6 +620,7 @@ def test_declared_topologies_and_port_endpoints_pass_early_validation(tmp_path, 
                                              ("glm5_next", 4, 0), ("glm5_next", 4, 3)])
 def test_multi_rank_port_zero_is_refused_before_any_weight_resolution(tmp_path, monkeypatch, kind, tp, rank):
     import importlib
+
     from tensorfold import families, hub
 
     package = importlib.import_module(f"tensorfold.families.{kind}")

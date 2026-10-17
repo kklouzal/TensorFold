@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import json
 import pkgutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +47,9 @@ def families() -> dict[str, Family]:
 
 
 def read_config(model_dir: str | Path) -> dict[str, Any]:
-    return json.loads((Path(model_dir) / "config.json").read_text())
+    from tensorfold.checkpoint_metadata import read_config as read
+
+    return read(model_dir)
 
 
 RECIPES_URL = "https://github.com/kklouzal/TensorFold/blob/python-0.6/docs/recipes/README.md"
@@ -160,6 +161,9 @@ def require_readable(family: Family, config: dict[str, Any], backend: str) -> No
         from tensorfold.cuda.exl3 import format as exl3_format
 
         exl3_format.require_config(config, where=where, tested=tested, help=OWN_MODEL_HELP)
+    metadata_check = getattr(family.package, "check_metadata", None)
+    if metadata_check is not None:
+        metadata_check(config, backend)
     check = getattr(family.package, "check_quantization", None)
     if method == MLX_QUANT and check is not None:
         check(config, backend)                   # the family reads its own affine widths, groups and mixed layers

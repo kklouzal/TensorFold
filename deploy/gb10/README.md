@@ -488,6 +488,13 @@ tokens. Static YaRN can affect shorter-context quality. A frequency/kernel oracl
 does not establish full-model quality at the expanded limit; long-context
 retrieval and representative Harness tasks must be checked separately.
 
+New builds resolve supported [model metadata](../../docs/model-metadata.md)
+before loading, including quantization sidecars, tokenizer EOS and named templates.
+Explicit launch flags retain precedence. Online preflight verifies the Hub file
+inventory at an exact revision; offline operation requires the complete local
+ancillary files. Historical deployment/image receipts retain their original
+configuration and validation scope.
+
 CPU verification, from the repository root:
 
 ```bash

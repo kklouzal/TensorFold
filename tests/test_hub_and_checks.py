@@ -129,7 +129,8 @@ def test_nemotron_pull_checks_its_mtp_head(tmp_path, monkeypatch, capsys):
         "model.safetensors": "weights",
     })
     monkeypatch.setattr(hub, "cached", lambda repo_id: snapshot)
-    monkeypatch.setattr(hub, "pull", lambda repo_id: snapshot)
+    monkeypatch.setattr(hub, "metadata", lambda repo_id, *, latest=False: snapshot)
+    monkeypatch.setattr(hub, "pull", lambda repo_id, *, revision=None: snapshot)
     assert main(["pull", repo]) == 1
     assert "missing required files: mtp-4bit.safetensors" in capsys.readouterr().err
     (snapshot / "mtp-4bit.safetensors").write_bytes(b"head")
@@ -220,9 +221,13 @@ def test_flash_next_reads_the_nvfp4_checkpoint_and_refuses_other_fp4_blocks(tmp_
     per_tensor = json.loads(json.dumps(mixed))
     per_tensor["quantization_config"]["quantized_layers"]["model.language_model.layers.0.linear_attn.out_proj"] = {
         "quant_algo": "FP8"}
-    for other in (other_group, other_algo, per_tensor):
+    # Canonicalization now detects contradictory/unknown representation metadata
+    # before the family's remaining supported-layout check.
+    for other, reason in ((other_group, "conflicting checkpoint quantization"),
+                          (other_algo, "unsupported ModelOpt quant_algo 'MXFP4'"),
+                          (per_tensor, "blocks of 16")):
         (tmp_path / "config.json").write_text(json.dumps(other))
-        with pytest.raises(ValueError, match="blocks of 16"):
+        with pytest.raises(ValueError, match=reason):
             qwen4_exp.check(tmp_path)
     # NVFP4 outside the routed experts (e.g. a W4A16 DeltaNet projection) is refused before any weight is read
     gdn_fp4 = json.loads(json.dumps(mixed))
@@ -305,7 +310,8 @@ def test_serve_finishes_a_config_only_cache_before_loading(tmp_path, monkeypatch
     index.unlink()                 # `info` downloaded only config.json, before a full `serve` download
     pulled = []
 
-    def finish(repo_id, *, cache_dir=None):
+    def finish(repo_id, *, cache_dir=None, revision=None):
+        assert revision == snapshot.name
         pulled.append(repo_id)
         index.write_text(index_contents)
         (snapshot / "model.safetensors").write_bytes(b"weights")
@@ -318,7 +324,8 @@ def test_serve_finishes_a_config_only_cache_before_loading(tmp_path, monkeypatch
         assert (model_dir / "model.safetensors").is_file()
         raise LoadReached
 
-    monkeypatch.setattr(hub, "cached", lambda repo_id, *, cache_dir=None: snapshot)
+    monkeypatch.setattr(hub, "cached", lambda repo_id, *, cache_dir=None, revision=None: snapshot)
+    monkeypatch.setattr(hub, "metadata", lambda repo_id: snapshot)
     monkeypatch.setattr(hub, "pull", finish)
     monkeypatch.setattr(qwen4_exp, "load", load)
     with pytest.raises(LoadReached):

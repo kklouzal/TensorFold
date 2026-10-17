@@ -7,8 +7,8 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("triton")          # Flash Next's CUDA weights import its triton kernels
 
-from tensorfold.families.qwen4_exp.cuda.weights import Config  # noqa: E402
-from tensorfold.token_metadata import resolve_eos  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.weights import Config
+from tensorfold.token_metadata import resolve_eos
 
 IM_END, ENDOFTEXT = 248046, 248044
 TEXT = {
