@@ -4,6 +4,7 @@ and llama.cpp-shaped prefill progress: what Harness reads for load gating and pe
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -171,8 +172,19 @@ def test_a_concurrent_engine_s_load_memory_and_prefix_cache(tmp_path):
         assert types.get(metrics.PREFIX + name) == kind, name
     assert f"{metrics.PREFIX}kv_cache_usage_perc 0.4\n" in text          # vLLM's meaning: one unlabeled fraction
     assert f'{metrics.PREFIX}lanes{{phase="memory_wait"}} 1' in text
-    assert re.search(r'build_info\{version="[^"]+",backend="cuda",instance="[0-9a-f]{32}",model="fake-cuda",'
-                     r'kv_dtype="rotorquant8-norm",mtp_drafts="4",lanes="4"\} 1', text)
+    build_info, = (line for line in text.splitlines() if line.startswith(metrics.PREFIX + "build_info{"))
+    assert build_info.endswith("} 1")
+    pairs = re.findall(r'(\w+)="((?:[^"\\]|\\.)*)"', build_info)
+    labels = {key: json.loads('"' + value + '"') for key, value in pairs}
+    expected = {"version": body["server"]["version"], "backend": "cuda", "instance": stats.INSTANCE_ID,
+                "model": "fake-cuda", "kv_dtype": "rotorquant8-norm", "mtp_drafts": "4", "lanes": "4"}
+    revision = os.environ.get(stats.SOURCE_REVISION_ENV) or None
+    assert body["server"]["source_revision"] == revision
+    if revision is not None:
+        expected["source_revision"] = revision
+    assert len(pairs) == len(labels)                    # duplicate labels are invalid exposition
+    assert labels == expected                         # the source label is present exactly when configured
+    assert labels["version"] and re.fullmatch(r"[0-9a-f]{32}", labels["instance"])
 
 
 def test_an_idle_bare_app_still_renders_valid_exposition():
