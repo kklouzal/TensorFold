@@ -15,8 +15,8 @@ def test_registered_authority_direct_dma_orders_cross_stream_eviction_and_unpins
     sizes = (7 * 17 * 4,) * 2
     policy = ExpertPinPolicy(sum(sizes), mode="on", allocation_bytes=sizes)
     cache = HostExpertCache(160, 160, "cuda", pin_policy=policy)
-    source = tuple(cache.allocate_authority(shape, dtype=torch.int32, tag=f"field{i}") for i in range(2))
     try:
+        source = tuple(cache.allocate_authority(shape, dtype=torch.int32, tag=f"field{i}") for i in range(2))
         for i, tensor in enumerate(source):
             tensor.copy_(torch.arange(tensor.numel(), dtype=torch.int32).reshape(shape) + 1000 * i)
         originals = tuple(t.clone() for t in source)
@@ -45,11 +45,11 @@ def test_registered_authority_direct_dma_orders_cross_stream_eviction_and_unpins
 def test_partial_startup_registration_rollback_retains_usable_cpu_bytes():
     policy = ExpertPinPolicy(96, mode="on", allocation_bytes=(32, 64))
     cache = HostExpertCache(64, 64, "cuda", pin_policy=policy)
-    first = cache.allocate_authority((8,), dtype=torch.int32)
-    first.fill_(17)
-    assert first.is_pinned()
-    # Model/header failure before cache.register must still retire the first allocation.
     try:
+        first = cache.allocate_authority((8,), dtype=torch.int32)
+        first.fill_(17)
+        assert first.is_pinned()
+        # Model/header failure before cache.register must still retire the first allocation.
         with pytest.raises(ValueError, match="geometry"):
             cache.allocate_authority((4,), dtype=torch.int32)
     finally:
