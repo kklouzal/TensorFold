@@ -289,6 +289,7 @@ class App:
         spec = grammar.request_spec(body)
         calls = self._strict_calls(body, tools, spec, policy)
         spec = calls.spec if calls is not None else spec
+        grammar.check_stopping(body, spec)
         top = probability_options(body, supported=bool(getattr(self.engine, "supports_logprobs", False)))
         if top is not None:
             if not chat or body.get("stream") or thinking or tools or stop or spec is not None or budget:
