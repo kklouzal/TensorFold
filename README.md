@@ -19,6 +19,11 @@ scale/calibration admission stay on CPU; loading admission includes the GPU
 packing peak. Exact-byte, peak-allocation and startup qualification of this
 loading change is pending; no startup-speed claim is made here.
 
+NVFP4 host admission also reserves the physical pinned Reader backing separately
+from GPU scratch and temporary payloads. The shared estimate charges its ring
+once, including when routed experts are offloaded; small-model and installed
+qualification of this accounting correction is pending.
+
 Concurrent Qwen prompt batches now run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head also reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Final installed concurrency and performance qualification of these increments remains pending.
 
 Required-tool format discovery now follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. The existing HTTP enforcement regressions pass without changing their assertions; installed-image qualification of this correction is pending.

@@ -185,6 +185,11 @@ are live at a time; their loading allowance is charged even without an MTP
 bank. This does not quantize activations or change Flash Next's W4A16 math.
 Startup performance qualification of the CUDA packing change remains pending.
 
+NVFP4 admission counts the Reader's two pinned allocations with their allocator
+bucket rounding (a 256 MiB backing bound on the pinned runtime), alongside the
+larger of buffered source bytes and a subsequent CPU field publication. This is
+host allowance; it does not add 256 MiB to device packing scratch.
+
 For EXL3, CPU authority contains compact original trellis bytes without padding.
 Fixed GPU cells are sized for the largest gate/up/down bundle in the model. With
 numeric budgets or `--vram-experts auto`, final startup sizing can use smaller routed cells when all

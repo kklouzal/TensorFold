@@ -56,6 +56,7 @@ def test_raw_codes_scales_and_six_fp32_globals_match_authority_and_aligned_pool(
     assert plan.slots == 2 and plan.gpu_bytes == 27776
     assert plan.authority_allocations == (3 * entry,) * 2
     assert plan.staging_bytes == 32768
+    assert plan.loading_bytes == max(64 << 20, 8 * entry)  # shared estimator owns the physical Reader ring once
     assert plan.metadata_host_bytes > 5 * plan.largest_header_bytes
     assert plan.control_host_bytes > 6
     assert not plan.receipt()["capturable"]

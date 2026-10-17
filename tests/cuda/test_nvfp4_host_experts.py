@@ -39,7 +39,7 @@ def test_nvfp4_ram_layout_sizes_exact_payload_and_keeps_shared_resident(tmp_path
 def test_routed_gpu_packing_is_admitted_without_mtp(tmp_path):
     model = write(tmp_path, hidden=512)
     layout = ram_experts.layout(model, "auto", mtp=False)
-    assert layout.loading_device_bytes == layout.loading_bytes
+    assert layout.loading_device_bytes < layout.loading_bytes
     assert layout.loading_device_bytes >= 128 * 128 * 512 + 8 * layout.entry_bytes
 
 

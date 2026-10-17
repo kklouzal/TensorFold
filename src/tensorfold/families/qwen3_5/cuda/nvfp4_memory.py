@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 from tensorfold.cuda.nvfp4.host_layout import routed_tensor_a4
+from tensorfold.cuda.read_budget import reader_host_bytes
 
 _DIRECT_WEIGHT_SUFFIXES = (".norm", ".input_layernorm", ".post_attention_layernorm", ".q_norm", ".k_norm",
                            ".conv1d")
@@ -165,10 +166,11 @@ def weight_estimate(model_dir, transform):
         n, half = info["shape"]
         padding += (-(-n // 128) * 128 - n) * (2 * half // 16)
     # Buffered direct-read refusal can materialize the largest raw tensor on
-    # the host. Two pinned 64-MiB rings are counted as well, including alignment.
+    # the host. Both pinned Reader backings include allocator bucket rounding.
     largest = max((math.prod(i["shape"]) * itemsize(i, n) for n, i in entries.items()
                    if transform(n, i)[0]), default=0)
-    # Keep the original host conversion/staging allowance. This specialization
-    # reduces only the proven device overlap; CPU admission is not relaxed.
-    host = max(existing.staging, largest + 2 * ((64 << 20) + 3 * 4096))
+    # Reader rings remain live alongside conversion/read staging. Preserve the
+    # original CPU allowance and add those physical backings exactly once;
+    # offload's additional authority allowance deliberately excludes the rings.
+    host = reader_host_bytes(max(existing.staging, largest))
     return Weights(existing.resident + padding, staging, existing.mapped), host

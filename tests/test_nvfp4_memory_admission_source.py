@@ -194,7 +194,7 @@ class Contracts(unittest.TestCase):
         dense = 2 * 248320 * 4096 * 2
         self.assertEqual((weight.resident, weight.staging, weight.mapped),
                          (packed + scales + 8 + dense + 8192, 4194304, 0))
-        self.assertEqual(host, 6102712320)
+        self.assertEqual(host, 6102712320 + 2 * (128 << 20))
         # Full math pads the block-scale plane independently of packed words.
         # A nonaligned row count must reserve both planes' retained padding.
         entries['model.layers.0.m.weight_packed']['shape'][0] = 4097
