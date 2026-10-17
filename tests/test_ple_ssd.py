@@ -381,6 +381,7 @@ def test_a_family_without_ple_tables_refuses_the_flag_before_any_download(tmp_pa
                                                     "quantization": {"bits": 4, "group_size": 64}}))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(hub, "cached", lambda repo_id, **_: folder)
+    monkeypatch.setattr(hub, "metadata", lambda repo_id, **_: folder)
     for name in ("pull", "resolve"):
         monkeypatch.setattr(hub, name, lambda *a, **k: pytest.fail("downloaded before refusing"))
     model = "owner/model" if repo else str(folder)

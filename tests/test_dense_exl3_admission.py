@@ -25,6 +25,10 @@ FORMAT = ROOT / "src/tensorfold/cuda/exl3/format.py"
 
 def functions(path, names, namespace=None):
     namespace = {} if namespace is None else namespace
+    module = ".".join(path.relative_to(ROOT / "src").with_suffix("").parts)
+    namespace.setdefault("__name__", module)
+    if not namespace.get("__package__"):
+        namespace["__package__"] = module.rpartition(".")[0]
     nodes = [node for node in ast.parse(path.read_text()).body
              if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names]
     assert {node.name for node in nodes} == set(names)
