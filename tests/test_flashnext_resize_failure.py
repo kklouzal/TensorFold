@@ -157,3 +157,46 @@ def test_interrupted_final_bookkeeping_cannot_publish_a_clean_resize(allocations
         st.kv_snapshot_metadata()
     st.recover_resize(weights(), 256)
     assert st._resize_error is st._kv_error is None
+
+
+@pytest.mark.parametrize("diagnostic", ["wrapper", "traceback"])
+def test_diagnostic_failure_preserves_resize_primary_and_unconditional_poison(allocations, monkeypatch, diagnostic):
+    import traceback
+    import torch
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    st = filled(state, torch, "bf16")
+    primary, secondary = OSError("original resize failure"), MemoryError("diagnostic preparation failure")
+
+    def failed(*args):
+        uncommitted = torch.zeros(16)
+        retained.append(weakref.ref(uncommitted))
+        raise primary
+
+    def failed_diagnostic(*args):
+        raise secondary
+
+    retained = []
+    with monkeypatch.context() as patch:
+        patch.setattr(state, "_rows", failed)
+        patch.setattr(state if diagnostic == "wrapper" else traceback,
+                      "KVResizeError" if diagnostic == "wrapper" else "clear_frames", failed_diagnostic)
+        with pytest.raises(OSError) as caught:
+            st.resize(512)
+        assert caught.value is primary and secondary in [primary.__cause__, primary.__context__]
+        assert st._resize_error is primary and st.cache_bytes() == attached_bytes(st)
+        if diagnostic == "traceback":
+            assert st._resize_frames_pending is not None and retained[0]() is not None
+            with pytest.raises(MemoryError):
+                st.recover_resize(weights(), 256)
+            assert st._resize_frames_pending is not None and retained[0]() is not None
+        else:
+            assert st._resize_frames_pending is None and retained[0]() is None
+        for check in (st.kv_begin, st.kv_check, st.kv_snapshot_metadata, lambda: st.kv_check_words(0, -2),
+                      lambda: st.reset(weights())):
+            with pytest.raises(BaseException) as poisoned:
+                check()
+            assert poisoned.value is (primary if diagnostic == "wrapper" else st._kv_error)
+    st.recover_resize(weights(), 256)
+    assert st._resize_error is st._kv_error is None
+    assert st._resize_frames_pending is None and retained[0]() is None
