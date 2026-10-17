@@ -98,7 +98,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     from ModelOpt calibration or converted through BF16.
     """
     check(model_dir, gib, tp=tp)
-    text, entries = config(model_dir), headers(model_dir)
+    text = config(model_dir)
     for name in ("hidden_size", "moe_intermediate_size", "num_experts", "num_experts_per_tok", "num_hidden_layers"):
         _integer(text.get(name), name, 1)
     if text["num_experts_per_tok"] > text["num_experts"]:
@@ -106,8 +106,9 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     if text["num_experts"] > 1023:
         raise ValueError("Qwen MoE routing supports at most 1023 routed experts plus shared")
     dims, width, count = text["hidden_size"], text["moe_intermediate_size"], text["num_experts"]
-    banks = bank_bases_a4(entries, text)
     fields = authority_fields_a4(count, width, dims)
+    entries = headers(model_dir)
+    banks = bank_bases_a4(entries, text)
     allocations = tuple(math.prod(shape) * SIZES[dtype] for shape, dtype in fields)
     one = authority_fields_a4(1, width, dims)
     entry = 0
@@ -131,7 +132,8 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     metadata = _metadata_bytes(entries)
     # Histories, resident identities/NumPy rank arrays, per-bank views and the
     # bounded startup rank search are charged at the largest possible pool.
-    controls = logical + 1 + 576 * logical + 4096 * len(banks) + 65536
+    controls = (logical + 1 + 576 * logical + 4096 * len(banks) + 65536
+                + 192 * _PAIR_WINDOW * (text["num_experts_per_tok"] + 1) + 65536)
     runtime = 16 * _PAIR_WINDOW * (dims + width) + 65536
     return Layout(entry, slots, slots * entry, sum(allocations) * len(banks), staging, loading,
                   allocations * len(banks), banks, logical, count, runtime, metadata, controls,

@@ -1,0 +1,174 @@
+"""Independent CT payload, reserved-workspace and transaction-peak oracles."""
+from dataclasses import replace
+import json
+import math
+import struct
+
+import pytest
+
+from tensorfold.cuda.capacity import SIZES
+from tensorfold.families.qwen3_5_moe import ram_experts as ram
+
+
+def checkpoint(path):
+    cfg = {"hidden_size": 128, "moe_intermediate_size": 64, "num_experts": 3,
+           "num_experts_per_tok": 2, "num_hidden_layers": 2}
+    (path / "config.json").write_text(json.dumps({"text_config": cfg}))
+    infos, offset = {}, 0
+
+    def add(name, dtype, shape):
+        nonlocal offset
+        size = math.prod(shape) * SIZES[dtype]
+        infos[name] = {"dtype": dtype, "shape": shape, "data_offsets": [offset, offset + size]}
+        offset += size
+
+    for layer in range(2):
+        base = f"model.language_model.layers.{layer}.mlp"
+        for expert in (*[f"experts.{i}" for i in range(3)], "shared_expert"):
+            for projection, n, k in (("gate_proj", 64, 128), ("up_proj", 64, 128), ("down_proj", 128, 64)):
+                for field, dtype, shape in (("weight_packed", "U8", [n, k // 2]),
+                    ("weight_scale", "F8_E4M3", [n, k // 16]), ("weight_global_scale", "F32", [1]),
+                    ("input_global_scale", "F32", [1])):
+                    add(f"{base}.{expert}.{projection}.{field}", dtype, shape)
+        add(base + ".gate.weight", "BF16", [3, 128])
+        add(base + ".shared_expert_gate.weight", "BF16", [1, 128])
+    add("model.language_model.embed_tokens.weight", "BF16", [9, 128])
+    encoded = json.dumps(infos).encode()
+    with (path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(encoded)) + encoded)
+        stream.truncate(8 + len(encoded) + offset)
+    return cfg, infos
+
+
+def test_raw_codes_scales_and_six_fp32_globals_match_authority_and_aligned_pool(tmp_path):
+    _, infos = checkpoint(tmp_path)
+    # Per projection: one half-byte code and one E4M3 scale per16 weights,
+    # plus two FP32 calibration values. Six independent aligned scalar fields
+    # in the cache occupy64 bytes; raw scalar authority occupies24.
+    matrix = 128 * 64
+    payload = 3 * (matrix // 2 + matrix // 16) + 24
+    entry = 3 * (matrix // 2 + matrix // 16) + 64
+    plan = ram.layout(tmp_path, (2 * entry + 7) / ram.GIB)
+    assert plan.host_bytes == 6 * payload == 83088
+    assert plan.entry_bytes == entry == 13888
+    assert plan.slots == 2 and plan.gpu_bytes == 27776
+    assert plan.authority_allocations == (27648, 13824, 24, 12, 24, 12) * 2
+    assert plan.staging_bytes == 32768
+    assert plan.metadata_host_bytes >= ram.MAX_HEADER_BYTES
+    assert plan.control_host_bytes > 6
+    assert not plan.receipt()["capturable"]
+    resident = lambda name, info: (math.prod(info["shape"]) * SIZES[info["dtype"]], 0)
+    transform = plan.transform(resident)
+    routed = sum(resident(name, info)[0] for name, info in infos.items() if ".experts." in name)
+    total = sum(resident(name, info)[0] for name, info in infos.items())
+    assert sum(transform(name, info)[0] for name, info in infos.items()) == total - routed
+    shared = "model.language_model.layers.0.mlp.shared_expert.gate_proj.weight_packed"
+    assert transform(shared, infos[shared]) == resident(shared, infos[shared])
+    shared_input = "model.language_model.layers.0.mlp.shared_expert.gate_proj.input_global_scale"
+    assert transform(shared_input, infos[shared_input]) == (4, 0)
+    assert transform("draft.layers.0.mlp.experts.0.gate_proj.weight_packed", infos[shared]) == (4096, 0)
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, "1", float("nan"), float("inf")])
+def test_bad_public_budget_rejects_before_checkpoint_io(budget):
+    with pytest.raises(ValueError, match="finite positive"):
+        ram.layout("/absent", budget)
+
+
+@pytest.mark.parametrize("field,value", [("num_experts", True), ("num_hidden_layers", 0),
+    ("hidden_size", 63), ("num_experts_per_tok", 4)])
+def test_invalid_geometry_rejects_before_header_acquisition(tmp_path, monkeypatch, field, value):
+    cfg, _ = checkpoint(tmp_path)
+    cfg[field] = value
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+    monkeypatch.setattr(ram, "headers", lambda path: pytest.fail("invalid geometry opened payload headers"))
+    with pytest.raises(ValueError):
+        ram.layout(tmp_path, "auto")
+
+
+def test_missing_global_or_incomplete_bank_cannot_remove_weights_from_gpu_estimate(tmp_path, monkeypatch):
+    _, infos = checkpoint(tmp_path)
+    missing = "model.language_model.layers.1.mlp.experts.2.up_proj.input_global_scale"
+    del infos[missing]
+    monkeypatch.setattr(ram, "headers", lambda path: infos)
+    with pytest.raises(ValueError, match="incomplete"):
+        ram.layout(tmp_path, "auto")
+
+
+def pool(plan, free, *, old=0, kv=0, snapshots=0, target=0, draft=0, reserve=0, allocator=lambda n: n):
+    return ram.plan_pool(plan, raw_free_bytes=free, existing_pool_bytes=old, future_kv_bytes=kv,
+                         future_snapshot_bytes=snapshots, future_target_workspace_bytes=target,
+                         future_draft_workspace_bytes=draft, device_reserve_bytes=reserve,
+                         allocation_size=allocator)
+
+
+def test_zero_optional_reserve_preserves_every_mandatory_future_allocation(tmp_path):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, "auto")
+    entry, native = plan.entry_bytes, plan.runtime_workspace_bytes
+    result = pool(plan, native + 100 + 200 + 300 + 3 * entry + 9,
+                  kv=100, snapshots=200, draft=300)
+    assert result["slots"] == 3
+    assert result["future_target_workspace_bytes"] == native
+    assert result["reserved_bytes"] == native + 600
+    assert result["device_reserve_bytes"] == 0
+    assert result["transaction_free_after_reservations_bytes"] == 9
+    assert not result["snapshot_is_reservation"]
+
+
+def test_allocator_bound_and_old_live_pool_are_charged_at_transaction_peak(tmp_path):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, "auto")
+    native = plan.runtime_workspace_bytes
+    # Independent small allocator oracle: the fifth cell crosses64KiB.
+    rounded = lambda size: ((size + 65535) // 65536) * 65536
+    result = pool(plan, native + 65536 + 17, old=plan.entry_bytes, allocator=rounded)
+    assert result["slots"] == 4  # four13888-byte cells fit one64KiB block; five do not
+    assert result["requested_pool_bytes"] == 55552
+    assert result["new_allocation_bound_bytes"] == 65536
+    assert result["transaction_free_after_reservations_bytes"] == 17
+    assert result["final_free_after_reservations_bytes"] == 17 + plan.entry_bytes
+    assert result["existing_pool_not_credited"]
+
+
+def test_existing_pool_reuse_never_frees_live_storage_to_manufacture_transaction_room(tmp_path):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, "auto")
+    result = pool(plan, plan.runtime_workspace_bytes, old=plan.entry_bytes)
+    assert not result["replace_pool"] and result["slots"] == 1
+    assert result["new_allocation_bound_bytes"] == 0
+    assert result["transaction_free_after_reservations_bytes"] == 0
+
+
+def test_fixed_budget_never_silently_shrinks_when_workspace_does_not_fit(tmp_path):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, 3 * 13888 / ram.GIB)
+    with pytest.raises(ValueError, match="requested expert pool"):
+        pool(plan, plan.runtime_workspace_bytes + 2 * plan.entry_bytes, old=plan.entry_bytes)
+    with pytest.raises(ValueError, match="mandatory"):
+        pool(plan, plan.runtime_workspace_bytes - 1, old=plan.entry_bytes)
+
+
+@pytest.mark.parametrize("kwargs", [{"old": 1}, {"kv": True}, {"draft": -1}, {"allocator": None},
+                                   {"allocator": lambda n: n - 1}, {"allocator": lambda n: float(n)}])
+def test_malformed_budget_or_invalid_allocator_bound_rejects(tmp_path, kwargs):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, "auto")
+    with pytest.raises(ValueError):
+        pool(plan, 1 << 30, **kwargs)
+
+
+def test_full_heretic_geometry_is_not_a_gpu_residency_estimate(tmp_path, monkeypatch):
+    cfg, infos = checkpoint(tmp_path)
+    cfg.update(hidden_size=2048, moe_intermediate_size=512, num_hidden_layers=40, num_experts=256)
+    monkeypatch.setattr(ram, "config", lambda path: cfg)
+    monkeypatch.setattr(ram, "headers", lambda path: infos)
+    # Header validator separately has a real124k-field gate; this oracle isolates
+    # full-model arithmetic without creating payload or relying on that helper.
+    monkeypatch.setattr(ram, "bank_bases_a4", lambda entries, text: tuple(f"model.layers.{i}.mlp" for i in range(40)))
+    plan = ram.layout(tmp_path, "auto")
+    assert plan.host_bytes == 18119639040 and plan.entry_bytes == 1769536
+    assert plan.expert_count == 10240
+    assert plan.runtime_workspace_bytes == 5308416
+    assert plan.gpu_bytes == plan.entry_bytes and plan.automatic
+    assert replace(plan, automatic=False).host_bytes == plan.host_bytes
