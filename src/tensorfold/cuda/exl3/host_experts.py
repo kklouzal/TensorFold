@@ -102,6 +102,7 @@ class _CompactLayer:
     count: int
     fields: tuple = ()
     shared_id: int | None = None
+    pinned: bool = False
 
 
 def _validate_authority(authority):
@@ -111,8 +112,8 @@ def _validate_authority(authority):
            t.is_quantized or not t.is_contiguous() or t.requires_grad or torch.is_inference(t)
            for t in authority.source):
         raise ValueError("compact authority needs ordinary immutable contiguous CPU tensors")
-    if authority.data.dtype != torch.uint8 or authority.data.ndim != 1 or authority.data.is_pinned():
-        raise ValueError("compact trellis authority must be a pageable CPU byte vector")
+    if authority.data.dtype != torch.uint8 or authority.data.ndim != 1:
+        raise ValueError("compact trellis authority must be a CPU byte vector")
     count = authority.count
     if not 0 < count <= 1024 or authority.starts.dtype != torch.int64 or tuple(authority.starts.shape) != (count,):
         raise ValueError("compact authority requires 1..1024 experts and int64 starts")
@@ -159,11 +160,11 @@ def _publish(CONTROL, GATE, UP, DOWN, N, B: tl.constexpr):
 class Exl3HostExpertCache(HostExpertCache):
     """Variable-size compact payloads using the existing cache lease protocol."""
 
-    def __init__(self, gpu_bytes, entry_bytes, device, *, staging_slots=2):
+    def __init__(self, gpu_bytes, entry_bytes, device, *, staging_slots=2, pin_policy=None):
         self._size_layout = None
         self._shared_cells = {}
         self._shared_protected = frozenset()
-        super().__init__(gpu_bytes, entry_bytes, device, staging_slots=staging_slots)
+        super().__init__(gpu_bytes, entry_bytes, device, staging_slots=staging_slots, pin_policy=pin_policy)
         if self._pool.data_ptr() % 16 or self._pool.data_ptr() + self.gpu_bytes > 2**63 - 1:
             raise ValueError("EXL3 cells require aligned signed-int64 CUDA addresses")
         with torch.inference_mode(False):
@@ -217,18 +218,22 @@ class Exl3HostExpertCache(HostExpertCache):
             source = authority.source
             layers = dict(self._layers)
             layers[layer_id] = _CompactLayer(authority, source, tuple(t._version for t in source),
-                                            (self._cells,), authority.count, shared_id=shared_id)
+                                            (self._cells,), authority.count, shared_id=shared_id,
+                                            pinned=authority.data.is_pinned())
             self._policy.register(layer_id, authority.count)
             self._layers = layers
 
     def _copy_fixed(self, layer, expert, slot, stream):
+        start = int(layer.authority.starts[expert])
+        size = int(layer.authority.trellis_bytes[expert])
+        if layer.pinned:
+            self._cells[slot, :size].copy_(layer.authority.data.narrow(0, start, size), non_blocking=True)
+            return size
         stage = self._next_stage
         self._next_stage = (stage + 1) % self.staging_slots
         event = self._stage_events[stage]
         if self._stage_pending[stage] and not event.query():
             event.synchronize()
-        start = int(layer.authority.starts[expert])
-        size = int(layer.authority.trellis_bytes[expert])
         pinned = self._staging[stage, :size]
         pinned.copy_(layer.authority.data.narrow(0, start, size))
         self._cells[slot, :size].copy_(pinned, non_blocking=True)
@@ -338,15 +343,18 @@ class Exl3HostExpertCache(HostExpertCache):
     def _copy(self, layer, expert, slot, stream):
         if self._size_layout is None or self._size_layout.kind == 'fixed':
             return self._copy_fixed(layer, expert, slot, stream)
+        start = int(layer.authority.starts[expert])
+        size = int(layer.authority.trellis_bytes[expert])
+        if size != self._size_layout.cells[slot].size:
+            raise ValueError('logical expert does not fit its prepared size-class cell')
+        if layer.pinned:
+            self._cells[slot].copy_(layer.authority.data.narrow(0, start, size), non_blocking=True)
+            return size
         stage = self._next_stage
         self._next_stage = (stage + 1) % self.staging_slots
         event = self._stage_events[stage]
         if self._stage_pending[stage] and (not event.query()):
             event.synchronize()
-        start = int(layer.authority.starts[expert])
-        size = int(layer.authority.trellis_bytes[expert])
-        if size != self._size_layout.cells[slot].size:
-            raise ValueError('logical expert does not fit its prepared size-class cell')
         pinned = self._staging[stage, :size]
         pinned.copy_(layer.authority.data.narrow(0, start, size))
         self._cells[slot].copy_(pinned, non_blocking=True)
@@ -869,7 +877,7 @@ def _joint_payloads(pk, metadata, reads=None):
                 raise_failures(primary, errors)
 
 
-def load_compact(pk, prefix, count, shared, *, device="cpu", keys=None, reads=None):
+def load_compact(pk, prefix, count, shared, *, device="cpu", keys=None, reads=None, allocator=None):
     """Validated compact authority plus native scale/width tables, without GPU trellises.
 
     CPU ``device`` is an isolated constructor/oracle mode, not a serving fallback.
@@ -933,7 +941,8 @@ def load_compact(pk, prefix, count, shared, *, device="cpu", keys=None, reads=No
     if len(codebooks) != 1:
         raise ValueError("routed/shared EXL3 experts mix codebooks")
     with torch.inference_mode(False):
-        data = torch.empty((total,), dtype=torch.uint8, device="cpu")
+        data = (torch.empty((total,), dtype=torch.uint8, device="cpu") if allocator is None else
+                allocator.allocate_authority((total,), dtype=torch.uint8, tag=prefix))
         start_tensor = torch.tensor(starts, dtype=torch.int64)
         bit_tensor = torch.tensor(bits, dtype=torch.int32)
         count_tensor = torch.tensor(counts, dtype=torch.int64)
@@ -987,7 +996,7 @@ def load_cached(pk, prefix, count, shared, cache, layer_id, device, *, reads=Non
     if destination.type != "cuda" or destination.index not in (None, cache.device.index):
         raise ValueError("EXL3 metadata and weight cache must share a CUDA device")
     keys = cache.projection_keys(pk, prefix, shared)
-    authority, tables = load_compact(pk, prefix, count, shared, device=cache.device, keys=keys, reads=reads)
+    authority, tables = load_compact(pk, prefix, count, shared, device=cache.device, keys=keys, reads=reads, allocator=cache)
     return CachedExl3Experts(authority, tables, cache, layer_id, shared_id=count)
 
 
