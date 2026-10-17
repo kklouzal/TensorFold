@@ -122,3 +122,33 @@ def test_failed_stream_fence_keeps_all_attached_owners_before_retry(allocations,
     st.pos_dev = real_pos
     st.recover_resize(weights(), 256)
     assert st._resize_error is None
+
+
+@pytest.mark.parametrize("recovery", [False, True])
+def test_interrupted_final_bookkeeping_cannot_publish_a_clean_resize(allocations, recovery):
+    import torch
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    st = filled(state, torch, "int4")
+    if recovery:
+        st._poison_resize(MemoryError("controlled grow failure"))
+    primary = KeyboardInterrupt("interrupted version publication")
+
+    class InterruptedVersion(int):
+        interrupted = False
+
+        def __add__(self, other):
+            if not self.interrupted:
+                self.interrupted = True
+                raise primary
+            return int(self) + other
+
+    st.version = InterruptedVersion(st.version)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        st.recover_resize(weights(), 256) if recovery else st.resize(512)
+    assert caught.value is primary and st._resize_error is primary
+    assert st.cache_bytes() == attached_bytes(st)
+    with pytest.raises(state.KVResizeError):
+        st.kv_snapshot_metadata()
+    st.recover_resize(weights(), 256)
+    assert st._resize_error is st._kv_error is None
