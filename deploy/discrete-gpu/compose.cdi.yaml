@@ -1,0 +1,10 @@
+# Requires a CDI-enabled Docker Engine and an installed NVIDIA CDI specification.
+# Select exactly one GPU injection mechanism; remove the base device request.
+services:
+  tensorfold:
+    gpus: !reset []
+    devices: !override
+      - ${TF_CDI_DEVICE:?Set TF_CDI_DEVICE to an exact NVIDIA CDI device name}
+    environment:
+      # The NGC image defaults to all; prevent a second legacy-hook injection.
+      NVIDIA_VISIBLE_DEVICES: void

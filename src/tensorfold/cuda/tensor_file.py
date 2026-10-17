@@ -206,11 +206,13 @@ def _metadata_object(raw: bytes, path) -> dict:
 
 
 def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
-    """Authorize an index-relative file in the model or its own HF blob store.
+    """Authorize an index-relative file in the model or a managed HF blob store.
 
     Parent traversal and absolute names are refused before following symlinks.
     A standard ``models--*/snapshots/<revision>`` root may borrow its sibling
-    ``blobs`` directory. Other resolved targets must stay inside the model.
+    ``blobs`` directory. Its managed blob links may also target the canonical,
+    marked cache-wide shared store; this never authorizes the whole cache.
+    Model/cache names and contents must remain immutable over validation/use.
     """
     if not isinstance(shard, str) or not shard:
         raise ValueError("checkpoint file names must be nonempty relative strings")
@@ -219,6 +221,7 @@ def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
         raise ValueError(f"{shard}: checkpoint file must not be absolute or traverse parent directories")
     root = Path(model_dir).resolve()
     allowed = [root]
+    store = None
     if root.parent.name == "snapshots" and root.parent.parent.name.startswith("models--"):
         store = root.parent.parent
         blobs = (store / "blobs").resolve()
@@ -226,9 +229,58 @@ def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
             raise ValueError("the model's HF blob root resolves outside its own store")
         allowed.append(blobs)
     path = (root / relative).resolve()
-    if not any(path.is_relative_to(directory) for directory in allowed):
+    if (not any(path.is_relative_to(directory) for directory in allowed)
+            and (store is None or not _shared_hf_blob(root / relative, store, path))):
         raise ValueError(f"{shard}: resolved checkpoint file is outside the model's authorized roots")
     return path
+
+
+def _shared_hf_blob(snapshot_file: Path, store: Path, resolved: Path) -> bool:
+    """HF Hub v1.32 shared layout: snapshot -> own blob link -> marked payload.
+
+    Only this file's managed two-link chain is admitted. The shared directory,
+    hash-prefix directory, payload and version marker must have their actual
+    types, with no directory/payload/marker symlinks expanding the authority.
+    Reads of the two-byte marker are bounded and ordinary-file checked.
+    """
+    shared = store.parent / "blobs"
+    if not store.name[len("models--"):] or any(char in "\r\n" for char in store.name):
+        return False
+    try:
+        parts = resolved.relative_to(shared).parts
+    except ValueError:
+        return False
+    if (len(parts) != 2 or len(parts[1]) != 64 or parts[0] != parts[1][:2]
+            or any(char not in "0123456789abcdef" for char in parts[1])):
+        return False
+    try:
+        parent = snapshot_file.parent.resolve()
+        if not parent.is_relative_to(store / "snapshots"):
+            return False
+        if not stat.S_ISLNK(snapshot_file.lstat().st_mode):
+            return False
+        own_blob = Path(os.path.abspath(parent / os.readlink(snapshot_file)))
+        blobs = store / "blobs"
+        if (own_blob.parent != blobs or any(char in "\r\n" for char in own_blob.name)
+                or not stat.S_ISDIR(blobs.lstat().st_mode)):
+            return False
+        if not stat.S_ISLNK(own_blob.lstat().st_mode):
+            return False
+        target = Path(os.path.abspath(blobs / os.readlink(own_blob)))
+        if target != resolved:
+            return False
+        marker = shared / ".huggingface-shared-blobs"
+        if not (stat.S_ISDIR(shared.lstat().st_mode)
+                and stat.S_ISDIR((shared / parts[0]).lstat().st_mode)
+                and stat.S_ISREG(resolved.lstat().st_mode)
+                and stat.S_ISREG(marker.lstat().st_mode)):
+            return False
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    # Access, IO and cleanup failures retain their actual exception/ownership
+    # context rather than being mislabeled as a different path authority error.
+    with _regular_stream(marker) as stream:
+        return stream.read(3) == b"1\n"
 
 
 def read_header(path: str | Path, sizes: dict[str, int]) -> tuple[int, dict]:
