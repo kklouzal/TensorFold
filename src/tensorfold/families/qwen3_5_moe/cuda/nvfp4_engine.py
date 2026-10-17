@@ -97,15 +97,16 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                       if plan is not None else 0)
         if plan is not None:
             from tensorfold.cuda.allocation_bound import pool_allocation_bound
-            from tensorfold.cuda.expert_cache import HostExpertCache
             from tensorfold.cuda.expert_pin import ExpertPinPolicy
+            from tensorfold.cuda.nvfp4.cache_a4 import A4ExpertCache
 
             before_pool = torch.cuda.memory._snapshot()
             pins = ExpertPinPolicy(plan.host_bytes, mode=vram_experts_pin,
                                    future_bytes=host_extra + host_weight_staging,
                                    allocation_bytes=plan.authority_allocations)
             try:
-                self.expert_cache = HostExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins)
+                self.expert_cache = A4ExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins,
+                                                  width=text["moe_intermediate_size"], dims=text["hidden_size"])
             except BaseException as primary:  # noqa: BLE001 -- Preserve pinned ownership through interrupt rollback.
                 rollback(pins, primary, pins.close)
             allocate = pool_allocation_bound(torch, self.expert_cache._pool, before_snapshot=before_pool)

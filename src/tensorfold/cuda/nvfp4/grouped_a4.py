@@ -1,17 +1,11 @@
-"""Bounded native-A4 grouped candidate; selection requires native/integrated evidence.
+"""Bounded grouped native-A4 execution for resident fields and one-source leases."""
 
-Private preparation consumes the same admitted immutable six-field authority as
-ExpertsA4. It batches existing checkpoint quantization/MMA contracts across
-experts, preserving each projection's calibration and native K reduction order.
-"""
-
-from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 
 import torch
 
-from .experts_a4 import PAIRS
+PAIRS = 128
 
 
 @lru_cache(maxsize=1)
@@ -20,19 +14,10 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_experts_a4_v1", sources=[str(here / "experts_a4.cpp"),
+    return load(name="tensorfold_nvfp4_experts_a4_v2", sources=[str(here / "experts_a4.cpp"),
                 str(here / "experts_a4.cu")], need=MIN_CAPABILITY,
                 arch_specific=precision.own_math(torch.cuda.get_device_capability())["nvfp4"],
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
-
-
-@contextmanager
-def _lease(bank, ids):
-    if hasattr(bank, "cache"):
-        with bank.cache.lease(bank.layer_id, ids) as result:
-            yield result
-    else:
-        yield bank.fields, {expert: expert for expert in ids}
 
 
 def _windows(groups, capacity):
@@ -51,12 +36,12 @@ def _windows(groups, capacity):
 
 
 def run(bank, x, picks, out, *, prefill):
-    """Candidate run with the same admitted public bank contract as ExpertsA4."""
+    """Fill routed slots with the prepared bank's exact native A4 math."""
     from tensorfold.cuda.kernels import qmm
 
     bank._check(x, picks, out, prefill=prefill)
     out.zero_()
-    capacity = bank.cache.capacity if hasattr(bank, "cache") else bank.count
+    capacity = bank.capacity
     ext = _ext()
     up_sk = 1 if prefill else qmm.split_k(bank.width, bank.dims)
     down_sk = 1 if prefill else qmm.split_k(bank.dims, bank.width)
@@ -67,7 +52,7 @@ def run(bank, x, picks, out, *, prefill):
                 if 0 <= expert < bank.count:
                     groups.setdefault(expert, []).append((lo + row, slot))
         for pairs, ids in _windows(groups, capacity):
-            with _lease(bank, ids) as (fields, mapping):
+            with bank.lease(ids) as (fields, mapping):
                 members = [(row, slot, mapping[expert]) for row, slot, expert in pairs]
                 items = []
                 for first in range(len(members)):
@@ -92,5 +77,5 @@ def run(bank, x, picks, out, *, prefill):
                 # Hidden rows are pair-indexed; destination row/slot/cell
                 # remain in the original plan for down scatter.
                 ext.quantize(hidden, plan, fields[5], down_codes, down_scales, True)
-                ext.gemm(down_codes, down_scales, fields[1].unsqueeze(1), fields[3], fields[5], item, plan,
+                ext.gemm(down_codes, down_scales, bank.native_down, fields[3], fields[5], item, plan,
                          out, bank.dims, bank.width, down_sk, True)

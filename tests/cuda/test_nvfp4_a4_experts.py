@@ -1,52 +1,22 @@
 """Native A4 routed banks versus original checkpoint-native individual linears."""
 
+import gc
+import weakref
+
 import pytest
 import torch
-from nvfp4_a4_inputs import PREFIX, Context, ct_quant_reference, swiglu
+from nvfp4_a4_inputs import PREFIX, Context, ct_quant_reference, individual_reference, swiglu
 
 if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
     pytest.skip("native activation FP4 requires SM12", allow_module_level=True)
 
-from tensorfold.cuda.expert_cache import HostExpertCache, entry_bytes_for
-from tensorfold.cuda.nvfp4 import checkpoint
+from tensorfold.cuda.expert_cache import entry_bytes_for
+from tensorfold.cuda.expert_pin import ExpertPinPolicy
+from tensorfold.cuda.nvfp4 import cache_a4, checkpoint
+from tensorfold.cuda.nvfp4.cache_a4 import A4ExpertCache
+from tensorfold.cuda.nvfp4.grouped_a4 import _ext
 from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
-from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4
-from tensorfold.cuda.nvfp4.linear import Fp4Linear
-
-
-def linears(ctx, expert):
-    result = []
-    for projection in ("gate_proj", "up_proj", "down_proj"):
-        base = f"{PREFIX}.experts.{expert}.{projection}"
-        fields = ctx.payload
-        result.append(Fp4Linear.from_checkpoint(fields[base + ".weight_packed"].cuda(),
-            fields[base + ".weight_scale"].cuda(), 1. / float(fields[base + ".weight_global_scale"][0]),
-            act=1. / float(fields[base + ".input_global_scale"][0]),
-            act_inverse=float(fields[base + ".input_global_scale"][0])))
-    return result
-
-
-def individual_reference(ctx, x, picks, *, prefill):
-    """Original CPU checkpoint fields packed by the separate CUDA implementation.
-
-    Each row/slot executes alone, with its original expert's three independent
-    globals and two separate BF16 operations before down quantization.
-    """
-    outputs = torch.zeros((*picks.shape, ctx.cfg.hidden), dtype=torch.bfloat16 if prefill else torch.float32,
-                          device=x.device)
-    native = checkpoint.prompt if prefill else checkpoint.matmul
-    lins = [linears(ctx, e) for e in range(ctx.cfg.experts)]
-    for row, slots in enumerate(picks.cpu().tolist()):
-        for slot, expert in enumerate(slots):
-            if not 0 <= expert < ctx.cfg.experts:
-                continue
-            gate, up, down = lins[expert]
-            g = native(checkpoint.A4, x[row:row + 1], gate)
-            u = native(checkpoint.A4, x[row:row + 1], up)
-            silu = torch.nn.functional.silu(g)
-            hidden = silu * u
-            outputs[row, slot] = native(checkpoint.A4, hidden, down, f32=not prefill)[0]
-    return outputs
+from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, entry_layout_a4
 
 
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 17), (True, 133)])
@@ -56,7 +26,7 @@ def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill,
     authority = Context()
     entry = entry_bytes_for(tuple(torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
                                   for shape, dtype in authority_fields_a4(1, original.cfg.moe_width, original.cfg.hidden)))
-    cache = HostExpertCache(entry, entry, "cuda:0")
+    cache = A4ExpertCache(entry, entry, "cuda:0", width=original.cfg.moe_width, dims=original.cfg.hidden)
     try:
         cached = load_host_experts_a4(authority, PREFIX, authority.cfg, "cuda:0", cache=cache, swiglu=swiglu)
         x = (torch.randn(rows, original.cfg.hidden, generator=torch.Generator().manual_seed(901)) * .3).to(
@@ -74,7 +44,7 @@ def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill,
         out = output[:, :3]
         for bank in (resident, cached, cached):
             with monkeypatch.context() as patch:
-                patch.setattr(checkpoint, "_inv", lambda value: pytest.fail("HOT static input reciprocal"))
+                patch.setattr(checkpoint, "_inv", lambda value: pytest.fail("CPU input reciprocal during grouped execution"))
                 bank.run(x, picks, out, prefill=prefill)
             assert torch.equal(out, expected)
             assert torch.equal(output[:, 3], torch.full_like(output[:, 3], 17.))
@@ -101,42 +71,71 @@ def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill,
         cache.close()
 
 
-@pytest.mark.parametrize("prefill,capacity", [(False, 1), (False, 4), (True, 1), (True, 4)])
-def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_projection_shapes(prefill, capacity):
-    from tensorfold.cuda.nvfp4.grouped_a4 import _ext, run
-
-    context = Context(count=4, width=512, dims=2048)
-    resident = load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", swiglu=swiglu)
-    entry = entry_bytes_for(tuple(torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
-                                 for shape, dtype in authority_fields_a4(1, 512, 2048)))
-    cache = HostExpertCache(entry * capacity, entry, "cuda:0")
+@pytest.mark.parametrize("prefill,capacity,pin", [(False, 1, False), (False, 4, False),
+                                               (True, 1, False), (True, 4, False), (False, 4, True)])
+def test_native_a4_actual_shapes_copy_pin_resize_oracle_and_retirement(prefill, capacity, pin, monkeypatch):
+    geometry = entry_layout_a4(512, 2048)
+    entry = geometry.entry_bytes
+    policy = (ExpertPinPolicy(4 * entry, mode="on", allocation_bytes=(4 * entry,)) if pin else None)
+    cache = A4ExpertCache(entry, entry, "cuda:0", width=512, dims=2048, pin_policy=policy)
     try:
-        fresh = Context(count=4, width=512, dims=2048)
-        cached = load_host_experts_a4(fresh, PREFIX, fresh.cfg, "cuda:0", cache=cache, swiglu=swiglu)
-        rows, slots = 33, 5
-        x = (torch.randn(rows, 2048, generator=torch.Generator().manual_seed(991)) * .7).to("cuda", torch.bfloat16)
-        full = torch.full((rows, slots + 1), -7, dtype=torch.int32, device="cuda")
-        picks = full[:, :slots]
-        picks[:, :4] = (torch.arange(rows, dtype=torch.int32, device="cuda")[:, None] +
-                        torch.arange(4, dtype=torch.int32, device="cuda")) % 4
-        out = torch.zeros((rows, slots + 1, 2048), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
-        expected = torch.empty_like(out[:, :slots])
-        resident.run(x, picks, expected, prefill=prefill)
-        for bank in (resident, cached, cached):
-            run(bank, x, picks, out[:, :slots], prefill=prefill)
-            assert torch.equal(out[:, :slots], expected)
-            assert torch.count_nonzero(out[:, slots:]) == 0
-        # Odd row/slot strides and a one-element storage offset are legal
-        # public views; BF16 stores cannot assume bfloat162 alignment here.
-        slot_stride = 2049
-        row_stride = slots * slot_stride + 1
-        storage = torch.full((rows * row_stride + 1,), 17., dtype=out.dtype, device="cuda")
-        odd = storage.as_strided((rows, slots, 2048), (row_stride, slot_stride, 1), 1)
-        run(cached, x, picks, odd, prefill=prefill)
-        assert torch.equal(odd, expected)
-        mask = torch.zeros(storage.shape, dtype=torch.bool, device="cuda")
-        mask.as_strided(odd.shape, odd.stride(), 1).fill_(True)
-        assert torch.equal(storage[~mask], torch.full_like(storage[~mask], 17.))
+        context = Context(count=4, width=512, dims=2048)
+        bank = load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache, swiglu=swiglu)
+        assert len(cache._layers[0].source) == len(cache._layers[0].views) == 1
+        authority_ref = weakref.ref(cache._layers[0].source[0])
+        old_pool, old_views = cache._pool, cache._native_views
+        original_views = cache_a4.native_views
+
+        def fail_views(*args):
+            raise RuntimeError("private replacement view failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(cache_a4, "native_views", fail_views)
+            with pytest.raises(RuntimeError, match="replacement view failure"):
+                cache.configure_before_use(entry * capacity)
+        assert cache._pool is old_pool and cache._native_views is old_views and cache.capacity == 1
+        cache.configure_before_use(entry * capacity)
+        assert cache.capacity == capacity
+        assert all(t.stride(0) * t.element_size() == entry for t in cache._native_views)
+        assert cache._native_down.data_ptr() == cache._native_views[1].data_ptr()
+        del old_pool, old_views
+        # One staged or direct H2D copy per expert miss, including calibrations.
+        uploads, original_copy = [], torch.Tensor.copy_
+
+        def copied(target, source, *args, **kwargs):
+            if target.device.type == "cuda" and source.device.type == "cpu":
+                uploads.append(target.numel() * target.element_size())
+            return original_copy(target, source, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(torch.Tensor, "copy_", copied)
+            with cache.lease(0, [0]):
+                pass
+        assert uploads == [entry]
+        assert cache._layers[0].pinned == (pin,)
+        # Preparing another view after the first borrow is forbidden by the
+        # candidate's own contract, independently of numerical comparison.
+        with monkeypatch.context() as patch:
+            patch.setattr(cache_a4, "native_views", lambda *a: pytest.fail("late native view allocation"))
+            source = Context(count=4, width=512, dims=2048)
+            resident = load_host_experts_a4(source, PREFIX, source.cfg, "cuda:0", swiglu=swiglu)
+            rows, slots = 33, 5
+            x = (torch.randn(rows, 2048, generator=torch.Generator().manual_seed(1441)) * .5).to("cuda", torch.bfloat16)
+            picks = torch.full((rows, slots + 1), -7, dtype=torch.int32, device="cuda")[:, :slots]
+            picks[:, :4] = (torch.arange(rows, dtype=torch.int32, device="cuda")[:, None] +
+                            torch.arange(4, dtype=torch.int32, device="cuda")) % 4
+            expected = torch.empty((rows, slots, 2048), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
+            expected.copy_(individual_reference(Context(count=4, width=512, dims=2048), x, picks, prefill=prefill))
+            stride = slots * 2049 + 1
+            storage = torch.full((rows * stride + 1,), 17., dtype=expected.dtype, device="cuda")
+            output = storage.as_strided(expected.shape, (stride, 2049, 1), 1)
+            for _ in range(2):
+                bank.run(x, picks, output, prefill=prefill)
+                assert torch.equal(output, expected)
+            mask = torch.zeros(storage.shape, dtype=torch.bool, device="cuda")
+            mask.as_strided(output.shape, output.stride(), 1).fill_(True)
+            assert torch.equal(storage[~mask], torch.full_like(storage[~mask], 17.))
+        assert cache_a4.native_views is original_views
         # Independent activation-quantizer oracle: standard quant4's byte
         # representation is row-major, while its scale layout is K-major.
         plan = torch.tensor([[0, 0, 3], [2, 1, 1], [1, 0, 0]], dtype=torch.int32, device="cuda")
@@ -150,15 +149,33 @@ def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_proje
                 want_codes, want_scales = ct_quant_reference(x[row:row + 1].cpu(), raw_multiplier)
                 assert torch.equal(codes[projection, pair].cpu(), want_codes[0])
                 assert torch.equal(scales[projection, pair].cpu(), want_scales[0])
-        boundary_x = torch.full((1, 2048), .5, dtype=torch.bfloat16, device="cuda")
-        boundary_plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
-        boundary_codes = torch.empty((2, 1, 1024), dtype=torch.uint8, device="cuda")
-        boundary_scales = torch.empty((2, 1, 128), dtype=torch.uint8, device="cuda")
-        _ext().quantize(boundary_x, boundary_plan, resident.fields[4], boundary_codes, boundary_scales)
-        assert torch.equal(boundary_scales[0], torch.full_like(boundary_scales[0], 0x0a))
-        assert cache.evictions > 0 if capacity < 4 else cache.evictions == 0
+        boundary = torch.full((1, 2048), .5, dtype=torch.bfloat16, device="cuda")
+        with cache.lease(0, [0]) as (fields, mapping):
+            plan = torch.tensor([[0, 0, mapping[0]]], dtype=torch.int32, device="cuda")
+            codes = torch.empty((2, 1, 1024), dtype=torch.uint8, device="cuda")
+            scales = torch.empty((2, 1, 128), dtype=torch.uint8, device="cuda")
+            _ext().quantize(boundary, plan, fields[4], codes, scales)
+        raw = float(context.payload[PREFIX + ".experts.0.gate_proj.input_global_scale"][0])
+        want_codes, want_scales = ct_quant_reference(boundary.cpu(), raw)
+        assert torch.equal(codes[0].cpu(), want_codes)
+        assert torch.equal(scales[0].cpu(), want_scales)
+        assert torch.equal(scales[0], torch.full_like(scales[0], 0x0a))
+        assert cache.copied_bytes == cache.misses * entry
+        if capacity == 1:
+            assert cache.evictions > 0
+        del fields
+        cache.close()
+        gc.collect()
+        assert cache._pool is None and cache._native_views == () and cache._native_down is None
+        assert authority_ref() is None
+        assert not any(isinstance(value, torch.Tensor) for value in vars(bank).values())
+        saved = output.clone()
+        with pytest.raises(RuntimeError, match="cached native A4 bank is closed"):
+            bank.run(x, picks, output, prefill=prefill)
+        assert torch.equal(output, saved)
     finally:
         cache.close()
+
 
 
 def test_grouped_native_boundary_refuses_empty_extreme_strides_before_launch():
@@ -201,4 +218,24 @@ def test_grouped_native_boundary_refuses_empty_extreme_strides_before_launch():
     want_codes, want_scales = checkpoint.quant4(x, 1.)
     assert torch.equal(codes[0], want_codes)
     assert torch.equal(scales[0, 0], want_scales[:, 0].reshape(-1))
+    torch.cuda.synchronize()
+
+
+def test_native_scalar_field_boundary_refuses_empty_extreme_stride_before_launch():
+    maximum = torch.iinfo(torch.int64).max
+    plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
+    x = torch.ones((1, 64), dtype=torch.bfloat16, device="cuda")
+    codes = torch.empty((2, 1, 32), dtype=torch.uint8, device="cuda")
+    scales = torch.empty((2, 1, 4), dtype=torch.uint8, device="cuda")
+    for shape in ((0, 2), (1, 0)):
+        invalid = torch.empty_strided(shape, (maximum, 1), dtype=torch.float32, device="cuda")
+        with pytest.raises(RuntimeError, match="positive inner|complete per-expert"):
+            _ext().quantize(x, plan, invalid, codes, scales)
+    # Unused singleton outer stride is legal and cannot overflow indexing.
+    calibration = torch.empty_strided((1, 2), (maximum, 1), dtype=torch.float32, device="cuda")
+    calibration.fill_(1.)
+    _ext().quantize(x, plan, calibration, codes, scales)
+    want_codes, want_scales = ct_quant_reference(x.cpu(), 1.)
+    assert torch.equal(codes[0].cpu(), want_codes)
+    assert torch.equal(scales[0].cpu(), want_scales)
     torch.cuda.synchronize()

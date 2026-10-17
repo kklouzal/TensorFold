@@ -91,8 +91,20 @@ authority registration. The pool reserves future KV, retained states, draft
 contexts and runtime scratch before choosing its final size. It requires discrete
 VRAM, a fresh native CUDA allocator and stable allocator configuration through
 startup. Reused/unproved allocator state fails explicitly. Resident execution may
-use unified memory. Both new expert implementations currently execute eagerly;
-the affine native-MTP graph path remains separate.
+use unified memory. Resident and cached banks use the same grouped native FP4
+activation kernels, executing eagerly; the affine native-MTP graph path remains
+separate. Cached authority stores one 16-byte-aligned U8 record per expert,
+including its three packed projections and four calibration fields. A miss
+uploads that record once. Native field views are prepared before the pool's
+first borrow and rebuilt transactionally when startup sizes the pool. For this
+checkpoint, each record is 1,769,536 bytes, including 40 bytes of initialized
+padding; admission charges the padding and host registration geometry.
+
+The cache owns the CPU authority and GPU pool. Cached banks retain geometry and
+cache identity, with no separate CPU calibration copies. A lease fences native
+consumers before reuse or close. Failed replacement preserves the existing
+pool; failed retirement retains its owners for explicit cleanup. Calls after a
+successful close fail before native execution or output mutation.
 
 Native component checks have passed on the RTX PRO 2000 Blackwell host. Full-model
 quality, throughput selection and immutable installed-image qualification remain

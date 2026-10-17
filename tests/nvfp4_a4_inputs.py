@@ -76,3 +76,42 @@ def ct_quant_reference(x, raw_multiplier):
         code = torch.where(absolute > edge if exclusive else absolute >= edge, next_code, code)
     code = torch.where((v < 0) & (code != 0), code | 8, code).view(m, k)
     return (code[:, ::2] | (code[:, 1::2] << 4)), encoded.view(torch.uint8)
+
+
+def linears(ctx, expert):
+    from tensorfold.cuda.nvfp4.linear import Fp4Linear
+
+    result = []
+    for projection in ("gate_proj", "up_proj", "down_proj"):
+        base = f"{PREFIX}.experts.{expert}.{projection}"
+        fields = ctx.payload
+        result.append(Fp4Linear.from_checkpoint(fields[base + ".weight_packed"].cuda(),
+            fields[base + ".weight_scale"].cuda(), 1. / float(fields[base + ".weight_global_scale"][0]),
+            act=1. / float(fields[base + ".input_global_scale"][0]),
+            act_inverse=float(fields[base + ".input_global_scale"][0])))
+    return result
+
+
+def individual_reference(ctx, x, picks, *, prefill):
+    """Original CPU checkpoint fields packed by the separate CUDA implementation.
+
+    Each row/slot executes alone, with its original expert's three independent
+    globals and two separate BF16 operations before down quantization.
+    """
+    from tensorfold.cuda.nvfp4 import checkpoint
+
+    outputs = torch.zeros((*picks.shape, ctx.cfg.hidden), dtype=torch.bfloat16 if prefill else torch.float32,
+                          device=x.device)
+    native = checkpoint.prompt if prefill else checkpoint.matmul
+    lins = [linears(ctx, e) for e in range(ctx.cfg.experts)]
+    for row, slots in enumerate(picks.cpu().tolist()):
+        for slot, expert in enumerate(slots):
+            if not 0 <= expert < ctx.cfg.experts:
+                continue
+            gate, up, down = lins[expert]
+            g = native(checkpoint.A4, x[row:row + 1], gate)
+            u = native(checkpoint.A4, x[row:row + 1], up)
+            silu = torch.nn.functional.silu(g)
+            hidden = silu * u
+            outputs[row, slot] = native(checkpoint.A4, hidden, down, f32=not prefill)[0]
+    return outputs

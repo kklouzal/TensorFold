@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from math import prod
 
 
 def routed_tensor(name):
@@ -67,7 +69,7 @@ _A4_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
 
 
 def authority_fields_a4(count, width, dims):
-    """Native-A4 CPU authority fields, separate from Flash Next's W4A16 blocks.
+    """Six logical native-A4 fields, separate from Flash Next's W4A16 blocks.
 
     A projection blob holds checkpoint FP4 code words, then its tiled E4M3
     block scales. Weight global fields hold prepared FP32 reciprocals; input
@@ -130,3 +132,36 @@ def bank_bases_a4(infos, text):
             if info.get("dtype") != dtype or list(info.get("shape", ())) != shape:
                 raise ValueError(f"{name}.experts.{expert}.{projection}.{field}: invalid native A4 storage")
     return tuple(sorted(banks))
+
+
+@dataclass(frozen=True)
+class A4Field:
+    shape: tuple[int, ...]
+    dtype: str
+    offset: int
+    size: int
+
+
+@dataclass(frozen=True)
+class A4EntryLayout:
+    entry_bytes: int
+    fields: tuple[A4Field, ...]
+    padding: tuple[tuple[int, int], ...]
+
+
+def entry_layout_a4(width, dims, *, count=1):
+    """Canonical 16-byte entry layout for native A4 host authority and hot cells."""
+    fields, padding, cursor = [], [], 0
+    for shape, dtype in authority_fields_a4(count, width, dims):
+        offset = -(-cursor // 16) * 16
+        if offset != cursor:
+            padding.append((cursor, offset))
+        size = prod(shape[1:]) * (1 if dtype == "U8" else 4)
+        fields.append(A4Field(shape[1:], dtype, offset, size))
+        cursor = offset + size
+    entry = -(-cursor // 16) * 16
+    if entry != cursor:
+        padding.append((cursor, entry))
+    if count * entry > 2**63 - 1:
+        raise ValueError("native A4 padded authority exceeds tensor storage size limits")
+    return A4EntryLayout(entry, tuple(fields), tuple(padding))

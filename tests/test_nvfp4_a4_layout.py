@@ -1,10 +1,11 @@
 """Native A4 header/field accounting independent of device execution."""
 
 import math
+from itertools import pairwise
 
 import pytest
 
-from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, bank_bases_a4, routed_tensor_a4
+from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, bank_bases_a4, entry_layout_a4, routed_tensor_a4
 
 
 def headers():
@@ -28,6 +29,28 @@ def test_six_fields_match_original_payload_and_padding_oracle():
     gpu = sum(-(-(n // 256) // 16) * 16 for n in sizes)
     assert gpu == 1_769_536
     assert [dtype for _, dtype in fields] == ["U8", "U8", "F32", "F32", "F32", "F32"]
+
+
+def test_interleaved_layout_preserves_every_field_offset_and_initialized_padding_range():
+    layout = entry_layout_a4(512, 2048, count=256)
+    assert layout.entry_bytes == 1_769_536
+    assert [(field.offset, field.size) for field in layout.fields] == [
+        (0, 1_179_648), (1_179_648, 589_824), (1_769_472, 8),
+        (1_769_488, 4), (1_769_504, 8), (1_769_520, 4)]
+    assert layout.padding == ((1_769_480, 1_769_488), (1_769_492, 1_769_504),
+                              (1_769_512, 1_769_520), (1_769_524, 1_769_536))
+    assert sum(hi - lo for lo, hi in layout.padding) == 40
+    spans = sorted([(field.offset, field.offset + field.size) for field in layout.fields] + list(layout.padding))
+    assert spans[0][0] == 0 and spans[-1][1] == layout.entry_bytes
+    assert all(left[1] == right[0] for left, right in pairwise(spans))
+
+
+def test_total_padded_authority_bound_includes_all_three_projections():
+    # Separate gate/up storage fits signed64; the unified complete record does
+    # not. Refuse before headers, allocation or unchecked storage arithmetic.
+    authority_fields_a4(700, 2**27, 2**26)
+    with pytest.raises(ValueError, match="padded authority exceeds"):
+        entry_layout_a4(2**27, 2**26, count=700)
 
 
 def test_complete_main_banks_and_exact_field_selection():

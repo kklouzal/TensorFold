@@ -50,14 +50,17 @@ def test_raw_codes_scales_and_six_fp32_globals_match_authority_and_aligned_pool(
     payload = 3 * (matrix // 2 + matrix // 16) + 24
     entry = 3 * (matrix // 2 + matrix // 16) + 64
     plan = ram.layout(tmp_path, (2 * entry + 7) / ram.GIB)
-    assert plan.host_bytes == 6 * payload == 83088
+    assert plan.host_bytes == 6 * entry == 83328
+    assert plan.authority_padding_bytes == 6 * (entry - payload) == 240
     assert plan.entry_bytes == entry == 13888
     assert plan.slots == 2 and plan.gpu_bytes == 27776
-    assert plan.authority_allocations == (27648, 13824, 24, 12, 24, 12) * 2
+    assert plan.authority_allocations == (3 * entry,) * 2
     assert plan.staging_bytes == 32768
     assert plan.metadata_host_bytes > 5 * plan.largest_header_bytes
     assert plan.control_host_bytes > 6
     assert not plan.receipt()["capturable"]
+    assert "prepared_activation_calibration_bytes" not in plan.receipt()
+    assert plan.receipt()["upload_fields_per_expert_miss"] == 1
     resident = lambda name, info: (math.prod(info["shape"]) * SIZES[info["dtype"]], 0)
     transform = plan.transform(resident)
     routed = sum(resident(name, info)[0] for name, info in infos.items() if ".experts." in name)
@@ -174,7 +177,9 @@ def test_full_heretic_geometry_is_not_a_gpu_residency_estimate(tmp_path, monkeyp
     # full-model arithmetic without creating payload or relying on that helper.
     monkeypatch.setattr(ram, "bank_bases_a4", lambda entries, text: tuple(f"model.layers.{i}.mlp" for i in range(40)))
     plan = ram.layout(tmp_path, "auto")
-    assert plan.host_bytes == 18119639040 and plan.entry_bytes == 1769536
+    assert plan.host_bytes == 18119639040 + 409600 == 18120048640 and plan.entry_bytes == 1769536
+    assert plan.authority_padding_bytes == 40 * 40 * 256 == 409600
+    assert plan.authority_allocations == (256 * 1769536,) * 40
     assert plan.expert_count == 10240
     assert plan.runtime_workspace_bytes == 5308416
     assert plan.gpu_bytes == plan.entry_bytes and plan.automatic

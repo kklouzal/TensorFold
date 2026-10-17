@@ -12,13 +12,13 @@
 namespace {
 
 __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int k,
-                              const int* plan, int pairs, const float* input, int cells, int projections,
+                              const int* plan, int pairs, const float* input, int cells, int64_t input_stride,
                               uint8_t* codes, uint8_t* scales, bool paired) {
     const int blk = blockIdx.x * blockDim.x + threadIdx.x, pair = blockIdx.y, projection = blockIdx.z;
     if (blk >= k / 16) return;
     const int row = paired ? pair : plan[3 * pair], cell = plan[3 * pair + 2];
     if (row < 0 || row >= rows || cell < 0 || cell >= cells) { __trap(); return; }
-    const float inverse = input[static_cast<int64_t>(cell) * projections + projection];
+    const float inverse = input[static_cast<int64_t>(cell) * input_stride + projection];
     float values[16], amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
@@ -40,7 +40,8 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
 // input globals differ from the other projection or the next expert.
 template <bool DOWN, bool F32>
 __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const uint8_t* scales,
-    const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input, int cells, int projections,
+    const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input,
+    int64_t blob_stride, int64_t weight_stride, int64_t input_stride, int cells,
     const int* items, int item_count, const int* plan, int pairs, void* out, int64_t out_row, int64_t out_slot,
     int output_rows, int output_slots, int n, int k, int slices) {
     const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
@@ -54,7 +55,7 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
     }
     const int r0 = first + g, r1 = r0 + 8, kg_count = k / 64, per = kg_count / slices;
     const bool valid0 = g < count, valid1 = g + 8 < count;
-    const uint8_t* w = blob + (static_cast<int64_t>(cell) * projections + projection) * blob_bytes;
+    const uint8_t* w = blob + static_cast<int64_t>(cell) * blob_stride + projection * blob_bytes;
     const uint8_t* ws = w + static_cast<int64_t>(n) * k / 2;
     float total[4] = {0.f, 0.f, 0.f, 0.f};
     for (int slice = 0; slice < slices; ++slice) {
@@ -78,8 +79,9 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
 #pragma unroll
         for (int v = 0; v < 4; ++v) total[v] = slice == 0 ? acc[v] : __fadd_rn(total[v], acc[v]);
     }
-    const int64_t scale_at = static_cast<int64_t>(cell) * projections + projection;
-    const float alpha = __fmul_rn(__fdiv_rn(1.f, input[scale_at]), weight[scale_at]);
+    const int64_t input_at = static_cast<int64_t>(cell) * input_stride + projection;
+    const int64_t weight_at = static_cast<int64_t>(cell) * weight_stride + projection;
+    const float alpha = __fmul_rn(__fdiv_rn(1.f, input[input_at]), weight[weight_at]);
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
         const int r = first + g + h * 8;
@@ -112,7 +114,7 @@ void expert_a4_quant_cuda(const at::Tensor& x, const at::Tensor& plan, const at:
     quant_kernel<<<dim3((x.size(1) / 16 + 127) / 128, plan.size(0), input.size(1)), 128, 0,
                     at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
         x.stride(0), x.size(0), x.size(1), plan.data_ptr<int>(), plan.size(0), input.data_ptr<float>(), input.size(0),
-        input.size(1), codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), paired);
+        input.stride(0), codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), paired);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -123,7 +125,8 @@ void launch_gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Te
     const dim3 grid((items.size(0) * (n / 8) + 3) / 4, blob.size(1));
     gemm_kernel<DOWN, F32><<<grid, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
         codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), blob.data_ptr<uint8_t>(), blob.size(2),
-        weight.data_ptr<float>(), input.data_ptr<float>(), blob.size(0), blob.size(1), items.data_ptr<int>(),
+        weight.data_ptr<float>(), input.data_ptr<float>(), blob.stride(0), weight.stride(0), input.stride(0),
+        blob.size(0), items.data_ptr<int>(),
         items.size(0), plan.data_ptr<int>(), plan.size(0), out.data_ptr(), out.stride(0), out.stride(1),
         out.size(0), out.size(1), n, k, sk);
 }

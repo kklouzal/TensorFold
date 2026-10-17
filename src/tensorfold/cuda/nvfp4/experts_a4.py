@@ -1,22 +1,16 @@
-"""Native activation-FP4 routed experts, separate from Flash Next's W4A16 banks.
+"""Native A4 expert banks; GPU grouped execution consumes all calibrations.
 
-The authority contains original checkpoint code/scale bits in checkpoint MMA
-order. CPU-owned scalar metadata supplies per-expert calibrations without a
-GPU scalar readback. A run borrows one expert at a time, retires each cache
-lease after its submitted consumers, and retains no per-bank device scratch.
+Resident banks own six device fields. Cached banks hold only cache identity and
+geometry; immutable padded CPU authority belongs solely to the model's cache.
+No CPU calibration arrays or individual-expert math remain in serving.
 """
-
-from __future__ import annotations
 
 from contextlib import contextmanager
 
 import torch
 
-from . import checkpoint
+from .grouped_a4 import run
 from .host_layout import authority_fields_a4
-from .linear import Fp4Linear
-
-PAIRS = 128
 
 
 def pack_projection_a4(weight, scale):
@@ -37,20 +31,6 @@ def pack_projection_a4(weight, scale):
     return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
 
 
-def projection_a4(blob, n, k, weight_scale, input_inverse, *, prepared_act=None):
-    """Borrow admitted code/scale bytes and original CT input multiplier.
-
-    Payload admission belongs to loading; this HOT view never rescans scales.
-    The dequantization scale is prepared separately for the selected alpha
-    contract; quantization consumes the original multiplier without roundtrip.
-    """
-    cut = n * k // 2
-    words = blob[:cut].view(torch.int32).view(n // 64, k // 64, 8, 32, 2)
-    scales = blob[cut:].view(n // 64, k // 64, 64, 4)
-    act = checkpoint._inv(input_inverse) if prepared_act is None else prepared_act
-    return Fp4Linear(words, scales, weight_scale, n, k, act=act, act_inverse=input_inverse)
-
-
 def _span(t):
     if not t.numel():
         return 0, 0
@@ -63,57 +43,41 @@ def _overlap(a, b):
 
 
 class ExpertsA4:
-    """Resident six-field bank; the public picks are local expert IDs.
+    """Prepared resident bank, with a fixed grouped execution/lease contract.
 
-    ``swiglu`` is a prepared BF16 SiLU/product callable with a BF16 intermediate
-    SiLU result. Inputs/outputs must not alias each other or any expert storage.
-    Invalid picks (negative or >=count) write zero without reading authority.
-    Native decode and prompt retain their existing independent K-chain rules.
+    Inputs and outputs must be disjoint from each other and expert storage.
+    Out-of-local-range picks are inactive zero slots. Per-projection raw input
+    multipliers, weight reciprocals and native mode-specific K sums stay exact.
     """
 
     capturable = False
+    run = run
 
-    def __init__(self, fields, scalar_fields, width, dims, *, swiglu):
-        self.width, self.dims = width, dims
+    def __init__(self, fields, width, dims, *, swiglu):
         if len(fields) != 6 or fields[0].ndim != 3:
             raise ValueError("native A4 expert bank requires six fields")
-        self.count = fields[0].shape[0]
+        self.width, self.dims, self.count = width, dims, fields[0].shape[0]
         geometry = authority_fields_a4(self.count, width, dims)
-        if (len(scalar_fields) != 4 or not callable(swiglu)
-                or any(tuple(t.shape) != shape or t.dtype != (torch.uint8 if dtype == "U8" else torch.float32)
-                       or not t.is_contiguous() for t, (shape, dtype) in zip(fields, geometry))):
-            raise ValueError("native A4 expert fields disagree with authority geometry")
-        self.fields, self.scalars, self.swiglu = tuple(fields), tuple(scalar_fields), swiglu
+        if (not callable(swiglu) or any(tuple(t.shape) != shape
+                or t.dtype != (torch.uint8 if dtype == "U8" else torch.float32)
+                or not t.is_contiguous() for t, (shape, dtype) in zip(fields, geometry))):
+            raise ValueError("native A4 resident fields disagree with admitted geometry")
         self.device = fields[0].device
         if self.device.type != "cuda" or any(t.device != self.device for t in fields):
             raise ValueError("native A4 resident fields require one CUDA device")
-        self._validate_scalars(geometry)
-        self._prepare_inputs()
+        self.fields, self.swiglu = tuple(fields), swiglu
+        self.native_down = self.fields[1].unsqueeze(1)
 
-    def _prepare_inputs(self):
-        """Prepare the same scalar FP32 reciprocal once; retained bytes=12*count.
-
-        These ordinary CPU tensors are immutable model-owned derived metadata.
-        Original input multipliers remain unchanged in authority and on device.
-        """
-        self.prepared_inputs = tuple(torch.empty(source.shape, dtype=torch.float32, device="cpu")
-                                     for source in self.scalars[2:])
-        for source, target in zip(self.scalars[2:], self.prepared_inputs):
-            for expert in range(self.count):
-                for projection in range(source.shape[1]):
-                    target[expert, projection] = checkpoint._inv(float(source[expert, projection]))
-
-    def _validate_scalars(self, geometry):
-        for t, (shape, _) in zip(self.scalars, geometry[2:]):
-            if t.device.type != "cpu" or t.dtype != torch.float32 or tuple(t.shape) != shape or not t.is_contiguous():
-                raise ValueError("native A4 calibrations must be immutable CPU FP32 expert fields")
+    @property
+    def capacity(self):
+        return self.count
 
     def device_tensors(self):
         return self.fields
 
     @contextmanager
-    def _expert(self, expert):
-        yield self.fields, expert
+    def lease(self, ids):
+        yield self.fields, {expert: expert for expert in ids}
 
     def _check(self, x, picks, out, *, prefill):
         if (type(prefill) is not bool or x.device != self.device or x.dtype != torch.bfloat16 or x.ndim != 2
@@ -131,59 +95,34 @@ class ExpertsA4:
                                                         for t in storage):
             raise ValueError("native A4 rows, picks and outputs must not overlap expert storage or each other")
 
-    def run(self, x, picks, out, *, prefill):
-        self._check(x, picks, out, prefill=prefill)
-        out.zero_()
-        run = checkpoint.prompt if prefill else checkpoint.matmul
-        for lo in range(0, x.shape[0], PAIRS):
-            rows = picks[lo:lo + PAIRS].cpu().tolist()
-            groups = {}
-            for row, values in enumerate(rows):
-                for slot, expert in enumerate(values):
-                    if 0 <= expert < self.count:
-                        groups.setdefault(expert, []).append((lo + row, slot))
-            for expert in sorted(groups):
-                pairs = groups[expert]
-                with self._expert(expert) as (fields, cell):
-                    gu_scale, dn_scale, gu_input, dn_input = self.scalars
-                    gu_act, dn_act = self.prepared_inputs
-                    gate = projection_a4(fields[0][cell, 0], self.width, self.dims,
-                                         float(gu_scale[expert, 0]), float(gu_input[expert, 0]),
-                                         prepared_act=float(gu_act[expert, 0]))
-                    up = projection_a4(fields[0][cell, 1], self.width, self.dims,
-                                       float(gu_scale[expert, 1]), float(gu_input[expert, 1]),
-                                       prepared_act=float(gu_act[expert, 1]))
-                    down = projection_a4(fields[1][cell], self.dims, self.width,
-                                         float(dn_scale[expert, 0]), float(dn_input[expert, 0]),
-                                         prepared_act=float(dn_act[expert, 0]))
-                    for at in range(0, len(pairs), PAIRS):
-                        block = pairs[at:at + PAIRS]
-                        indices = torch.tensor(block, dtype=torch.int64, device=self.device)
-                        selected = x.index_select(0, indices[:, 0])
-                        g = run(checkpoint.A4, selected, gate)
-                        u = run(checkpoint.A4, selected, up)
-                        hidden = self.swiglu(g, u)
-                        value = run(checkpoint.A4, hidden, down, f32=not prefill)
-                        out[indices[:, 0], indices[:, 1]] = value
-
 
 class CachedExpertsA4(ExpertsA4):
-    """Same arithmetic with a model-owned cache's bounded six-field leases."""
+    """Geometry and cache identity only; no retained CPU authority aliases."""
 
-    def __init__(self, authority, width, dims, *, cache, layer_id, swiglu):
-        self.width, self.dims, self.count = width, dims, authority[0].shape[0]
-        self.cache, self.layer_id, self.device = cache, layer_id, cache.device
-        self.scalars, self.swiglu = tuple(authority[2:]), swiglu
-        self._validate_scalars(authority_fields_a4(self.count, width, dims))
-        self._prepare_inputs()
+    def __init__(self, count, width, dims, *, cache, layer_id, swiglu):
+        authority_fields_a4(count, width, dims)
         if not callable(swiglu):
             raise TypeError("native A4 requires the prepared BF16 SiLU/product callable")
-        cache.register(layer_id, tuple(authority))
+        self.width, self.dims, self.count = width, dims, count
+        self.cache, self.layer_id, self.device, self.swiglu = cache, layer_id, cache.device, swiglu
+
+    @property
+    def capacity(self):
+        return self.cache.capacity
+
+    @property
+    def native_down(self):
+        return self.cache._native_down
 
     def device_tensors(self):
-        return (self.cache._pool,)
+        # Keep one strong snapshot for alias inspection. Concurrent close may
+        # retire the cache, but the subsequent lease owns admission/fencing.
+        pool = self.cache._pool
+        if pool is None:
+            raise RuntimeError("cached native A4 bank is closed")
+        return (pool,)
 
     @contextmanager
-    def _expert(self, expert):
-        with self.cache.lease(self.layer_id, [expert]) as (fields, mapping):
-            yield fields, mapping[expert]
+    def lease(self, ids):
+        with self.cache.lease(self.layer_id, ids) as result:
+            yield result
