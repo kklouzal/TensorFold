@@ -249,7 +249,7 @@ class Controls(unittest.TestCase):
                     raise PayloadReached()
                 def close(self):
                     events.append('close')
-            helper = source_scope(WEIGHTS, {'_validate_fp8_prefill'})['_validate_fp8_prefill']
+            helpers = source_scope(WEIGHTS, {'_validate_fp8_prefill', '_rotary_frequencies'})
             scope = source_scope(NVFP4, {'load_nvfp4'}, __package__='tensorfold.families.qwen3_5.cuda',
                                  Path=Path, skipped=lambda name: False, SUFFIXES=('weight',),
                                  prompt_precision=SimpleNamespace(fp8=lambda: fp8),
@@ -261,7 +261,8 @@ class Controls(unittest.TestCase):
                 fake.__dict__.update(GDN=object, Attention=object, Config=SimpleNamespace(read=lambda path: cfg),
                                      Layer=object, Weights=object, _Tensors=Reader,
                                      _close_failed_checkpoint=lambda reader, error: reader.close(),
-                                     _validate_fp8_prefill=helper)
+                                     _validate_fp8_prefill=helpers['_validate_fp8_prefill'],
+                                     _rotary_frequencies=helpers['_rotary_frequencies'])
                 modules[fake.__name__] = fake
                 with patch.dict(sys.modules, {fake.__name__: fake}):
                     with self.assertRaises((ValueError, PayloadReached)) as raised:

@@ -38,8 +38,8 @@ def test_mlx_app_count_reaches_request_preparation(limit, monkeypatch):
 
 
 @pytest.mark.parametrize("backend", ["mlx", "cuda"])
-def test_configured_count_applies_to_splitting_and_decoding(backend):
-    app = prompt_app(Frontend()) if backend == "mlx" else cuda_app(Frontend())
+def test_configured_count_applies_to_splitting_and_decoding(backend, tmp_path):
+    app = prompt_app(Frontend()) if backend == "mlx" else cuda_app(Frontend(), tmp_path)
     app.image_limits = ImageLimits(max_images=8)
     messages = image_messages() * 5
     if backend == "mlx":
@@ -77,8 +77,8 @@ class ImageApp(FakeApp):
 @pytest.mark.parametrize("backend", ["mlx", "cuda"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("limit", [4, 8])
-def test_image_history_refusal_and_recovery_on_the_same_server(backend, stream, limit):
-    app = ImageApp(limit) if backend == "mlx" else cuda_app(Frontend())
+def test_image_history_refusal_and_recovery_on_the_same_server(backend, stream, limit, tmp_path):
+    app = ImageApp(limit) if backend == "mlx" else cuda_app(Frontend(), tmp_path)
     app.image_limits = ImageLimits(max_images=limit)
     handler = (mlx_handler if backend == "mlx" else cuda_handler)(app)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -150,7 +150,7 @@ def test_cuda_cli_count_reaches_request_preparation(tmp_path, monkeypatch, reque
 
     def exercise(app):
         # A tokenizer template need only preserve markers for our model-free processor.
-        app.template = NS(render=lambda *args, **kwargs: "rendered prompt")
+        monkeypatch.setattr(app.template, "render", lambda *args, **kwargs: "rendered prompt")
         prepared = app.prepare({"messages": image_messages() * accepted, "max_tokens": 2}, True)
         seen.append(len(prepared.vision.image_hashes))
         with pytest.raises(RequestError, match=f"at most {accepted}"):

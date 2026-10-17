@@ -70,11 +70,11 @@ def test_the_budget_needs_vision_and_cuda():
         serve_options.check(_args(vision_image_tokens=8192), family, "mlx")
 
 
-def test_a_cuda_request_carries_the_servers_budget_to_the_frontend():
+def test_a_cuda_request_carries_the_servers_budget_to_the_frontend(tmp_path):
     from tests.test_vision_server import cuda_app
 
     front = BudgetFrontend()
-    app = cuda_app(front)
+    app = cuda_app(front, tmp_path)
     app.image_limits = ImageLimits(max_images=8, max_visual_tokens=16384)
     prepared = app.prepare({"messages": image_messages() * 5, "max_tokens": 2}, True)
     assert len(prepared.vision.image_hashes) == 5 and front.budget == {"max_visual_tokens": 16384}
