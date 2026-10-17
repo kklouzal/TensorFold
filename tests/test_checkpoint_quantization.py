@@ -1,0 +1,110 @@
+"""Independent export-schema, boundary and activation-intent controls."""
+
+from copy import deepcopy
+import itertools
+import re
+
+import pytest
+
+from tensorfold.checkpoint_quantization import LinearQuantization, effective_config
+
+
+def side(algo="NVFP4", **kw):
+    return {"producer": {"name": "modelopt", "version": "0.46.0"},
+            "quantization": dict(quant_algo=algo, **kw)}
+
+
+def test_sidecar_only_and_aliases_are_owned_without_changing_architecture():
+    original = {"model_type": "qwen3_5", "text_config": {"hidden_size": 4096}, "eos_token_id": [1, 7]}
+    ancillary = side(exclude_modules=["model.visual*", "lm_head"], kv_cache_quant_algo=None)
+    before = deepcopy((original, ancillary))
+    got = effective_config(original, ancillary, where="model")
+    assert (original, ancillary) == before
+    assert got["text_config"] == original["text_config"]
+    assert got["eos_token_id"] == [1, 7]
+    q = got["quantization_config"]
+    assert q["quant_method"] == "modelopt" and q["quant_algo"] == "NVFP4"
+    assert q["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
+    assert q["ignore"] == ["model.visual*", "lm_head"] and q["kv_cache_scheme"] is None
+    q["ignore"].clear()
+    assert ancillary == before[1]
+
+
+@pytest.mark.parametrize("location", ["quantization", "quantization_config", "text"])
+def test_weight_only_algorithm_never_infers_activation_quantization(location):
+    value = {"quant_method": "modelopt", "quant_algo": "W4A16_NVFP4", "group_size": 16}
+    raw = {"text_config": {"quantization": value}} if location == "text" else {location: value}
+    got = effective_config(raw, None, where="model")
+    assert "quantization" not in got and "quantization" not in got.get("text_config", {})
+    spec = LinearQuantization(got["quantization_config"]).resolve("model.layers.0.mlp.gate_proj")
+    assert spec["weights"]["num_bits"] == 4 and spec["input_activations"] is None
+
+
+def test_mixed_sidecar_keeps_exact_names_bank_descendants_and_exclusions():
+    layers = {"model.layers.0.mlp.experts": {"quant_algo": "W4A16_NVFP4", "group_size": 16},
+              "model.layers.0.self_attn.q_proj": {"quant_algo": "FP8"}}
+    got = effective_config({}, side("MIXED_PRECISION", quantized_layers=layers,
+                                   exclude_modules=["model.visual*"]), where="mixed")
+    q = got["quantization_config"]
+    assert q["quantized_layers"] == layers
+    policy = LinearQuantization(q)
+    assert policy.resolve("model.layers.0.mlp.experts.3.gate_proj")["input_activations"] is None
+    assert policy.resolve("model.layers.0.self_attn.q_proj")["input_activations"]["num_bits"] == 8
+    assert policy.resolve("model.visual.layers.0.self_attn.q_proj") is None
+    assert policy.resolve("model.language_model.layers.0.self_attn.q_proj") is None
+
+
+@pytest.mark.parametrize("raw,ancillary", [
+    ({"quantization": {"bits": 4, "group_size": 32}}, side()),
+    ({"quantization_config": {"quant_method": "compressed-tensors"}}, side()),
+    ({"quantization_config": {"quant_method": "modelopt", "quant_algo": "W4A16_NVFP4"}}, side()),
+    ({"quantization_config": {"quant_method": "modelopt", "ignore": ["a"]}}, side(exclude_modules=["b"])),
+    ({"quantization_config": {"quant_method": "modelopt", "kv_cache_scheme": "FP8"}},
+     side(kv_cache_quant_algo=None)),
+    ({"quantization": {"bits": 4}, "text_config": {"quantization_config": {"bits": 8}}}, None),
+])
+def test_conflicts_are_errors_instead_of_metadata_precedence(raw, ancillary):
+    with pytest.raises(ValueError, match="conflict"):
+        effective_config(raw, ancillary, where="checkpoint")
+
+
+@pytest.mark.parametrize("raw,ancillary", [([], None), ({"text_config": []}, None),
+    ({"quantization": False}, None), ({}, {}), ({}, side("MYSTERY")),
+    ({}, side("MIXED_PRECISION", quantized_layers=[])),
+    ({}, side(exclude_modules="lm_head")), ({}, side(group_size=True))])
+def test_malformed_unknown_and_boolean_counts_are_rejected(raw, ancillary):
+    with pytest.raises(ValueError):
+        effective_config(raw, ancillary, where="checkpoint")
+
+
+def test_existing_affine_per_layer_aliases_and_unrelated_fields_are_preserved():
+    q = {"bits": 4, "group_size": 64, "model.layers.0.mlp": {"bits": 8}, "lm_head": False}
+    original = {"quantization": q, "custom": {"keep": [None, False, 0]}}
+    got = effective_config(original, None, where="affine")
+    assert got["custom"] == original["custom"]
+    assert got["quantization_config"] == dict(q, quant_method="mlx")
+
+
+def test_declared_modelopt_activation_conflict_is_not_filled_from_a_sidecar():
+    group = {"weights": {"num_bits": 4, "type": "float", "group_size": 16}, "targets": ["Linear"]}
+    with pytest.raises(ValueError, match="conflict"):
+        effective_config({"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4",
+                                                   "config_groups": {"group_0": group}}}, None, where="x")
+
+
+@pytest.mark.parametrize("pattern", ["re:(a+)+$", "re:(a|aa)+$", "re:(?=a)a", "re:(a)\\1", "re:(" * 5000])
+def test_hostile_regex_is_rejected_before_matching(pattern):
+    with pytest.raises(ValueError, match="pattern"):
+        LinearQuantization({"ignore": [pattern]})
+
+
+def test_safe_regex_subset_matches_independent_regex_for_all_small_names():
+    from tensorfold.checkpoint_quantization import _Pattern
+
+    patterns = ["re:a", "re:a$", "re:^a.*b$", "re:.*\\.mlp\\..*", "re:..*a.*b", "re:.*$", "re:."]
+    names = ["".join(v) for n in range(5) for v in itertools.product("ab.\n", repeat=n)]
+    names += ["model.layers.0.mlp.gate_proj", "vision.mlp.down_proj"]
+    for pattern in patterns:
+        match = _Pattern(pattern)
+        for name in names:
+            assert bool(match.match(name)) == bool(re.match(pattern[3:], name)), (pattern, name)
