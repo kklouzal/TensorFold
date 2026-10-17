@@ -193,6 +193,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                 kv_dtype: str = "bf16", decode_share: float | None = None, yarn_factor: float | None = None,
                 vram_experts: float | str | None = None, kv_key_dtype: str | None = None,
                 kv_value_dtype: str | None = None,
+                expert_ranks: int = 1, expert_shards=None,
                 **options: Any):
     """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with any ``CUDA_KV_DTYPES`` KV storage."""
 
@@ -217,6 +218,15 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                          "has one): without it every round would decode one token. Serve a checkpoint with the "
                          "head, or pass --no-drafts for the serial reference")
     confidence = CONFIDENCE if mtp_confidence is None else float(mtp_confidence)
+    session = None
+    if expert_ranks > 1:
+        if tp != 1:
+            raise ValueError("expert parallelism and tensor parallelism cannot be combined")
+        from .cuda.expert_parallel import Follower, Session
+        session = Session(model_dir, ranks=expert_ranks, shards=expert_shards, rank=rank,
+                          master=master or "127.0.0.1", port=master_port, budget=vram_experts, mtp=depth > 0)
+        if rank:
+            return Follower(session)
     return FlashNextEngine(Path(model_dir), depth=depth, confidence=confidence, max_len=context,
                            context_explicit=options.get("context_explicit"), tp=int(tp), rank=int(rank),
                            master=master, port=int(master_port), streams=max(1, int(options.get("parallel") or 1)),
@@ -225,4 +235,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                            share=0.0 if decode_share is None else float(decode_share),
                            vision=bool(options.get("vision", False)),
                            vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor,
-                           vram_experts=vram_experts)
+                           vram_experts=vram_experts,
+                           **({"expert_session": session} if session is not None else {}),
+                           **({"kv_full_windows": options["kv_full_windows"]}
+                              if options.get("kv_full_windows") is not None else {}))

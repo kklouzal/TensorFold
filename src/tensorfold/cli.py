@@ -285,6 +285,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "master_port": int(args.master_port),
         "no_drafts": bool(args.no_drafts),
     }
+    if getattr(args, "expert_ranks", 1) > 1:
+        options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
+    if getattr(args, "kv_full_windows", None) is not None:
+        options["kv_full_windows"] = args.kv_full_windows
     if getattr(args, "kv_dtype", "bf16") != "bf16":
         options["kv_dtype"] = args.kv_dtype
     for name in ("kv_key_dtype", "kv_value_dtype"):
@@ -336,7 +340,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                 "other than Qwen's 4-bit g64, Flash Next without MXFP8 layers); drop the flag"
             )
         stacks.arm()  # its warmup may have loaded a compiler that took USR1
-        if args.tp > 1 and args.rank != 0:
+        if (args.tp > 1 or getattr(args, "expert_ranks", 1) > 1) and args.rank != 0:
             print(f"[tensorfold] rank {args.rank} ready in {time.perf_counter() - started:.1f}s, following rank 0", flush=True)
             engine.follow()
             return 0

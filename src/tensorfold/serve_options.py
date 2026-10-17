@@ -63,6 +63,23 @@ def name_priority(args: argparse.Namespace) -> dict[str, str]:
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    ranks = getattr(args, "expert_ranks", 1)
+    shards = getattr(args, "expert_shards", None)
+    if ranks != 1 or shards is not None:
+        if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":
+            raise ValueError("expert parallelism is supported by Flash Next CUDA only")
+        if getattr(args, "tp", 1) != 1 or getattr(args, "vram_experts", None) is None:
+            raise ValueError("expert parallelism requires --tp 1 and --vram-experts GIB|auto")
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.expert_parallel import ownership
+        ownership(ranks, shards, getattr(args, "rank", 0), int(config(config_dir)["num_experts"]))
+    windows = getattr(args, "kv_full_windows", None)
+    if windows is not None:
+        if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":
+            raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
+        from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
+        check_kv_full_windows(windows, streams=_cuda_streams(getattr(args, "parallel", "auto")),
+                              vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1))
     if backend == "cuda":
         _cuda_topology(args, family)
     if backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe" and not getattr(args, "no_drafts", False):
@@ -189,7 +206,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
         raise ValueError("--rank must be a nonnegative integer")
     if tp > 1 and not getattr(args, "master", ""):
         raise ValueError("--tp 2/4 needs --master: rank 0's address on the link between the ranks")
-    if rank >= tp:
+    if rank >= max(tp, getattr(args, "expert_ranks", 1)):
         raise ValueError(f"--rank {rank} needs --tp {rank + 1} or more")
     if tp == 4 and not getattr(family.package, "CUDA_TP4", False):
         raise ValueError(f"--tp 4: {family.title} runs on one or two GPUs on CUDA")
