@@ -331,7 +331,7 @@ class FlashNextEngine:
         if self.comm is not None:
             from tensorfold.cuda.comm import agree_eos
 
-            agree_eos(self.comm, w.cfg.eos, world=tp, device=w.device)
+            agree_eos(self.comm.all_gather, w.cfg.eos, world=tp, device=w.device)
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
         if self.depth > 0 and w.mtp is None:
             raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
