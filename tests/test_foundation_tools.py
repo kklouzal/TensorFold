@@ -15,6 +15,7 @@ import pytest
 from tensorfold.cuda import foundation_tools as tools
 
 ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skipif(os.name != "posix", reason="foundation fixtures require POSIX shell, signals and FIFOs")
 
 
 def executable(path, source):
