@@ -94,7 +94,9 @@ class CachedMoE4:
                 or picks.device != x.device or picks.dtype != torch.int32
                 or picks.ndim != 2 or picks.shape[0] != x.shape[0] or not picks.is_contiguous()
                 or out.device != x.device or tuple(out.shape) != (*picks.shape, self.dims)
-                or out.dtype != (torch.bfloat16 if prefill else torch.float32) or not out.is_contiguous()):
+                or out.dtype != (torch.bfloat16 if prefill else torch.float32) or not out.is_contiguous()
+                or out.data_ptr() % 4
+                or (self.routed_experts is not None and x.device != self.routed_experts.cache.device)):
             raise ValueError("NVFP4 local picks require BF16 rows, contiguous INT32 picks and matching output slots")
         slots = picks.shape[1]
         if not 0 < slots <= 1024 or slots != self.slots:
@@ -105,8 +107,9 @@ class CachedMoE4:
             end = source.data_ptr() + (sum((n - 1) * s for n, s in zip(source.shape, source.stride())) + 1) * source.element_size()
             return source.data_ptr() < out.data_ptr() + out.numel() * out.element_size() and out.data_ptr() < end
 
-        if overlaps(x) or overlaps(picks):
-            raise ValueError("NVFP4 output slots must not overlap input rows or picks")
+        if (overlaps(x) or overlaps(picks)
+                or (self.routed_experts is not None and overlaps(self.routed_experts.cache._pool))):
+            raise ValueError("NVFP4 output slots must not overlap input rows, picks or expert storage")
         out.zero_()
         for lo in range(0, x.shape[0], 128):
             hi = min(x.shape[0], lo + 128)
