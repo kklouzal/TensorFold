@@ -23,6 +23,28 @@ DeltaNet 63 MB a stream.
 
 `--no-drafts` or request field `"draft": false` selects serial decoding, the reference drafted output equals.
 
+## Heretic NVFP4 host check
+
+The GB10 held `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` at revision
+`3d05c6063e82cdae8dd1b9362116ea71be8d1439`. Its 11 files, including the unchanged
+23,354,242,448-byte safetensors file and ancillary metadata, were copied to the
+RTX PRO 2000 Blackwell host and fully verified against the publisher's pinned
+hashes. This is the 35B-A3B Heretic model, not the dense Qwen3.8-27B.
+
+The ordinary installed runtime `a44085dc…`, application source `8cf97219`,
+correctly refused `compressed-tensors nvfp4-pack-quantized` at capability
+preflight. This family currently reads MLX affine 4-bit/group-64 weights on
+CUDA; changing the format declaration does not add an NVFP4 reader.
+
+Headers show **18,119,639,040 bytes (16.88 GiB)** of routed expert payload,
+before shared experts, backbone, state or KV. Fully resident execution therefore
+cannot fit the 16 GB card. This family would require both an NVFP4 MoE reader
+and a suitable RAM-expert path; Flash Next's `--vram-experts` does not configure
+this model. The installed CLI test exposed no GPU and stopped before weight
+loading. No decoder, GPU admission, OOM, model-quality or throughput pass is
+claimed. The [receipt](../verification-heretic-a3b-20261017.json) preserves the
+input identities, installed refusal, size evidence and verification limits.
+
 ## Mac execution
 
 Macs verify on the dense family's row decoder, with every verification width checked at load against

@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "model_result": "unsupported_before_loading",
+  "transfer_result": "complete_publisher_hashes_verified",
+  "requested_context": "User asked to discover and bring the GB10 abliterated/Heretic model here; found Heretic A3B is35B, distinct from its dense27B AEON model. No silent model/format substitution or successful27B generation claim.",
+  "checkpoint": {
+    "repository": "AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4",
+    "revision": "3d05c6063e82cdae8dd1b9362116ea71be8d1439",
+    "model_type": "qwen3_5_moe",
+    "quant_method": "compressed-tensors",
+    "format": "nvfp4-pack-quantized",
+    "local_directory": "/home/kklouzal/models/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4/3d05c6063e82cdae8dd1b9362116ea71be8d1439",
+    "total_files": 11,
+    "total_bytes": 23374297039,
+    "files": [
+      {
+        "file": ".gitattributes",
+        "bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "file": "README.md",
+        "bytes": 29755,
+        "sha256": "661349eecc765f46764e10c17dcaee7d955b1b029a7b58896fd460b1a9a65058"
+      },
+      {
+        "file": "chat_template.jinja",
+        "bytes": 8057,
+        "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+      },
+      {
+        "file": "config.json",
+        "bytes": 23139,
+        "sha256": "77c1f9f1db3bb9f1ec9fcfb7fe96442b8e43d526dc25758c41457b08faa5aa2c"
+      },
+      {
+        "file": "generation_config.json",
+        "bytes": 213,
+        "sha256": "252e0efee3ded327704912616f3493a227cdc39eb4bab52fcae1ceb3ed5dc890"
+      },
+      {
+        "file": "model.safetensors",
+        "bytes": 23354242448,
+        "sha256": "c9301dfd497b6d2bd11045897bb56aadc5e5de72ee8fbdad1a4be28dfeafc797"
+      },
+      {
+        "file": "preprocessor_config.json",
+        "bytes": 390,
+        "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+      },
+      {
+        "file": "recipe.yaml",
+        "bytes": 474,
+        "sha256": "731e768a97eb5a911c917b2fe72053f2676c7e1eb764e84422e7d94acfb94de2"
+      },
+      {
+        "file": "tokenizer.json",
+        "bytes": 19989442,
+        "sha256": "6a0316e38d81a31965b770393461dcc03612ac06e2733f8e1cc440d36a2ef189"
+      },
+      {
+        "file": "tokenizer_config.json",
+        "bytes": 1166,
+        "sha256": "4fa2244ff8ef610f55bb0f593d2fb96789adf059228693d1cf7ec4aa0ea39f56"
+      },
+      {
+        "file": "video_preprocessor_config.json",
+        "bytes": 385,
+        "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+      }
+    ]
+  },
+  "installed_cli": {
+    "result": "expected-unsupported-format-refusal",
+    "exit": 1,
+    "elapsed_s": 0.36469993100035936,
+    "image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+    "application_source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+    "model": "AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4",
+    "revision": "3d05c6063e82cdae8dd1b9362116ea71be8d1439",
+    "GPU_exposed": false,
+    "scope": "Ordinary installed console CLI; metadata capability refusal, no weight/device load or generation credit"
+  },
+  "headers": {
+    "source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+    "family": "qwen3_5_moe",
+    "quant_method": "compressed-tensors",
+    "tensor_count": 124306,
+    "dtype_counts": {
+      "F32": 61760,
+      "BF16": 786,
+      "F8_E4M3": 30880,
+      "U8": 30880
+    },
+    "stored_payload_bytes_by_part": {
+      "routed_experts": 18119639040,
+      "other": 4323928576,
+      "vision": 893142496
+    },
+    "routed_sample": [
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.down_proj.input_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      },
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.down_proj.weight_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      },
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.gate_proj.input_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      },
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.gate_proj.weight_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      },
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.up_proj.input_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      },
+      {
+        "name": "model.language_model.layers.0.mlp.experts.0.up_proj.weight_global_scale",
+        "dtype": "F32",
+        "shape": [
+          1
+        ],
+        "bytes": 4
+      }
+    ],
+    "text_dimensions": {
+      "hidden_size": 2048,
+      "num_hidden_layers": 40,
+      "num_experts": 256,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 512,
+      "max_position_embeddings": 262144
+    },
+    "eos": [
+      248044,
+      248046
+    ],
+    "template": {
+      "name": "default",
+      "source": "chat_template.jinja",
+      "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+    },
+    "scope": "Verified safetensors headers and metadata only; no CUDA allocations, no decoder or resident-layout claim"
+  },
+  "hardware": {
+    "gpu": "one RTX PRO2000Blackwell16GBclass",
+    "system_RAM_visible_bytes": 67299979264,
+    "host_reserve_bytes": 8589934592,
+    "CUDA_optional_reserve_bytes": 0,
+    "scope": "The ordinary installed CLI refusal ran without exposing a GPU; no CUDA admission/OOM/generation/throughput claim."
+  },
+  "interpretation": {
+    "format_refusal": "Qwen MoE CUDA reader accepts MLX affine4/group64; no compressed-tensors NVFP4 MoE reader is implemented",
+    "memory": "Actual routed payload18,119,639,040bytes exceeds16GiB before shared experts/backbone/state/KV; an appropriate host-expert implementation would also be required here",
+    "RAM_offload": "Current --vram-experts applies to Flash Next, not this Qwen MoE family",
+    "no_workarounds": "No capability declaration changed, no metadata/weight conversion, no model/dependency patch, no remote service mutation"
+  },
+  "verification": {
+    "post_transfer_verifier_sha256": "5edd412f50e0b8bfd6954efa403a31b2b57f56e58fafb3cef05f6dc6f252d7f6",
+    "integrity_controls_normal": 11,
+    "integrity_controls_python_optimized": 11,
+    "scope": "Independent full rehash plus exact file-set/FD/path/lifetime checks; controls also run under -O. Initial transfer producer uses asserts and has a preserved cold cleanup finding; independent verifier is the selected integrity result, not a future transfer-lifecycle qualification."
+  },
+  "evidence_packet": "/home/kklouzal/tensorfold-qwen27-test-20261017",
+  "evidence_sha256": {
+    "metadata/heretic-inventory.json": "8c7ed249aa89e4e949b53784e867d7ec0b31dd7acf1102699d738ef2d650fe28",
+    "heretic-transfer-command.json": "8af78e889644645572da411d0f1234040cd019e4127e3c5e6f4a1c53bf71584e",
+    "heretic-transfer.log": "2d0696ed7dd51ab97b72841d9ea10ed0f65c05d2c5e45e21c7fe5637e4c0ad16",
+    "heretic-transfer-receipt.json": "4714ed774b2e72f5daf2ce569a079bd466d5a7abfabd8db6da7325f3a509c800",
+    "transfer_heretic.py": "e7671f9eb0bd51f7dce18bcc9db4f4bbce2acf909e81295e0ff072c7be915be6",
+    "verify_heretic_v2.py": "5edd412f50e0b8bfd6954efa403a31b2b57f56e58fafb3cef05f6dc6f252d7f6",
+    "heretic-verification-v2.json": "aa7d6fd24f47f2132e449619fb25e5f1333a28fb4d70442c801058eb7afebfbe",
+    "heretic-cli-command.json": "147059316e129ba3216ebeaa9f7e21648edf1728c518e11893ba466510469177",
+    "heretic-cli-result.json": "c90a0df2f3223fca1a29a19c236c0103f52ea3749971933f462dcf6c5fd41dd3",
+    "heretic-cli.log": "efc37cd3550e1f1038af4fc582921c78c68e7e66321f4465092bd55f0db6cb6c",
+    "heretic-header-inspect.py": "0cbd98e92bd0fc97497b62a2fa69332d71fabebe6c25000ea6ebbf0531591354",
+    "heretic-header-command.json": "4ecf7baf3c2f8da823b5194d9c99de48939bfb50010a142ec2b8dcfe75d4b019",
+    "heretic-headers.json": "c3a4ded19803868d490b6f62daf04abc12b5402fa2e81ec41b46c79c88b21484",
+    "gb10-heretic-identity.json": "e88865e7acfbd31ff35fead3660c4b6e5af2661075474f8f6c33fd751429bc9f",
+    "d14/heretic-verifier-controls.json": "03233f034b47552f15b9f513b28af189c060d9f96b0234fc9478cf5f7f07c05f",
+    "d14/v1-optimized-sensitivity.json": "806b8145b53198bec19f6d1d67f0659729d9b869db8eb8c30fcd4a665d47855c"
+  }
+}

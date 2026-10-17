@@ -693,6 +693,14 @@ These checks identify their executed image and scope. Each row retains its recor
 | `turboderp/Qwen3.8-Flash-Next-exl3`, `65c895314393431c09050b2e04e250836b3a6eb4` | Same installed `a440…` image/source `8cf97219` | Four slots, context 16,384, RotorQuant8-norm KV, MTP-4, pageable experts; 3.55 GiB automatic pool with zero optional margin. Strict tools/catalog, repeated/drafted/serial, concurrent/solo and streaming checks passed against recorded reference outputs. Required KV/workspace reservations retained; no paired speedup claim. [Qualification](docs/model-metadata-validation.md). |
 | `TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP`, `2b170fa6309d5d1ee380b35636075fac7945f286` | GB10/SM 121, 128 GB unified memory; historical deployment | Resident-weight API/restart, four-concurrent/repeated, tool/vision/video checks. YaRN-2 had one bounded 523,882-token prompt plus 18-token retrieval; see the deployment guide for limits. |
 
+The GB10's **`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`** checkpoint was copied
+to the 16 GB Blackwell host and independently verified against every pinned
+publisher hash. Its installed CLI check **refused the unsupported NVFP4 MoE
+format before loading**; this is not a successful inference qualification.
+Routed expert payload alone is 16.88 GiB, and this family has no RAM-expert
+path yet. This is a 35B-A3B model, distinct from Qwen3.8-27B dense.
+See the [model-specific result](docs/recipes/qwen3.6-moe.md#heretic-nvfp4-host-check).
+
 ### Earlier installed CLI/API qualification
 
 The ordinary installed PID-1 CLI and HTTP server in the same Source06 `cf99…` image passed seven functional groups on the 16 GB Blackwell / 64 GB RAM host. This used automatic expert caching, full default prefetch, context **2,048**, **four slots**, **INT8 K/V**, YaRN-2, eager execution, BF16 prompts and MTP-4/confidence 0.5. The configured admission limits were **five unfinished requests** and **32 HTTP connections**; these are test values, not the defaults.
