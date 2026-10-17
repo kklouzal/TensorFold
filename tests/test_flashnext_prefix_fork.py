@@ -33,7 +33,7 @@ def decoder(*, busy=False, room=True):
     prefix = list(range(300))
     snap = {"pos": 300, "mtp_len": 299, **source.kv_snapshot_metadata()}
     dec.kept = [(prefix, source, snap, "tail"), (prefix + [4, 5], source, {"pos": 302, "mtp_len": 301, **source.kv_snapshot_metadata()}, "later")]
-    dec.free, dec.filling, dec.fills = [spare], [], {}
+    dec.free, dec.filling, dec.fills, dec.failed_slots = [spare], [], {}, []
     dec.streams = {1: SimpleNamespace(st=source, waiting=False)} if busy else {}
     dec.depth, dec.capacity = 3, 1024
     growth = []
@@ -85,6 +85,47 @@ def test_copy_failure_returns_the_spare_and_discards_partial_allocations():
         dec._slot_for(prefix + [6, 7, 8], True)
     assert dec.free == [spare] and dec.kept == kept
     assert shrunk == [(spare, {"force": True})]
+
+
+@pytest.mark.parametrize("phase", ["growth", "copy"])
+@pytest.mark.parametrize("failure_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_fork_failure_preserves_source_and_exclusive_spare_through_retirement(
+        phase, failure_type, cleanup_failure):
+    dec, source, spare, prefix, snap, _ = decoder()
+    kept = list(dec.kept)
+    primary, cleanup = failure_type("fork failed"), RuntimeError("fork retirement failed")
+    shrunk = []
+
+    def fail(*args, **kwargs):
+        raise primary
+
+    def shrink(st, **kwargs):
+        shrunk.append((st, kwargs))
+        if cleanup_failure:
+            raise cleanup
+
+    if phase == "growth":
+        dec._grow = fail
+    else:
+        spare.copy_prefix = fail
+    dec._shrink = shrink
+    with pytest.raises(failure_type) as caught:
+        dec._slot_for(prefix + [6, 7, 8], True)
+    assert caught.value is primary and dec.kept == kept
+    assert all(entry[1] is source for entry in dec.kept)
+    if cleanup_failure:
+        assert primary.__cause__ is cleanup
+        assert dec.free == [] and dec.failed_slots == [spare]
+        dec._shrink = lambda st, **kwargs: shrunk.append((st, kwargs))
+        dec.recover_failed_slots()
+    assert dec.free == [spare] and dec.failed_slots == []
+    assert all(st is spare and kwargs == {"force": True} for st, kwargs in shrunk)
+    dec._grow = lambda *args, **kwargs: True
+    spare.copy_prefix = lambda *args: None
+    following, resume, cached = dec._slot_for(prefix + [9], True)
+    assert following is spare and cached == len(prefix) and resume == {"state": snap, "tail": "tail"}
+    assert dec.free == [] and dec.failed_slots == [] and dec.kept == kept
 
 
 def test_a_partial_resize_failure_is_counted_before_the_spare_is_shrunk():

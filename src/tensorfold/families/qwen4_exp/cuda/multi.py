@@ -180,6 +180,9 @@ class MultiDecoder:
             primary = error
             raise
         finally:
+            if getattr(st, "_resize_frames_pending", None) is not None:
+                # Uncommitted traceback-held storage is outside the attached sum.
+                self._memory_error = primary
             try:
                 gate.held = held_before + st.cache_bytes() - before
             except BaseException as cleanup:  # noqa: BLE001 - preserve failed resize and accounting outcomes
@@ -209,6 +212,8 @@ class MultiDecoder:
                 errors.append(cleanup)
         try:
             # Even a failed rebuild/reset may have changed attached storage.
+            if getattr(st, "_resize_frames_pending", None) is not None:
+                self._memory_error = primary
             gate.held = held_before + st.cache_bytes() - before
         except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
             self._memory_error = cleanup
