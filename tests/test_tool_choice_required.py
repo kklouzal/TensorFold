@@ -120,3 +120,35 @@ def test_the_call_format_comes_from_the_template():
     glm = "<|assistant|><tool_call>tfprobe_fn</tool_call>"
     assert call_format(glm, "tfprobe_fn", ["<tool_call>", "<|tool_call>"]) == ("<tool_call>", "", "<")
     assert call_format("no calls here", "tfprobe_fn", ["<tool_call>"]) is None
+
+
+@pytest.mark.parametrize("call,wanted", [
+    ("<tool_call>\n<function=tfprobe_fn>\n</function>\n</tool_call>",
+     ("<tool_call>", "\n<function=", ">")),
+    ("<|tool_call>call:tfprobe_fn{}<tool_call|>", ("<|tool_call>", "call:", "{")),
+    ("<tool_call>tfprobe_fn</tool_call>", ("<tool_call>", "", "<")),
+    ('<tool_call>{"name":"tfprobe_fn","arguments":{}}</tool_call>',
+     ("<tool_call>", '{"name":"', '"')),
+])
+def test_call_format_ignores_probe_names_in_schemas_before_and_after_the_call(call, wanted):
+    from tensorfold.engine.call_gate import call_format
+
+    definitions = "tools:tfprobe_fn,other;tfprobe_fn;"
+    assert call_format(definitions + call + definitions, "tfprobe_fn", ["<tool_call>", "<|tool_call>"]) == wanted
+
+
+def test_call_format_never_takes_a_name_outside_a_closed_call():
+    from tensorfold.engine.call_gate import call_format
+
+    for before in ("<tool_call>other</tool_call>", "<|tool_call>call:other{}<tool_call|>"):
+        assert call_format(before + "tools:tfprobe_fn;", "tfprobe_fn", ["<tool_call>", "<|tool_call>"]) is None
+
+
+def test_call_format_uses_header_name_and_keeps_probe_before_generation_opener():
+    from tensorfold.engine.call_gate import call_format
+
+    call = '<tool_call>{"name":"tfprobe_fn","arguments":{"echo":"tfprobe_fn"}}</tool_call>'
+    assert call_format(call + "<tool_call>", "tfprobe_fn", ["<tool_call>"]) == (
+        "<tool_call>", '{"name":"', '"')
+    assert call_format("nothing", "", ["<tool_call>"]) is None
+    assert call_format(call, "tfprobe_fn", []) is None
