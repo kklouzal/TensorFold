@@ -102,8 +102,10 @@ padding; admission charges the padding and host registration geometry.
 
 The cache owns the CPU authority and GPU pool. Cached banks retain geometry and
 cache identity, with no separate CPU calibration copies. A lease fences native
-consumers before reuse or close. Failed replacement preserves the existing
-pool; failed retirement retains its owners for explicit cleanup. Calls after a
+consumers before reuse or close. Failed allocation or view preparation before
+replacement commit preserves the existing pool; interrupted publication aborts
+startup and retires owned resources. Failed retirement retains its owners for
+explicit cleanup. Calls after a
 successful close fail before native execution or output mutation.
 
 Native component checks have passed on the RTX PRO 2000 Blackwell host. Full-model
