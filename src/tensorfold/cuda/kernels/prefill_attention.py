@@ -77,11 +77,11 @@ def attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0:
     Native D128/D256 queries require 4/16-byte alignment; their caches require 16-byte alignment.
     """
 
+    if q.ndim == 3 and q.shape[2] == 64:
+        return triton_attention(q, k_cache, v_cache, p0, scale=scale)
     hk = _check(q, k_cache, v_cache, p0)
-    _, h, d = q.shape
+    _, h, _ = q.shape
     out = torch.empty_like(q)
-    if d == 64:
-        return triton_attention(q, k_cache, v_cache, p0, scale=scale, out=out)
     _ext().prefill_attention(q, k_cache, v_cache, out, p0, scale, heads_a_block(h // hk))
     return out
 
@@ -93,8 +93,8 @@ def triton_attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tens
     Explicit output must be disjoint from q and each cache's filled [0, p0 + W) prefix.
     """
 
-    w, h, d = q.shape
     hk = _check(q, k_cache, v_cache, p0)
+    w, h, d = q.shape
     if out is None:
         out = torch.empty_like(q)
     else:
