@@ -64,6 +64,14 @@ messages and in tool results (`role: "tool"`), such as an agent's screenshots.
 See [image input](vision.md) for data URLs, public image URLs, limits and cache behavior.
 Unsupported image input, audio, video and non-text output requests receive HTTP 400.
 
+Flash Next's RAM expert cache, optional host pinning, shared KV-window budget and
+same-host NCCL expert ranks are startup settings. Rank 0 owns the HTTP server;
+followers execute their routed experts. The container's expert launcher retains
+the Harness entrypoint, including `/v1/tokenize`. A shared KV budget can queue a
+request or stop the newest blocked request with an explicit error; existing
+`memory_waits` and `memory_stops` statistics and metrics expose that pressure.
+See [desktop configuration and validation](desktop-report-remediation.md).
+
 ## Decisions
 
 `POST /v1/decisions` is served by the MLX server and by the CUDA GLM engine.
