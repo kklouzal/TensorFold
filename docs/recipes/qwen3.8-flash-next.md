@@ -207,8 +207,8 @@ python -m tensorfold.cuda.exl3.inspect flashnext-exl3-3.05bpw   # bits per tenso
 tensorfold serve flashnext-exl3-3.05bpw --host 0.0.0.0 --port 8080
 ```
 
-A pack maps its n-gram table from its own file and runs on one GPU: `--tp 2` and `--ple-on-ssd` are for the MLX
-checkpoint, and an EXL3 pack refuses both.
+A pack maps its n-gram table from its own file and runs on one GPU. An EXL3 pack
+refuses `--tp 2`, expert-rank partitioning and `--ple-on-ssd`.
 
 - Dense projections (attention, DeltaNet, the MTP head's fc layers, the head) run on the row-invariant EXL3
   linear (`cuda/exl3/linear.py`). Routed experts and the shared expert (as expert 512 of the same table) run on
@@ -337,10 +337,12 @@ On one GPU, `--parallel N` shares forwards across up to N requests: pure
 decode rounds replay CUDA graphs captured at startup within
 `TENSORFOLD_MULTI_GRAPH_MIB` (default 512 MiB; `0` disables capture) and the
 other rounds run eagerly, with the same bits. `--parallel auto` selects one
-request. Two-rank Flash Next retains serial text
+request. Tensor-parallel two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
-two-rank/media expansion and persistent lone-stream graph selection remain
-isolated candidates until protocol, ownership and actual-target gates pass.
+requests and supported media stay on rank zero in the separate
+[same-host expert-rank implementation](../desktop-report-remediation.md);
+actual two-GPU qualification remains pending. Persistent lone-stream graph
+selection remains an isolated candidate with its own gates.
 For prefix reuse, the single-request engine and concurrent decoder keep prompt
 states; a follow-up prefills the reply again. A kept state stops one token before its prompt's end, so the
 same prompt sent again resumes, and so does a next chat turn that renders the generation prompt's `<think>`

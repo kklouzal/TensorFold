@@ -573,7 +573,7 @@ overlap and 512 MiB headroom. Consequently, idle VRAM can include room reserved
 for future KV growth. The service has a **56,000,000,000-byte RAM limit with no
 additional swap**. Same-container restart and subsequent complete generations
 passed, including the arithmetic answer `888`. The observed cgroup peak at the
-final receipt was **53.148 GB**, with no OOM or swap event. NVFP4 expert offload remains unsupported; Blackwell's FP4
+final receipt was **53.148 GB**, with no OOM or swap event. That recorded image did not support NVFP4 expert offload; Blackwell's FP4
 instructions alone do not make a resident Flash Next NVFP4 export fit 16 GB.
 
 Actual HTTP/SSE generations used public sky, arithmetic and evaporation prompts,
