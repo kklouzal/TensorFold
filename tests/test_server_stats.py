@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from types import SimpleNamespace
 
@@ -455,6 +456,144 @@ def test_in_flight_counts_requests_waiting_for_a_one_at_a_time_turn(tmp_path):
     with health.of(app).running(3, []):
         load = stats.snapshot(app)["load"]
     assert (load["requests_running"], load["requests_waiting"], load["requests_in_flight"]) == (1, 2, 3)
+
+
+def test_serial_turn_wait_and_engine_queue_reach_the_same_reply_and_totals(tmp_path, monkeypatch):
+    """Server-owned waits must be folded before Health ends the request, beside the engine's own queue time."""
+    from tensorfold.cuda import server
+
+    app = app_for(tmp_path)
+    body = {"messages": HI, "max_tokens": 8}
+    prepared = app.prepare(body, True)
+    clock = [100.0]
+    monkeypatch.setattr(server.time, "perf_counter", lambda: clock[0])
+
+    class Turns:
+        def take(self, background, cancelled=None):
+            clock[0] += 0.125
+
+        def give(self):
+            pass
+
+    app.turns = Turns()
+    generate = app.engine.generate
+    app.engine.generate = lambda *a, **kw: {**(generate(*a, **kw) or {}), "queue_s": 0.25}
+    result = app.run(body, True, lambda delta: True, prepared=prepared)
+    reading = metrics.counters_now(app)
+    assert result["stats"]["queue_s"] == 0.375
+    assert reading.queue_s == reading.queue.total == result["stats"]["queue_s"]
+    assert reading.queue.n == reading.requests == 1
+
+
+def test_admission_wait_is_queue_time_and_preparation_is_reported_separately(tmp_path, monkeypatch):
+    from tensorfold.cuda import server
+
+    app = app_for(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(server.time, "perf_counter", lambda: clock[0])
+    prepare = app.prepare
+
+    def preparing(body, chat):
+        clock[0] += 0.125
+        return prepare(body, chat)
+
+    app.prepare = preparing
+    result = app.run({"messages": HI, "max_tokens": 8}, True, lambda delta: True, arrived=99.625)
+    totals = stats.snapshot(app)["totals"]
+    assert result["stats"]["prepare_s"] == 0.125
+    assert totals["queue_seconds"] == result["stats"]["queue_s"] == 0.375
+    assert metrics.counters_now(app).queue.total == 0.375
+
+
+def test_a_cancelled_serial_wait_is_counted_without_releasing_another_requests_turn(tmp_path, monkeypatch):
+    from tensorfold.cuda.turns import Turns
+
+    app = app_for(tmp_path)
+    turns = app.turns = Turns()
+    turns.take(False)                         # another request owns the engine for this whole test
+    waiting, cancelled = threading.Event(), threading.Event()
+    failures, released = [], []
+    real_wait, real_give = turns.cv.wait, turns.give
+
+    def wait(timeout=None):
+        waiting.set()
+        return real_wait(timeout)
+
+    def give():
+        released.append(True)
+        real_give()
+
+    monkeypatch.setattr(turns.cv, "wait", wait)
+    monkeypatch.setattr(turns, "give", give)
+
+    def run():
+        try:
+            app.run({"messages": HI, "max_tokens": 8}, True, lambda delta: True, cancelled=cancelled.is_set)
+        except BaseException as exc:
+            failures.append(exc)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert waiting.wait(5), "the request did not reach the engine's condition wait"
+        cancelled.set()
+        with turns.cv:
+            turns.cv.notify_all()             # wake for cancellation, without giving up the actual owner's turn
+        worker.join(5)
+        assert not worker.is_alive()
+        assert len(failures) == 1 and isinstance(failures[0], RequestCancelled)
+        totals = stats.snapshot(app)["totals"]
+        assert totals["requests"] == totals["cancelled"] == 1
+        assert totals["queue_seconds"] >= 0 and metrics.counters_now(app).queue.n == 1
+        assert not app.engine.calls and not released and turns.busy
+        assert turns.parked == turns.waiting == 0
+    finally:
+        cancelled.set()
+        real_give()
+        worker.join(5)
+
+
+def test_cancelling_a_yielded_background_request_keeps_the_foreground_turn(tmp_path, monkeypatch):
+    """Once a background run gives its turn away, cancellation cannot release the foreground owner's turn."""
+    from tensorfold.cuda import server
+
+    app = app_for(tmp_path)
+    clock = [100.0]
+    monkeypatch.setattr(server.time, "perf_counter", lambda: clock[0])
+
+    class Turns:
+        owner = None
+        takes = 0
+        gives = 0
+
+        def take(self, background, cancelled=None):
+            assert background
+            self.takes += 1
+            if self.takes == 1:
+                assert self.owner is None
+                self.owner = "background"
+                clock[0] += 0.125
+            else:
+                assert self.owner == "foreground"
+                clock[0] += 0.5
+                raise RequestCancelled("the background client left while the foreground request ran")
+
+        def wanted(self):
+            return True
+
+        def give(self):
+            self.gives += 1
+            assert self.owner == "background", "released another request's turn"
+            self.owner = "foreground"         # a queued foreground request immediately takes the released turn
+
+    turns = app.turns = Turns()
+    with pytest.raises(RequestCancelled):
+        app.run({"messages": HI, "max_tokens": 64, "priority": "background"}, True, lambda delta: True)
+    assert (turns.takes, turns.gives, turns.owner) == (2, 1, "foreground")
+    assert len(app.engine.calls) == 1
+    totals = stats.snapshot(app)["totals"]
+    assert totals["requests"] == totals["cancelled"] == 1
+    assert totals["queue_seconds"] == metrics.counters_now(app).queue.total == 0.625
 
 
 def documented_fields():
