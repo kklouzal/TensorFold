@@ -7,7 +7,6 @@ import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
-from transformers import PreTrainedTokenizerFast
 
 from tests.cli_server_fixture import prepared_tokenizer
 
@@ -280,7 +279,7 @@ def test_a_non_kv_entry_such_as_a_draft_slot_counts_as_fixed_memory():
 def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
     """Run `tensorfold serve` up to its HTTP loop with a stub app; returns the app's keyword arguments and output."""
 
-    tokenizer = prepared_tokenizer(tmp_path, PreTrainedTokenizerFast)
+    tokenizer = prepared_tokenizer(tmp_path)
     with cli_protocol(monkeypatch, "0.0"):
         monkeypatch.setattr(memory_budget, "physical_memory_bytes", lambda: 128 * GIB)
         monkeypatch.setattr("faulthandler.register", lambda *args, **kwargs: None)

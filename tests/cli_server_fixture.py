@@ -4,49 +4,54 @@ The CLI constructs the listener, passes that exact owner to ``serve``, then
 closes it. These fixtures acquire no sockets and preserve that lifetime.
 """
 
-import threading
 import json
+import threading
 from hashlib import sha256
 from types import SimpleNamespace
 
 
 class PreparedTokenizer:
-    """MLX metadata protocol backed by real HF text operations, not array math.
+    """MLX host protocol over real tokenizers/Jinja operations, no array math.
 
-    The MLX wrapper owns its EOS-set property separately from HF's singular
-    special-token setter. Keep that boundary explicit in these host controls.
+    EOS and the rendered template are mutable through the same public metadata
+    properties the MLX wrapper exposes. Core dependencies suffice on Linux.
     """
-    def __init__(self, tokenizer):
+
+    def __init__(self, tokenizer, template):
         self._tokenizer = tokenizer
-        self.eos_token_ids = (tokenizer.eos_token_id,)
+        self.eos_token_ids = (2,)
+        self.chat_template = template
 
     @property
     def chat_template(self):
-        return self._tokenizer.chat_template
+        return self._source
 
     @chat_template.setter
     def chat_template(self, value):
-        self._tokenizer.chat_template = value
+        from jinja2 import Template
+
+        self._source, self._compiled = value, Template(value)
 
     @property
     def added_tokens_decoder(self):
-        return self._tokenizer.added_tokens_decoder
+        return self._tokenizer.get_added_tokens_decoder()
 
     @property
     def all_special_ids(self):
-        return self._tokenizer.all_special_ids
+        return [index for index, token in self.added_tokens_decoder.items() if token.special]
 
     def get_vocab(self):
         return self._tokenizer.get_vocab()
 
-    def encode(self, *args, **kwargs):
-        return self._tokenizer.encode(*args, **kwargs)
+    def encode(self, text, *, add_special_tokens=True):
+        return self._tokenizer.encode(text, add_special_tokens=add_special_tokens).ids
 
-    def decode(self, *args, **kwargs):
-        return self._tokenizer.decode(*args, **kwargs)
+    def decode(self, ids, *, skip_special_tokens=True):
+        return self._tokenizer.decode(ids, skip_special_tokens=skip_special_tokens)
 
-    def apply_chat_template(self, *args, **kwargs):
-        return self._tokenizer.apply_chat_template(*args, **kwargs)
+    def apply_chat_template(self, messages, *, tokenize=True, add_generation_prompt=False, **kwargs):
+        text = self._compiled.render(messages=messages, add_generation_prompt=add_generation_prompt, **kwargs)
+        return self.encode(text, add_special_tokens=False) if tokenize else text
 
 
 def prepared_chat_template(directory, source="fixture"):
@@ -57,24 +62,22 @@ def prepared_chat_template(directory, source="fixture"):
     return ChatTemplate(directory)
 
 
-def prepared_tokenizer(directory, tokenizer_type):
-    """Real HF tokenizer and files; resolve its class before MLX protocol scopes.
-
-    The caller supplies the already imported runtime class so dependency
-    discovery cannot mistake an explicit host-only MLX fixture for its SDK.
-    """
+def prepared_tokenizer(directory):
+    """Real core tokenization/template files before CLI identity capture."""
     from tokenizers import Tokenizer, models, pre_tokenizers
 
     vocab = {"[UNK]": 0, "user": 1, "stop": 2, "assistant": 3, "word": 4}
-    backend = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
-    backend.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
-    tokenizer = tokenizer_type(tokenizer_object=backend, unk_token="[UNK]", eos_token="stop",
-                               chat_template="{% for m in messages %}{{ m.role }} {{ m.content }} {% endfor %}")
-    tokenizer.save_pretrained(directory)
+    tokenizer = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tokenizer.add_special_tokens(["[UNK]", "stop"])
+    tokenizer.save(str(directory / "tokenizer.json"))
+    template = "{% for m in messages %}{{ m.role }} {{ m.content }} {% endfor %}"
+    (directory / "tokenizer_config.json").write_text(json.dumps({
+        "chat_template": template, "eos_token": "stop", "unk_token": "[UNK]"}))
     config = directory / "config.json"
     if not config.exists():
         config.write_text(json.dumps({"model_type": "fixture", "vocab_size": len(vocab), "eos_token_id": 2}))
-    return PreparedTokenizer(tokenizer)
+    return PreparedTokenizer(tokenizer, template)
 
 
 def cuda_cli_engine(**members):

@@ -95,6 +95,12 @@ class OriginControls(unittest.TestCase):
         # The fixed model lifetime owns the cached view; no process cache exists.
         self.assertNotIn("lru_cache", ATTENTION.read_text())
         self.assertNotIn("def base(", ATTENTION.read_text())
+        # The canonical helper retains FP32 storage before the device transfer;
+        # actual cast bytes and overflow boundaries have independent Torch tests.
+        rotary = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_rotary_frequencies")
+        cast = next(i for i, n in enumerate(rotary.body) if ast.unparse(n) == "inv = inv.to(torch.float32)")
+        self.assertLess(cast, len(rotary.body) - 1)
+        self.assertEqual(ast.unparse(rotary.body[-1]), "return inv.to(device)")
         for name in ("weights.py", "exl3_load.py", "nvfp4_load.py"):
             path = source.parent / name
             text = path.read_text()

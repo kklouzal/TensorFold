@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 
 import pytest
-from transformers import PreTrainedTokenizerFast
 
 
 from tests.mlx_host_protocol_fakes import cli_protocol, mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
@@ -52,7 +51,7 @@ def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, 
     header = json.dumps({"fixture.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}).encode()
     header += b" " * (-len(header) % 8)
     (model_dir / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + b"\x00\x00")
-    tokenizer = prepared_tokenizer(model_dir, PreTrainedTokenizerFast)
+    tokenizer = prepared_tokenizer(model_dir)
 
     class Built(Exception):
         pass
