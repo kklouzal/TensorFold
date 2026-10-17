@@ -53,10 +53,10 @@ def check(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
 
     if is_exl3(Path(model_dir)):
         return
-    import json
+    from tensorfold.checkpoint_metadata import read_config
 
-    raw = json.loads((Path(model_dir) / "config.json").read_text())
-    quant = raw.get("quantization_config") or raw.get("quantization") or {}
+    raw = read_config(model_dir)
+    quant = raw.get("quantization_config") or {}
     if str(quant.get("quant_method", "")).lower() == "modelopt":
         groups = quant.get("config_groups") or {}
         group = ((groups.get("group_0") or {}).get("weights") or {}).get("group_size", 16)

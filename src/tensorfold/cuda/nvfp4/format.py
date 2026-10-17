@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
-
 import numpy as np
+
+from tensorfold.checkpoint_metadata import read_config
+from tensorfold.checkpoint_quantization import LinearQuantization, effective_config
 
 METHODS = ("modelopt", "compressed-tensors")
 E2M1 = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
@@ -16,11 +17,8 @@ E2M1 = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5,
 def config_block(config: dict) -> dict | None:
     """The quantization block of config.json (top level or text config) when it names ModelOpt or compressed-tensors."""
 
-    for source in (config, config.get("text_config") or {}):
-        found = source.get("quantization_config")
-        if isinstance(found, dict) and str(found.get("quant_method", "")).lower() in METHODS:
-            return found
-    return None
+    block = effective_config(config, None, where="checkpoint").get("quantization_config")
+    return block if block is not None and block.get("quant_method") in METHODS else None
 
 
 def require_config(config: dict, *, where: str, tested: str, help: str) -> None:
@@ -47,8 +45,11 @@ def require_config(config: dict, *, where: str, tested: str, help: str) -> None:
 def is_quantized(model_dir: str | Path) -> bool:
     """Whether config.json names ModelOpt or compressed-tensors quantization."""
 
-    config = Path(model_dir) / "config.json"
-    return config.is_file() and config_block(read_metadata_json(checkpoint_path(model_dir, "config.json"))) is not None
+    try:
+        (Path(model_dir) / "config.json").lstat()
+    except FileNotFoundError:
+        return False
+    return config_block(read_config(model_dir)) is not None
 
 
 def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
@@ -70,6 +71,116 @@ def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
     if w[0] in ("BF16", "F16", "F32"):
         return "bf16"
     raise ValueError(f"unknown weight storage {w[0]} with scale {s[0] if s else None}")
+
+
+class LinearMetadata:
+    """A prepared declaration/storage cross-check for one model's linear reads."""
+
+    def __init__(self, block):
+        self.policy = LinearQuantization(block)
+        self.reciprocal = block.get("quant_method") == "compressed-tensors"
+
+    def validate(self, name, tensors, *, checkpoint: bool):
+        """Return (stored kind, declared activation bits or None), before payload reads.
+
+        ``checkpoint=False`` is an explicit/stored-weight math policy; it may
+        disable declared activation quantization but never reinterpret weights.
+        """
+        if "weight" in tensors and "weight_packed" in tensors:
+            raise ValueError(f"{name}: both weight and weight_packed are present")
+        kind = scheme(tensors)
+        weight = tensors.get("weight", tensors.get("weight_packed"))
+        _, shape = weight
+        if len(shape) != 2 or any(type(n) is not int or n <= 0 for n in shape):
+            raise ValueError(f"{name}: linear weight must have a positive two-dimensional shape")
+        n, k = shape[0], shape[1] * (2 if kind == "nvfp4" else 1)
+        spec = self.policy.resolve(name)
+        if spec is None:
+            if kind != "bf16" and (checkpoint or self.policy.excluded(name)):
+                raise ValueError(f"{name}: stored {kind} weights have no matching quantization declaration")
+        else:
+            declared = spec.get("weights")
+            if declared is None:
+                if kind != "bf16":
+                    raise ValueError(f"{name}: metadata declares unquantized weights but storage is {kind}")
+            elif declared.get("type", "float") != "float" or declared.get("num_bits") != (
+                    4 if kind == "nvfp4" else 8 if kind in ("fp8", "mxfp8", "fp8block") else 16):
+                raise ValueError(f"{name}: stored {kind} weights disagree with quantization metadata")
+            elif kind == "nvfp4" and declared.get("group_size", 16) != 16:
+                raise ValueError(f"{name}: stored NVFP4 blocks require group_size 16")
+            if declared is not None:
+                strategy = declared.get("strategy")
+                allowed = (None, "group", "tensor_group") if kind == "nvfp4" else (None, "tensor")
+                if kind in ("nvfp4", "fp8") and strategy not in allowed:
+                    raise ValueError(f"{name}: unsupported weight scale strategy {strategy!r}")
+                scale_dtype = declared.get("scale_dtype")
+                expected_dtype = "torch.float8_e4m3fn" if kind == "nvfp4" else "torch.float32"
+                if scale_dtype is not None and scale_dtype != expected_dtype:
+                    raise ValueError(f"{name}: scale_dtype metadata disagrees with {kind} scale storage")
+        if spec is not None:
+            declared = spec.get("weights") or {}
+            if (declared.get("dynamic", False) is not False or declared.get("symmetric", True) is not True
+                    or declared.get("actorder") is not None or declared.get("zp_dtype") is not None
+                    or spec.get("pre_quant_scale") or spec.get("has_zero_point") or spec.get("lora_rank")):
+                raise ValueError(f"{name}: unsupported transformed/asymmetric weight quantization metadata")
+        if kind == "nvfp4":
+            if k % 16 or tensors.get("weight_scale") != ("F8_E4M3", [n, k // 16]):
+                raise ValueError(f"{name}: NVFP4 block-scale shape/dtype disagrees with weight storage")
+            if "weight_scale_2" in tensors and "weight_global_scale" in tensors:
+                raise ValueError(f"{name}: conflicting weight global-scale conventions")
+            self._scalar(name, tensors, "weight_global_scale" if self.reciprocal else "weight_scale_2")
+        elif kind == "fp8":
+            self._scalar(name, tensors, "weight_scale")
+        activation = None if spec is None else spec.get("input_activations")
+        if checkpoint and spec is not None and spec.get("output_activations") is not None:
+            raise ValueError(f"{name}: checkpoint output quantization is unsupported; use --precision full")
+        if not checkpoint or activation is None:
+            return kind, None
+        bits = activation.get("num_bits")
+        dynamic = activation.get("dynamic", False)
+        valid = (activation.get("type", "float") == "float" and
+                 (kind == "nvfp4" and bits == 4 and activation.get("group_size", 16) == 16
+                  and dynamic in (False, "local")
+                  and activation.get("strategy") in (None, "group", "tensor_group")
+                  and activation.get("scale_dtype") in (None, "torch.float8_e4m3fn")
+                  or kind == "fp8" and bits == 8 and dynamic is False
+                  and activation.get("strategy", "tensor") in ("tensor", None)))
+        if not valid or activation.get("symmetric", True) is not True or activation.get("zp_dtype") is not None:
+            raise ValueError(f"{name}: unsupported checkpoint activation quantization; use --precision full")
+        scales = [key for key in ("input_scale", "input_global_scale") if key in tensors]
+        if len(scales) != 1:
+            raise ValueError(f"{name}: checkpoint activation math requires one static input calibration")
+        self._scalar(name, tensors, scales[0])
+        return kind, bits
+
+    @staticmethod
+    def _scalar(name, tensors, field):
+        import math
+
+        value = tensors.get(field)
+        if (value is None or value[0] not in ("F32", "F16", "BF16")
+                or not isinstance(value[1], (list, tuple))
+                or any(type(n) is not int or n <= 0 for n in value[1]) or math.prod(value[1]) != 1):
+            raise ValueError(f"{name}: {field} must be one floating-point calibration value")
+
+
+def calibration(value, *, name, reciprocal=False):
+    """A scalar calibration used by native math: finite, positive, and invertible."""
+    import math
+
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name}: calibration must be finite and positive")
+    scale = 1.0 / value if reciprocal else value
+    import struct
+
+    try:
+        narrowed = struct.unpack("f", struct.pack("f", scale))[0]
+    except OverflowError:
+        narrowed = float("inf")
+    if not math.isfinite(narrowed) or narrowed <= 0:
+        raise ValueError(f"{name}: calibration must remain finite and positive in FP32")
+    return scale
 
 
 def e4m3(bits: np.ndarray) -> np.ndarray:
