@@ -37,6 +37,7 @@ def own(mc: Cache, rows: int) -> Cache:
     other.k, other.v = mc.k.new_empty((rows, *mc.k.shape[1:])), mc.v.new_empty((rows, *mc.v.shape[1:]))
     other.k[:mc.pos], other.v[:mc.pos] = mc.k[:mc.pos], mc.v[:mc.pos]
     other.pos = mc.pos
+    other.origin = mc.origin
     return other
 
 
