@@ -262,3 +262,86 @@ def test_actual_serving_setup_keeps_startup_failure_and_actor_retirement(serving
     fixture.failures.close = None
     owner.close()
     assert owner.scheduler is None
+
+
+@pytest.mark.parametrize("selected_rows", [None, 8, 0, 17])
+def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup, monkeypatch, selected_rows):
+    from tensorfold.cuda import scheduler
+    from tensorfold.families.qwen3_5.cuda import multi
+
+    directory, _state, _events, _options, _gathers = startup
+    decoders, constructor_options, calibration, launches = [], [], [], []
+    initialize = multi.MultiDecoder.__init__
+    calibrate = multi.MultiDecoder.calibrate
+
+    def initialize_decoder(decoder, *args, **kwargs):
+        constructor_options.append(kwargs)
+        initialize(decoder, *args, **kwargs)
+        decoders.append(decoder)
+
+    def cold_calibration(decoder, streams):
+        calibration.append((decoder.max_rows, decoder.block, streams))
+        calibrate(decoder, streams, reps=1)
+
+    def forward(w, wins, *, full_logits, tp):
+        assert w is decoders[0].w and full_logits and not tp
+        launches.append(sum(len(tokens) for tokens, _parents, _state in wins))
+
+    class Actor:
+        def __init__(self, decoder, *, max_streams):
+            assert decoder.costs and max_streams == 3
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+
+    class SelectedRows(Qwen27Engine):
+        def _prepare_serving(self, model_dir, *, streams, keep):
+            super()._prepare_serving(model_dir, streams=streams, keep=keep, max_rows=self.max_rows)
+
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda settings: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(multi.MultiDecoder, "__init__", initialize_decoder)
+    monkeypatch.setattr(multi.MultiDecoder, "calibrate", cold_calibration)
+    monkeypatch.setattr(multi, "State", lambda w: NS(w=w))
+    monkeypatch.setattr(multi, "multi_tree_forward", forward)
+    monkeypatch.setattr(scheduler, "Scheduler", Actor)
+    engine_type = Qwen27Engine if selected_rows is None else SelectedRows
+    options = {} if selected_rows is None else {"max_rows": selected_rows}
+    if selected_rows in (0, 17):
+        with pytest.raises(ValueError, match="a stream's window is 1 to 16 rows"):
+            engine_type(directory, None, streams=3, **options)
+        assert constructor_options[0]["max_rows"] == selected_rows
+        assert not decoders and not calibration and not launches
+        return
+
+    engine = engine_type(directory, None, streams=3, **options)
+    try:
+        expected = 16 if selected_rows is None else selected_rows
+        assert decoders == [engine.multi]
+        assert engine.multi.max_rows == engine.multi.block == expected
+        assert calibration == [(expected, expected, 3)]
+        assert constructor_options[0].get("max_rows") == selected_rows
+        # Calibration intentionally retains its independent 16-row-window grid;
+        # the NVFP4 caller budgets that scratch separately from its proposal cap.
+        assert sorted(set(launches)) == multi.calibration_rows(3, False)
+
+        class ProposalReached(Exception):
+            pass
+
+        class Draft:
+            def launch_blocks(self, snapshots, pending, guesses, block):
+                assert snapshots == ["snapshot"] and pending == [2]
+                assert guesses == expected - 1 and block == expected
+                raise ProposalReached
+
+        engine.multi.draft, engine.multi.drafts = Draft(), True
+        engine.multi.streams[0] = NS(snap="snapshot", draft=True)
+        # Stop at the cold drafter provider: the real verifier must select its
+        # admitted proposal width before any target arithmetic is attempted.
+        with pytest.raises(ProposalReached):
+            engine.multi._verify([(0, multi.TREE, 2, None)])
+    finally:
+        engine.close()
