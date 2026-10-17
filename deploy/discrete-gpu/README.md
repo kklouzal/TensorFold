@@ -81,7 +81,7 @@ cache writable to solve broken links. The source loader supports managed HF
 shared blobs only through the snapshot's own repository blob link, a real
 shared `blobs` directory with regular `.huggingface-shared-blobs` marker `1\n`,
 and canonical regular `<2-hex-prefix>/<64-hex-hash>` payloads. Other cache paths
-remain outside its authority. See the [HF layout source](https://github.com/huggingface/huggingface_hub/blob/v1.32.0/src/huggingface_hub/utils/_shared_blobs.py).
+remain outside its authority. See the [HF layout source](https://github.com/huggingface/huggingface_hub/blob/v2.2.0/src/huggingface_hub/utils/_shared_blobs.py).
 Keep the selected model files, their path ancestry and links, the shared marker
 and admitted payloads immutable while loading or serving. Unrelated cache
 entries may change without altering those inputs. Stop their readers before
