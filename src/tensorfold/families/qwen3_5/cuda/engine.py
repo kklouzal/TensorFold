@@ -53,7 +53,7 @@ class Qwen27Engine:
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
         from .weights import load
         from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
-        from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, live_kv, prompt_row_bytes, prompt_rows,
+        from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
         from .affine_memory import draft_weights, weight_transform
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
@@ -147,6 +147,21 @@ class Qwen27Engine:
 
             self.vision = QwenCudaVision(model_dir, self.w.norm.device, allow_urls=vision_urls,
                                          offload=vision_offload)
+        self._prepare_serving(model_dir, streams=streams, keep=keep)
+
+    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int) -> None:
+        """Prepare request state after loading/admission and optional drafter/vision.
+
+        The loader establishes torch, tp/rank, allow_copy, capacity_plan,
+        context_window, w, draft, vision and chat_template before this call.
+        ``keep`` is the normalized retained-prefix count used by admission.
+        Calibration completes before publishing a running scheduler.
+        """
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.geometry import live_kv
+
+        torch, tp, rank, allow_copy = self.torch, self.tp, self.rank, self.allow_copy
+        many = streams > 1
         torch.cuda.empty_cache()
         from tensorfold.cuda.markers import resume_points
         from tensorfold.cuda.streams import PrefixCache
@@ -162,7 +177,7 @@ class Qwen27Engine:
             spare = plan["budget_bytes"] - plan["weight_bytes_estimate"] - plan["cache_workspace_bytes_estimate"]
             self.room = KVRoom(self.cache, spare + live_kv(config(model_dir), 1, self.context_window))
         # ``streams`` > 1: up to that many requests decoded together, their windows verified in one forward
-        self.concurrent = streams > 1
+        self.concurrent = many
         self.multi = self.scheduler = None
         if self.concurrent:
             from tensorfold.cuda.scheduler import Scheduler

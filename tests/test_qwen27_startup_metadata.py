@@ -120,3 +120,145 @@ def test_actual_tp_constructor_refuses_effective_eos_mismatch_before_resume_setu
         Qwen27Engine(directory, None, tp=2, master="host")
     assert "load" in events and "split" in events and "resume" not in events
     assert len(gathers) == 3 and gathers[1:] == [[1, 2], [1, 3]]
+
+
+@pytest.fixture
+def serving(startup, monkeypatch):
+    from tensorfold.cuda import scheduler
+    from tensorfold.families.qwen3_5.cuda import multi
+
+    directory, _state, events, _options, _gathers = startup
+    owner = object.__new__(Qwen27Engine)
+    failures = NS(calibrate=None, start=None, close=None)
+    decoders, actors = [], []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda settings: events.append("allocator"))
+
+    class Decoder:
+        def __init__(self, w, draft, **kwargs):
+            self.w, self.draft, self.options = w, draft, kwargs
+            self.costs = []
+            decoders.append(self)
+            events.append("decoder")
+
+        def calibrate(self, streams):
+            assert owner.multi is self and owner.scheduler is None
+            self.costs = [(1, .1), (streams * 12, .2)]
+            events.append("calibrate")
+            if failures.calibrate is not None:
+                raise failures.calibrate
+
+    class Actor:
+        def __init__(self, decoder, *, max_streams):
+            assert decoder is owner.multi and "calibrate" in events
+            self.decoder, self.max_streams = decoder, max_streams
+            actors.append(self)
+            events.append("actor")
+
+        def start(self):
+            assert owner.scheduler is self
+            events.append("start")
+            if failures.start is not None:
+                raise failures.start
+
+        def close(self):
+            assert owner.scheduler is self
+            events.append("close")
+            if failures.close is not None:
+                raise failures.close
+
+    monkeypatch.setattr(multi, "MultiDecoder", Decoder)
+    monkeypatch.setattr(scheduler, "Scheduler", Actor)
+    return NS(owner=owner, directory=directory, events=events,
+              failures=failures, decoders=decoders, actors=actors)
+
+
+@pytest.mark.parametrize("tp,rank,streams", [(1, 0, 1), (2, 0, 1), (2, 1, 1),
+                                            (1, 0, 3), (2, 0, 3), (2, 1, 3)])
+def test_actual_constructor_serving_setup_keeps_serial_and_rank_bookkeeping(serving, tp, rank, streams):
+    fixture, owner = serving, serving.owner
+    owner.__init__(fixture.directory, None, tp=tp, rank=rank, master="host", allow_copy=False,
+                   streams=streams, keep="5", eos_token_ids=[3, 1])
+    try:
+        assert owner.eos == (3, 1) and owner.model_dir == fixture.directory
+        assert owner.cache.keep == 4 and owner.cache.entries == []
+        assert fixture.events.index("load") < fixture.events.index("empty_cache") < fixture.events.index("resume")
+        assert owner.concurrent is (streams > 1)
+        if streams == 1:
+            assert not fixture.decoders and not fixture.actors
+            assert owner.multi is owner.scheduler is None
+            if tp == 1:
+                assert owner.room.cache is owner.cache and owner.room.budget == 640
+            else:
+                assert owner.room is None
+        else:
+            assert fixture.decoders == [owner.multi]
+            assert owner.multi.w is owner.w and owner.multi.draft is owner.draft
+            assert owner.multi.options == {"allow_copy": False, "rank": rank, "world": tp, "context": 33, "keep": 5,
+                                           "points": owner.points, "vision": owner.vision}
+            assert owner.multi.model_dir == fixture.directory and owner.room is None
+            assert fixture.events.index("resume") < fixture.events.index("decoder") < fixture.events.index("calibrate")
+            if rank == 0:
+                assert fixture.actors == [owner.scheduler] and owner.scheduler.max_streams == streams
+                assert fixture.events.index("calibrate") < fixture.events.index("actor") < fixture.events.index("start")
+            else:
+                assert owner.scheduler is None and not fixture.actors
+    finally:
+        owner.close()
+    assert owner.scheduler is None
+
+
+def test_loaded_subclass_prepares_requests_without_running_base_loader(serving, monkeypatch):
+    from tensorfold.cuda.chat_template import prepare_chat_template
+
+    class LoadedVariant(Qwen27Engine):
+        pass
+
+    fixture = serving
+    owner = object.__new__(LoadedVariant)
+    owner.torch, owner.tp, owner.rank, owner.allow_copy = torch, 1, 0, False
+    owner.capacity_plan = {"context_window": 32, "cache_slots": 33, "budget_bytes": 1024,
+                           "weight_bytes_estimate": 128, "cache_workspace_bytes_estimate": 256}
+    owner.context_window = 32
+    owner.w = NS(config=NS(eos=(3, 1)), norm=torch.ones(1))
+    owner.draft, owner.vision = object(), object()
+    owner.chat_template = prepare_chat_template(fixture.directory)
+
+    def no_load(*args, **kwargs):
+        pytest.fail("shared serving preparation must not discover or load checkpoint formats")
+
+    monkeypatch.setattr(weights, "load", no_load)
+    monkeypatch.setattr(exl3_load, "quant_config", no_load)
+    monkeypatch.setattr(nv_format, "is_quantized", no_load)
+    owner._prepare_serving(fixture.directory, streams=1, keep=5)
+    try:
+        assert owner.eos == (3, 1) and owner.cache.keep == 4
+        assert owner.room.cache is owner.cache and owner.room.budget == 640
+        assert owner.model_dir == fixture.directory and owner.points is None
+        assert owner.scheduler is owner.multi is None and not owner.concurrent
+        assert fixture.events == ["empty_cache", "resume"]
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("stage,close_failure", [("calibrate", False), ("start", False), ("start", True)])
+def test_actual_serving_setup_keeps_startup_failure_and_actor_retirement(serving, stage, close_failure):
+    fixture, owner = serving, serving.owner
+    primary, cleanup = KeyboardInterrupt("startup interrupted"), OSError("actor close failed")
+    setattr(fixture.failures, stage, primary)
+    if close_failure:
+        fixture.failures.close = cleanup
+    with pytest.raises(KeyboardInterrupt) as caught:
+        owner.__init__(fixture.directory, None, streams=3)
+    assert caught.value is primary
+    if stage == "calibrate":
+        assert not fixture.actors and owner.scheduler is None
+        assert fixture.events[-1] == "calibrate"
+    else:
+        assert fixture.actors == [owner.scheduler]
+        assert fixture.events[-2:] == ["start", "close"]
+        assert caught.value.__cause__ is (cleanup if close_failure else None)
+    # The failed owner remains reachable; retire it through the same public close.
+    fixture.failures.close = None
+    owner.close()
+    assert owner.scheduler is None

@@ -19,7 +19,15 @@ def publication(family, scheduler_type):
     tree = ast.parse(path.read_text())
     constructor = next(node for node in ast.walk(tree)
                        if isinstance(node, ast.FunctionDef) and node.name == "__init__")
-    blocks = (node.body for node in ast.walk(constructor) if isinstance(getattr(node, "body", None), list))
+    startup_scope = constructor
+    if family == "qwen3_5":
+        calls = [node for node in ast.walk(constructor) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func) == "self._prepare_serving"]
+        assert len(calls) == 1
+        assert ast.unparse(calls[0]) == "self._prepare_serving(model_dir, streams=streams, keep=keep)"
+        startup_scope = next(node for node in ast.walk(tree)
+                             if isinstance(node, ast.FunctionDef) and node.name == "_prepare_serving")
+    blocks = (node.body for node in ast.walk(startup_scope) if isinstance(getattr(node, "body", None), list))
     candidates = [(body[index], body[index + 1]) for body in blocks for index, node in enumerate(body[:-1])
                   if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
                   and isinstance(node.value.func, ast.Name) and node.value.func.id == "Scheduler"]
