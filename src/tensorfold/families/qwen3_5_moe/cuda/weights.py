@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import torch
 
 from tensorfold.cuda import experts as grouped
 from tensorfold.cuda.moe import Routed
-from tensorfold.families.qwen3_5.cuda.weights import Attention, QLinear, Weights, load as load_dense
+from tensorfold.families.qwen3_5.cuda.weights import Attention, QLinear, Weights
+from tensorfold.families.qwen3_5.cuda.weights import load as load_dense
 
 MTP_FILE = "mtp-4bit.safetensors"      # the MTP layer beside a checkpoint whose conversion dropped it
 GS = 64
@@ -51,9 +52,16 @@ def routed(prefix: str, get: Callable, top_k: int) -> Routed:
     return Routed(router.to(torch.bfloat16).contiguous(), experts, int(top_k))
 
 
-def load(model_dir: str | Path, *, eos_token_ids=None) -> Weights:
+def load(model_dir: str | Path, *, eos_token_ids=None, expert_factory=None) -> Weights:
     """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels."""
 
+    from tensorfold.families.qwen3_5.cuda.nvfp4_load import quantized
+
+    if quantized(Path(model_dir)):
+        from .nvfp4_load import load_nvfp4
+
+        return load_nvfp4(model_dir, expert_factory=expert_factory,
+                          **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     return load_dense(model_dir, tiled=True,
                       mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)},
                       prefill_mlp=(), **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
@@ -88,7 +96,7 @@ def mtp_tensors(model_dir: str | Path) -> dict[str, torch.Tensor] | None:
     out: dict[str, torch.Tensor] = {}
     for path in files:
         f = SafeTensors([path])
-        for name in f.keys():
+        for name in f.keys():  # noqa: SIM118 -- SafeTensors exposes keys(), not dict iteration.
             if name.startswith("mtp.") or ".mtp." in name:
                 out["mtp." + name.split("mtp.", 1)[1]] = f.get(name)
     return out or None
