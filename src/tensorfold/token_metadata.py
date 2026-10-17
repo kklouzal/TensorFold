@@ -5,7 +5,14 @@ token stop; other special tokens have no implied end-of-reply meaning.
 """
 from __future__ import annotations
 
-from tensorfold.checkpoint_metadata import read_json
+from tensorfold.checkpoint_metadata import read_json, read_text
+
+
+def load_tokenizer(model_dir):
+    """Load captured regular-file tokenizer JSON through the shared metadata boundary."""
+    from tokenizers import Tokenizer
+
+    return Tokenizer.from_str(read_text(model_dir, "tokenizer.json", required=True))
 
 
 def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):
@@ -84,7 +91,7 @@ def _lookup_eos(model_dir, config, token, vocab_size):
     return found
 
 
-def resolve_eos(model_dir, configured=None, *, vocab_size=None, override=None, fallback=None):
+def resolve_eos(model_dir, configured=None, *, vocab_size=None, override=None, fallback=None, tokenizer=None):
     """Stable model, generation and named tokenizer EOS union, or explicit replacement.
 
     ``configured`` is the caller's authoritative model EOS; an optional family
@@ -101,7 +108,13 @@ def resolve_eos(model_dir, configured=None, *, vocab_size=None, override=None, f
     special = read_json(model_dir, "special_tokens_map.json") or {}
     token = _content(config.get("eos_token", special.get("eos_token")), "tokenizer eos_token")
     if token is not None:
-        found.extend(_lookup_eos(model_dir, config, token, vocab_size))
+        if tokenizer is None:
+            found.extend(_lookup_eos(model_dir, config, token, vocab_size))
+        else:
+            vocab = tokenizer.get_vocab()
+            if token not in vocab:
+                raise ValueError("declared tokenizer EOS content is absent from the loaded tokenizer")
+            found.extend(token_ids(vocab[token], field="loaded tokenizer EOS ID", vocab_size=vocab_size, required=True))
     if not found and fallback is not None:
         found.extend(token_ids(fallback, field="family default eos_token_id", vocab_size=vocab_size))
     return token_ids(found, vocab_size=vocab_size, required=True)
