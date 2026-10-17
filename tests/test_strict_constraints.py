@@ -121,3 +121,36 @@ def test_python_regex_syntax_errors_do_not_narrow_native_syntax(grammars, monkey
     monkeypatch.setattr(_parser, "parse", different_syntax)
     compiled = grammars.compile(grammar.Spec("regex", "[a-z]+"))
     assert grammars.accepts(compiled, "abc")
+
+
+
+def test_array_keywords_do_not_change_non_array_types(grammars):
+    schema = {"type": "integer", "items": {"type": "string", "enum": ["a", "b"]}, "uniqueItems": True}
+    plan = _plan(schema)
+    compiled = grammars.compile(plan.spec)
+    assert _accepted(grammars, compiled, _call("3"))
+    assert not _accepted(grammars, compiled, _call('["a"]'))
+
+
+def test_nullable_unique_array_keeps_null_and_array_contracts(grammars):
+    plan = _plan({"type": ["array", "null"], "items": {"type": "string", "enum": ["a", "b"]},
+                  "uniqueItems": True})
+    compiled = grammars.compile(plan.spec)
+    for value, expected in ((None, True), ([], True), (["a", "b"], True), (["b", "b"], False), (3, False)):
+        assert _accepted(grammars, compiled, _call(json.dumps(value))) is expected
+
+
+
+def test_unique_substitutions_do_not_collide_with_user_definition_names(grammars):
+    schema = {"type": "object", "properties": {
+        "other": {"$ref": "#/properties/value/$defs/tf_helpers_0_0_root"},
+        "keys": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}, "uniqueItems": True}},
+        "required": ["other", "keys"], "additionalProperties": False,
+        "$defs": {"tf_helpers_0_0_root": {"type": "integer"}},
+        "description": "__tensorfold_constraint_0_ __tensorfold_constraint_1_"}
+    plan = _plan(schema)
+    compiled = grammars.compile(plan.spec)
+    for value, expected in (({"other": 3, "keys": ["b", "a"]}, True),
+                            ({"other": [], "keys": ["a"]}, False),
+                            ({"other": 3, "keys": ["a", "a"]}, False)):
+        assert _accepted(grammars, compiled, _call(json.dumps(value))) is expected
