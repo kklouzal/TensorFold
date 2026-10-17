@@ -242,7 +242,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                  capture_taps: bool = False) -> list[tuple[torch.Tensor, torch.Tensor | None, State | None]]:
     """``prefill_chunk`` for several streams in one forward (dense or routed text layers): ``items`` are (ids, state, cut).
     Projections, norms and MLPs run over every row at once, each row's bits its own; each stream's convolution
-    windows, DeltaNet chains and attention read its own state. Per item: (last row normed, taps, the state at cut)."""
+    windows, DeltaNet chains and attention read its own state. Routed experts require one GPU (tp=False).
+    Per item: (last row normed, taps, the state at cut)."""
 
     if tp and any(layer.moe is not None for layer in w.layers):
         raise ValueError("routed experts run on one GPU")
