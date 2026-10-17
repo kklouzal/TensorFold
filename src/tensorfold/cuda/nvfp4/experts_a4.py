@@ -95,7 +95,7 @@ class ExpertsA4:
     def _expert(self, expert):
         yield self.fields, expert
 
-    def run(self, x, picks, out, *, prefill):
+    def _check(self, x, picks, out, *, prefill):
         if (type(prefill) is not bool or x.device != self.device or x.dtype != torch.bfloat16 or x.ndim != 2
                 or x.shape[1] != self.dims or x.stride(-1) != 1 or x.stride(0) < self.dims
                 or picks.device != self.device or picks.dtype != torch.int32 or picks.ndim != 2
@@ -110,6 +110,9 @@ class ExpertsA4:
         if _overlap(x, out) or _overlap(picks, out) or any(_overlap(t, out) or _overlap(t, x) or _overlap(t, picks)
                                                         for t in storage):
             raise ValueError("native A4 rows, picks and outputs must not overlap expert storage or each other")
+
+    def run(self, x, picks, out, *, prefill):
+        self._check(x, picks, out, prefill=prefill)
         out.zero_()
         run = checkpoint.prompt if prefill else checkpoint.matmul
         for lo in range(0, x.shape[0], PAIRS):

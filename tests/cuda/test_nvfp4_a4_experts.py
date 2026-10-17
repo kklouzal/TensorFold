@@ -96,3 +96,46 @@ def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill,
         assert not any(name.endswith("scratch") for name in vars(cached))
     finally:
         cache.close()
+
+
+@pytest.mark.parametrize("prefill,capacity", [(False, 1), (False, 4), (True, 1), (True, 4)])
+def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_projection_shapes(prefill, capacity):
+    from tensorfold.cuda.nvfp4.grouped_a4 import _ext, run
+
+    context = Context(count=4, width=512, dims=2048)
+    resident = load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", swiglu=swiglu)
+    entry = entry_bytes_for(tuple(torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
+                                 for shape, dtype in authority_fields_a4(1, 512, 2048)))
+    cache = HostExpertCache(entry * capacity, entry, "cuda:0")
+    try:
+        fresh = Context(count=4, width=512, dims=2048)
+        cached = load_host_experts_a4(fresh, PREFIX, fresh.cfg, "cuda:0", cache=cache, swiglu=swiglu)
+        rows, slots = 33, 5
+        x = (torch.randn(rows, 2048, generator=torch.Generator().manual_seed(991)) * .7).to("cuda", torch.bfloat16)
+        full = torch.full((rows, slots + 1), -7, dtype=torch.int32, device="cuda")
+        picks = full[:, :slots]
+        picks[:, :4] = (torch.arange(rows, dtype=torch.int32, device="cuda")[:, None] +
+                        torch.arange(4, dtype=torch.int32, device="cuda")) % 4
+        out = torch.zeros((rows, slots + 1, 2048), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
+        expected = torch.empty_like(out[:, :slots])
+        resident.run(x, picks, expected, prefill=prefill)
+        for bank in (resident, cached, cached):
+            run(bank, x, picks, out[:, :slots], prefill=prefill)
+            assert torch.equal(out[:, :slots], expected)
+            assert torch.count_nonzero(out[:, slots:]) == 0
+        # Independent activation-quantizer oracle: standard quant4's byte
+        # representation is row-major, while its scale layout is K-major.
+        plan = torch.tensor([[0, 0, 3], [2, 1, 1], [1, 0, 0]], dtype=torch.int32, device="cuda")
+        codes = torch.empty((2, 3, 1024), dtype=torch.uint8, device="cuda")
+        scales = torch.empty((2, 3, 128), dtype=torch.uint8, device="cuda")
+        _ext().quantize(x, plan, resident.fields[4], codes, scales)
+        for projection in range(2):
+            for pair, (row, _, expert) in enumerate(plan.cpu().tolist()):
+                original_act = 1. / float(context.payload[
+                    f"{PREFIX}.experts.{expert}.{'gate_proj' if projection == 0 else 'up_proj'}.input_global_scale"][0])
+                want_codes, want_scales = checkpoint.quant4(x[row:row + 1], original_act)
+                assert torch.equal(codes[projection, pair], want_codes[0])
+                assert torch.equal(scales[projection, pair], want_scales[:, 0].reshape(-1))
+        assert cache.evictions > 0 if capacity < 4 else cache.evictions == 0
+    finally:
+        cache.close()

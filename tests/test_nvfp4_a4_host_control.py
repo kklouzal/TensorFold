@@ -108,3 +108,19 @@ def test_invalid_scalar_stops_before_projection_codes_and_never_publishes_bank(f
         load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, swiglu=swiglu)
     assert not any(name.endswith(("weight_packed", "weight_scale")) for name in ctx.reads)
     assert not cache._layers and not ctx.used
+
+
+@pytest.mark.parametrize("capacity", [1, 2, 4])
+def test_grouped_candidate_windows_preserve_every_pair_and_both_resource_limits(capacity):
+    from tensorfold.cuda.nvfp4.grouped_a4 import _windows
+
+    groups = {3: [(r, 0) for r in range(140)], 0: [(r, 1) for r in range(19)],
+              2: [(r, 2) for r in range(91)], 1: [(r, 3) for r in range(7)]}
+    batches = list(_windows(groups, capacity))
+    got = []
+    for pairs, ids in batches:
+        assert 0 < len(pairs) <= 128 and 0 < len(ids) <= capacity
+        assert ids == sorted({e for _, _, e in pairs})
+        got.extend((e, row, slot) for row, slot, e in pairs)
+    expected = [(e, row, slot) for e in sorted(groups) for row, slot in groups[e]]
+    assert got == expected
