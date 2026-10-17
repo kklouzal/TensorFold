@@ -131,6 +131,16 @@ def test_native_prompt_attention_rejects_misaligned_views(target, dim):
         _ext().prefill_attention(tensors["q"], tensors["k"], tensors["v"], tensors["out"], 0, dim**-0.5, 1)
 
 
+def test_native_prompt_attention_accepts_four_byte_query_and_output_views():
+    gen = torch.Generator(device="cuda").manual_seed(31)
+    q = torch.randn(514, generator=gen, device="cuda").bfloat16()[2:].view(2, 2, 128)
+    k, v = _caches(gen, 2, 1, 128)
+    out = torch.empty(514, device="cuda", dtype=torch.bfloat16)[2:].view_as(q)
+    expected = triton_attention(q, k, v, 0, scale=0.125)
+    _ext().prefill_attention(q, k, v, out, 0, 0.125, 1)
+    assert torch.equal(out, expected)
+
+
 @pytest.mark.parametrize("alias", ["q", "partial_q", "k", "partial_k", "v"])
 def test_prompt_attention_rejects_output_overlapping_reads(alias):
     q = torch.zeros((2, 2, 128), device="cuda", dtype=torch.bfloat16)
