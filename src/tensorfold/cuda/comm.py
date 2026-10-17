@@ -69,7 +69,7 @@ class NCCL:
         self._opened = False
 
     def open(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-             key: str = "tf_nccl_uid") -> None:
+             key: str = "tf_nccl_uid", store=None) -> None:
         """Acquire into a published slot; failure closes or retains that slot.
 
         Native init writes directly into ``comm`` before Python regains control.
@@ -82,7 +82,7 @@ class NCCL:
                 if self.closed or self._opened:
                     raise RuntimeError("communicator open is one-shot")
                 acquiring = True
-                self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key)
+                self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key, store=store)
                 self._opened = True
         except BaseException as error:
             if not acquiring:
@@ -90,7 +90,7 @@ class NCCL:
             rollback(self, error, lambda: self.close(abort=True))
 
     def _initialize(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-                    key: str = "tf_nccl_uid") -> None:
+                    key: str = "tf_nccl_uid", store=None) -> None:
         from datetime import timedelta
         from math import isfinite
 
@@ -116,7 +116,8 @@ class NCCL:
         for function in (lib.ncclCommDestroy, lib.ncclCommAbort):
             function.argtypes = [ctypes.c_void_p]
             function.restype = ctypes.c_int
-        self.store = TCPStore(master, port, world, rank == 0, timeout=timedelta(seconds=timeout_s))
+        self.store = store if store is not None else TCPStore(master, port, world, rank == 0,
+                                                             timeout=timedelta(seconds=timeout_s))
         uid = _UniqueId()
         if rank == 0:
             self._check(self.lib.ncclGetUniqueId(ctypes.byref(uid)))
@@ -296,6 +297,57 @@ class NCCL:
             except BaseException as error:
                 errors.append(error)
             raise_failures(primary, errors)
+
+    def broadcast(self, tensor: torch.Tensor, root: int = 0) -> None:
+        """Borrow one contiguous tensor until current-stream completion; every rank submits the same shape/type."""
+        with self._close_lock:
+            self._buffer(tensor)
+            if type(root) is not int or not 0 <= root < self.world:
+                raise ValueError("broadcast requires an in-range root rank")
+            function = self.lib.ncclBroadcast
+            function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p]
+            function.restype = ctypes.c_int
+            self._check(function(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), _DTYPES[tensor.dtype],
+                                 root, self.comm, torch.cuda.current_stream(self.device).cuda_stream))
+
+    def _buffer(self, tensor: torch.Tensor) -> None:
+        if self.closed or not self._opened:
+            raise RuntimeError("communicator admission is closed")
+        if (not isinstance(tensor, torch.Tensor) or tensor.device != self.device
+                or tensor.dtype not in _DTYPES or not tensor.is_contiguous()):
+            raise ValueError("NCCL requires supported contiguous storage on the communicator device")
+
+    def send(self, tensor: torch.Tensor, peer: int) -> None:
+        self._transfer(tensor, peer, "ncclSend")
+
+    def recv(self, tensor: torch.Tensor, peer: int) -> None:
+        self._transfer(tensor, peer, "ncclRecv")
+
+    def _transfer(self, tensor: torch.Tensor, peer: int, name: str) -> None:
+        """Point-to-point borrowed storage, matched by the peer's identical type/count and submission order."""
+        with self._close_lock:
+            self._buffer(tensor)
+            if type(peer) is not int or not 0 <= peer < self.world or peer == self.rank:
+                raise ValueError("NCCL point-to-point peer must be another valid rank")
+            function = getattr(self.lib, name)
+            function.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_void_p, ctypes.c_void_p]
+            function.restype = ctypes.c_int
+            self._check(function(tensor.data_ptr(), tensor.numel(), _DTYPES[tensor.dtype], peer, self.comm,
+                                 torch.cuda.current_stream(self.device).cuda_stream))
+
+    def check(self) -> None:
+        """Observe deferred native errors without treating successful submission as completed communication."""
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("communicator admission is closed")
+            error = ctypes.c_int()
+            function = self.lib.ncclCommGetAsyncError
+            function.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+            function.restype = ctypes.c_int
+            self._check(function(self.comm, ctypes.byref(error)))
+            self._check(error.value)
 
     def barrier(self) -> None:
         with self._close_lock:

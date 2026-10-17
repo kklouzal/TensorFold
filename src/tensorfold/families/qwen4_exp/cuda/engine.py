@@ -35,7 +35,7 @@ def vision_workspace() -> int:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None) -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -43,9 +43,10 @@ class FlashNextEngine:
         self._receiving = False
         self._shutdown_sent = False
         self.comm = self.vision = self.w = self.scheduler = self.multi = self.e = self.serial = None
+        self.expert_session = expert_session
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -56,7 +57,7 @@ class FlashNextEngine:
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, expert_session=None) -> None:
         from .. import rope_parameters
         from ..kv_formats import get_pair
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
@@ -149,7 +150,7 @@ class FlashNextEngine:
             from tensorfold.cuda.capacity import Geometry
             from .prompt_plan import IDLE_ROWS
 
-            ram_layout = layout(model_dir, vram_experts, mtp=mtp)
+            ram_layout = expert_session.layout if expert_session is not None else layout(model_dir, vram_experts, mtp=mtp)
             if automatic_experts:
                 automatic_capacity = {"memory_reserve": AUTO_HEADROOM_BYTES}
             weight_rule = ram_layout.transform(weight_rule)
@@ -173,6 +174,8 @@ class FlashNextEngine:
             else:
                 scratch_device, scratch_host = plan_scratch(text,
                     streams * each if streams > 1 else max(8, each), chunk or IDLE_ROWS, mtp)
+            if expert_session is not None:
+                scratch_device += expert_session.workspace_bytes
             base_geometry = geometry
             def geometry(text):
                 base = base_geometry(text)
@@ -220,8 +223,12 @@ class FlashNextEngine:
         w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
                  draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
-                 **({"vram_experts": vram_experts} if vram_experts is not None else {}))
+                 **({"expert_loader": expert_session.load_bank} if expert_session is not None else
+                    {"vram_experts": vram_experts} if vram_experts is not None else {}))
         self.w, self.scheduler = w, None
+        if expert_session is not None:
+            expert_session.finish_loading()
+            w.meta["expert_cache"] = expert_session.cache
         if ram_layout is not None and not automatic_experts:
             cache = w.meta["expert_cache"]
             initial = deepcopy(self.capacity_plan)
@@ -858,6 +865,10 @@ class FlashNextEngine:
         if comm is not None:
             comm.close(abort=getattr(self, '_abort_comm', False))
             self.comm = None
+        session = getattr(self, "expert_session", None)
+        if session is not None:
+            session.close(abort=getattr(self, "_abort_comm", False))
+            self.expert_session = None
         weights = getattr(self, 'w', None)
         if weights is not None:
             import torch

@@ -1,0 +1,353 @@
+"""Flash Next expert-only follower and per-slot NCCL exchange.
+
+Rank zero alone owns the model's sequence state, routers and shared experts.
+Workers return disjoint unweighted slots. The normal model consumer combines
+those slots in its original order; NCCL never performs floating-point arithmetic.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import threading
+import time
+from dataclasses import replace
+from datetime import timedelta
+from pathlib import Path
+
+from tensorfold.cleanup import rollback
+from tensorfold.cuda.expert_parallel import MAX_ROWS, MAX_SLOTS, AffineBank, ownership
+
+TIMEOUT = 600.0
+
+
+def scope_architecture_cache(torch):
+    """Scope process-local JIT artifacts before imports can build on a heterogeneous peer's path."""
+    from torch.utils.cpp_extension import get_default_build_root
+
+    major, minor = torch.cuda.get_device_capability(0)
+    suffix = f"sm{major}{minor}"
+    default = Path(get_default_build_root())
+    for key, fallback in (("TORCH_EXTENSIONS_DIR", default), ("TRITON_CACHE_DIR", default / "triton"),
+                          ("CUDA_CACHE_PATH", default / "cuda"), ("TORCHINDUCTOR_CACHE_DIR", default / "inductor")):
+        path = Path(os.environ.get(key, str(fallback))) / suffix
+        path.mkdir(parents=True, exist_ok=True)
+        os.environ[key] = str(path)
+
+
+def decode_frame(raw, *, sequence, banks):
+    if not isinstance(raw, bytes) or len(raw) > 512:
+        raise ValueError("expert control frame exceeds its 512-byte envelope")
+    frame = json.loads(raw)
+    if (not isinstance(frame, list) or len(frame) != 4
+            or any(type(v) is not int for v in frame)):
+        raise ValueError("expert control frame requires four native integer fields")
+    seq, bank, rows, prefill = frame
+    if seq != sequence or not 0 <= seq < 2**63 or prefill not in (0, 1):
+        raise ValueError("expert control sequence or arithmetic mode is invalid")
+    if bank == -1 and rows == 0 and prefill == 0:
+        return None
+    if not 0 <= bank < banks or not 1 <= rows <= MAX_ROWS:
+        raise ValueError("expert control bank/rows exceeds admitted geometry")
+    return bank, rows, bool(prefill)
+
+
+class DistributedExperts:
+    kernel = "expert_parallel"
+    capturable = False
+
+    def __init__(self, session, key, local):
+        self.session, self.key, self.local = session, key, local
+        self.width, self.dims = local.width, local.dims
+        self.count = sum(session.owner.counts) + 1
+
+    def device_tensors(self):
+        return self.local.device_tensors()
+
+
+class Session:
+    """One serialized expert wire with one bounded work item outstanding per rank.
+
+    Store headers wake idle followers without enqueuing an unbounded CUDA wait.
+    Ready acknowledgements precede collectives. Native events plus async error
+    checks bound host waits; cleanup aborts first on failure and preserves owners.
+    """
+    def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp):
+        import torch
+        from torch.distributed import TCPStore
+
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.comm import NCCL
+
+        from ..ram_experts import layout
+        from .weight_types import Config
+
+        self.comm = self.reader = self.cache = None
+        self.source_files = []
+        self.source_identity = []
+        self.closed = False
+        self.sequence = 0
+        self.lock = threading.RLock()
+        self.banks = {}
+        self.packed_cache = None
+        self.model_dir, self.budget, self.mtp = Path(model_dir), budget, mtp
+        self.rank, self.world, self.timeout = rank, ranks, TIMEOUT
+        self.cfg = Config.read(self.model_dir)
+        self.owner = ownership(ranks, shards, rank, self.cfg.experts)
+        if self.cfg.top_k + 1 > MAX_SLOTS:
+            raise ValueError("expert parallelism exceeds the native 1024-expert plan geometry")
+        if self.cfg.quant not in ("mlx", "modelopt"):
+            raise ValueError("expert parallelism supports affine4 and NVFP4 Flash Next checkpoints")
+        if budget is None:
+            raise ValueError("expert parallelism requires --vram-experts GIB|auto on each rank")
+        torch.cuda.set_device(0)
+        scope_architecture_cache(torch)
+        self.torch = torch
+        self.slots, self.dims = self.cfg.top_k + 1, self.cfg.hidden
+        base = layout(model_dir, budget, mtp=mtp)
+        total = self.cfg.experts + (base.format == "affine4")
+        local = len(self.owner.ids) + (rank == 0 and base.format == "affine4")
+        if base.host_bytes % total:
+            raise ValueError("expert authority geometry does not divide into complete per-expert cells")
+        self.layout = replace(base, host_bytes=(base.host_bytes // total) * local)
+        text = config(model_dir)
+        self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
+                                           + self.slots * self.cfg.moe_width * 2) + (4 << 20)
+        try:
+            self.store = TCPStore(master, port, ranks, rank == 0, timeout=timedelta(seconds=self.timeout))
+            identity = self._identity(text)
+            self.store.set(f"ep/identity/{rank}", json.dumps(identity))
+            peers = [self._read_json(f"ep/identity/{r}", 1 << 20) for r in range(ranks)]
+            if (any(p[1:] != peers[0][1:] for p in peers)
+                    or len({p[0] for p in peers}) != ranks):
+                raise ValueError("expert ranks require distinct GPUs and matching checkpoint/configuration geometry")
+            self.comm = NCCL()
+            self.comm.open(rank, ranks, master, port, store=self.store, key="tf_ep_nccl_uid")
+            self.x = torch.empty((MAX_ROWS, self.dims), dtype=torch.bfloat16, device="cuda")
+            self.pick = torch.empty((MAX_ROWS, self.slots), dtype=torch.int32, device="cuda")
+            self.output = torch.empty((MAX_ROWS, self.slots, self.dims), dtype=torch.float32, device="cuda")
+            self.peer = torch.empty_like(self.output)
+            self.low = torch.empty_like(self.output, dtype=torch.bfloat16)
+        except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
+            rollback(self, error, lambda: self.close(abort=True))
+
+    def _identity(self, text):
+        prop = self.torch.cuda.get_device_properties(0)
+        uuid = str(prop.uuid)
+        digest = hashlib.sha256()
+        for name in ("config.json", "model.safetensors.index.json"):
+            from tensorfold.cuda.tensor_file import checkpoint_path
+            path = checkpoint_path(self.model_dir, name)
+            if path.stat().st_size > 96 << 20:
+                raise ValueError("expert checkpoint metadata exceeds the 96MiB boundary")
+            digest.update(path.read_bytes())
+        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+        index = read_metadata_json(checkpoint_path(self.model_dir, "model.safetensors.index.json"))
+        files = []
+        for shard in sorted(set(index["weight_map"].values())):
+            fd = os.open(checkpoint_path(self.model_dir, shard), os.O_RDONLY | os.O_CLOEXEC)
+            self.source_files.append(fd)
+            st = os.fstat(fd)
+            files.append([shard, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns])
+            self.source_identity.append(files[-1])
+        if len(json.dumps(files).encode()) > 1 << 19:
+            raise ValueError("expert checkpoint source identity exceeds 512KiB")
+        return [uuid, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
+                self.cfg.moe_width, bool(self.mtp), self.cfg.quant, files]
+
+    def _read_json(self, key, maximum):
+        raw = self.store.get(key)
+        if not isinstance(raw, bytes) or len(raw) > maximum:
+            raise ValueError("expert rendezvous metadata exceeds its envelope")
+        return json.loads(raw)
+
+    def _ensure_reader(self):
+        if self.reader is None:
+            from .reader import _Reader
+            self.reader = _Reader(self.model_dir, "cpu")
+
+    def _check_source(self):
+        from tensorfold.cuda.tensor_file import checkpoint_path
+        for identity in self.source_identity:
+            name, *expected = identity
+            st = os.stat(checkpoint_path(self.model_dir, name))
+            if [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns] != expected:
+                raise ValueError("expert checkpoint source changed during loading")
+
+    def load_bank(self, reader, name, prefix, cfg, kind):
+        """Called before the ordinary loader reads any unowned expert payload."""
+        from tensorfold.cuda.expert_cache import CachedExperts, HostExpertCache
+
+        self._ensure_reader()
+        self._check_source()
+        if self.cache is None:
+            self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda")
+            from tensorfold.cuda.packed_expert_cache import PackedExpertCache
+            self.packed_cache = PackedExpertCache.from_environment()
+        key = prefix + name
+        if key in self.banks:
+            raise ValueError("expert layer registered twice")
+        if kind == "mlx":
+            from tensorfold.cuda.host_experts import load_host_experts
+            host = load_host_experts(self.reader, key, owned_ids=self.owner.ids, include_shared=self.rank == 0,
+                                     authority=self.cache, packed_cache=self.packed_cache)
+            local = AffineBank(CachedExperts(host, self.cache, len(self.banks)))
+        else:
+            from tensorfold.cuda.nvfp4.host_experts import load_moe_host
+            local = load_moe_host(self.reader, key, cfg, "cuda", cache=self.cache,
+                                  owned_ids=self.owner.ids, include_shared=self.rank == 0)
+        self.banks[key] = local
+        return DistributedExperts(self, key, local)
+
+    def finish_loading(self):
+        self._check_source()
+        if self.reader is not None:
+            self.reader.close()
+            self.reader.release()
+            self.reader = None
+        keys = sorted(self.banks)
+        self.keys = keys
+        manifest = [[k, self.banks[k].width, self.banks[k].dims] for k in keys]
+        body = json.dumps(manifest)
+        if len(body.encode()) > 65536:
+            raise ValueError("expert bank manifest exceeds 64KiB")
+        self.store.set(f"ep/banks/{self.rank}", body)
+        if any(self._read_json(f"ep/banks/{r}", 65536) != manifest for r in range(self.world)):
+            raise ValueError("expert ranks disagree on registered layer geometry")
+
+    def _wait(self):
+        event = self.torch.cuda.Event()
+        event.record(self.torch.cuda.current_stream())
+        deadline = time.monotonic() + self.timeout
+        while not event.query():
+            self.comm.check()
+            if time.monotonic() >= deadline:
+                raise TimeoutError("expert rank operation exceeded its completion deadline")
+            time.sleep(.001)
+        self.comm.check()
+
+    def _publish(self, bank, rows, prefill):
+        if self.sequence >= 2**63:
+            raise OverflowError("expert work sequence exhausted")
+        frame = json.dumps([self.sequence, bank, rows, int(prefill)])
+        for rank in range(1, self.world):
+            self.store.set(f"ep/work/{rank}", frame)
+        ready = [f"ep/ready/{rank}" for rank in range(1, self.world)]
+        for key in ready:
+            if self.store.get(key) != str(self.sequence).encode():
+                raise RuntimeError("expert follower acknowledged another work sequence")
+            self.store.delete_key(key)
+
+    def run(self, distributed, x, picks, out, *, prefill):
+        if self.rank != 0 or self.closed:
+            raise RuntimeError("expert leader admission is closed")
+        with self.lock:
+            try:
+                bank = self.keys.index(distributed.key)
+                for start in range(0, len(x), MAX_ROWS):
+                    rows = min(MAX_ROWS, len(x) - start)
+                    self.x[:rows].copy_(x[start:start + rows])
+                    self.pick[:rows].copy_(picks[start:start + rows])
+                    self._publish(bank, rows, prefill)
+                    self.comm.broadcast(self.x[:rows])
+                    self.comm.broadcast(self.pick[:rows])
+                    target = self.low[:rows] if prefill else self.output[:rows]
+                    distributed.local.run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
+                                                prefill=prefill)
+                    self.output[:rows].copy_(target)
+                    for rank in range(1, self.world):
+                        self.comm.recv(self.peer[:rows], rank)
+                        begin, end = sum(self.owner.counts[:rank]), sum(self.owner.counts[:rank + 1])
+                        mask = ((self.pick[:rows] >= begin) & (self.pick[:rows] < end)).unsqueeze(-1)
+                        self.output[:rows].copy_(self.torch.where(mask, self.peer[:rows], self.output[:rows]))
+                    out[start:start + rows].copy_(self.output[:rows])
+                    self._wait()
+                    self.sequence += 1
+            except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
+                rollback(self, error, lambda: self.close(abort=True))
+
+    def follow(self):
+        if self.rank == 0:
+            raise RuntimeError("expert leader cannot enter the follower loop")
+        try:
+            while True:
+                while not self.store.check([f"ep/work/{self.rank}"]):
+                    time.sleep(.01)  # idle followers retain no pending CUDA collective
+                raw = self.store.get(f"ep/work/{self.rank}")
+                self.store.delete_key(f"ep/work/{self.rank}")
+                work = decode_frame(raw, sequence=self.sequence, banks=len(self.keys))
+                self.store.set(f"ep/ready/{self.rank}", str(self.sequence))
+                if work is None:
+                    break
+                bank, rows, prefill = work
+                self.comm.broadcast(self.x[:rows])
+                self.comm.broadcast(self.pick[:rows])
+                target = self.low[:rows] if prefill else self.output[:rows]
+                self.banks[self.keys[bank]].run_picks(self.x[:rows], self.owner.local(self.pick[:rows]), target,
+                                                     prefill=prefill)
+                self.output[:rows].copy_(target)
+                self.comm.send(self.output[:rows], 0)
+                self._wait()
+                self.sequence += 1
+        except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
+            rollback(self, error, lambda: self.close(abort=True))
+
+    def close(self, *, abort=False):
+        with self.lock:
+            if self.closed:
+                return
+            if not abort and self.rank == 0 and getattr(self, "keys", None) is not None:
+                self._publish(-1, 0, False)
+            if self.comm is not None:
+                self.comm.close(abort=abort)
+                self.comm = None
+            if self.reader is not None:
+                self.reader.close()
+                self.reader = None
+            if self.cache is not None:
+                self.cache.close()
+                self.cache = None
+            while self.source_files:
+                os.close(self.source_files[-1])
+                self.source_files.pop()
+            self.closed = True
+
+
+class Follower:
+    """CLI owner whose sole runtime is expert work, without any backbone or sequence cache."""
+    def __init__(self, session):
+        self.session, self.w = session, None
+        self.session._ensure_reader()
+        try:
+            from tensorfold.cuda.capacity import available_bytes, host_cgroup_bytes, host_stream_bytes
+            host_need = (session.layout.host_bytes + session.layout.staging_bytes
+                         + session.layout.loading_bytes + session.layout.metadata_host_bytes)
+            rooms = [room for room in (host_stream_bytes(), host_cgroup_bytes()) if room is not None]
+            if rooms and host_need > min(rooms):
+                raise MemoryError("expert follower host authority/staging exceeds admitted host capacity")
+            if (session.layout.gpu_bytes + session.workspace_bytes
+                    + getattr(session.layout, "loading_device_bytes", 0) > available_bytes(session.torch)):
+                raise MemoryError("expert follower device pool/loading/workspace exceeds admitted device capacity")
+            names = session.reader.where
+            prefix = "language_model." if "language_model.model.embed_tokens.weight" in names else ""
+            base = "model.language_model." if "model.language_model.embed_tokens.weight" in names else "model."
+            banks = [f"{prefix}{base}layers.{i}.mlp" for i in range(session.cfg.layers)]
+            if session.mtp and f"{prefix}mtp.fc_embedding.weight" in names:
+                banks.append(f"{prefix}mtp.layers.0.mlp")
+            for key in banks:
+                session.load_bank(None, key, "", session.cfg, session.cfg.quant)
+            session.finish_loading()
+            if session.budget == "auto":
+                from ..ram_experts import auto_pool_bytes
+                free, _ = session.torch.cuda.mem_get_info()
+                selected = auto_pool_bytes(int(free), session.cache.entry_bytes, session.cache.score_history_entries,
+                                           workspace_bytes=session.workspace_bytes)
+                session.cache.configure_before_use(selected["gpu_bytes"])
+        except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
+            rollback(self, error, lambda: self.close(abort=True))
+
+    def follow(self):
+        self.session.follow()
+
+    def close(self, *, abort=False):
+        self.session.close(abort=abort)

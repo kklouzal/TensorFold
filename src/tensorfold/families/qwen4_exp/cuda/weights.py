@@ -33,7 +33,7 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
-         rope: RopeParameters | None = None, vram_experts: float | str | None = None) -> Weights:
+         rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -62,6 +62,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                                           nk=full.nk // world, nv=full.nv // world,
                                           moe_width=full.moe_width // world, shared_width=full.shared_width // world)
     expert_cache = None
+    packed_cache = None
     ple_tables = PLETables()
     next_expert_layer = 0
     rd = _Reader(model_dir, device)
@@ -245,11 +246,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         sw, ss, sb = triple(name + ".shared_expert_gate")
         shared_gate = dequantize(sw, ss, sb).to(torch.bfloat16)
         router = torch.cat([gate_rows, shared_gate]).contiguous()
+        if expert_loader is not None:
+            return MoEW(router, expert_loader(rd, name, prefix, full, "mlx"))
         if expert_cache is not None:
             from tensorfold.cuda.expert_cache import CachedExperts
             from tensorfold.cuda.host_experts import load_host_experts
 
-            host = load_host_experts(rd, prefix + name)
+            host = load_host_experts(rd, prefix + name, authority=expert_cache, packed_cache=packed_cache)
             layer_id = next_expert_layer
             next_expert_layer += 1
             return MoEW(router, CachedExperts(host, expert_cache, layer_id))
@@ -276,6 +279,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         router = raw(name + ".gate.weight").to(torch.bfloat16)
         sgate = raw(name + ".shared_expert_gate.weight").to(torch.bfloat16).reshape(full.hidden).contiguous()
         router = torch.cat([router, sgate[None]]).contiguous()
+        if expert_loader is not None:
+            return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
         e = full.experts
         w_ = full.moe_width
         gs = full.nvfp4_group
@@ -416,10 +421,15 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             from tensorfold.cuda.expert_cache import HostExpertCache
 
             expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device)
+            from tensorfold.cuda.packed_expert_cache import PackedExpertCache
+            packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"
                  else triple("model.embed_tokens"))
         loaded = []
         ahead = rd.layer_names(prefix, mbase, chosen, mtp)   # read ahead of the layer that takes them
+        if expert_loader is not None:
+            from tensorfold.cuda.expert_parallel import expert_tensor
+            ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
         if expert_cache is not None:
             from ..ram_experts import expert_tensor
 

@@ -339,6 +339,12 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     """Routed experts + the shared expert. Returns the pending write-back: (2, slots y, weights) on one GPU, (3, gathered fp32 partials, None) across ranks."""
 
     m = layer.moe
+    if getattr(m.experts, "kernel", "qmm") == "expert_parallel":
+        buf = b.moe
+        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R])
+        moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
+        m.experts.session.run(m.experts, b.mixed[:R], buf.pick[:R], buf.y[:R], prefill=b.prefill)
+        return 2, buf.y[:R], buf.wts[:R]
     if getattr(m.experts, "kernel", "qmm") == "nvfp4":      # an NVFP4 checkpoint: the FP4 experts
         buf = b.moe
         nvfp4_moe.moe(b.mixed[:R], b.xs_mixed[:R], m.router, m.experts, buf, _MoECfg(w.cfg))

@@ -164,6 +164,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="Flash Next: read the n-gram (PLE) tables from the checkpoint on SSD at each lookup "
                             "instead of holding them in memory. A trade: a few percent of decode speed for about "
                             "40 GiB less at peak (the tables are 29.8 GiB); a 128 GB Mac needs it")
+    speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
+                       help="Flash Next CUDA RAM experts auto: reserve N full KV windows across concurrent slots")
 
     speed.add_argument("--no-update-check", action="store_true",
                        help="don't ask GitHub whether a newer release exists (also TENSORFOLD_NO_UPDATE_CHECK=1)")
@@ -173,6 +175,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="auto: MLX on macOS, CUDA elsewhere")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
                       help="GPUs (one per machine) the model is split over; run the same command on each")
+    cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
+                      help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
+    cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
+                      help="comma-separated routed-expert counts per expert rank, covering every expert exactly")
     cuda.add_argument("--rank", type=int, choices=(0, 1, 2, 3), default=0,
                       help="with --tp 2/4: this machine's rank; rank 0 serves HTTP, others follow it")
     cuda.add_argument("--master", default="", help="with --tp 2/4: rank 0's address on the link between the ranks")
