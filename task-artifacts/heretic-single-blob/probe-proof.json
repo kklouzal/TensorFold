@@ -1,0 +1,14 @@
+{
+  "source_sha256": "d75271f476fb9293625ca391d5a3de65dd7b7d5198f5f256b4752126ba3f4e93",
+  "target_sha256": "eb8997c45e2755657ccbdaffb7ce3aad7d512201a237063a796dfbc6c20ba695",
+  "generator_sha256": "a6d578af81102b05bbc85af04cfd9189b8701f463f397245c30cd26e15f13582",
+  "unchanged_function_ast": [
+    "body",
+    "reply_tokens",
+    "validate_stats",
+    "cache_receipt",
+    "module_identity"
+  ],
+  "run_body_equal_after_reversing_only_variant_validation_and_note": true,
+  "scope": "private labelled kernel binding only; all HTTP/token/evidence/cleanup behavior retained"
+}
