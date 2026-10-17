@@ -135,7 +135,7 @@ def requant_rows(head, ids: torch.Tensor, device) -> tuple[torch.Tensor, torch.T
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, table_reads: list | None = None,
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, _ram_layout=None,
-         vram_experts_pin: str = "off", _pin_future_bytes: int = 0):
+         vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None):
     """Load native EXL3 weights, optionally retaining original expert streams on CPU."""
 
     from .weight_types import Config, draft_token_ids
@@ -146,7 +146,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     if type(_pin_future_bytes) is not int or _pin_future_bytes < 0:
         raise ValueError("remaining expert-loader host workspace must be nonnegative integer bytes")
 
-    cfg = Config.read(model_dir, rope=rope)
+    cfg = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     ids = draft_token_ids(draft_vocab, cfg.vocab)
     tables = PLETables()
     if table_reads is not None:

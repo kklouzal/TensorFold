@@ -16,7 +16,7 @@ from .bf16 import b16_from_rows, quantize4, stack_b16
 from .qmm import Q4, dequantize, make_q4, stack_q4
 from .reader import _DT, _groups, _Reader, _rows, _rows_at, norms_around_one  # noqa: F401
 from .weight_types import (
-    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids, stop_ids)  # noqa: F401 (re-exported)
+    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids)  # noqa: F401 (re-exported)
 
 
 _PLAIN = (torch.bfloat16, torch.float16, torch.float32)
@@ -34,7 +34,7 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None,
-         vram_experts_pin: str = "off", _pin_future_bytes: int = 0) -> Weights:
+         vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -51,11 +51,12 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         ram_layout = layout(model_dir, vram_experts, mtp=mtp)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope,
+                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
                          **({"vram_experts": vram_experts, "_ram_layout": ram_layout}
                             if vram_experts is not None else {}),
                          **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": _pin_future_bytes}
                             if vram_experts_pin != "off" else {}))
-    full = Config.read(model_dir, rope=rope)
+    full = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     ids = draft_token_ids(draft_vocab, full.vocab)
     if ids is not None and ids.size < (tp[1] if tp is not None else 1):
         raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,8 +61,11 @@ class Config:
         return self.top_k + 2
 
     @classmethod
-    def read(cls, model_dir: str | Path) -> "Config":
-        raw = json.loads((Path(model_dir) / "config.json").read_text())
+    def read(cls, model_dir: str | Path, *, eos_token_ids=None) -> "Config":
+        from tensorfold.checkpoint_metadata import read_config
+        from tensorfold.token_metadata import resolve_eos
+
+        raw = read_config(model_dir)
         chars = {"mamba": "M", "attention": "*", "moe": "E", "mlp": "-"}
         if raw.get("hybrid_override_pattern"):
             pattern = "".join(raw["hybrid_override_pattern"])
@@ -72,7 +74,8 @@ class Config:
         if "-" in pattern:
             raise ValueError("Nemotron-H checkpoints with dense MLP blocks are not supported on CUDA")
         limit = raw.get("time_step_limit") or (0.0, float("inf"))
-        eos = raw.get("eos_token_id", 2)
+        eos = resolve_eos(model_dir, raw.get("eos_token_id"), vocab_size=int(raw["vocab_size"]),
+                          override=eos_token_ids, fallback=2)
         m_heads, m_groups = int(raw["mamba_num_heads"]), int(raw["n_groups"])
         if m_heads <= 0 or m_groups <= 0 or m_heads % m_groups:
             raise ValueError("Nemotron Mamba needs positive heads and groups, with groups dividing heads")
@@ -87,7 +90,7 @@ class Config:
             shared_width=int(raw["moe_shared_expert_intermediate_size"]),
             scaling=float(raw.get("routed_scaling_factor") or 1.0), norm_topk=bool(raw.get("norm_topk_prob", True)),
             eps=float(raw.get("layer_norm_epsilon", 1e-5)), dt_min=float(limit[0]), dt_max=float(limit[1]),
-            eos=tuple(eos) if isinstance(eos, list) else (int(eos),),
+            eos=eos,
         )
 
 
@@ -235,11 +238,11 @@ def load_mtp(path: Path, c: Config, device: str = "cuda") -> MTP:
     return mtp
 
 
-def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True) -> Weights:
+def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, eos_token_ids=None) -> Weights:
     """The checkpoint in ``model_dir``, and its ``mtp-4bit.safetensors`` unless ``mtp`` is False."""
 
     model_dir = Path(model_dir)
-    c = Config.read(model_dir)
+    c = Config.read(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     r = _Reader(sorted(model_dir.glob("model*.safetensors")), device)
     blocks: list[Block] = []
     for i, kind in enumerate(c.pattern):

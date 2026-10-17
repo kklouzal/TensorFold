@@ -15,6 +15,9 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from tensorfold.checkpoint_metadata import read_config
+from tensorfold.checkpoint_quantization import effective_config
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/tensorfold/families/qwen3_5/cuda"
 spec = importlib.util.spec_from_file_location("qwen35_config_real_metadata", ROOT / "src/tensorfold/cuda/tensor_file.py")
@@ -69,7 +72,8 @@ def format_api(family):
     scope = {"__name__": __name__, "dataclass": dataclass, "PARTS": (), "MARKERS": {}, "Path": Path, "struct": struct, "METHODS": ("modelopt", "compressed-tensors"),
              "SIZES": {"I32": 4, "U32": 4, "I64": 8}, "_regular_stream": HEADER._regular_stream,
              "_strict_header": HEADER.read_header, "read_header_stream": HEADER.read_header_stream,
-             "checkpoint_path": HEADER.checkpoint_path, "read_metadata_json": HEADER.read_metadata_json}
+             "checkpoint_path": HEADER.checkpoint_path, "read_metadata_json": HEADER.read_metadata_json,
+             "read_config": read_config, "effective_config": effective_config}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec",
                  flags=__future__.annotations.compiler_flag), scope)
     return SimpleNamespace(**scope)
@@ -93,7 +97,8 @@ def reference():
     return {"hidden": 256, "intermediate": 512, "layers": 2, "heads": 4, "kv_heads": 2,
             "head_dim": 64, "vocab": 128, "k_heads": 2, "v_heads": 4, "dk": 128, "dv": 128,
             "conv_kernel": 4, "interval": 4, "eps": 1e-6, "rope_dims": 16, "rope_theta": 10000000.0,
-            "eos": (3,), "experts": 0, "top_k": 0, "moe_width": 0, "mrope_section": (11, 11, 10)}
+            "eos": (3,), "experts": 0, "top_k": 0, "moe_width": 0, "mrope_section": (11, 11, 10),
+            "layer_types": ()}
 
 
 class ConfigMetadataControls(unittest.TestCase):
@@ -153,11 +158,18 @@ class ConfigMetadataControls(unittest.TestCase):
     def test_missing_generation_preserves_original_defaults_and_coercions(self):
         new = config(SOURCE / "weights.py")
         item = text()
-        item.update(num_hidden_layers=2.0, eos_token_id="3", intermediate_size="512")
+        item.update(num_hidden_layers=2.0, eos_token_id=3, intermediate_size="512")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "config.json").write_text(json.dumps(item), encoding="utf-8")
             self.assertEqual(asdict(new.read(root)), reference())
+            # HF EOS metadata declares native IDs, unlike the unrelated numeric
+            # field normalizations above. Retain the old string as a rejection
+            # control rather than silently coercing an invalid token schema.
+            item["eos_token_id"] = "3"
+            (root / "config.json").write_text(json.dumps(item), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                new.read(root)
 
     def test_config_and_generation_use_strict_metadata_grammar_before_config_use(self):
         cls = config(SOURCE / "weights.py")
@@ -292,7 +304,9 @@ class ConfigMetadataControls(unittest.TestCase):
                                       and n.func.value.id == "json") for n in ast.walk(tree)))
             calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                      and isinstance(n.func, ast.Name) and n.func.id == "read_metadata_json"]
-            self.assertGreaterEqual(len(calls), 1)
+            delegated = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                         and n.func.id == "read_config"]
+            self.assertGreaterEqual(len(calls) + len(delegated), 1)
             for call in calls:
                 self.assertIsInstance(call.args[0], ast.Call)
                 self.assertEqual(call.args[0].func.id, "checkpoint_path")

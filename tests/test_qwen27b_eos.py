@@ -48,6 +48,15 @@ def test_ids_only_in_generation_config(tmp_path):
     assert Config.read(d).eos == (IM_END,)
 
 
+def test_named_tokenizer_eos_completes_export_defaults_and_explicit_ids_replace_them(tmp_path):
+    d = checkpoint(tmp_path, {"model_type": "qwen3_5", "text_config": {**TEXT, "eos_token_id": ENDOFTEXT}},
+                   {"eos_token_id": ENDOFTEXT})
+    (d / "tokenizer_config.json").write_text(json.dumps({"eos_token": "turn_end",
+        "added_tokens_decoder": {str(IM_END): {"content": "turn_end", "special": True}}}))
+    assert Config.read(d).eos == (ENDOFTEXT, IM_END)
+    assert Config.read(d, eos_token_ids=[0]).eos == (0,)
+
+
 def test_no_ids_anywhere_is_an_error(tmp_path):
     d = checkpoint(tmp_path, {"model_type": "qwen3_5", "text_config": TEXT}, {"temperature": 1.0})
     with pytest.raises(ValueError, match="eos_token_id"):
