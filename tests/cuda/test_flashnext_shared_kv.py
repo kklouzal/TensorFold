@@ -23,7 +23,7 @@ def test_one_shared_window_bounds_three_streams_and_preserves_retry(tmp_path, mo
     # multi-thousand-token numerical fixture. No memory/failure check is mocked.
     monkeypatch.setattr(multi, "FIRST", 8)
     monkeypatch.setattr(multi, "STEP", 16)
-    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", "64")
+    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", "256")
     _checkpoint(tmp_path)
     engine = FlashNextEngine(tmp_path, streams=3, max_len=64, context_explicit=True,
                              depth=3, confidence=0.0, prefetch=False, graphs=False,
