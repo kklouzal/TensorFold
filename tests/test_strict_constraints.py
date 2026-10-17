@@ -1,4 +1,4 @@
-"""Independent decoded-value oracles for strict length and finite-uniqueness grammars."""
+"""Independent finite-uniqueness oracles and strict schema admission boundaries."""
 
 import itertools
 import json
@@ -109,3 +109,15 @@ def test_requested_strict_response_schemas_refuse_native_ignored_constraints(sch
         body["response_format"]["json_schema"]["strict"] = strict
         assert grammar.request_spec(body).kind == "json_schema"
     assert grammar.request_spec({"guided_json": schema}).kind == "json_schema"
+
+
+def test_python_regex_syntax_errors_do_not_narrow_native_syntax(grammars, monkeypatch):
+    import re
+    from re import _parser
+
+    def different_syntax(*args, **kwargs):
+        raise re.error("a syntax difference from the native regex parser")
+
+    monkeypatch.setattr(_parser, "parse", different_syntax)
+    compiled = grammars.compile(grammar.Spec("regex", "[a-z]+"))
+    assert grammars.accepts(compiled, "abc")
