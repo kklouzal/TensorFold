@@ -72,7 +72,7 @@ class Session:
     Ready acknowledgements precede collectives. Native events plus async error
     checks bound host waits; cleanup aborts first on failure and preserves owners.
     """
-    def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp):
+    def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp, pin_mode="off"):
         import torch
         from torch.distributed import TCPStore
 
@@ -88,11 +88,16 @@ class Session:
         self.closed = self.retired = False
         self.sequence = 0
         self.lock = threading.RLock()
+        self.abort_requested = threading.Event()
+        self.running = threading.Event()
+        self.following = threading.Event()
         self.banks = {}
         self.packed_cache = None
         self.model_dir, self.budget, self.mtp = Path(model_dir), budget, mtp
+        self.pin_mode = pin_mode
         self.rank, self.world, self.timeout = rank, ranks, TIMEOUT
         self.cfg = Config.read(self.model_dir)
+        text = config(model_dir)
         self.owner = ownership(ranks, shards, rank, self.cfg.experts)
         if self.cfg.top_k + 1 > MAX_SLOTS:
             raise ValueError("expert parallelism exceeds the native 1024-expert plan geometry")
@@ -114,7 +119,20 @@ class Session:
         # their disjoint authorities. Per-rank admission alone races this bound.
         self.group_host_bytes = base.host_bytes + ranks * (base.staging_bytes + base.loading_bytes
             + base.metadata_host_bytes + base.control_host_bytes + (4 << 20))
-        text = config(model_dir)
+        if pin_mode not in ("off", "auto", "on"):
+            raise ValueError("expert pin mode must be off, auto or on")
+        from tensorfold.cuda.expert_pin import backing_bytes
+
+        from ..expert_authority import allocations
+        self.allocation_bytes = allocations(text=text, layout=base,
+                                           owned=len(self.owner.ids), shared=rank == 0)
+        self.layout = replace(self.layout, host_bytes=sum(self.allocation_bytes),
+                              authority_allocations=self.allocation_bytes)
+        self.pin_future_bytes = 0
+        if pin_mode != "off":
+            backing = sum(backing_bytes(size) for r, count in enumerate(self.owner.counts)
+                          for size in allocations(text, base, owned=count, shared=r == 0))
+            self.group_host_bytes += max(0, backing - base.host_bytes)
         self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
                                            + self.slots * self.cfg.moe_width * 2) + (4 << 20)
         try:
@@ -127,11 +145,6 @@ class Session:
                 raise ValueError("expert ranks require distinct GPUs and matching checkpoint/configuration geometry")
             self.comm = NCCL()
             self.comm.open(rank, ranks, master, port, store=self.store, key="tf_ep_nccl_uid")
-            self.x = torch.empty((MAX_ROWS, self.dims), dtype=torch.bfloat16, device="cuda")
-            self.pick = torch.empty((MAX_ROWS, self.slots), dtype=torch.int32, device="cuda")
-            self.output = torch.empty((MAX_ROWS, self.slots, self.dims), dtype=torch.float32, device="cuda")
-            self.peer = torch.empty_like(self.output)
-            self.low = torch.empty_like(self.output, dtype=torch.bfloat16)
         except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
             rollback(self, error, lambda: self.close(abort=True))
 
@@ -142,13 +155,21 @@ class Session:
         for name in ("config.json", "model.safetensors.index.json"):
             from tensorfold.cuda.tensor_file import checkpoint_path
             path = checkpoint_path(self.model_dir, name)
+            if not path.exists() and name.endswith(".index.json"):
+                continue
             if path.stat().st_size > 96 << 20:
                 raise ValueError("expert checkpoint metadata exceeds the 96MiB boundary")
-            digest.update(path.read_bytes())
-        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
-        index = read_metadata_json(checkpoint_path(self.model_dir, "model.safetensors.index.json"))
+            with path.open("rb") as metadata:
+                raw = metadata.read((96 << 20) + 1)
+                if len(raw) > 96 << 20:
+                    raise ValueError("expert checkpoint metadata exceeds the 96MiB boundary")
+                digest.update(raw)
+        from tensorfold.cuda.tensor_file import checkpoint_path
+
+        from .reader import checkpoint_inventory
+        inventory = checkpoint_inventory(self.model_dir)
         files = []
-        for shard in sorted(set(index["weight_map"].values())):
+        for shard in sorted(set(inventory.values())):
             from tensorfold.families.qwen4_exp.table_file import TableFile
             file = TableFile(checkpoint_path(self.model_dir, shard))
             self.source_files.append(file)
@@ -167,16 +188,19 @@ class Session:
             raise ValueError("expert rendezvous metadata exceeds its envelope")
         return json.loads(raw)
 
-    def _receive(self, key):
-        deadline = time.monotonic() + self.timeout
-        while not self.store.check([key]):
+    def _receive(self, key, *, idle=False):
+        store = self.store  # retain the listener/borrow through this accepted control operation
+        deadline = None if idle else time.monotonic() + self.timeout
+        while not store.check([key]):
+            if self.abort_requested.is_set():
+                raise RuntimeError("expert group retirement interrupted control wait")
             for rank in range(self.world):
-                if self.store.check([f"ep/failed/{rank}"]):
+                if store.check([f"ep/failed/{rank}"]):
                     raise RuntimeError(f"expert rank {rank} failed; the group must retire")
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("expert control acknowledgement exceeded its deadline")
             time.sleep(.01)
-        return self.store.get(key)
+        return store.get(key)
 
     def admit_followers(self):
         """Leader's full host/backbone admission completed; followers may allocate their banks."""
@@ -188,6 +212,16 @@ class Session:
         if self.reader is None:
             from .reader import _Reader
             self.reader = _Reader(self.model_dir, "cpu")
+
+    def _allocate_buffers(self):
+        if hasattr(self, "x"):
+            return
+        torch = self.torch
+        self.x = torch.empty((MAX_ROWS, self.dims), dtype=torch.bfloat16, device="cuda")
+        self.pick = torch.empty((MAX_ROWS, self.slots), dtype=torch.int32, device="cuda")
+        self.output = torch.empty((MAX_ROWS, self.slots, self.dims), dtype=torch.float32, device="cuda")
+        self.peer = torch.empty_like(self.output)
+        self.low = torch.empty_like(self.output, dtype=torch.bfloat16)
 
     def _check_source(self):
         from tensorfold.cuda.tensor_file import checkpoint_path
@@ -204,8 +238,15 @@ class Session:
         self._ensure_reader()
         self._check_source()
         if self.cache is None:
-            self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda")
-            from tensorfold.cuda.packed_expert_cache import PackedExpertCache
+            from tensorfold.cuda.expert_pin import ExpertPinPolicy
+            self._allocate_buffers()
+            policy = ExpertPinPolicy(sum(self.allocation_bytes), mode=self.pin_mode,
+                                     allocation_bytes=self.allocation_bytes,
+                                     future_bytes=self.layout.loading_bytes + self.layout.staging_bytes
+                                     + self.layout.metadata_host_bytes + self.layout.control_host_bytes
+                                     + self.pin_future_bytes)
+            self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda", pin_policy=policy)
+            from tensorfold.cuda.packed_experts import PackedExpertCache
             self.packed_cache = PackedExpertCache.from_environment()
         key = prefix + name
         if key in self.banks:
@@ -243,6 +284,8 @@ class Session:
         event.record(self.torch.cuda.current_stream())
         deadline = time.monotonic() + self.timeout
         while not event.query():
+            if self.abort_requested.is_set():
+                raise RuntimeError("expert group retirement interrupted native wait")
             self.comm.check()
             if time.monotonic() >= deadline:
                 raise TimeoutError("expert rank operation exceeded its completion deadline")
@@ -265,6 +308,9 @@ class Session:
         if self.rank != 0 or self.closed:
             raise RuntimeError("expert leader admission is closed")
         with self.lock:
+            if self.closed or self.abort_requested.is_set():
+                raise RuntimeError("expert leader admission is closed")
+            self.running.set()
             try:
                 bank = self.keys.index(distributed.key)
                 for start in range(0, len(x), MAX_ROWS):
@@ -288,15 +334,16 @@ class Session:
                     self.sequence += 1
             except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
                 rollback(self, error, lambda: self.close(abort=True))
+            finally:
+                self.running.clear()
 
     def follow(self):
         if self.rank == 0:
             raise RuntimeError("expert leader cannot enter the follower loop")
+        self.following.set()
         try:
             while True:
-                while not self.store.check([f"ep/work/{self.rank}"]):
-                    time.sleep(.01)  # idle followers retain no pending CUDA collective
-                raw = self.store.get(f"ep/work/{self.rank}")
+                raw = self._receive(f"ep/work/{self.rank}", idle=True)
                 self.store.delete_key(f"ep/work/{self.rank}")
                 work = decode_frame(raw, sequence=self.sequence, banks=len(self.keys))
                 self.store.set(f"ep/ready/{self.rank}", str(self.sequence))
@@ -314,12 +361,16 @@ class Session:
                 self.sequence += 1
         except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
             rollback(self, error, lambda: self.close(abort=True))
+        finally:
+            self.following.clear()
 
     def close(self, *, abort=False):
+        if abort or self.running.is_set() or self.following.is_set():
+            self.abort_requested.set()  # wake an owner before waiting for its wire lease
         with self.lock:
             if self.retired:
                 return
-            failed = abort or self.closed
+            failed = abort or self.closed or self.abort_requested.is_set()
             self.closed = True
             errors = []
             if failed and hasattr(self, "store"):
@@ -366,6 +417,8 @@ class Session:
                         break
                     self.source_files.pop()
             self.retired = self.comm is self.reader is self.cache is None and not self.source_files
+            if self.retired:
+                self.store = None
             raise_failures(None, errors)
 
 

@@ -1,8 +1,10 @@
 """Expert ownership, bounded work wire and rank-process failure contracts; no GPU emulation."""
+import json
 import os
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +70,9 @@ def test_local_slot_mapping_retains_shared_owner_and_skips_only_other_owners():
 def _session_owner(comm, *, store=None):
     session = object.__new__(Session)
     session.lock = threading.RLock()
+    session.abort_requested = threading.Event()
+    session.running = threading.Event()
+    session.following = threading.Event()
     session.rank, session.world = 0, 2
     session.closed = session.retired = False
     session.comm, session.reader = comm, None
@@ -116,3 +121,41 @@ def test_follower_never_reads_authority_before_group_admission():
     with pytest.raises(MemoryError, match="group admission refused"):
         Follower(session)
     assert events == ["ep/admitted", {"abort": True}]
+
+
+def test_successful_follower_departure_retires_a_still_live_leader():
+    commands = [[sys.executable, "-c", "import time; time.sleep(60)"],
+                [sys.executable, "-c", "pass"]]
+    assert supervise(commands, [dict(os.environ)] * 2, grace=.1) == 1
+
+
+def test_exited_rank_does_not_leave_a_compiler_in_another_process_group(tmp_path):
+    marker = tmp_path / "compiler.pid"
+    compiler = ("import os,pathlib,signal,time;os.setpgid(0,0);signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+                f"pathlib.Path({str(marker)!r}).write_text(str(os.getpid()));time.sleep(60)")
+    leader = ("import pathlib,subprocess,sys,time;"
+              f"subprocess.Popen([sys.executable,'-c',{compiler!r}]);p=pathlib.Path({str(marker)!r});"
+              "\nwhile not p.exists(): time.sleep(.01)\nsys.exit(17)")
+    assert supervise([[sys.executable, "-c", leader]], [dict(os.environ)], grace=.1) == 17
+    stat = Path("/proc") / marker.read_text() / "stat"
+    if stat.exists():
+        assert stat.read_bytes().rsplit(b") ", 1)[1].split()[0] in (b"Z", b"X")
+
+
+def test_unsharded_and_indexed_inventory_identify_the_same_tensor(tmp_path):
+    torch = pytest.importorskip("torch")
+    from safetensors.torch import save_file
+
+    from tensorfold.families.qwen4_exp.cuda.reader import checkpoint_inventory
+    save_file({"owned.weight": torch.zeros((2, 4), dtype=torch.bfloat16)}, tmp_path / "model.safetensors")
+    assert checkpoint_inventory(tmp_path) == {"owned.weight": "model.safetensors"}
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({
+        "weight_map": {"owned.weight": "model.safetensors"}}))
+    assert checkpoint_inventory(tmp_path) == {"owned.weight": "model.safetensors"}
+
+
+def test_pin_geometry_is_scaled_from_the_authoritative_layout():
+    from tensorfold.families.qwen4_exp.expert_authority import allocations
+    layout = SimpleNamespace(format="affine4", authority_allocations=(600, 300, 600, 300))
+    assert allocations({"num_experts": 5}, layout, owned=2, shared=True) == (300, 150, 300, 150)
+    assert allocations({"num_experts": 5}, layout, owned=3, shared=False) == (300, 150, 300, 150)

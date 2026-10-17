@@ -194,6 +194,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                 vram_experts: float | str | None = None, kv_key_dtype: str | None = None,
                 kv_value_dtype: str | None = None,
                 expert_ranks: int = 1, expert_shards=None,
+                vram_experts_pin: str = "off",
                 **options: Any):
     """Verify MTP on one or two CUDA GPUs; start rank 1 first for ``tp=2``, with any ``CUDA_KV_DTYPES`` KV storage."""
 
@@ -224,7 +225,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
             raise ValueError("expert parallelism and tensor parallelism cannot be combined")
         from .cuda.expert_parallel import Follower, Session
         session = Session(model_dir, ranks=expert_ranks, shards=expert_shards, rank=rank,
-                          master=master or "127.0.0.1", port=master_port, budget=vram_experts, mtp=depth > 0)
+                          master=master or "127.0.0.1", port=master_port, budget=vram_experts, mtp=depth > 0,
+                          pin_mode=vram_experts_pin)
         if rank:
             return Follower(session)
     return FlashNextEngine(Path(model_dir), depth=depth, confidence=confidence, max_len=context,
@@ -236,6 +238,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                            vision=bool(options.get("vision", False)),
                            vision_urls=bool(options.get("vision_urls", False)), yarn_factor=yarn_factor,
                            vram_experts=vram_experts,
+                           **({"vram_experts_pin": vram_experts_pin} if vram_experts_pin != "off" else {}),
                            **({"expert_session": session} if session is not None else {}),
                            **({"kv_full_windows": options["kv_full_windows"]}
                               if options.get("kv_full_windows") is not None else {}))

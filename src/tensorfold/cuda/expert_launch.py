@@ -7,51 +7,122 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack, contextmanager
+from pathlib import Path
+
+from tensorfold.cleanup import raise_failures
+
+
+def _exited(process):
+    # WNOWAIT reserves the session leader's numeric identity until all owned
+    # compiler groups retire. Popen.poll/communicate/wait must not reap it early.
+    status = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if status is None:
+        return None
+    return status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+
+
+@contextmanager
+def _session_members(session):
+    """Pin the proc directory before pidfd_open: reused PIDs cannot redirect inspection or signaling."""
+    members = []
+    with ExitStack() as handles:
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                directory = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    # Inspect the pinned directory first, avoiding pidfds for
+                    # unrelated users/kernel tasks. Re-read after pinning PID.
+                    def fields(directory=directory):
+                        with os.fdopen(os.open("stat", os.O_RDONLY, dir_fd=directory), "rb") as source:
+                            return source.read(4096).rsplit(b") ", 1)[1].split()
+                    metadata = fields()
+                    if int(metadata[3]) != session or metadata[0] in (b"Z", b"X"):
+                        continue
+                    pidfd = os.pidfd_open(int(entry.name))
+                    try:
+                        metadata = fields()
+                        if int(metadata[3]) == session and metadata[0] not in (b"Z", b"X"):
+                            members.append(pidfd)
+                            handles.callback(os.close, pidfd)
+                            pidfd = None
+                    finally:
+                        if pidfd is not None:
+                            os.close(pidfd)
+                finally:
+                    os.close(directory)
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # exact inspected process retired; never target its replacement
+        yield members
+
+
+def _retire(process, deadline):
+    if process.returncode is not None:
+        raise RuntimeError("expert rank was reaped before its session retired")
+    while True:
+        with _session_members(process.pid) as members:
+            if time.monotonic() >= deadline:
+                for pidfd in members:
+                    try:
+                        signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        with _session_members(process.pid) as members:
+            live = bool(members)
+        if _exited(process) is not None and not live:
+            process.wait(timeout=0)  # no further inspection/signaling of this reserved SID
+            return
+        if time.monotonic() >= deadline + 10:
+            raise RuntimeError("expert session failed to retire; unreaped leader retains its identity")
+        time.sleep(.01)
 
 
 def supervise(commands, environments, *, grace=10.0):
-    """Own every child process group; any failure retires the entire rank group."""
+    """Own Linux rank sessions through partial spawn, departure and signal/error cleanup."""
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
-    children = []
-    failure = None
+    if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "pidfd_open")) or not hasattr(signal, "pidfd_send_signal"):
+        raise RuntimeError("expert launcher requires Linux waitid/WNOWAIT and pidfd session ownership")
+    children, primary, result = [], None, 1
     try:
         for command, environment in zip(commands, environments):
             children.append(subprocess.Popen(command, env=environment, start_new_session=True))
+        departure = None
         while True:
-            statuses = [child.poll() for child in children]
+            statuses = [_exited(child) for child in children]
             if any(code not in (None, 0) for code in statuses):
-                failure = next(code for code in statuses if code not in (None, 0))
+                result = abs(next(code for code in statuses if code not in (None, 0)))
                 break
             if all(code == 0 for code in statuses):
-                return 0
-            if statuses[0] == 0:
-                deadline = time.monotonic() + grace
-                while time.monotonic() < deadline and any(child.poll() is None for child in children):
-                    time.sleep(.05)
-                if all(child.poll() == 0 for child in children):
-                    return 0
-                failure = 1
+                result = 0
                 break
+            if any(code is not None for code in statuses):
+                departure = departure or time.monotonic() + grace
+                if time.monotonic() >= departure:
+                    break  # a successful follower departure cannot leave an idle leader indefinitely
             time.sleep(.05)
-    finally:
-        running = [child for child in children if child.poll() is None]
-        for child in running:
-            try:
-                os.killpg(child.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass  # child already completed after the poll
-        deadline = time.monotonic() + grace
-        for child in children:
-            try:
-                child.wait(timeout=max(0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                child.wait()
-    return abs(failure or 1)
+    except BaseException as error:  # noqa: BLE001 - cleanup preserves primary cancellation/spawn failure
+        primary = error
+    errors = []
+    deadline = time.monotonic() + grace
+    for child in children:
+        try:
+            os.killpg(child.pid, signal.SIGTERM)  # unreaped leader still reserves this group identity
+        except ProcessLookupError:
+            pass
+        except BaseException as error:  # noqa: BLE001 - continue retiring other rank sessions
+            errors.append(error)
+    for child in children:
+        try:
+            _retire(child, deadline)
+        except BaseException as error:  # noqa: BLE001 - retain child owners and surface all cleanup failures
+            errors.append(error)
+    if errors and primary is None and result:
+        primary = RuntimeError(f"expert rank group failed with status {result}")
+    raise_failures(primary, errors)
+    return result
 
 
 def main(argv=None):

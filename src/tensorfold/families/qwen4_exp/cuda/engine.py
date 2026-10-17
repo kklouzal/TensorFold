@@ -35,7 +35,7 @@ def vision_workspace() -> int:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off") -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -46,7 +46,7 @@ class FlashNextEngine:
         self.expert_session = expert_session
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -58,7 +58,7 @@ class FlashNextEngine:
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
-                 kv_full_windows: int | None = None, expert_session=None) -> None:
+                 kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off") -> None:
         from ..ram_experts import check_kv_full_windows
 
         check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
@@ -100,6 +100,8 @@ class FlashNextEngine:
         if not 0.0 <= float(confidence) <= 1.0:
             raise ValueError(f"MTP draft confidence: a probability from 0 to 1, not {confidence}")
         text = config(model_dir)
+        if vram_experts_pin not in ("off", "auto", "on") or vram_experts_pin != "off" and vram_experts is None:
+            raise ValueError("expert pinning requires a RAM expert budget and off, auto or on")
         ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if int(depth) > 0 else None
         if ids is not None and ids.size < tp:
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
@@ -159,6 +161,13 @@ class FlashNextEngine:
             if automatic_experts:
                 automatic_capacity = {"memory_reserve": AUTO_HEADROOM_BYTES}
             weight_rule = ram_layout.transform(weight_rule)
+            loading_device = getattr(ram_layout, "loading_device_bytes", 0)
+            if loading_device:
+                from tensorfold.cuda.capacity import Weights, estimate_weights
+                def loading_weights(directory):
+                    original = estimate_weights(directory, weight_rule, rank=rank)
+                    return Weights(original.resident, max(original.staging, loading_device), original.mapped), original.staging
+                numeric_capacity["weight_estimator"] = loading_weights
             if ram_layout.format == "exl3" and not automatic_experts:
                 from tensorfold.cuda.capacity import Weights, estimate_weights
 
@@ -191,8 +200,26 @@ class FlashNextEngine:
                              "host_extra_staging": ram_layout.loading_bytes,
                              "resident_extra": ram_layout.gpu_bytes + ram_layout.metadata_device_bytes
                              + ram_layout.control_device_bytes}
+            if expert_session is None and vram_experts_pin != "off" and ram_layout.format in ("affine4", "nvfp4"):
+                from ..expert_authority import allocations
+                from tensorfold.cuda.expert_pin import backing_bytes
+                geometry_bytes = allocations(text, ram_layout)
+                host_capacity["host_resident"] += max(0, sum(map(backing_bytes, geometry_bytes)) - ram_layout.host_bytes)
             if expert_session is not None:
                 host_capacity["host_resident"] = expert_session.group_host_bytes + scratch_host
+        self._pin_future_bytes = 0
+        if ram_layout is not None and vram_experts_pin != "off":
+            from tensorfold.cuda.capacity import estimate_weights
+            original_estimator = numeric_capacity.get("weight_estimator")
+            def pin_forecast(directory):
+                if original_estimator is None:
+                    weights = estimate_weights(directory, weight_rule, rank=rank)
+                    host_staging = weights.staging
+                else:
+                    weights, host_staging = original_estimator(directory)
+                self._pin_future_bytes = host_staging
+                return weights, host_staging
+            numeric_capacity["weight_estimator"] = pin_forecast
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    weight_rule,
@@ -202,6 +229,7 @@ class FlashNextEngine:
                                    **numeric_capacity,
                                    **rope_capacity, **host_capacity)
         if expert_session is not None:
+            expert_session.pin_future_bytes = self._pin_future_bytes
             expert_session.admit_followers()
         if ram_layout is not None:
             self.capacity_plan["vram_experts"] = {
@@ -233,7 +261,9 @@ class FlashNextEngine:
                  draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
                  **({"expert_loader": expert_session.load_bank} if expert_session is not None else
-                    {"vram_experts": vram_experts} if vram_experts is not None else {}))
+                    {"vram_experts": vram_experts} if vram_experts is not None else {}),
+                 **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
+                    if vram_experts_pin != "off" else {}))
         self.w, self.scheduler = w, None
         if expert_session is not None:
             expert_session.finish_loading()

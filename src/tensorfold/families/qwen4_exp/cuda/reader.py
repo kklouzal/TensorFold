@@ -14,20 +14,36 @@ _DT = {"U32": torch.int32, "I32": torch.int32, "BF16": torch.bfloat16, "F16": to
        "F8_E4M3": torch.float8_e4m3fn}
 
 
+def checkpoint_inventory(model_dir: Path) -> dict[str, str]:
+    """Validated owned tensor inventory for indexed or ordinary unsharded checkpoints."""
+    from tensorfold.cuda.capacity import SIZES, headers
+    from tensorfold.cuda.tensor_file import checkpoint_path, read_header, read_metadata_json
+
+    index = checkpoint_path(model_dir, "model.safetensors.index.json")
+    if index.exists():
+        body = read_metadata_json(index)
+        where = body.get("weight_map") if isinstance(body, dict) else None
+        if not isinstance(where, dict) or not where or any(not isinstance(k, str) or not k
+                or not isinstance(v, str) or not v for k, v in where.items()):
+            raise ValueError("checkpoint index must contain a nonempty string-to-string weight_map")
+        for name in sorted(set(where.values())):
+            checkpoint_path(model_dir, name)
+        return dict(where)
+    headers(model_dir)  # same authorized files/duplicate/split checks as admission
+    where = {}
+    for path in sorted(model_dir.glob("*.safetensors")):
+        _, entries = read_header(checkpoint_path(model_dir, path.name), SIZES)
+        where.update({name: path.name for name in entries if name != "__metadata__"})
+    return where
+
+
 class _Reader:
     """Read checkpoint shards sequentially (O_DIRECT where allowed) and release each shard's cached pages."""
 
     def __init__(self, model_dir: Path, device: str) -> None:
         from tensorfold.cuda.direct_read import ReadAhead, Reader
-        from tensorfold.cuda.tensor_file import read_metadata_json
-
         self.dir = model_dir
-        index = read_metadata_json(self._path("model.safetensors.index.json"))
-        where = index.get("weight_map") if isinstance(index, dict) else None
-        if not isinstance(where, dict) or any(not isinstance(k, str) or not isinstance(v, str)
-                                             for k, v in where.items()):
-            raise ValueError("checkpoint index must contain a string-to-string weight_map")
-        self.where = dict(where)
+        self.where = checkpoint_inventory(model_dir)
         self.device = device
         self.headers: dict[str, tuple[int, dict]] = {}
         self.touched: set[str] = set()

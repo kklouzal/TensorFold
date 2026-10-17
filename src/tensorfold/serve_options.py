@@ -96,6 +96,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if backend != "mlx" or not getattr(family.package, "MLX_MODEL_FILE", False):
             raise ValueError("--trust-model-code requires an MLX family recipe that uses the provider's model_file")
     ram = getattr(args, "vram_experts", None)
+    pin = getattr(args, "vram_experts_pin", "off")
+    if pin not in ("off", "auto", "on") or pin != "off" and (ram is None or backend != "cuda"):
+        raise ValueError("--vram-experts-pin requires supported CUDA --vram-experts and off, auto or on")
     if getattr(args, "ssd_experts", None) is not None and backend == "cuda":
         raise ValueError("--ssd-experts is supported on MLX only; Flash Next CUDA supports --vram-experts GIB")
     if ram is not None:

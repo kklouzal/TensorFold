@@ -192,7 +192,10 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
         raise ValueError(f"--vram-experts needs at least one packed expert ({entry / GIB:.6f} GiB)")
     # Two pinned upload entries; two-expert CPU chunks need at most 8*entry +256KiB of live arrays.
     return Layout(entry, slots, slots * entry, count * entry, 2 * entry,
-                  max(64 * 2**20, 8 * entry + 256 * 2**10), automatic=gib == "auto")
+                  max(64 * 2**20, 8 * entry + 256 * 2**10), automatic=gib == "auto",
+                  authority_allocations=tuple(size for _ in range(count // (int(text["num_experts"]) + 1))
+                      for size in ((int(text["num_experts"]) + 1) * (2 * entry // 3),
+                                   (int(text["num_experts"]) + 1) * (entry // 3))))
 
 
 def _nvfp4_layout(model_dir, gib, text, mtp):
