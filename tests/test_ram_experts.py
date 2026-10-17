@@ -347,7 +347,7 @@ def ram_loader(monkeypatch):
     rope = NS(inverse_frequencies=lambda framework: torch.zeros(1), metadata=lambda: {})
     cfg = NS(rope=rope, layers=0, quant="mlx", vocab=2)
     monkeypatch.setattr(ram_experts, "check", lambda *a, **k: None)
-    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: NS(gpu_bytes=2048, entry_bytes=1024))
+    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: NS(gpu_bytes=2048, entry_bytes=1024, format="affine4"))
     monkeypatch.setattr(exl3, "is_exl3", lambda *a: False)
     monkeypatch.setattr(weights.Config, "read", lambda *a, **k: cfg)
     monkeypatch.setattr(weights, "_Reader", lambda *a: reader)
