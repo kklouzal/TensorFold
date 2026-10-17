@@ -69,7 +69,9 @@ def exchange(factory, first, *, decisions=True):
             return None
 
         def _prepare(self, body, chat):
-            return SimpleNamespace(prompt=[1, 2, 3])
+            from tensorfold.cuda.server import PreparedRequest
+
+            return PreparedRequest([1, 2, 3], 1, [], False, None)
 
     connection = Connection()
     try:
