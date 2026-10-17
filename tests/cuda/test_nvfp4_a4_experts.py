@@ -50,7 +50,7 @@ def individual_reference(ctx, x, picks, *, prefill):
 
 
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 17), (True, 133)])
-def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill, rows):
+def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill, rows, monkeypatch):
     original = Context()
     resident = load_host_experts_a4(original, PREFIX, original.cfg, "cuda:0", swiglu=swiglu)
     authority = Context()
@@ -73,7 +73,9 @@ def test_native_resident_cached_eviction_strided_slots_and_permutations(prefill,
                             dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
         out = output[:, :3]
         for bank in (resident, cached, cached):
-            bank.run(x, picks, out, prefill=prefill)
+            with monkeypatch.context() as patch:
+                patch.setattr(checkpoint, "_inv", lambda value: pytest.fail("HOT static input reciprocal"))
+                bank.run(x, picks, out, prefill=prefill)
             assert torch.equal(out, expected)
             assert torch.equal(output[:, 3], torch.full_like(output[:, 3], 17.))
             assert torch.count_nonzero(out[:, 2]) == 0

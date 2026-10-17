@@ -1,6 +1,7 @@
 """Independent byte oracle and owned native-A4 authority boundary controls."""
 
 import struct
+from contextlib import contextmanager
 
 import pytest
 
@@ -208,3 +209,60 @@ def test_ct_native_calibration_admits_finite_original_multiplier_without_roundtr
     assert native_calibration(act, 1., name="original CT multiplier", act_inverse=raw) == act
     with pytest.raises(ValueError, match="native FP32"):
         native_calibration(act, 1., name="legacy inverse boundary")
+
+
+
+@pytest.mark.parametrize("prefill", [False, True])
+def test_bank_prepares_exact_scalar_reciprocals_once_and_run_never_recomputes_them(monkeypatch, prefill):
+    from tensorfold.cuda.nvfp4 import checkpoint
+
+    ctx, cache = Context(), Cache()
+    original_inv, calls = checkpoint._inv, []
+
+    def record(value):
+        calls.append(value)
+        return original_inv(value)
+
+    monkeypatch.setattr(checkpoint, "_inv", record)
+    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, owned_ids=[2, 0], swiglu=swiglu)
+    assert len(calls) == 3 * bank.count
+    assert sum(t.numel() * t.element_size() for t in bank.prepared_inputs) == 12 * bank.count
+    for source, prepared in zip(bank.scalars[2:], bank.prepared_inputs):
+        assert prepared.device.type == "cpu" and prepared.dtype == torch.float32
+        for row in range(bank.count):
+            for projection in range(source.shape[1]):
+                assert float(prepared[row, projection]) == original_inv(float(source[row, projection]))
+    fields = cache._layers[0]
+    expected = []
+    for expert in range(bank.count):
+        for projection in range(3):
+            raw = float(bank.scalars[2 if projection < 2 else 3][expert, projection if projection < 2 else 0])
+            act = float(bank.prepared_inputs[0 if projection < 2 else 1][expert, projection if projection < 2 else 0])
+            expected.append((act, raw))
+    observed = []
+
+    def fake_matmul(mode, x, linear, *, f32=False):
+        observed.append((linear.act, linear.act_inverse))
+        return torch.full((x.shape[0], linear.n), linear.act,
+                          dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
+
+    @contextmanager
+    def lease(expert):
+        yield fields, expert
+
+    # This CPU control executes the actual bank grouping/projection/run body;
+    # native arithmetic/device admission are independently covered on CUDA.
+    monkeypatch.setattr(bank, "_check", lambda *a, **k: None)
+    monkeypatch.setattr(bank, "_expert", lease)
+    monkeypatch.setattr(bank, "device", torch.device("cpu"))
+    monkeypatch.setattr(checkpoint, "matmul", fake_matmul)
+    monkeypatch.setattr(checkpoint, "prompt", fake_matmul)
+    monkeypatch.setattr(checkpoint, "_inv", lambda value: pytest.fail("recomputed a static reciprocal during run"))
+    x = torch.ones((2, ctx.cfg.hidden), dtype=torch.bfloat16)
+    picks = torch.tensor([[0, -1], [1, 0]], dtype=torch.int32)
+    out = torch.empty((2, 2, ctx.cfg.hidden), dtype=torch.bfloat16 if prefill else torch.float32)
+    bank.run(x, picks, out, prefill=prefill)
+    assert observed == expected
+    assert torch.count_nonzero(out[0, 1]) == 0
+    for row, slot, expert in ((0, 0, 0), (1, 0, 1), (1, 1, 0)):
+        assert torch.equal(out[row, slot], torch.full_like(out[row, slot], float(bank.prepared_inputs[1][expert, 0])))
