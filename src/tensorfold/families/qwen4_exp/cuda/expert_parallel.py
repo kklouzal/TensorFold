@@ -131,7 +131,7 @@ class Session:
             peers = [self._read_json(f"ep/identity/{r}", 1 << 20) for r in range(ranks)]
             if (any(p[1:] != peers[0][1:] for p in peers)
                     or len({p[0] for p in peers}) != ranks):
-                raise ValueError("expert ranks require distinct GPUs and matching checkpoint/configuration geometry")
+                raise ValueError("expert ranks require distinct GPUs and matching checkpoint, geometry and expert pin policy")
             self.comm = NCCL()
             self.comm.open(rank, ranks, master, port, store=self.store, key="tf_ep_nccl_uid")
         except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
@@ -171,7 +171,7 @@ class Session:
         if len(json.dumps(files).encode()) > 1 << 19:
             raise ValueError("expert checkpoint source identity exceeds 512KiB")
         return [device_uuid, host_epoch, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
-                self.cfg.moe_width, bool(self.mtp), self.cfg.quant, files]
+                self.cfg.moe_width, bool(self.mtp), self.cfg.quant, self.pin_mode, files]
 
     def _read_json(self, key, maximum):
         raw = self.store.get(key)
