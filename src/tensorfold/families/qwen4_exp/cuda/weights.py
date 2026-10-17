@@ -437,7 +437,6 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                                                         future_bytes=_pin_future_bytes)
             expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
             if ram_layout.format == "affine4":
-
                 from tensorfold.cuda.packed_experts import PackedExpertCache
                 packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"
