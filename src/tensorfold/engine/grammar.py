@@ -86,7 +86,12 @@ def _schema_resources(schema: Any, where: str) -> None:
 
 
 def _regex_resources(pattern: str, where: str) -> None:
-    """Reject recursive regex parser exhaustion before the pinned C++ parser can overflow its process stack."""
+    """Reject recursive regex parser exhaustion before the pinned C++ parser can overflow its process stack.
+
+    Use the non-caching parser already required by strict pattern validation on supported CPython 3.11+. Public
+    re.compile would retain untrusted compiled patterns in its count-only process-global cache; re.purge would affect
+    unrelated callers. Syntax differences are deliberately forwarded to the native parser unchanged.
+    """
 
     from re import _parser
 
