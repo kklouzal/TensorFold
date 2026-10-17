@@ -408,7 +408,7 @@ class HostExpertCache:
             # aliases obey the same immutable-authority contract as all sources.
             versions = tuple(None if torch.is_inference(t) else t._version for t in payloads)
             layers = dict(self._layers)
-            pinned = tuple(t.is_pinned() for t in payloads)
+            pinned = tuple((self.pin_policy is not None and self.pin_policy.owns(t)) or t.is_pinned() for t in payloads)
             layers[layer_id] = _Layer(payloads, versions, views, fields, count, pinned, not all(pinned))
             self._policy.register(layer_id, count)
             self._layers = layers

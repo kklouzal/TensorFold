@@ -46,12 +46,20 @@ public:
         return static_cast<int>(status);
     }
     bool active() const { return active_; }
+    bool contains(const at::Tensor& tensor) const {
+        if (!active_ || !tensor.device().is_cpu() || !tensor.is_contiguous() || !tensor.numel()) return false;
+        const auto begin = reinterpret_cast<uintptr_t>(storage_.data_ptr());
+        const auto address = reinterpret_cast<uintptr_t>(tensor.data_ptr());
+        const auto extent = static_cast<uint64_t>(storage_.numel());
+        const auto bytes = static_cast<uint64_t>(tensor.numel()) * tensor.element_size();
+        return address >= begin && address - begin <= extent && bytes <= extent - (address - begin);
+    }
     ~Registration() noexcept {
         // Reclaiming still-registered CPU storage could race a DMA consumer.
         // Explicit close (after quiescence) is mandatory; abandoning a failed
         // owner is a fatal lifecycle violation rather than unsafe reclamation.
         if (active_) {
-            std::fputs("TensorFold: unretired expert host registration\n", stderr);
+            std::fprintf(stderr, "TensorFold: unretired expert host registration (cleanup status %d)\n", close_error_);
             std::terminate();
         }
     }
@@ -60,7 +68,8 @@ public:
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     pybind11::class_<Registration>(m, "Registration")
         .def(pybind11::init<at::Tensor>()).def("pin", &Registration::pin)
-        .def("close", &Registration::close).def_property_readonly("active", &Registration::active);
+        .def("close", &Registration::close).def("contains", &Registration::contains)
+        .def_property_readonly("active", &Registration::active);
     m.attr("memory_allocation") = static_cast<int>(cudaErrorMemoryAllocation);
     m.attr("not_supported") = static_cast<int>(cudaErrorNotSupported);
     m.def("error_text", [](int code) { return cudaGetErrorString(static_cast<cudaError_t>(code)); });
