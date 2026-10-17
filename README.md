@@ -23,6 +23,8 @@ NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
 once, including when routed experts are offloaded; small-model and installed
 qualification of this accounting correction is pending.
+Host read/publication storage and GPU packing scratch remain separate, including
+the distinct backbone and expert readers owned by a multi-rank leader.
 
 Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 

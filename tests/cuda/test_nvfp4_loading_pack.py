@@ -64,7 +64,7 @@ def peak_begin():
     return torch.cuda.memory_allocated()
 
 
-@pytest.mark.parametrize("width,dims", [(128, 512), (512, 2048), (512, 2560), (1024, 2560)])
+@pytest.mark.parametrize("width,dims", [(128, 512), (512, 2048), (512, 2560), (640, 2560), (1024, 2560)])
 def test_modelopt_gpu_authority_matches_cpu_original_bytes_and_admitted_peak(width, dims):
     reader = Reader(width, dims)
     cpu = nvx.make(*(tuple(t.unsqueeze(0) for t in values) + (scale,)

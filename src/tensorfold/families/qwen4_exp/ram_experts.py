@@ -202,7 +202,7 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
 def _nvfp4_layout(model_dir, gib, text, mtp):
     from tensorfold.cuda.capacity import SIZES
     from tensorfold.cuda.nvfp4.host_layout import bank_bases
-    from tensorfold.cuda.read_budget import reader_host_bytes
+    from tensorfold.cuda.read_budget import pinned_backing_bytes, reader_host_bytes
 
     entries = headers(model_dir)
     banks = bank_bases(entries, text, mtp)
@@ -238,8 +238,8 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
             raw = max(raw, width * dims)
     # D2H's largest field is the packed gate/up pair, after reads have ended.
     # Three retained scalar read spans fit nine alignment pages alongside it.
-    host_loading = max(loading, reader_host_bytes(raw, 2 * tiles) + 9 * 4096)
-    return Layout(entry, slots, slots * entry, sum(allocations), 2 * entry, host_loading,
+    host_loading = reader_host_bytes(raw, 2 * tiles) + 9 * 4096
+    return Layout(entry, slots, slots * entry, sum(allocations), pinned_backing_bytes(2 * entry), host_loading,
                   "nvfp4", automatic=gib == "auto",
                   loading_device_bytes=loading,
                   authority_allocations=allocations)

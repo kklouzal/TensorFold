@@ -10,6 +10,7 @@ from nvfp4_tiny import write
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda.expert_cache import HostExpertCache, entry_bytes_for
 from tensorfold.cuda.nvfp4.host_experts import load_nvfp4_host_experts
+from tensorfold.cuda.read_budget import reader_host_bytes
 from tensorfold.families.qwen4_exp import ram_experts
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import load_moe_host
@@ -39,7 +40,8 @@ def test_nvfp4_ram_layout_sizes_exact_payload_and_keeps_shared_resident(tmp_path
 def test_routed_gpu_packing_is_admitted_without_mtp(tmp_path):
     model = write(tmp_path, hidden=512)
     layout = ram_experts.layout(model, "auto", mtp=False)
-    assert layout.loading_device_bytes < layout.loading_bytes
+    field = 2 * (128 // 32) * (512 // 32) * 144 * 4
+    assert layout.loading_bytes == reader_host_bytes(128 * 512 // 2, field) + 9 * 4096
     assert layout.loading_device_bytes >= 128 * 128 * 512 + 8 * layout.entry_bytes
 
 

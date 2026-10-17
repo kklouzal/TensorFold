@@ -230,7 +230,13 @@ class FlashNextEngine:
                 geometry_bytes = allocations(text, ram_layout)
                 host_capacity["host_resident"] += max(0, sum(map(backing_bytes, geometry_bytes)) - ram_layout.host_bytes)
             if expert_session is not None:
+                from tensorfold.cuda.read_budget import READER_HOST_RING_BYTES
+
                 host_capacity["host_resident"] = expert_session.group_host_bytes + scratch_host
+                # The group already owns each Session's expert read/pack
+                # staging. weights.load has a separate backbone Reader whose
+                # physical ring remains live beside those Session readers.
+                host_capacity["host_extra_staging"] = READER_HOST_RING_BYTES
         self._pin_future_bytes = 0
         if ram_layout is not None and vram_experts_pin != "off":
             from tensorfold.cuda.capacity import estimate_weights
