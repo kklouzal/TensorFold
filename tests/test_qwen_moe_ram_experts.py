@@ -3,6 +3,7 @@ from dataclasses import replace
 import json
 import math
 import struct
+import sys
 
 import pytest
 
@@ -54,7 +55,7 @@ def test_raw_codes_scales_and_six_fp32_globals_match_authority_and_aligned_pool(
     assert plan.slots == 2 and plan.gpu_bytes == 27776
     assert plan.authority_allocations == (27648, 13824, 24, 12, 24, 12) * 2
     assert plan.staging_bytes == 32768
-    assert plan.metadata_host_bytes >= ram.MAX_HEADER_BYTES
+    assert plan.metadata_host_bytes > 5 * plan.largest_header_bytes
     assert plan.control_host_bytes > 6
     assert not plan.receipt()["capturable"]
     resident = lambda name, info: (math.prod(info["shape"]) * SIZES[info["dtype"]], 0)
@@ -96,7 +97,7 @@ def test_missing_global_or_incomplete_bank_cannot_remove_weights_from_gpu_estima
     _, infos = checkpoint(tmp_path)
     missing = "model.language_model.layers.1.mlp.experts.2.up_proj.input_global_scale"
     del infos[missing]
-    monkeypatch.setattr(ram, "headers", lambda path: infos)
+    monkeypatch.setattr(ram, "headers", lambda path, **kwargs: infos)
     with pytest.raises(ValueError, match="incomplete"):
         ram.layout(tmp_path, "auto")
 
@@ -168,7 +169,7 @@ def test_full_heretic_geometry_is_not_a_gpu_residency_estimate(tmp_path, monkeyp
     cfg, infos = checkpoint(tmp_path)
     cfg.update(hidden_size=2048, moe_intermediate_size=512, num_hidden_layers=40, num_experts=256)
     monkeypatch.setattr(ram, "config", lambda path: cfg)
-    monkeypatch.setattr(ram, "headers", lambda path: infos)
+    monkeypatch.setattr(ram, "headers", lambda path, **kwargs: infos)
     # Header validator separately has a real124k-field gate; this oracle isolates
     # full-model arithmetic without creating payload or relying on that helper.
     monkeypatch.setattr(ram, "bank_bases_a4", lambda entries, text: tuple(f"model.layers.{i}.mlp" for i in range(40)))
@@ -178,6 +179,38 @@ def test_full_heretic_geometry_is_not_a_gpu_residency_estimate(tmp_path, monkeyp
     assert plan.runtime_workspace_bytes == 5308416
     assert plan.gpu_bytes == plan.entry_bytes and plan.automatic
     assert replace(plan, automatic=False).host_bytes == plan.host_bytes
+
+
+def test_header_budget_counts_utf8_padding_filtered_metadata_and_nested_extensions(tmp_path):
+    _, infos = checkpoint(tmp_path)
+    initial = ram.layout(tmp_path, "auto")
+    payload = max(info["data_offsets"][1] for info in infos.values())
+    nested = "x" * 10000
+    next(iter(infos.values()))["extension"] = {"nested": [nested]}
+    infos["__metadata__"] = {"owner": "\U00010000", "opaque": "y" * 10000}
+    raw = json.dumps(infos, ensure_ascii=False).encode("utf-8") + b" " * 8192
+    with (tmp_path / "model.safetensors").open("wb") as stream:
+        stream.write(struct.pack("<Q", len(raw)) + raw)
+        stream.truncate(8 + len(raw) + payload)
+    padded = ram.layout(tmp_path, "auto")
+    assert padded.header_bytes == padded.largest_header_bytes == len(raw) + 8
+    wire_growth = padded.header_bytes - initial.header_bytes
+    assert padded.metadata_host_bytes - initial.metadata_host_bytes >= 5 * wire_growth + 3 * sys.getsizeof(nested)
+    assert padded.host_bytes == initial.host_bytes and padded.entry_bytes == initial.entry_bytes
+
+
+def test_header_budget_accumulates_all_validated_shards_without_rewalking(tmp_path):
+    checkpoint(tmp_path)
+    initial = ram.layout(tmp_path, "auto")
+    extra = {"auxiliary": {"dtype": "U8", "shape": [1], "data_offsets": [0, 1]},
+             "__metadata__": {"owner": "second"}}
+    raw = json.dumps(extra).encode("utf-8")
+    (tmp_path / "second.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw + b"x")
+    multiple = ram.layout(tmp_path, "auto")
+    assert multiple.header_bytes == initial.header_bytes + len(raw) + 8
+    assert multiple.largest_header_bytes == initial.largest_header_bytes
+    assert multiple.metadata_host_bytes > initial.metadata_host_bytes
+    assert multiple.host_bytes == initial.host_bytes
 
 
 def runtime_text():
