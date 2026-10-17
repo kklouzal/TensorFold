@@ -18,7 +18,7 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
     if (blk >= k / 16) return;
     const int row = paired ? pair : plan[3 * pair], cell = plan[3 * pair + 2];
     if (row < 0 || row >= rows || cell < 0 || cell >= cells) { __trap(); return; }
-    const float inverse = __fdiv_rn(1.f, input[cell * projections + projection]);
+    const float inverse = __fdiv_rn(1.f, input[static_cast<int64_t>(cell) * projections + projection]);
     float values[16], amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
@@ -78,7 +78,7 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
 #pragma unroll
         for (int v = 0; v < 4; ++v) total[v] = slice == 0 ? acc[v] : __fadd_rn(total[v], acc[v]);
     }
-    const int scale_at = cell * projections + projection;
+    const int64_t scale_at = static_cast<int64_t>(cell) * projections + projection;
     const float alpha = __fmul_rn(input[scale_at], weight[scale_at]);
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
@@ -99,8 +99,8 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
             reinterpret_cast<float*>(out)[at] = v0;
             reinterpret_cast<float*>(out)[at + 1] = v1;
         } else {
-            *reinterpret_cast<__nv_bfloat162*>(reinterpret_cast<__nv_bfloat16*>(out) + at) =
-                __floats2bfloat162_rn(v0, v1);
+            reinterpret_cast<__nv_bfloat16*>(out)[at] = __float2bfloat16_rn(v0);
+            reinterpret_cast<__nv_bfloat16*>(out)[at + 1] = __float2bfloat16_rn(v1);
         }
     }
 }
