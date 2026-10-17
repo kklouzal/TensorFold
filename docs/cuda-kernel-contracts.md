@@ -237,6 +237,33 @@ full dependencies. Kernels compiled or launched without PDL keep their original 
 the lane matmul's template flag); the other extension kernels execute the two instructions as no-ops.
 `tests/test_pdl_kernel_contract.py` checks the wait-first rule over the converted sources.
 
+## CT native FP4 routed experts
+
+Qwen MoE native-A4 experts use one grouped execution contract for resident
+six-field storage and cached interleaved records. Per-expert fields have
+contiguous inner payloads and an explicit outer expert stride. Native boundary
+checks prove positive shapes, complete inner spans and byte-range arithmetic
+before multiplication or launch; unused singleton strides remain legal.
+Cache pool replacement prepares all typed views before committing its new pool.
+Consumers enqueue inside the base cache lease, which owns copy readiness and
+retirement; a failed retirement retains all owners.
+
+Original CT input-global FP32 multipliers drive group-16 activation quantization
+directly. Alpha separately rounds the reciprocal input calibration and its
+product with the prepared weight reciprocal. Each gate/up result rounds to
+BF16, SiLU rounds to BF16, and its product with up rounds again before independent
+down-input quantization. Decode down outputs are FP32; prompt outputs are BF16.
+Out-of-bank picks are inactive slots and write zero without reading authority.
+Stored native block scales admit only unsigned finite E4M3 byte encodings
+`0x00..0x7e`, once at load; the general packing permutation preserves all bits.
+
+The maintained independent oracle packs original checkpoint projections through
+the individual linear implementation and computes each routed pair separately.
+An additional scalar CPU activation quantizer checks encoded bytes, including
+the raw-multiplier reciprocal-roundtrip boundary. These references live in
+`tests/nvfp4_a4_inputs.py`; they are not production fallback implementations.
+Flash Next's existing W4A16 expert representation and arithmetic are separate.
+
 ## Flash Next block selection and RotorQuant centroid decoding
 
 A sparse-attention row keeps its `TOP` best-scoring complete blocks, in block order, ties to the lower block id,

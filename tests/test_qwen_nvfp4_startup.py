@@ -17,7 +17,8 @@ pytest.importorskip("triton")
 
 from tokenizers import Tokenizer, models
 
-from tensorfold.cuda import allocation_bound, capacity, expert_cache, expert_pin, geometry, precision, prompt_precision
+from tensorfold.cuda import allocation_bound, capacity, expert_pin, geometry, precision, prompt_precision
+from tensorfold.cuda.nvfp4 import cache_a4
 from tensorfold.families.qwen3_5.cuda import multi, nvfp4_load, nvfp4_memory
 from tensorfold.families.qwen3_5_moe import dflash_metadata, ram_experts
 from tensorfold.families.qwen3_5_moe.cuda import dflash, weights
@@ -97,8 +98,9 @@ def startup(tmp_path, monkeypatch):
             self.closed = True
 
     class Cache:
-        def __init__(self, gpu_bytes, entry_bytes, device, *, pin_policy):
+        def __init__(self, gpu_bytes, entry_bytes, device, *, pin_policy, width, dims):
             assert gpu_bytes == entry_bytes and device == "cuda"
+            assert width == text["moe_intermediate_size"] and dims == text["hidden_size"]
             self.gpu_bytes, self.entry_bytes, self.capacity = gpu_bytes, entry_bytes, 1
             self.pin_policy, self._pool, self.closed = pin_policy, object(), False
             self.allocated_bytes = gpu_bytes + ALLOCATION_OVERHEAD
@@ -200,7 +202,7 @@ def startup(tmp_path, monkeypatch):
     monkeypatch.setattr(capacity, "admit", admit)
     monkeypatch.setattr(geometry, "prompt_rows", lambda *args: 512)
     monkeypatch.setattr(expert_pin, "ExpertPinPolicy", Pins)
-    monkeypatch.setattr(expert_cache, "HostExpertCache", Cache)
+    monkeypatch.setattr(cache_a4, "A4ExpertCache", Cache)
     monkeypatch.setattr(allocation_bound, "pool_allocation_bound", allocation)
     monkeypatch.setattr(weights, "load", load)
     monkeypatch.setattr(dflash, "DFlash", draft)

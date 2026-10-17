@@ -153,12 +153,12 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     reads its two scalar calibrations before code/scale payload. Packing one
     projection at a time bounds CPU temporary storage by three projection blobs.
     Resident loading releases CPU code/scale authority after synchronous device
-    transfer, retaining36 bytes/expert of original and prepared calibration metadata.
+    transfer. Serving retains no CPU calibration metadata for either residency.
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
     from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4
-    from .host_layout import authority_fields_a4
+    from .host_layout import authority_fields_a4, entry_layout_a4
 
     device = torch.device(device)
     if device.type != "cuda":
@@ -187,9 +187,15 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             if (kind, activation) != ("nvfp4", 4):
                 raise ValueError(f"{base}: native A4 routed experts require declared four-bit activations")
 
-    fields = tuple(cache.allocate_authority(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32, tag=name)
-                   if cache is not None else torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
-                   for shape, dtype in geometry)
+    if cache is None:
+        fields = tuple(torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
+                       for shape, dtype in geometry)
+    else:
+        if cache.field_layout != entry_layout_a4(width, dims, count=len(ids)):
+            raise ValueError("native A4 cache differs from the admitted expert field geometry")
+        source = cache.allocate_authority((len(ids), cache.entry_bytes), dtype=torch.uint8, tag=name)
+        fields = cache.source_views(source)
+        cache.zero_padding(source)
     for local, expert in enumerate(ids):
         for p, (projection, _, _) in enumerate(projections):
             base = f"{name}.experts.{expert}.{projection}"
@@ -212,8 +218,9 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             del codes, blocks, packed
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
-        bank = CachedExpertsA4(fields, width, dims, cache=cache, layer_id=key, swiglu=swiglu)
+        bank = CachedExpertsA4(len(ids), width, dims, cache=cache, layer_id=key, swiglu=swiglu)
+        cache.register(key, (source,))
     else:
-        bank = ExpertsA4(tuple(t.to(device) for t in fields), fields[2:], width, dims, swiglu=swiglu)
+        bank = ExpertsA4(tuple(t.to(device) for t in fields), width, dims, swiglu=swiglu)
     ctx.used["nvfp4"] = True
     return bank

@@ -7,9 +7,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from tensorfold.cuda.capacity import SIZES, Geometry, config, headers
+from tensorfold.cuda.capacity import Geometry, config, headers
 from tensorfold.cuda.geometry import gdn_geometry, layer_counts, stream_geometry
-from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, bank_bases_a4, routed_tensor_a4
+from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, routed_tensor_a4
 
 GIB = 1 << 30
 _READ_PIECE = 64 << 20
@@ -68,6 +68,7 @@ class Layout:
     largest_header_bytes: int
     automatic: bool
     format: str = "ct-nvfp4-a4"
+    authority_padding_bytes: int = 0
 
     def routed_tensor(self, name):
         """Only fields of the banks completely validated at this boundary."""
@@ -87,7 +88,9 @@ class Layout:
                 "pinned_staging_payload_bound_bytes": self.staging_bytes,
                 "loading_bytes": self.loading_bytes, "header_metadata_bound_bytes": self.metadata_host_bytes,
                 "cache_control_host_bound_bytes": self.control_host_bytes,
-                "prepared_activation_calibration_bytes": 12 * self.expert_count,
+                "authority_padding_bytes": self.authority_padding_bytes,
+                "authority_allocation_count": len(self.authority_allocations),
+                "upload_fields_per_expert_miss": 1,
                 "source_filesystem_working_bytes": self.source_filesystem_bytes,
                 "safetensors_header_bytes": self.header_bytes,
                 "largest_safetensors_header_bytes": self.largest_header_bytes,
@@ -97,11 +100,11 @@ class Layout:
 
 
 def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
-    """Validate original CT expert fields and size the final six-field authority.
+    """Validate original CT fields and size one padded expert authority per bank.
 
     The shared expert remains a separately resident native CT operation. Every
-    weight/input global contributes FP32 native calibration authority under
-    CT's reciprocal convention, never ModelOpt calibration or BF16 metadata.
+    weight global contributes a prepared FP32 reciprocal; input globals remain
+    original FP32 multipliers. Serving keeps no separate CPU calibration table.
     """
     check(model_dir, gib, tp=tp)
     text = config(model_dir)
@@ -112,7 +115,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     if text["num_experts"] > 1023:
         raise ValueError("Qwen MoE routing supports at most 1023 routed experts plus shared")
     dims, width, count = text["hidden_size"], text["moe_intermediate_size"], text["num_experts"]
-    fields = authority_fields_a4(count, width, dims)
+    packed = entry_layout_a4(width, dims, count=count)
     metadata_objects = header_bytes = largest_header = 0
 
     def observe(offset, entries):
@@ -123,12 +126,9 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
 
     entries = headers(model_dir, observer=observe)
     banks = bank_bases_a4(entries, text)
-    allocations = tuple(math.prod(shape) * SIZES[dtype] for shape, dtype in fields)
-    one = authority_fields_a4(1, width, dims)
-    entry = 0
-    for shape, dtype in one:
-        entry = -(-entry // 16) * 16 + math.prod(shape) * SIZES[dtype]
-    entry = -(-entry // 16) * 16
+    entry = packed.entry_bytes
+    raw_entry = sum(field.size for field in packed.fields)
+    allocations = (count * entry,) * len(banks)
     logical = count * len(banks)
     requested = entry if gib == "auto" else (gib * GIB if type(gib) is int else
                                              gib.as_integer_ratio()[0] * GIB // gib.as_integer_ratio()[1])
@@ -153,14 +153,13 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
                 + sys.getsizeof(b"") + sys.getsizeof("\U00010000"))
     # Histories, resident identities/NumPy rank arrays, per-bank views and the
     # bounded startup rank search are charged at the largest possible pool.
-    # Three derived FP32 activation dequantizers per expert are prepared once
-    # beside the original authority, including for the baseline CPU adapter.
-    controls = (logical + 1 + 588 * logical + 4096 * len(banks) + 65536
+    controls = (logical + 1 + 576 * logical + 4096 * len(banks) + 65536
                 + 192 * _PAIR_WINDOW * (text["num_experts_per_tok"] + 1) + 65536)
     runtime = 16 * _PAIR_WINDOW * (dims + width) + 65536
-    return Layout(entry, slots, slots * entry, sum(allocations) * len(banks), staging, loading,
-                  allocations * len(banks), banks, logical, count, runtime, metadata, controls,
-                  _READ_PIECE, header_bytes, largest_header, gib == "auto")
+    return Layout(entry, slots, slots * entry, logical * entry, staging, loading,
+                  allocations, banks, logical, count, runtime, metadata, controls,
+                  _READ_PIECE, header_bytes, largest_header, gib == "auto",
+                  authority_padding_bytes=logical * (entry - raw_entry))
 
 
 def _moe_buffers(rows, experts, slots, width, dims, prefill):

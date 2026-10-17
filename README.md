@@ -699,8 +699,11 @@ The GB10's **`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`** checkpoint was copied
 to the 16 GB Blackwell host and independently verified against every pinned
 publisher hash. Its installed CLI check **refused the unsupported NVFP4 MoE
 format before loading**; this is not a successful inference qualification.
-Routed expert payload alone is 16.88 GiB, and this family has no RAM-expert
-path yet. This is a 35B-A3B model, distinct from Qwen3.8-27B dense.
+Routed expert payload alone is 16.88 GiB. The new reader has a bounded RAM-expert
+path with one padded upload per missed expert and grouped native FP4 activation
+math; resident and cached banks use the same arithmetic implementation. Its
+final installed-image and performance qualification is pending. This is a
+35B-A3B model, distinct from Qwen3.8-27B dense.
 See the [model-specific result](docs/recipes/qwen3.6-moe.md#heretic-nvfp4-host-check).
 
 ### Earlier installed CLI/API qualification

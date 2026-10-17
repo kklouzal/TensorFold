@@ -22,6 +22,23 @@ static int64_t extend_span(int64_t span, int64_t count, int64_t stride, int64_t 
     return span + (count - 1) * stride;
 }
 
+// Native blob fields have a contiguous per-expert payload and an explicit
+// outer expert stride. Admit each affine span before multiplication, including
+// singleton/empty edge cases, rather than assuming a fully contiguous bank.
+static void expert_field(const at::Tensor& value, const at::Tensor& on, at::ScalarType type, int rank,
+                         const char* name) {
+    TORCH_CHECK(value.is_cuda() && value.device() == on.device() && value.scalar_type() == type &&
+                value.dim() == rank && value.stride(rank - 1) == 1, name, ": native expert field");
+    const auto limit = std::numeric_limits<int64_t>::max() / value.element_size();
+    int64_t span = value.size(rank - 1);
+    TORCH_CHECK(span > 0, name, ": positive inner field dimension required");
+    for (int axis = rank - 2; axis >= 0; --axis) {
+        TORCH_CHECK(value.size(axis) > 0 && value.stride(axis) >= span &&
+                    (axis == 0 || value.stride(axis) == span), name, ": complete per-expert field");
+        span = extend_span(span, value.size(axis), value.stride(axis), limit, name);
+    }
+}
+
 // Plan rows are (source-row, destination-slot, cache-cell). They are constructed
 // from admitted CPU picks by the owner; kernels also guard every indirect access.
 void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
@@ -32,7 +49,7 @@ void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& inp
     extend_span(x.size(1), x.size(0), x.stride(0),
                 std::numeric_limits<int64_t>::max() / x.element_size(), "nativeA4 input");
     tensor(plan, x, at::kInt, 2, "plan");
-    tensor(input, x, at::kFloat, 2, "input calibration");
+    expert_field(input, x, at::kFloat, 2, "input calibration");
     tensor(codes, x, at::kByte, 3, "codes");
     tensor(scales, x, at::kByte, 3, "scales");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 8 == 0, "codes require8-byte alignment");
@@ -54,9 +71,9 @@ void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& b
            const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down) {
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
-    tensor(blob, blob, at::kByte, 3, "projection blob");
-    tensor(weight, blob, at::kFloat, 2, "weight calibration");
-    tensor(input, blob, at::kFloat, 2, "input calibration");
+    expert_field(blob, blob, at::kByte, 3, "projection blob");
+    expert_field(weight, blob, at::kFloat, 2, "weight calibration");
+    expert_field(input, blob, at::kFloat, 2, "input calibration");
     tensor(items, blob, at::kInt, 2, "expert items");
     tensor(plan, blob, at::kInt, 2, "pair plan");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 4 == 0 &&

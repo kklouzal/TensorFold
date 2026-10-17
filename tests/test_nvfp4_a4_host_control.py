@@ -1,7 +1,7 @@
 """Independent byte oracle and owned native-A4 authority boundary controls."""
 
 import struct
-from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,8 +9,10 @@ torch = pytest.importorskip("torch")
 
 from nvfp4_a4_inputs import PREFIX, Context, swiglu
 
-from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4, projection_a4
+from tensorfold.cuda.nvfp4.cache_a4 import native_views
+from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4
 from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
+from tensorfold.cuda.nvfp4.host_layout import entry_layout_a4
 
 
 class Cache:
@@ -18,14 +20,23 @@ class Cache:
 
     def __init__(self):
         self.allocations, self._layers = [], {}
+        self.field_layout = entry_layout_a4(64, 128)
+        self.entry_bytes, self._pool = self.field_layout.entry_bytes, None
 
     def allocate_authority(self, shape, *, dtype, tag):
-        value = torch.empty(shape, dtype=dtype)
         self.allocations.append((shape, dtype, tag))
-        return value
+        return torch.empty(shape, dtype=dtype)
+
+    def source_views(self, source):
+        return native_views(source, self.field_layout)
+
+    def zero_padding(self, source):
+        for lo, hi in self.field_layout.padding:
+            source[:, lo:hi].zero_()
 
     def register(self, key, fields):
         self._layers[key] = fields
+
 
 
 def oracle_blob(weight, scales):
@@ -55,19 +66,17 @@ def test_cpu_pack_is_scalar_foreign_layout_permutation(n, k):
     s = (torch.arange(n * k // 16, dtype=torch.int64) * 23 % 256).to(torch.uint8).view(n, k // 16)
     got = pack_projection_a4(w, s.view(torch.float8_e4m3fn))
     assert torch.equal(got, oracle_blob(w, s))
-    linear = projection_a4(got, n, k, .25, .125)
-    assert linear.words.data_ptr() == got.data_ptr()
-    assert linear.bs.data_ptr() == got.data_ptr() + n * k // 2
-    assert linear.scale == .25 and linear.act == 8. and linear.act_inverse == .125
+
 
 
 def test_owned_loader_reads_only_selected_original_fields_and_prepares_exact_calibrations():
     ctx, cache = Context(), Cache()
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, owned_ids=[2, 0],
                                 layer_id=7, swiglu=swiglu)
-    authority = cache._layers[7]
+    source, = cache._layers[7]
+    authority = cache.source_views(source)
     assert bank.count == 2 and bank.width == 64 and bank.dims == 128 and not bank.capturable
-    assert len(cache.allocations) == 6 and len(ctx.reads) == 24 and len(set(ctx.reads)) == 24
+    assert len(cache.allocations) == 1 and len(ctx.reads) == 24 and len(set(ctx.reads)) == 24
     assert not any(".experts.1." in name or ".shared_expert." in name for name in ctx.reads)
     assert ctx.used == {"nvfp4": True}
     for local, expert in enumerate((2, 0)):
@@ -179,7 +188,7 @@ def test_valid_zero_max_scales_are_preserved_and_unowned_invalid_payload_is_neve
     assert bank.count == 1 and len(calls) == 3
     assert untouched not in ctx.reads
     expected = oracle_blob(ctx.payload[base + ".weight_packed"], scale)
-    assert torch.equal(cache._layers[0][0][0, 0], expected)
+    assert torch.equal(cache.source_views(cache._layers[0][0])[0][0, 0], expected)
 
 
 
@@ -212,57 +221,50 @@ def test_ct_native_calibration_admits_finite_original_multiplier_without_roundtr
 
 
 
-@pytest.mark.parametrize("prefill", [False, True])
-def test_bank_prepares_exact_scalar_reciprocals_once_and_run_never_recomputes_them(monkeypatch, prefill):
-    from tensorfold.cuda.nvfp4 import checkpoint
+def test_cached_bank_has_no_cpu_calibration_retention_or_preparation(monkeypatch):
+    from tensorfold.cuda.nvfp4 import checkpoint, grouped_a4
 
-    ctx, cache = Context(), Cache()
-    original_inv, calls = checkpoint._inv, []
+    context, cache = Context(), Cache()
+    monkeypatch.setattr(checkpoint, "_inv", lambda value: pytest.fail("prepared an unused CPU reciprocal"))
+    bank = load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache, swiglu=swiglu)
+    assert not any(isinstance(value, torch.Tensor) for value in vars(bank).values())
+    assert not hasattr(bank, "scalars") and not hasattr(bank, "prepared_inputs")
+    assert bank.run.__func__ is grouped_a4.run
+    assert sum(source.numel() for source in cache._layers[0]) == context.cfg.experts * cache.entry_bytes
 
-    def record(value):
-        calls.append(value)
-        return original_inv(value)
 
-    monkeypatch.setattr(checkpoint, "_inv", record)
-    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, owned_ids=[2, 0], swiglu=swiglu)
-    assert len(calls) == 3 * bank.count
-    assert sum(t.numel() * t.element_size() for t in bank.prepared_inputs) == 12 * bank.count
-    for source, prepared in zip(bank.scalars[2:], bank.prepared_inputs):
-        assert prepared.device.type == "cpu" and prepared.dtype == torch.float32 and not prepared.is_pinned()
-        for row in range(bank.count):
-            for projection in range(source.shape[1]):
-                assert float(prepared[row, projection]) == original_inv(float(source[row, projection]))
-    fields = cache._layers[0]
-    expected = []
-    for expert in range(bank.count):
-        for projection in range(3):
-            raw = float(bank.scalars[2 if projection < 2 else 3][expert, projection if projection < 2 else 0])
-            act = float(bank.prepared_inputs[0 if projection < 2 else 1][expert, projection if projection < 2 else 0])
-            expected.append((act, raw))
-    observed = []
+def test_cached_storage_inspection_snapshots_once_before_concurrent_close():
+    from tensorfold.cuda.nvfp4.experts_a4 import CachedExpertsA4
 
-    def fake_matmul(mode, x, linear, *, f32=False):
-        observed.append((linear.act, linear.act_inverse))
-        return torch.full((x.shape[0], linear.n), linear.act,
-                          dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
+    pool = torch.empty(1, dtype=torch.uint8)
 
-    @contextmanager
-    def lease(expert):
-        yield fields, expert
+    class ClosingCache:
+        device = torch.device("cuda:0")
+        reads = 0
 
-    # This CPU control executes the actual bank grouping/projection/run body;
-    # native arithmetic/device admission are independently covered on CUDA.
-    monkeypatch.setattr(bank, "_check", lambda *a, **k: None)
-    monkeypatch.setattr(bank, "_expert", lease)
-    monkeypatch.setattr(bank, "device", torch.device("cpu"))
-    monkeypatch.setattr(checkpoint, "matmul", fake_matmul)
-    monkeypatch.setattr(checkpoint, "prompt", fake_matmul)
-    monkeypatch.setattr(checkpoint, "_inv", lambda value: pytest.fail("recomputed a static reciprocal during run"))
-    x = torch.ones((2, ctx.cfg.hidden), dtype=torch.bfloat16)
-    picks = torch.tensor([[0, -1], [1, 0]], dtype=torch.int32)
-    out = torch.empty((2, 2, ctx.cfg.hidden), dtype=torch.bfloat16 if prefill else torch.float32)
-    bank.run(x, picks, out, prefill=prefill)
-    assert observed == expected
-    assert torch.count_nonzero(out[0, 1]) == 0
-    for row, slot, expert in ((0, 0, 0), (1, 0, 1), (1, 1, 0)):
-        assert torch.equal(out[row, slot], torch.full_like(out[row, slot], float(bank.prepared_inputs[1][expert, 0])))
+        @property
+        def _pool(self):
+            self.reads += 1
+            return pool if self.reads == 1 else None
+
+    cache = ClosingCache()
+    bank = CachedExpertsA4(1, 64, 128, cache=cache, layer_id=0, swiglu=swiglu)
+    assert bank.device_tensors() == (pool,)
+    assert cache.reads == 1
+    with pytest.raises(RuntimeError, match="cached native A4 bank is closed"):
+        bank.device_tensors()
+    assert cache.reads == 2
+
+
+def test_closed_cached_run_refuses_before_mutating_output_or_loading_native_extension(monkeypatch):
+    from tensorfold.cuda.nvfp4 import grouped_a4
+    from tensorfold.cuda.nvfp4.experts_a4 import CachedExpertsA4
+
+    cache = SimpleNamespace(device=torch.device("cpu"), _pool=None)
+    bank = CachedExpertsA4(1, 64, 128, cache=cache, layer_id=0, swiglu=swiglu)
+    x, picks = torch.ones((1, 128), dtype=torch.bfloat16), torch.zeros((1, 1), dtype=torch.int32)
+    out = torch.full((1, 1, 128), 17., dtype=torch.float32)
+    monkeypatch.setattr(grouped_a4, "_ext", lambda: pytest.fail("loaded native extension for closed cache"))
+    with pytest.raises(RuntimeError, match="cached native A4 bank is closed"):
+        bank.run(x, picks, out, prefill=False)
+    assert torch.equal(out, torch.full_like(out, 17.))
