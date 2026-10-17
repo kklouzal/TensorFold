@@ -418,6 +418,14 @@ class Session:
                     self.source_files.pop()
             self.retired = self.comm is self.reader is self.cache is None and not self.source_files
             if self.retired:
+                # Wire/native consumers are terminal before their banks, shared
+                # NV scratch and transport tensors lose the session's ownership.
+                # An unresolved close retains every one of these references.
+                self.banks.clear()
+                self.nv_workspace.clear()
+                self.packed_cache = None
+                for name in ("x", "pick", "output", "peer", "low"):
+                    self.__dict__.pop(name, None)
                 self.store = None
             raise_failures(None, errors)
 
