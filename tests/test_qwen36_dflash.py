@@ -152,6 +152,21 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
 
 
+@pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])
+def test_shared_affine_packer_publishes_canonical_single_group_strides(rows, columns):
+    from tensorfold.cuda.kernels import qmm
+
+    generator = torch.Generator().manual_seed(rows + columns)
+    words = torch.randint(-(2**31), 2**31 - 1, (rows, columns // 8), dtype=torch.int32, generator=generator)
+    scales = torch.rand((rows, columns // 64), generator=generator).bfloat16()
+    biases = torch.randn((rows, columns // 64), generator=generator).bfloat16()
+    packed = qmm.pack(words, scales, biases, 64)
+    padded = -(-rows // 128) * 128
+    assert packed.scales.stride() == packed.biases.stride() == (padded, 1)
+    assert packed.scales.shape == (columns // 64, padded)
+    assert all(torch.equal(actual, expected) for actual, expected in zip(qmm.unpack(packed), (words, scales, biases)))
+
+
 def test_bad_header_count_fails_without_materializing_scalar_layers(fixture):
     directory, raw, _cfg, _arrays, _target = fixture
     raw["num_hidden_layers"] = 2**31 - 1
