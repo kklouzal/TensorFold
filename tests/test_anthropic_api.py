@@ -19,10 +19,12 @@ BASE = {"model": "local-model", "max_tokens": 128, "messages": [{"role": "user",
 def serving(backend, tmp_path, *, fail=False):
     if backend == "cuda":
         app = app_for(tmp_path, Engine())
+        app.aliases = (BASE["model"],)           # the id Claude Code is pointed at (--alias)
         with http_server(app) as port:
             yield app, port
     else:
         app = FakeApp(reasoning="hmm", fail_stream=fail)
+        app.model_ids = [*app.model_ids, BASE["model"]]
         server = serve_fake(app)
         try:
             yield app, server.server_port
@@ -250,6 +252,7 @@ def test_tool_image_reaches_the_vision_renderer_as_its_tool_result(backend, tmp_
         else:
             app.tokenizer = Tokenizer()
             app.effort_levels, app.enable_thinking, app.reasoning_effort = frozenset(), False, None
+            app.effort_for = lambda explicit: explicit           # ChatApp's: an image prompt renders as generation's
             app.late_system, app.context_window = "system", 32
         status, raw = call(port, "POST", "/v1/messages/count_tokens", body)
         assert status == 200 and json.loads(raw)["input_tokens"] == 4
@@ -313,6 +316,7 @@ def test_tool_arguments_stream_before_completion():
 @pytest.mark.parametrize("thinking", [{"type": "disabled"}, {"type": "adaptive"}])
 def test_mlx_token_count_renders_without_generation(thinking):
     app = make_app(enable_thinking=False, reasoning_effort="medium")
+    app.model_ids = [*app.model_ids, BASE["model"]]
     def refuse_generation(*args, **kwargs):
         raise AssertionError("token counting must not generate")
     app.chat = refuse_generation

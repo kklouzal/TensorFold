@@ -33,7 +33,9 @@ def _value(owner, entry) -> int:
 
 def _use(owner, st) -> None:
     owner.used[id(st)] = owner.clock
-    owner.kept.sort(key=lambda k: _value(owner, k))          # stable: equal values keep their order
+    # stable: equal values keep their order. A new list, published by one store: a /stats scrape on another thread
+    # reads ``kept`` whole (sorting in place empties a list while it sorts)
+    owner.kept = sorted(owner.kept, key=lambda k: _value(owner, k))
 
 
 def _idle(owner, busy, *spared):

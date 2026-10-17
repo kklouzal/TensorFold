@@ -6,7 +6,6 @@ import inspect
 import json
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -16,11 +15,13 @@ from tensorfold.server.cancellation import RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
 from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
+from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.request_options import heard_effort, parse_numbers, thinking_fields
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
 from tensorfold.server.stopping import matched_stop, stop_options
-from tensorfold.server.thinking_notes import unanswered
+from tensorfold.server import failure_capture
+from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
 from tensorfold.server.token_routes import flag, token_ids
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
@@ -140,9 +141,12 @@ class App:
         return ids
 
     def reply_model(self, body: Any) -> str:
-        """The id a reply names: the one the request asked for when this endpoint answers to it, else ``--name``."""
+        """The id ``--name-priority`` keys a request's default priority by: the one it asked for when this endpoint
+        answers to it, else ``--name``. (The id a reply names is ``server.http.requested_model``'s.)"""
 
         asked = body.get("model") if isinstance(body, dict) else None
+        if isinstance(asked, str) and getattr(self, "model_policies", False):     # GLM's ID@POLICY names ID
+            asked = asked.split("@", 1)[0]
         return asked if isinstance(asked, str) and asked in self.model_ids else self.served
 
     def _check_fields(self, body: dict[str, Any]) -> str | None:
@@ -197,6 +201,14 @@ class App:
         """Safe prompt-plus-reply capacity; None is unlimited, while zero refuses every prompt."""
 
         return self._context_limit()
+
+    @property
+    def max_model_len(self) -> int | None:
+        """The context length /v1/models and /stats report: the effective window, else the checkpoint's own (None
+        when neither is known)."""
+
+        limit = self._context_limit()
+        return limit if limit is not None else (self.native_context_window or None)
 
     def decisions(self, body: dict[str, Any]) -> dict[str, Any]:
         """Answer typed questions from next-token label logits. No text is generated."""
@@ -421,11 +433,24 @@ class App:
                         float(min_p))
 
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
-            prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
-        """One reply; once ``cancelled()`` holds, a waiting request raises ``RequestCancelled`` unstarted, a running one stops at its next round and raises it after ``generate``."""
+            prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
+            request_id: str | None = None, arrived: float | None = None,
+            progress: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any]:
+        """One reply; once ``cancelled()`` holds, a waiting request raises ``RequestCancelled`` unstarted, a running one stops at its next round and raises it after ``generate``.
 
-        arrived = time.perf_counter()
-        prepared = prepared if prepared is not None else self.prepare(body, chat)
+        ``request_id`` names the request in its ``tensorfold`` block and ``done`` line (one is made if None);
+        ``arrived`` is the handler's clock when the request came (perf_counter): its timings start there.
+        ``progress`` receives llama.cpp's ``prompt_progress`` (total, cache, processed, time_ms) while the prompt
+        prefills, where the engine reports it, and returns False once the client has gone."""
+
+        entered = time.perf_counter()
+        request_id = request_id or new_request_id()
+        arrived = entered if arrived is None else float(arrived)
+        if prepared is None:                # admitted (--max-pending-requests) before preparing: that wait is queued
+            prepared = self.prepare(body, chat)
+            prepare_s, admitted_s = time.perf_counter() - entered, entered - arrived
+        else:
+            prepare_s, admitted_s = entered - arrived, 0.0
         prompt, max_tokens = prepared.prompt, prepared.max_tokens
         tools, thinking = prepared.tools, prepared.thinking
         policy = ToolCallPolicy(body)
@@ -525,9 +550,15 @@ class App:
         shaped = prepared.grammar is not None or prepared.think_budget > 0
         think_end = self.tok.token_to_id("</think>") if chat and thinking and shaped else None
         budget = self._think_budget(prepared, think_end)
-        # background: the request's own priority, else --name-priority's default for its id; title requests always
-        by_name = "priority" not in body and self.reply_model(body) in getattr(self, "background_ids", ())
-        background = body.get("priority") == "background" or by_name or (chat and is_title_request(body.get("messages"), tools))
+        # background: the request's own priority (OpenAI's service_tier "flex" when it sends none), else
+        # --name-priority's default for its id; title requests always
+        if "priority" in body:
+            priority = body["priority"]
+        elif body.get("service_tier") == "flex":
+            priority = "background"
+        else:
+            priority = "background" if self.reply_model(body) in getattr(self, "background_ids", ()) else None
+        background = priority == "background" or (chat and is_title_request(body.get("messages"), tools))
         concurrent = getattr(self.engine, "concurrent", False)
         turns = None if concurrent else self._turns()
         if concurrent and background and "background" in inspect.signature(self.engine.generate).parameters:
@@ -537,11 +568,24 @@ class App:
         gates = [g for g in (gate, budget, Yield(turns) if yielding else None) if g is not None]
 
         cached: list[int] = []              # the prompt tokens the first run found cached (usage's cached_tokens)
+        queued = [admitted_s]               # seconds waiting for the engine's turn (and for admission)
+
+        def filled(total: int, cache: int, processed: int, elapsed_ms: float) -> bool:
+            """The first run's prompt progress, until its first token; True: the client has gone."""
+            if out or stopped["client"]:
+                return stopped["client"]
+            if not progress({"total": total, "cache": cache, "processed": processed, "time_ms": int(elapsed_ms)}):
+                stopped["client"] = True
+            return stopped["client"]
+
+        reports = progress is not None and "progress" in inspect.signature(self.engine.generate).parameters
 
         def generate(ids: list[int], count: int, feed: Callable[[list[int]], bool]) -> Any:
             if yielding and cached:                 # a run after a cut: foreground requests waiting go first
                 turns.give()
+                waited = time.perf_counter()
                 turns.take(True, cancelled)
+                queued[0] += time.perf_counter() - waited
             extra = dict(options)
             if prepared.grammar is not None:    # response_format: a fresh grammar state, after </think> when thinking
                 spec, compiled = prepared.grammar
@@ -554,6 +598,8 @@ class App:
                 same = list(ids) == list(prepared.vision.token_ids)
                 extra["vision"] = prepared.vision if same else continued(prepared.vision, ids,
                                                                        self.vision.frontend.config)
+            if reports and not cached:              # the first run's prompt only: a later run's prompt is the reply's
+                extra["progress"] = filled
             stats = self.engine.generate(ids, count, sampling, feed, **extra)
             if not cached:
                 cached.append(int((stats or {}).get("cached") or 0))
@@ -561,54 +607,71 @@ class App:
 
         # an engine that decodes concurrent requests together (``concurrent``) takes them as they come
         if turns is not None:
+            waited = time.perf_counter()
             turns.take(background, cancelled)
-        try:
-            if cancelled is not None and cancelled():                # the client left while this request waited
-                raise RequestCancelled("the client left before the request started")
-            with health.of(self).running(len(prompt), out, arrived) as request:  # /health reads ``out``; rounds never call in
-                serving[0] = request
-                try:
-                    stats = request.stats = generate_gated(generate, prompt, max_tokens, gates, on_tokens)
-                finally:
-                    serving[0] = None
-        finally:
-            if turns is not None:
+            queued[0] += time.perf_counter() - waited
+        released = turns is None
+
+        def release() -> None:              # the engine's turn goes back once, as soon as generation ends
+            nonlocal released
+            if not released:
+                released = True
                 turns.give()
-        if failed:
-            raise failed[0]
-        if stopped["client"]:                                        # as the Mac server: nothing more is written
-            raise RequestCancelled("the client left during the reply")
-        stats = {**(stats or {}), "token_sha": token_sha(out)}
-        reasoning, answer = visible(True)
-        final: dict[str, Any] = {}
-        if len(reasoning) > sent["reasoning"]:
-            final["reasoning_content"] = reasoning[sent["reasoning"]:]
-        raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
-        text = stops.visible(raw_text)
-        if tools:                   # a call missing only its closer is a call before the think split decides
-            text = normalize_qwen_tool_markup(text)
-        raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
-        content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
-        if tools:
-            shown = policy.content(content)
-            # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
-            content = shown if calls or shown.strip() else content
-        # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
-        streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
-        if streamed > len(calls or ()):
-            content = hide_tool_calls(content, finished=True).strip()   # those calls are the streamed deltas
-        sent_text = answer[:sent["content"]]
-        lead = sent_text if content.startswith(sent_text) else sent_text.lstrip()
-        tail = content[len(lead):] if content.startswith(lead) else ""
-        if tail:
-            final["content"] = tail
-        ended = stopped["stop"] or bool(out and out[-1] in ends)
-        # calls already streamed as deltas make a finished reply a tool-call turn, as the client has received them
-        finish = "tool_calls" if calls or (streamed and ended) else ("stop" if ended else "length")
+
+        try:
+            # running until its reply is made, then counted with how it ended; /health reads ``out``; rounds never call in
+            with health.of(self).running(len(prompt), out, arrived) as request:
+                try:
+                    if cancelled is not None and cancelled():            # the client left while this request waited
+                        raise RequestCancelled("the client left before the request started")
+                    serving[0] = request
+                    try:
+                        stats = request.stats = generate_gated(generate, prompt, max_tokens, gates, on_tokens)
+                    finally:
+                        serving[0] = None
+                finally:
+                    release()
+                if failed:
+                    raise failed[0]
+                if stopped["client"]:                                        # as the Mac server: nothing more is written
+                    raise RequestCancelled("the client left during the reply")
+                reasoning, answer = visible(True)
+                final: dict[str, Any] = {}
+                if len(reasoning) > sent["reasoning"]:
+                    final["reasoning_content"] = reasoning[sent["reasoning"]:]
+                raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
+                text = stops.visible(raw_text)
+                if tools:                   # a call missing only its closer is a call before the think split decides
+                    text = normalize_qwen_tool_markup(text)
+                raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
+                content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls) if tools else (answer, None)
+                if tools:
+                    shown = policy.content(content)
+                    # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
+                    content = shown if calls or shown.strip() else content
+                # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
+                streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
+                if streamed > len(calls or ()):
+                    content = hide_tool_calls(content, finished=True).strip()   # those calls are the streamed deltas
+                sent_text = answer[:sent["content"]]
+                lead = sent_text if content.startswith(sent_text) else sent_text.lstrip()
+                tail = content[len(lead):] if content.startswith(lead) else ""
+                if tail:
+                    final["content"] = tail
+                ended = stopped["stop"] or bool(out and out[-1] in ends)
+                # calls already streamed as deltas make a finished reply a tool-call turn, as the client has received them
+                finish = request.outcome = "tool_calls" if calls or (streamed and ended) else ("stop" if ended else "length")
+        finally:
+            release()
+        stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(stats or {}),
+                 **timings(stats or {}, len(out), queued[0], prepare_s, arrived, request.first),
+                 "token_sha": token_sha(out)}
         warning = unanswered(finish, chat and thinking, content, calls)
         if warning:
             print(warning, flush=True)
-        print_done(len(prompt), (cached or [0])[0], thinking, out, finish, stats, request)
+        self._ended_thinking(request_id, body, prompt, out, finish, chat and thinking, content, calls, reasoning,
+                             raw_text, stopped["stop"], ends, stats)
+        print_done(request_id, len(prompt), (cached or [0])[0], thinking, out, finish, stats, request)
         if body.get("return_token_ids"):              # the reply's ids in the "tensorfold" block, for exactness checks
             stats = {**(stats or {}), "token_ids": [int(t) for t in out]}
         logprobs = (self._probability_decoder.format(probabilities.emitted(out), ends)
@@ -619,6 +682,28 @@ class App:
                 "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
                 "reasoning_tokens": reasoning_count(out, self.tok.token_to_id("</think>") if chat and thinking else None),
                 "stats": stats, "calls_streamed": streamed}
+
+    def _ended_thinking(self, request_id: str, body: dict[str, Any], prompt: list[int], out: list[int], finish: str,
+                        thinking: bool, content: str, calls: Any, reasoning: str, raw_text: str, stop_string: bool,
+                        ends: tuple[int, ...], stats: dict[str, Any]) -> None:
+        """A reply that ended at an end token inside its think block (no answer, no call): one warning line, and with
+        TENSORFOLD_FAILURE_CAPTURE_DIR set the request, its token ids and stats captured (``failure_capture``). The
+        reply is not changed."""
+
+        end = out[-1] if out and out[-1] in ends and not stop_string else None
+        if not thinking or end is None or finish != "stop":         # the common replies: nothing to look up
+            return
+        close = self.tok.token_to_id("</think>")
+        closed = close in out if close is not None else "</think>" in raw_text
+        if not ended_thinking(finish, thinking, content, calls, reasoning, True, closed):
+            return
+        text = self.tok.id_to_token(end)
+        print(ended_thinking_note(request_id, len(prompt), len(out), end, text), flush=True)
+        if failure_capture.directory() is None:                    # capture off: no record is built
+            return
+        failure_capture.capture("ended_in_think", request_id, body, {
+            "finish": finish, "prompt_tokens": len(prompt), "end_token": {"id": int(end), "text": text},
+            "token_ids": [int(t) for t in out], "stats": stats})
 
     def _turns(self) -> Turns:
         """The engine's turns (one request at a time, background ones last), made on first use."""
@@ -673,15 +758,37 @@ def token_sha(tokens: list[int]) -> str:
     return hashlib.sha256(",".join(str(int(t)) for t in tokens).encode()).hexdigest()[:12]
 
 
-def print_done(prompt: int, cached: int, thinking: bool, out: list[int], finish: str, stats: dict[str, Any],
-               request: Any) -> None:
-    """The Mac server's ``done`` line for a finished reply; tok/s runs from the first token to the last."""
+STATS_VERSION = 2          # the ``tensorfold`` block's keys: 2 adds request_id, queue_s, prepare_s, ttft_s and decode_tps
+
+
+def timings(stats: dict[str, Any], tokens: int, queued: float, prepare_s: float, arrived: float,
+            first: float | None) -> dict[str, float]:
+    """A reply's ``tensorfold`` timings past its engine's own: ``queue_s`` (waiting for a lane or the engine's turn,
+    and for admission), ``prepare_s`` (arrival to a prepared prompt: template, tokens, images), ``ttft_s`` (arrival to
+    the first generated token) and ``decode_tps`` (tokens after the first over the engine's ``decode_s``). A time the
+    request did not have (no token, no decode time) is left out."""
+
+    engine_queue = stats.get("queue_s")
+    out = {"queue_s": round(queued + (engine_queue if isinstance(engine_queue, (int, float)) else 0.0), 4),
+           "prepare_s": round(max(0.0, prepare_s), 4)}
+    if first is not None:
+        out["ttft_s"] = round(max(0.0, first - arrived), 4)
+    decode = stats.get("decode_s")
+    if isinstance(decode, (int, float)) and not isinstance(decode, bool) and decode > 0 and tokens > 1:
+        out["decode_tps"] = round((tokens - 1) / decode, 2)
+    return out
+
+
+def print_done(request_id: str, prompt: int, cached: int, thinking: bool, out: list[int], finish: str,
+               stats: dict[str, Any], request: Any) -> None:
+    """The Mac server's ``done`` line for a finished reply, named by its request id (its ``x-request-id``); tok/s runs
+    from the first token to the last, ttft from the request's arrival."""
 
     ended = time.perf_counter()
     first, started = getattr(request, "first", None), getattr(request, "started", ended)
     decode = ended - first if first is not None else 0.0
     rate = (len(out) - 1) / decode if decode > 0 and len(out) > 1 else 0.0
-    print(f"[tensorfold] done req-{uuid.uuid4().hex[:12]} prompt={prompt} cached={cached} thinking={thinking} "
+    print(f"[tensorfold] done {request_id} prompt={prompt} cached={cached} thinking={thinking} "
           f"tokens={len(out)} sha={token_sha(out)} finish={finish} tok/s={rate:.1f} "
           f"ttft={(first - started) if first is not None else -1:.2f}s prefill={stats.get('prefill_s', -1):.2f}s "
           f"rounds={stats.get('rounds', 0)} accepted={stats.get('accepted', 0)}/{stats.get('drafted', 0)}",

@@ -11,8 +11,8 @@ The server stores SHA-256 digests and compares every configured digest for each 
 
 Send `Authorization: Bearer KEY` from OpenAI-compatible clients, or `x-api-key: KEY` from Messages clients.
 Missing or invalid credentials return HTTP 401 with `WWW-Authenticate: Bearer` and the route's error format.
-All `/v1/*`, tokenization, metrics and their inference aliases require a key; `--metrics-open` opens both metrics
-routes. `/health` remains open and returns only `{"status":"ok"}` when keys are configured.
+All `/v1/*`, tokenization, metrics, statistics and their inference aliases require a key; `--metrics-open` opens both
+metrics routes and both statistics routes. `/health` remains open and returns only `{"status":"ok"}` when keys are configured.
 With no keys, the existing open routes and health details stay unchanged; a non-loopback bind prints a warning.
 
 Replace the key file atomically to rotate keys. Its modification time is checked at most once a second; SIGHUP
@@ -27,9 +27,11 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 
 | Route | Behavior |
 | --- | --- |
-| `GET /v1/models` | Served model ID and any configured aliases (both servers) |
+| `GET /v1/models` | Served model ID and any configured aliases (both servers), each with `created` (this server's start) and vLLM's `max_model_len` (the served context length) |
+| `GET /v1/models/{model}` | One served ID's model object; 404 `model_not_found` for any other |
 | `GET /health` | Server health and available status information |
-| `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV occupancy, drafts and latency (both servers) |
+| `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV memory, prefix cache, drafts and latency (both servers) |
+| `GET /stats`, `GET /v1/stats` | One JSON snapshot: server identity, model, limits, load, KV memory, prefix cache and totals (both servers) |
 | `POST /v1/chat/completions` | Text chat, optional image input, tools and reasoning; streamed or non-streamed |
 | `POST /v1/completions` | Raw text without a chat template, or token IDs |
 | `POST /v1/messages` | Anthropic Messages: text, supported images, function tools and thinking; JSON or SSE |
@@ -38,10 +40,19 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /detokenize`, `POST /v1/detokenize` | vLLM's: the text of `tokens`, special tokens included |
 | `POST /v1/responses` | OpenAI's Responses API, run as the equivalent chat completion; streamed or non-streamed |
 | `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}` | A stored response, or remove it |
+| `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
-take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given.
+take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given. Both servers serve
+one prompt a request: a batch of several prompts receives HTTP 400.
+
+`model` names the served ID (`--name`) or an `--alias`, as `/v1/models` lists them; a request that omits it (or sends
+null) is served as `--name`. Any other ID receives HTTP 404 with OpenAI's `model_not_found` error on every generation
+and tokenization route (chat, completions, Responses and its `input_tokens`, Messages and their token count,
+`/tokenize`, `/detokenize`, decisions); Messages routes answer Anthropic's `not_found_error`. Point a client that asks for
+several IDs (Claude Code's background model, say) at served IDs, or add them with `--alias`. On GLM-5.3 a draft policy
+follows the served ID after `@` (`ID@POLICY`).
 
 `/tokenize` takes vLLM's fields: a `prompt` string (`add_special_tokens`, default true), or `messages` with the
 chat fields that shape the prompt (`tools`, `reasoning_effort`, `chat_template_kwargs`) and `add_generation_prompt`
@@ -88,8 +99,18 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` | Both |
 | `thinking_budget` | Token-count limit inside reasoning | Both |
 | `priority` | `background` yields to foreground requests | Both |
+| `service_tier` | `flex` is `priority: "background"` when the request sends no `priority`; other tiers change nothing | Both |
+| `return_progress` | With `stream`, llama.cpp's `prompt_progress` frames while the prompt prefills (see Responses) | CUDA Flash Next `--parallel` |
 
 `n` must be 1; multiple choices receive HTTP 400.
+
+These fields are accepted and ignored, as `frequency_penalty` and `presence_penalty` are: the reply is the one the
+request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
+`web_search_options`, `moderation` (no moderation result is returned), `prediction`, `store`, `metadata`, `user`,
+`safety_identifier`, `prompt_cache_key`, `prompt_cache_retention` and `stream_options.include_obfuscation`;
+`tool_choice: {"type": "allowed_tools", ...}` runs as `auto` over every offered tool (the Responses API applies the
+allowed list). Completions: `echo`, `suffix` and `best_of`. The prefix cache is automatic, and replies do not depend on
+it.
 
 CUDA Flash Next on one GPU supports `logprobs: true` and `top_logprobs` from 0 through 20 for nonstreamed text chat
 with thinking off, without tools, stop strings or structured output. Each visible token has its `token`, `bytes`,
@@ -242,6 +263,27 @@ decodes on from the reply, as for a required tool call.
 
 ## Context and errors
 
+Every reply carries an `x-request-id` header. A request's own `X-Client-Request-Id` (OpenAI's client header), else
+its `x-request-id`, is used when it is 1 to 128 letters, digits, `.`, `_`, `:` or `-`; otherwise the server makes one
+(`req-` and 32 hex digits). The same id is the reply's `tensorfold.request_id` and names it in the server's `done`
+line.
+
+On CUDA, a reply that ends at an end token with its think block still open (thinking on, finish `stop`, reasoning
+but no answer and no call) prints one warning line naming its request id, prompt and reply token counts and the end
+token. With `TENSORFOLD_FAILURE_CAPTURE_DIR` set, the server also writes that one request (its body with image and
+video parts redacted, its generated token IDs and its `tensorfold` statistics) to a file there, written whole and
+readable by the server's user alone. The directory holds at most 32 files and 256 MiB: a capture that would pass
+either is skipped with a line saying so, never written over an older one. Nothing is captured for any other reply,
+and capturing never changes the reply. The Mac server neither prints this line nor captures.
+
+A route that fails before its reply starts answers HTTP 500 with a `server_error` object on both servers; once a
+reply has started, a stream ends with an error event (or the connection closes).
+
+An error reply is OpenAI's error object, `{"error": {"message", "type", "param", "code"}}`, with `param` and `code`
+null where nothing names them. A capacity refusal (a full request queue under `--max-pending-requests`, the image queue)
+is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on
+both servers, streamed or not, as long as no reply has started. An unknown route is HTTP 404.
+
 The rendered prompt and reserved reply must fit the effective context. In 0.3.5, an explicit `max_tokens`
 or `max_completion_tokens` that would put prompt plus reply beyond the window is rejected with counts
 and fitting guidance before generation. MLX returns HTTP 400 for non-streamed requests or an
@@ -280,19 +322,45 @@ GPU's memory can freeze the host, so lower it only with room to spare.
 
 ## Responses
 
+Replies follow OpenAI's schemas: `choices[0].logprobs` is null unless probabilities were requested, and a probability
+reply's `logprobs.refusal` is null. With `stream_options.include_usage`, every chunk before the usage chunk carries
+`"usage": null`.
+
 `choices[0].message.content` holds the answer. Reasoning uses `reasoning_content`, or
 `delta.reasoning_content` while streaming. Tools use `tool_calls` and `finish_reason: "tool_calls"`.
 Every reply's usage, streamed ones included, carries its prompt, completion and total tokens,
 `prompt_tokens_details.cached_tokens` (the prompt tokens found in the prefix cache) and
 `completion_tokens_details.reasoning_tokens` (the thinking tokens, through the closing think marker); timing details
 depend on the backend.
-TensorFold also reports generation statistics such as decode rate, time to first token and draft acceptance.
+TensorFold also reports generation statistics such as decode rate, time to first token and draft acceptance, in a
+`tensorfold` object: on a non-streamed reply's top level, and on a stream's finish chunk and (with
+`stream_options.include_usage`) its usage chunk too, so the timings ride the frame that carries usage.
+
+On CUDA the object carries `stats_version` (2), `request_id` (the reply's `x-request-id`), the engine's own
+`prefill_s`, `decode_s` (first token to the last), `rounds`, `drafts`, `cached`, `min_rows`, `drafted` and `accepted`,
+`token_sha`, and the request's timings, in seconds from the moment its request line was read: `prepare_s` (to a
+prepared prompt: template, tokens and images), `queue_s` (waiting for a lane or the engine's turn, held for memory
+included, and under `--max-pending-requests` for admission), `ttft_s` (to the first generated token) and
+`decode_tps` (the tokens after the first over `decode_s`). A timing the request did not have (no token, no decode
+time) is left out rather than reported as zero. A background reply that yielded its lane sums its runs. The Mac's
+object keeps its own keys and adds the same `stats_version`, `request_id`, `prepare_s`, `queue_s`, `prefill_s`,
+`decode_s`, `ttft_s` and `decode_tps` (a replayed background reply's last run). The server's `done` line names the
+request by the same id.
+
+A streamed request may send `return_progress: true` (llama.cpp's field; on CUDA a boolean, else HTTP 400) to receive
+llama.cpp's `prompt_progress` frames while its prompt prefills: a chunk with no output (`delta` `{"role":
+"assistant", "content": null}`, `finish_reason` null) and `prompt_progress` `{"total", "cache", "processed",
+"time_ms"}`: the prompt's tokens, those its resumed prefix cache held, those its state holds now (cached ones
+included), and milliseconds since a lane took it. One comes when a lane takes the prompt and one after each prefill
+pass, until its first token. Flash Next's concurrent engine (`--parallel N`) sends them; other engines, the Mac
+server and requests that do not ask send none.
 
 On CUDA, `GET /health` also carries counters a poller can difference into rates: `busy`, `requests_running`,
 `requests_total`, `completion_tokens_total` (the running replies' tokens included as they stream), and totals that
 move when a request ends, taken from the engine's own statistics: `prompt_tokens_total`, `cached_tokens_total`,
-`prefill_seconds_total`, `decode_seconds_total`, `rounds_total`, and `drafted_total` and `accepted_total` where the
-engine reports them. A `--parallel` server adds `streams` (decoding, prefilling and the maximum), and
+`prefill_seconds_total`, `decode_seconds_total` (first token to end where the engine reports no decode time),
+`rounds_total`, and `drafted_total` and `accepted_total` where the engine reports them. They are the counters
+`/stats` and `/metrics` read. A `--parallel` server adds `streams` (decoding, prefilling and the maximum), and
 `context_length` is the served window. The first sample is a baseline, not a rate.
 
 For exactness comparisons, hold the checkpoint, template, runtime, prompt, seed and sampling settings
@@ -304,23 +372,85 @@ repeats the same samples wherever the conversations agree (an agent benchmark's 
 first). To draw independent repeats, send a `seed` per run, or start each run's server with a different
 `TENSORFOLD_SEED_SALT` (an integer mixed into every prompt-derived seed; 0, the default, keeps today's seeds).
 
+## Statistics
+
+`GET /stats` and `GET /v1/stats` answer one JSON object, schema `tensorfold.stats` version 1, on both servers. A
+field the server cannot read is null, never a fabricated zero. A scrape reads counters and the sizes of tables the
+engine already keeps, a few dozen values and a pass over the live lanes and kept prefix points: no GPU call, no engine
+lock and no work in a round. Successful polls (of `/stats`, `/metrics` and `/health`) are not logged. The sections
+are read one after another, not as one atomic snapshot, and load and memory readings are advisory: admission decides.
+Times are seconds, sizes bytes.
+
+| Field | Meaning |
+| --- | --- |
+| `object`, `schema_version` | `"tensorfold.stats"`, `1` |
+| `time.unix_s`, `time.uptime_s` | Now (wall clock) and seconds since the server process started (monotonic) |
+| `server.version`, `server.backend` | The package version; `cuda` or `mlx` |
+| `server.instance_id`, `server.started_unix_s` | This process's random id and start: a new id means a restart, whose prefix cache and counters start empty |
+| `server.source_revision` | The container build's source commit (`TENSORFOLD_SOURCE_REVISION`, set from the image's `SOURCE_REVISION`), else null; a label, not a proof |
+| `model.id`, `model.aliases` | `--name` and each `--alias` |
+| `model.model_type`, `model.context_length` | The checkpoint's `model_type`; the served context (the `max_model_len` of `/v1/models`) |
+| `model.default_max_tokens`, `model.thinking_default`, `model.vision` | The reply limit a request without one gets, whether replies think by default, whether images are accepted |
+| `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
+| `limits.lanes` | Requests decoded together at most (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch) |
+| `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
+| `limits.prefix_cache_entries` | Prompt points the prefix cache keeps at most |
+| `load.requests_in_flight` | Requests accepted and not finished (CUDA: queued ones included) |
+| `load.requests_running`, `load.requests_waiting` | In prefill or decode; queued or held for a lane or memory (as `/metrics`) |
+| `load.lanes` | `{decode, prefill, memory_wait}`: lanes decoding, prefilling, and held out of rounds until memory frees (null where not counted) |
+| `load.held_for_memory` | A request waits, first in line, for memory to admit it |
+| `load.http_connections_in_use` | Accepted HTTP connections |
+| `load.stream_tokens` | Tokens each live stream's cache holds |
+| `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
+| `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
+| `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
+| `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens` | Kept prompt points, the most it keeps, the slots holding them, and the distinct prompt tokens their states hold |
+| `totals.requests`, `totals.finished.{stop,length,tool_calls}`, `totals.cancelled`, `totals.failed` | Finished requests, by finish reason, client gone, or failed |
+| `totals.prompt_tokens`, `totals.cached_prompt_tokens`, `totals.generated_tokens` | Of finished requests |
+| `totals.generated_tokens_live` | The same with the running replies' tokens so far (CUDA) |
+| `totals.queue_seconds`, `.prefill_seconds`, `.decode_seconds` | Summed over finished requests |
+| `totals.rounds`, `.drafted`, `.accepted` | Rounds, draft rows verified and drafts kept, summed |
+| `totals.preemptions` | Background requests that gave up their lane to a later one |
+| `totals.memory_waits`, `totals.memory_stops` | Rounds a stream sat out for memory; streams stopped when memory ran out |
+| `mlx` (Mac only) | `memory` (as `/health`'s, without a peak reset) and `live` (connections, waiting, decode and prefill tokens a second) |
+
+On CUDA, `kv`, `prefix_cache`, `lanes.memory_wait`, `memory_waits` and `memory_stops` come from Flash Next's
+concurrent engine (`--parallel N`); other engines leave them null. The Mac fills `load` from its scheduler and leaves
+`kv` and `prefix_cache` null. Requests are counted when they finish, those whose client left (abort) or that failed
+included.
+
 ## Metrics
 
-`GET /metrics` and `GET /v1/metrics` answer as Prometheus text on both servers. Each family is read on its own
-at scrape time (the scrape is not one atomic snapshot), and a family the server cannot count honestly is left
-out of the text rather than reported at a permanent zero.
+`GET /metrics` and `GET /v1/metrics` answer as Prometheus text on both servers, rendered from the same snapshot as
+`/stats` and from the same counters `/health` sums. Each family is read on its own at scrape time (the scrape is not
+one atomic snapshot), and a family the server cannot count honestly is left out of the text rather than reported at
+a permanent zero. Histograms share the edges 0.01 s to 4,800 s. Request timings start when the request line is read.
 
 The scrape carries `requests_running`, `requests_waiting`, `prompt_tokens_total`, `generation_tokens_total`,
-`kv_cache_usage_ratio` (one `pool` label per live stream cache), `mtp_drafted_total` and `mtp_accepted_total`
+`kv_cache_usage_ratio` (one `pool` label per live stream: its tokens over its context window), `mtp_drafted_total` and `mtp_accepted_total`
 (draft tokens verified and kept on finished requests; the engines keep one draft counter, so copies and chain
 drafts share it), `request_latency_seconds`, `time_to_first_token_seconds` and `request_decode_seconds` (each
 finished request's decode time: the CUDA engine's own figure, or first token to end on the Mac server; its `_sum`
-over `generation_tokens_total` is the decode rate), all under the `tensorfold:` prefix. Every reading is repeated under a vLLM-compatible name (`num_requests_running`, `num_requests_waiting`,
-`kv_cache_usage_perc`, `spec_decode_num_draft_tokens_total`, `spec_decode_num_accepted_tokens_total`,
-`e2e_request_latency_seconds`, `request_decode_time_seconds`) with identical values, so a dashboard copied from vLLM fills by swapping the
-`tensorfold:` prefix for the metric name. `client_disconnections_total` (requests the client walked away from)
-and `preemptions_total` (background work that gave up a lane to a later request) are published where the
-server counts those events, and never at a fabricated zero.
+over `generation_tokens_total` is the decode rate), all under the `tensorfold:` prefix. Readings are repeated under
+vLLM's names with vLLM's meanings (`num_requests_running`, `num_requests_waiting`,
+`spec_decode_num_draft_tokens_total`, `spec_decode_num_accepted_tokens_total`, `e2e_request_latency_seconds`,
+`request_decode_time_seconds`, `num_preemptions_total`), so a dashboard copied from vLLM fills by swapping the
+`tensorfold:` prefix for the metric name. `kv_cache_usage_perc` is vLLM's KV-cache usage, one unlabeled 0-to-1 reading
+(`/stats`' `kv.usage_ratio`), published where the engine reports KV memory; earlier releases published a per-stream
+token ratio under this name, which `kv_cache_usage_ratio{pool}` keeps.
+
+More families: `request_queue_time_seconds`, `request_prefill_time_seconds` and
+`request_time_per_output_token_seconds` (decode seconds over the tokens after the first) histograms;
+`request_success_total{finished_reason}` (`stop`, `length`, `tool_calls`, `abort` for a client that left, `error`);
+`prefix_cache_queries_total` and `prefix_cache_hits_total` (prompt tokens and those found cached, vLLM's names,
+counted when a request finishes rather than when it is admitted); `process_start_time_seconds`; and `build_info` (1,
+labelled `version`, `backend`, `instance`, `source_revision`, `model`, `kv_dtype`, `mtp_drafts` and `lanes` where
+known). Where the engine counts them: the gauges `lanes{phase}` (`decode`, `prefill`, `memory_wait`), `lanes_max`,
+`requests_held_for_memory`, `kv_memory_budget_bytes`, `kv_memory_held_bytes`, `kv_memory_active_bytes`,
+`prefix_cache_entries`, `prefix_cache_capacity` and `prefix_cache_tokens`, and the counters `memory_waits_total` and
+`memory_stops_total`. `client_disconnections_total` (requests the client walked away from) and `preemptions_total`
+(background work that gave up a lane to a later request) are published where the server counts those events, and
+never at a fabricated zero.
 
 ## The Responses API
 
@@ -343,6 +473,12 @@ same handler and engine path. A response has that chat completion's prompt and t
 - `stream`, `store` (default true) and `metadata` (up to 16 string pairs). The chat extensions `draft`,
   `thinking_budget`, `stop`, `ignore_eos`, `chat_template_kwargs` and `priority` pass through.
 
+`POST /v1/responses/input_tokens` takes the same request and answers OpenAI's `{"object": "response.input_tokens",
+"input_tokens": N}`: the tokens of the prompt that request would run (template, tools, reasoning and images included),
+counted by the same preparation without generating, so a prompt too long for the context is refused as generation
+would refuse it.
+
+A response carries `access_programs: null`. A refusal of its chat completion names `input` as its `param`.
 `output` holds a `reasoning` item (its text as `reasoning_text` content, with an empty `summary`), a `message` with
 `output_text`, and `function_call` items (`call_id`, `name` and JSON `arguments`). A reply cut by the token limit has
 `status: "incomplete"` and `incomplete_details.reason: "max_output_tokens"`. `usage` has `input_tokens` (with
@@ -356,7 +492,8 @@ output item `response.output_item.added`, `response.content_part.added`, its del
 `response.incomplete` or `response.failed`.
 
 With `store` true, a finished response is kept in memory (the newest 1,024, up to 256 MiB) before its last event or
-body is sent. `GET /v1/responses/{id}` returns it, `DELETE /v1/responses/{id}` removes it, and
+body is sent. `GET /v1/responses/{id}` returns it (`stream=true` is ignored), `DELETE /v1/responses/{id}` removes it
+and answers `{"id", "object": "response.deleted", "deleted": true}`, and
 `previous_response_id` continues its conversation: the server rebuilds the messages a chat client would send, so the
 prompt cache resumes the shared prefix as it does for chat. `store: false` keeps nothing, and a restart forgets every
 response.

@@ -879,8 +879,10 @@ class FlashNextEngine:
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,
-                 stop_eos: bool = True, background: bool = False, probabilities=None, *, vision=None) -> dict[str, Any]:
-        """``draft=False``: one token a round, no MTP drafts; ``background``: last, yielding lanes to waiting ones."""
+                 stop_eos: bool = True, background: bool = False, probabilities=None, *, vision=None,
+                 progress=None) -> dict[str, Any]:
+        """``draft=False``: one token a round, no MTP drafts; ``background``: last, yielding lanes to waiting ones;
+        ``progress``: the prompt's prefill progress under ``--parallel`` (``Scheduler.submit``), else unused."""
 
         request = threading.Lock()
         with request:
@@ -901,7 +903,8 @@ class FlashNextEngine:
                     return scheduler.submit(list(prompt), max_tokens, sampling, draft, on_tokens, stop_eos=stop_eos,
                                             **grammar, **({"background": True} if background else {}),
                                             probabilities=probabilities,
-                                            **({"vision": vision} if vision is not None else {}))
+                                            **({"vision": vision} if vision is not None else {}),
+                                            **({"progress": progress} if progress is not None else {}))
                 hit = self._resume(prompt) if draft else None
                 points = None
                 if self.tp == 2:                     # rank 0 decodes exactly what it hands rank 1

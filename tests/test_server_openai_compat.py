@@ -198,7 +198,7 @@ def test_stream_error_after_headers_sends_an_error_event() -> None:
     assert status == 200
     assert '"object": "chat.completion.chunk"' in body
     assert '"finish_reason": "stop"' not in body
-    assert '"error": {"message": "boom", "type": "server_error"}' in body
+    assert '"error": {"message": "boom", "type": "server_error", "param": null, "code": null}' in body
     assert "data: [DONE]" in body
 
 
@@ -323,7 +323,8 @@ def test_include_usage_moves_usage_into_its_own_chunk_before_done(chat: bool) ->
     chunks = [json.loads(line[5:]) for line in lines if line != "data: [DONE]"]
     assert lines[-1] == "data: [DONE]" and lines.count("data: [DONE]") == 1
     usage_chunk, end = chunks[-1], [c for c in chunks if c["choices"]][-1]
-    assert chunks.index(end) == len(chunks) - 2 and "usage" not in end
+    # the spec: every chunk before the usage chunk carries a null usage
+    assert chunks.index(end) == len(chunks) - 2 and all(c["usage"] is None for c in chunks[:-1])
     assert end["choices"][0]["finish_reason"] == "stop" and "exact_mode" in end
     assert usage_chunk["choices"] == [] and usage_chunk["object"] == end["object"]
     assert all(usage_chunk[key] == end[key] for key in ("id", "created", "model"))

@@ -44,6 +44,10 @@ class Stream:
     prefill_s: float = 0.0
     started: float = 0.0
     finished: float = 0.0
+    queued: float = field(default_factory=time.perf_counter)   # when it joined the waiting queue (a replay: again)
+    queue_s: float = 0.0                                  # seconds it waited there for a lane, held for memory included
+    admitted: float = 0.0                                 # when a lane took it
+    on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
@@ -76,10 +80,10 @@ class Stream:
     def stats(self) -> dict:
         own = {"prefill_s": round(self.prefill_s, 4), "decode_s": round(max(self.finished - self.started, 0.0), 4),
                "rounds": self.rounds, "drafts": self.draft, "cached": self.cached, "min_rows": self.min_rows,
-               "drafted": self.drafted, "accepted": self.accepted}
+               "drafted": self.drafted, "accepted": self.accepted, "queue_s": round(self.queue_s, 4)}
         if self.carry is None:
             return own
-        both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s")}
+        both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s", "queue_s")}
         both.update({k: self.carry[k] + own[k] for k in ("rounds", "drafted", "accepted")})
         rows = [r for r in (self.carry["min_rows"], own["min_rows"]) if r]
         return {**own, **both, "cached": self.carry["cached"], "min_rows": min(rows, default=0)}

@@ -14,6 +14,7 @@ import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import unquote
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.engine import grammar
@@ -21,13 +22,16 @@ from tensorfold.server import anthropic, live, request_body, responses, token_ro
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
                                      tool_choice_requires_call)
 from tensorfold.server.decisions import DecisionError
-from tensorfold.server.errors import CapacityError, RequestError, error_body
+from tensorfold.server.failure_capture import redact_images
+from tensorfold.server.errors import (ModelNotFound, RequestError, error_body, invalid_request, retry_headers,
+                                     server_error, status_of, unknown_route)
 from tensorfold.server.request_options import parse_numbers, thinking_fields
 from tensorfold.server.probabilities import probability_options
 from tensorfold.server.messages import normalize_messages, validate_modalities
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
-from tensorfold.server import metrics
+from tensorfold.server import metrics, stats
+from tensorfold.server.request_ids import RequestIds
 from tensorfold.server.stacks import Rearming
 from tensorfold.server.request_body import read_body
 
@@ -339,24 +343,60 @@ class Server(ThreadingHTTPServer):
                 raise failure
 
 
-def redact_images(value: Any) -> Any:
-    """A request body for the request log: every image part's URL or data replaced, the rest kept."""
+def requested_model(app: Any, body: Any) -> str:
+    """The id a reply names: the request's ``model`` when this endpoint answers to it (``--name`` or an alias), the
+    served name when the request omits it or sends null. Any other id is ModelNotFound (HTTP 404); a model that is
+    not a string is a RequestError."""
 
-    if isinstance(value, list):
-        return [redact_images(item) for item in value]
-    if not isinstance(value, dict):
-        return value
-    if value.get("type") == "image_url":
-        return {**value, "image_url": {"url": "<redacted>"}}
-    return {key: redact_images(item) for key, item in value.items()}
-
-
-def reply_model(app: Any, body: Any) -> str:
-    """The id a reply names: the one the request asked for when this endpoint answers to it, else the served name."""
-
-    asked = body.get("model") if isinstance(body, dict) else None
     name = str(getattr(app, "served_name", "") or getattr(app, "served", "") or "")
-    return asked if isinstance(asked, str) and asked in (getattr(app, "model_ids", None) or [name]) else name
+    asked = body.get("model") if isinstance(body, dict) else None
+    if asked is None:
+        return name
+    if not isinstance(asked, str):
+        raise RequestError("model must be a string naming a served model")
+    if getattr(app, "model_policies", False):       # GLM: ``ID@POLICY`` names a served id and a draft policy
+        asked = asked.split("@", 1)[0]
+    ids = getattr(app, "model_ids", None) or [name]
+    if asked not in ids:
+        raise ModelNotFound(f"The model `{_shown(asked)}` does not exist on this server, which serves "
+                            f"{', '.join(ids)} (GET /v1/models)")
+    return asked
+
+
+SHOWN_ID = 256          # characters of an unknown model id its 404 repeats: an error stays small whatever is sent
+
+
+def _shown(model: str) -> str:
+    return model if len(model) <= SHOWN_ID else f"{model[:SHOWN_ID]}... ({len(model)} characters)"
+
+
+def model_route(path: str) -> str | None:
+    """A models path's model id ("" for the list), else None. An id may hold slashes (``org/name``) and %-escapes."""
+
+    path = path.split("?", 1)[0].rstrip("/")
+    for prefix in ("/v1/models", "/models"):
+        if path == prefix:
+            return ""
+        if path.startswith(prefix + "/"):
+            return unquote(path[len(prefix) + 1:])
+    return None
+
+
+def models_reply(app: Any, model_id: str, max_model_len: int | None) -> tuple[int, dict[str, Any]]:
+    """(status, body) of GET /v1/models (``model_id`` "") or GET /v1/models/{model}: OpenAI's Model, plus vLLM's
+    ``max_model_len`` (the served context length, null where none is known); ``created`` is this server's start, so a
+    listing is stable while it runs. An id this endpoint does not serve is 404 ``model_not_found``."""
+
+    def entry(name: str) -> dict[str, Any]:
+        return {"id": name, "object": "model", "created": int(stats.STARTED_UNIX_S), "owned_by": "tensorfold",
+                "max_model_len": max_model_len}
+
+    if not model_id:
+        return 200, {"object": "list", "data": [entry(name) for name in app.model_ids]}
+    if model_id not in app.model_ids:
+        return 404, {"error": error_body(ModelNotFound(f"The model `{_shown(model_id)}` does not exist on this "
+                                                       "server (GET /v1/models)"))}
+    return 200, entry(model_id)
 
 
 def served_model_ids(served_name: str, aliases: list[str] | None = None) -> list[str]:
@@ -380,7 +420,7 @@ def wants_usage_chunk(body: Any) -> bool:
 def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
     defer_headers = (getattr(app, "max_pending_requests", None) is not None
                      or getattr(getattr(app, "scheduler", None), "max_engine_calls", None) is not None)
-    class Handler(Rearming):              # USR1's stack dump armed again after each request
+    class Handler(RequestIds, Rearming):              # USR1's stack dump armed again after each request
         protocol_version = "HTTP/1.1"
 
         def log_message(self, format: str, *args: Any) -> None:
@@ -391,6 +431,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in retry_headers(status):        # a capacity refusal: when to retry
+                self.send_header(name, value)
             if self.close_connection:                    # so a pooling client does not reuse the socket
                 self.send_header("Connection", "close")
             self.end_headers()
@@ -418,6 +460,11 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 return responses.get(self, app, responses.route(route))
             if route in {"/metrics", "/v1/metrics"}:
                 return metrics.send(self, app)
+            if route in stats.ROUTES:               # the Mac's own: MLX memory (no peak reset) and the live meters
+                scheduler = getattr(app, "scheduler", None)
+                return stats.send(self, app, {"mlx": {
+                    "memory": _memory(False, admission=getattr(app, "prompt_memory", None)),
+                    "live": live.snapshot(scheduler) if hasattr(scheduler, "decoded") else None}})
             if route in {"", "/health"}:
                 if getattr(getattr(app, "auth", None), "enabled", False):
                     self._send_json({"status": "ok"})
@@ -438,23 +485,12 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                     }
                 )
                 return
-            if route.endswith("/models") or route == "/models":
-                self._send_json(
-                    {
-                        "object": "list",
-                        "data": [
-                            {
-                                "id": model_id,
-                                "object": "model",
-                                "created": int(time.time()),
-                                "owned_by": "tensorfold",
-                            }
-                            for model_id in app.model_ids
-                        ],
-                    }
-                )
+            model_id = model_route(route)
+            if model_id is not None or route.endswith("/models"):    # any path ending in /models lists them
+                status, payload = models_reply(app, model_id or "", int(getattr(app, "context_window", 0) or 0) or None)
+                self._send_json(payload, status)
                 return
-            self._send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
+            self._send_json({"error": unknown_route("GET", self.path)}, status=404)
 
         def _legacy_prompt_to_text(self, prompt: Any) -> str:
             if isinstance(prompt, str):
@@ -463,7 +499,10 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 if all(isinstance(token_id, int) for token_id in prompt):
                     with app.tokenizer_lock:
                         return app.tokenizer.decode([int(token_id) for token_id in prompt])
-                return "\n".join(self._legacy_prompt_to_text(item) for item in prompt)
+                if len(prompt) != 1:            # OpenAI's batch of prompts wants a choice each: refused, as on CUDA
+                    raise RequestError("prompt must be one prompt a request (a string or a list of token ids); "
+                                       "send each prompt as its own request")
+                return self._legacy_prompt_to_text(prompt[0])
             if prompt is None:
                 return ""
             return str(prompt)
@@ -488,7 +527,11 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             if not self._discard_body():
                 return
-            responses.delete(self, app, responses.route(self._route()))
+            rid = responses.route(self._route())
+            if rid is None:
+                self._send_json({"error": unknown_route("DELETE", self.path)}, status=404)
+                return
+            responses.delete(self, app, rid)
 
         def do_POST(self) -> None:
             route = self._route()
@@ -498,6 +541,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 return anthropic.post(self, app)
             if responses.route(route) == "":         # a Response: this handler's chat completion, translated
                 return responses.post(self, app)
+            if responses.route(route) == "input_tokens":
+                return responses.input_tokens(self, app)
             if route in token_routes.ROUTES:         # vLLM's /tokenize and /detokenize
                 return self._post_tokenizer(route.endswith("/detokenize"))
 
@@ -506,7 +551,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             if not is_chat_completion and not is_text_completion:
                 if not self._discard_body():
                     return
-                self._send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
+                self._send_json({"error": unknown_route("POST", self.path)}, status=404)
                 return
             field = "messages" if is_chat_completion else "prompt"   # the field an error's code names (OpenAI's param)
 
@@ -514,7 +559,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 body = parse_numbers(json.loads(read_body(self) or b"{}"))
                 validate_modalities(body)
                 probability_options(body)
-                named = reply_model(app, body)          # the id the request asked for, as vLLM names it
+                named = requested_model(app, body)      # the id the request asked for, as vLLM names it
                 if _REQUEST_LOG and body.get("priority") != "background":   # batch jobs are not client traffic
                     with open(_REQUEST_LOG, "a") as handle:
                         handle.write(json.dumps(redact_images(body)) + "\n")
@@ -541,6 +586,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 problem = grammar.refusal(body, app)        # compiled before a stream's headers: a bad grammar is a 400
                 if problem:
                     raise RequestError(problem)
+                if "priority" not in body and body.get("service_tier") == "flex":
+                    sampling_fields["priority"] = "background"      # OpenAI's flex tier: this server's background
                 if tools and tool_choice_requires_call(body.get("tool_choice")):
                     sampling_fields["tool_call_required"] = True     # the engine opens the answer with a call
                 sampling_fields.update(thinking_fields(body, getattr(app, "effort_levels", frozenset())))
@@ -548,15 +595,16 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                                if getattr(app, "accepts_sampling", False) else {})
                 if getattr(app, "accepts_cancellation", False):
                     sampling_kw["cancellation"] = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))
+                if getattr(app, "accepts_request_ids", False):      # the reply's request id; timings from arrival
+                    sampling_kw.update(request_id=self.request_id, arrived=self.arrived)
                 stream = bool(body.get("stream", False))
                 separate_usage = wants_usage_chunk(body)      # usage then rides its own chunk before [DONE]
                 tool_policy = ToolCallPolicy(body)
             except RequestError as exc:
-                self._send_json({"error": error_body(exc, field)},
-                                status=503 if isinstance(exc, CapacityError) else 400)
+                self._send_json({"error": error_body(exc, field)}, status=status_of(exc))
                 return
             except Exception as exc:
-                self._send_json({"error": {"message": str(exc)}}, status=400)
+                self._send_json({"error": invalid_request(str(exc) or type(exc).__name__)}, status=400)
                 return
 
             completion_id = (
@@ -602,33 +650,16 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 finish_reason: str | None = None,
             ) -> dict[str, Any]:
                 if is_text_completion:
-                    return {
-                        "id": completion_id,
-                        "object": "text_completion",
-                        "created": created,
-                        "model": named,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "text": delta,
-                                "finish_reason": finish_reason,
-                                "logprobs": None,
-                            }
-                        ],
-                    }
-                return {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": named,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": delta if isinstance(delta, dict) else ({"content": delta} if delta else {}),
-                            "finish_reason": finish_reason,
-                        }
-                    ],
-                }
+                    choice = {"index": 0, "text": delta, "finish_reason": finish_reason, "logprobs": None}
+                else:
+                    choice = {"index": 0,
+                              "delta": delta if isinstance(delta, dict) else ({"content": delta} if delta else {}),
+                              "finish_reason": finish_reason}
+                frame = {"id": completion_id, "object": "text_completion" if is_text_completion else
+                         "chat.completion.chunk", "created": created, "model": named, "choices": [choice]}
+                if separate_usage:              # the spec: every chunk but the usage chunk has a null usage
+                    frame["usage"] = None
+                return frame
 
             try:
                 if stream:
@@ -661,14 +692,15 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         usage: dict[str, Any] | None = None,
                     ) -> None:
                         if error is not None:
-                            payload = {"error": {"message": str(error), "type": "server_error"}}
+                            payload = {"error": server_error(str(error))}
                         else:
                             payload = stream_chunk("", finish_reason or "length")
                             if extras:
                                 payload.update(extras)
                         emit(payload)
-                        if usage is not None:
-                            emit({**stream_chunk(), "choices": [], "usage": usage})   # the spec's own usage chunk
+                        if usage is not None:                   # the spec's own usage chunk, with the stats
+                            emit({**stream_chunk(), "choices": [], "usage": usage,
+                                  **({"tensorfold": extras["tensorfold"]} if extras and "tensorfold" in extras else {})})
                         self.wfile.write(b"data: [DONE]\n\n")
                         self.wfile.flush()
 
@@ -740,8 +772,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         return
                     except RequestError as exc:
                         if not opened:
-                            self._send_json({"error": error_body(exc, field)},
-                                            status=503 if isinstance(exc, CapacityError) else 400)
+                            self._send_json({"error": error_body(exc, field)}, status=status_of(exc))
                             return
                         emit({"error": error_body(exc, field)})
                         self.wfile.write(b"data: [DONE]\n\n")
@@ -754,7 +785,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         )
                         traceback.print_exc()
                         if not opened:
-                            self._send_json({"error": {"message": str(exc), "type": "server_error"}}, status=500)
+                            self._send_json({"error": server_error(str(exc))}, status=500)
                             return
                         try:
                             finish_stream(None, error=exc)
@@ -822,6 +853,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                             {
                                 "index": 0,
                                 "message": message,
+                                "logprobs": None,
                                 "finish_reason": reply["finish_reason"],
                             }
                         ],
@@ -831,13 +863,13 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 )
             except (BrokenPipeError, ConnectionResetError, RequestCancelled):
                 self.close_connection = True
-            except RequestError as exc:
-                self._send_json({"error": error_body(exc, field)}, status=400)
+            except RequestError as exc:          # a capacity refusal is a 503 here too, as when streaming
+                self._send_json({"error": error_body(exc, field)}, status=status_of(exc))
             except Exception as exc:  # surface runner errors to the client
                 print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
                 try:
-                    self._send_json({"error": {"message": str(exc)}}, status=500)
+                    self._send_json({"error": server_error(str(exc))}, status=500)
                 except Exception:
                     pass
 
@@ -845,12 +877,13 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
         def _post_tokenizer(self, detokenize: bool) -> None:
             try:
                 body = json.loads(read_body(self) or b"{}")
+                requested_model(app, body)
                 reply = token_routes.detokenize(app, body) if detokenize else token_routes.tokenize(app, body)
             except RequestError as exc:
-                self._send_json({"error": error_body(exc)}, status=503 if isinstance(exc, CapacityError) else 400)
+                self._send_json({"error": error_body(exc)}, status=status_of(exc))
                 return
             except Exception as exc:  # noqa: BLE001 - a body the tokenizer cannot read is a client error
-                self._send_json({"error": {"message": str(exc), "type": "invalid_request_error"}}, status=400)
+                self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             self._send_json(reply)
 
@@ -859,28 +892,32 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             if decide is None:
                 if not self._discard_body():
                     return
-                self._send_json({"error": {"message": f"unknown path {self.path}"}}, status=404)
+                self._send_json({"error": unknown_route("POST", self.path)}, status=404)
                 return
             try:
                 body = parse_numbers(json.loads(read_body(self) or b"{}"))
                 if not isinstance(body, dict):
                     raise RequestError("request body must be an object")
+                requested_model(app, body)
             except RequestError as exc:
-                self._send_json({"error": {"message": str(exc), "type": "invalid_request_error"}}, status=400)
+                self._send_json({"error": error_body(exc)}, status=status_of(exc))
                 return
             except Exception as exc:  # noqa: BLE001 - a bad body is a client error
-                self._send_json({"error": {"message": str(exc), "type": "invalid_request_error"}}, status=400)
+                self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             try:
                 payload = decide(body)
-            except (RequestError, DecisionError) as exc:
-                self._send_json({"error": {"message": str(exc), "type": "invalid_request_error"}}, status=400)
+            except RequestError as exc:           # a capacity refusal is a 503, as on the chat route
+                self._send_json({"error": error_body(exc)}, status=status_of(exc))
+                return
+            except DecisionError as exc:
+                self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             except Exception as exc:  # a scoring failure is the server's, not a bad body
                 print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
                 try:
-                    self._send_json({"error": {"message": str(exc)}}, status=500)
+                    self._send_json({"error": server_error(str(exc))}, status=500)
                 except Exception:
                     pass
                 return

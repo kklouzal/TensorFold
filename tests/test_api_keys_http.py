@@ -203,7 +203,7 @@ def test_authenticated_replies_and_translated_handlers_count_once(backend, path,
     httpd = Server(("127.0.0.1", 0), (mlx_handler if backend == "mlx" else cuda_handler)(app))
     thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
-    body = {"model": "fixture", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 2}
+    body = {"model": app.model_ids[0], "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 2}
     if path == "/v1/responses":
         body = {"input": "Hello", "max_output_tokens": 2, "store": False}
     try:

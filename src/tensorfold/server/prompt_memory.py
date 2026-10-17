@@ -141,20 +141,30 @@ class PromptMemory:
         self._memory_lock = RLock()
 
     def memory_snapshot(self, reset_peak: bool = False) -> dict[str, int]:
+        """MLX's memory and this server's budgets, each read on its own. A plain reading (a /health or /stats poll)
+        takes no lock: admission holds ``_memory_lock`` while it reclaims, and a poll must not wait for it. A peak
+        reset takes the lock, so it never lands inside admission's workspace measurement (``observe_cache``)."""
+
+        if not reset_peak:
+            return self._memory_reading()
         with self._memory_lock:
-            memory = {
-                "active": int(self.runtime.get_active_memory()),
-                "cache": int(self.runtime.get_cache_memory()),
-                "peak": int(self.runtime.get_peak_memory()),
-                "budget": self.process_budget,
-                "mlx_budget": self.budget,
-            }
-            footprint = process_footprint()
-            if footprint is not None:
-                memory["footprint"] = footprint
-            if reset_peak and (not self.open or self.workspace_profiled):
+            memory = self._memory_reading()
+            if not self.open or self.workspace_profiled:
                 self.runtime.reset_peak_memory()
             return memory
+
+    def _memory_reading(self) -> dict[str, int]:
+        memory = {
+            "active": int(self.runtime.get_active_memory()),
+            "cache": int(self.runtime.get_cache_memory()),
+            "peak": int(self.runtime.get_peak_memory()),
+            "budget": self.process_budget,
+            "mlx_budget": self.budget,
+        }
+        footprint = process_footprint()
+        if footprint is not None:
+            memory["footprint"] = footprint
+        return memory
 
     def release_freed(self) -> None:
         """MLX's cache of freed buffers back to the system; live arrays, retained prefixes among them, stay."""

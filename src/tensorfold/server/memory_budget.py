@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
 import math
 import os
-from typing import Any, Mapping, Sequence
+import sys
+from typing import Any, Callable, Mapping, Sequence
 
 GIB = 1024**3
 MEMORY_FRACTION = 0.70
@@ -38,9 +40,13 @@ def physical_memory_bytes() -> int:
     return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
 
 
-def process_footprint() -> int | None:
-    """This process's physical footprint as macOS counts it (Metal buffers included); None where it can't be read."""
+@functools.cache
+def _footprint_reader() -> Callable[[], int | None] | None:
+    """macOS's ``proc_pid_rusage`` as a reader of the footprint, resolved once (a scrape must not retry a library
+    load); None on every other platform, or where the library lacks it."""
 
+    if sys.platform != "darwin":
+        return None
     import ctypes
 
     class Usage(ctypes.Structure):      # rusage_info_v4 up to ri_phys_footprint, then the rest unread
@@ -48,13 +54,22 @@ def process_footprint() -> int | None:
                     ("rest", ctypes.c_uint64 * 27)]
 
     try:
-        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
-        info = Usage()
-        if libc.proc_pid_rusage(os.getpid(), 4, ctypes.byref(info)) != 0:
-            return None
+        rusage = ctypes.CDLL("/usr/lib/libSystem.B.dylib").proc_pid_rusage
     except (OSError, AttributeError):
         return None
-    return int(info.footprint)
+
+    def read() -> int | None:
+        info = Usage()
+        return None if rusage(os.getpid(), 4, ctypes.byref(info)) != 0 else int(info.footprint)
+
+    return read
+
+
+def process_footprint() -> int | None:
+    """This process's physical footprint as macOS counts it (Metal buffers included); None where it can't be read."""
+
+    reader = _footprint_reader()
+    return reader() if reader is not None else None
 
 
 def model_fraction(package: Any, ram: int | None = None) -> float:

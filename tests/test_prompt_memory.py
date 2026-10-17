@@ -424,6 +424,37 @@ def test_health_reset_waits_for_in_progress_workspace_capture():
     assert runtime.peak == runtime.get_active_memory()
 
 
+def test_a_plain_memory_reading_never_waits_for_admission():
+    """/stats and a /health poll without a peak reset read while admission holds its lock (it may be reclaiming)."""
+    from threading import Event, Thread
+
+    runtime = Runtime()
+    memory = controller(runtime=runtime)
+    held, release, readings = Event(), Event(), []
+
+    def admission():
+        with memory._memory_lock:
+            held.set()
+            release.wait(10)
+
+    owner = Thread(target=admission)
+    reader = Thread(target=lambda: readings.append(memory.memory_snapshot(False)))
+    owner.start()
+    try:
+        assert held.wait(2)
+        reader.start()
+        reader.join(2)
+        assert readings, "a plain memory reading waited for the admission lock"
+        reading = readings[0]
+        assert reading["active"] == runtime.get_active_memory() and reading["budget"] == memory.process_budget
+        assert reading["mlx_budget"] == memory.budget and reading["peak"] == runtime.get_peak_memory()
+    finally:
+        release.set()
+        owner.join(5)
+        if reader.ident is not None:
+            reader.join(5)
+
+
 def test_geometry_uses_configuration_and_kernel_parts_without_loading_arrays():
     class Attention:
         q_proj, k_proj, heads, split_rows = object(), object(), 24, 256

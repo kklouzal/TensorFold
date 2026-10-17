@@ -152,7 +152,7 @@ A healthy listener alone is insufficient: consume a complete generation. Check r
 
 ### GB10 Compose profile
 
-[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 profile: a captured model path, 114 GiB memory, host CPU affinity, four slots, a 1,048,576-token YaRN-4 context and `rotorquant8-norm` for both K and V. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. See the [deployment guide](deploy/gb10/README.md).
+[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 profile: a captured model path, 114 GiB memory, host CPU affinity, four slots, a 1,048,576-token YaRN-4 context and `rotorquant8-norm` for both K and V. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. It sets `TENSORFOLD_FAILURE_CAPTURE_DIR` to a bounded directory under the kernel cache, where a reply that ended inside its think block is captured (redacted request, token IDs, statistics); a normal reply's request is never logged or captured. See the [deployment guide](deploy/gb10/README.md).
 
 ```bash
 docker compose -f deploy/gb10/compose.yaml config --quiet
@@ -245,7 +245,7 @@ Use `tensorfold serve --help` from your checkout for the authoritative parser. A
 | `--backend auto\|mlx\|cuda` | `auto`: MLX on macOS, CUDA elsewhere. |
 | `--host`, `--port` | `127.0.0.1`, `8080`; container port publication needs `--host 0.0.0.0` inside. |
 | `--api-key KEY`, `--api-key-file FILE` | Require bearer authentication; repeat static keys or load a restricted-permission key file. Configuration is bound at startup; key-file contents reload during operation and invalid configuration refuses authenticated routes. Both backends. |
-| `--metrics-open` | Permit unauthenticated `/metrics` when keys are configured. |
+| `--metrics-open` | Permit unauthenticated `/metrics` and `/stats` when keys are configured. |
 | `--name-priority ID=background` | Give CUDA requests for that served model ID background priority by default. |
 | `--vision-image-tokens N` | Explicit CUDA Qwen visual-token budget, 1 through 65,536; frontend image/resource limits remain active. Flash Next retains its 16,384-token default. |
 | `--name`, `--alias` | Model's own name; aliases are repeatable additional IDs on both backends. |
@@ -397,11 +397,12 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Readiness, effective configuration and configured admission counters. |
-| `GET /v1/models` | Advertised model IDs/aliases. |
-| `GET /metrics` | Prometheus-compatible service metrics. |
+| `GET /v1/models`, `GET /v1/models/{model}` | Advertised model IDs/aliases with their `max_model_len`; an unknown ID is 404, as it is on every generation route. |
+| `GET /metrics` | Prometheus-compatible service metrics, vLLM's names and meanings where they apply. |
+| `GET /stats` | One JSON snapshot for clients: server identity and start, model, limits, load, KV memory, prefix cache and totals (schema 1). |
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |
-| `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations. |
+| `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations; `POST /v1/responses/input_tokens` counts a request's input without generating. |
 | `POST /v1/tokenize` | CUDA Harness extension: native chat prompt counting without generation, including supported image expansion. Successful replies also carry Harness model-discovery metadata: canonical reasoning efforts, the active chat template's fingerprint and loaded-code provenance. |
 
 Structured output uses xgrammar: supported `response_format` JSON/schema fields, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, and `structured_outputs` aliases. It works with supported draft verification. Malformed/uncompilable constraints, a missing dependency, or incompatible required-tool/grammar combinations are refused before generation. A minimal constrained request is:
@@ -707,6 +708,7 @@ These report client-observed streamed arrival/first-token timing; they do not me
 ```bash
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/metrics
+curl -fsS http://127.0.0.1:8080/stats
 docker logs --tail 100 tensorfold-local
 docker inspect tensorfold-local --format '{{json .State}}'
 

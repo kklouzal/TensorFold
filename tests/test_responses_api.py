@@ -346,7 +346,7 @@ def test_cuda_get_and_delete_a_stored_response(tmp_path):
         status, found = call(port, "GET", f"/v1/responses/{got['id']}")
         assert status == 200 and json.loads(found) == got and got["metadata"] == {"run": "7"}
         status, gone = call(port, "DELETE", f"/v1/responses/{got['id']}")
-        assert status == 200 and json.loads(gone) == {"id": got["id"], "object": "response", "deleted": True}
+        assert status == 200 and json.loads(gone) == {"id": got["id"], "object": "response.deleted", "deleted": True}
         assert call(port, "GET", f"/v1/responses/{got['id']}")[0] == 404
         assert call(port, "DELETE", f"/v1/responses/{got['id']}")[0] == 404
         status, text = post_response(port, input="again", previous_response_id=got["id"])

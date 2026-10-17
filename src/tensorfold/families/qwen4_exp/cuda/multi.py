@@ -265,6 +265,35 @@ class MultiDecoder:
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
 
+    def usage(self) -> dict:
+        """/stats' KV-memory and prefix-cache readings, from another thread, without a lock, each on its own: the gate's
+        ints, ``kept`` as published (this worker replaces it, never changes it in place), and ``streams``/``filling``
+        each copied whole by one unpacking before it is iterated (one C loop under the GIL: ``server.stats``).
+
+        ``kv``: the memory gate's budget for growing stream caches (``room`` less ``reserve``), what they hold (kept
+        prefix-cache slots included), and what the slots of running requests hold beyond their first rows (vLLM's
+        usage: kept entries are evicted for a request that needs room, so they count as free). ``free_tokens_estimate``
+        is the context that budget less the running requests' share would hold; host memory and the resize copy can
+        still refuse it, and admission stays the authority."""
+
+        gate = self.memory_gate
+        budget = gate.room - gate.reserve
+        busy = [s.st for s in [*self.streams.values(), *self.filling] if s.st is not None]
+        first = min(self.capacity, FIRST)
+        active = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in {id(st): st for st in busy}.values())
+        per_token = -(-self.window_bytes // self.capacity) if self.capacity else 0
+        kept = self.kept
+        ends: dict[int, int] = {}
+        for ids, slot, _snap, _tail in kept:
+            ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
+        return {"kv": {"budget_bytes": budget, "held_bytes": gate.held, "active_bytes": active,
+                       "usage_ratio": round(active / budget, 6) if budget > 0 else None,
+                       "bytes_per_token": per_token,
+                       "free_tokens_estimate": max(0, budget - active) // per_token if per_token else None},
+                "prefix_cache": {"entries": len(kept), "capacity": self.keep, "slots": len(ends),
+                                 "tokens": sum(ends.values())},
+                "memory_waits": gate.waits, "memory_stops": gate.ends}
+
     @torch.no_grad()
     def warm(self) -> None:
         """A synthetic greedy request through prefill (a full chunk, then a partial one cut at the kept point), its drafts and one round, then forgotten, so no request compiles or loads a kernel."""
@@ -506,6 +535,8 @@ class MultiDecoder:
             fill = self.fills[s.sid]
             e, mtp, _, kept, _ = fill
             fill[2], fill[4] = a + n, last if mtp else None
+            if s.on_fill is not None:                        # a request that asked for its prefill progress
+                s.on_fill(a + n)
             for snap, tail in kept:
                 if a < snap["pos"] <= a + n:
                     self._remember(list(s.prompt[:snap["pos"]]), s.st, snap, tail)

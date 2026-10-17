@@ -7,12 +7,12 @@ from tensorfold.server import metrics
 
 def gated(path, metrics_open=False):
     path = path.split("?", 1)[0].rstrip("/")
-    if metrics_open and path in {"/metrics", "/v1/metrics"}:
+    if metrics_open and path in {"/metrics", "/v1/metrics", "/stats", "/v1/stats"}:
         return False
     return (path == "/v1" or path.startswith("/v1/") or
-            path in {"/metrics", "/tokenize", "/detokenize", "/models", "/messages",
+            path in {"/metrics", "/stats", "/tokenize", "/detokenize", "/models", "/messages",
                      "/messages/count_tokens", "/chat/completions", "/completions", "/decisions"} or
-            path == "/responses" or path.startswith("/responses/") or
+            path == "/responses" or path.startswith(("/responses/", "/models/")) or
             path.endswith(("/chat/completions", "/completions", "/decisions", "/models")))
 
 
