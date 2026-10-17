@@ -46,7 +46,7 @@ def _attend(Q, K, V, OUT, p0, W, H: tl.constexpr, HK: tl.constexpr, D: tl.conste
     first_pos = p0 + block * BM
     last_pos = p0 + tl.minimum(block * BM + BM, W) - 1
     full = (first_pos + 1) // BN                  # tiles every row of the block sees whole
-    for t in range(0, full):
+    for t in range(full):
         keys = t * BN + tl.arange(0, BN)
         k = tl.load(K + (keys[:, None] * HK + hk) * D + d[None, :])
         v = tl.load(V + (keys[:, None] * HK + hk) * D + d[None, :])
@@ -64,8 +64,8 @@ def _attend(Q, K, V, OUT, p0, W, H: tl.constexpr, HK: tl.constexpr, D: tl.conste
 def attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: int, *, scale: float) -> torch.Tensor:
     """q (W, H, D) bf16 at positions [p0, p0 + W); the caches must already hold every key through p0 + W - 1."""
 
-    w, h, d = q.shape
     hk = _check(q, k_cache, v_cache, p0)
+    _, h, d = q.shape
     out = torch.empty_like(q)
     if d == 64:
         return triton_attention(q, k_cache, v_cache, p0, scale=scale, out=out)

@@ -1,11 +1,12 @@
 """A global n-gram scale multiplies stored bf16 rows before their projections and sums."""
 
-import pytest
-import torch
 from fractions import Fraction
 
-from tensorfold.families.qwen4_exp.cuda import glue
+import pytest
+import torch
+
 from tensorfold.cuda.kernels.qmm import group_sums
+from tensorfold.families.qwen4_exp.cuda import glue
 
 
 def _exact_group_sums(values):
@@ -54,7 +55,8 @@ def test_table_scale_follows_dequantization_and_updates_group_sums(value, packed
 
 def test_forward_scale_equals_bf16_rows_scaled_before_staging(tmp_path):
     import numpy as np
-    from test_flashnext_forward import _Rand, _bf16_table, _cfg, _model, _ple
+    from test_flashnext_forward import _bf16_table, _cfg, _model, _ple, _Rand
+
     from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill
 
     config = _cfg(ple=True)

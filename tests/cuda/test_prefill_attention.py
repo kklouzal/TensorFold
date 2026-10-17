@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.cuda.kernels.prefill_attention import attention, triton_attention, _ext  # noqa: E402
+from tensorfold.cuda.kernels.prefill_attention import _ext, attention, triton_attention
 
 # 27B, Qwen3.6-35B-A3B, Nemotron, GLM-5.3 per-head keys (TF_GLM_LATENT=0), a small group
 SHAPES = [(24, 4, 256), (16, 2, 256), (32, 2, 128), (32, 32, 256), (12, 4, 128), (12, 4, 64)]
@@ -33,7 +33,7 @@ def test_cuda_prompt_attention_has_the_triton_bits(heads, kv_heads, dim):
         assert torch.equal(got.view(torch.int16), want.view(torch.int16)), (p0, w)
 
 
-@pytest.mark.parametrize("heads,kv_heads,dim", SHAPES[:3])
+@pytest.mark.parametrize("heads,kv_heads,dim", SHAPES[:3] + [SHAPES[-1]])
 def test_cuda_prompt_attention_rows_do_not_depend_on_chunking(heads, kv_heads, dim):
     gen = torch.Generator(device="cuda").manual_seed(9)
     total, p0 = 900, 2000
