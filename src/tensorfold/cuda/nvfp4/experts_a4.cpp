@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <limits>
 
 void expert_a4_quant_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, at::Tensor&, bool);
 void expert_a4_gemm_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
@@ -12,13 +13,24 @@ static void tensor(const at::Tensor& value, const at::Tensor& on, at::ScalarType
                 value.dim() == rank && value.is_contiguous(), name, ": contiguous CUDA tensor on the bank device");
 }
 
+// Positive tensor dimensions are established before this helper. Check each
+// affine-extent term before multiplying: zero-storage tensors may legally carry
+// arbitrary int64 strides, and their metadata must never cause host overflow.
+static int64_t extend_span(int64_t span, int64_t count, int64_t stride, int64_t limit, const char* name) {
+    TORCH_CHECK(count > 0 && stride >= 0 && span <= limit, name, ": invalid positive extent");
+    TORCH_CHECK(count == 1 || stride <= (limit - span) / (count - 1), name, ": extent exceeds byte index range");
+    return span + (count - 1) * stride;
+}
+
 // Plan rows are (source-row, destination-slot, cache-cell). They are constructed
 // from admitted CPU picks by the owner; kernels also guard every indirect access.
 void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
                at::Tensor codes, at::Tensor scales, bool paired) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.stride(1) == 1 &&
-                x.stride(0) >= x.size(1) && x.size(0) < INT32_MAX && x.size(1) > 0 &&
+                x.stride(0) >= x.size(1) && x.size(0) > 0 && x.size(0) < INT32_MAX && x.size(1) > 0 &&
                 x.size(1) <= INT32_MAX && x.size(1) % 64 == 0, "x: BF16 rows in complete64-input tiles");
+    extend_span(x.size(1), x.size(0), x.stride(0),
+                std::numeric_limits<int64_t>::max() / x.element_size(), "nativeA4 input");
     tensor(plan, x, at::kInt, 2, "plan");
     tensor(input, x, at::kFloat, 2, "input calibration");
     tensor(codes, x, at::kByte, 3, "codes");
@@ -64,12 +76,16 @@ void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& b
                 scales.size(0) == projections && scales.size(1) == p && scales.size(2) == k / 16,
                 "nativeA4 quantized pair dimensions");
     TORCH_CHECK(out.is_cuda() && out.device() == blob.device() && out.dim() == 3 && out.size(2) == n &&
-                out.stride(2) == 1 && out.stride(1) >= n && out.stride(0) >= out.size(1) * out.stride(1) &&
+                out.size(0) > 0 && out.size(0) <= INT32_MAX && out.size(1) > 0 && out.size(1) <= INT32_MAX &&
+                out.stride(2) == 1 && out.stride(1) >= n && out.stride(0) >= 0 &&
+                out.stride(0) / out.size(1) >= out.stride(1) &&
                 (out.scalar_type() == at::kBFloat16 || (down && out.scalar_type() == at::kFloat)),
-                "nativeA4 output: separate slots, BF16 or FP32 decode-down");
+                "nativeA4 output: positive separate slots, BF16 or FP32 decode-down");
+    const auto limit = std::numeric_limits<int64_t>::max() / out.element_size();
+    const auto row_span = extend_span(n, out.size(1), out.stride(1), limit, "nativeA4 output slots");
+    extend_span(row_span, out.size(0), out.stride(0), limit, "nativeA4 output rows");
     TORCH_CHECK(down || (out.is_contiguous() && out.size(0) == projections && out.size(1) == p),
                 "gate/up output: (2,pairs,width) contiguous BF16");
-    TORCH_CHECK(!down || (out.size(0) <= INT32_MAX && out.size(1) <= INT32_MAX), "down output index range");
     c10::cuda::CUDAGuard guard(blob.device());
     expert_a4_gemm_cuda(codes, scales, blob, weight, input, items, plan, out, n, k, sk, down);
 }
