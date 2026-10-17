@@ -76,13 +76,15 @@ def rows_array(array, rows, keep):
 
 
 State = source_class("src/tensorfold/families/qwen4_exp/cuda/state.py", "State",
-                     {"cache_bytes", "layer_bytes", "resize"}, {"_rows": rows_array})
+                     {"cache_bytes", "owned_cache_bytes", "layer_bytes", "resize", "_resize_caches", "_poison_resize"},
+                     {"_rows": rows_array, "KVResizeError": RuntimeError})
 
 
 def state(owner):
     st = State()
     st.capacity, st.limit, st.layers = 256, 81920, 2
     st.pos, st.mtp_len, st.version = 0, 0, 0
+    st._resize_error = st._kv_error = None
     st.image_positions = None
     st.kv_pair = get_pair()
     # This byte-counting state contains no numeric cache payload; numeric checks have their own boundary suite.
