@@ -6,10 +6,9 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
-
 import torch
 
+from tensorfold.checkpoint_metadata import read_config
 from tensorfold.cuda import prompt_precision
 
 from .weights import Plain
@@ -99,64 +98,79 @@ def maths() -> tuple[dict[str, bool], str]:
     return own, f"full ({gpu} has neither the block-scaled FP4 nor the FP8 mma): bf16 activations, the stored weights"
 
 
-def load_nvfp4(model_dir: str | Path, device: str = "cuda"):
+def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None):
     """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored."""
 
     from tensorfold.cuda.capacity import headers
     from tensorfold.cuda.nvfp4 import format as fmt
     from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear, Staging
 
-    from .weights import GDN, Attention, Config, Layer, Weights, _Tensors, _close_failed_checkpoint, _validate_fp8_prefill
+    from .weights import (
+        GDN,
+        Attention,
+        Config,
+        Layer,
+        Weights,
+        _close_failed_checkpoint,
+        _Tensors,
+        _validate_fp8_prefill,
+    )
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir)
-    block = fmt.config_block(read_metadata_json(checkpoint_path(model_dir, "config.json"))) or {}
+    cfg = Config.read(model_dir) if eos_token_ids is None else Config.read(model_dir, eos_token_ids=eos_token_ids)
+    block = read_config(model_dir).get("quantization_config") or {}
+    metadata = fmt.LinearMetadata(block)
     reciprocal = str(block.get("quant_method", "")).lower() == "compressed-tensors"
     info = {n: (i["dtype"], i["shape"]) for n, i in headers(model_dir).items() if not skipped(n)}
     root = "model.language_model." if any(n.startswith("model.language_model.") for n in info) else "model."
     t = _Tensors(model_dir, device, skip=skipped)
     try:
         staging = Staging()                                   # one e4m3 copy at a time, shared by every NVFP4 projection
-        own, line = maths()
+        own, _ = maths()
+        used = {"nvfp4": False, "fp8": False}
+        from tensorfold.cuda import precision
+
+        checkpoint_math = precision.mode() == precision.CHECKPOINT
         if prompt_precision.fp8() and not any(own.values()):
             _validate_fp8_prefill(cfg, 1)
 
-        def act_scale(name: str, got: dict, kind: str) -> float | None:
-            """The checkpoint's static input scale (x = codes * scale), where ``kind`` runs its own math; else None."""
-
-            if not own[kind]:
+        def act_scale(name: str, got: dict, kind: str, activation: int | None) -> float | None:
+            """Only declared, supported activation math consumes a static calibration."""
+            if activation is None or not own[kind]:
                 return None
-            if "input_scale" in got:
-                return float(got["input_scale"].float().reshape(-1)[0])
-            if "input_global_scale" in got:
-                return 1.0 / float(got["input_global_scale"].float().reshape(-1)[0])
-            raise ValueError(f"{name}: no static input scale, so its own math is unknown; serve it with --precision full")
+            field = "input_scale" if "input_scale" in got else "input_global_scale"
+            scale = fmt.calibration(float(got[field].float().reshape(-1)[0]), name=name + "." + field,
+                                    reciprocal=field == "input_global_scale")
+            used[kind] = True
+            return scale
 
         def linear(name: str, prompt: bool = True):
             parts = {s: info[f"{name}.{s}"] for s in SUFFIXES if f"{name}.{s}" in info}
             if not parts:
                 raise ValueError(f"the checkpoint has no projection {name}")
-            kind = fmt.scheme(parts)
+            kind, activation = metadata.validate(name, parts, checkpoint=checkpoint_math)
+            if kind not in ("nvfp4", "fp8", "bf16"):
+                raise ValueError(f"{name}: {kind} projections are not read on Qwen3.8-27B yet")
             got = {s: t.pop(f"{name}.{s}") for s in parts}
             weight = got["weight"] if "weight" in got else got.get("weight_packed")
             if kind == "nvfp4":
                 g = got.get("weight_global_scale" if reciprocal else "weight_scale_2")
                 if g is None:
                     raise ValueError(f"{name}: an NVFP4 weight without its global scale")
-                g = float(g.float().reshape(-1)[0])
-                lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], 1.0 / g if reciprocal else g,
-                                                act=act_scale(name, got, "nvfp4"))
+                g = fmt.calibration(float(g.float().reshape(-1)[0]), name=name + ".weight_global_scale",
+                                    reciprocal=reciprocal)
+                lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], g,
+                                                act=act_scale(name, got, "nvfp4", activation))
                 lin.staging = staging
                 return lin
             if kind == "fp8":
                 s = got["weight_scale"].float().reshape(-1)
                 if s.numel() != 1:
                     raise ValueError(f"{name}: FP8 with {s.numel()} scales; the CUDA engine reads one scale a tensor")
-                return Fp8Linear.from_checkpoint(weight, float(s[0]), act=act_scale(name, got, "fp8"))
-            if kind == "bf16":
-                w = weight.to(torch.bfloat16).contiguous()
-                return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
-            raise ValueError(f"{name}: {kind} projections are not read on Qwen3.8-27B yet")
+                return Fp8Linear.from_checkpoint(weight, fmt.calibration(float(s[0]), name=name + ".weight_scale"),
+                                                 act=act_scale(name, got, "fp8", activation))
+            w = weight.to(torch.bfloat16).contiguous()
+            return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
 
         def get(name: str) -> torch.Tensor:
             return t.pop(root + name).contiguous()
@@ -195,8 +209,14 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda"):
             raise ValueError("this checkpoint ties its head to the embedding; the CUDA engine reads a separate lm_head")
         w = Weights(config=cfg, embed=Plain(get("embed_tokens.weight").to(torch.bfloat16)), layers=layers,
                     norm=norm("norm.weight"), head=linear("lm_head", prompt=False), quant="nvfp4")
-        w.precision = "checkpoint" if any(own.values()) else "full"
-        w.own = own
+        w.precision = "checkpoint" if any(used.values()) else "full"
+        w.own = used
+        if any(used.values()):
+            native = [label for kind, label in (("nvfp4", "NVFP4 layers FP4 x FP4"), ("fp8", "FP8 layers FP8 x FP8"))
+                      if used[kind]]
+            line = "checkpoint (declared " + "; ".join(native) + "; other layers use bf16 activations)"
+        else:
+            line = FULL_LINE
         print(f"[tensorfold] precision: {line}", flush=True)
         half = cfg.rope_dims // 2
         inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)

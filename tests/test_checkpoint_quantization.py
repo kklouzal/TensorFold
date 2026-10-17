@@ -1,8 +1,8 @@
 """Independent export-schema, boundary and activation-intent controls."""
 
-from copy import deepcopy
 import itertools
 import re
+from copy import deepcopy
 
 import pytest
 
@@ -135,3 +135,27 @@ def test_mixed_untargeted_inventory_never_assigns_all_formats_to_every_linear():
     assert policy.resolve("model.layers.0.mlp.experts.7.gate_proj")["weights"]["num_bits"] == 4
     assert policy.resolve("model.layers.0.attn")["weights"]["group_size"] == 32
     assert policy.resolve("model.other") is None
+
+
+def test_legacy_modelopt_kv_alias_is_reconciled_identically_to_the_sidecar():
+    raw = {"quantization": {"quant_method": "modelopt", "quant_algo": "W4A16_NVFP4",
+                            "kv_cache_quant_algo": "FP8"}}
+    direct = effective_config(raw, None, where="direct")["quantization_config"]
+    ancillary = effective_config({}, side("W4A16_NVFP4", kv_cache_quant_algo="FP8"),
+                                 where="sidecar")["quantization_config"]
+    assert direct["kv_cache_scheme"] == ancillary["kv_cache_scheme"]
+    assert "kv_cache_quant_algo" not in direct
+
+
+def test_bounded_glob_matcher_agrees_with_stdlib_over_all_small_patterns():
+    import fnmatch
+
+    from tensorfold.checkpoint_quantization import _Pattern
+
+    names = ["".join(v) for n in range(5) for v in itertools.product("ab\n", repeat=n)]
+    for size in range(5):
+        for tokens in itertools.product("ab?*", repeat=size):
+            pattern = "".join(tokens)
+            matcher = _Pattern(pattern)
+            for name in names:
+                assert bool(matcher.match(name)) == fnmatch.fnmatchcase(name, pattern), (pattern, name)

@@ -94,3 +94,99 @@ def test_block_fp8_matches_torch_float8_and_its_block_scales():
 def test_block_fp8_scheme_from_tensor_storage():
     assert fmt.scheme({"weight": ("F8_E4M3", [200, 256]), "weight_scale_inv": ("F32", [2, 2])}) == "fp8block"
     assert fmt.scheme({"weight": ("F8_E4M3", [200, 256]), "weight_scale": ("F32", [])}) == "fp8"
+
+
+def _projection(*, reciprocal=False, activation=True):
+    value = {"weight": ("U8", [8, 32]), "weight_scale": ("F8_E4M3", [8, 4]),
+             "weight_global_scale" if reciprocal else "weight_scale_2": ("F32", [])}
+    if activation:
+        value["input_global_scale" if reciprocal else "input_scale"] = ("F32", [1])
+    return value
+
+
+def _metadata(*, activation=True, method="modelopt", dynamic=False):
+    return fmt.LinearMetadata({"quant_method": method, "config_groups": {"g": {
+        "targets": ["Linear"], "weights": {"type": "float", "num_bits": 4, "group_size": 16},
+        "input_activations": {"type": "float", "num_bits": 4, "group_size": 16, "dynamic": dynamic}
+        if activation else None}}})
+
+
+@pytest.mark.parametrize("method,dynamic", [("modelopt", False), ("compressed-tensors", "local")])
+def test_activation_math_requires_metadata_not_presence_of_static_scales(method, dynamic):
+    headers = _projection(reciprocal=method == "compressed-tensors")
+    assert _metadata(method=method, dynamic=dynamic).validate("mlp", headers, checkpoint=True) == ("nvfp4", 4)
+    assert _metadata(method=method, activation=False).validate("mlp", headers, checkpoint=True) == ("nvfp4", None)
+    assert _metadata(method=method, dynamic=dynamic).validate("mlp", headers, checkpoint=False) == ("nvfp4", None)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("input_scale", ("F32", [2])), ("input_scale", ("I32", [])),
+    ("weight_scale_2", ("F32", [2])), ("weight_scale", ("F8_E4M3", [8, 3])),
+    ("weight", ("U8", [8, 32, 1])), ("weight", ("U8", [True, 32])),
+    ("weight_packed", ("U8", [8, 32]))])
+def test_declared_storage_and_calibrations_are_cross_checked(field, value):
+    headers = _projection(); headers[field] = value
+    with pytest.raises(ValueError):
+        _metadata().validate("mlp", headers, checkpoint=True)
+
+
+def test_missing_or_conflicting_static_activation_calibration_is_explicit():
+    headers = _projection(activation=False)
+    with pytest.raises(ValueError, match="static input calibration"):
+        _metadata().validate("mlp", headers, checkpoint=True)
+    assert _metadata().validate("mlp", headers, checkpoint=False) == ("nvfp4", None)
+    headers = _projection(); headers["input_global_scale"] = ("F32", [])
+    with pytest.raises(ValueError, match="one static"):
+        _metadata().validate("mlp", headers, checkpoint=True)
+
+
+def test_weight_storage_disagreement_and_excluded_quantized_weights_are_refused():
+    policy = _metadata()
+    with pytest.raises(ValueError, match="disagree"):
+        policy.validate("mlp", {"weight": ("BF16", [8, 64])}, checkpoint=True)
+    excluded = fmt.LinearMetadata({"quant_method": "modelopt", "ignore": ["mlp"]})
+    for full in (False, True):
+        with pytest.raises(ValueError, match="no matching"):
+            excluded.validate("mlp", _projection(), checkpoint=full)
+
+
+@pytest.mark.parametrize("dynamic", [True, "local"])
+def test_fp8_native_math_refuses_dynamic_nonstatic_scheme(dynamic):
+    metadata = fmt.LinearMetadata({"quant_method": "compressed-tensors", "config_groups": {"g": {
+        "weights": {"num_bits": 8, "type": "float"},
+        "input_activations": {"num_bits": 8, "type": "float", "dynamic": dynamic}}}})
+    header = {"weight": ("F8_E4M3", [8, 64]), "weight_scale": ("F32", []), "input_scale": ("F32", [])}
+    with pytest.raises(ValueError, match="unsupported checkpoint activation"):
+        metadata.validate("mlp", header, checkpoint=True)
+    assert metadata.validate("mlp", header, checkpoint=False) == ("fp8", None)
+
+
+@pytest.mark.parametrize("value", [0., -0., -1., float("inf"), float("nan"), 1e-100, 1e100])
+@pytest.mark.parametrize("reciprocal", [False, True])
+def test_calibration_rejects_invalid_or_nonrepresentable_fp32_values(value, reciprocal):
+    with pytest.raises(ValueError, match="calibration"):
+        fmt.calibration(value, name="projection.input", reciprocal=reciprocal)
+
+
+def test_calibration_preserves_original_scaling_and_reciprocal_convention():
+    assert fmt.calibration(.25, name="input") == .25
+    assert fmt.calibration(4., name="input_global_scale", reciprocal=True) == .25
+
+
+def test_output_quantization_is_not_lost_when_input_activation_is_absent():
+    policy = fmt.LinearMetadata({"quant_method": "modelopt", "config_groups": {"g": {
+        "weights": {"num_bits": 4, "type": "float", "group_size": 16},
+        "input_activations": None, "output_activations": {"num_bits": 8, "type": "float"}}}})
+    with pytest.raises(ValueError, match="output quantization"):
+        policy.validate("mlp", _projection(), checkpoint=True)
+    assert policy.validate("mlp", _projection(), checkpoint=False) == ("nvfp4", None)
+
+
+@pytest.mark.parametrize("key,value", [("scale_dtype", "torch.float32"), ("strategy", "channel"),
+                                       ("symmetric", False), ("dynamic", True)])
+def test_weight_scale_representation_metadata_is_not_silently_ignored(key, value):
+    weights = {"num_bits": 4, "type": "float", "group_size": 16, key: value}
+    policy = fmt.LinearMetadata({"quant_method": "modelopt", "config_groups": {"g": {
+        "weights": weights, "input_activations": None}}})
+    with pytest.raises(ValueError):
+        policy.validate("mlp", _projection(), checkpoint=False)
