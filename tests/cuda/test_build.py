@@ -194,20 +194,23 @@ def test_the_first_start_says_it_builds_and_the_next_is_quiet(tmp_path):
 
 def test_a_killed_build_releases_or_reports_its_actual_lock(tmp_path):
     from torch.utils import cpp_extension
+    import torch
 
+    target = "sm_" + "".join(str(n) for n in torch.cuda.get_device_capability())
+    built_name = NAME + "_" + target
     names = cpp_extension._jit_compile.__code__.co_names
     advisory = "FileLock" in names and "FileBaton" not in names
     baton = "FileBaton" in names and "FileLock" not in names
     assert advisory or baton, f"unaudited Torch JIT lock protocol: {names}"
     env = dict(os.environ, TORCH_EXTENSIONS_DIR=str(tmp_path))
-    lock = tmp_path / NAME / "lock"
+    lock = tmp_path / built_name / "lock"
     owner_stderr = tmp_path / "owner.stderr"
     with owner_stderr.open("w") as errors:
         with _child(INTERRUPTED, env, stderr=errors) as owner:
             assert _line(owner, owner_stderr).startswith(f"[tensorfold] building CUDA extension {NAME}")
             assert _line(owner, owner_stderr) == str(lock)
             assert (lock.parent / "build.ninja").is_file()
-            assert not (lock.parent / (NAME + cpp_extension.LIB_EXT)).exists()
+            assert not (lock.parent / (built_name + cpp_extension.LIB_EXT)).exists()
             assert _exited(owner) is None
             if advisory:
                 _advisory_recovery(owner, env, lock, tmp_path, cpp_extension)

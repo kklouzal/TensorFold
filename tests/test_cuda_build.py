@@ -70,6 +70,41 @@ def test_the_container_list_adds_nothing(monkeypatch, tmp_path):
     assert ext._get_cuda_arch_flags(seen["extra_cuda_cflags"]) == []
 
 
+@pytest.mark.torch
+@pytest.mark.parametrize("explicit", [False, True])
+def test_actual_architecture_and_instruction_target_have_distinct_modules_and_build_locks(ext, monkeypatch, tmp_path,
+                                                                                       explicit):
+    root = tmp_path / "explicit" if explicit else None
+    for capability, specific in [((8, 9), False), ((12, 0), False), ((12, 0), True)]:
+        _gpu(monkeypatch, capability)
+        options = {"build_directory": root} if explicit else {}
+        ext.build.load(name="tf_test", sources=ext.sources, arch_specific=specific, **options)
+    records = [kwargs for _, kwargs in ext.calls]
+    assert [row["name"] for row in records] == ["tf_test_sm_89", "tf_test_sm_120", "tf_test_sm_120a"]
+    for row, target in zip(records, ("89", "120", "120a")):
+        assert row["extra_cuda_cflags"] == [f"-gencode=arch=compute_{target},code=sm_{target}"]
+        if explicit:
+            assert Path(row["build_directory"]) == root / row["name"]
+            assert Path(row["build_directory"]).is_dir()
+
+
+@pytest.mark.torch
+def test_one_device_observation_binds_flags_and_module_identity(ext, monkeypatch):
+    import torch
+
+    observations = []
+
+    def capability():
+        observations.append(True)
+        return (8, 9) if len(observations) == 1 else (12, 0)
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    ext.build.load(name="tf_test", sources=ext.sources)
+    assert observations == [True]
+    kwargs = ext.calls[0][1]
+    assert kwargs["name"] == "tf_test_sm_89" and "code=sm_89" in kwargs["extra_cuda_cflags"][0]
+
+
 @pytest.fixture
 def ext(tmp_path, monkeypatch):
     """Extension ``tf_test`` with its build directory under ``tmp_path`` and torch's build replaced by a recorder."""
@@ -94,12 +129,12 @@ def ext(tmp_path, monkeypatch):
     monkeypatch.setattr(cpp_extension, "_jit_compile", lambda: cpp_extension.FileBaton)
     monkeypatch.setattr(build, "_say", said.append)
     monkeypatch.setattr(build, "_toolkit", lambda: [])               # the pip toolkit has tests of its own
-    return SimpleNamespace(build=build, torch=cpp_extension, dir=Path(directory("tf_test", False)), sources=sources,
+    return SimpleNamespace(build=build, torch=cpp_extension, dir=Path(directory("tf_test_sm_121", False)), sources=sources,
                            calls=calls, said=said)
 
 
 def _built(ext, mtime=None):
-    module = ext.dir / f"tf_test{getattr(ext.torch, 'LIB_EXT', '.so')}"
+    module = ext.dir / f"tf_test_sm_121{getattr(ext.torch, 'LIB_EXT', '.so')}"
     module.write_bytes(b"")
     stamp = time.time() + 60 if mtime is None else mtime
     os.utime(module, (stamp, stamp))
@@ -109,14 +144,14 @@ def _built(ext, mtime=None):
 def test_every_other_argument_reaches_torch_unchanged(ext):
     flags = {"extra_cuda_cflags": ["-O3", "--fmad=false"], "extra_include_paths": ["inc"], "verbose": False}
     assert ext.build.load(name="tf_test", sources=ext.sources, **flags) == "module"
-    assert ext.calls == [((), {"name": "tf_test", "sources": ext.sources, **flags,
+    assert ext.calls == [((), {"name": "tf_test_sm_121", "sources": ext.sources, **flags,
                                "extra_cuda_cflags": ["-O3", "--fmad=false", SM121]})]
 
 
 @pytest.mark.torch
 def test_a_first_build_says_so(ext):
     ext.build.load(name="tf_test", sources=ext.sources, verbose=False)
-    assert ext.said == ["building CUDA extension tf_test (first start after an install or update; "
+    assert ext.said == ["building CUDA extension tf_test_sm_121 (first start after an install or update; "
                         "later starts reuse it)"]
     assert len(ext.calls) == 1
 
@@ -133,7 +168,7 @@ def test_a_built_extension_starts_quietly(ext):
 def test_a_source_newer_than_the_built_module_is_a_build(ext):
     _built(ext, mtime=1.0)
     ext.build.load(name="tf_test", sources=ext.sources, verbose=False)
-    assert [line.split(" (")[0] for line in ext.said] == ["building CUDA extension tf_test"]
+    assert [line.split(" (")[0] for line in ext.said] == ["building CUDA extension tf_test_sm_121"]
 
 
 @pytest.mark.torch
@@ -151,10 +186,11 @@ def test_a_lock_is_named_with_the_fix(ext):
 def test_a_build_directory_argument_is_the_one_checked(ext, tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()
-    (other / "lock").write_text("")
+    (other / "tf_test_sm_121").mkdir()
+    (other / "tf_test_sm_121" / "lock").write_text("")
     ext.build.load(name="tf_test", sources=ext.sources, build_directory=str(other), verbose=False)
-    assert str(other / "lock") in ext.said[0]
-    assert ext.calls[0][1]["build_directory"] == str(other)
+    assert str(other / "tf_test_sm_121" / "lock") in ext.said[0]
+    assert ext.calls[0][1]["build_directory"] == str(other / "tf_test_sm_121")
 
 
 @pytest.mark.torch
@@ -233,7 +269,7 @@ def test_the_lock_named_is_the_one_torch_waits_on(tmp_path, monkeypatch):
         return
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
-    lock = tmp_path / "extensions" / "tf_lock_probe" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
+    lock = tmp_path / "extensions" / "tf_lock_probe_sm_121" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
     lock.parent.mkdir(parents=True)
     lock.write_text("")
     source = tmp_path / "tf_lock_probe.cpp"
@@ -284,13 +320,13 @@ def test_advisory_lock_file_is_never_probed_for_wait_or_stale_advice(ext, monkey
     try:
         with monkeypatch.context() as patch:
             patch.setattr(build.os, "stat", no_lock_probe)
-            assert ext.build._announce(ext.torch, "tf_test", ext.sources, None) is None
+            assert ext.build._announce(ext.torch, "tf_test_sm_121", ext.sources, None) is None
         after = os.stat(lock)
         assert (after.st_ino, after.st_mtime_ns) == (identity.st_ino, identity.st_mtime_ns)
         assert lock.read_bytes() == contents
         assert all("wait" not in line and "delete" not in line and HINT not in line for line in ext.said)
         assert ext.said == ([] if built else [
-            "building CUDA extension tf_test (first start after an install or update; later starts reuse it)"
+            "building CUDA extension tf_test_sm_121 (first start after an install or update; later starts reuse it)"
         ])
     finally:
         owner.release()
@@ -362,7 +398,7 @@ def test_real_advisory_torch_build_waits_without_file_baton_advice(tmp_path, mon
         pytest.skip("real advisory lock test requires the advisory-lock Torch runtime")
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
-    lock = tmp_path / "extensions" / "tf_advisory_probe" / "lock"
+    lock = tmp_path / "extensions" / "tf_advisory_probe_sm_121" / "lock"
     lock.parent.mkdir(parents=True)
     source = tmp_path / "tf_advisory_probe.cpp"
     source.write_text("int tf_advisory_probe() { return 0; }\n")
@@ -442,7 +478,8 @@ def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
     directory.mkdir()
     source = tmp_path / "advisory.cpp"
     source.write_text("int fixture() { return 0; }\n")
-    lock = directory / "lock"
+    lock = directory / "tf_advisory_probe_sm_121" / "lock"
+    lock.parent.mkdir()
     actual_lock = cpp_extension.FileLock
     reached_lock, finished = threading.Event(), threading.Event()
     acquired, compiled, ended, said = [], [], [], []

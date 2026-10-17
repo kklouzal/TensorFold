@@ -50,11 +50,26 @@ def refuse_old_gpu(need: tuple[int, int] = MIN_CAPABILITY) -> None:
 
 def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABILITY, *, arch_specific: bool = False,
          **kwargs: Any) -> Any:
-    """torch's JIT ``load`` for this GPU only (NVIDIA's containers list every architecture back to sm_80), with a line when it compiles or waits on a lock."""
+    """Build for this GPU only, with a target-qualified JIT module and lock identity.
+
+    Torch's public ``name`` argument controls both its default build directory
+    and TORCH_EXTENSION_NAME. Keep them consistent: a waiter must never import
+    another rank's single-target binary. Explicit build directories are roots
+    beneath which each module/actual target gets its own build and lock files.
+    """
 
     from torch.utils import cpp_extension
 
-    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *arch_flags(need, arch_specific)]
+    flags = arch_flags(need, arch_specific)
+    # arch_flags constructs this single target from one current-device query;
+    # the `a` suffix also distinguishes architecture-specific instructions.
+    name = name + "_" + flags[0].split(",code=", 1)[1]
+    directory = kwargs.get("build_directory")
+    if directory is not None:
+        directory = Path(directory) / name
+        directory.mkdir(parents=True, exist_ok=True)
+        kwargs["build_directory"] = str(directory)
+    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *flags]
     links = _toolkit()
     if links:
         kwargs["extra_ldflags"] = [*kwargs.get("extra_ldflags", []), *links]
