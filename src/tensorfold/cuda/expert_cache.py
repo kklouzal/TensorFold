@@ -415,7 +415,7 @@ class HostExpertCache:
             self._fields = fields
             # Retain the unchanged staged HOT path when every registered source
             # is pageable. Resolve direct/mixed capability once at registration.
-            if any(pinned):
+            if type(self)._copy is HostExpertCache._copy and any(pinned):
                 self._copy = self._copy_capable
 
     def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> int:
