@@ -262,12 +262,13 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
                 or re.fullmatch(r"mtp\.layers\.0\.mlp", base)) for base in bases):
         raise ValueError("--vram-experts: unrecognized EXL3 expert layer")
     width, dims, total, largest, count = text["moe_intermediate_size"], text["hidden_size"], 0, 0, 0
-    expected, specs = set(), []
+    expected, specs, allocations = set(), [], []
     from tensorfold.cuda.exl3.cache_layout import ExpertSpec
     from tensorfold.cuda.exl3.cache_layout import plan as arena_plan
 
     for layer_id, base in enumerate(sorted(bases)):
         codebooks = set()
+        layer_begin = total
         for expert_id, expert in enumerate([f"{base}.experts.{i}" for i in range(text["num_experts"])]
                                           + [f"{base}.shared_expert"]):
             entry = 0
@@ -290,6 +291,7 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
             count += 1
         if len(codebooks) != 1:
             raise ValueError(f"--vram-experts: mixed EXL3 codebooks in {base}")
+        allocations.append(total - layer_begin)
     if set(projections) != expected:
         raise ValueError("--vram-experts: unexpected EXL3 expert projection")
     requested = largest if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
@@ -302,7 +304,8 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
     final = arena_plan(tuple(specs), payload, payload + slots * 32)
     return Layout(largest, slots, payload, total, 2 * largest,
                   max(64 * 2**20, 2 * largest), "exl3", count * (3 * 8 + 3 * 4), count * 28,
-                  slots * 32, final.publication_host_bytes, gib == "auto")
+                  slots * 32, final.publication_host_bytes, gib == "auto",
+                  authority_allocations=tuple(allocations))
 
 
 def auto_pool_bytes(available: int, entry_bytes: int, expert_count: int, *, control_bytes: int = 0,

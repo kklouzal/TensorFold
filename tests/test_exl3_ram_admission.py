@@ -64,6 +64,7 @@ def test_compact_authority_maximum_cell_and_resident_logical_scales(tmp_path, mt
     assert plan.format == "exl3" and plan.entry_bytes == large
     assert plan.slots == 2 and plan.gpu_bytes == 2 * large
     assert plan.host_bytes == layers * (3 * small + large)
+    assert plan.authority_allocations == (3 * small + large,) * layers
     assert plan.host_bytes < layers * 4 * large
     assert plan.staging_bytes == 2 * large
     assert plan.metadata_device_bytes == layers * 4 * (3 * 8 + 3 * 4)
@@ -87,6 +88,44 @@ def test_supported_original_widths_remain_distinct(tmp_path, routed_bits, shared
     plan = ram_experts.layout(tmp_path, 0.001)
     assert plan.entry_bytes == 3 * 256 * 128 * shared_bits // 8
     assert plan.host_bytes == 3 * (3 * 3 * 256 * 128 * routed_bits // 8 + plan.entry_bytes)
+
+
+def test_exl3_pin_plan_uses_complete_compact_banks_and_remaining_workspace(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_pin
+    from tensorfold.families.qwen4_exp import expert_authority
+
+    text, _ = checkpoint(tmp_path)
+    plan = ram_experts.layout(tmp_path, 0.001)
+    bank_bytes = 3 * 3 * 256 * 128 * 2 // 8 + 3 * 256 * 128 * 4 // 8
+    seen = []
+
+    def capture(planned_bytes, *, mode, allocation_bytes, future_bytes):
+        seen.append((planned_bytes, mode, allocation_bytes, future_bytes))
+        return seen[-1]
+
+    monkeypatch.setattr(expert_pin, "ExpertPinPolicy", capture)
+    result = expert_authority.pin_policy(text, plan, "on", future_bytes=12345)
+    expected_future = (plan.loading_bytes + plan.staging_bytes + plan.metadata_host_bytes
+                       + plan.control_host_bytes + 12345)
+    assert result == (3 * bank_bytes, "on", (bank_bytes,) * 3, expected_future)
+    assert len(seen) == 1
+    for options in ({"owned": 1}, {"shared": False}):
+        with pytest.raises(ValueError, match="cannot be partitioned"):
+            expert_authority.allocations(text, plan, **options)
+
+
+def test_disabled_expert_pinning_requires_no_allocation_or_runtime_discovery():
+    from tensorfold.families.qwen4_exp import expert_authority
+
+    assert expert_authority.pin_policy(None, None, "off") is None
+
+
+@pytest.mark.parametrize("mode,future", [("invalid", 0), ("on", 0), ("auto", 0), ("off", -1)])
+def test_exl3_pin_controls_fail_before_checkpoint_read(tmp_path, mode, future):
+    from tensorfold.families.qwen4_exp.cuda.exl3 import load
+
+    with pytest.raises(ValueError, match="expert pinning|workspace"):
+        load(tmp_path / "does-not-exist", vram_experts_pin=mode, _pin_future_bytes=future)
 
 
 def test_incomplete_expert_group_and_subcell_budget_fail_before_payload(tmp_path):

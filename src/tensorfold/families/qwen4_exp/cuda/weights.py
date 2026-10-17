@@ -428,10 +428,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         if ram_layout is not None:
             from tensorfold.cuda.expert_cache import HostExpertCache
 
-            from ..expert_authority import pin_policy
-            from tensorfold.cuda.capacity import config
-            policy = pin_policy(config(model_dir), ram_layout, vram_experts_pin, future_bytes=_pin_future_bytes)
-            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, pin_policy=policy)
+            pin_options = {}
+            if vram_experts_pin != "off":
+                from ..expert_authority import pin_policy
+                from tensorfold.cuda.capacity import config
+
+                pin_options["pin_policy"] = pin_policy(config(model_dir), ram_layout, vram_experts_pin,
+                                                        future_bytes=_pin_future_bytes)
+            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
             from tensorfold.cuda.packed_experts import PackedExpertCache
             packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"

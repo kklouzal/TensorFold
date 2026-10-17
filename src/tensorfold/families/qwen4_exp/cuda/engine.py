@@ -200,7 +200,7 @@ class FlashNextEngine:
                              "host_extra_staging": ram_layout.loading_bytes,
                              "resident_extra": ram_layout.gpu_bytes + ram_layout.metadata_device_bytes
                              + ram_layout.control_device_bytes}
-            if expert_session is None and vram_experts_pin != "off" and ram_layout.format in ("affine4", "nvfp4"):
+            if expert_session is None and vram_experts_pin != "off":
                 from ..expert_authority import allocations
                 from tensorfold.cuda.expert_pin import backing_bytes
                 geometry_bytes = allocations(text, ram_layout)
