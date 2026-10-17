@@ -129,6 +129,8 @@ def test_native_a4_actual_shapes_copy_pin_resize_oracle_and_retirement(prefill, 
             stride = slots * 2049 + 1
             storage = torch.full((rows * stride + 1,), 17., dtype=expected.dtype, device="cuda")
             output = storage.as_strided(expected.shape, (stride, 2049, 1), 1)
+            resident.run(x, picks, output, prefill=prefill)
+            assert torch.equal(output, expected)
             for _ in range(2):
                 bank.run(x, picks, output, prefill=prefill)
                 assert torch.equal(output, expected)
