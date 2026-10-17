@@ -153,6 +153,47 @@ def test_unresolved_native_abort_retains_cache_and_source_for_retry():
     assert attempts == [{"abort": True}, {"abort": True}]
 
 
+def test_payload_release_interruption_preserves_prior_failure_and_allows_retry():
+    prior, interruption = OSError("failure notification unavailable"), KeyboardInterrupt("bank release interrupted")
+    def unavailable(*args):
+        raise prior
+    session = _session_owner(SimpleNamespace(close=lambda **kw: None), store=SimpleNamespace(set=unavailable))
+    class InterruptedBankRelease(dict):
+        def clear(self):
+            if self:
+                super().clear()  # partial publication is valid, but never successful session retirement
+                raise interruption
+            super().clear()
+    session.banks = InterruptedBankRelease(bank=object())
+    session.nv_workspace["scratch"] = object()
+    session.x = object()
+    with pytest.raises(OSError) as caught:
+        session.close(abort=True)
+    assert caught.value is prior and caught.value.__cause__ is interruption
+    assert not session.retired and not session.banks and session.nv_workspace and hasattr(session, "x")
+    session.store = SimpleNamespace(set=lambda *args: None)
+    session.close()
+    assert session.retired and not session.nv_workspace and not hasattr(session, "x") and session.store is None
+
+
+def test_interruption_after_store_release_retries_without_republishing_or_early_retirement():
+    interruption = KeyboardInterrupt("store released before final publication")
+    class InterruptedStoreRelease(Session):
+        def __setattr__(self, name, value):
+            super().__setattr__(name, value)
+            if name == "store" and value is None and self.__dict__.pop("interrupt_store_release", False):
+                raise interruption
+    session = object.__new__(InterruptedStoreRelease)
+    session.__dict__.update(_session_owner(SimpleNamespace(close=lambda **kw: None)).__dict__)
+    session.keys = []  # a real loaded leader retains its manifest during close/retry
+    session.interrupt_store_release = True
+    with pytest.raises(KeyboardInterrupt) as caught:
+        session.close(abort=True)
+    assert caught.value is interruption and not session.retired and session.store is None
+    session.close()  # no store exists now: do not publish a failure or normal stop frame
+    assert session.retired and session.store is None
+
+
 def test_follower_never_reads_authority_before_group_admission():
     events = []
     def receive(key):

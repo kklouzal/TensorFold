@@ -373,12 +373,12 @@ class Session:
             failed = abort or self.closed or self.abort_requested.is_set()
             self.closed = True
             errors = []
-            if failed and hasattr(self, "store"):
+            if failed and getattr(self, "store", None) is not None:
                 try:
                     self.store.set(f"ep/failed/{self.rank}", "failed")
                 except BaseException as error:  # noqa: BLE001 - cleanup failures are aggregated
                     errors.append(error)
-            elif self.rank == 0 and getattr(self, "keys", None) is not None:
+            elif not failed and self.rank == 0 and getattr(self, "keys", None) is not None:
                 try:
                     self._publish(-1, 0, False)
                 except BaseException as error:  # noqa: BLE001 - abort native work after a failed stop frame
@@ -416,17 +416,20 @@ class Session:
                         errors.append(error)
                         break
                     self.source_files.pop()
-            self.retired = self.comm is self.reader is self.cache is None and not self.source_files
-            if self.retired:
+            if self.comm is self.reader is self.cache is None and not self.source_files:
                 # Wire/native consumers are terminal before their banks, shared
                 # NV scratch and transport tensors lose the session's ownership.
                 # An unresolved close retains every one of these references.
-                self.banks.clear()
-                self.nv_workspace.clear()
-                self.packed_cache = None
-                for name in ("x", "pick", "output", "peer", "low"):
-                    self.__dict__.pop(name, None)
-                self.store = None
+                try:
+                    self.banks.clear()
+                    self.nv_workspace.clear()
+                    self.packed_cache = None
+                    for name in ("x", "pick", "output", "peer", "low"):
+                        self.__dict__.pop(name, None)
+                    self.store = None
+                    self.retired = True  # publish only after every owned reference has retired
+                except BaseException as error:  # noqa: BLE001 - retain prior failures and permit partial-release retry
+                    errors.append(error)
             raise_failures(None, errors)
 
 
