@@ -10,7 +10,6 @@ from typing import Callable
 from tensorfold.cuda.capacity import Geometry, SIZES, config, headers
 from tensorfold.cuda.geometry import gdn_geometry, layer_counts, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, bank_bases_a4, routed_tensor_a4
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES
 
 GIB = 1 << 30
 _READ_PIECE = 64 << 20
@@ -34,18 +33,19 @@ def check(model_dir, gib, *, tp=1):
 
 
 def _metadata_bytes(entries):
-    # Header decoding, normalized capacity metadata and reader metadata can
-    # coexist. Count shared objects repeatedly, so interned names/keys do not
-    # turn into an accidental credit. The wire header can contain padding up
-    # to the safetensors protocol cap, independently of decoded object sizes.
-    size = sys.getsizeof(entries)
-    for name, info in entries.items():
-        size += sys.getsizeof(name) + sys.getsizeof(info)
-        for key, value in info.items():
-            size += sys.getsizeof(key) + sys.getsizeof(value)
-            if isinstance(value, (tuple, list)):
-                size += sum(sys.getsizeof(item) for item in value)
-    return 3 * size + MAX_HEADER_BYTES
+    # Include arbitrary validated extension metadata recursively. Count shared
+    # objects repeatedly; interned keys/values never become an accidental
+    # credit. Only scalar sizes escape the observer, never borrowed headers.
+    size, pending = 0, [entries]
+    while pending:
+        value = pending.pop()
+        size += sys.getsizeof(value)
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (tuple, list)):
+            pending.extend(value)
+    return size
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,8 @@ class Layout:
     metadata_host_bytes: int
     control_host_bytes: int
     source_filesystem_bytes: int
+    header_bytes: int
+    largest_header_bytes: int
     automatic: bool
     format: str = "ct-nvfp4-a4"
 
@@ -86,6 +88,8 @@ class Layout:
                 "loading_bytes": self.loading_bytes, "header_metadata_bound_bytes": self.metadata_host_bytes,
                 "cache_control_host_bound_bytes": self.control_host_bytes,
                 "source_filesystem_working_bytes": self.source_filesystem_bytes,
+                "safetensors_header_bytes": self.header_bytes,
+                "largest_safetensors_header_bytes": self.largest_header_bytes,
                 "native_runtime_workspace_bytes": self.runtime_workspace_bytes,
                 "logical_expert_count": self.expert_count, "banks": len(self.banks),
                 "automatic": self.automatic, "capturable": False}
@@ -108,7 +112,15 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
         raise ValueError("Qwen MoE routing supports at most 1023 routed experts plus shared")
     dims, width, count = text["hidden_size"], text["moe_intermediate_size"], text["num_experts"]
     fields = authority_fields_a4(count, width, dims)
-    entries = headers(model_dir)
+    metadata_objects = header_bytes = largest_header = 0
+
+    def observe(offset, entries):
+        nonlocal metadata_objects, header_bytes, largest_header
+        metadata_objects += _metadata_bytes(entries)
+        header_bytes += offset
+        largest_header = max(largest_header, offset)
+
+    entries = headers(model_dir, observer=observe)
     banks = bank_bases_a4(entries, text)
     allocations = tuple(math.prod(shape) * SIZES[dtype] for shape, dtype in fields)
     one = authority_fields_a4(1, width, dims)
@@ -130,7 +142,14 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     # claim that the complete source checkpoint must stay resident is made.
     reader = 2 * (1 << (_READ_PIECE + _READ_ALIGN - 1).bit_length())
     loading = max(64 << 20, 8 * entry) + reader
-    metadata = _metadata_bytes(entries)
+    # Decoded raw, normalized capacity and loader dictionaries can coexist.
+    # Three complete decoded inventories conservatively also cover parser
+    # object-pair lists and span-sort work (their objects/keys are recounted).
+    # On pinned CPython the raw bytes and decoded JSON input coexist, with
+    # Unicode storage at most four bytes per input code point. Wire padding
+    # is charged from observed offsets, including otherwise-filtered metadata.
+    metadata = (3 * metadata_objects + 5 * largest_header
+                + sys.getsizeof(b"") + sys.getsizeof("\U00010000"))
     # Histories, resident identities/NumPy rank arrays, per-bank views and the
     # bounded startup rank search are charged at the largest possible pool.
     controls = (logical + 1 + 576 * logical + 4096 * len(banks) + 65536
@@ -138,7 +157,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     runtime = 16 * _PAIR_WINDOW * (dims + width) + 65536
     return Layout(entry, slots, slots * entry, sum(allocations) * len(banks), staging, loading,
                   allocations * len(banks), banks, logical, count, runtime, metadata, controls,
-                  _READ_PIECE, gib == "auto")
+                  _READ_PIECE, header_bytes, largest_header, gib == "auto")
 
 
 def _moe_buffers(rows, experts, slots, width, dims, prefill):
