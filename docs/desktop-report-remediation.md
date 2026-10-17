@@ -250,6 +250,41 @@ new ARM64 execution are separate as well. No reported desktop speed target,
 blanket latency gain or unchanged-capacity claim follows from these features.
 
 
+## Installed local qualification
+
+Frozen runtime `b551e68f` was built as the ordinary installed wheel in the
+maintained Dockerfile. All 512 packaged owned source files matched the captured
+source. Corrected verification images retain the serving image's exact
+application layers; the [machine-readable receipt](verification-desktop-report-20261017.json)
+names runtime, test revisions, image digests, wheel hash and retained evidence.
+
+The complete CPU rerun passed **7,994 cases** with 177 explicit skips. The full
+non-matrix CUDA run passed 2,046 cases with 97 explicit skips and found three stale
+EXL3 accounting assertions. The complete corrected module passed all 12 cases,
+including the formerly blocked assertion tails. This yields **2,049 distinct
+passing CUDA cases**, with no unresolved failure; it is a full initial run plus
+an affected-module rerun. Original failed logs remain available. Seven earlier
+CPU fixture failures were similarly repaired without weakening their assertions.
+The two CPU and 28 CUDA warnings came from unchanged private allocator API calls.
+
+The trained EXL3 service passed the same bounded HTTP checks with registration
+off/default KV reservation and registration on/two windows shared by four slots:
+strict tool enforcement and explicit unsupported-schema refusal, the actual
+31-tool catalog, repeated/serial/MTP and solo/concurrent token identity,
+streaming, statistics, metrics and clean shutdown. Fixed reply tokens and SSE
+choices match the earlier qualified runtime; three long-context KV-format token
+and cache hashes also match. The observed expert pool grew from 3.05 to 3.53 GiB
+under the changed capacity policy. Those two starts establish functionality,
+not an isolated speed comparison.
+
+The actual native library was NCCL **2.30.7**. Native one-rank Session/model
+execution, serial/MTP/concurrent identity, resource release, and the installed
+one-child Harness launch/tokenization/chat/retirement gate passed. This host
+has one GPU: actual distinct-device NCCL execution, SM89, full reported affine
+and pretrained ModelOpt/vision workloads remain unqualified. The full KV-pair
+matrix was not freshly run; only the exact historical unchanged subset retains
+its original qualification. No GB10, Kubernetes or Harness rollout occurred.
+
 ## Controlled performance comparisons and selection
 
 These component comparisons used one Linux AMD64 RTX PRO 2000 Blackwell/SM120

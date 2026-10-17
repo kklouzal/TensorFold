@@ -18,6 +18,35 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Desktop report remediation, 2026-10-17
+
+Runtime `b551e68f` implements admitted optional registered expert authority,
+asymmetric same-host NCCL expert ranks, explicit shared KV reservation, bounded
+affine persistence and original-arithmetic NVFP4 offload/SSD reads. The
+[desktop contracts and performance record](desktop-report-remediation.md)
+identify each selected design and measured region. Registered DMA, packed
+warm starts and common NVFP4 grouping improved their controlled workloads.
+Complete advisory-prefetch and device-residency designs regressed required
+regions and do not ship; the established serial-only prefetch gain remains
+explicitly blocked on full-scale input and dispatch/retirement qualification.
+
+The [installed receipt](verification-desktop-report-20261017.json) identifies
+the serving image, unchanged application layers and separate corrected test
+captures. The full CPU rerun passed 7,994 cases. The full non-matrix CUDA run's 2,046 passes
+plus the complete 12-case accounting-fixture rerun cover 2,049 distinct passing
+cases; the original three failures and nine overlapping passes are accounted
+explicitly. This is not a single clean full-suite rerun. No runtime defect or
+numerical tolerance was hidden by those fixture corrections.
+
+Both trained local EXL3 registration policies passed the fixed strict-tool,
+serial/MTP/concurrent and streaming API checks and clean shutdown. Their token
+sequences and the three-format long-context token/KV hashes match the prior
+qualified runtime. Native one-rank NCCL/model and the installed Harness child
+passed; this one-GPU host cannot qualify actual multi-GPU or SM89 execution.
+The reported full affine checkpoint, full pretrained ModelOpt/vision, fresh
+exhaustive KV matrix and new ARM64/Apple execution remain outside this record.
+No desktop-report speed estimate or additive combined gain is claimed.
+
 ## CUDA failure remediation, 2026-10-17
 
 The remediation follows source `0240cefea90fcd83a593384259b7346875e3603c` and preserves the previous
