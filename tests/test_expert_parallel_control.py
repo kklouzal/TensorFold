@@ -124,6 +124,63 @@ def test_follower_never_reads_authority_before_group_admission():
     assert events == ["ep/admitted", {"abort": True}]
 
 
+def test_follower_refuses_absolute_cap_before_any_expert_payload_allocation(monkeypatch):
+    from tensorfold.cuda import capacity
+    monkeypatch.setenv(capacity.LIMIT_ENV, "1")
+    monkeypatch.setattr(capacity, "available_bytes", lambda torch: 1 << 30)
+    monkeypatch.setattr(capacity, "host_stream_bytes", lambda: 1 << 30)
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda: 1 << 30)
+    events = []
+    session = SimpleNamespace(_receive=lambda key: b"ready", _ensure_reader=lambda: events.append("metadata"),
+                              layout=SimpleNamespace(host_bytes=0, staging_bytes=0, loading_bytes=0,
+                                                     metadata_host_bytes=0, gpu_bytes=60, loading_device_bytes=1),
+                              workspace_bytes=40,
+                              torch=SimpleNamespace(cuda=SimpleNamespace(memory_allocated=lambda: (1 << 30) - 50)),
+                              load_bank=lambda *a: pytest.fail("expert payload allocated before cap admission"),
+                              close=lambda **kw: events.append(kw))
+    with pytest.raises(MemoryError, match="admitted device capacity"):
+        Follower(session)
+    assert events == ["metadata", {"abort": True}]
+
+
+@pytest.mark.parametrize("outcome", ["bounded", "live-overflow", "physical-shortage", "reusable-reservation"])
+def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(monkeypatch, outcome):
+    """Independent byte balances; mock allocator accounting is not multi-GPU execution evidence."""
+    from tensorfold.cuda import capacity
+    from tensorfold.families.qwen4_exp.ram_experts import AUTO_HEADROOM_BYTES
+    mib = 1 << 20
+    fixed, workspace, cell, slack = 64 * mib, 32 * mib, 16 * mib, 7 * mib
+    cap = fixed + AUTO_HEADROOM_BYTES + workspace + 3 * cell + slack
+    monkeypatch.setenv(capacity.LIMIT_ENV, str(cap / (1 << 30)))
+    state = {"allocated": fixed, "spare": 0, "free": 2 << 30}
+    allocations = []
+    def allocate(size):
+        allocations.append(size)
+        state["allocated"] += size + (8 * mib if outcome == "live-overflow" else 0)
+        state["free"] -= size
+        if outcome in ("physical-shortage", "reusable-reservation"):
+            state["free"] = AUTO_HEADROOM_BYTES
+            # Non-releasable free fragments within allocated CUDA blocks can
+            # satisfy later tensor allocations while empty_cache retains them.
+            state["spare"] = workspace - (1 if outcome == "physical-shortage" else 0)
+    runtime = SimpleNamespace(cuda=SimpleNamespace(synchronize=lambda: None, empty_cache=lambda: None,
+                              mem_get_info=lambda: (state["free"], 4 << 30),
+                              memory_allocated=lambda: state["allocated"],
+                              memory_reserved=lambda: state["allocated"] + state["spare"]))
+    follower = object.__new__(Follower)
+    follower.session = SimpleNamespace(torch=runtime, workspace_bytes=workspace,
+                                       cache=SimpleNamespace(entry_bytes=cell, score_history_entries=128,
+                                                             configure_before_use=allocate))
+    if outcome in ("live-overflow", "physical-shortage"):
+        with pytest.raises(MemoryError, match="retain its declared workspace"):
+            follower._configure_auto_experts()
+    else:
+        follower._configure_auto_experts()
+        assert state["allocated"] + AUTO_HEADROOM_BYTES + workspace <= cap
+        assert follower.session.auto_pool_decision["explicit_device_limit_bytes"] == cap
+    assert allocations == [3 * cell]  # independent cap balance admits exactly three whole cells
+
+
 def test_successful_follower_departure_retires_a_still_live_leader():
     commands = [[sys.executable, "-c", "import time; time.sleep(60)"],
                 [sys.executable, "-c", "pass"]]
