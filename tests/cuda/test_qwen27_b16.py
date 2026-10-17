@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
@@ -19,6 +19,27 @@ def test_rows_do_not_depend_on_the_row_count(n, k):
         assert torch.equal(matmul(x[:m], w), alone[:m]), m
     want = (x.float() @ w.float().t()).bfloat16()
     assert (alone.float() - want.float()).abs().max().item() < 2e-2
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_prepared_row_reuse_keeps_shipping_singleton_bits(dtype):
+    from tensorfold.families.qwen3_5.cuda.b16 import _ext
+
+    generator = torch.Generator(device="cuda").manual_seed(17032)
+    x = torch.empty(33, 2048, dtype=dtype, device="cuda").uniform_(-0.5, 0.5, generator=generator)
+    weight = torch.empty(130, 2048, dtype=dtype, device="cuda").uniform_(-0.02, 0.02, generator=generator)
+    singleton = torch.cat([matmul(row[None], weight) for row in x])
+    for rows in (1, 2, 3, 4, 5, 8, 12, 16, 17, 33):
+        for reuse in (2, 4, 8, 16):
+            got = _ext().b16_linear_rows(x[:rows], weight, reuse)
+            assert torch.equal(got.view(torch.int16), singleton[:rows].view(torch.int16))
+    order = torch.tensor([2, 0, 1], device="cuda")
+    for reuse in (2, 4, 8, 16):
+        got = _ext().b16_linear_rows(x[order], weight, reuse)
+        assert torch.equal(got.view(torch.int16), singleton[order].view(torch.int16))
+    for invalid in (0, 1, 3, 32):
+        with pytest.raises(RuntimeError, match="reused rows"):
+            _ext().b16_linear_rows(x, weight, invalid)
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
