@@ -2,6 +2,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <limits>
+#include "tensor_contracts.cuh"
 
 void prefill_attention_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, int, float, int);
 
@@ -23,6 +24,12 @@ void prefill_attention(const at::Tensor& q, const at::Tensor& k, const at::Tenso
     TORCH_CHECK(k.size(0) >= p0 + q.size(0), "caches must hold the chunk's keys");
     TORCH_CHECK(out.device() == q.device() && out.is_contiguous() && out.sizes() == q.sizes() &&
                 out.scalar_type() == at::kBFloat16, "out: like q on q's CUDA device");
+    // Only [0, p0 + W) of each contiguous cache is read. Unfilled tails may hold output.
+    const int64_t keys = p0 + q.size(0);
+    const int64_t cache_reads = keys == 0 ? 0 : (k.numel() / k.size(0)) * keys;
+    TORCH_CHECK(!tensorfold::overlaps(out, q) && !tensorfold::overlaps(out, k, -1, cache_reads) &&
+                !tensorfold::overlaps(out, v, -1, cache_reads),
+                "prompt attention output must not overlap q or filled cache inputs");
     TORCH_CHECK(hpc == 1 || hpc == 2 || hpc == 4 || hpc == 8, "heads a block must be 1, 2, 4 or 8");
     TORCH_CHECK((q.size(1) / k.size(1)) % hpc == 0, "heads a block must divide the query heads a KV head");
     c10::cuda::CUDAGuard guard(q.device());

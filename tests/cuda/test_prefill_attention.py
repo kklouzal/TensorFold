@@ -119,6 +119,39 @@ def test_prompt_attention_rejects_invalid_head_tiles(hpc):
         _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, hpc)
 
 
+@pytest.mark.parametrize("alias", ["q", "partial_q", "k", "partial_k", "v"])
+def test_prompt_attention_rejects_output_overlapping_reads(alias):
+    q = torch.zeros((2, 2, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((6, 1, 128), device="cuda", dtype=torch.bfloat16)
+    v = torch.zeros_like(k)
+    if alias == "q":
+        out = q
+    elif alias == "partial_q":
+        backing = torch.zeros(640, device="cuda", dtype=torch.bfloat16)
+        q, out = backing[:512].view_as(q), backing[128:].view_as(q)
+    elif alias == "k":
+        out = k[:4].view_as(q)
+    elif alias == "partial_k":
+        out = k[1:5].view_as(q)
+    else:
+        out = v[:4].view_as(q)
+    with pytest.raises(ValueError, match="must not overlap"):
+        triton_attention(q, k, v, 0, scale=0.125, out=out)
+    with pytest.raises(RuntimeError, match="must not overlap"):
+        _ext().prefill_attention(q, k, v, out, 0, 0.125, 1)
+
+
+def test_prompt_attention_allows_output_in_unfilled_cache_tail():
+    gen = torch.Generator(device="cuda").manual_seed(29)
+    q = torch.randn((2, 2, 128), generator=gen, device="cuda").bfloat16()
+    k, v = _caches(gen, 6, 1, 128)
+    expected = attention(q, k, v, 0, scale=0.125)
+    out = k[2:6].view_as(q)
+    assert torch.equal(triton_attention(q, k, v, 0, scale=0.125, out=out), expected)
+    _ext().prefill_attention(q, k, v, out, 0, 0.125, 1)
+    assert torch.equal(out, expected)
+
+
 @pytest.mark.parametrize("dim", [64, 128, 256])
 def test_prompt_attention_empty_window(dim):
     q = torch.empty((0, 2, dim), device="cuda", dtype=torch.bfloat16)
