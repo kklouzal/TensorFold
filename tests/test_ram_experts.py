@@ -412,3 +412,26 @@ def test_payload_failure_preserves_primary_when_both_cleanups_fail(tmp_path, ram
         ("checkpoint reader cleanup also failed", reader_failure),
         ("expert cache cleanup also failed", cache_failure),
     ]
+
+
+def test_modelopt_sidecar_reaches_the_ram_expert_preflight(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": {}}))
+    metadata = {"producer": {"name": "modelopt", "version": "0.46.0"},
+                "quantization": {"quant_algo": "NVFP4", "group_size": 16}}
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(metadata))
+    assert ram_experts.check(tmp_path, "auto") is None
+    metadata["quantization"]["group_size"] = 32
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="groups of 16"):
+        ram_experts.check(tmp_path, "auto")
+
+
+def test_ram_expert_sidecar_cannot_escape_the_checkpoint_boundary(tmp_path):
+    model = tmp_path / "model"; model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "qwen4_exp"}))
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text(json.dumps({"producer": {"name": "modelopt"},
+                                   "quantization": {"quant_algo": "NVFP4"}}))
+    (model / "hf_quant_config.json").symlink_to(foreign)
+    with pytest.raises(ValueError, match="authorized roots"):
+        ram_experts.check(model, "auto")

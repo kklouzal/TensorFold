@@ -1,15 +1,15 @@
 """Actual loader control/owner order with opaque values; no numerical SDK."""
 
 from __future__ import annotations
-
 import __future__
+
 import ast
 import contextlib
 import io
-from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen3_5/cuda/nvfp4_load.py"
@@ -17,6 +17,15 @@ SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen3_5/
 
 class Value:
     dtype = object()
+
+    def __float__(self):
+        return 1.0
+
+    def __getitem__(self, index):
+        return self
+
+    def reshape(self, *shape):
+        return self
 
     def contiguous(self):
         return self
@@ -59,8 +68,8 @@ def fixture():
     namespace = dict(
         torch=torch,
         Path=Path,
-        checkpoint_path=lambda root, name: root / name,
-        read_metadata_json=lambda path: {},
+        read_config=lambda path: {},
+        FULL_LINE="opaque full mode",
         skipped=lambda name: False,
         __name__="tensorfold.families.qwen3_5.cuda.nvfp4_load",
         __package__="tensorfold.families.qwen3_5.cuda",
@@ -136,7 +145,8 @@ def fixture():
     capacity = ModuleType("tensorfold.cuda.capacity")
     capacity.headers = lambda path: {name: {"dtype": "BF16", "shape": [1, 1]} for name in names}
     nv = ModuleType("tensorfold.cuda.nvfp4")
-    nv.format = SimpleNamespace(config_block=lambda value: {}, scheme=lambda parts: "bf16")
+    nv.format = SimpleNamespace(LinearMetadata=lambda block: SimpleNamespace(
+        validate=lambda name, parts, **kwargs: ("bf16", None)))
     linear = ModuleType("tensorfold.cuda.nvfp4.linear")
     linear.__dict__.update(Fp4Linear=object, Fp8Linear=object, Staging=lambda: None)
     modules = {m.__name__: m for m in (weights, capacity, nv, linear)}
@@ -206,3 +216,59 @@ class PhaseControls(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetadataSelection(unittest.TestCase):
+    def test_declared_weight_only_and_native_policies_survive_the_actual_loader(self):
+        from tensorfold.checkpoint_quantization import LinearQuantization, effective_config
+        from tensorfold.cuda import precision
+
+        path = SOURCE.parents[3] / "cuda/nvfp4/format.py"
+        selected = {"scheme", "LinearMetadata", "calibration"}
+        nodes = [n for n in ast.parse(path.read_text()).body
+                 if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in selected]
+        api = {"LinearQuantization": LinearQuantization}
+        exec(  # noqa: S102 - compile only owned maintained-source AST.
+            compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec",
+                    flags=__future__.annotations.compiler_flag), api)
+        for algorithm in ("NVFP4", "W4A16_NVFP4"):
+            for mode in (precision.CHECKPOINT, precision.FULL):
+                with self.subTest(algorithm=algorithm, mode=mode):
+                    load, _, _, modules = fixture()
+                    headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
+                    native = []
+                    for name in list(headers):
+                        if not ("_proj.weight" in name or name == "lm_head.weight"):
+                            continue
+                        base = name[:-7]
+                        headers[name] = {"dtype": "U8", "shape": [8, 32]}
+                        for field, dtype, shape in (("weight_scale", "F8_E4M3", [8, 4]),
+                                                    ("weight_scale_2", "F32", []),
+                                                    ("input_scale", "F32", [])):
+                            headers[base + "." + field] = {"dtype": dtype, "shape": shape}
+                    modules["tensorfold.cuda.capacity"].headers = lambda path, headers=headers: headers
+                    modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(**{
+                        n: api[n] for n in ("LinearMetadata", "calibration")})
+                    def packed(*args, native=native, **kwargs):
+                        native.append(kwargs["act"])
+                        return SimpleNamespace()
+                    modules["tensorfold.cuda.nvfp4.linear"].Fp4Linear = SimpleNamespace(from_checkpoint=packed)
+                    config = effective_config({"quantization_config": {"quant_method": "modelopt",
+                                               "quant_algo": algorithm}}, None, where="fixture")
+                    load.__globals__.update(read_config=lambda path, config=config: config,
+                        SUFFIXES=("weight", "weight_scale", "weight_scale_2", "input_scale"),
+                        maths=lambda: ({"nvfp4": True, "fp8": True}, "hardware capable"))
+                    overrides = []
+                    original_read = modules["tensorfold.families.qwen3_5.cuda.weights"].Config.read
+                    def read(path, overrides=overrides, original_read=original_read, **kwargs):
+                        overrides.append(kwargs)
+                        return original_read(path)
+                    modules["tensorfold.families.qwen3_5.cuda.weights"].Config.read = read
+                    with patch.dict(sys.modules, modules), precision.using(mode), contextlib.redirect_stdout(io.StringIO()):
+                        result = load(Path("opaque"), eos_token_ids=(7, 9))
+                    expected = 1.0 if algorithm == "NVFP4" and mode == precision.CHECKPOINT else None
+                    self.assertTrue(native)
+                    self.assertEqual(native, [expected] * len(native))
+                    self.assertEqual(result.own, {"nvfp4": expected is not None, "fp8": False})
+                    self.assertEqual(result.precision, "checkpoint" if expected is not None else "full")
+                    self.assertEqual(overrides, [{"eos_token_ids": (7, 9)}])

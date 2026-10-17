@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-
 METHODS = ("modelopt", "compressed-tensors")
 
 
 def _object(value, where):
     if not isinstance(value, dict):
-        raise ValueError(f"{where}: expected an object")
+        raise ValueError(f"{where}: expected an object")  # noqa: TRY004 - invalid JSON schema is a ValueError boundary.
     return value
 
 
@@ -98,6 +97,10 @@ def _block(value, where):
     method = result.get("quant_method")
     if method not in METHODS:
         return result
+    if method == "modelopt" and "kv_cache_quant_algo" in result:
+        kv = result.pop("kv_cache_quant_algo")
+        scheme = {"dynamic": False, "num_bits": 8, "type": "float"} if kv == "FP8" else kv
+        result = _merge(result, {"kv_cache_scheme": scheme}, where)
     if "exclude_modules" in result:
         excluded = _strings(result.pop("exclude_modules"), f"{where}.exclude_modules")
         result = _merge(result, {"ignore": excluded}, where)
@@ -144,10 +147,6 @@ def _sidecar(sidecar, where):
     quant = deepcopy(_object(sidecar.get("quantization"), f"{where}.quantization"))
     quant["quant_method"] = "modelopt"
     quant["producer"] = deepcopy(producer)
-    if "kv_cache_quant_algo" in quant:
-        kv = quant.pop("kv_cache_quant_algo")
-        quant["kv_cache_scheme"] = ({"dynamic": False, "num_bits": 8, "type": "float"}
-                                     if kv == "FP8" else kv)
     return _block(quant, where)
 
 
