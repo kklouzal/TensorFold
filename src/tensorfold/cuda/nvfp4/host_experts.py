@@ -197,13 +197,13 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             input_global = ctx.read(base + ".input_global_scale", device="cpu")
             scale = fmt.calibration(float(weight_global.reshape(-1)[0]), name=base + ".weight_global_scale",
                                     reciprocal=True)
-            act = fmt.calibration(float(input_global.reshape(-1)[0]), name=base + ".input_global_scale",
-                                  reciprocal=True)
-            fmt.native_calibration(act, scale, name=base)
+            inverse = fmt.calibration(float(input_global.reshape(-1)[0]), name=base + ".input_global_scale")
+            act = fmt.calibration(inverse, name=base + ".input_global_scale", reciprocal=True)
+            fmt.native_calibration(act, scale, name=base, act_inverse=inverse)
             if p < 2:
-                fields[2][local, p], fields[4][local, p] = scale, act
+                fields[2][local, p], fields[4][local, p] = scale, inverse
             else:
-                fields[3][local, 0], fields[5][local, 0] = scale, act
+                fields[3][local, 0], fields[5][local, 0] = scale, inverse
             codes = ctx.read(base + ".weight_packed", device="cpu")
             blocks = ctx.read(base + ".weight_scale", device="cpu")
             fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")

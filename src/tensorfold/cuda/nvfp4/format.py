@@ -238,18 +238,21 @@ def validate_native_a4_scales(scales, *, name: str) -> None:
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
 
 
-def native_calibration(act: float, weight_scale: float, *, name: str) -> float:
+def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
     """Admit the exact FP32 inverse/product used by checkpoint native math.
 
     Called only for an actually selected native projection. Reuse the owned
     arithmetic helpers so validation and subsequent native preparation share
-    their rounding and subnormal contract; return the original scale unchanged.
+    their rounding and subnormal contract. An explicit CT input multiplier is
+    admitted directly instead of introducing a reciprocal roundtrip. Return
+    the original dequantization scale unchanged.
     """
     import math
 
     from .checkpoint import _inv, alpha
 
-    inverse, product = _inv(act), alpha(act, weight_scale)
+    inverse = _inv(act) if act_inverse is None else calibration(act_inverse, name=name + ".input_global_scale")
+    product = alpha(act, weight_scale)
     if not (math.isfinite(inverse) and inverse > 0 and math.isfinite(product) and product > 0):
         raise ValueError(f"{name}: native FP32 inverse and joint calibration must remain finite and positive")
     return act
