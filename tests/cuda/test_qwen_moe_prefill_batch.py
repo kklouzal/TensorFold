@@ -7,14 +7,11 @@ import json
 
 import pytest
 import torch
-from safetensors.torch import save_file
-
-if not torch.cuda.is_available():
-    pytest.skip("CUDA only", allow_module_level=True)
-
 from nvfp4_a4_inputs import PREFIX, Context, linears, swiglu
 from qwen_engine_checks import same_state
-from test_qwen36_moe import D, E, V, WIDTH, _model
+from safetensors.torch import save_file
+from test_qwen36_moe import WIDTH, D, E, V, _model
+
 from tensorfold.cleanup import rollback
 from tensorfold.cuda import moe, prompt_precision
 from tensorfold.cuda.nvfp4.cache_a4 import A4ExpertCache
@@ -25,6 +22,9 @@ from tensorfold.families.qwen3_5.cuda.prefill import Piece, prefill_batch, prefi
 from tensorfold.families.qwen3_5_moe.cuda.dflash import DFlash
 from tensorfold.families.qwen3_5_moe.cuda.nvfp4_load import NativeMoE, SharedExpert
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig
+
+if not torch.cuda.is_available():
+    pytest.skip("CUDA only", allow_module_level=True)
 
 # New row counts1/5/17/129 span the router's16-row tile and A4's128-row
 # grouping boundary. Includes fresh/resumed, end/start/interior/no kept prefix.
@@ -117,7 +117,8 @@ def test_routed_batch_matches_sequential_states_cuts_and_all_residual_taps(targe
         actual = prefill_rows(w, items, capture_taps=True)
     rows = sum(len(ids) for ids, _, _ in items)
     assert calls == [(rows, torch.bfloat16, True)] * len(w.layers)
-    for (normed, taps, part), state, reference in zip(actual, states, references, strict=True):
+    for (normed, taps, part), state, reference, (prompt, (_, _, keep)) in zip(
+            actual, states, references, pieces, strict=True):
         ref_normed, ref_taps, ref_part, ref_state = reference
         same_state(state, ref_state)
         assert torch.equal(normed, ref_normed) and torch.equal(taps, ref_taps)
@@ -125,6 +126,8 @@ def test_routed_batch_matches_sequential_states_cuts_and_all_residual_taps(targe
         assert (part is None) == (ref_part is None)
         if part is not None:
             same_state(part, ref_part)
+            # A separately prefilled prefix never executes either cut branch.
+            same_state(part, state_at(w, prompt, keep))
     if cache is not None:
         assert cache.evictions > 0 and cache.copied_bytes == cache.misses * cache.entry_bytes
 
