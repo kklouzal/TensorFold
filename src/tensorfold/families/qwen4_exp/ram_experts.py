@@ -29,12 +29,16 @@ def check(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
     import json
 
     raw = json.loads((Path(model_dir) / "config.json").read_text())
+    quant = raw.get("quantization_config") or raw.get("quantization") or {}
+    if str(quant.get("quant_method", "")).lower() == "modelopt":
+        groups = quant.get("config_groups") or {}
+        group = ((groups.get("group_0") or {}).get("weights") or {}).get("group_size", 16)
+        if group != 16:
+            raise ValueError("--vram-experts: ModelOpt checkpoints require NVFP4 in groups of 16")
+        return
     specs = [spec for spec in checkpoint_specs(raw).values() if spec is not None]
     if not specs or any(spec.bits != 4 or spec.group_size != 32 for spec in specs):
         raise ValueError("--vram-experts supports MLX affine 4-bit weights in groups of 32 only")
-    quant = raw.get("quantization_config") or raw.get("quantization") or {}
-    if quant.get("quant_method") == "modelopt":
-        raise ValueError("--vram-experts does not support NVFP4; use affine 4-bit group32 weights")
 
 
 def expert_tensor(name: str) -> bool:
@@ -70,11 +74,18 @@ class Layout:
     control_device_bytes: int = 0
     control_host_bytes: int = 0
     automatic: bool = False
+    loading_device_bytes: int = 0
 
     def transform(self, resident):
         """Exclude expert projections; the fixed GPU pool is admitted as resident_extra."""
 
         def weights(name, info):
+            if self.format == "nvfp4":
+                from tensorfold.cuda.nvfp4.host_layout import routed_tensor
+
+                if routed_tensor(name):
+                    return 0, 0
+                return resident(name, info)
             if self.format == "exl3" and exl3_expert_tensor(name):
                 if name.endswith((".trellis", ".mcg", ".mul1")):
                     return 0, 0
@@ -107,12 +118,14 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
     width, dims = int(text["moe_intermediate_size"]), int(text["hidden_size"])
     if width <= 0 or dims <= 0 or width % 32 or dims % 32:
         raise ValueError("--vram-experts requires expert width and hidden size divisible by 32")
-    if int(text["shared_expert_intermediate_size"]) != width:
-        raise ValueError("--vram-experts requires matching routed and shared expert widths")
     from tensorfold.cuda.exl3.format import is_exl3
 
     if is_exl3(Path(model_dir)):
         return _exl3_layout(model_dir, gib, text, mtp)
+    if str(text["_quantization"].get("quant_method", "")).lower() == "modelopt":
+        return _nvfp4_layout(model_dir, gib, text, mtp)
+    if int(text["shared_expert_intermediate_size"]) != width:
+        raise ValueError("--vram-experts requires matching routed and shared expert widths")
     # 160 int32 words per 32x32 tile: 4-bit weights plus BF16 affine scales/biases.
     entry = 3 * (width // 32) * (dims // 32) * 160 * 4
     bundles: dict[str, dict] = {}
@@ -152,6 +165,27 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
     # Two pinned upload entries; two-expert CPU chunks need at most 8*entry +256KiB of live arrays.
     return Layout(entry, slots, slots * entry, count * entry, 2 * entry,
                   max(64 * 2**20, 8 * entry + 256 * 2**10), automatic=gib == "auto")
+
+
+def _nvfp4_layout(model_dir, gib, text, mtp):
+    from tensorfold.cuda.nvfp4.host_layout import bank_bases
+
+    banks = bank_bases(headers(model_dir), text, mtp)
+    width, dims = text["moe_intermediate_size"], text["hidden_size"]
+    # 144 int32 words per tile; global FP32 gate/up and down scales have
+    # separate 16-byte-aligned fields in HostExpertCache.
+    entry = 3 * (width // 32) * (dims // 32) * 144 * 4 + 32
+    count = len(banks) * text["num_experts"]
+    requested = entry if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
+    slots = min(count, requested // entry)
+    if not slots:
+        raise ValueError(f"--vram-experts needs at least one packed NVFP4 expert ({entry / GIB:.6f} GiB)")
+    # One expert's exact CPU bit packing or GPU draft-only quantization at a
+    # time. Quantization's eight-magnitude temporary dominates this bound.
+    loading = max(64 * 2**20, 128 * width * dims + 8 * entry)
+    return Layout(entry, slots, slots * entry, count * entry, 2 * entry, loading,
+                  "nvfp4", automatic=gib == "auto",
+                  loading_device_bytes=loading if any(b.startswith("mtp.") for b in banks) else 0)
 
 
 def exl3_expert_tensor(name: str) -> bool:

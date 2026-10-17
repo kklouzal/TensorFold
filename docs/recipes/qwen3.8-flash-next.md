@@ -111,6 +111,32 @@ RoPE policy and must not be reused across policy changes.
 
 ### NVFP4 checkpoints
 
+RAM-backed routed experts also accept ModelOpt NVFP4 exports:
+
+```bash
+tensorfold serve /models/Flash-Next-NVFP4 --backend cuda \
+  --vram-experts auto --ple-on-ssd --parallel 4 --context 32768
+```
+
+The example requires enough host RAM for the export's packed routed experts and
+enough VRAM for its resident backbone, shared experts, MTP head, sequence state
+and workspace. It is not a fit or throughput claim for a 16 GB card. Each cache
+entry retains the original E2M1 codes, e4m3 block-scale bytes and per-expert FP32
+global scales. The shared expert keeps its resident BF16 or MXFP8 representation;
+MTP's BF16/FP8 experts retain their existing draft-only NVFP4 conversion, one
+expert at a time. This path uses the current W4A16 grouped expert arithmetic,
+including on SM120. It does not introduce activation quantization or imply a
+native FP4-MMA throughput gain. Host-backed banks decline CUDA graph capture.
+
+With `--ple-on-ssd`, affine, BF16, FP8 and NVFP4 n-gram shards use their own
+validated row layouts and bounded positional reads. The decoded BF16 bits and
+table-scale behavior match the mapped readers; Linux disables read-ahead but
+does not promise that the OS will retain no file pages. The reader drains
+accepted lookups before closing its descriptors. Full pretrained ModelOpt
+checkpoint and SM89 execution qualification remain pending on the available
+single-SM120 host; generated complete-model and component checks are recorded
+with their executed source and image in the remediation evidence.
+
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
 
 ```bash

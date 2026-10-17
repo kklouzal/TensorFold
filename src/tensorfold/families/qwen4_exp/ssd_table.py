@@ -134,34 +134,7 @@ class SSDTable:
         total = 0
         for path, *entries in files:
             path = Path(path)
-            if path not in opened:
-                file = None
-                try:
-                    file = TableFile(path)
-                    self._unpublished_file[0] = file
-                    file.open()                    # closed owner is published before native acquisition
-                    self._files.append(file)
-                    self._unpublished_file[0] = None
-                    fd = file.fileno()
-                    self._fds.append(fd)
-                except BaseException as primary:
-                    if file is not None:
-                        interruption = _retain_file(self._unpublished_file, file)
-                        if interruption is not None:
-                            _note(primary, "unpublished SSD file ownership repair was interrupted")
-                            raise primary from _cause(primary, interruption)
-                    raise
-                opened_stat = os.fstat(fd)
-                if not stat.S_ISREG(opened_stat.st_mode):
-                    raise ValueError(f"{path.name}: the n-gram checkpoint must be a regular file")
-                if nocache:
-                    _no_cache(fd)
-                size = opened_stat.st_size
-                data, header = read_header_stream(file, SIZES, label=path)
-                descriptors = {(info["dtype"], tuple(info["shape"]), tuple(info["data_offsets"]))
-                               for name, info in header.items() if name != "__metadata__"}
-                opened[path] = (len(self._fds) - 1, data, size, descriptors)
-            index, data, size, descriptors = opened[path]
+            index, data, size, descriptors = self._opened(path, opened, nocache)
             (rows, wrow, w0), (srows, grow, s0), (brows, brow, b0) = (
                 _span(entry, kind, data, size, path.name) for entry, kind in zip(entries, _KINDS))
             if any((entry["dtype"], tuple(entry["shape"]), tuple(entry["data_offsets"])) not in descriptors
@@ -183,6 +156,37 @@ class SSDTable:
         self.wrow, self.grow = widths
         self.nbytes = total
         self._fd_of = np.array(self._fds, dtype=np.int64)
+
+    def _opened(self, path, opened, nocache):
+        """Share validated regular-file ownership across encoded row layouts."""
+        if path not in opened:
+            file = None
+            try:
+                file = TableFile(path)
+                self._unpublished_file[0] = file
+                file.open()
+                self._files.append(file)
+                self._unpublished_file[0] = None
+                fd = file.fileno()
+                self._fds.append(fd)
+            except BaseException as primary:
+                if file is not None:
+                    interruption = _retain_file(self._unpublished_file, file)
+                    if interruption is not None:
+                        _note(primary, "unpublished SSD file ownership repair was interrupted")
+                        raise primary from _cause(primary, interruption)
+                raise
+            opened_stat = os.fstat(fd)
+            if not stat.S_ISREG(opened_stat.st_mode):
+                raise ValueError(f"{path.name}: the n-gram checkpoint must be a regular file")
+            if nocache:
+                _no_cache(fd)
+            size = opened_stat.st_size
+            data, header = read_header_stream(file, SIZES, label=path)
+            descriptors = {(info["dtype"], tuple(info["shape"]), tuple(info["data_offsets"]))
+                           for name, info in header.items() if name != "__metadata__"}
+            opened[path] = (len(self._fds) - 1, data, size, descriptors)
+        return opened[path]
 
     def gather(self, ids: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Validate public IDs once, then gather original checkpoint bytes."""
@@ -232,3 +236,66 @@ class SSDTable:
         self._life.close()
         if self._closer is not None:
             self._closer.detach()
+
+
+class EncodedSSDTable(SSDTable):
+    """BF16/FP8/NVFP4 rows through the same bounded positional I/O/lifetime.
+
+    ``decode`` consumes owned raw uint8 rows and returns decoded BF16 bits.
+    It is the same numerical decoder used by the corresponding mapped table.
+    No full table mapping, page pinning or startup prefetch is performed.
+    """
+
+    def __init__(self, files, kind, decode, *, nocache=True, weight_scale=1.0):
+        self.kind, self.decode = kind, decode
+        self.weight_scale = weight_scale
+        super().__init__(files, nocache=nocache)
+
+    def _layout(self, files, nocache):
+        kinds = {"bf16": (("weight", "BF16", 2),), "fp8": (("weight", "F8_E4M3", 1),),
+                 "nvfp4": (("weight", "U8", 1), ("block scales", "F8_E4M3", 1))}[self.kind]
+        if not files:
+            raise ValueError("the n-gram table has no shards")
+        opened, starts, fidx, bases, widths, total = {}, [0], [], [], None, 0
+        for path, *entries in files:
+            path = Path(path)
+            index, data, size, descriptors = self._opened(path, opened, nocache)
+            if len(entries) != len(kinds):
+                raise ValueError(f"{path.name}: wrong number of encoded n-gram fields")
+            spans = [_span(entry, kind, data, size, path.name) for entry, kind in zip(entries, kinds)]
+            if any((e["dtype"], tuple(e["shape"]), tuple(e["data_offsets"])) not in descriptors for e in entries):
+                raise ValueError(f"{path.name}: encoded n-gram metadata disagrees with its opened checkpoint header")
+            rows, width = spans[0][:2]
+            row_widths = tuple(s[1] for s in spans)
+            if (any(s[0] != rows for s in spans) or widths not in (None, row_widths)
+                    or (self.kind == "nvfp4" and (width % 8 or row_widths[1] * 8 != width))):
+                raise ValueError(f"{path.name}: encoded n-gram row shapes disagree")
+            widths = row_widths
+            total += rows * sum(widths)
+            starts.append(starts[-1] + rows)
+            fidx.append(index)
+            bases.append(tuple(s[2] for s in spans))
+        self.starts, self.fidx, self.bases = (np.array(a, dtype=np.int64) for a in (starts, fidx, bases))
+        self.rows, self.widths = int(starts[-1]), widths
+        self.width = widths[0] // 2 if self.kind == "bf16" else widths[0] * (2 if self.kind == "nvfp4" else 1)
+        self.wrow, self.nbytes = widths[0], total
+        self._fd_of = np.array(self._fds, dtype=np.int64)
+
+    def _gather_flat(self, flat):
+        unique, inverse = np.unique(flat, return_inverse=True)
+        shard = np.searchsorted(self.starts, unique, side="right") - 1
+        local, where = unique - self.starts[shard], self.fidx[shard]
+        outs, reads = [], []
+        for part, width in enumerate(self.widths):
+            out = np.empty((unique.size, width), dtype=np.uint8)
+            outs.append(out)
+            reads += self._reads(where, self.bases[shard, part] + local * width, width, out)
+        batches = min(WORKERS, len(reads))
+        if batches > 1:
+            self._life.parallel(self._pool, _fill, [reads[i::batches] for i in range(batches)])
+        else:
+            _fill(reads)
+        return self.decode(*outs)[inverse]
+
+    def lock(self):
+        return False
