@@ -71,6 +71,7 @@ COPY tests /opt/TensorFold/tests
 COPY deploy /opt/TensorFold/deploy
 COPY tools /opt/TensorFold/tools
 COPY CHANGELOG.md /opt/TensorFold/CHANGELOG.md
+COPY docs/api.md /opt/TensorFold/docs/api.md
 # Private source captures can have 0700/0600 modes; test workers run as a different UID.
 RUN chmod -R a+rX /opt/TensorFold
 WORKDIR /opt/TensorFold

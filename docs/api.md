@@ -291,6 +291,11 @@ support (or Flash Next on two GPUs under `--parallel`), and for a template whose
 choose that path without changing their schemas. TensorFold never retries a strict request without enforcement or
 silently drops its constraints.
 
+Active structured output or strict tools cannot be combined with `ignore_eos: true`; the server returns HTTP 400
+before generation or streaming. A grammar's terminal token ends its guarantee, so continuing past it cannot preserve
+the requested constraint. Ordinary unconstrained requests, non-strict tools and tools disabled by `tool_choice: none`
+retain normal `ignore_eos` behavior.
+
 `response_format.json_schema.strict: true` is checked against the same enforceable subset before compilation;
 unsupported constraints return HTTP 400. The finite-enum uniqueness extension belongs to strict function tools:
 strict response schemas still refuse `uniqueItems: true`. Non-strict and `guided_*` schemas retain xgrammar's native
