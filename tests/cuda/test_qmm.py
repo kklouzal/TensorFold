@@ -27,6 +27,42 @@ def _dequant(words, scales, biases, gs):
     return q * scales.float().repeat_interleave(gs, 1) + biases.float().repeat_interleave(gs, 1)
 
 
+@pytest.mark.parametrize("exponent", [21, 23])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_group_epilogues_preserve_the_exact_cancellation_residual(exponent, sign):
+    """Exact dyadics distinguish the specified FMA order from rounded multiply/add."""
+
+    from fractions import Fraction
+
+    from tensorfold.families.qwen3_5.cuda import qmm as triton_qmm
+    from tensorfold.families.qwen3_5.cuda.distributed import row_partial
+    from tensorfold.families.qwen3_5.cuda.weights import QLinear
+
+    # First group contributes sign*(-1-2^-7+delta). The second contributes
+    # sign*(1-delta)*(1+2^-7), so exact arithmetic leaves -sign*delta*2^-7.
+    # Both group dots and the first accumulator are exactly representable in
+    # FP32; rounding the second product before cancellation erases the residual.
+    delta = Fraction(1, 2**exponent)
+    scale = 1 + Fraction(1, 128)
+    expected = sign * ((-scale + delta) + (1-delta)*scale)
+    assert expected == -sign * delta / 128
+    n, k = 128, 128
+    words = torch.zeros((n, k//8), device="cuda", dtype=torch.int32)
+    words[:, 8] = 0x11  # group1's first two unpacked quantized weights are one
+    scales = torch.zeros((n, k//64), device="cuda", dtype=torch.bfloat16)
+    biases = torch.zeros_like(scales)
+    scales[:, 1] = float(scale)
+    biases[:, 0] = 1
+    x = torch.zeros((1, k), device="cuda", dtype=torch.bfloat16)
+    x[0, 0], x[0, 1], x[0, 2] = -sign, -sign/128, sign*float(delta)
+    x[0, 64], x[0, 65] = sign, -sign*float(delta)
+    want = torch.full((1, n), float(expected), device="cuda", dtype=torch.bfloat16)
+    assert torch.equal(qmm.matmul(x, qmm.pack(words, scales, biases, 64)), want)
+    assert torch.equal(triton_qmm.lane_matmul(x, words, scales, biases), want)
+    partial = row_partial(x, QLinear(words, scales, biases))
+    assert torch.equal(partial, want.float())
+
+
 @pytest.mark.parametrize("n,k,gs", [(48, 5120, 64), (1024, 5120, 64), (5120, 6144, 64), (200, 1024, 32),
                                     (1536, 2048, 32)])
 def test_pack_round_trip(n, k, gs):
