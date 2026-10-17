@@ -129,19 +129,22 @@ def test_the_call_format_comes_from_the_template():
     ("<tool_call>tfprobe_fn</tool_call>", ("<tool_call>", "", "<")),
     ('<tool_call>{"name":"tfprobe_fn","arguments":{}}</tool_call>',
      ("<tool_call>", '{"name":"', '"')),
+    ('<｜DSML｜tool_calls><｜DSML｜invoke name="tfprobe_fn"></｜DSML｜invoke></｜DSML｜tool_calls>',
+     ("<｜DSML｜tool_calls>", '<｜DSML｜invoke name="', '"')),
 ])
 def test_call_format_ignores_probe_names_in_schemas_before_and_after_the_call(call, wanted):
-    from tensorfold.engine.call_gate import call_format
+    from tensorfold.engine.call_gate import CALL_MARKS, call_format
 
     definitions = "tools:tfprobe_fn,other;tfprobe_fn;"
-    assert call_format(definitions + call + definitions, "tfprobe_fn", ["<tool_call>", "<|tool_call>"]) == wanted
+    assert call_format(definitions + call + definitions, "tfprobe_fn", [opener for opener, _ in CALL_MARKS]) == wanted
 
 
 def test_call_format_never_takes_a_name_outside_a_closed_call():
-    from tensorfold.engine.call_gate import call_format
+    from tensorfold.engine.call_gate import CALL_MARKS, call_format
 
-    for before in ("<tool_call>other</tool_call>", "<|tool_call>call:other{}<tool_call|>"):
-        assert call_format(before + "tools:tfprobe_fn;", "tfprobe_fn", ["<tool_call>", "<|tool_call>"]) is None
+    for opener, closer in CALL_MARKS:
+        assert call_format(opener + "other" + closer + "tools:tfprobe_fn;", "tfprobe_fn",
+                           [start for start, _ in CALL_MARKS]) is None
 
 
 def test_call_format_uses_header_name_and_keeps_probe_before_generation_opener():
