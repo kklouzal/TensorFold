@@ -82,8 +82,10 @@ shared blobs only through the snapshot's own repository blob link, a real
 shared `blobs` directory with regular `.huggingface-shared-blobs` marker `1\n`,
 and canonical regular `<2-hex-prefix>/<64-hex-hash>` payloads. Other cache paths
 remain outside its authority. See the [HF layout source](https://github.com/huggingface/huggingface_hub/blob/v1.32.0/src/huggingface_hub/utils/_shared_blobs.py).
-Keep the model, links and cache contents immutable while loading or serving;
-stop readers before modifying or collecting those files.
+Keep the selected model files, their path ancestry and links, the shared marker
+and admitted payloads immutable while loading or serving. Unrelated cache
+entries may change without altering those inputs. Stop their readers before
+modifying or collecting selected files.
 
 Create the cache, temporary and work directories before launch. UID/GID
 1000:1000 needs write and traverse access to those directories, plus read and
@@ -130,7 +132,7 @@ docker compose --env-file deploy/discrete-gpu/.env \
 ```
 
 For a supported multi-GPU model configuration, copy the chosen override and
-use an explicit ordered list. For device requests, the replacement is:
+use an explicit device list. For device requests, the replacement is:
 
 ```yaml
 services:
@@ -144,8 +146,10 @@ For CDI, keep `gpus: !reset []` and `NVIDIA_VISIBLE_DEVICES: void`, and replace
 `devices` with `!override [nvidia.com/gpu=GPU-first-uuid, nvidia.com/gpu=GPU-second-uuid]`.
 Include that file last. This selects visibility only: choose the corresponding
 supported model parallelism and device arguments separately. Check actual
-visible UUIDs inside the container before loading a model; successful Compose
-parsing does not establish GPU availability, execution or multi-GPU correctness.
+visible UUIDs and their CUDA indices inside the container before assigning
+ranks or loading a model. Request-list order alone does not establish that
+mapping. Successful Compose parsing does not establish GPU availability,
+execution or multi-GPU correctness.
 
 ### Set host capacity and restart behavior
 
@@ -187,6 +191,40 @@ an exited service and starts it after a daemon reboot unless manually stopped.
 Ensure Docker starts at boot if using that policy. The optional `on-failure`
 policy does not provide the same daemon-restart behavior. See
 [Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
+## Optional expert ranks and memory policies
+
+The checked-in two-slot EXL3 profile keeps its existing command. Affine4 and
+ModelOpt NVFP4 Flash Next models can instead use the same-host NCCL expert
+launcher: rank zero owns the backbone, KV, HTTP and supported vision, while
+followers load their assigned routed-expert banks. It supports rank-zero shared
+request rounds; tensor-parallel `--tp 2` restrictions remain separate. EXL3
+expert partitioning is refused.
+
+[Desktop remediation contracts and launch examples](../../docs/desktop-report-remediation.md)
+show both explicit UUID and CDI selection, the compatibility launcher before
+rank creation, the trusted Harness rank entrypoint, and an explicit larger
+shared-memory allocation for NCCL. Check each GPU's UUID-to-CUDA-index mapping,
+shard counts, host authority and per-rank memory requirements before choosing
+an asymmetric split. Full two-GPU/SM89 qualification remains separate from the
+single-device visibility checks.
+
+`--vram-experts-pin off|auto|on` defaults to `off`. Registration is opt-in,
+capacity checked and retained through all transfers/consumers; `on` refuses
+startup if it cannot be provided. `--kv-full-windows N` is an explicit reduction
+in simultaneous long-request capacity for automatic RAM experts and at least
+two request slots; it keeps normal precision and can return capacity errors.
+Leaving it unset retains reservation for all slots. Full-context capacity and
+service workspace must still fit on rank zero.
+
+The [packed affine expert cache](../../docs/packed-expert-cache.md) is also
+opt-in. Add `TENSORFOLD_PACKED_EXPERT_CACHE` and
+`TENSORFOLD_PACKED_EXPERT_CACHE_BYTES` explicitly to the container environment
+or a local Compose override; `.env` interpolation variables are not forwarded
+to the container automatically. Put it in service-owned private writable cache
+storage and select a disk quota from the actual checkpoint. NVFP4 and EXL3
+retain their own layouts; format-aware `--ple-on-ssd` supports the documented
+non-EXL3 n-gram formats.
 
 ## Readiness, stop and update
 
