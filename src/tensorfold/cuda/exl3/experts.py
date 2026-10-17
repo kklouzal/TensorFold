@@ -11,7 +11,7 @@ from typing import Sequence
 import torch
 
 CB_3INST, CB_MCG, CB_MUL1 = 0, 1, 2
-ACT_BF16, ACT_F32 = 0, 1          # SwiGLU with the GLM family's bf16 roundings / in fp32
+ACT_BF16, ACT_F32 = 0, 1          # GLM's bf16 SwiGLU and rounded product/add combine / fp32 SwiGLU and FMA combine
 # Half-bits a value: 1..8 bits (2, 4, .. 16) and every half-integer rate 1.5..7.5 (3, 5, .. 15).
 K2_SUPPORTED = tuple(range(2, 17))
 
@@ -213,8 +213,8 @@ def routed(x: torch.Tensor, pick: torch.Tensor, wts: torch.Tensor | None, ex: Ex
         return s.y[:P]
     if out is None:
         out = torch.empty((R, D), dtype=torch.float32, device=x.device)
-    # the down epilogue and the combine in one launch (the same arithmetic in the same order as the two)
-    ext.down_combine(s.z, pick, ex.svh_d, s.y, wts, out, R, P, D, sk, slots, E)
+    # Keep the family's slot-sum rounding: GLM rounds products, FP32 mode contracts them with the addition.
+    ext.down_combine(s.z, pick, ex.svh_d, s.y, wts, out, R, P, D, sk, slots, E, act_mode != ACT_BF16)
     return out
 
 

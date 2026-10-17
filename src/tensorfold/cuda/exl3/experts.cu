@@ -190,7 +190,16 @@ __global__ void combine_kernel(const float* __restrict__ y, const float* __restr
     out[(size_t)r * D + d] = acc;
 }
 
-// down_epilogue_kernel then combine_kernel in one launch, the same arithmetic in the same order (the same bits).
+// GLM's BF16 mode rounds the product before adding it; the FP32 mode uses an FMA.
+// Select the family contract once on the host, with no branch inside the slot sum.
+template <bool FUSED>
+__device__ __forceinline__ float weighted_add(float w, float y, float acc) {
+    if (FUSED) return fmaf(w, y, acc);
+    return __fadd_rn(acc, __fmul_rn(w, y));
+}
+
+// Down epilogue and slot-ordered combine in one launch. Per-slot outputs retain the same bits in both modes.
+template <bool FUSED>
 __global__ void down_combine_kernel(const float* __restrict__ Z, const int* __restrict__ pick,
                                     const half* __restrict__ svh_d, float* __restrict__ y,
                                     const float* __restrict__ wts, float* __restrict__ out, int P, int D, int SK,
@@ -227,10 +236,10 @@ __global__ void down_combine_kernel(const float* __restrict__ Z, const int* __re
     for (int q = 0; q < slots; ++q) {
         const float w = wts[r * slots + q];
         const float4 u = part[q][lane];
-        acc[0] = fmaf(w, u.x, acc[0]);
-        acc[1] = fmaf(w, u.y, acc[1]);
-        acc[2] = fmaf(w, u.z, acc[2]);
-        acc[3] = fmaf(w, u.w, acc[3]);
+        acc[0] = weighted_add<FUSED>(w, u.x, acc[0]);
+        acc[1] = weighted_add<FUSED>(w, u.y, acc[1]);
+        acc[2] = weighted_add<FUSED>(w, u.z, acc[2]);
+        acc[3] = weighted_add<FUSED>(w, u.w, acc[3]);
     }
 #pragma unroll
     for (int j = 0; j < 4; ++j) out[(size_t)r * D + n + j] = acc[j];
@@ -360,12 +369,19 @@ void exl3x_combine_cuda(const at::Tensor& y, const at::Tensor& wts, at::Tensor& 
 
 void exl3x_down_combine_cuda(const at::Tensor& Z, const at::Tensor& pick, const at::Tensor& svh_d, at::Tensor& y,
                              const at::Tensor& wts, at::Tensor& out, int64_t rows, int64_t P, int64_t D, int64_t SK,
-                             int64_t slots, int64_t E) {
+                             int64_t slots, int64_t E, bool fused) {
     TORCH_CHECK(slots <= 32, "at most 32 slots a row");
     dim3 grid((unsigned)rows, (unsigned)(D / 128));
-    down_combine_kernel<<<grid, (unsigned)(32 * slots), 0, at::cuda::getCurrentCUDAStream()>>>(
-        Z.data_ptr<float>(), pick.data_ptr<int>(), reinterpret_cast<const half*>(svh_d.data_ptr()),
-        y.data_ptr<float>(), wts.data_ptr<float>(), out.data_ptr<float>(), (int)P, (int)D, (int)SK, (int)E,
-        (int)slots);
+    if (fused) {
+        down_combine_kernel<true><<<grid, (unsigned)(32 * slots), 0, at::cuda::getCurrentCUDAStream()>>>(
+            Z.data_ptr<float>(), pick.data_ptr<int>(), reinterpret_cast<const half*>(svh_d.data_ptr()),
+            y.data_ptr<float>(), wts.data_ptr<float>(), out.data_ptr<float>(), (int)P, (int)D, (int)SK, (int)E,
+            (int)slots);
+    } else {
+        down_combine_kernel<false><<<grid, (unsigned)(32 * slots), 0, at::cuda::getCurrentCUDAStream()>>>(
+            Z.data_ptr<float>(), pick.data_ptr<int>(), reinterpret_cast<const half*>(svh_d.data_ptr()),
+            y.data_ptr<float>(), wts.data_ptr<float>(), out.data_ptr<float>(), (int)P, (int)D, (int)SK, (int)E,
+            (int)slots);
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

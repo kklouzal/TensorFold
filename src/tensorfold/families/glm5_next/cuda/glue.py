@@ -392,7 +392,7 @@ def select(logits: torch.Tensor, bias: torch.Tensor, pick: torch.Tensor, wts: to
 
 @triton.jit
 def _combine(Y, WTS, OUT, D: tl.constexpr, SLOTS: tl.constexpr, BLOCK: tl.constexpr):
-    """A rank's fp32 MoE share: w_k y_k summed in slot order, shared expert last with weight 1; y is bf16 in prefill."""
+    """A rank's fp32 MoE share: round each w_k y_k before the slot-ordered add; y is bf16 in prefill."""
 
     r = tl.program_id(0)
     c = tl.program_id(1)
@@ -406,4 +406,5 @@ def _combine(Y, WTS, OUT, D: tl.constexpr, SLOTS: tl.constexpr, BLOCK: tl.conste
 def combine(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor) -> None:
     rows, d = out.shape
     block = min(1024, d)
-    _combine[(rows, d // block)](y, wts, out, D=d, SLOTS=wts.shape[1], BLOCK=block, num_warps=4)
+    _combine[(rows, d // block)](y, wts, out, D=d, SLOTS=wts.shape[1], BLOCK=block, num_warps=4,
+                               enable_fp_fusion=False)

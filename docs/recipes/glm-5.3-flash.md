@@ -47,6 +47,11 @@ The expert decoder and BF16 target matmul keep row arithmetic fixed. A quantized
 propose drafts, but target verification retains the BF16 head. EXL3 speed, capacity and long-context
 qualification are TBD [release-0.3.5].
 
+Each CUDA MoE share multiplies an expert's output by its routing weight with
+FP32 rounding, then adds that product to the FP32 accumulator in slot order.
+The shared expert is last. This GLM contract also applies to the shared EXL3
+kernel's BF16 activation mode; its default FP32 mode uses an FMA slot sum.
+
 ### Draft policies
 
 For the affine checkpoint with its MTP head loaded, the default `auto` policy uses MTP for sampled requests.
