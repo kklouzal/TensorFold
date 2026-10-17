@@ -359,13 +359,16 @@ def test_graph_replay_follows_each_steps_experts(tmp_path: Path, monkeypatch) ->
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the loader builds CUDA tensors")
-def test_an_nvfp4_checkpoint_refuses_ple_on_ssd(tmp_path: Path) -> None:
-    """The SSD reader takes the MLX layout's shards only, so --ple-on-ssd on an NVFP4 checkpoint stops by name."""
+def test_an_nvfp4_checkpoint_uses_its_format_on_ssd(tmp_path: Path) -> None:
+    """NVFP4 table rows use positional code/scale reads and the same decoded BF16 bits."""
 
     from tensorfold.families.qwen4_exp.cuda.weights import load
 
-    with pytest.raises(ValueError, match="ple-on-ssd"):
-        load(write(tmp_path / "ssd", ple_nvfp4=True), mtp=True, draft_vocab=None, ple_on_ssd=True)
+    w = load(write(tmp_path / "ssd", ple_nvfp4=True), mtp=True, draft_vocab=None, ple_on_ssd=True)
+    from tensorfold.families.qwen4_exp.ssd_table import EncodedSSDTable
+
+    assert isinstance(w.layers[1].ple.table, EncodedSSDTable)
+    w.meta["ple_tables"].close(torch.cuda.synchronize)
 
 
 def test_an_nvfp4_checkpoint_refuses_two_ranks(tiny: Path, monkeypatch) -> None:
