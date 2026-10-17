@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import torch
 import triton
@@ -12,16 +12,20 @@ import triton.language as tl
 @triton.jit
 def _block_attention(Q, KB, VB, TABLE, LENS, O, scale, window, R,
                      G: tl.constexpr, HKV: tl.constexpr, L: tl.constexpr, LP: tl.constexpr, D: tl.constexpr,
-                     BN: tl.constexpr, CAUSAL: tl.constexpr):
-    """Program (stream j, kv head g): G query heads x L block rows against the context keys a row's window keeps, then the block's keys."""
+                     BN: tl.constexpr, CAUSAL: tl.constexpr, TILED: tl.constexpr, BM: tl.constexpr):
+    """One stream/KV head and optional query tile, preserving each row's complete key reduction."""
 
     j = tl.program_id(0)
     g = tl.program_id(1)
-    M: tl.constexpr = G * LP
+    M: tl.constexpr = BM if TILED else G * LP
     rows = tl.arange(0, M)
+    if TILED:
+        rows = tl.program_id(2) * M + rows
     head = g * G + rows // LP
     r = rows % LP
     live = r < L
+    if TILED:
+        live = live & (rows < G * LP)
     d = tl.arange(0, D)
     qrow = (j * L + r).to(tl.int64)
     q = tl.load(Q + head[:, None].to(tl.int64) * R * D + qrow[:, None] * D + d[None, :], mask=live[:, None], other=0.0)
@@ -99,9 +103,15 @@ def block_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, keys: Seq
     table, lens = dev[:2 * streams], dev[2 * streams:].to(torch.int32)
     out = torch.empty((rows, heads * dim), dtype=torch.bfloat16, device=q.device)
     group = heads // kv_heads
-    _block_attention[(streams, kv_heads)](q, k, v, table, lens, out, scale, window, rows, G=group, HKV=kv_heads,
-                                          L=length, LP=max(16, triton.next_power_of_2(length)), D=dim,
-                                          BN=64, CAUSAL=causal, num_warps=4, num_stages=2)
+    padded = max(16, triton.next_power_of_2(length))
+    # Existing <=64KiB query/probability tiles retain their original launch.
+    # Larger blocks split only queries; each query still reduces all keys in order.
+    tiled = group * padded * max(dim, padded) > 32768
+    query_tile = 128
+    grid = (streams, kv_heads, triton.cdiv(group * padded, query_tile)) if tiled else (streams, kv_heads)
+    _block_attention[grid](q, k, v, table, lens, out, scale, window, rows, G=group, HKV=kv_heads,
+                           L=length, LP=padded, D=dim, BN=64, CAUSAL=causal, TILED=tiled, BM=query_tile,
+                           num_warps=4, num_stages=2)
     return out
 
 
