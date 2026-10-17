@@ -102,6 +102,7 @@ class Layout:
     control_host_bytes: int = 0
     automatic: bool = False
     loading_device_bytes: int = 0
+    authority_allocations: tuple[int, ...] = ()
 
     def transform(self, resident):
         """Exclude expert projections; the fixed GPU pool is admitted as resident_extra."""
@@ -210,9 +211,13 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
     # One expert's exact CPU bit packing or GPU draft-only quantization at a
     # time. Quantization's eight-magnitude temporary dominates this bound.
     loading = max(64 * 2**20, 128 * width * dims + 8 * entry)
-    return Layout(entry, slots, slots * entry, count * entry, 2 * entry, loading,
+    e = text["num_experts"]
+    tiles = (width // 32) * (dims // 32) * 144 * 4
+    allocations = (e * 2 * tiles, e * tiles, e * 8, e * 4) * len(banks)
+    return Layout(entry, slots, slots * entry, sum(allocations), 2 * entry, loading,
                   "nvfp4", automatic=gib == "auto",
-                  loading_device_bytes=loading if any(b.startswith("mtp.") for b in banks) else 0)
+                  loading_device_bytes=loading if any(b.startswith("mtp.") for b in banks) else 0,
+                  authority_allocations=allocations)
 
 
 def exl3_expert_tensor(name: str) -> bool:

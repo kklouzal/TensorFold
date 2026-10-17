@@ -25,7 +25,8 @@ def test_nvfp4_ram_layout_sizes_exact_payload_and_keeps_shared_resident(tmp_path
     layout = ram_experts.layout(model, "auto")
     entry = 3 * (128 // 32) * (512 // 32) * 144 * 4 + 32
     assert layout.format == "nvfp4" and layout.entry_bytes == entry
-    assert layout.host_bytes == 6 * entry and layout.slots == 1
+    assert layout.host_bytes == 6 * (entry - 20) and layout.slots == 1
+    assert sum(layout.authority_allocations) == layout.host_bytes and len(layout.authority_allocations) == 12
     assert layout.loading_device_bytes >= 128 * 128 * 512
     transform = layout.transform(lambda *_: (99, 0))
     assert transform("model.layers.0.mlp.experts.0.gate_proj.weight", {}) == (0, 0)
