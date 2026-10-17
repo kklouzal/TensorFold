@@ -248,7 +248,7 @@ def test_follower_refuses_absolute_cap_before_any_expert_payload_allocation(monk
     monkeypatch.setattr(capacity, "host_stream_bytes", lambda: 1 << 30)
     monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda: 1 << 30)
     events = []
-    session = SimpleNamespace(_receive=lambda key: b"ready", _ensure_reader=lambda: events.append("metadata"),
+    session = SimpleNamespace(budget=1, _receive=lambda key: b"ready", _ensure_reader=lambda: events.append("metadata"),
                               layout=SimpleNamespace(host_bytes=0, staging_bytes=0, loading_bytes=0,
                                                      metadata_host_bytes=0, gpu_bytes=60, loading_device_bytes=1),
                               workspace_bytes=40,
@@ -260,14 +260,14 @@ def test_follower_refuses_absolute_cap_before_any_expert_payload_allocation(monk
     assert events == ["metadata", {"abort": True}]
 
 
+@pytest.mark.parametrize("headroom", [0, 512 * 2**20])
 @pytest.mark.parametrize("outcome", ["bounded", "live-overflow", "physical-shortage", "reusable-reservation"])
-def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(monkeypatch, outcome):
+def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(monkeypatch, outcome, headroom):
     """Independent byte balances; mock allocator accounting is not multi-GPU execution evidence."""
     from tensorfold.cuda import capacity
-    from tensorfold.families.qwen4_exp.ram_experts import AUTO_HEADROOM_BYTES
     mib = 1 << 20
     fixed, workspace, cell, slack = 64 * mib, 32 * mib, 16 * mib, 7 * mib
-    cap = fixed + AUTO_HEADROOM_BYTES + workspace + 3 * cell + slack
+    cap = fixed + headroom + workspace + 3 * cell + slack
     monkeypatch.setenv(capacity.LIMIT_ENV, str(cap / (1 << 30)))
     state = {"allocated": fixed, "spare": 0, "free": 2 << 30}
     allocations = []
@@ -276,7 +276,7 @@ def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(mo
         state["allocated"] += size + (8 * mib if outcome == "live-overflow" else 0)
         state["free"] -= size
         if outcome in ("physical-shortage", "reusable-reservation"):
-            state["free"] = AUTO_HEADROOM_BYTES
+            state["free"] = headroom
             # Non-releasable free fragments within allocated CUDA blocks can
             # satisfy later tensor allocations while empty_cache retains them.
             state["spare"] = workspace - (1 if outcome == "physical-shortage" else 0)
@@ -285,6 +285,7 @@ def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(mo
                               memory_allocated=lambda: state["allocated"],
                               memory_reserved=lambda: state["allocated"] + state["spare"]))
     follower = object.__new__(Follower)
+    follower.expert_headroom_bytes = headroom
     follower.session = SimpleNamespace(torch=runtime, workspace_bytes=workspace,
                                        cache=SimpleNamespace(entry_bytes=cell, score_history_entries=128,
                                                              configure_before_use=allocate))
@@ -293,7 +294,7 @@ def test_follower_auto_cache_honors_absolute_live_cap_and_postallocation_room(mo
             follower._configure_auto_experts()
     else:
         follower._configure_auto_experts()
-        assert state["allocated"] + AUTO_HEADROOM_BYTES + workspace <= cap
+        assert state["allocated"] + headroom + workspace <= cap
         assert follower.session.auto_pool_decision["explicit_device_limit_bytes"] == cap
     assert allocations == [3 * cell]  # independent cap balance admits exactly three whole cells
 

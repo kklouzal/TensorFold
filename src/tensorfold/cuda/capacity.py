@@ -247,6 +247,32 @@ def reserve_bytes(total: int, *, host: bool = False) -> int:
     return int(gib * GIB)
 
 
+def cuda_reserve_bytes(total: int, *, default: int | None = None) -> int:
+    """Discrete CUDA's floor; an explicit device override may be zero.
+
+    Unset preserves the legacy global reserve, or a caller's existing explicit
+    default. This policy never changes host/unified memory reservations.
+    """
+    if type(total) is not int or total < 0:
+        raise ValueError("CUDA memory size must be nonnegative integer bytes")
+    value = os.environ.get("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB")
+    if value is None:
+        if default is not None and (type(default) is not int or not 0 <= default <= total):
+            raise ValueError("default CUDA memory reserve must be integer bytes within device memory")
+        return reserve_bytes(total) if default is None else default
+    try:
+        gib = float(value)
+    except ValueError:
+        gib = math.nan
+    if not math.isfinite(gib) or gib < 0:
+        raise ValueError(f"TENSORFOLD_CUDA_MEMORY_RESERVE_GIB={value}: finite GiB from 0 to device memory size")
+    numerator, denominator = gib.as_integer_ratio()
+    scaled = numerator * GIB
+    if scaled > total * denominator:
+        raise ValueError(f"TENSORFOLD_CUDA_MEMORY_RESERVE_GIB={value}: finite GiB from 0 to device memory size")
+    return scaled // denominator
+
+
 def host_stream_bytes() -> int | None:
     """Host staging room, with a 2-GiB default reserve or the explicit startup reserve override."""
 
@@ -348,11 +374,16 @@ def available_bytes(torch, *, reserve: int | None = None) -> int:
     free, total = map(int, torch.cuda.mem_get_info())
     if reserve is not None and (type(reserve) is not int or not 0 <= reserve <= total):
         raise ValueError("explicit CUDA memory reserve must be integer bytes within device memory")
-    memory = _meminfo() if unified(torch) else None
+    integrated = unified(torch)
+    memory = _meminfo() if integrated else None
     if memory is not None:
         granted = memory["MemAvailable"] - (reserve_bytes(memory["MemTotal"], host=True) if reserve is None else reserve)     # one pool: page cache counts as free
+    elif integrated:
+        # Missing /proc data retains the unified fallback's legacy floor;
+        # a discrete-only override must not lower a shared host reservation.
+        granted = free - (reserve_bytes(total) if reserve is None else reserve)
     else:
-        granted = free - (reserve_bytes(total) if reserve is None else reserve)        # a discrete card (or no /proc/meminfo): the floor comes off the card
+        granted = free - cuda_reserve_bytes(total, default=reserve)        # a discrete card (or no /proc/meminfo): the floor comes off the card
     limit = cuda_limit_bytes()
     return max(0, min(granted, limit)) if limit is not None else max(0, granted)
 

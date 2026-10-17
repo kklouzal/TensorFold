@@ -124,16 +124,15 @@ def test_all_blocked_decoders_end_newest_explicitly_and_oldest_finishes_its_full
     assert dec.memory_gate.ends == 1 and dec.memory_gate.held <= room
 
 
+@pytest.mark.parametrize("headroom", [0, 512 * 2**20])
 @pytest.mark.parametrize("windows,selected", [(None, 4), (1, 1), (2, 2), (9, 4)])
 @pytest.mark.parametrize("cap", [None, 0.5, 6, 8])
 @pytest.mark.parametrize("overallocate", [False, True])
 def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
-        windows, selected, cap, overallocate, capsys, monkeypatch):
+        headroom, windows, selected, cap, overallocate, capsys, monkeypatch):
     from tensorfold.cuda.capacity import LIMIT_ENV
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
     from tensorfold.families.qwen4_exp.cuda.prompt_plan import POINTS
-    from tensorfold.families.qwen4_exp.ram_experts import AUTO_HEADROOM_BYTES
-
     gib, entry = 2**30, 2**20
     if cap is None:
         monkeypatch.delenv(LIMIT_ENV, raising=False)
@@ -165,6 +164,7 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
             layer_bytes=lambda rows: gib // 4, rec=Array(), conv=Array(), ple_tail=Array())
     engine = FlashNextEngine.__new__(FlashNextEngine)
     engine.kv_full_windows = windows
+    engine.expert_headroom_bytes = headroom
     engine.w = NS(meta={"expert_cache": cache}, cfg=NS(streams=4, hidden=64), mtp=object(), head=NS(n=4096), x3=None)
     engine.multi = NS(free=[st] * 4, keep=8, pbuf=NS(rows=16))
     engine.capacity_plan = {"vram_experts": {"gpu_bytes": entry, "control_device_bytes": 0},
@@ -196,7 +196,7 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
     assert result["layer_resize_overlap_bytes"] == gib // 4
     assert result["kept_snapshot_count"] == snapshots and result["snapshot_bytes"] == snapshots * snapshot_bytes
     assert result["unallocated_workspace_bytes"] == result["prompt_transient_bytes"] == transient
-    assert result["reserved_bytes"] == AUTO_HEADROOM_BYTES + selected * gib + gib // 4 + snapshots * snapshot_bytes + transient
+    assert result["reserved_bytes"] == headroom + selected * gib + gib // 4 + snapshots * snapshot_bytes + transient
     assert engine.multi.memory_gate.room == selected * gib + gib // 4
     assert engine.multi.memory_gate.allow_lone_growth is (windows is None)
     assert result["policy"] == ("remaining-device-bytes-after-fixed-service-state-v1" if windows is None else
@@ -207,8 +207,14 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
     assert result["available_bytes"] == (15 * gib if cap is None else (cap - 1) * gib)
     if cap is not None:
         assert allocated[0] + result["reserved_bytes"] <= cap * gib
-    assert engine.capacity_plan["serving_peak_bytes_estimate"] == allocated[0] + result["reserved_bytes"] - AUTO_HEADROOM_BYTES
-    assert ("request errors possible" in capsys.readouterr().out) is (windows is not None)
+    assert engine.capacity_plan["serving_peak_bytes_estimate"] == allocated[0] + result["reserved_bytes"] - headroom
+    output = capsys.readouterr().out
+    assert ("request errors possible" in output) is (windows is not None)
+    assert f"{headroom / 2**20:g} MiB headroom" in output
+    assert result["headroom_bytes"] == headroom
+    before = engine.multi.memory_gate.live()
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "15")
+    assert engine.multi.memory_gate.live() == before  # policy is selected once, not read during growth.
 
 
 @pytest.mark.torch

@@ -517,3 +517,99 @@ def test_capacity_null_layout_keeps_arithmetic_pattern(tmp_path):
     actual = config(tmp_path)
     assert "layer_types" not in actual
     assert layer_counts(actual) == (3, 1)
+
+
+@pytest.mark.parametrize("value,expected", [("0", 0), ("-0.0", 0), ("0.125", 2**27), ("16", 16 * 2**30)])
+def test_cuda_reserve_override_accepts_zero_fraction_and_exact_device_size(monkeypatch, value, expected):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", value)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == expected
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == expected
+    assert capacity.reserve_bytes(64 * capacity.GIB, host=True) == 8 * capacity.GIB
+
+
+@pytest.mark.parametrize("value", ["", " ", "bad", "true", "nan", "inf", "-inf", "-1", "16.00001", "1e300"])
+def test_cuda_reserve_rejects_nonfinite_negative_and_oversize_values(monkeypatch, value):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", value)
+    with pytest.raises(ValueError, match="TENSORFOLD_CUDA_MEMORY_RESERVE_GIB"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB)
+
+
+def test_unset_cuda_reserve_preserves_global_and_explicit_caller_defaults(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", raising=False)
+    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == 4 * capacity.GIB
+    assert capacity.cuda_reserve_bytes(64 * capacity.GIB) == math.ceil(64 * capacity.GIB / 10)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == 512 * 2**20
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=0) == 0
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == 8 * capacity.GIB
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == 512 * 2**20
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "0")
+    with pytest.raises(ValueError, match="TENSORFOLD_MEMORY_RESERVE_GIB"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB)
+
+
+@pytest.mark.parametrize("integrated", [False, True])
+def test_cuda_zero_and_host_eight_reserves_are_independent(monkeypatch, integrated):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+                              get_device_properties=lambda device: SimpleNamespace(is_integrated=integrated)))
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemTotal": 64 * gib, "MemAvailable": 26 * gib})
+    monkeypatch.delenv(capacity.LIMIT_ENV, raising=False)
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.available_bytes(runtime) == (18 if integrated else 24) * gib
+    assert capacity.host_stream_bytes() == 18 * gib
+    if not integrated:
+        assert capacity.available_bytes(runtime, reserve=2 * gib) == 24 * gib
+    monkeypatch.setenv(capacity.LIMIT_ENV, "17")
+    assert capacity.available_bytes(runtime) == 17 * gib
+
+
+def test_cuda_reserve_avoids_float_overflow_and_checks_exact_upper_bound(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "1e300")
+    assert capacity.cuda_reserve_bytes(10**400) == int(1e300) * capacity.GIB
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "16")
+    with pytest.raises(ValueError, match="device memory"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB - 1)
+
+
+def test_unified_missing_meminfo_still_ignores_the_discrete_override(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+                              get_device_properties=lambda device: SimpleNamespace(is_integrated=True)))
+    monkeypatch.setattr(capacity, "_meminfo", lambda: None)
+    monkeypatch.delenv(capacity.LIMIT_ENV, raising=False)
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.available_bytes(runtime) == 16 * gib
+
+
+@pytest.mark.parametrize("total,default", [(True, None), (-1, None), (16 * 2**30, True),
+                                           (16 * 2**30, -1), (16 * 2**30, 17 * 2**30)])
+def test_cuda_reserve_validates_dynamic_default_geometry_when_selected(monkeypatch, total, default):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", raising=False)
+    with pytest.raises(ValueError, match="CUDA memory"):
+        capacity.cuda_reserve_bytes(total, default=default)
+
+
+def test_cuda_override_is_selected_before_an_unused_caller_default(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.cuda_reserve_bytes(256 * 2**20, default=512 * 2**20) == 0

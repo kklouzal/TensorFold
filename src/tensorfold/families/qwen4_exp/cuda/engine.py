@@ -174,13 +174,16 @@ class FlashNextEngine:
         numeric_capacity = {}
         ram_layout = None
         if vram_experts is not None:
+            from tensorfold.cuda.capacity import Geometry, cuda_reserve_bytes
+
             from ..ram_experts import AUTO_HEADROOM_BYTES, layout, plan_scratch
-            from tensorfold.cuda.capacity import Geometry
             from .prompt_plan import IDLE_ROWS
 
             ram_layout = expert_session.layout if expert_session is not None else layout(model_dir, vram_experts, mtp=mtp)
             if automatic_experts:
-                automatic_capacity = {"memory_reserve": AUTO_HEADROOM_BYTES}
+                self.expert_headroom_bytes = cuda_reserve_bytes(int(torch.cuda.mem_get_info()[1]),
+                                                               default=AUTO_HEADROOM_BYTES)
+                automatic_capacity = {"memory_reserve": self.expert_headroom_bytes}
             weight_rule = ram_layout.transform(weight_rule)
             loading_device = getattr(ram_layout, "loading_device_bytes", 0)
             if loading_device:
@@ -538,11 +541,13 @@ class FlashNextEngine:
         explicit --kv-full-windows shares that many full windows across slots,
         with no lone-stream escape from the selected growth budget.
         """
-        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes, reserved_growth
+        from tensorfold.cuda.capacity import cuda_limit_bytes
+
+        from ..ram_experts import auto_pool_bytes, reserved_growth
         from .prompt_plan import POINTS
-        from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
 
         cache = self.w.meta["expert_cache"]
+        headroom = self.expert_headroom_bytes
         decoder = self.multi if streams > 1 else self.e
         states = self.multi.free if streams > 1 else [self.e.st, self.serial.st]
         state = states[0]
@@ -582,25 +587,28 @@ class FlashNextEngine:
         room = free if limit is None else max(0, min(free, limit - accounted))
         control = 32 if hasattr(cache, "control_device_bytes") else 0
         decision = auto_pool_bytes(room, cache.entry_bytes, cache.score_history_entries, control_bytes=control,
-                                   growth_bytes=growth + overlap, snapshot_bytes=snapshots, workspace_bytes=transient)
+                                   growth_bytes=growth + overlap, snapshot_bytes=snapshots, workspace_bytes=transient,
+                                   headroom_bytes=headroom)
         cache.configure_before_use(decision["gpu_bytes"])
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         final_free, final_total = map(int, torch.cuda.mem_get_info())
         final_allocated = int(torch.cuda.memory_allocated())
         final_spare = int(torch.cuda.memory_reserved()) - final_allocated
-        future = AUTO_HEADROOM_BYTES + growth + overlap + snapshots + transient
-        if (final_total != total or final_free < AUTO_HEADROOM_BYTES
+        future = headroom + growth + overlap + snapshots + transient
+        if (final_total != total or final_free < headroom
                 or final_free + final_spare < future
                 or (limit is not None and final_allocated + future > limit)):
             raise MemoryError("automatic expert pool cannot retain its declared full service workspace")
         if streams > 1:
             from tensorfold.cuda.memory_gate import MemoryGate, torch_live
 
-            raw_live = torch_live(torch, lambda runtime: available_bytes(runtime, reserve=0))
+            # Auto is discrete-only. Read raw device free bytes so the selected
+            # headroom is charged once and cannot change with the environment.
+            raw_live = torch_live(torch, lambda runtime: int(runtime.cuda.mem_get_info()[0]))
             # _grow already charges its one-layer copy overlap in fits(extra).
             self.multi.memory_gate = MemoryGate(growth + overlap, reserve=0,
-                                                live=lambda: max(0, raw_live() - AUTO_HEADROOM_BYTES),
+                                                live=lambda: max(0, raw_live() - headroom),
                                                 allow_lone_growth=self.kv_full_windows is None)
         if self.kv_full_windows is not None:
             decision["policy"] = "remaining-device-bytes-after-fixed-service-state-shared-kv-v1"
@@ -643,7 +651,7 @@ class FlashNextEngine:
         print(f"[tensorfold] RAM experts auto: {cache.host_bytes / 2**30:.2f} GiB {authority}, "
               f"{cache.gpu_bytes / 2**30:.2f} GiB GPU pool ({cache.resident_capacity} resident cells, "
               f"{cache.capacity} experts per lease); "
-              f"{reservation} and {retained} snapshots reserved, 512 MiB headroom", flush=True)
+              f"{reservation} and {retained} snapshots reserved, {headroom / 2**20:g} MiB headroom", flush=True)
 
     @property
     def kv_dtype(self) -> str:
