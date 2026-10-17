@@ -39,9 +39,8 @@ the refusal is retained as historical evidence before the new reader below.
 
 Headers show **18,119,639,040 bytes (16.88 GiB)** of routed expert payload,
 before shared experts, backbone, state or KV. Fully resident execution therefore
-cannot fit the 16 GB card. This family would require both an NVFP4 MoE reader
-and a suitable RAM-expert path; Flash Next's `--vram-experts` does not configure
-this model. The installed CLI test exposed no GPU and stopped before weight
+cannot fit the 16 GB card. The historical image lacked this family's NVFP4 MoE
+reader and RAM-expert path. The installed CLI test exposed no GPU and stopped before weight
 loading. No decoder, GPU admission, OOM, model-quality or throughput pass is
 claimed by that historical run. The [receipt](../verification-heretic-a3b-20261017.json) preserves the
 input identities, installed refusal, size evidence and verification limits.
@@ -69,16 +68,21 @@ YaRN rotary configuration. It is separate from a native MTP head. TensorFold rea
 its metadata and weights through owned code; checkpoint Python is never imported.
 Default draft linears keep BF16 storage. Explicit `--drafter-bits 4` changes only
 proposals; the target verifies every committed token. `0` or `16` selects BF16 on
-this CUDA path. `--draft-rows N` overrides the metadata block width, from 2 through
-128 on one stream and at most 16 with `--parallel`. `--mtp-drafts` selects the
+this CUDA path. With a secondary, `--draft-rows N` overrides the metadata block
+width, from 2 through 128 on one stream and at most 16 with `--parallel`.
+Without a secondary, width 1 is also valid. `--mtp-drafts` selects the
 affine model's native MTP path and does not apply to this separate model.
 
 ```bash
 tensorfold serve /models/heretic-nvfp4 --backend cuda --name heretic \
-  --drafter /models/qwen36-dflash --context 4096 --vram-experts auto
+  --drafter /models/qwen36-dflash --context 4096 --vram-experts auto \
+  --draft-rows 8 --drafter-bits 16 --vram-experts-pin on
 ```
 
-The example's context is an explicit operator choice. Without a context override,
+The example uses the measured single-request profile on the 16 GB Blackwell;
+registration must pass host admission. The secondary's metadata default remains
+16 rows, and registration defaults to `off`. Context and eight draft rows are
+explicit operator choices. Without a context override,
 normal capacity admission applies; a larger admitted context can leave a smaller
 expert pool. `--no-drafts` and request field `"draft": false` use the serial target
 reference. An automatically resolved drafter is used only when the family's
@@ -108,9 +112,15 @@ startup and retires owned resources. Failed retirement retains its owners for
 explicit cleanup. Calls after a
 successful close fail before native execution or output mutation.
 
-Native component checks have passed on the RTX PRO 2000 Blackwell host. Full-model
-quality, throughput selection and immutable installed-image qualification remain
-pending; no new tokens/s result is claimed here yet.
+Installed source `099eb4d0` passed native component checks and full-model serial,
+drafted and seeded token identity on the RTX PRO 2000 Blackwell. The eight-row
+BF16 profile reached about 37 tok/s with a 7.29 GiB expert pool. A balanced
+54-reply comparison retained identical 512-token outputs and work counts across
+the original and prepared vocabulary heads. The conditional paired analysis and
+its assumptions, source/image identities, API coverage and limitations are in
+the [qualification](../qwen36-ct-nvfp4-validation.md). These results establish
+same-target execution identity, rather than general answer quality or parity
+with another runtime.
 
 Concurrent prompt prefill runs the routed MoE over the aggregate batch with the
 same BF16 post-attention boundary as separate prefills. Each stream retains its
@@ -119,8 +129,10 @@ the aggregate prompt rows by the admitted forward limit, including while other
 streams decode. Routed batched prefill supports one GPU. The SM120 BF16
 vocabulary head keeps its ordered singleton arithmetic while reusing weights
 for the seven- and fifteen-row DFlash proposal tails; prompt projection is
-unchanged. Fresh installed numerical, concurrency and performance checks for
-these increments remain pending.
+unchanged. Fresh installed checks cover the aggregate row bound, independent
+per-stream state, and four concurrent 512-token replies equal to the serial
+reference. That separate four-slot/four-row profile completed 2,048 tokens at
+57.70 aggregate client tok/s; it is not the single-request profile above.
 
 ## Mac execution
 

@@ -334,6 +334,13 @@ function requests and four strict JSON requests pass the shared boundary validat
 exhaustive model quality, actual two-GPU execution, ARM64/GB10 behavior or MLX execution for this change. The Mac
 server shares admission, grammar and reader code; its native engine remains unrun.
 
+The later installed Heretic CT NVFP4 qualification at source `099eb4d0` exercises
+the actual checkpoint's XML `True`/`False`/`None` scalar template. Ordinary and
+streamed strict calls preserve booleans, nulls and the literal strings `"True"`
+and `"None"`; strict JSON, prefix reuse, cancellation/recovery and four concurrent
+512-token replies also pass. The [model-specific record](qwen36-ct-nvfp4-validation.md)
+keeps this single-GPU CUDA scope separate from the earlier Flash Next results.
+
 ## Reasoning
 
 On both backends, `reasoning_effort: none` disables thinking; other effort values enable it and reach the chat

@@ -373,8 +373,8 @@ change the generic image defaults or authorize sharing native caches with AMD64.
 The Dockerfile defaults `MAX_JOBS` to eight. Set `--build-arg MAX_JOBS=N` when
 building or `-e MAX_JOBS=N` when running to choose a bounded compiler worker
 count appropriate to that host's CPU and memory. This setting does not prove
-that a compiler used every worker. The small verification examples below use
-one worker to limit memory peaks. New Torch versions use OS advisory
+that a compiler used every worker. The verification examples below leave
+container CPU and RAM quotas unset. New Torch versions use OS advisory
 locks: a persistent unlocked `lock` file is normal and must not be deleted as a
 recovery step. TensorFold emits old stale-file guidance only for the audited
 FileBaton implementation.
@@ -500,14 +500,17 @@ CPU verification, from the repository root:
 ```bash
 docker buildx build --load --target verification \
   --tag tensorfold-gb10-fork:verification --file deploy/gb10/Dockerfile .
-docker run --rm --network none --memory 3g --memory-swap 3g --pids-limit 512 \
-  --cpus 2 -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
+docker run --rm --network none \
+  -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
   tensorfold-gb10-fork:verification \
+  -o pythonpath=tests \
   tests/test_native_ssd.py tests/test_harness_tokenizer.py \
   tests/test_qwen4_exp_yarn.py -q
 ```
 
-The native SSD tests use synthetic, isolated files and an independent byte
+The `pythonpath` override selects the installed wheel while retaining test
+helpers. The development setting adds `src`, which would shadow the wheel's
+native extension in this container. The native SSD tests use synthetic, isolated files and an independent byte
 oracle. Harness tests use the native request preparation with a small tokenizer,
 including oversized counts, image expansion, validation, framing, and bounded
 preparation, plus discovery metadata: template fingerprint precedence;
@@ -519,11 +522,12 @@ Synthetic CUDA verification uses the NGC entrypoint to enable the same driver
 compatibility setup as the runtime image. It allocates no full model weights:
 
 ```bash
-docker run --rm --network none --gpus all --memory 4g --memory-swap 4g \
-  --pids-limit 256 --cpus 2 -e MAX_JOBS=1 -e OMP_NUM_THREADS=1 \
+docker run --rm --network none --gpus all \
+  -e MAX_JOBS=8 -e OMP_NUM_THREADS=1 \
   -e OPENBLAS_NUM_THREADS=1 \
   --entrypoint python3 \
   tensorfold-gb10-fork:verification /opt/harness/cuda_entrypoint.py python3 -m pytest \
+  -o pythonpath=tests \
   tests/cuda/test_flashnext_yarn.py tests/cuda/test_flashnext_vision.py \
   tests/cuda/test_flashnext_forward.py tests/cuda/test_grammar_mask.py \
   tests/cuda/test_vision_patch_conv.py -q

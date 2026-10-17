@@ -11,13 +11,13 @@ change can be verified.
 
 **Desktop integration (2026-10-17):** Flash Next CUDA adds optional expert-authority registration, shared KV-window reservation, affine packed-expert persistence, ModelOpt NVFP4 RAM-backed experts and format-aware SSD n-gram reads. Same-host NCCL expert ranks can partition affine/NVFP4 routed experts while rank zero retains the backbone, concurrent requests and supported vision. Registration and persistence remain opt-in. [Contracts, deployment and validation scope](docs/desktop-report-remediation.md) distinguish implementation from installed-image, full-checkpoint and multi-GPU qualification. Historical results below retain their recorded source/image identities.
 
-**Qwen MoE CT NVFP4 implementation (2026-10-17):** original compressed-tensors NVFP4 experts and their native activation math now have a separate CUDA loader, resident/RAM expert banks and a DFlash v1 draft adapter. The [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1) records the hardware restrictions, flags and pending full-model/installed-image qualification. Existing affine native-MTP execution keeps its own arithmetic and defaults.
+**Qwen MoE CT NVFP4 qualification (2026-10-17):** the original `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` export now runs with RAM-backed experts and its separate DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell. Installed source `099eb4d0` completed serial/drafted identity, strict tools/JSON, streaming, cancellation and four concurrent 512-token replies. The eight-row BF16 draft profile reached about **37 tok/s** in the balanced single-request comparison; four concurrent requests completed at **57.70 aggregate client tok/s** in a separate profile. [Conditions, immutable images and limits](docs/qwen36-ct-nvfp4-validation.md) retain the numerical contracts and conditional performance analysis. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
-Concurrent Qwen prompt batches now run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head also reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Final installed concurrency and performance qualification of these increments remains pending.
+Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 
-Required-tool format discovery now follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. The existing HTTP enforcement regressions pass without changing their assertions; installed-image qualification of this correction is pending.
+Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
-CUDA strict tools also recognize exact XML templates that render scalar `True`, `False` and `None`, while preserving canonical JSON containers and API arguments. Ambiguous nullable raw strings and unsupported formats are refused before generation. An unfinished strict call reports `stop` or `length`, preserving partial streaming evidence; it is not marked as a completed tool turn. Installed-model qualification remains pending.
+CUDA strict tools recognize exact XML templates that render scalar `True`, `False` and `None`, while preserving canonical JSON containers and API arguments. Ambiguous nullable raw strings and unsupported formats are refused before generation. An unfinished strict call reports `stop` or `length`, preserving partial streaming evidence. Installed Heretic checks verified scalar booleans/null and literal strings through ordinary and streamed strict calls.
 
 Installed local checks passed **7,994 CPU cases** and cover **2,049 distinct CUDA cases** through the full non-matrix run and complete corrected module. Both trained EXL3 registration policies, strict tools, concurrent replies, three-format exactness and the installed Harness launcher passed. The [desktop receipt](docs/verification-desktop-report-20261017.json) records the corrected fixtures and exact images. Actual two-GPU and mixed-architecture execution require separate hardware qualification.
 
@@ -227,6 +227,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Nemotron 3.5 Lightning | `Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit` | MLX, CUDA | Included MTP; context copies on MLX |
 | Qwen3.8-27B dense | `Vontra/Qwen3.8-27B-MLX-4bit` | MLX, CUDA | `z-lab/Qwen3.8-27B-DFlash2`; optional on MLX |
 | Qwen3.6-35B-A3B MoE | `Vontra/Qwen3.6-35B-A3B-MLX-4bit-MTP` | MLX, CUDA | Included MTP; see the [recipe](docs/recipes/qwen3.6-moe.md) |
+| Qwen3.6-35B-A3B CT NVFP4 | `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` | CUDA SM12, one GPU; discrete RAM expert pool when needed | Separate `z-lab/Qwen3.6-35B-A3B-DFlash` v1; [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1) |
 | Qwen3.8 Flash Next | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` | MLX, CUDA | Included MTP and context copies |
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit` | MLX | Context copies; optional `z-lab/gemma-4-26B-A4B-it-DFlash` |
@@ -300,7 +301,8 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--parallel N\|auto` | `auto`: MLX up to 8 while projected memory fits; CUDA 1. Explicit shared-round support is family/rank-specific. |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
-| `--drafter-bits N` | `4`; 0 retains BF16 draft linears. |
+| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `4` quantizes proposals only. |
+| `--draft-rows N` | CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. 0 disables MTP drafts. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
@@ -319,9 +321,9 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 
 | Flags | Default / contract |
 | --- | --- |
-| `--vram-experts GIB\|auto` | Unset: resident experts. Flash Next affine4/group-32, EXL3 or ModelOpt NVFP4 CUDA; bounded VRAM expert cache backed by immutable system-RAM authority. Affine4/NVFP4 also support expert ranks. |
+| `--vram-experts GIB\|auto` | Flash Next: unset means resident experts; affine4/group-32, EXL3 or ModelOpt NVFP4 support a bounded RAM-backed pool, with expert ranks for affine4/NVFP4. Qwen CT NVFP4 automatically selects RAM experts when its minimum resident state cannot fit; see its [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1). |
 | `--vram-experts-pin off\|auto\|on` | `off`: pageable authority. With supported CUDA RAM experts, `auto` admits host registration or retains pageable bytes on explicit capacity/capability refusal; `on` requires registration. Unknown driver/cleanup failures remain errors. |
-| `--kv-full-windows N` | Unset: reserve every slot's full window. Positive N shares that many full growth windows with `--vram-experts auto`, `--parallel >=2`, `--tp 1`; reduced simultaneous long-request capacity can cause explicit capacity errors. |
+| `--kv-full-windows N` | Flash Next CUDA only. Unset: reserve every slot's full window. Positive N shares that many full growth windows with `--vram-experts auto`, `--parallel >=2`, `--tp 1`; reduced simultaneous long-request capacity can cause explicit capacity errors. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
 | `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. |
@@ -702,15 +704,13 @@ These checks identify their executed image and scope. Each row retains its recor
 | `TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP`, `2b170fa6309d5d1ee380b35636075fac7945f286` | GB10/SM 121, 128 GB unified memory; historical deployment | Resident-weight API/restart, four-concurrent/repeated, tool/vision/video checks. YaRN-2 had one bounded 523,882-token prompt plus 18-token retrieval; see the deployment guide for limits. |
 
 The GB10's **`AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4`** checkpoint was copied
-to the 16 GB Blackwell host and independently verified against every pinned
-publisher hash. Its installed CLI check **refused the unsupported NVFP4 MoE
-format before loading**; this is not a successful inference qualification.
-Routed expert payload alone is 16.88 GiB. The new reader has a bounded RAM-expert
-path with one padded upload per missed expert and grouped native FP4 activation
-math; resident and cached banks use the same arithmetic implementation. Its
-final installed-image and performance qualification is pending. This is a
-35B-A3B model, distinct from Qwen3.8-27B dense.
-See the [model-specific result](docs/recipes/qwen3.6-moe.md#heretic-nvfp4-host-check).
+to the 16 GB Blackwell host and verified against every pinned publisher hash.
+The historical `8cf97219` CLI refusal remains recorded. The new installed
+`099eb4d0` reader successfully ran the full model with RAM-backed experts:
+one padded upload per missed expert and the same grouped native FP4 activation
+math as resident banks. Routed payload alone is 16.88 GiB. This is a 35B-A3B
+model, distinct from Qwen3.8-27B dense. See the
+[qualification and reproducible profile](docs/qwen36-ct-nvfp4-validation.md).
 
 ### Earlier installed CLI/API qualification
 

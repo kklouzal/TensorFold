@@ -1,0 +1,4279 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "scope": "Installed original compressed-tensors NVFP4 Qwen3.6 MoE and separate DFlash v1 qualification on one Linux AMD64 SM120 host. Source/image-specific composite; no service deployment.",
+  "qualification_status": "completed for source099 and recorded regions; conditional performance interpretation retained",
+  "qualified_runtime_revision": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+  "source_tree": "dd00865f73d64ecd3fb359e365d644c74f71942e",
+  "source_uid": "a9f5b9dee32129ec444ee09900503908e3f08ecad29b320786c6abb3fa7ee025",
+  "source_archive_sha256": "4e681b0f1262821ab91cdeba29a0eb212817b2ff86bb526a49b5b5950a588b69",
+  "runtime_image": "sha256:4337064296a99de5eadfc82ff2029112efc9268fe1f26cfb7399191582d82657",
+  "verification_image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+  "wheel_sha256": "c3dc9449018b7597bdf28baae7c8aa30561427919302135f78b481794a16f15b",
+  "base_image": "nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:f86c199a302a3a7405d5f055adf1311cd660e85d8a66cf452be6eb45d5768639",
+  "artifact_identity": "Both source099 image audits matched530 installed package files and the same wheel/native_fd_owner. Verification adds tests/development inputs; completed API/copy/native/CPU run source-bound to907, completed formal run source-bound to433. No source overlays or installed dependency edits.",
+  "installed_audits": {
+    "runtime": {
+      "source": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+      "source_uid": "a9f5b9dee32129ec444ee09900503908e3f08ecad29b320786c6abb3fa7ee025",
+      "target": "runtime",
+      "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
+      "matched": 530,
+      "missing_readmes": [
+        "families/README.md",
+        "families/qwen3_5/cuda/README.md",
+        "kernels/README.md"
+      ],
+      "baked_files_matched": 541,
+      "native_fd_owner": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so",
+      "native_fd_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+      "native_fd_owner_source_sha256": "e4f9e18724e1747d8b6ce5a67d8d228fa08fa14f695739acfd0b5bd1629d8db0",
+      "wheel": "/opt/fork-wheel/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+      "wheel_sha256": "c3dc9449018b7597bdf28baae7c8aa30561427919302135f78b481794a16f15b",
+      "python": "3.12.3",
+      "machine": "x86_64",
+      "packages": {
+        "tensorfold": "0.6.6",
+        "torch": "2.16.0.dev20261006+cu134",
+        "triton": "3.9.0+gitaad2a60d",
+        "xgrammar": "0.2.8",
+        "tokenizers": "0.23.1",
+        "jinja2": "3.1.6",
+        "numpy": "2.1.0",
+        "huggingface-hub": "1.24.0",
+        "nvidia-nccl-cu13": "2.30.7",
+        "transformers": "5.17.0"
+      },
+      "nccl": {
+        "native_version": 23007,
+        "loader_name": "libnccl.so.2",
+        "loaded_paths": [
+          "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+        ]
+      },
+      "cuda_available": false,
+      "model_or_gpu_qualification": false
+    },
+    "verification": {
+      "source": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+      "source_uid": "a9f5b9dee32129ec444ee09900503908e3f08ecad29b320786c6abb3fa7ee025",
+      "target": "verification",
+      "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
+      "matched": 530,
+      "missing_readmes": [
+        "families/README.md",
+        "families/qwen3_5/cuda/README.md",
+        "kernels/README.md"
+      ],
+      "baked_files_matched": 1255,
+      "native_fd_owner": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so",
+      "native_fd_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+      "native_fd_owner_source_sha256": "e4f9e18724e1747d8b6ce5a67d8d228fa08fa14f695739acfd0b5bd1629d8db0",
+      "wheel": "/opt/fork-wheel/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+      "wheel_sha256": "c3dc9449018b7597bdf28baae7c8aa30561427919302135f78b481794a16f15b",
+      "python": "3.12.3",
+      "machine": "x86_64",
+      "packages": {
+        "tensorfold": "0.6.6",
+        "torch": "2.16.0.dev20261006+cu134",
+        "triton": "3.9.0+gitaad2a60d",
+        "xgrammar": "0.2.8",
+        "tokenizers": "0.23.1",
+        "jinja2": "3.1.6",
+        "numpy": "2.1.0",
+        "huggingface-hub": "1.24.0",
+        "nvidia-nccl-cu13": "2.30.7",
+        "transformers": "5.17.0"
+      },
+      "nccl": {
+        "native_version": 23007,
+        "loader_name": "libnccl.so.2",
+        "loaded_paths": [
+          "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+        ]
+      },
+      "cuda_available": false,
+      "model_or_gpu_qualification": false
+    }
+  },
+  "models": {
+    "target": {
+      "repo": "AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4",
+      "revision": "3d05c6063e82cdae8dd1b9362116ea71be8d1439",
+      "local_directory": "/home/kklouzal/models/AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4/3d05c6063e82cdae8dd1b9362116ea71be8d1439",
+      "files": [
+        {
+          "file": ".gitattributes",
+          "bytes": 1570,
+          "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+        },
+        {
+          "file": "README.md",
+          "bytes": 29755,
+          "sha256": "661349eecc765f46764e10c17dcaee7d955b1b029a7b58896fd460b1a9a65058"
+        },
+        {
+          "file": "chat_template.jinja",
+          "bytes": 8057,
+          "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+        },
+        {
+          "file": "config.json",
+          "bytes": 23139,
+          "sha256": "77c1f9f1db3bb9f1ec9fcfb7fe96442b8e43d526dc25758c41457b08faa5aa2c"
+        },
+        {
+          "file": "generation_config.json",
+          "bytes": 213,
+          "sha256": "252e0efee3ded327704912616f3493a227cdc39eb4bab52fcae1ceb3ed5dc890"
+        },
+        {
+          "file": "model.safetensors",
+          "bytes": 23354242448,
+          "sha256": "c9301dfd497b6d2bd11045897bb56aadc5e5de72ee8fbdad1a4be28dfeafc797"
+        },
+        {
+          "file": "preprocessor_config.json",
+          "bytes": 390,
+          "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+        },
+        {
+          "file": "recipe.yaml",
+          "bytes": 474,
+          "sha256": "731e768a97eb5a911c917b2fe72053f2676c7e1eb764e84422e7d94acfb94de2"
+        },
+        {
+          "file": "tokenizer.json",
+          "bytes": 19989442,
+          "sha256": "6a0316e38d81a31965b770393461dcc03612ac06e2733f8e1cc440d36a2ef189"
+        },
+        {
+          "file": "tokenizer_config.json",
+          "bytes": 1166,
+          "sha256": "4fa2244ff8ef610f55bb0f593d2fb96789adf059228693d1cf7ec4aa0ea39f56"
+        },
+        {
+          "file": "video_preprocessor_config.json",
+          "bytes": 385,
+          "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+        }
+      ],
+      "total_bytes": 23374297039,
+      "prior_verification_receipt": "/home/kklouzal/tensorfold-qwen27-test-20261017/heretic-verification-v2.json",
+      "transfer_receipt": "/home/kklouzal/tensorfold-qwen27-test-20261017/heretic-transfer-receipt.json",
+      "publisher_inventory_receipt": "/home/kklouzal/tensorfold-qwen27-test-20261017/metadata/heretic-inventory.json",
+      "scope": "Prior publisher-matched independent post-transfer verification; no new model file hash or current file-stat audit in this packet"
+    },
+    "secondary": {
+      "repo": "z-lab/Qwen3.6-35B-A3B-DFlash",
+      "revision": "42d3b34d588423cdae7ba8f53a8cf7789346a719",
+      "local_directory": "/home/kklouzal/models/z-lab/Qwen3.6-35B-A3B-DFlash/42d3b34d588423cdae7ba8f53a8cf7789346a719",
+      "files": [
+        {
+          "file": ".gitattributes",
+          "bytes": 1580,
+          "sha256": "b2e477ac11e8f8ae6bf3c94b172c2b32c132d8a251d3e93a9895cccc754354f1",
+          "identity": [
+            36,
+            157321188,
+            1580,
+            1779316610453814140,
+            1792259009571833445
+          ]
+        },
+        {
+          "file": "README.md",
+          "bytes": 5837,
+          "sha256": "d7356a01881d84e2986e8c127d4ffc85ca9a03504e9c170e73258a409e89796a",
+          "identity": [
+            36,
+            157321189,
+            5837,
+            1779316610827815899,
+            1792259009571876803
+          ]
+        },
+        {
+          "file": "assets/dflash_system.png",
+          "bytes": 338153,
+          "sha256": "bea1f82796909c1e4f7261ee3c08af743ec3c25057b83fca918808b76af4a7dc",
+          "identity": [
+            36,
+            157321194,
+            338153,
+            1779316611486818999,
+            1792259017648911594
+          ]
+        },
+        {
+          "file": "assets/speedup.png",
+          "bytes": 66921,
+          "sha256": "0f1b16c20ccce188749a0e9054d596d35986395c55cbe2ab6b79eb75c51c8045",
+          "identity": [
+            36,
+            157321195,
+            66921,
+            1779316610499814356,
+            1792259017649341298
+          ]
+        },
+        {
+          "file": "config.json",
+          "bytes": 1324,
+          "sha256": "d2be70579f0b8e7b109e776dbf14bd88ac5be115d2dabbb20e6373988939f410",
+          "identity": [
+            36,
+            157321190,
+            1324,
+            1779316610512814417,
+            1792259009571907290
+          ]
+        },
+        {
+          "file": "dflash.py",
+          "bytes": 8345,
+          "sha256": "80d58268f8839a22cad42516cc95d127b79fca194d25ee7a8cc4d610bc8f560e",
+          "identity": [
+            36,
+            157321191,
+            8345,
+            1779316610356813683,
+            1792259009571947867
+          ]
+        },
+        {
+          "file": "model.safetensors",
+          "bytes": 948000184,
+          "sha256": "6db5c712b4f3d924026162ad1aedf7fd1fef32437690451137f967d9b7160144",
+          "identity": [
+            36,
+            157321192,
+            948000184,
+            1779316638266944860,
+            1792259017646038011
+          ]
+        }
+      ],
+      "total_bytes": 948422344,
+      "publication_receipt": "dflash/publication.json",
+      "verification_receipts": [
+        "dflash/verification-normal.json",
+        "dflash/verification-optimized.json"
+      ],
+      "architecture": "DFlash v1 block diffusion; TensorFold-owned implementation, not native MTP/dense DFlash2",
+      "scope": "Prior independent normal/-O content verification and atomic publication; no weight rehash"
+    },
+    "eos": [
+      248044,
+      248046
+    ],
+    "chat_template_sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+  },
+  "host": {
+    "platform": "Linux AMD64",
+    "gpu": "NVIDIA RTX PRO 2000 Blackwell",
+    "compute_capability": [
+      12,
+      0
+    ],
+    "gpu_count": 1,
+    "cuda_total_device_memory_bytes": 16584343552,
+    "device_memory_label": "16 GB nominal",
+    "kernel_driver": "595.91.07",
+    "compatibility_driver": "615.71.09",
+    "swap_bytes": 0
+  },
+  "runtime": {
+    "distribution_versions": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0",
+      "huggingface-hub": "1.24.0",
+      "nvidia-nccl-cu13": "2.30.7",
+      "transformers": "5.17.0"
+    },
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "nccl": {
+      "native_version": 23007,
+      "loader_name": "libnccl.so.2",
+      "loaded_paths": [
+        "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+      ]
+    },
+    "cuda_image_version": "13.4.1.012",
+    "cuda_compat_driver_version": "615.71.09",
+    "kernel_driver_version": "595.91.07",
+    "model_probe_runtime": {
+      "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+      "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.39",
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0",
+      "cuda": "13.4",
+      "source_revision": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+      "gpu": "NVIDIA RTX PRO 2000 Blackwell",
+      "device_uuid": "953e0462-dfab-541a-e631-573d64f8c5ad",
+      "compute_capability": [
+        12,
+        0
+      ],
+      "device_total_bytes": 16584343552,
+      "memory_policy": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "TENSORFOLD_CUDA_MEMORY_LIMIT_GB": null
+      }
+    }
+  },
+  "numerical_contract": {
+    "target_format": "Original compressed-tensors nvfp4-pack-quantized; original packed FP4 weights, UE4M3 block-scale bytes and projection-specific FP32 calibration values retained",
+    "input_quantization": "Uses each original CT FP32 input-global multiplier directly; reciprocal reconstruction is not an equivalent transform",
+    "output_calibration": "Separately FP32-rounded input/weight reciprocals and their FP32 product preserve the documented target epilogue",
+    "bf16_exclusions": "Routers, shared gate and excluded backbone/embedding/vocabulary-head projections retain BF16 storage/arithmetic",
+    "swiglu": "BF16 SiLU result followed by BF16 product before the down projection",
+    "determinism": "Same target math/build and keyed sampling across tested serial/drafted/batched full-model runs with RAM-backed experts; resident-versus-cached equality is qualified by native component-bank cases, not a fully resident35B full-model run",
+    "cross_runtime_bit_identity": false,
+    "general_model_quality_benchmark": false,
+    "fully_resident_35b_full_model_run": false
+  },
+  "profiles": {
+    "single_request_formal": {
+      "backend": "cuda",
+      "precision": "checkpoint",
+      "context": 4096,
+      "context_is_explicit_override": true,
+      "streams": 1,
+      "draft_rows": 8,
+      "secondary_bits": 16,
+      "vram_experts": "auto",
+      "vram_experts_pin": "on",
+      "thinking": false,
+      "target_kv": "family default; no alternate KV codec requested",
+      "cached_experts": "eager; host-backed A4 banks are not CUDA-graph capturable",
+      "expert_pool": {
+        "gpu_bytes": 7828427264,
+        "host_bytes": 18120048640,
+        "cells": 4424
+      },
+      "expert_layout": {
+        "format": "ct-nvfp4-a4",
+        "entry_bytes": 1769536,
+        "slots": 1,
+        "gpu_bytes": 1769536,
+        "host_authority_bytes": 18120048640,
+        "pinned_staging_payload_bound_bytes": 4194304,
+        "loading_bytes": 335544320,
+        "header_metadata_bound_bytes": 384041638,
+        "cache_control_host_bound_bytes": 6424577,
+        "authority_padding_bytes": 409600,
+        "authority_allocation_count": 40,
+        "upload_fields_per_expert_miss": 1,
+        "source_filesystem_working_bytes": 67108864,
+        "safetensors_header_bytes": 17532336,
+        "largest_safetensors_header_bytes": 17532336,
+        "native_runtime_workspace_bytes": 5308416,
+        "logical_expert_count": 10240,
+        "banks": 40,
+        "automatic": true,
+        "capturable": false
+      },
+      "capacity_plan": {
+        "native_window": 262144,
+        "requested_context": 4096,
+        "explicit_context": true,
+        "context_window": 4096,
+        "cache_slots": 4104,
+        "budget_bytes": 15847915520,
+        "weight_bytes_estimate": 5271923200,
+        "loading_bytes_estimate": 41943040,
+        "mapped_table_bytes": 0,
+        "cache_workspace_bytes_estimate": 2682663284,
+        "startup_peak_bytes_estimate": 5313866240,
+        "serving_peak_bytes_estimate": 7954586484,
+        "total_bytes_estimate": 7954586484,
+        "full_mapped_working_set_bytes_estimate": 7954586484,
+        "mapped_pages_reclaimable": true,
+        "mapped_tables_resident": null,
+        "largest_window": 61407
+      },
+      "pool_reservations": {
+        "policy": "qwen-ct-nvfp4-after-fixed-state-v1",
+        "raw_free_bytes": 10512760832,
+        "existing_pool_bytes": 1769536,
+        "existing_pool_not_credited": true,
+        "future_kv_bytes": 92454912,
+        "future_snapshot_bytes": 386334720,
+        "future_target_workspace_bytes": 860746100,
+        "future_draft_workspace_bytes": 1343127552,
+        "device_reserve_bytes": 0,
+        "reserved_bytes": 2682663284,
+        "slots": 4424,
+        "requested_pool_bytes": 7828427264,
+        "new_allocation_bound_bytes": 7828668416,
+        "replace_pool": true,
+        "transaction_free_after_reservations_bytes": 1429132,
+        "final_free_after_reservations_bytes": 3198668,
+        "snapshot_is_reservation": false,
+        "allocator": {
+          "policy": "native-round512-divisions-observed-segment-v1",
+          "backend": "native",
+          "device": 0,
+          "large_segment_bytes": 20971520,
+          "expandable_segments": false,
+          "roundup_power2_divisions": {
+            "1": 0,
+            "2": 0,
+            "4": 0,
+            "8": 0,
+            "16": 0,
+            "32": 0,
+            "64": 0,
+            "128": 0,
+            "256": 0,
+            "512": 0,
+            "1024": 0,
+            "2048": 0,
+            "4096": 0,
+            "8192": 0,
+            "16384": 0,
+            "32768": 0
+          },
+          "bootstrap_requested_bytes": 1769536,
+          "bootstrap_rounded_bytes": 1769984,
+          "torch_version": "2.16.0.dev20261006+cu134",
+          "torch_git": "1a66f68165eb1685c14874588d9a2e0cd475e116",
+          "allocator_settings": {
+            "PYTORCH_CUDA_ALLOC_CONF": "",
+            "expandable_segments": false,
+            "garbage_collection_threshold": 0.0,
+            "graph_capture_record_stream_reuse": false,
+            "max_cached_size": -1,
+            "max_round_threshold": -1,
+            "max_split_size": -1,
+            "pinned_num_register_threads": 1,
+            "pinned_use_cuda_host_register": false,
+            "release_lock_on_cudamalloc": false,
+            "roundup_power2_divisions": {
+              "1": 0,
+              "1024": 0,
+              "128": 0,
+              "16": 0,
+              "16384": 0,
+              "2": 0,
+              "2048": 0,
+              "256": 0,
+              "32": 0,
+              "32768": 0,
+              "4": 0,
+              "4096": 0,
+              "512": 0,
+              "64": 0,
+              "8": 0,
+              "8192": 0
+            }
+          },
+          "proof": "first-device-allocator-tensor; fixed allocator configuration",
+          "bound": "additional physical reservation; no cached-storage credit"
+        }
+      },
+      "gpu_memory_reserve_gib": 0,
+      "absolute_cuda_memory_cap": null
+    },
+    "four_request_api": {
+      "backend": "cuda",
+      "precision": "checkpoint",
+      "context": 4096,
+      "streams": 4,
+      "draft_rows": 4,
+      "secondary_bits": 16,
+      "vram_experts": "auto",
+      "vram_experts_pin": "on",
+      "thinking": false,
+      "expert_pool_cells": 2447,
+      "expert_pool_bytes": 4330054592,
+      "timing_scope": "separate API client-wall observation, not the single-request formal region"
+    },
+    "fresh_copy_only": {
+      "context": 4096,
+      "streams": 1,
+      "draft_rows": 16,
+      "secondary_present": false,
+      "allow_copy": true,
+      "vram_experts_pin": "on",
+      "expert_pool": {
+        "cells": 5714,
+        "bytes": 10111128704,
+        "gib": 9.416722416877747
+      },
+      "same_engine_draft_false_reference": true
+    }
+  },
+  "resource_policy": {
+    "host_floor_bytes": 8589934592,
+    "host_floor_sampling_seconds": 0.25,
+    "continuous_reservation": false,
+    "container_ram_quota": null,
+    "container_swap_quota": null,
+    "cpu_quota": null,
+    "pid_quota": null,
+    "memlock": "unlimited",
+    "stack": "unlimited",
+    "gpu_device_request": "all available on the one-GPU host; no absolute CUDA-memory cap",
+    "proof": "Actual Docker PID update and identity-bound live memory/cpu/pids ancestor cgroup proof before the stdlib-only child readiness barrier releases work",
+    "gpu_model_environment": {
+      "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+      "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+      "MAX_JOBS": "8"
+    },
+    "cpu_verification_environment": "NVIDIA_VISIBLE_DEVICES=void; inference-memory reserve/cap variables absent; OMP/OPENBLAS/MKL thread settings1 are not OS quotas",
+    "shm": "Per-run ceiling from initial MemAvailable minus8GiB, not a preallocation or RAM cap",
+    "execution": "GPU/CPU qualification jobs serialized using the same owned host lock; host GPU clocks/power/temperature sampled, clocks not locked",
+    "runs": [
+      {
+        "path": "runner/run-final-cpu-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "cpu",
+        "minimum_sampled_mem_available_bytes": 54328668160,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-cpu-coupled-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "cpu",
+        "minimum_sampled_mem_available_bytes": 54502191104,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-cpu-startup-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "cpu",
+        "minimum_sampled_mem_available_bytes": 53826543616,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-native-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "gpu",
+        "minimum_sampled_mem_available_bytes": 41226944512,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-native-admit-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "gpu",
+        "minimum_sampled_mem_available_bytes": 53932662784,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-copy-512-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "gpu",
+        "minimum_sampled_mem_available_bytes": 34796650496,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-api-long-099",
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "gpu",
+        "minimum_sampled_mem_available_bytes": 34331910144,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      },
+      {
+        "path": "runner/run-final-formal-width8-099",
+        "image": "sha256:4337064296a99de5eadfc82ff2029112efc9268fe1f26cfb7399191582d82657",
+        "role": "gpu",
+        "minimum_sampled_mem_available_bytes": 34752368640,
+        "host_floor_bytes": 8589934592,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": []
+      }
+    ],
+    "minimum_current_qualification_mem_available_bytes": 34331910144,
+    "all_recorded_owned_runs_closed": true,
+    "all_recorded_owned_runs_no_oom": true,
+    "all_recorded_cleanup_error_lists_empty": true,
+    "quota_scope": "Actual Docker RAM/swap/CPU/PID configuration plus complete live ancestor cgroup memory/cpu/pids proof; unrelated OS/global limits are not claimed"
+  },
+  "gates": {
+    "fresh_application_cpu": {
+      "application_passes": 1175,
+      "private_formal_control_passes": 18,
+      "breakdown": [
+        {
+          "gate": {
+            "path": "runner/run-final-cpu-099",
+            "result": "pass",
+            "exit": 0,
+            "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+            "role": "cpu",
+            "role_provenance": "explicit receipt",
+            "mode": "installed",
+            "source_overlay": false,
+            "argv": [
+              "python3",
+              "-m",
+              "pytest",
+              "-q",
+              "-ra",
+              "--tb=short",
+              "-o",
+              "pythonpath=tests",
+              "-o",
+              "cache_dir=/evidence/pytest-cache",
+              "tests/test_allocation_bound.py",
+              "tests/test_cuda_batch_admit.py",
+              "tests/test_cuda_capacity.py",
+              "tests/test_cuda_capacity_boundary.py",
+              "tests/test_cuda_capacity_index_targets_source.py",
+              "tests/test_cuda_metadata_bindings.py",
+              "tests/test_cuda_parallel_admission.py",
+              "tests/test_cuda_scheduler_close.py",
+              "tests/test_cuda_scheduler_startup_source.py",
+              "tests/test_deployment_pins.py",
+              "tests/test_http_cancelled_response.py",
+              "tests/test_http_chunked_boundary.py",
+              "tests/test_http_connection_lifetime.py",
+              "tests/test_http_request_bodies.py",
+              "tests/test_http_request_framing.py",
+              "tests/test_http_service_limits.py",
+              "tests/test_qwen27_growing_caches_host.py",
+              "tests/test_qwen27_kv_limit.py",
+              "tests/test_qwen27_prompt_end_cache_host.py",
+              "tests/test_qwen27_prompt_end_template.py",
+              "tests/test_qwen27_startup_metadata.py",
+              "tests/test_qwen27_stream_depth.py",
+              "tests/test_qwen27b_eos.py",
+              "tests/test_qwen36_dflash.py",
+              "tests/test_qwen36_family.py",
+              "tests/test_qwen36_head_and_shared_format.py",
+              "tests/test_qwen36_head_policy.py",
+              "tests/test_qwen36_load_controls.py",
+              "tests/test_qwen36_load_lifetime.py",
+              "tests/test_qwen36_moe_rows.py",
+              "tests/test_qwen36_mtp.py",
+              "tests/test_qwen36_mtp_snapshot_control.py",
+              "tests/test_qwen36_nvfp4_load_controls.py",
+              "tests/test_qwen_moe_batched_prefill_control.py",
+              "tests/test_qwen_moe_nvfp4_engine.py",
+              "tests/test_qwen_moe_ram_experts.py",
+              "tests/test_strict_constraints.py",
+              "tests/test_strict_scalar_tools.py",
+              "tests/test_strict_tools.py",
+              "tests/test_verification_public_permissions.py"
+            ],
+            "owned_cid": "ef7dfcb17bd44e36b4fc292feee540bbed166683385368422e256e3eeb1cb708",
+            "state": {
+              "Status": "exited",
+              "Running": false,
+              "ExitCode": 0,
+              "OOMKilled": false,
+              "Error": ""
+            },
+            "ownership_unresolved": false,
+            "cleanup_errors": [],
+            "monitor_error": null,
+            "host_floor_bytes": 8589934592,
+            "minimum_sampled_mem_available_bytes": 54328668160,
+            "live_unlimited_ancestor_cgroup_proof": true,
+            "resource_environment": {
+              "MAX_JOBS": "8",
+              "NVIDIA_VISIBLE_DEVICES": "void"
+            },
+            "pytest": {
+              "passed": 1014,
+              "skipped": 6,
+              "warnings": 2,
+              "seconds": 178.32,
+              "raw_summary": "1014 passed, 6 skipped, 2 warnings in 178.32s (0:02:58)",
+              "skip_reasons": [
+                "SKIPPED [1] tests/test_qwen36_moe_rows.py:8: could not import 'mlx.core': No module named 'mlx'",
+                "SKIPPED [1] tests/test_qwen36_mtp.py:7: could not import 'mlx.core': No module named 'mlx'",
+                "SKIPPED [1] tests/test_qwen27_prompt_end_template.py:77: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)",
+                "SKIPPED [1] tests/test_qwen27_prompt_end_template.py:86: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)",
+                "SKIPPED [2] tests/test_qwen27_prompt_end_template.py:96: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)"
+              ]
+            }
+          },
+          "application_passes": 1014,
+          "private_passes": 0
+        },
+        {
+          "gate": {
+            "path": "runner/run-final-cpu-coupled-099",
+            "result": "pass",
+            "exit": 0,
+            "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+            "role": "cpu",
+            "role_provenance": "explicit receipt",
+            "mode": "installed",
+            "source_overlay": false,
+            "argv": [
+              "python3",
+              "-m",
+              "pytest",
+              "-q",
+              "-ra",
+              "--tb=short",
+              "-o",
+              "pythonpath=tests /payload",
+              "-o",
+              "cache_dir=/evidence/pytest-cache",
+              "tests/test_cuda_failed_admission.py",
+              "tests/test_cuda_priority.py",
+              "tests/test_cuda_27b_ignore_eos.py",
+              "/payload/test_head_width_perf_probe.py"
+            ],
+            "owned_cid": "dbfd4064309b6fec37aecef70eb71920b6fab393514c8c8c5b80328071d664f2",
+            "state": {
+              "Status": "exited",
+              "Running": false,
+              "ExitCode": 0,
+              "OOMKilled": false,
+              "Error": ""
+            },
+            "ownership_unresolved": false,
+            "cleanup_errors": [],
+            "monitor_error": null,
+            "host_floor_bytes": 8589934592,
+            "minimum_sampled_mem_available_bytes": 54502191104,
+            "live_unlimited_ancestor_cgroup_proof": true,
+            "resource_environment": {
+              "MAX_JOBS": "8",
+              "NVIDIA_VISIBLE_DEVICES": "void"
+            },
+            "pytest": {
+              "passed": 61,
+              "skipped": 0,
+              "warnings": 0,
+              "seconds": 3.66,
+              "raw_summary": "61 passed in 3.66s",
+              "skip_reasons": []
+            }
+          },
+          "application_passes": 43,
+          "private_passes": 18
+        },
+        {
+          "gate": {
+            "path": "runner/run-final-cpu-startup-099",
+            "result": "pass",
+            "exit": 0,
+            "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+            "role": "cpu",
+            "role_provenance": "explicit receipt",
+            "mode": "installed",
+            "source_overlay": false,
+            "argv": [
+              "python3",
+              "-m",
+              "pytest",
+              "-q",
+              "-ra",
+              "--tb=short",
+              "-o",
+              "pythonpath=tests",
+              "-o",
+              "cache_dir=/evidence/pytest-cache",
+              "tests/test_qwen_nvfp4_startup.py",
+              "tests/test_qwen_draft_taps.py",
+              "tests/test_dense_tp_frame_boundary.py",
+              "tests/test_cuda_geometry.py"
+            ],
+            "owned_cid": "fb525ac00c47fd3e3ccb3faa6eacf270946233db141f9c37eac662711f6026fb",
+            "state": {
+              "Status": "exited",
+              "Running": false,
+              "ExitCode": 0,
+              "OOMKilled": false,
+              "Error": ""
+            },
+            "ownership_unresolved": false,
+            "cleanup_errors": [],
+            "monitor_error": null,
+            "host_floor_bytes": 8589934592,
+            "minimum_sampled_mem_available_bytes": 53826543616,
+            "live_unlimited_ancestor_cgroup_proof": true,
+            "resource_environment": {
+              "MAX_JOBS": "8",
+              "NVIDIA_VISIBLE_DEVICES": "void"
+            },
+            "pytest": {
+              "passed": 118,
+              "skipped": 0,
+              "warnings": 0,
+              "seconds": 2.86,
+              "raw_summary": "118 passed in 2.86s",
+              "skip_reasons": []
+            }
+          },
+          "application_passes": 118,
+          "private_passes": 0
+        }
+      ],
+      "split_provenance": "Coupled raw61 = owner-assigned43 application +18 private formal controls; argv separates three app modules and one private module",
+      "application_module_groups_disjoint_verified": true,
+      "application_module_counts": [
+        40,
+        3,
+        4
+      ],
+      "full_099_suite_claim": false,
+      "warning_disposition": "2 inherited torch allocator FutureWarnings, same existing warning class as240"
+    },
+    "fresh_selected_native": {
+      "selected_gate": {
+        "path": "runner/run-final-native-099",
+        "result": "pass",
+        "exit": 0,
+        "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+        "role": "gpu",
+        "role_provenance": "explicit receipt",
+        "mode": "installed",
+        "source_overlay": false,
+        "argv": [
+          "python3",
+          "-m",
+          "pytest",
+          "-q",
+          "-ra",
+          "--tb=short",
+          "-o",
+          "pythonpath=tests",
+          "-o",
+          "cache_dir=/evidence/pytest-cache",
+          "tests/cuda/test_nvfp4_a4_experts.py",
+          "tests/cuda/test_nvfp4_checkpoint.py",
+          "tests/cuda/test_nvfp4_scale_boundary.py",
+          "tests/cuda/test_qwen36_dflash.py",
+          "tests/cuda/test_qwen27_draft_attention.py",
+          "tests/cuda/test_qwen27_b16.py",
+          "tests/cuda/test_qwen36_head.py",
+          "tests/cuda/test_qwen_moe_prefill_batch.py",
+          "tests/cuda/test_qwen27_prefill_batch.py",
+          "tests/cuda/test_qwen36_moe.py::test_prefill_chunks_give_the_same_state_and_head_cache",
+          "tests/cuda/test_qwen27_multi.py::test_streams_keep_decoding_while_a_prompt_prefills",
+          "tests/cuda/test_qwen27_multi.py::test_prompts_resume_a_shared_start_and_equal_fresh",
+          "tests/test_qwen36_head_policy.py"
+        ],
+        "owned_cid": "4d6e931c07bdd1068bf00499bbba783796b4b1a16ef32e7a6df5b6532d98e128",
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": [],
+        "monitor_error": null,
+        "host_floor_bytes": 8589934592,
+        "minimum_sampled_mem_available_bytes": 41226944512,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "resource_environment": {
+          "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+          "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+          "MAX_JOBS": "8",
+          "NVIDIA_VISIBLE_DEVICES": "all"
+        },
+        "pytest": {
+          "passed": 113,
+          "skipped": 1,
+          "warnings": 0,
+          "seconds": 337.18,
+          "raw_summary": "113 passed, 1 skipped in 337.18s (0:05:37)",
+          "skip_reasons": [
+            "SKIPPED [1] tests/cuda/test_qwen27_b16.py:117: second compatible CUDA device unavailable"
+          ]
+        }
+      },
+      "scope": "Selected native/coupled gate, not whole CUDA suite; includes13 head CPU cases also in fresh CPU group, so do not add counts",
+      "dense_pretrained_admission": {
+        "gate": {
+          "path": "runner/run-final-native-admit-099",
+          "result": "pass",
+          "exit": 0,
+          "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+          "role": "gpu",
+          "role_provenance": "explicit receipt",
+          "mode": "installed",
+          "source_overlay": false,
+          "argv": [
+            "python3",
+            "-m",
+            "pytest",
+            "-q",
+            "-ra",
+            "--tb=short",
+            "-o",
+            "pythonpath=tests",
+            "-o",
+            "cache_dir=/evidence/pytest-cache",
+            "tests/cuda/test_qwen27_batch_admit.py"
+          ],
+          "owned_cid": "7cf2cd12a1556c8a439521d86662accfb02c2d61040bcb774abd2007f6a1706f",
+          "state": {
+            "Status": "exited",
+            "Running": false,
+            "ExitCode": 0,
+            "OOMKilled": false,
+            "Error": ""
+          },
+          "ownership_unresolved": false,
+          "cleanup_errors": [],
+          "monitor_error": null,
+          "host_floor_bytes": 8589934592,
+          "minimum_sampled_mem_available_bytes": 53932662784,
+          "live_unlimited_ancestor_cgroup_proof": true,
+          "resource_environment": {
+            "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+            "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+            "MAX_JOBS": "8",
+            "NVIDIA_VISIBLE_DEVICES": "all"
+          },
+          "pytest": {
+            "passed": 0,
+            "skipped": 2,
+            "warnings": 0,
+            "seconds": 0.24,
+            "raw_summary": "2 skipped in 0.24s",
+            "skip_reasons": [
+              "SKIPPED [1] tests/cuda/test_qwen27_batch_admit.py:93: needs TENSORFOLD_QWEN27_DRAFTER and the mlx checkpoint's variable",
+              "SKIPPED [1] tests/cuda/test_qwen27_batch_admit.py:93: needs TENSORFOLD_QWEN27_DRAFTER and the nvfp4 checkpoint's variable"
+            ]
+          }
+        },
+        "status": "ALL_SKIPPED_NOT_COVERAGE",
+        "passed_cases": 0,
+        "skipped_cases": 2,
+        "reason": "Missing required pretrained dense27B MLX/NVFP4 and dense DFlash2 checkpoints"
+      }
+    },
+    "historical_composite_reuse": {
+      "source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "verification_image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "full_installed_cpu_gate": {
+        "path": "runner/run-final-cpu-installed-240",
+        "result": "pass",
+        "exit": 0,
+        "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+        "role": "cpu",
+        "role_provenance": "explicit receipt",
+        "mode": "installed",
+        "source_overlay": false,
+        "argv": [
+          "python3",
+          "-m",
+          "pytest",
+          "-q",
+          "-ra",
+          "-o",
+          "pythonpath=tests",
+          "-o",
+          "cache_dir=/evidence/pytest-cache",
+          "tests",
+          "--ignore=tests/cuda"
+        ],
+        "owned_cid": "c4a0b022226b69063871162eb5344f2ae91950cdf7f8d0309347fdcd627a7486",
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": [],
+        "monitor_error": null,
+        "host_floor_bytes": 8589934592,
+        "minimum_sampled_mem_available_bytes": 53634097152,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "resource_environment": {
+          "MAX_JOBS": "8",
+          "NVIDIA_VISIBLE_DEVICES": "void"
+        },
+        "pytest": {
+          "passed": 8989,
+          "skipped": 187,
+          "warnings": 2,
+          "seconds": 404.64,
+          "raw_summary": "8989 passed, 187 skipped, 2 warnings in 404.64s (0:06:44)",
+          "skip_reasons": [
+            "SKIPPED [1] tests/control/test_tui.py:6: could not import 'prompt_toolkit': No module named 'prompt_toolkit'",
+            "SKIPPED [1] tests/streaming/test_glm_stream.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/streaming/test_pool.py:13: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/streaming/test_stream_build.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/streaming/test_stream_kernels.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_affine_rows_metal.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_alternating_kv.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_bonsai.py:12: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_cache_contents.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_call_gate.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_copy_windows.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_deepseek_v4_family.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_deepseek_v4_kernels.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_dflash_draft_vocab.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_family_prefill_chunks.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_family_streams.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_finished_state_leak.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_mtp_rows.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_affine.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_chain_side.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_current_parameters.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_host_table.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_index_scores.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_inputs.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_kernels.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_sorted_slices.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_flash_next_table_scale.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_forced_window_width.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_gemma4_cache.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_gemma4_drafts.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_gemma4_family.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_gemma4_kernels.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_float32.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_fused.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_layouts.py:11: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_memory.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_next_family.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_pass_cpu.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_ported_kernels.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_prompt_kernels.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_q8_0.py:13: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_quantization.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm5_row_kernels.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_gpu_generation.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_grammar_lanes.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_issue155_spill.py:17: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_kernel_inputs.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_attention.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_engine.py:12: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_fuse.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_gdn.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_glue_norm.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_qmm.py:5: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_tree.py:5: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_draft_head.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_load.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_norm_sums.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_pass.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_pre_m5_streams.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_rows.py:12: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_scan.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_speculation.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nemotron_state_cache.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_nucleus_window.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_partial_snapshots.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_prefill_kernel_fallback.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_prefill_pass_hook.py:12: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_prefix_snapshots.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_prompt_attention.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_prompt_pass.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen36_moe_rows.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen36_mtp.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_qwen4_exp_family.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen4_exp_prefill.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen4_exp_prefill_kernels.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen4_exp_table_scale.py:5: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen_family.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_qwen_round_state.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_row_attention.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_row_forward.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_simd_qmm.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_simd_qmm_alignment.py:8: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_simd_qmm_bits.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_think_budget_one.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_thinking_budget.py:9: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_thread_limits.py:11: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_topk.py:6: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_vision_glm_mlx.py:10: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_vision_mlx_runtime.py:7: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [3] tests/control/test_cli.py:42: real snapshot rendering needs the declared [tui] extra",
+            "SKIPPED [1] tests/control/test_macos_smoke.py:18: requires explicit TENSORFOLD_TEST_LAUNCHD=1 in a logged-in macOS session",
+            "SKIPPED [1] tests/control/test_pty.py:13: actual terminal rendering needs the declared [tui] extra",
+            "SKIPPED [1] tests/test_checkpoint_spill.py:81: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_checkpoint_spill.py:106: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_cuda_server_stream.py:22: needs the Qwen3.8-27B tokenizer (tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit)",
+            "SKIPPED [1] tests/test_cuda_thinking_controls.py:287: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_decisions.py:201: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_decisions.py:272: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_dflash_tree_search.py:196: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_dflash_tree_search.py:255: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_dflash_tree_search.py:309: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_discrete_gpu_compose.py:56: requires host Docker Compose >=2.30",
+            "SKIPPED [2] tests/test_discrete_gpu_compose.py:67: requires host Docker Compose >=2.30",
+            "SKIPPED [1] tests/test_discrete_gpu_compose.py:75: requires host Docker Compose >=2.30",
+            "SKIPPED [1] tests/test_discrete_gpu_compose.py:84: requires host Docker Compose >=2.30",
+            "SKIPPED [2] tests/test_discrete_gpu_compose.py:91: requires host Docker Compose >=2.30",
+            "SKIPPED [2] tests/test_discrete_gpu_compose.py:97: requires host Docker Compose >=2.30",
+            "SKIPPED [1] tests/test_exact_sampling.py:58: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_exact_sampling.py:93: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_family_cost_learning.py:88: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_family_cost_learning.py:101: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_family_cost_learning.py:116: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_glm_keep_thinking.py:136: needs Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw's chat template (TF_GLM5_TR3_MODEL or the Hugging Face cache)",
+            "SKIPPED [1] tests/test_lane_server.py:487: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_server.py:520: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_server.py:598: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_server.py:728: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_server.py:741: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_lane_server.py:756: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_metrics.py:214: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_min_p.py:132: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_min_p.py:150: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_ple_ssd.py:415: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_ple_ssd.py:545: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_ple_ssd.py:593: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_prefill_plan.py:183: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [4] tests/test_prompt_parity.py:61: needs the flashnext tokenizer and chat template (TF_FLASHNEXT_MODEL or TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP)",
+            "SKIPPED [8] tests/test_prompt_parity.py:61: needs the glm tokenizer and chat template (TF_GLM5_MODEL or TensorFold/GLM-5.3-Flash-MLX-4bit-MTP)",
+            "SKIPPED [3] tests/test_prompt_parity.py:61: needs the nemotron tokenizer and chat template (TF_NEMOTRON_MODEL or TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit)",
+            "SKIPPED [7] tests/test_prompt_parity.py:61: needs the qwen27 tokenizer and chat template (TENSORFOLD_MLX_MODEL or TensorFold/Qwen3.8-27B-MLX-4bit)",
+            "SKIPPED [1] tests/test_qwen27_prompt_end_template.py:77: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)",
+            "SKIPPED [1] tests/test_qwen27_prompt_end_template.py:86: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)",
+            "SKIPPED [2] tests/test_qwen27_prompt_end_template.py:96: needs TensorFold/Qwen3.8-27B-MLX-4bit's tokenizer files in the Hugging Face cache (see this file's docstring)",
+            "SKIPPED [1] tests/test_reply_model.py:37: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_reply_model.py:55: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_residency.py:69: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_resume_chunks.py:36: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_think_call.py:69: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_thinking_notes.py:43: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [3] tests/test_thinking_off_channels.py:20: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_tool_draft.py:66: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_tool_draft.py:169: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_tool_draft.py:208: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_tool_parameters_null.py:23: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [1] tests/test_tool_parameters_null.py:38: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [2] tests/test_top_k_off.py:97: could not import 'mlx.core': No module named 'mlx'",
+            "SKIPPED [3] tests/test_vision_glm_processing.py:89: could not import 'mlx_vlm.models.glm5_next.processing': No module named 'mlx_vlm'",
+            "SKIPPED [2] tests/test_vision_tool_results.py:65: needs Vontra/GLM-5.3-Flash-MLX-4bit-MTP's template files in the Hugging Face cache (see this file's docstring)",
+            "SKIPPED [2] tests/test_vision_tool_results.py:65: needs Vontra/Qwen3.8-27B-MLX-4bit's template files in the Hugging Face cache (see this file's docstring)",
+            "SKIPPED [2] tests/test_vision_tool_results.py:65: needs Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP's template files in the Hugging Face cache (see this file's docstring)"
+          ]
+        }
+      },
+      "selected_native_gate": {
+        "path": "runner/run-final-native-240",
+        "result": "pass",
+        "exit": 0,
+        "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+        "role": "gpu",
+        "role_provenance": "explicit receipt",
+        "mode": "installed",
+        "source_overlay": false,
+        "argv": [
+          "python3",
+          "-m",
+          "pytest",
+          "-q",
+          "-ra",
+          "--tb=short",
+          "-o",
+          "pythonpath=tests",
+          "-o",
+          "cache_dir=/evidence/pytest-cache",
+          "tests/cuda/test_nvfp4_a4_experts.py",
+          "tests/cuda/test_nvfp4_checkpoint.py",
+          "tests/cuda/test_nvfp4_scale_boundary.py",
+          "tests/cuda/test_qwen36_dflash.py",
+          "tests/cuda/test_qwen27_draft_attention.py",
+          "tests/cuda/test_qwen27_b16.py",
+          "tests/cuda/test_qwen36_moe.py",
+          "tests/cuda/test_qwen27_forward.py",
+          "tests/cuda/test_qmm.py",
+          "tests/cuda/test_qmm_group.py",
+          "tests/cuda/test_gdn.py",
+          "tests/test_qwen36_head_policy.py"
+        ],
+        "owned_cid": "a139c9a792882bd25cf47c6939beb858144d97244de1fc1b7f22b2c15ea53ab6",
+        "state": {
+          "Status": "exited",
+          "Running": false,
+          "ExitCode": 0,
+          "OOMKilled": false,
+          "Error": ""
+        },
+        "ownership_unresolved": false,
+        "cleanup_errors": [],
+        "monitor_error": null,
+        "host_floor_bytes": 8589934592,
+        "minimum_sampled_mem_available_bytes": 41679450112,
+        "live_unlimited_ancestor_cgroup_proof": true,
+        "resource_environment": {
+          "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+          "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+          "MAX_JOBS": "8",
+          "NVIDIA_VISIBLE_DEVICES": "all"
+        },
+        "pytest": {
+          "passed": 238,
+          "skipped": 2,
+          "warnings": 28,
+          "seconds": 388.49,
+          "raw_summary": "238 passed, 2 skipped, 28 warnings in 388.49s (0:06:28)",
+          "skip_reasons": [
+            "SKIPPED [1] tests/cuda/test_qwen27_b16.py:117: second compatible CUDA device unavailable",
+            "SKIPPED [1] tests/cuda/test_qmm_group.py:79: needs the 27B checkpoint at /models/Qwen3.8-27B-MLX-4bit (set TF_QWEN27_MODEL)"
+          ]
+        }
+      },
+      "d13_proof": "d13/coverage-reuse-099eb4d0.json",
+      "d14_proof": "d14/reuse-240-to-099-source-proof.json",
+      "changed_application_files": [
+        "src/tensorfold/families/qwen3_5/cuda/multi.py",
+        "src/tensorfold/families/qwen3_5/cuda/prefill.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/head.py"
+      ],
+      "native_cpp_cu_build_dependency_changes": [],
+      "status": "Source-scoped composite reuse reviewed; frozen099 audits and fresh affectedCPU/native/API/formal measurement gates completed in their recorded regions",
+      "counts_must_not_be_summed_across_sources": true,
+      "not_claimed": [
+        "full099 suite",
+        "entire CUDA suite"
+      ],
+      "selected_native_gate_scope": "Selected native/coupled gate includes 13 CPU head-policy controls; 238 is not a pure GPU-native case count",
+      "counts_must_not_be_summed_across_gates": true
+    },
+    "static": {
+      "source": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+      "source_uid": "a9f5b9dee32129ec444ee09900503908e3f08ecad29b320786c6abb3fa7ee025",
+      "python_files_compiled": 1148,
+      "compile_errors": 0,
+      "relevant_ruff_diagnostics": 4011,
+      "introduced_since240": 0,
+      "removed_since240": 0,
+      "prior110_advisory_triages_reused": true,
+      "evidence": "static/final-099eb4d0-20261017T211834Z/manifest.json"
+    },
+    "installed_pytest_import_policy": "Explicit -o pythonpath=tests overrides pyproject src,tests; qualification imports the wheel and native_fd_owner rather than baked source",
+    "historical_failures_preserved": "Original environment-contaminated and source-shadowed CPU attempts, API240 batched-prefill refusal and prototype helper/refusal failures remain separate; they were not relabeled passing"
+  },
+  "actual_api": {
+    "run": {
+      "path": "runner/run-final-api-long-099",
+      "result": "pass",
+      "exit": 0,
+      "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+      "role": "gpu",
+      "role_provenance": "explicit receipt",
+      "mode": "installed",
+      "source_overlay": false,
+      "argv": [
+        "python3",
+        "/probe/extended_api_probe.py",
+        "--helper",
+        "/probe/frozen-d75271f4/model_probe.py",
+        "--model",
+        "/model",
+        "--drafter",
+        "/drafter",
+        "--context",
+        "4096",
+        "--rows",
+        "4",
+        "--bits",
+        "16",
+        "--pin",
+        "on",
+        "--max-tokens",
+        "64",
+        "--timeout",
+        "300",
+        "--output",
+        "/evidence/extended-typed-api-long-pin-on.json"
+      ],
+      "owned_cid": "f1b2efce8b2870dd33cbe62be8435db96ee2ac044c66f08dc282f7534a3ee9aa",
+      "state": {
+        "Status": "exited",
+        "Running": false,
+        "ExitCode": 0,
+        "OOMKilled": false,
+        "Error": ""
+      },
+      "ownership_unresolved": false,
+      "cleanup_errors": [],
+      "monitor_error": null,
+      "host_floor_bytes": 8589934592,
+      "minimum_sampled_mem_available_bytes": 34331910144,
+      "live_unlimited_ancestor_cgroup_proof": true,
+      "resource_environment": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      }
+    },
+    "probe_sha256": "105bf90ed0bf0faff881862ae57340a6afb788139ca66595151cde36b82ae590",
+    "configuration": {
+      "model": "/model",
+      "drafter": "/drafter",
+      "helper": "/probe/frozen-d75271f4/model_probe.py",
+      "context": 4096,
+      "rows": 4,
+      "bits": 16,
+      "pin": "on",
+      "max_tokens": 64,
+      "timeout": 300.0,
+      "output": "/evidence/extended-typed-api-long-pin-on.json"
+    },
+    "metadata": {
+      "eos": [
+        248044,
+        248046
+      ],
+      "template": {
+        "name": "default",
+        "source": "chat_template.jinja",
+        "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+      },
+      "tool_template": {
+        "name": "default",
+        "source": "chat_template.jinja",
+        "sha256": "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c"
+      },
+      "secondary": "tensorfold.families.qwen3_5_moe.cuda.dflash.DFlash",
+      "tokenize_count": 20
+    },
+    "base_api_checks": {
+      "prefix_cached_tokens": 1605,
+      "structured": {
+        "json_object": true,
+        "strict_schema": true,
+        "strict_tool": true,
+        "typed_tool_nonstream_and_sse": {
+          "flag": false,
+          "absent": null,
+          "word_true": "True",
+          "word_none": "None"
+        },
+        "typed_sse_scope": "one-call policy buffers calls; incremental multi-call scalar prefixes qualified by CPU controls"
+      },
+      "streaming": {
+        "complete": true,
+        "observed_cancelled_delta": 1,
+        "recovery_equal": true
+      },
+      "short_concurrent": {
+        "requests": 4,
+        "tokens_equal": true,
+        "scope": "four synchronized clients; no throughput or maximum-lane claim"
+      }
+    },
+    "long_concurrent": {
+      "status": "pass",
+      "serial_completion_tokens": 512,
+      "quartet_completion_tokens": [
+        512,
+        512,
+        512,
+        512
+      ],
+      "all_five_full_token_arrays_equal": true,
+      "token_sha": "ffb65cfd59e8",
+      "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528",
+      "aggregate_tokens": 2048,
+      "wall_seconds": 35.49485233100131,
+      "aggregate_client_tokens_per_second": 57.69850740331918,
+      "wall_scope": "four barrier clients, HTTP and executor setup/join; excludes serial oracle and stats/cache observation",
+      "explicit_cuda_drained": false,
+      "comparative_performance_claim": false,
+      "secondary_serial_delta": {
+        "calls": 0,
+        "forward_batches": 0,
+        "forward_contexts": 0
+      },
+      "secondary_quartet_delta": {
+        "calls": 160,
+        "forward_batches": 160,
+        "forward_contexts": 640
+      },
+      "end_load": {
+        "requests_in_flight": 0,
+        "requests_running": 0,
+        "requests_waiting": 0,
+        "lanes": {
+          "decode": 0,
+          "prefill": 0,
+          "memory_wait": 0
+        },
+        "held_for_memory": false,
+        "http_connections_in_use": 1,
+        "stream_tokens": []
+      },
+      "memory_waits": null,
+      "memory_stops": null,
+      "memory_wait_claim": "Totals are null/unexposed; no zero-wait or zero-stop claim",
+      "before_serial_totals": {
+        "requests": 15,
+        "finished": {
+          "stop": 11,
+          "length": 0,
+          "tool_calls": 3
+        },
+        "cancelled": 1,
+        "failed": 0,
+        "prompt_tokens": 10871,
+        "cached_prompt_tokens": 1982,
+        "generated_tokens": 202,
+        "generated_tokens_live": 202,
+        "queue_seconds": 0.0457,
+        "prefill_seconds": 79.1588,
+        "decode_seconds": 12.1447,
+        "rounds": 74,
+        "drafted": 135,
+        "accepted": 117,
+        "preemptions": 0,
+        "memory_waits": null,
+        "memory_stops": null
+      },
+      "after_serial_totals": {
+        "requests": 16,
+        "finished": {
+          "stop": 11,
+          "length": 1,
+          "tool_calls": 3
+        },
+        "cancelled": 1,
+        "failed": 0,
+        "prompt_tokens": 10917,
+        "cached_prompt_tokens": 1982,
+        "generated_tokens": 714,
+        "generated_tokens_live": 714,
+        "queue_seconds": 0.047,
+        "prefill_seconds": 79.9049,
+        "decode_seconds": 64.9016,
+        "rounds": 585,
+        "drafted": 135,
+        "accepted": 117,
+        "preemptions": 0,
+        "memory_waits": null,
+        "memory_stops": null
+      },
+      "after_quartet_totals": {
+        "requests": 20,
+        "finished": {
+          "stop": 11,
+          "length": 5,
+          "tool_calls": 3
+        },
+        "cancelled": 1,
+        "failed": 0,
+        "prompt_tokens": 11101,
+        "cached_prompt_tokens": 1982,
+        "generated_tokens": 2762,
+        "generated_tokens_live": 2762,
+        "queue_seconds": 0.0643,
+        "prefill_seconds": 85.1933,
+        "decode_seconds": 201.5347,
+        "rounds": 1225,
+        "drafted": 1991,
+        "accepted": 1521,
+        "preemptions": 0,
+        "memory_waits": null,
+        "memory_stops": null
+      },
+      "quartet_totals_delta": {
+        "requests": 4,
+        "generated_tokens": 2048,
+        "failed": 0,
+        "cancelled": 0,
+        "rounds": 640,
+        "drafted": 1856,
+        "accepted": 1404
+      }
+    },
+    "cleanup": {
+      "loop_alive": false,
+      "engine_closed": true,
+      "handlers_drained": true
+    }
+  },
+  "copy_only_comparison": {
+    "configuration": {
+      "mode": "copy",
+      "model": "/model",
+      "drafter": null,
+      "rows": 16,
+      "bits": 16,
+      "pin": "on",
+      "kernel": "baseline",
+      "context": 4096,
+      "max_tokens": 512,
+      "requests": 3,
+      "profile_helper": "/payload/profile_probe.py",
+      "helper": "/payload/model_probe_candidate.py",
+      "status_helper": "/payload/model_perf_probe.py",
+      "output_dir": "/evidence/complete-policy"
+    },
+    "allow_copy": true,
+    "secondary_present": false,
+    "all_seven_replies_validated": true,
+    "greedy_and_serial_full_arrays_equal": true,
+    "seeded_serial_draft_repeat_full_arrays_equal": true,
+    "seeded_token_sha": "b45d2d117ddf",
+    "pool": {
+      "cells": 5714,
+      "bytes": 10111128704,
+      "gib": 9.416722416877747
+    },
+    "startup_seconds": {
+      "engine": 62.60916107997764,
+      "http_ready": 63.09613250102848
+    },
+    "rates": {
+      "greedy-0": {
+        "tokens": 512,
+        "decode_s": 30.824997046031058,
+        "complete_decode_tokens_per_second": 16.60989615783025,
+        "prefill_s": 2.20948292396497,
+        "rounds": 502,
+        "accepted": 9,
+        "drafted": 30,
+        "token_sha": "ffb65cfd59e8",
+        "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+      },
+      "greedy-1": {
+        "tokens": 512,
+        "decode_s": 30.032829522970133,
+        "complete_decode_tokens_per_second": 17.048010731336685,
+        "prefill_s": 0.06532314699143171,
+        "rounds": 502,
+        "accepted": 9,
+        "drafted": 30,
+        "token_sha": "ffb65cfd59e8",
+        "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+      },
+      "greedy-2": {
+        "tokens": 512,
+        "decode_s": 29.638838840066455,
+        "complete_decode_tokens_per_second": 17.274630857261073,
+        "prefill_s": 0.06479788001161069,
+        "rounds": 502,
+        "accepted": 9,
+        "drafted": 30,
+        "token_sha": "ffb65cfd59e8",
+        "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+      },
+      "greedy-serial": {
+        "tokens": 512,
+        "decode_s": 29.885275182081386,
+        "complete_decode_tokens_per_second": 17.13218288540254,
+        "prefill_s": 0.2772154710255563,
+        "rounds": 511,
+        "accepted": 0,
+        "drafted": 0,
+        "token_sha": "ffb65cfd59e8",
+        "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+      }
+    },
+    "measurement": "Accepted completion tokens / engine.decode_s; not rounded server(n-1) rate",
+    "timing_limits": [
+      "descriptive fresh complete-policy screen, no uncertainty/equivalence/selection",
+      "app.prepare prepass precedes helper HTTP interval",
+      "first request after construction, not universal cold-kernel state"
+    ],
+    "cleanup": {
+      "handlers_drained": true,
+      "loop_alive": false,
+      "engine_closed": true
+    }
+  },
+  "formal_single_request_comparison": {
+    "result": "pass",
+    "run": "runner/run-final-formal-width8-099",
+    "image": "sha256:4337064296a99de5eadfc82ff2029112efc9268fe1f26cfb7399191582d82657",
+    "source": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+    "region": "one stream; fixed8-row-admitted engine/cache/weight storage; ('plain', 'r4', 'r8') head only; warm repeated publicLRU prefix",
+    "objective": [
+      "lexicographic: maximize median balanced-block geometric accepted completion tokens / engine decode_s",
+      "then the same summary of accepted completion tokens / GPU-drained complete HTTP request seconds"
+    ],
+    "request": {
+      "model": "heretic-probe",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write a complete Python module implementing an LRU cache class with get, put, delete, resize and a thread-safe wrapper, with docstrings and a short usage example."
+        }
+      ],
+      "max_tokens": 512,
+      "temperature": 0,
+      "top_k": 0,
+      "top_p": 1,
+      "seed": 7,
+      "draft": true,
+      "chat_template_kwargs": {
+        "enable_thinking": false
+      },
+      "return_token_ids": true
+    },
+    "timing_definitions": {
+      "complete_decode_tps": "All512 accepted completion tokens / engine.decode_s, not rounded server(n-1) rate",
+      "complete_request_tps": "All512 accepted tokens / complete HTTP-response consumption plus explicit CUDA drain; includes ordinary request preparation"
+    },
+    "timed_requests": 54,
+    "blocks": 9,
+    "requests_per_role": 18,
+    "warmups_per_policy": 1,
+    "order": [
+      {
+        "block": 0,
+        "rows": 8,
+        "kernels": [
+          "plain",
+          "r4",
+          "r8",
+          "r8",
+          "r4",
+          "plain"
+        ]
+      },
+      {
+        "block": 1,
+        "rows": 8,
+        "kernels": [
+          "r4",
+          "r8",
+          "plain",
+          "plain",
+          "r8",
+          "r4"
+        ]
+      },
+      {
+        "block": 2,
+        "rows": 8,
+        "kernels": [
+          "r8",
+          "plain",
+          "r4",
+          "r4",
+          "plain",
+          "r8"
+        ]
+      },
+      {
+        "block": 3,
+        "rows": 8,
+        "kernels": [
+          "r8",
+          "r4",
+          "plain",
+          "plain",
+          "r4",
+          "r8"
+        ]
+      },
+      {
+        "block": 4,
+        "rows": 8,
+        "kernels": [
+          "plain",
+          "r8",
+          "r4",
+          "r4",
+          "r8",
+          "plain"
+        ]
+      },
+      {
+        "block": 5,
+        "rows": 8,
+        "kernels": [
+          "r4",
+          "plain",
+          "r8",
+          "r8",
+          "plain",
+          "r4"
+        ]
+      },
+      {
+        "block": 6,
+        "rows": 8,
+        "kernels": [
+          "plain",
+          "r4",
+          "r8",
+          "r8",
+          "r4",
+          "plain"
+        ]
+      },
+      {
+        "block": 7,
+        "rows": 8,
+        "kernels": [
+          "r4",
+          "r8",
+          "plain",
+          "plain",
+          "r8",
+          "r4"
+        ]
+      },
+      {
+        "block": 8,
+        "rows": 8,
+        "kernels": [
+          "r8",
+          "plain",
+          "r4",
+          "r4",
+          "plain",
+          "r8"
+        ]
+      }
+    ],
+    "analysis_plan": {
+      "unit": "one symmetric ABC-CBA block; three projected four-cell paired head effects",
+      "head_roles": [
+        "plain",
+        "r4",
+        "r8"
+      ],
+      "pair_roles": [
+        [
+          "plain",
+          "r4"
+        ],
+        [
+          "plain",
+          "r8"
+        ],
+        [
+          "r4",
+          "r8"
+        ]
+      ],
+      "per_metric_alpha": 0.008333333333333333,
+      "table_contract": "prepared roles share one object; only entries7/8 use4 or8; Plain shares original weight",
+      "confidence": "exact order-statistic median interval conditional on independent representative blocks; Bonferroni alpha allocation across three pairs/two metrics; insufficient blocks yield unbounded interval",
+      "limitations": "screening is descriptive/inconclusive; external design/independence validation required for inference; lag diagnostics do not prove independence; no equivalence, no exclusions, no automatic selection"
+    },
+    "roles": {
+      "plain": {
+        "timed_requests": 18,
+        "complete_decode_tps": {
+          "median_of_18_requests": 28.519609046630322,
+          "range_of_18_requests": [
+            28.38578035954478,
+            28.668062129807012
+          ],
+          "median_of_nine_within_block_geometric_means": 28.495547695721218
+        },
+        "complete_request_tps": {
+          "median_of_18_requests": 28.39775160517779,
+          "range_of_18_requests": [
+            28.261189182895958,
+            28.549155380541983
+          ],
+          "median_of_nine_within_block_geometric_means": 28.37675178871615
+        }
+      },
+      "r4": {
+        "timed_requests": 18,
+        "complete_decode_tps": {
+          "median_of_18_requests": 35.709280185729924,
+          "range_of_18_requests": [
+            35.390260844868045,
+            35.92838609976761
+          ],
+          "median_of_nine_within_block_geometric_means": 35.7197423376418
+        },
+        "complete_request_tps": {
+          "median_of_18_requests": 35.516507585906496,
+          "range_of_18_requests": [
+            35.21071454718087,
+            35.73792837040364
+          ],
+          "median_of_nine_within_block_geometric_means": 35.52915153763829
+        }
+      },
+      "r8": {
+        "timed_requests": 18,
+        "complete_decode_tps": {
+          "median_of_18_requests": 37.452939706690586,
+          "range_of_18_requests": [
+            37.23296322154441,
+            37.7187224296529
+          ],
+          "median_of_nine_within_block_geometric_means": 37.42209214144963
+        },
+        "complete_request_tps": {
+          "median_of_18_requests": 37.251441253010086,
+          "range_of_18_requests": [
+            37.01838089524938,
+            37.51497333840725
+          ],
+          "median_of_nine_within_block_geometric_means": 37.221143042603686
+        }
+      }
+    },
+    "policy": {
+      "labels": {
+        "plain": "Plain: original native R1 vocabulary head",
+        "r4": "actual prepared head: tail/target entries use4",
+        "r8": "same actual prepared head: tail/target entries use8"
+      },
+      "tables": {
+        "plain": [
+          0,
+          0,
+          2,
+          8,
+          8,
+          0,
+          0,
+          8,
+          8,
+          0,
+          0,
+          0,
+          16,
+          0,
+          0,
+          16,
+          16
+        ],
+        "r4": [
+          0,
+          0,
+          2,
+          8,
+          8,
+          0,
+          0,
+          4,
+          4,
+          0,
+          0,
+          0,
+          16,
+          0,
+          0,
+          16,
+          16
+        ],
+        "r8": [
+          0,
+          0,
+          2,
+          8,
+          8,
+          0,
+          0,
+          8,
+          8,
+          0,
+          0,
+          0,
+          16,
+          0,
+          0,
+          16,
+          16
+        ]
+      },
+      "original_table": [
+        0,
+        0,
+        2,
+        8,
+        8,
+        0,
+        0,
+        8,
+        8,
+        0,
+        0,
+        0,
+        16,
+        0,
+        0,
+        16,
+        16
+      ],
+      "changed_indices": [
+        7,
+        8
+      ],
+      "head_types": {
+        "plain": "tensorfold.families.qwen3_5.cuda.weights.Plain",
+        "r4": "tensorfold.families.qwen3_5_moe.cuda.head._RowsHead",
+        "r8": "tensorfold.families.qwen3_5_moe.cuda.head._RowsHead"
+      },
+      "same_prepared_object_lower_upper": true,
+      "same_weight_object_all_policies": true,
+      "same_weight_pointer_all_policies": true,
+      "weight_shape": [
+        248320,
+        2048
+      ],
+      "weight_dtype": "torch.bfloat16",
+      "weight_device": "cuda:0",
+      "weight_bytes": 1017118720,
+      "fixed_engine_rows": [
+        8,
+        8,
+        8
+      ],
+      "policy_changes": "owning table and both head references only; no CUDA allocation or bank/width change"
+    },
+    "source_hashes": {
+      "head.py": "f0552fa6fbd3bc277fe26de9f6834c3a0953c75992e7acaacb9547be0a9bcc66",
+      "b16.py": "cee4e5e8b44ba172e5750533593359a7d3c5018a9d0bb11bd0001348e17c694d",
+      "b16.cpp": "5588e706e4516eb282f10902662cc41571df24cb84ba01fbda12e2e470bebaa9",
+      "b16.cu": "38d87c1917598aa7271a89aaf59e4f1292a40276d2c79906ce2bb382f1035521"
+    },
+    "comparisons": {
+      "r4_over_plain": {
+        "reference": "plain",
+        "candidate": "r4",
+        "per_metric_alpha": 0.008333333333333333,
+        "family_pairs": 3,
+        "roles": {
+          "baseline": "plain",
+          "grouped": "r4"
+        },
+        "metrics": {
+          "complete_decode_tps": {
+            "median_block_grouped_over_baseline": 1.2523737591835784,
+            "geometric_mean_grouped_over_baseline": 1.2525237340919222,
+            "observed_block_ratio_range": [
+              1.2480987461582338,
+              1.2582281622023284
+            ],
+            "conditional_independent_block_median_interval": [
+              1.2480987461582338,
+              1.2582281622023284
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.22477226269864614,
+              0.2250407578261262,
+              0.22970451083314103,
+              0.223154792026655,
+              0.22542356965421462,
+              0.22510939274654973,
+              0.22449667511774418,
+              0.22712117730476677,
+              0.22162139034136086
+            ],
+            "lag1_descriptive_autocorrelation": -0.4400822369707735,
+            "last_minus_first_log_ratio": -0.0031508723572852837,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          },
+          "complete_request_tps": {
+            "median_block_grouped_over_baseline": 1.2509682951925902,
+            "geometric_mean_grouped_over_baseline": 1.2512406302470238,
+            "observed_block_ratio_range": [
+              1.246915496079361,
+              1.2570598285482173
+            ],
+            "conditional_independent_block_median_interval": [
+              1.246915496079361,
+              1.2570598285482173
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.22383813615704407,
+              0.22391788759254938,
+              0.22877552477474028,
+              0.2218426833241809,
+              0.22414990318943406,
+              0.22461314073803917,
+              0.2232691947819685,
+              0.22614070056141777,
+              0.22067289862732586
+            ],
+            "lag1_descriptive_autocorrelation": -0.47149495326347657,
+            "last_minus_first_log_ratio": -0.003165237529718201,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          }
+        }
+      },
+      "r8_over_plain": {
+        "reference": "plain",
+        "candidate": "r8",
+        "per_metric_alpha": 0.008333333333333333,
+        "family_pairs": 3,
+        "roles": {
+          "baseline": "plain",
+          "grouped": "r8"
+        },
+        "metrics": {
+          "complete_decode_tps": {
+            "median_block_grouped_over_baseline": 1.310986910414779,
+            "geometric_mean_grouped_over_baseline": 1.3132996502113892,
+            "observed_block_ratio_range": [
+              1.3093243019963887,
+              1.3222072565580798
+            ],
+            "conditional_independent_block_median_interval": [
+              1.3093243019963887,
+              1.3222072565580798
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.270780220303632,
+              0.2695112041397216,
+              0.27283036589333687,
+              0.2737323011466337,
+              0.2793025041476893,
+              0.27060230668317065,
+              0.2764572694771825,
+              0.2696659399903032,
+              0.2700029736094134
+            ],
+            "lag1_descriptive_autocorrelation": -0.12661161299814075,
+            "last_minus_first_log_ratio": -0.0007772466942186362,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          },
+          "complete_request_tps": {
+            "median_block_grouped_over_baseline": 1.3097337759666343,
+            "geometric_mean_grouped_over_baseline": 1.3117200369513136,
+            "observed_block_ratio_range": [
+              1.3076764750301664,
+              1.320532275026291
+            ],
+            "conditional_independent_block_median_interval": [
+              1.3076764750301664,
+              1.320532275026291
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.2697447245789206,
+              0.26828293995893704,
+              0.27163340446746664,
+              0.2724871182686712,
+              0.2780348939757027,
+              0.269823892107222,
+              0.2749731936801503,
+              0.2682518791915123,
+              0.2688214853069857
+            ],
+            "lag1_descriptive_autocorrelation": -0.07935336009467933,
+            "last_minus_first_log_ratio": -0.0009232392719349392,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          }
+        }
+      },
+      "r8_over_r4": {
+        "reference": "r4",
+        "candidate": "r8",
+        "per_metric_alpha": 0.008333333333333333,
+        "family_pairs": 3,
+        "roles": {
+          "baseline": "r4",
+          "grouped": "r8"
+        },
+        "metrics": {
+          "complete_decode_tps": {
+            "median_block_grouped_over_baseline": 1.0470827431946428,
+            "geometric_mean_grouped_over_baseline": 1.0485227660484449,
+            "observed_block_ratio_range": [
+              1.0434627635238543,
+              1.0553568271118217
+            ],
+            "conditional_independent_block_median_interval": [
+              1.0434627635238543,
+              1.0553568271118217
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.04600795760498588,
+              0.044470446313595424,
+              0.04312585506019584,
+              0.050577509119978714,
+              0.053878934493474695,
+              0.045492913936620916,
+              0.05196059435943834,
+              0.04254476268553642,
+              0.04838158326805253
+            ],
+            "lag1_descriptive_autocorrelation": -0.1875711090268926,
+            "last_minus_first_log_ratio": 0.0023736256630666475,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          },
+          "complete_request_tps": {
+            "median_block_grouped_over_baseline": 1.0469766066518953,
+            "geometric_mean_grouped_over_baseline": 1.0483355521250535,
+            "observed_block_ratio_range": [
+              1.0430104327759293,
+              1.0553632186811233
+            ],
+            "conditional_independent_block_median_interval": [
+              1.0430104327759293,
+              1.0553632186811233
+            ],
+            "nominal_family_alpha_under_assumptions": 0.05,
+            "sampling_blocks": 9,
+            "classification": "inconclusive for selection; independence/model assumptions require external validation",
+            "raw_block_log_ratios": [
+              0.04590658842187656,
+              0.04436505236638766,
+              0.042857879692726364,
+              0.050644434944490335,
+              0.05388499078626863,
+              0.045210751369182844,
+              0.05170399889818178,
+              0.0421111786300945,
+              0.04814858667965982
+            ],
+            "lag1_descriptive_autocorrelation": -0.1906639061109938,
+            "last_minus_first_log_ratio": 0.002241998257783262,
+            "assumptions": "independent representative block effects; lag/drift diagnostics cannot prove this; no equivalence claim",
+            "conditional_interval_direction": "candidate_higher"
+          }
+        }
+      }
+    },
+    "tokens": {
+      "completion_tokens_each": 512,
+      "finish_reason": "length",
+      "all_timed_full_arrays_equal": true,
+      "token_sha": "ffb65cfd59e8",
+      "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528",
+      "seeded_tokens": 32,
+      "seeded_sha": "b45d2d117ddf",
+      "seeded_full_token_ids_comma_sha256": "b45d2d117ddf35e3f3410f7a0ee276447fe4aeec8bf9f2822a40eef97d7fc166",
+      "hash_encoding": "UTF8 decimal integer token IDs joined by commas"
+    },
+    "work_signature_each": {
+      "rounds": 119,
+      "accepted": 392,
+      "drafted": 833,
+      "secondary_delta": {
+        "calls": 119,
+        "forward_batches": 119,
+        "forward_contexts": 119
+      },
+      "tokens": 512
+    },
+    "secondary_totals": {
+      "calls": 6819,
+      "forward_batches": 6819,
+      "forward_contexts": 6819
+    },
+    "fixed_pool": {
+      "gpu_bytes": 7828427264,
+      "host_bytes": 18120048640,
+      "cells": 4424
+    },
+    "startup_to_http_ready_s": 62.823404249036685,
+    "policy_restored": true,
+    "head_table_restored": true,
+    "head_owner_retained": false,
+    "observed_ordering": "R8 > R4 > Plain on both objectives in every one of nine blocks in this recorded region",
+    "statistical_interpretation": "The exact order-statistic median intervals and nominal family allocation are conditional on independent representative block effects. These assumptions are unproven; balancing, lag and clock diagnostics do not prove them. All observed block ratio minima exceed1, but no unconditional confidence, global-optimality, equivalence or outside-region superiority is claimed. The original helper classification remains unchanged.",
+    "prior_width4_ordering": "R4 versusR8 remains inconclusive; this width8 experiment does not resolve it",
+    "bf16_versus_4bit": "Earlier complete512 screens remain inconclusive; BF16 remains metadata/default choice, explicit4 changes proposals only",
+    "independent_closed_analysis_verification": {
+      "checks": {
+        "expected54timed": true,
+        "18_per_role": true,
+        "all54complete512": true,
+        "all54_full_arrays_equal_serial": true,
+        "all_raw_arrays_equal_processed_arrays": true,
+        "all63_token_hashes_recomputed": true,
+        "all58_greedy512_arrays_equal": true,
+        "all5_seeded32_arrays_equal": true,
+        "all_actual_token_counts_equal_requested": true,
+        "all54_work_signatures_equal": true,
+        "all54_7proposals_per_round": true,
+        "all54_actual_dflash_batch_per_round": true,
+        "all54_cached45_and_width8": true,
+        "all54_same_admitted_pool_before_after": true,
+        "all122_http200": true,
+        "outer0": true,
+        "driver_and_outer_pass": true,
+        "all_owners_retired": true,
+        "no_errors_or_oom": true
+      },
+      "requests": 63,
+      "greedy512_requests": 58,
+      "seeded32_requests": 5,
+      "HTTP_events": 122,
+      "full_greedy_SHA256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528",
+      "full_seeded_SHA256": "b45d2d117ddf35e3f3410f7a0ee276447fe4aeec8bf9f2822a40eef97d7fc166",
+      "work_signature": {
+        "rounds": 119,
+        "accepted": 392,
+        "drafted": 833,
+        "secondary_delta": {
+          "calls": 119,
+          "forward_batches": 119,
+          "forward_contexts": 119
+        },
+        "tokens": 512
+      },
+      "owner_flags": {
+        "policy_restored": true,
+        "head_table_restored": true,
+        "head_owner_retained": false,
+        "primary_error": null,
+        "cleanup_errors": []
+      },
+      "outer_ownership": {
+        "result": "pass",
+        "phase": "payload",
+        "ownership_unresolved": false,
+        "observer_returncode_after_retirement": 0,
+        "monitor_error": null,
+        "cleanup_errors": []
+      },
+      "container_terminal_state": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-10-17T21:42:26.82889761Z",
+        "FinishedAt": "2026-10-17T21:58:56.411822643Z"
+      },
+      "raw_log_warnings": []
+    },
+    "exact_timed_series": {
+      "plain": {
+        "labels": [
+          "timed-8-0-0",
+          "timed-8-0-5",
+          "timed-8-1-2",
+          "timed-8-1-3",
+          "timed-8-2-1",
+          "timed-8-2-4",
+          "timed-8-3-2",
+          "timed-8-3-3",
+          "timed-8-4-0",
+          "timed-8-4-5",
+          "timed-8-5-1",
+          "timed-8-5-4",
+          "timed-8-6-0",
+          "timed-8-6-5",
+          "timed-8-7-2",
+          "timed-8-7-3",
+          "timed-8-8-1",
+          "timed-8-8-4"
+        ],
+        "block": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7,
+          7,
+          8,
+          8
+        ],
+        "complete_decode_tps": [
+          28.520152737878018,
+          28.640885089509663,
+          28.45369968838685,
+          28.5897246597732,
+          28.519065355382622,
+          28.38578035954478,
+          28.54543120859406,
+          28.668062129807012,
+          28.529142300939814,
+          28.45336005508443,
+          28.43007567090337,
+          28.511227991823894,
+          28.43647704439276,
+          28.528497767337214,
+          28.53256878899591,
+          28.458574637425684,
+          28.636966086869617,
+          28.497549667873248
+        ],
+        "complete_request_tps": [
+          28.39485687329005,
+          28.52116306774787,
+          28.335095082863276,
+          28.467700781643043,
+          28.400646337065524,
+          28.261189182895958,
+          28.426490400953757,
+          28.549155380541983,
+          28.410244944326,
+          28.333868056610395,
+          28.303459877501517,
+          28.370578366911896,
+          28.318379675696182,
+          28.41042947058996,
+          28.415700405426985,
+          28.337856557799856,
+          28.51569137601308,
+          28.379198834251035
+        ]
+      },
+      "r4": {
+        "labels": [
+          "timed-8-0-1",
+          "timed-8-0-4",
+          "timed-8-1-0",
+          "timed-8-1-5",
+          "timed-8-2-2",
+          "timed-8-2-3",
+          "timed-8-3-1",
+          "timed-8-3-4",
+          "timed-8-4-2",
+          "timed-8-4-3",
+          "timed-8-5-0",
+          "timed-8-5-5",
+          "timed-8-6-1",
+          "timed-8-6-4",
+          "timed-8-7-0",
+          "timed-8-7-5",
+          "timed-8-8-2",
+          "timed-8-8-3"
+        ],
+        "block": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7,
+          7,
+          8,
+          8
+        ],
+        "complete_decode_tps": [
+          35.666785840343046,
+          35.90120408366084,
+          35.74982074446864,
+          35.68968923753088,
+          35.90733835555825,
+          35.692068303044444,
+          35.82476927030312,
+          35.69285867817022,
+          35.833789723345255,
+          35.55739683878301,
+          35.92838609976761,
+          35.390260844868045,
+          35.57699490493917,
+          35.72570169328963,
+          35.618494362621256,
+          35.9048740904737,
+          35.507016189696294,
+          35.80290285145945
+        ],
+        "complete_request_tps": [
+          35.47661867712256,
+          35.71807381081028,
+          35.56598384784815,
+          35.49235737115254,
+          35.72105916318911,
+          35.50636591152338,
+          35.63132004209624,
+          35.49561479366356,
+          35.629692518320134,
+          35.372267687891835,
+          35.73792837040364,
+          35.21071454718087,
+          35.3933042332606,
+          35.52664926028961,
+          35.43643911039833,
+          35.718943520933884,
+          35.32428019022542,
+          35.619249122759996
+        ]
+      },
+      "r8": {
+        "labels": [
+          "timed-8-0-2",
+          "timed-8-0-3",
+          "timed-8-1-1",
+          "timed-8-1-4",
+          "timed-8-2-0",
+          "timed-8-2-5",
+          "timed-8-3-0",
+          "timed-8-3-5",
+          "timed-8-4-1",
+          "timed-8-4-4",
+          "timed-8-5-2",
+          "timed-8-5-3",
+          "timed-8-6-2",
+          "timed-8-6-3",
+          "timed-8-7-1",
+          "timed-8-7-4",
+          "timed-8-8-0",
+          "timed-8-8-5"
+        ],
+        "block": [
+          0,
+          0,
+          1,
+          1,
+          2,
+          2,
+          3,
+          3,
+          4,
+          4,
+          5,
+          5,
+          6,
+          6,
+          7,
+          7,
+          8,
+          8
+        ],
+        "complete_decode_tps": [
+          37.46038988316019,
+          37.476817141083814,
+          37.44548953022098,
+          37.242914608426794,
+          37.370644444605,
+          37.38376035962576,
+          37.626960656153564,
+          37.600763312079614,
+          37.7187224296529,
+          37.623948661465946,
+          37.355524341352066,
+          37.28046142266695,
+          37.47214215902657,
+          37.63343903288777,
+          37.23296322154441,
+          37.39859402104146,
+          37.249678153270295,
+          37.59530416560656
+        ],
+        "complete_request_tps": [
+          37.26129833372281,
+          37.277452289077786,
+          37.24158417229736,
+          37.04047274732778,
+          37.16626741277538,
+          37.17983739084498,
+          37.42327399061086,
+          37.39848700757538,
+          37.51497333840725,
+          37.417454876318644,
+          37.15382401141366,
+          37.07406889078092,
+          37.26230471264732,
+          37.42098091675156,
+          37.01838089524938,
+          37.19705568995663,
+          37.05046955566977,
+          37.39260273925349
+        ]
+      }
+    },
+    "telemetry": {
+      "host": {
+        "samples": 3958,
+        "observed_duration_s": 989.7426237619948,
+        "median_sample_gap_s": 0.2502516070380807,
+        "maximum_sample_gap_s": 0.2518526720814407,
+        "minimum_sampled_available_bytes": 34752368640,
+        "minimum_sampled_available_GiB": 32.365665435791016,
+        "required_floor_bytes": 8589934592,
+        "no_sample_below_floor": true,
+        "continuous_hard_floor_proof": false,
+        "swap_total_bytes": 0
+      },
+      "gpu_whole_run": {
+        "samples": 943,
+        "fields": {
+          "pwr": {
+            "min": 8.0,
+            "median": 43.0,
+            "max": 51.0
+          },
+          "gtemp": {
+            "min": 36.0,
+            "median": 54.0,
+            "max": 56.0
+          },
+          "sm": {
+            "min": 0.0,
+            "median": 69.0,
+            "max": 94.0
+          },
+          "mem": {
+            "min": 0.0,
+            "median": 26.0,
+            "max": 55.0
+          },
+          "mclk": {
+            "min": 405.0,
+            "median": 12001.0,
+            "max": 12001.0
+          },
+          "pclk": {
+            "min": 577.0,
+            "median": 1950.0,
+            "max": 2310.0
+          },
+          "fb": {
+            "min": 553.0,
+            "median": 13581.0,
+            "max": 13583.0
+          },
+          "rxpci": {
+            "min": 0.0,
+            "median": 1994.0,
+            "max": 5691.0
+          },
+          "txpci": {
+            "min": 0.0,
+            "median": 175.0,
+            "max": 528.0
+          }
+        },
+        "mclk_histogram": {
+          "405.0": 1,
+          "12001.0": 942
+        },
+        "pclk_histogram": {
+          "577.0": 1,
+          "1567.0": 1,
+          "1950.0": 524,
+          "1957.0": 412,
+          "2085.0": 1,
+          "2310.0": 1,
+          "2002.0": 1,
+          "1965.0": 1,
+          "2152.0": 1
+        }
+      },
+      "gpu_sm_at_least50_descriptive_subset": {
+        "samples": 842,
+        "fields": {
+          "pwr": {
+            "min": 19.0,
+            "median": 43.0,
+            "max": 51.0
+          },
+          "gtemp": {
+            "min": 39.0,
+            "median": 54.0,
+            "max": 56.0
+          },
+          "sm": {
+            "min": 51.0,
+            "median": 70.0,
+            "max": 94.0
+          },
+          "mem": {
+            "min": 6.0,
+            "median": 28.0,
+            "max": 55.0
+          },
+          "mclk": {
+            "min": 12001.0,
+            "median": 12001.0,
+            "max": 12001.0
+          },
+          "pclk": {
+            "min": 1950.0,
+            "median": 1950.0,
+            "max": 2310.0
+          },
+          "fb": {
+            "min": 13365.0,
+            "median": 13581.0,
+            "max": 13583.0
+          },
+          "rxpci": {
+            "min": 2.0,
+            "median": 2105.0,
+            "max": 5691.0
+          },
+          "txpci": {
+            "min": 1.0,
+            "median": 190.0,
+            "max": 528.0
+          }
+        },
+        "mclk_histogram": {
+          "12001.0": 842
+        },
+        "pclk_histogram": {
+          "1957.0": 406,
+          "1950.0": 431,
+          "2085.0": 1,
+          "2310.0": 1,
+          "2002.0": 1,
+          "1965.0": 1,
+          "2152.0": 1
+        }
+      },
+      "gpu_telemetry_limitations": [
+        "dmon is sampled with requested1s cadence and no per-sample timestamps; includes startup/teardown",
+        "cannot reliably correlate clocks/power with individual timed roles",
+        "clocks/power were observed, not locked by this protocol; no throttle-reason or CPU-clock telemetry",
+        "SM>=50 subset is descriptive only; no timing samples excluded"
+      ],
+      "actual_unlimited_resources": {
+        "container_id": "5539ae281e9eabc269f621e499247327b4c0745f858d30666069d73048e8863f",
+        "host_cgroup_path": "/system.slice/docker-5539ae281e9eabc269f621e499247327b4c0745f858d30666069d73048e8863f.scope",
+        "controllers": [
+          "cpuset",
+          "cpu",
+          "io",
+          "memory",
+          "hugetlb",
+          "pids",
+          "rdma",
+          "misc",
+          "dmem"
+        ],
+        "levels": [
+          {
+            "path": "/sys/fs/cgroup/system.slice/docker-5539ae281e9eabc269f621e499247327b4c0745f858d30666069d73048e8863f.scope",
+            "pids.max": "max",
+            "memory.max": "max",
+            "cpu.max": "max 100000"
+          },
+          {
+            "path": "/sys/fs/cgroup/system.slice",
+            "pids.max": "max",
+            "memory.max": "max",
+            "cpu.max": "max 100000"
+          },
+          {
+            "path": "/sys/fs/cgroup",
+            "pids.max": null,
+            "memory.max": null,
+            "cpu.max": null
+          }
+        ],
+        "unlimited": true,
+        "root_missing_limit_files": "root/controller inapplicable"
+      },
+      "resource_environment": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      }
+    },
+    "analysis_disposition": {
+      "observed_order": "R8 > R4 > PlainR1 in this same099 width8/BF16draft/pinON warm-publicLRU region",
+      "repeatability": "all9 paired blocks and all18 per-role raw rate ranges have the same ordering for both metrics",
+      "recommendation": "retain R8 for the measured width8 head region, as the best observed repeatedly higher complete-model option",
+      "statistical_classification": "conditional independent representative-block median intervals only; unconditional significance/independence not established",
+      "equivalence_claim": false,
+      "prior_row4_ordering": "inconclusive, unchanged; width8 results do not resolve it",
+      "BF16_vs_draft4": "not compared or resolved in this run",
+      "other_serving_designs": "not ranked here: strict-serial/copy-only/freshdifferentadmission/otherwidth/hardware need separate complete-policy evidence",
+      "new_GPU_loader": "separate work; these rates and profiles retain099/image433 identity"
+    }
+  },
+  "closed_complete_configuration_screens": [
+    {
+      "run": "runner/run-row2-current-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 2,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 24.020205345004797,
+          "complete_decode_tokens_per_second": 21.315388134534608,
+          "prefill_s": 2.28025070799049,
+          "rounds": 268,
+          "accepted": 243,
+          "drafted": 268,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 23.107815249008127,
+          "complete_decode_tokens_per_second": 22.157005951567704,
+          "prefill_s": 0.07723322592210025,
+          "rounds": 268,
+          "accepted": 243,
+          "drafted": 268,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 23.05692654894665,
+          "complete_decode_tokens_per_second": 22.205908446344537,
+          "prefill_s": 0.07696072896942496,
+          "rounds": 268,
+          "accepted": 243,
+          "drafted": 268,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 32.780316708027385,
+          "complete_decode_tokens_per_second": 15.61912914266076,
+          "prefill_s": 0.3890490779886022,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4432,
+      "pool_gib": 7.3039751052856445,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-head-r4-512",
+      "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+      "runtime_source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 4,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 17.030062220990658,
+          "complete_decode_tokens_per_second": 30.064482052738878,
+          "prefill_s": 2.419968714006245,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 15.62628643703647,
+          "complete_decode_tokens_per_second": 32.765302368097444,
+          "prefill_s": 0.09461450506933033,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 15.450277839088812,
+          "complete_decode_tokens_per_second": 33.13856264155024,
+          "prefill_s": 0.08074669993948191,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 33.19070450309664,
+          "complete_decode_tokens_per_second": 15.426005794852328,
+          "prefill_s": 0.3775812720414251,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4428,
+      "pool_gib": 7.297383069992065,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-head-r8-512",
+      "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+      "runtime_source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 4,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 16.405791994999163,
+          "complete_decode_tokens_per_second": 31.20849027929091,
+          "prefill_s": 2.3709915480576456,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 15.46866780903656,
+          "complete_decode_tokens_per_second": 33.099165766614846,
+          "prefill_s": 0.08031764894258231,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 15.432705700048245,
+          "complete_decode_tokens_per_second": 33.176295197438996,
+          "prefill_s": 0.07546622899826616,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 32.56060876499396,
+          "complete_decode_tokens_per_second": 15.724521727936894,
+          "prefill_s": 0.3761081959819421,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4428,
+      "pool_gib": 7.297383069992065,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-final-secondary4-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 4,
+        "bits": 4,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 16.425901538925245,
+          "complete_decode_tokens_per_second": 31.170283030534982,
+          "prefill_s": 2.288102663005702,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 15.61635962408036,
+          "complete_decode_tokens_per_second": 32.78613020735628,
+          "prefill_s": 0.0863766010152176,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 15.436056445003487,
+          "complete_decode_tokens_per_second": 33.169093532676854,
+          "prefill_s": 0.07462252804543823,
+          "rounds": 160,
+          "accepted": 351,
+          "drafted": 480,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 31.59715966496151,
+          "complete_decode_tokens_per_second": 16.203988125165672,
+          "prefill_s": 0.3483089240035042,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4772,
+      "pool_gib": 7.864298105239868,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-row8-current-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 8,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 16.909419490024447,
+          "complete_decode_tokens_per_second": 30.278981505074704,
+          "prefill_s": 2.289012353052385,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 15.719138975953683,
+          "complete_decode_tokens_per_second": 32.57175859207243,
+          "prefill_s": 0.08735063299536705,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 15.720796301960945,
+          "complete_decode_tokens_per_second": 32.568324795108204,
+          "prefill_s": 0.07316725002601743,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 32.44020174606703,
+          "complete_decode_tokens_per_second": 15.782885815809502,
+          "prefill_s": 0.368764154962264,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4424,
+      "pool_gib": 7.290791034698486,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-row8-tail-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 8,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 14.903795714024454,
+          "complete_decode_tokens_per_second": 34.35366465189862,
+          "prefill_s": 2.2581039399374276,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 13.815343601978384,
+          "complete_decode_tokens_per_second": 37.060243650160146,
+          "prefill_s": 0.07674373895861208,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 13.777167746098712,
+          "complete_decode_tokens_per_second": 37.162935767039876,
+          "prefill_s": 0.0730028540128842,
+          "rounds": 119,
+          "accepted": 392,
+          "drafted": 833,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 32.59523725591134,
+          "complete_decode_tokens_per_second": 15.707816328508107,
+          "prefill_s": 0.37095535499975085,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4424,
+      "pool_gib": 7.290791034698486,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-row16-current-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 16,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 22.090573550085537,
+          "complete_decode_tokens_per_second": 23.177306774726883,
+          "prefill_s": 2.2643172789830714,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 20.300552719971165,
+          "complete_decode_tokens_per_second": 25.220988170253488,
+          "prefill_s": 0.07125854399055243,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 20.371325617074035,
+          "complete_decode_tokens_per_second": 25.13336685222252,
+          "prefill_s": 0.07229521602857858,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 33.15883322595619,
+          "complete_decode_tokens_per_second": 15.440832809497497,
+          "prefill_s": 0.37217258592136204,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4414,
+      "pool_gib": 7.274310946464539,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-row16-tail-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 16,
+        "bits": 16,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 17.847554542007856,
+          "complete_decode_tokens_per_second": 28.687403576490194,
+          "prefill_s": 2.2701125589665025,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 16.525904420996085,
+          "complete_decode_tokens_per_second": 30.981662906721546,
+          "prefill_s": 0.07235393195878714,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 16.52398540393915,
+          "complete_decode_tokens_per_second": 30.98526096966561,
+          "prefill_s": 0.07698612404055893,
+          "rounds": 103,
+          "accepted": 408,
+          "drafted": 1545,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 32.91271579498425,
+          "complete_decode_tokens_per_second": 15.55629754740648,
+          "prefill_s": 0.3766411319375038,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4414,
+      "pool_gib": 7.274310946464539,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    },
+    {
+      "run": "runner/run-row8-tail-bits4-v2-512-240",
+      "image": "sha256:074a5f6a0be02553b498be73e58ef8c0ce7406273900e0c1d8ee3c3ec24b2b68",
+      "runtime_source": "240c72eb076f8844aedc18b11fde5edc884a1f43",
+      "configuration": {
+        "model": "/model",
+        "drafter": "/draft",
+        "context": 4096,
+        "streams": 1,
+        "rows": 8,
+        "bits": 4,
+        "pin": "on",
+        "kernel": "baseline",
+        "max_tokens": 512,
+        "requests": 3,
+        "concurrent": false,
+        "output": "/evidence/complete-policy/model-probe.json"
+      },
+      "rates": {
+        "greedy-0": {
+          "tokens": 512,
+          "decode_s": 14.839234690996818,
+          "complete_decode_tokens_per_second": 34.50312705887979,
+          "prefill_s": 2.2725383220240474,
+          "rounds": 123,
+          "accepted": 388,
+          "drafted": 861,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-1": {
+          "tokens": 512,
+          "decode_s": 13.937671581981704,
+          "complete_decode_tokens_per_second": 36.7349737715087,
+          "prefill_s": 0.08041839499492198,
+          "rounds": 123,
+          "accepted": 388,
+          "drafted": 861,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-2": {
+          "tokens": 512,
+          "decode_s": 13.784647471038625,
+          "complete_decode_tokens_per_second": 37.14277068569985,
+          "prefill_s": 0.07032842701300979,
+          "rounds": 123,
+          "accepted": 388,
+          "drafted": 861,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        },
+        "greedy-serial": {
+          "tokens": 512,
+          "decode_s": 31.664304682984948,
+          "complete_decode_tokens_per_second": 16.16962712827631,
+          "prefill_s": 0.3390704790363088,
+          "rounds": 511,
+          "accepted": 0,
+          "drafted": 0,
+          "token_sha": "ffb65cfd59e8",
+          "full_token_ids_comma_sha256": "ffb65cfd59e8e6bd8c9ae0343e99b65bda0676586dee35ca0e85b3954d50b528"
+        }
+      },
+      "pool_cells": 4767,
+      "pool_gib": 7.856058061122894,
+      "all_seven_replies_correct": true,
+      "scope": "Earlier-source/private descriptive complete-policy screen, no new-source inference"
+    }
+  ],
+  "limitations": {
+    "full_099_suite": "No full099 suite rerun is claimed; source-scoped240 reuse and disjoint fresh groups are identified. Never add cross-source or overlapping gate counts.",
+    "native_gate_counts": "Fresh113 and historical238 are native/coupled gate totals, each includes13 CPU head-policy controls already present in CPU coverage.",
+    "pretrained_dense_admission": "Both selected dense27B/DFlash2 admission cases skipped for absent model inputs; zero covered passes.",
+    "compute_sanitizer": "Unavailable in recorded image capability checks; no memcheck result claimed",
+    "multiple_gpus": "Only one compatibleGPU present; no actual two-GPU NCCL/mixed-architecture run or comparative throughput here",
+    "apple_arm64_other_hardware": "No fresh Apple execution, ARM64 execution or otherGPU qualification for this increment",
+    "context": "Configured4096 only; no filled-window/full262144 actual-model qualification",
+    "vision": "This text workload does not qualify vision or video",
+    "model_quality": "Same-target sequence/math checks, not broad answer-quality/perplexity or another engine parity",
+    "api_rate": "57.69850740331918 aggregate clienttok/s is not explicitly CUDA-drained; null memory_waits/memory_stops remain unknown"
+  },
+  "later_loader_increment": {
+    "qualification_status": "Separate and not qualified by this099 record",
+    "results_included": false,
+    "scope": "Any subsequent GPU-loading preparation/source/image change requires its own audited artifact, exact loader/native/model/resource checks and measured startup/performance comparison. Retain all099 values under their original identities; append later results separately."
+  },
+  "evidence": {
+    "availability": "Maintained summaries carry identities/results. Raw captures and private comparison drivers are owner-local archived evidence, not runtime/test prerequisites for a fresh checkout.",
+    "packet_root": "/home/kklouzal/tensorfold-heretic-implementation-20261017",
+    "closed_packet_snapshot": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/final-closed-gates-099.json",
+      "sha256": "2b0c784d693997a2484d3ff1d6da468f327efbd81c1f228327f0837f3b06af5f",
+      "bytes": 134620,
+      "scope": "Earlier snapshot before formal closure; its historicalpending marker is superseded by this receipt formal section"
+    },
+    "closed_packet_markdown_snapshot": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/final-closed-gates-099.md",
+      "sha256": "43a2279a235de2d00cd7fc02c2ecb767f2f1dca92682b08635d20f85d809aac9",
+      "bytes": 8857
+    },
+    "formal_capture": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/runner/run-final-formal-width8-099/head-width-perf.json",
+      "sha256": "8ca716a47a38474dc18953bdf469d9924e7af3488f46f0e50b3381d505df3126",
+      "bytes": 3845164
+    },
+    "formal_raw_requests": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/runner/run-final-formal-width8-099/head-width-perf.requests.jsonl",
+      "sha256": "bd1dc6e61c44c4cd93860764fc38ad41b5b4530952fb0e05bc3413d339855440",
+      "bytes": 1363327
+    },
+    "formal_plan": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/runner/run-final-formal-width8-099/head-width-perf.plan.json",
+      "sha256": "c314ce23aac57f343321514312de47b0a20e9221f6276c4c2204c845060d741c",
+      "bytes": 3813
+    },
+    "closed_small_file_sha256": {
+      "final-capture-099eb4d0/source.json": {
+        "sha256": "b63dfbb31c6192b919d741e5502c4a2c8b2fd932e6aa01dcc8a3d4c9e9415a96",
+        "bytes": 212501
+      },
+      "final-capture-099eb4d0/attempts/final-02/receipt.json": {
+        "sha256": "dcb213c2eb6f3da55d09fdaa293b9ffe7a1c5d1ca6bb7822bb7d306854805612",
+        "bytes": 6744
+      },
+      "final-capture-099eb4d0/attempts/final-02/runtime-audit.json": {
+        "sha256": "9047158635aabc781e11c687cce49ccfdfff2be5aec30bee6f744e0d41f47baa",
+        "bytes": 1496
+      },
+      "final-capture-099eb4d0/attempts/final-02/verification-audit.json": {
+        "sha256": "534d43652df971fe97b75968b82ba3ae742c9f73db5d1eb9bc6e34a3244a0b1e",
+        "bytes": 1502
+      },
+      "final-capture-099eb4d0/attempts/final-02/runtime.exit": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "final-capture-099eb4d0/attempts/final-02/runtime-audit.exit": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "final-capture-099eb4d0/attempts/final-02/runtime.id": {
+        "sha256": "639c77db06d8b3c017b7d1abe59fcfecd81eb8b31a06090fb0ba860f415445bb",
+        "bytes": 71
+      },
+      "final-capture-099eb4d0/attempts/final-02/verification.exit": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "final-capture-099eb4d0/attempts/final-02/verification-audit.exit": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "final-capture-099eb4d0/attempts/final-02/verification.id": {
+        "sha256": "7da47a34cf773f927bf8cc0882a5859b4e0107d5b1bd343fcff8f6a16e0865b7",
+        "bytes": 71
+      },
+      "final-capture-099eb4d0/attempts/final-02/runtime-inspect.json": {
+        "sha256": "666b46bfbf37629e28e3a481691b934c48dd89833cd6ce9a2a188a84048c9308",
+        "bytes": 11052
+      },
+      "/home/kklouzal/tensorfold-qwen27-test-20261017/heretic-verification-v2.json": {
+        "sha256": "aa7d6fd24f47f2132e449619fb25e5f1333a28fb4d70442c801058eb7afebfbe",
+        "bytes": 2372
+      },
+      "/home/kklouzal/tensorfold-qwen27-test-20261017/heretic-transfer-receipt.json": {
+        "sha256": "4714ed774b2e72f5daf2ce569a079bd466d5a7abfabd8db6da7325f3a509c800",
+        "bytes": 2192
+      },
+      "/home/kklouzal/tensorfold-qwen27-test-20261017/gb10-heretic-identity.json": {
+        "sha256": "e88865e7acfbd31ff35fead3660c4b6e5af2661075474f8f6c33fd751429bc9f",
+        "bytes": 2537
+      },
+      "/home/kklouzal/tensorfold-qwen27-test-20261017/metadata/heretic-inventory.json": {
+        "sha256": "8c7ed249aa89e4e949b53784e867d7ec0b31dd7acf1102699d738ef2d650fe28",
+        "bytes": 28687
+      },
+      "dflash/publication.json": {
+        "sha256": "f14d6a9cf6639214a6bf9090f46dd45ada0836c261d6ee62d5768c5de9270a70",
+        "bytes": 2510
+      },
+      "dflash/verification-normal.json": {
+        "sha256": "8e1c8e2c66b3c5d497bd29a85a3c8fc82fe1a26bed47126d4d495aef5ffad44d",
+        "bytes": 2658
+      },
+      "dflash/verification-optimized.json": {
+        "sha256": "ab2492f4b03f95d9a6c0b51b3637d0ad90c173082e7a9f50d3001ba81fcdbb5e",
+        "bytes": 2657
+      },
+      "dflash/publisher-inventory.json": {
+        "sha256": "0e283099a1b55d1f271ba6ebe472a0d0f405dd7cf008d4a721fd7a0121edd32e",
+        "bytes": 2504
+      },
+      "runner/run-final-cpu-099/receipt.json": {
+        "sha256": "c1a26c8ff554ad08c82f3bdfcf32b9df11ede4fe36c21f8baefce3e14f525f65",
+        "bytes": 5644
+      },
+      "runner/run-final-cpu-099/payload.json": {
+        "sha256": "ce753348aa87dd9f06e3c56e97f013c7040a9950b74ac0d014a20dd4999fbd66",
+        "bytes": 2032
+      },
+      "runner/run-final-cpu-099/actual-resource-proof.json": {
+        "sha256": "caee09f9e5ef392ba456a13f523a104f7101d0ef9b2d916a0f65cbee4bb19874",
+        "bytes": 4434
+      },
+      "runner/run-final-cpu-099/container.json": {
+        "sha256": "8e0684d637d42890658bfdd4d834f1d7280f8cde6d110989e98678e34b3931a6",
+        "bytes": 12451
+      },
+      "runner/run-final-cpu-099/command.json": {
+        "sha256": "bb7fc3c2b10c830b6978bffa679f715821cc54e7af1a5a25ac093cf36d4a5160",
+        "bytes": 2306
+      },
+      "runner/run-final-cpu-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-cpu-099/raw.log": {
+        "sha256": "e0261044cce55a7991e1d3a5c9c2a8888aaa3c5b59e75cb263c4a11ec50d6e7d",
+        "bytes": 2697
+      },
+      "runner/run-final-cpu-coupled-099/receipt.json": {
+        "sha256": "9d5dcefac876d7abc04010a3da5a65dbc8d71e65b75dc131033c6025b0845adc",
+        "bytes": 5888
+      },
+      "runner/run-final-cpu-coupled-099/payload.json": {
+        "sha256": "6d409354dbef5c3b3f43a94730231f4bc6a8f9b3d04daf579dfc2bef369414e0",
+        "bytes": 498
+      },
+      "runner/run-final-cpu-coupled-099/actual-resource-proof.json": {
+        "sha256": "366a91d2be67c3e5e8e423e1707004136a468a35bca0e94b88e7fe2defa97188",
+        "bytes": 4666
+      },
+      "runner/run-final-cpu-coupled-099/container.json": {
+        "sha256": "78ae32b376c5a3addd96a16be0e121b1e30eb98ed860511870f6311df924426d",
+        "bytes": 12981
+      },
+      "runner/run-final-cpu-coupled-099/command.json": {
+        "sha256": "c42c486d73f98fddd584165192ca6820dcadf95dd97ea16a9e5b05807f406228",
+        "bytes": 2487
+      },
+      "runner/run-final-cpu-coupled-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-cpu-coupled-099/raw.log": {
+        "sha256": "35cf7cf75a1e7da36050b2bfbfd42586c83025bbf486ea52f6dc2471bfcc9992",
+        "bytes": 99
+      },
+      "runner/run-final-cpu-startup-099/receipt.json": {
+        "sha256": "afd566a057ada905a7f647375390c0bb9c1990970478a9f907836628606b5050",
+        "bytes": 5660
+      },
+      "runner/run-final-cpu-startup-099/payload.json": {
+        "sha256": "4ec40e4d85ba0d4f915cf6cad25424ef242a4284f8136b1508476f023b68ab7f",
+        "bytes": 481
+      },
+      "runner/run-final-cpu-startup-099/actual-resource-proof.json": {
+        "sha256": "d6c16e3ee9425f572d5745d05dce83e697afc93983c96e998517a8642d5a8fe2",
+        "bytes": 4450
+      },
+      "runner/run-final-cpu-startup-099/container.json": {
+        "sha256": "a94521431c6378ba5e81a4438f30fc0f51212ec31675bf0f6b8ebef9eaa4fe31",
+        "bytes": 12484
+      },
+      "runner/run-final-cpu-startup-099/command.json": {
+        "sha256": "696aa003faf57f99ea27cbfccd69cc182144916c897f39442f709ebbe9728b1c",
+        "bytes": 2330
+      },
+      "runner/run-final-cpu-startup-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-cpu-startup-099/raw.log": {
+        "sha256": "5bf909d5513381ff67344a30113ae7437f3e62a75a3c9f156952b6a1f8693f53",
+        "bytes": 180
+      },
+      "runner/run-final-native-099/receipt.json": {
+        "sha256": "c414833136a1734fd7f97efd38671f15c9c21617a9dd37df7c42d7368eb7228b",
+        "bytes": 6247
+      },
+      "runner/run-final-native-099/payload.json": {
+        "sha256": "c551486e3ff762204f6450d02a3841c0d9be5908800c8dcfab0fdccb42ca536b",
+        "bytes": 1033
+      },
+      "runner/run-final-native-099/actual-resource-proof.json": {
+        "sha256": "6e3115da8769d7656b5482b8c28844aecc3a62b4f10ee29a2bf17532e9d483bf",
+        "bytes": 4991
+      },
+      "runner/run-final-native-099/container.json": {
+        "sha256": "d05b1f29506aea505563837639ebe9628b7ce370c8ada4f2243ec5cfdf6389f5",
+        "bytes": 13402
+      },
+      "runner/run-final-native-099/command.json": {
+        "sha256": "67258d20059327ea76894bcec6ea837dde0fb0c884abfd5c7c3b0d60cdbdfbe5",
+        "bytes": 2596
+      },
+      "runner/run-final-native-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-native-099/raw.log": {
+        "sha256": "bac5311c6e076ec7e6241ab53d9923e941f1ec0bc0fa5d9db14eaea59195e890",
+        "bytes": 1214
+      },
+      "runner/run-final-native-admit-099/receipt.json": {
+        "sha256": "8ffdde77b43a8fb69fdf2d647bd0699a82ed077a401355de9e9c50cd3c3ad9ee",
+        "bytes": 6259
+      },
+      "runner/run-final-native-admit-099/payload.json": {
+        "sha256": "c8e6dc0702ce61ddab6f88461bd414e774d70ad899fc89e917b595013973594d",
+        "bytes": 370
+      },
+      "runner/run-final-native-admit-099/actual-resource-proof.json": {
+        "sha256": "5f1c2f158d53cbe149ba8f8cb9b466791270c4d1d99b7525007c200f89590ee9",
+        "bytes": 5003
+      },
+      "runner/run-final-native-admit-099/container.json": {
+        "sha256": "958fae2f24e6047d528c95331836ae4651502b0832ffe08a3d5a89b76a323142",
+        "bytes": 13427
+      },
+      "runner/run-final-native-admit-099/command.json": {
+        "sha256": "63cb620132aee1db7058ff997f5c0d944a540b81534869c92c5b60c6da786801",
+        "bytes": 2614
+      },
+      "runner/run-final-native-admit-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-native-admit-099/raw.log": {
+        "sha256": "0f3f6ff094b88a1bd2f5076ccc8795f122d559121c7277ebf70e47c179a8e83b",
+        "bytes": 1263
+      },
+      "runner/run-final-copy-512-099/receipt.json": {
+        "sha256": "dcce270927668563285bf16ff14d4779983a6dcf060aeecbaa03c26309786c2a",
+        "bytes": 6695
+      },
+      "runner/run-final-copy-512-099/payload.json": {
+        "sha256": "2a4a2484862bdb53d47b9d748465115d8ef7604e5d8d029149cda6acb5859814",
+        "bytes": 637
+      },
+      "runner/run-final-copy-512-099/actual-resource-proof.json": {
+        "sha256": "373690a249f896472b1af945800930fadadadc2b31237d1fb9b76f0644c47960",
+        "bytes": 5415
+      },
+      "runner/run-final-copy-512-099/container.json": {
+        "sha256": "ddc1c16d3f44b6b93451da820c5941efb4326349e39186ddabca5b8830469816",
+        "bytes": 14386
+      },
+      "runner/run-final-copy-512-099/command.json": {
+        "sha256": "5e6ae0bde3862103458f203aaccfbb8aebee70e3a400a42fef25f5eabaed409b",
+        "bytes": 2904
+      },
+      "runner/run-final-copy-512-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-copy-512-099/raw.log": {
+        "sha256": "599cd90b67ec8df474a9b29ca067289c7e8a3056154aaaeef14c54125bd1efc6",
+        "bytes": 2965
+      },
+      "runner/run-final-api-long-099/receipt.json": {
+        "sha256": "6e7b9ca26ef68acbc436230d2ecad5f6fe4b8321760ff8279abaca3ef3d0f408",
+        "bytes": 6923
+      },
+      "runner/run-final-api-long-099/payload.json": {
+        "sha256": "e93928b220e6ff373461a3c9067ae698d658c49d0cd41ac271a443a524cc2d03",
+        "bytes": 563
+      },
+      "runner/run-final-api-long-099/actual-resource-proof.json": {
+        "sha256": "cd3979338ef5181c8dcc8f10ee8687302af91fdea4eab86faff6903b878b58f0",
+        "bytes": 5631
+      },
+      "runner/run-final-api-long-099/container.json": {
+        "sha256": "f9010bf372ec8208bd430e5541f91f3b59c65331d4799eecbd3c2159092f85c9",
+        "bytes": 14884
+      },
+      "runner/run-final-api-long-099/command.json": {
+        "sha256": "372375ae4b1c83a2bf52ae17024223c4a66dd8f150eb0a70072dba4bc2f36038",
+        "bytes": 3061
+      },
+      "runner/run-final-api-long-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-api-long-099/raw.log": {
+        "sha256": "e5037537ded0af7c204b51206f3acff53caf883a6cc5986d2fb0339ee20c6b37",
+        "bytes": 6388
+      },
+      "runner/run-final-cpu-installed-240/receipt.json": {
+        "sha256": "1be64d348913c2a9013420229af5b26823c004688c6e79890564722f4c6c7416",
+        "bytes": 5664
+      },
+      "runner/run-final-cpu-installed-240/payload.json": {
+        "sha256": "f7c6b6efabdc2373127c1be088b3ddc42a9317e2f5da8855a8db8d123ecb68d9",
+        "bytes": 346
+      },
+      "runner/run-final-cpu-installed-240/actual-resource-proof.json": {
+        "sha256": "4c6cad064b841d69a76d1444e0dcbf747c2367bc0b08a94e9829002d3d98dc18",
+        "bytes": 4454
+      },
+      "runner/run-final-cpu-installed-240/container.json": {
+        "sha256": "cd43419b652d16a03f9420870833237be57aed954dbed085fbab4c61cfad0140",
+        "bytes": 12490
+      },
+      "runner/run-final-cpu-installed-240/command.json": {
+        "sha256": "e2440fbd479c669baa7c6f91a0a74aec739cbd5b7b6dec379cd83b086681f9d3",
+        "bytes": 2336
+      },
+      "runner/run-final-cpu-installed-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-cpu-installed-240/raw.log": {
+        "sha256": "0b58f3ee174468c45cfea80549ad22d7c79a32db1f77b8cbb69fd99760db19ec",
+        "bytes": 26169
+      },
+      "runner/run-final-native-240/receipt.json": {
+        "sha256": "5f2870d27c424a510eda1b55412d49bbc0324156167ce4c55636da8777b20e03",
+        "bytes": 6247
+      },
+      "runner/run-final-native-240/payload.json": {
+        "sha256": "0f634dfe041085fab98bd217cace536676539d54ca95c386c73f6bff8488772c",
+        "bytes": 798
+      },
+      "runner/run-final-native-240/actual-resource-proof.json": {
+        "sha256": "83591a8874173ac76967b785d9ea942a1573f258784118c5bd58b5344fb59e78",
+        "bytes": 4991
+      },
+      "runner/run-final-native-240/container.json": {
+        "sha256": "1808d85a9fe80be7bee95fd7b8ac6a6fa83a940b520116e58d944640489b3fff",
+        "bytes": 13404
+      },
+      "runner/run-final-native-240/command.json": {
+        "sha256": "db3f68e9da63ebd47c54484d4728a01e4b29d37f267e1868281baddf4d53aeac",
+        "bytes": 2596
+      },
+      "runner/run-final-native-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-native-240/raw.log": {
+        "sha256": "e299db4a28138ad988813069ec5b12b08f9919fbab42dbff133b1d3a91317119",
+        "bytes": 3496
+      },
+      "d13/coverage-reuse-099eb4d0.json": {
+        "sha256": "dadff01c31a3391932f86d9a85f5a02b5fdc88e14cd43c1e0f384846c4f60066",
+        "bytes": 3744
+      },
+      "d14/reuse-240-to-099-source-proof.json": {
+        "sha256": "6cd235bf34a2c2330a6572870eae4fe2c485e51dcec33586ab0824e15f544802",
+        "bytes": 3965
+      },
+      "static/final-099eb4d0-20261017T211834Z/ledger.json": {
+        "sha256": "b39627f04b3e8e1b3b094ea9e52b7d045521b204ff8a1854e4900f7a24b725f1",
+        "bytes": 894
+      },
+      "static/final-099eb4d0-20261017T211834Z/ruff-delta240-to099.json": {
+        "sha256": "312e4e1dd43cb43016327c206a017591e37c6d163a67e9628a37134fc32a5d36",
+        "bytes": 428
+      },
+      "static/final-099eb4d0-20261017T211834Z/manifest.json": {
+        "sha256": "14278d69ffc39651fee307458404935d4ddc2c07b123da96c28e36019dade907",
+        "bytes": 5257
+      },
+      "runner/run-final-api-long-099/extended-typed-api-long-pin-on.json": {
+        "sha256": "3dedab3c065037c16a81a70c8d338aea418c82a28bac49aebadc1434859d5f25",
+        "bytes": 411971
+      },
+      "runner/run-final-copy-512-099/complete-policy/model-probe.json": {
+        "sha256": "3ef00eff5695f91efabb0a2ed34b95dceddc33382882604740cdabf018a47624",
+        "bytes": 176356
+      },
+      "runner/run-final-copy-512-099/complete-policy/complete-policy.json": {
+        "sha256": "4982a82dde41beff0d70e5fccba0a2a7ddd26b2bba4a8ba92ba11ac345a1a01e",
+        "bytes": 22254
+      },
+      "runner/run-row2-current-512-240/receipt.json": {
+        "sha256": "0800a2104df5a0defd59ce67fee760163f67341594cc81d0f3e40a57e65dbb9d",
+        "bytes": 7137
+      },
+      "runner/run-row2-current-512-240/payload.json": {
+        "sha256": "1f4543618b2533ba5bafe1d2587bb5c36cc7a7fa8770373afbe7698db387d1f7",
+        "bytes": 882
+      },
+      "runner/run-row2-current-512-240/actual-resource-proof.json": {
+        "sha256": "df1d0b9c607b060aff4b505a68ccfe1e3e6797b8fba808fd407771311854235f",
+        "bytes": 5833
+      },
+      "runner/run-row2-current-512-240/container.json": {
+        "sha256": "802fbbd3140e5c7419dce726de6581e2eefe2399a2ef4c71724ba7806c548f83",
+        "bytes": 15356
+      },
+      "runner/run-row2-current-512-240/command.json": {
+        "sha256": "b64d2a2219c7f0e7ab6926df4c5d08f03d90851debef697fc523363eda837565",
+        "bytes": 3206
+      },
+      "runner/run-row2-current-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row2-current-512-240/raw.log": {
+        "sha256": "311171ec044aa2cdecc50fa0e3b1318945ce51d61691b0bcd8e029f3922c52ee",
+        "bytes": 3030
+      },
+      "runner/run-row2-current-512-240/complete-policy/model-probe.json": {
+        "sha256": "fd877de3d5239f08a82c4e83b1119582d1b952e5814fc1717009ac4182f0729d",
+        "bytes": 179113
+      },
+      "runner/run-head-r4-512/receipt.json": {
+        "sha256": "3187893902955b5417b140bbf881caf0cf3155175b47d7729ad346f872a3fd47",
+        "bytes": 7254
+      },
+      "runner/run-head-r4-512/payload.json": {
+        "sha256": "dd195696e4cd060db846b67f92e917363a0bc4c818605f903c9d31f27cc77251",
+        "bytes": 838
+      },
+      "runner/run-head-r4-512/actual-resource-proof.json": {
+        "sha256": "bcc0eed7aa26717b36aada722f8ff961f69112154c86eed78c60273ee79df964",
+        "bytes": 5964
+      },
+      "runner/run-head-r4-512/container.json": {
+        "sha256": "f7b5c92c25c96ea364a2fcda1eac16b58f4e38779c421a6522cc67c543e76ef9",
+        "bytes": 15414
+      },
+      "runner/run-head-r4-512/command.json": {
+        "sha256": "16645eaa65516b6e72979b5e45646e3f60ebb0d6ab0d109f64a96f1158de46ca",
+        "bytes": 151279
+      },
+      "runner/run-head-r4-512/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-head-r4-512/raw.log": {
+        "sha256": "8ed484641a538aab349461c9190489431a333c022a2bef9691e39e2f48613dfe",
+        "bytes": 3172
+      },
+      "runner/run-head-r4-512/complete-policy/model-probe.json": {
+        "sha256": "be108865c56a2c8a50344841a0a07294fef136105dd3286807343e4c9c66a8ca",
+        "bytes": 175061
+      },
+      "runner/run-head-r8-512/receipt.json": {
+        "sha256": "7b07a2d208a1ef4d66f7c763b23317001052d3c06eba10668ba7220df643d99d",
+        "bytes": 7254
+      },
+      "runner/run-head-r8-512/payload.json": {
+        "sha256": "f9fbb01c55a49dfe0687d28af0100ed7900154e013619275776af3ece073017d",
+        "bytes": 838
+      },
+      "runner/run-head-r8-512/actual-resource-proof.json": {
+        "sha256": "d100b99ff075a2397c6bba439773f41227552d17d94ce816c6aebfceba624e91",
+        "bytes": 5964
+      },
+      "runner/run-head-r8-512/container.json": {
+        "sha256": "70393e79b9c1ef26461180fa2c4326277e9095f9563a3e52a091c7c54aa1463d",
+        "bytes": 15413
+      },
+      "runner/run-head-r8-512/command.json": {
+        "sha256": "358cb9b8b987d6fcb82e4086759a98d4ca57fcabaf68535e5cb8835c4f9cfb7e",
+        "bytes": 151279
+      },
+      "runner/run-head-r8-512/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-head-r8-512/raw.log": {
+        "sha256": "3b60b6eaedab28cd899768baee62b8d6a1061c789b679ba5e087472cd5a02098",
+        "bytes": 3021
+      },
+      "runner/run-head-r8-512/complete-policy/model-probe.json": {
+        "sha256": "92899766bdba696932adc0952b7dada52bdb9e3d4984820de75b4a2ae53db8fb",
+        "bytes": 175069
+      },
+      "runner/run-final-secondary4-512-240/receipt.json": {
+        "sha256": "a852d0a33c8a11c9a8a70aaa0bab43097b8a1f6081a409d24c3cc2ca98cdd40c",
+        "bytes": 6926
+      },
+      "runner/run-final-secondary4-512-240/payload.json": {
+        "sha256": "4a16989ed85a5fe568dcd8f1bdaa30624ece07ec107896cd2c6f7353b33f6683",
+        "bytes": 695
+      },
+      "runner/run-final-secondary4-512-240/actual-resource-proof.json": {
+        "sha256": "0bc0c4f73ccbc765709c1b57b14886be901a0d168760a45c2ca85952866c46c6",
+        "bytes": 5634
+      },
+      "runner/run-final-secondary4-512-240/container.json": {
+        "sha256": "6f4a58936333a04927a433d48e780031a935f00582d70aafe5913c90656dbfd5",
+        "bytes": 14891
+      },
+      "runner/run-final-secondary4-512-240/command.json": {
+        "sha256": "0762a06449fb73d1531403f0782d962106535e558355d5f0074c2980f442a215",
+        "bytes": 3070
+      },
+      "runner/run-final-secondary4-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-final-secondary4-512-240/raw.log": {
+        "sha256": "7268f54fc56f3333115826322b6764b4b8b2590fc15866c96167c3c876fc7bc5",
+        "bytes": 2978
+      },
+      "runner/run-final-secondary4-512-240/complete-policy/model-probe.json": {
+        "sha256": "52e4380f1de09772c05e4420b2cb9016026e0d9ff50214f14b5b51eb4e75aac1",
+        "bytes": 179111
+      },
+      "runner/run-row8-current-512-240/receipt.json": {
+        "sha256": "dc19fb705269cd38e0031ef6e169d6954ac0a35e46c9e7be495cd2f12dd38b2c",
+        "bytes": 7137
+      },
+      "runner/run-row8-current-512-240/payload.json": {
+        "sha256": "ca210b50f7b3b8bec4ae9a43339a2dcb923d8a5b0d5c6db8a36cc04d89201cf1",
+        "bytes": 882
+      },
+      "runner/run-row8-current-512-240/actual-resource-proof.json": {
+        "sha256": "aa04632c481145e5e5fcf8272617d38985e0aec3d93896060a66ba78bec3610f",
+        "bytes": 5833
+      },
+      "runner/run-row8-current-512-240/container.json": {
+        "sha256": "cb5ba0ab8237f0d7357f01f0f02f80c7973eb889e8a5d7cca76ca934d0b43a38",
+        "bytes": 15356
+      },
+      "runner/run-row8-current-512-240/command.json": {
+        "sha256": "dabac9871a05411abc21c4f6b07e6a5ce55d0ef045202ed305ca2d4579a8a8d4",
+        "bytes": 3206
+      },
+      "runner/run-row8-current-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row8-current-512-240/raw.log": {
+        "sha256": "eefc82da8bbd13c17074eae3f39d406acf2e472db953189e83c11ca10a32e964",
+        "bytes": 3030
+      },
+      "runner/run-row8-current-512-240/complete-policy/model-probe.json": {
+        "sha256": "194e4df4f16715ed7d4fa679dcdf9e4371c805324292a4c02a596db5d50cc37b",
+        "bytes": 179129
+      },
+      "runner/run-row8-tail-512-240/receipt.json": {
+        "sha256": "22c9ef035f487f592e63fd2ba24812d952bddb702c5ee29356c7c5409675a1b3",
+        "bytes": 7131
+      },
+      "runner/run-row8-tail-512-240/payload.json": {
+        "sha256": "f4ba82f759b0ec06d19f53053caee7c19f1a8657aab89be46b553458a965edd1",
+        "bytes": 879
+      },
+      "runner/run-row8-tail-512-240/actual-resource-proof.json": {
+        "sha256": "b79934282b9bc000c084a983ddf0d66b884b197369be65b81f40e70231c80c4a",
+        "bytes": 5827
+      },
+      "runner/run-row8-tail-512-240/container.json": {
+        "sha256": "1292e353c7be9d3f119bf5e2aa3b9276e70a0724f7f235733e17bd3ae8ee3d3d",
+        "bytes": 15344
+      },
+      "runner/run-row8-tail-512-240/command.json": {
+        "sha256": "82d4bc5e4224649f12b8ecface98800e207f8729fa3ee3c92679de29f0516fc3",
+        "bytes": 3197
+      },
+      "runner/run-row8-tail-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row8-tail-512-240/raw.log": {
+        "sha256": "abe50297941448c0624c208f0730596f193ae540aa1775af265e44b93609575f",
+        "bytes": 3030
+      },
+      "runner/run-row8-tail-512-240/complete-policy/model-probe.json": {
+        "sha256": "46a3467a12094cd6bbbd36fbe934bdb5eb81ce8c0ec2d0c057ebcc406a25dfee",
+        "bytes": 179133
+      },
+      "runner/run-row16-current-512-240/receipt.json": {
+        "sha256": "37ed17c3bf103024306050bb7fedeaf54281e807dd65325b7ffa322b24fd9b5f",
+        "bytes": 7139
+      },
+      "runner/run-row16-current-512-240/payload.json": {
+        "sha256": "5aedae08dda53abe7e42fdc2e36ff58eb38922736e15cee21a862eb3dbdc442d",
+        "bytes": 883
+      },
+      "runner/run-row16-current-512-240/actual-resource-proof.json": {
+        "sha256": "1b10488ea4947bf5c05477cb23f7c4d7d1434688d63cb5fceacab3be8740999f",
+        "bytes": 5835
+      },
+      "runner/run-row16-current-512-240/container.json": {
+        "sha256": "c3639d399fa86d45eb5d63607df96aa894f18ff604686083a56fde4c441e7c2f",
+        "bytes": 15359
+      },
+      "runner/run-row16-current-512-240/command.json": {
+        "sha256": "95c5e1b0c4f2b8d51e565531a1df4a174f5462ac2c825e3204039335a184bb85",
+        "bytes": 3209
+      },
+      "runner/run-row16-current-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row16-current-512-240/raw.log": {
+        "sha256": "09083c160eaa17fe38cb090b63d0ef928606aec0e299cbcb9f9e69f57601e04a",
+        "bytes": 3035
+      },
+      "runner/run-row16-current-512-240/complete-policy/model-probe.json": {
+        "sha256": "ceea2bba697ce9905a31e2227e3e9bfd1345e9d634642340dd153486a22cd14d",
+        "bytes": 179154
+      },
+      "runner/run-row16-tail-512-240/receipt.json": {
+        "sha256": "b215885c5ef3bb37c5324238849788ec393c3da942722673c43035a8356bff3c",
+        "bytes": 7133
+      },
+      "runner/run-row16-tail-512-240/payload.json": {
+        "sha256": "17729e9870ff529aaad24a71d681050e7abce44e25d9bf9dd454c3ec8b9e0226",
+        "bytes": 880
+      },
+      "runner/run-row16-tail-512-240/actual-resource-proof.json": {
+        "sha256": "8f45d0d4ad764085fe6b42a65f213f957a5a3d305348119e225b79c4e662ab21",
+        "bytes": 5829
+      },
+      "runner/run-row16-tail-512-240/container.json": {
+        "sha256": "c7cb33b964768798182a3549f24a0da5dc3d11b588fd2f2db929672bcc2aabea",
+        "bytes": 15348
+      },
+      "runner/run-row16-tail-512-240/command.json": {
+        "sha256": "3a55438d0f1be99fcbe4e739f373bdb809cecc096024559af0bd0fb6028f29c1",
+        "bytes": 3200
+      },
+      "runner/run-row16-tail-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row16-tail-512-240/raw.log": {
+        "sha256": "e1a88226ad61964ccb839a5d643874e25269141e6754013af49b74eb6252df9f",
+        "bytes": 3035
+      },
+      "runner/run-row16-tail-512-240/complete-policy/model-probe.json": {
+        "sha256": "ad3587dd8e8e2aca03374e98b7400a4bf703917a66c8158d227c1173ae5eb945",
+        "bytes": 179148
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/receipt.json": {
+        "sha256": "5565453ed7f26a36b0f045e75799834259d6111542e7a1ad8801d66fc6af8bc7",
+        "bytes": 6930
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/payload.json": {
+        "sha256": "526ef1a20b9b292206d55e8bed63a8eaf2bb7451b0c38838fbef2811a2864f49",
+        "bytes": 876
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/actual-resource-proof.json": {
+        "sha256": "941c7a5828933863a4cb58d8177a12a8cbaeba3bd306c950eb2c001567b1dc5a",
+        "bytes": 5638
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/container.json": {
+        "sha256": "321cfe435e01cf025d9a96f695dddffcda40b338ab78b3b2462570677f007519",
+        "bytes": 14899
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/command.json": {
+        "sha256": "207bb599fab02921919d6b4c33cb0f56a295c2ec426ad93965da73ede37413f7",
+        "bytes": 3076
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/raw.log": {
+        "sha256": "e22088ceaa4a2652fad794d7e3706aa849666a773fe0f8f5bd726b18347adddb",
+        "bytes": 3030
+      },
+      "runner/run-row8-tail-bits4-v2-512-240/complete-policy/model-probe.json": {
+        "sha256": "d8a3b1acdaf86721bb5b28b2e3466c8838e19f672116b1c48f0f0cb5b8c314f2",
+        "bytes": 179135
+      },
+      "d13/head-tails-f0552fa6.json": {
+        "sha256": "e3b3c571bb10e272da55e6204a91f02eee6577124c542b3506ff2d31f6eac562",
+        "bytes": 1244
+      },
+      "d13/row-tail-explicit-bits-69866883.json": {
+        "sha256": "7008cc9e651380d1000b5039f41b921b991b0b9e9ef9c5e1c41666b8f93da367",
+        "bytes": 510
+      },
+      "d13/head-width-6cdd5db4.json": {
+        "sha256": "adbcc597bb305195c7d193200c3583c92a4d1470fa398145b5594823fbc248d5",
+        "bytes": 406
+      },
+      "d13/long-api-counter-105bf90e.json": {
+        "sha256": "078e61436a9374e29fe7a106f47ceebd5bb9bf059417575a64d7708fbf1d3d22",
+        "bytes": 627
+      },
+      "runner/run-final-formal-width8-099/head-width-perf.json": {
+        "sha256": "8ca716a47a38474dc18953bdf469d9924e7af3488f46f0e50b3381d505df3126",
+        "bytes": 3845164
+      },
+      "runner/run-final-formal-width8-099/head-width-perf.plan.json": {
+        "sha256": "c314ce23aac57f343321514312de47b0a20e9221f6276c4c2204c845060d741c",
+        "bytes": 3813
+      },
+      "runner/run-final-formal-width8-099/head-width-perf.requests.jsonl": {
+        "sha256": "bd1dc6e61c44c4cd93860764fc38ad41b5b4530952fb0e05bc3413d339855440",
+        "bytes": 1363327
+      },
+      "runner/run-final-formal-width8-099/raw.log": {
+        "sha256": "fa250ccf958e2112c3fe90fea52373cbf50de6a2ec509e95cd32e2e07a352934",
+        "bytes": 16495
+      },
+      "runner/run-final-formal-width8-099/receipt.json": {
+        "sha256": "3f596f432b1545f1dd19bff5775e151e443cff77f6b1916d70912cf134a7a238",
+        "bytes": 6935
+      },
+      "runner/run-final-formal-width8-099/command.json": {
+        "sha256": "8f2e1e8e417a8e763265a2b2329900557a21db1fd5c8b8eac75083ec42eb1f29",
+        "bytes": 3078
+      },
+      "runner/run-final-formal-width8-099/container.json": {
+        "sha256": "ef173f88cdac641c5e654a1bec40d61a0ef95cfaa155af30910027605944e948",
+        "bytes": 14903
+      },
+      "runner/run-final-formal-width8-099/actual-resource-proof.json": {
+        "sha256": "e5f0918fd74b7fbda5efdfc64c8284b67ff695ceaa9f53f6ee83e99376ef031d",
+        "bytes": 5643
+      },
+      "runner/run-final-formal-width8-099/gpu-dmon.log": {
+        "sha256": "7de9062bbade752e1720e3f5c39fa90cf91b31847d693a093a4346679df8f001",
+        "bytes": 117453
+      },
+      "runner/run-final-formal-width8-099/host-memory.csv": {
+        "sha256": "63a559a70c7827add177fc861ef58bbefecb57211982b6dd68320d5612af7e73",
+        "bytes": 122284
+      },
+      "runner/run-final-formal-width8-099/exit.txt": {
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+        "bytes": 2
+      }
+    },
+    "formal_analysis": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/final-formal-099-analysis.json",
+      "bytes": 44286,
+      "sha256": "69b7ccee3daae6c3e905d5264e2fd7b86a5e9ae93c2d6ba294a4cb12cb36876c"
+    },
+    "formal_analysis_markdown": {
+      "path": "/home/kklouzal/tensorfold-heretic-implementation-20261017/final-formal-099-analysis.md",
+      "bytes": 5771,
+      "sha256": "0bffc85637f56a0df0d0037ac014564e82e2104aae41c340e8725f8d6d62da57"
+    }
+  },
+  "diagnostic_profile_099": {
+    "run": "/home/kklouzal/tensorfold-heretic-implementation-20261017/runner/run-final-profile8-099",
+    "result": "pass",
+    "outer_result": "pass",
+    "source_revision": "099eb4d0233a6de883d8f2de76b96cec6accd578",
+    "image": "sha256:4337064296a99de5eadfc82ff2029112efc9268fe1f26cfb7399191582d82657",
+    "profiler_driver_sha256": "8cef909113a150c02d825ae1b269be25aa3c38f81d240a79db964ae95f98adfc",
+    "trace_sha256": "7867d0474a539f88faa88cbebefee82603adbce6391cd1a30f7022da2e0da2ee",
+    "kernel_events": 24830,
+    "request": {
+      "rows": 8,
+      "draft_bits": 16,
+      "pin": "on",
+      "tokens": 32,
+      "seed": 47,
+      "token_sha": "b45d2d117ddf",
+      "actual_dflash_forwards": 12
+    },
+    "summed_all_CUDA_activities_us": 624821.1210000006,
+    "summed_kernel_only_us": 504021.06400000025,
+    "families": {
+      "BF16_R1_mixed_GDN_and_draft": {
+        "count": 2694,
+        "summed_us": 268674.2300000004,
+        "share_all_summed_CUDA_activity_pct": 43.00018372778408,
+        "names": [
+          "void (anonymous namespace)::b16_kernel<__nv_bfloat16, 1, 4>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, int, int, int, __nv_bfloat16 const*, __nv_bfloat16*, int)"
+        ]
+      },
+      "BF16_R8_vocabulary_heads": {
+        "count": 24,
+        "summed_us": 66516.21900000001,
+        "share_all_summed_CUDA_activity_pct": 10.645641890841258,
+        "names": [
+          "void (anonymous namespace)::b16_kernel<__nv_bfloat16, 8, 4>(__nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16 const*, __nv_bfloat16*, int, int, int, __nv_bfloat16 const*, __nv_bfloat16*, int)"
+        ]
+      },
+      "pinned_H2D_including_expert_uploads_and_control": {
+        "count": 631,
+        "summed_us": 118326.48500000034,
+        "share_all_summed_CUDA_activity_pct": 18.937657678828725,
+        "names": [
+          "Memcpy HtoD (Pinned -> Device)"
+        ]
+      },
+      "routed_A4_gate_up": {
+        "count": 520,
+        "summed_us": 56241.96899999997,
+        "share_all_summed_CUDA_activity_pct": 9.001291267168913,
+        "names": [
+          "void (anonymous namespace)::gemm_kernel<false, false>(unsigned char const*, unsigned char const*, unsigned char const*, long, float const*, float const*, long, long, long, int, int const*, int, int const*, int, void*, long, long, int, int, int, int, int)"
+        ]
+      },
+      "routed_A4_decode_down_F32": {
+        "count": 480,
+        "summed_us": 26578.57699999998,
+        "share_all_summed_CUDA_activity_pct": 4.253789781859815,
+        "names": [
+          "void (anonymous namespace)::gemm_kernel<true, true>(unsigned char const*, unsigned char const*, unsigned char const*, long, float const*, float const*, long, long, long, int, int const*, int, int const*, int, void*, long, long, int, int, int, int, int)"
+        ]
+      },
+      "routed_A4_prompt_down": {
+        "count": 40,
+        "summed_us": 729.642,
+        "share_all_summed_CUDA_activity_pct": 0.11677614207923029,
+        "names": [
+          "void (anonymous namespace)::gemm_kernel<true, false>(unsigned char const*, unsigned char const*, unsigned char const*, long, float const*, float const*, long, long, long, int, int const*, int, int const*, int, void*, long, long, int, int, int, int, int)"
+        ]
+      }
+    },
+    "captured_request_expert_cache_delta": {
+      "hits": 14946,
+      "misses": 463,
+      "copied_bytes": 819295168,
+      "evictions": 463
+    },
+    "R1_count_source_explanation": {
+      "target_GDN_decode_projections": 1800,
+      "draft_block_projections": 672,
+      "draft_context_FC_KV": 221,
+      "initial_target_head": 1,
+      "total": 2694,
+      "scope": "counts source/count-consistent, not duration attribution; no shapes/stacks collected"
+    },
+    "remaining_bottleneck_disposition": [
+      "R1 BF16 family is largest remaining captured activity; mixes target GDN and draft dense/context projections, requiring source/grid attribution before projection-specific timing claims",
+      "Pinned H2D plus per-miss control/upload overhead remains a credible next target; newer GPU-loader experiment is separate/unqualified by these099 results",
+      "Same explicit FMA/XOR row-reuse for remaining large BF16 projections is plausible but unselected; M8 integrated proof not supplied here",
+      "Do not switch to prompt MMA or reduce precision without an accepted arithmetic contract"
+    ],
+    "limitations": [
+      "single-stream constructor has no forward calibration; frozen helper calibration label is overbroad",
+      "HTTP helper prepare prepass precedes each measured HTTP interval; those intervals are not end-to-end cold observations",
+      "only generate#3 is captured; first seeded specialization may compile; this is the exact sequence, not universal steady state",
+      "CUPTI/profiler/synchronization/export overhead invalidates performance qualification; raw kernel times can overlap",
+      "activity durations can overlap; shares are of summed kernels/copies/memsets, not wall time or throughput",
+      "different block/seed/cache/work from earlier row4 traces: no causal before/after speedup claim",
+      "32-token seeded cache pressure is not the full512 greedy distribution",
+      "pinned H2D total cannot be fully assigned to expert misses from aggregate counts alone"
+    ]
+  }
+}

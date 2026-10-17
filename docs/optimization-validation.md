@@ -18,6 +18,29 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Qwen MoE CT NVFP4, 2026-10-17
+
+Installed source `099eb4d0` ran the original pinned Heretic 35B-A3B compressed-tensors
+export and its separate BF16 DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell.
+The [qualification](qwen36-ct-nvfp4-validation.md) and
+[receipt](verification-qwen36-ct-nvfp4-20261017.json) identify actual immutable
+images, native numerical checks, serial/drafted/seeded identity, strict tools,
+streaming, cancellation and four concurrent complete replies. Tests used no
+container CPU/RAM/PID quota, zero optional VRAM reserve and an 8 GiB available
+host-RAM floor. Required future state and loading reservations remain admitted.
+
+At context 4,096 with eight BF16 draft rows and registered authority, the selected
+profile reached about 37 decode tok/s. Nine rotating symmetric blocks compared
+54 complete 512-token replies with identical tokens, work and fixed expert pool;
+prepared eight-row vocabulary projection was consistently faster than the
+four-row and original singleton policies in that experiment. Reported median
+intervals are conditional on independent representative block effects; no
+unconditional population-confidence or global-optimum claim follows. The earlier
+four-row policy ordering and BF16-versus-four-bit drafter speed ordering remain
+unresolved. Four concurrent requests in a separate four-row profile completed at
+57.70 aggregate client tok/s, which excludes final device retirement and is not
+an isolated speculative-decoding speedup comparison.
+
 ## Smaller pretrained NVFP4, 2026-10-17
 
 The ordinary installed desktop image `c74633ad…`/runtime `b551e68f` ran
