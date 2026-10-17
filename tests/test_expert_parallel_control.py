@@ -377,6 +377,35 @@ def test_unsharded_and_indexed_inventory_identify_the_same_tensor(tmp_path):
     assert checkpoint_inventory(tmp_path) == {"owned.weight": "model.safetensors"}
 
 
+def test_rank_source_identity_requires_matching_requested_expert_pin_policy(tmp_path):
+    torch = pytest.importorskip("torch")
+    from safetensors.torch import save_file
+    save_file({"owned.weight": torch.zeros((2, 4), dtype=torch.bfloat16)}, tmp_path / "model.safetensors")
+    (tmp_path / "config.json").write_text("{}")
+    sessions, identities = [], []
+    try:
+        for rank, mode in ((0, "off"), (1, "off"), (1, "on"), (1, "auto")):
+            session = object.__new__(Session)
+            sessions.append(session)
+            session.model_dir, session.pin_mode = tmp_path, mode
+            session.source_files, session.source_identity = [], []
+            session.owner, session.slots, session.dims = Ownership((1, 1), rank), 2, 32
+            session.cfg, session.mtp = SimpleNamespace(moe_width=32, quant="mlx"), False
+            session.torch = SimpleNamespace(cuda=SimpleNamespace(
+                get_device_properties=lambda _, rank=rank: SimpleNamespace(uuid=f"GPU-{rank}")))
+            identities.append(session._identity({}))
+        # This is the actual pre-native all-rank identity comparison: GPU UUID
+        # differs by rank, while checkpoint/geometry/policy must agree exactly.
+        assert identities[0][1:] == identities[1][1:]
+        assert identities[0][1:] != identities[2][1:]
+        assert identities[0][1:] != identities[3][1:]
+        assert identities[2][1:] != identities[3][1:]
+    finally:
+        for session in sessions:
+            for source in session.source_files:
+                source.close()
+
+
 def test_pin_geometry_is_scaled_from_the_authoritative_layout():
     from tensorfold.families.qwen4_exp.expert_authority import allocations
     layout = SimpleNamespace(format="affine4", authority_allocations=(600, 300, 600, 300))
