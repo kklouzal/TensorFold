@@ -110,7 +110,9 @@ def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_pa
     layout = ram_experts.layout(model, "auto")
     cache = HostExpertCache(layout.entry_bytes, layout.entry_bytes, "cuda")
     try:
-        bank = load_moe_host(reader, "model.layers.0.mlp", w.cfg, cache=cache)
+        workspace = {}
+        bank = load_moe_host(reader, "model.layers.0.mlp", w.cfg, cache=cache, workspace=workspace)
+        draft = load_moe_host(reader, "mtp.layers.0.mlp", w.cfg, cache=cache, workspace=workspace)
         cfg = type("MoECfg", (), {"num_experts": 8, "num_experts_per_tok": 2,
                                  "hidden_size": 512, "moe_intermediate_size": 128})
         x = (torch.randn(rows, 512, generator=torch.Generator().manual_seed(91)) * .1).to("cuda", torch.bfloat16)
@@ -145,6 +147,17 @@ def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_pa
         pool_out = cache._pool[:out[:1].numel() * out.element_size()].view(out.dtype).view_as(out[:1])
         with pytest.raises(ValueError, match="overlap"):
             bank.run_picks(x[:1], picks[:1], pool_out, prefill=prefill)
+        # Every main/MTP bank and both output precisions share one admitted
+        # native plan and BF16 activation buffer, not one allocation per bank.
+        flip = moe_mod.MoEBuffers(rows, cfg, "cuda", prefill=not prefill)
+        nvfp4_moe.moe(x, x, w.mtp.layer.moe.router, w.mtp.layer.moe.experts, flip, cfg)
+        draft_out = torch.empty_like(flip.y)
+        draft.run_picks(x, flip.pick, draft_out, prefill=not prefill)
+        assert torch.equal(draft_out, flip.y)
+        assert bank._workspace is draft._workspace is workspace and len(workspace) == 1
+        plan, act = next(iter(workspace.values()))
+        storage = {t.data_ptr() for t in bank.device_tensors()[-1]}
+        assert all(t.data_ptr() in storage for t in (plan.members, plan.items, plan.counts, plan.rank, plan.hist, act))
     finally:
         reader.close()
         cache.close()

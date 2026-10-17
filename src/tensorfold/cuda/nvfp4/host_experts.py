@@ -146,7 +146,8 @@ class CachedExperts4:
             yield nvx.Experts4(*payloads, self.width, self.dims, self.limit), mapping
 
 
-def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, include_shared=True, layer_id=None):
+def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, include_shared=True, layer_id=None,
+                  workspace=None):
     """Complete local expert bank for leader or EP follower, without backbone reads."""
     from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 
@@ -180,4 +181,5 @@ def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, i
             shared = nvfp4_moe.expert4_from_bf16(*[
                 _read(reader, base + p + ".weight", device=device).to(torch.bfloat16)
                 for p in ("gate_proj", "up_proj", "down_proj")])
-    return nvfp4_moe.CachedMoE4(routed, shared, full.moe_width, full.hidden, len(ids), full.top_k + 1)
+    return nvfp4_moe.CachedMoE4(routed, shared, full.moe_width, full.hidden, len(ids), full.top_k + 1,
+                              workspace=workspace)
