@@ -8,11 +8,6 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import prepared_tokenizer
-
-from tests.mlx_host_protocol_fakes import cli_protocol
-from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
-
 from tensorfold import cli, families, hub
 from tensorfold.server import memory_budget
 from tensorfold.server.memory_budget import (
@@ -25,6 +20,9 @@ from tensorfold.server.memory_budget import (
     memory_limit_bytes,
     needed_bytes,
 )
+from tests.cli_server_fixture import prepared_tokenizer
+from tests.mlx_host_protocol_fakes import cli_protocol
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
 
 GIB = 1024**3
 
@@ -392,7 +390,6 @@ def test_weights_past_the_budget_are_refused_before_loading(monkeypatch, tmp_pat
 
 def test_the_27b_draft_slot_counts_its_drafter_context_as_fixed_memory_and_a_copy_as_none(mlx_host_protocol):
     import copy
-
 
     from tensorfold.families.qwen3_5.dflash_head import DraftSlot
 

@@ -4,10 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
-
 from tensorfold import cli
 from tensorfold.cuda import precision
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 from tests.test_cuda_cli import _family
 
 

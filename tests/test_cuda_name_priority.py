@@ -8,11 +8,10 @@ import pytest
 
 pytest.importorskip("jinja2")
 
-from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
-
 from tensorfold import cli
 from tensorfold.serve_options import check as _check_serve_options
 from tensorfold.serve_options import name_priority
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 from tests.test_cuda_admission import http_server
 from tests.test_cuda_server_errors import HI, app_for
 

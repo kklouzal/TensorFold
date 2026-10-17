@@ -1,22 +1,23 @@
 """Actual generic/CUDA/Responses framing; no accelerator/model imports."""
-from contextlib import redirect_stdout
-from http.client import HTTPMessage
-from io import BytesIO, StringIO
 import importlib.util
-from pathlib import Path
 import socket
 import tempfile
 import threading
-from types import SimpleNamespace
 import unittest
+from contextlib import redirect_stdout
+from http.client import HTTPMessage
+from io import BytesIO, StringIO
+from pathlib import Path
+from types import SimpleNamespace
 
 from http_import_control import assert_accelerator_free_imports
-from tests.cli_server_fixture import prepared_chat_template
 
+from tensorfold.cuda.http import make_handler as cuda
 from tensorfold.server import request_body
 from tensorfold.server.errors import RequestError
-from tensorfold.server.http import Server, make_handler as generic
-from tensorfold.cuda.http import make_handler as cuda
+from tensorfold.server.http import Server
+from tensorfold.server.http import make_handler as generic
+from tests.cli_server_fixture import prepared_chat_template
 
 
 def handler(fields, payload=b''):
