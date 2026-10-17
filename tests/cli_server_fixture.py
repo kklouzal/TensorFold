@@ -5,8 +5,17 @@ closes it. These fixtures acquire no sockets and preserve that lifetime.
 """
 
 import threading
+import json
 from hashlib import sha256
 from types import SimpleNamespace
+
+
+def prepared_chat_template(directory, source="fixture"):
+    """Actual captured template protocol, with isolated regular-file metadata."""
+    from tensorfold.cuda.chat_template import ChatTemplate
+
+    (directory / "tokenizer_config.json").write_text(json.dumps({"chat_template": source}))
+    return ChatTemplate(directory)
 
 
 def cuda_cli_engine(**members):
