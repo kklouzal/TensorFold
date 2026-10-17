@@ -144,6 +144,26 @@ def test_interrupted_successful_registration_stays_owned_for_rollback(monkeypatc
     assert not native.owners[0].active
 
 
+def test_post_pin_bookkeeping_interruption_latches_failure_before_reuse(monkeypatch):
+    native = ready(monkeypatch)
+    policy = pin.ExpertPinPolicy(8, mode="on", allocation_bytes=(8,))
+    primary = KeyboardInterrupt()
+
+    class InterruptedCounter(dict):
+        def __setitem__(self, key, value):
+            raise primary
+
+    policy._remaining = InterruptedCounter(policy._remaining)
+    with pytest.raises(KeyboardInterrupt) as failure:
+        policy.empty((2,), dtype=torch.int32)
+    assert failure.value is primary and native.owners[0].active
+    with pytest.raises(RuntimeError, match="failed"):
+        policy.empty((2,), dtype=torch.int32)
+    assert len(native.owners) == 1
+    policy.close()
+    assert not native.owners[0].active
+
+
 def test_close_failure_retains_registration_owner_in_owning_error(monkeypatch):
     native = ready(monkeypatch, Native(close_status=700))
     policy = pin.ExpertPinPolicy(8, mode="on", allocation_bytes=(8,))
