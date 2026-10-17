@@ -23,7 +23,9 @@ def _tile(q, k, v, m, l, o, valid, SCALE: tl.constexpr):
     alpha = tl.where(active, tl.where(m == float("-inf"), 0.0, tl.exp(m - next_m)), 1.0)
     p = tl.where(valid & active[:, None], tl.exp(s - next_m[:, None]), 0.0)
     o = o * alpha[:, None] + tl.dot(p.to(tl.bfloat16), v)
-    l = l * alpha + tl.sum(p, 1)
+    # Match the CUDA online-normalizer recurrence with one FP32 rounding;
+    # relying on compiler contraction changes the bits across Triton releases.
+    l = tl.fma(l, alpha, tl.sum(p, 1))
     return next_m, l, o
 
 
@@ -78,6 +80,10 @@ def triton_attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tens
     w, h, d = q.shape
     hk = _check(q, k_cache, v_cache, p0)
     out = torch.empty_like(q) if out is None else out
+    if (out.shape != q.shape or out.device != q.device or out.dtype != q.dtype or not out.is_contiguous()):
+        raise ValueError("prefill attention: out must be contiguous and like q on q's CUDA device")
+    if w == 0:
+        return out
     _attend[(triton.cdiv(w, BM), h)](q, k_cache, v_cache, out, p0, w, H=h, HK=hk, D=d, BM=BM, BN=BN, SCALE=scale,
                                      num_warps=8, num_stages=1 if d > 128 else 2)
     return out
@@ -90,9 +96,19 @@ def heads_a_block(group: int) -> int:
 
 
 def _check(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: int) -> int:
+    if (q.ndim != 3 or not q.is_cuda or q.dtype != torch.bfloat16 or q.shape[1] < 1
+            or q.shape[2] not in (64, 128, 256)):
+        raise ValueError("prefill attention: q must be CUDA (W, positive H, 64, 128 or 256) bf16")
     w, h, d = q.shape
+    if (k_cache.ndim != 3 or v_cache.shape != k_cache.shape or k_cache.shape[1] < 1
+            or k_cache.shape[2] != d or k_cache.device != q.device or v_cache.device != q.device
+            or k_cache.dtype != torch.bfloat16 or v_cache.dtype != torch.bfloat16):
+        raise ValueError("prefill attention: caches must be bf16 (keys, positive HK, D) on q's CUDA device")
     hk = k_cache.shape[1]
-    if k_cache.shape[0] < p0 + w or v_cache.shape != k_cache.shape or h % hk or d not in (64, 128, 256):
+    if (not isinstance(p0, int) or p0 < 0 or w > 2**31 - 128 or h > 2**31 - 1
+            or p0 > 2**31 - 64 - w):
+        raise ValueError("prefill attention position/dimensions exceed int32")
+    if k_cache.shape[0] < p0 + w or h % hk:
         raise ValueError("prefill attention: caches must hold the chunk's keys; heads a multiple of kv heads")
     if not (q.is_contiguous() and k_cache.is_contiguous() and v_cache.is_contiguous()):
         raise ValueError("prefill attention takes contiguous tensors")

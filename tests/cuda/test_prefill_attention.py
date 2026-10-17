@@ -6,10 +6,10 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.cuda.kernels.prefill_attention import attention, triton_attention  # noqa: E402
+from tensorfold.cuda.kernels.prefill_attention import attention, triton_attention, _ext  # noqa: E402
 
 # 27B, Qwen3.6-35B-A3B, Nemotron, GLM-5.3 per-head keys (TF_GLM_LATENT=0), a small group
-SHAPES = [(24, 4, 256), (16, 2, 256), (32, 2, 128), (32, 32, 256), (12, 4, 128)]
+SHAPES = [(24, 4, 256), (16, 2, 256), (32, 2, 128), (32, 32, 256), (12, 4, 128), (12, 4, 64)]
 CHUNKS = [(0, 1), (0, 100), (0, 333), (17, 7), (64, 64), (1000, 129), (4133, 300)]
 
 
@@ -43,3 +43,85 @@ def test_cuda_prompt_attention_rows_do_not_depend_on_chunking(heads, kv_heads, d
     for size in (1, 15, 16, 17, 64, 100, 512):
         parts = [attention(q[a:a + size].contiguous(), k, v, p0 + a, scale=dim ** -0.5) for a in range(0, total, size)]
         assert torch.equal(whole, torch.cat(parts)), size
+
+
+@pytest.mark.parametrize("dim", [64, 128, 256])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_zero_scores_preserve_cancellation_across_key_tiles(dim, sign):
+    """Uniform attention has a directly computed result independent of either kernel."""
+
+    q = torch.zeros((1, 1, dim), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((66, 1, dim), device="cuda", dtype=torch.bfloat16)
+    v = torch.zeros_like(k)
+    v[0, 0, 0], v[64, 0, 0], v[65, 0, 0] = sign * 2**24, -sign * 2**24, 1
+    expected = torch.zeros_like(q)
+    expected[0, 0, 0] = 1 / 66
+    for implementation in (attention, triton_attention):
+        assert torch.equal(implementation(q, k, v, 65, scale=dim**-0.5), expected)
+
+
+@pytest.mark.parametrize("invalid", ["zero_query_heads", "zero_kv_heads", "cpu_q", "cpu_k", "cpu_v",
+                                     "wrong_dim", "wrong_dtype", "negative_position", "large_position"])
+def test_prompt_attention_rejects_invalid_inputs(invalid):
+    q = torch.zeros((1, 2, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((1, 1, 128), device="cuda", dtype=torch.bfloat16)
+    v, p0 = torch.zeros_like(k), 0
+    if invalid == "zero_query_heads":
+        q = q[:, :0]
+    elif invalid == "zero_kv_heads":
+        k, v = k[:, :0], v[:, :0]
+    elif invalid == "cpu_q":
+        q = q.cpu()
+    elif invalid == "cpu_k":
+        k = k.cpu()
+    elif invalid == "cpu_v":
+        v = v.cpu()
+    elif invalid == "wrong_dim":
+        k, v = k[:, :, :64].contiguous(), v[:, :, :64].contiguous()
+    elif invalid == "wrong_dtype":
+        k = k.float()
+    elif invalid == "negative_position":
+        p0 = -1
+    else:
+        p0 = 2**63 - 1
+    for implementation in (attention, triton_attention):
+        with pytest.raises(ValueError, match="prefill attention"):
+            implementation(q, k, v, p0, scale=0.125)
+    with pytest.raises(RuntimeError):
+        _ext().prefill_attention(q, k, v, torch.empty_like(q), p0, 0.125, 1)
+
+
+@pytest.mark.parametrize("invalid", ["cpu", "shape", "dtype", "strided"])
+def test_prompt_attention_rejects_invalid_output(invalid):
+    q = torch.zeros((1, 2, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((1, 1, 128), device="cuda", dtype=torch.bfloat16)
+    v = torch.zeros_like(k)
+    out = torch.empty_like(q)
+    if invalid == "cpu":
+        out = out.cpu()
+    elif invalid == "shape":
+        out = out[:, :1]
+    elif invalid == "dtype":
+        out = out.float()
+    else:
+        out = torch.empty((1, 2, 256), device="cuda", dtype=torch.bfloat16)[:, :, ::2]
+    with pytest.raises(ValueError, match="out must"):
+        triton_attention(q, k, v, 0, scale=0.125, out=out)
+    with pytest.raises(RuntimeError, match="out:"):
+        _ext().prefill_attention(q, k, v, out, 0, 0.125, 1)
+
+
+@pytest.mark.parametrize("hpc", [0, -1, 3, 16])
+def test_prompt_attention_rejects_invalid_head_tiles(hpc):
+    q = torch.zeros((1, 16, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((1, 1, 128), device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="heads a block"):
+        _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, hpc)
+
+
+@pytest.mark.parametrize("dim", [64, 128, 256])
+def test_prompt_attention_empty_window(dim):
+    q = torch.empty((0, 2, dim), device="cuda", dtype=torch.bfloat16)
+    k = torch.empty((0, 1, dim), device="cuda", dtype=torch.bfloat16)
+    for implementation in (attention, triton_attention):
+        assert implementation(q, k, k, 0, scale=dim**-0.5).shape == q.shape
