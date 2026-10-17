@@ -79,7 +79,7 @@ def _fill(reads: list[tuple[int, int, int, memoryview, int]]) -> None:
     for fd, offset, size, out, at in reads:
         done = 0
         while done < size:
-            data = os.pread(fd, size - done, offset + done)
+            data = os.pread(fd, min(size - done, MAX_READ), offset + done)
             if not data:
                 raise OSError(f"short read of the n-gram tables at byte {offset + done}: the checkpoint changed")
             out[at + done:at + done + len(data)] = data

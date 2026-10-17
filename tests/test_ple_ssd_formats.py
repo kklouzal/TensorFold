@@ -14,9 +14,8 @@ from tensorfold.families.qwen4_exp.ssd_table import EncodedSSDTable
 torch = pytest.importorskip("torch")
 
 
-def _write(tmp_path, kind):
+def _write(tmp_path, kind, *, width=64, rows=19):
     rng = np.random.default_rng(819)
-    width, rows = 64, 19
     codes = rng.integers(0, 256, (rows, width // 2 if kind == "nvfp4" else width), dtype=np.uint8)
     if kind == "bf16":
         values = torch.randn(rows, width, generator=torch.Generator().manual_seed(45)).to(torch.bfloat16)
@@ -134,3 +133,21 @@ def test_encoded_close_waits_for_accepted_read(tmp_path, monkeypatch):
     closer.join(5)
     assert not reader.is_alive() and not closer.is_alive() and not failures
     assert np.array_equal(result[0], expected[[1, 3]])
+
+
+@pytest.mark.parametrize("kind", ("bf16", "fp8", "nvfp4"))
+def test_one_wide_encoded_row_still_bounds_each_positional_read(tmp_path, kind, monkeypatch):
+    path, expected = _write(tmp_path, kind, width=2 * ((1 << 20) + 8), rows=1)
+    table = open_table(tmp_path, [(path.name, "ngram.shard_0")], lambda _: .073, ssd=True)
+    real, sizes = os.pread, []
+
+    def record(fd, size, offset):
+        sizes.append(size)
+        return real(fd, size, offset)
+
+    monkeypatch.setattr(os, "pread", record)
+    try:
+        assert np.array_equal(table.gather(np.array([0])), expected)
+        assert max(sizes) <= 1 << 20 and len(sizes) > 1
+    finally:
+        table.close()
