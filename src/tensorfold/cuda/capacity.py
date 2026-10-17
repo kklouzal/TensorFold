@@ -250,6 +250,23 @@ def host_stream_bytes() -> int | None:
     return max(0, memory["MemAvailable"] - reserve)
 
 
+def host_memory_snapshot() -> dict:
+    """Advisory startup observation, never an allocation grant or reservation.
+
+    A telemetry read failure remains visible without turning a loaded model's
+    diagnostic into another admission decision. Cancellation still propagates.
+    """
+    memory = _meminfo()
+    error = None
+    try:
+        room = host_cgroup_bytes()
+    except (OSError, ValueError) as failure:
+        room, error = None, str(failure)
+    return {"mem_available_bytes": None if memory is None else memory["MemAvailable"],
+            "cgroup_remaining_bytes": room, "cgroup_read_error": error,
+            "snapshot_is_reservation": False}
+
+
 def host_cgroup_bytes() -> int | None:
     """Smallest remaining cgroup-v2 hard allowance along this process's visible ancestry.
 

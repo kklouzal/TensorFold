@@ -13,6 +13,36 @@ from tensorfold import cli
 from tensorfold.families.glm5_next.cuda import LATENT
 
 
+@pytest.mark.parametrize("available,room", [(None, None), (17, None), (17, 9), (0, 0)])
+def test_post_load_host_observation_preserves_unknown_unlimited_and_zero(monkeypatch, available, room):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setattr(capacity, "_meminfo", lambda: None if available is None else {"MemAvailable": available})
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda: room)
+    assert capacity.host_memory_snapshot() == {"mem_available_bytes": available, "cgroup_remaining_bytes": room,
+                                               "cgroup_read_error": None, "snapshot_is_reservation": False}
+
+
+def test_post_load_observation_reports_read_failure_and_preserves_cancellation(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    def failed():
+        raise ValueError("unreadable cgroup allowance")
+
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemAvailable": 17})
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", failed)
+    result = capacity.host_memory_snapshot()
+    assert result["cgroup_read_error"] == "unreadable cgroup allowance" and result["cgroup_remaining_bytes"] is None
+    assert result["mem_available_bytes"] == 17
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        capacity.host_memory_snapshot()
+
+
 def checkpoint(path, config, tensors):
     (path / "config.json").write_text(json.dumps(config))
     entries = {}

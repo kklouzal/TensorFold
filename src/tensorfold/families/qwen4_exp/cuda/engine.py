@@ -458,6 +458,18 @@ class FlashNextEngine:
         print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
               f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
               f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
+        if ram_layout is not None:
+            from tensorfold.cuda.capacity import host_memory_snapshot
+
+            host = self.capacity_plan["host_after_load"] = host_memory_snapshot()
+            available = ("unavailable" if host["mem_available_bytes"] is None else
+                         f"{host['mem_available_bytes'] / 2**30:.2f} GiB")
+            remaining = ("unlimited or not exposed" if host["cgroup_remaining_bytes"] is None else
+                         f"{host['cgroup_remaining_bytes'] / 2**30:.2f} GiB")
+            if host["cgroup_read_error"] is not None:
+                remaining = f"unavailable ({host['cgroup_read_error']})"
+            print(f"[tensorfold] host after load: MemAvailable {available}; cgroup hard-limit room {remaining}; "
+                  "advisory snapshot, competing allocations can consume it", flush=True)
         if self.scheduler is not None:
             self.scheduler.start()            # warmup's synthetic streams belong solely to the constructor
 
