@@ -2,7 +2,7 @@
 
 import pytest
 import torch
-from nvfp4_a4_inputs import PREFIX, Context, swiglu
+from nvfp4_a4_inputs import PREFIX, Context, ct_quant_reference, swiglu
 
 if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
     pytest.skip("native activation FP4 requires SM12", allow_module_level=True)
@@ -21,7 +21,8 @@ def linears(ctx, expert):
         fields = ctx.payload
         result.append(Fp4Linear.from_checkpoint(fields[base + ".weight_packed"].cuda(),
             fields[base + ".weight_scale"].cuda(), 1. / float(fields[base + ".weight_global_scale"][0]),
-            act=1. / float(fields[base + ".input_global_scale"][0])))
+            act=1. / float(fields[base + ".input_global_scale"][0]),
+            act_inverse=float(fields[base + ".input_global_scale"][0])))
     return result
 
 
@@ -142,11 +143,17 @@ def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_proje
         _ext().quantize(x, plan, resident.fields[4], codes, scales)
         for projection in range(2):
             for pair, (row, _, expert) in enumerate(plan.cpu().tolist()):
-                original_act = 1. / float(context.payload[
+                raw_multiplier = float(context.payload[
                     f"{PREFIX}.experts.{expert}.{'gate_proj' if projection == 0 else 'up_proj'}.input_global_scale"][0])
-                want_codes, want_scales = checkpoint.quant4(x[row:row + 1], original_act)
-                assert torch.equal(codes[projection, pair], want_codes[0])
-                assert torch.equal(scales[projection, pair], want_scales[:, 0].reshape(-1))
+                want_codes, want_scales = ct_quant_reference(x[row:row + 1].cpu(), raw_multiplier)
+                assert torch.equal(codes[projection, pair].cpu(), want_codes[0])
+                assert torch.equal(scales[projection, pair].cpu(), want_scales[0])
+        boundary_x = torch.full((1, 2048), .5, dtype=torch.bfloat16, device="cuda")
+        boundary_plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
+        boundary_codes = torch.empty((2, 1, 1024), dtype=torch.uint8, device="cuda")
+        boundary_scales = torch.empty((2, 1, 128), dtype=torch.uint8, device="cuda")
+        _ext().quantize(boundary_x, boundary_plan, resident.fields[4], boundary_codes, boundary_scales)
+        assert torch.equal(boundary_scales[0], torch.full_like(boundary_scales[0], 0x0a))
         assert cache.evictions > 0 if capacity < 4 else cache.evictions == 0
     finally:
         cache.close()
