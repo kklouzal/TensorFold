@@ -87,6 +87,7 @@ class Layout:
                 "pinned_staging_payload_bound_bytes": self.staging_bytes,
                 "loading_bytes": self.loading_bytes, "header_metadata_bound_bytes": self.metadata_host_bytes,
                 "cache_control_host_bound_bytes": self.control_host_bytes,
+                "prepared_activation_calibration_bytes": 12 * self.expert_count,
                 "source_filesystem_working_bytes": self.source_filesystem_bytes,
                 "safetensors_header_bytes": self.header_bytes,
                 "largest_safetensors_header_bytes": self.largest_header_bytes,
@@ -152,7 +153,9 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
                 + sys.getsizeof(b"") + sys.getsizeof("\U00010000"))
     # Histories, resident identities/NumPy rank arrays, per-bank views and the
     # bounded startup rank search are charged at the largest possible pool.
-    controls = (logical + 1 + 576 * logical + 4096 * len(banks) + 65536
+    # Three derived FP32 activation dequantizers per expert are prepared once
+    # beside the original authority, including for the baseline CPU adapter.
+    controls = (logical + 1 + 588 * logical + 4096 * len(banks) + 65536
                 + 192 * _PAIR_WINDOW * (text["num_experts_per_tok"] + 1) + 65536)
     runtime = 16 * _PAIR_WINDOW * (dims + width) + 65536
     return Layout(entry, slots, slots * entry, sum(allocations) * len(banks), staging, loading,
