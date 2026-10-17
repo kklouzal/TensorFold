@@ -2,7 +2,8 @@
 
 The `qwen3_5_moe` family serves Qwen3.6-35B-A3B on Apple Silicon and on one NVIDIA GPU. Its layers are the 27B's
 (Gated DeltaNet and gated full attention, every fourth layer attention) with routed experts in place of the dense
-MLP. CUDA drafts with the checkpoint's MTP layer. MLX preserves this fork's DFlash default;
+MLP. Affine CUDA checkpoints draft with their MTP layer; original CT NVFP4 uses a separate DFlash v1 model.
+MLX preserves this fork's DFlash default;
 `--mtp-drafts N` explicitly selects the newly integrated MTP capability. Its actual Apple numerical,
 exactness and performance qualification remains pending.
 
@@ -33,8 +34,8 @@ hashes. This is the 35B-A3B Heretic model, not the dense Qwen3.8-27B.
 
 The ordinary installed runtime `a44085dc…`, application source `8cf97219`,
 correctly refused `compressed-tensors nvfp4-pack-quantized` at capability
-preflight. This family currently reads MLX affine 4-bit/group-64 weights on
-CUDA; changing the format declaration does not add an NVFP4 reader.
+preflight. That recorded image read MLX affine 4-bit/group-64 weights on CUDA;
+the refusal is retained as historical evidence before the new reader below.
 
 Headers show **18,119,639,040 bytes (16.88 GiB)** of routed expert payload,
 before shared experts, backbone, state or KV. Fully resident execution therefore
@@ -42,8 +43,53 @@ cannot fit the 16 GB card. This family would require both an NVFP4 MoE reader
 and a suitable RAM-expert path; Flash Next's `--vram-experts` does not configure
 this model. The installed CLI test exposed no GPU and stopped before weight
 loading. No decoder, GPU admission, OOM, model-quality or throughput pass is
-claimed. The [receipt](../verification-heretic-a3b-20261017.json) preserves the
+claimed by that historical run. The [receipt](../verification-heretic-a3b-20261017.json) preserves the
 input identities, installed refusal, size evidence and verification limits.
+
+## Original CT NVFP4 and DFlash v1
+
+The new loader reads original `compressed-tensors` `nvfp4-pack-quantized` Qwen MoE
+exports. Routed and shared gate/up/down projections retain their packed weights,
+block scales and separate activation/global calibrations. Excluded BF16 routers,
+shared gate and backbone projections remain BF16. Native FP4 activations require
+SM 12.x and `--precision checkpoint`; this path explicitly refuses other math
+modes. It does not convert the model to affine weights.
+
+The secondary `z-lab/Qwen3.6-35B-A3B-DFlash` at
+`42d3b34d588423cdae7ba8f53a8cf7789346a719` is an eight-layer DFlash v1 block-diffusion
+model, with target residual taps `[1, 10, 19, 28, 37]`, block size 16 and its declared
+YaRN rotary configuration. It is separate from a native MTP head. TensorFold reads
+its metadata and weights through owned code; checkpoint Python is never imported.
+Default draft linears keep BF16 storage. Explicit `--drafter-bits 4` changes only
+proposals; the target verifies every committed token. `0` or `16` selects BF16 on
+this CUDA path. `--draft-rows N` overrides the metadata block width, from 2 through
+128 on one stream and at most 16 with `--parallel`. `--mtp-drafts` selects the
+affine model's native MTP path and does not apply to this separate model.
+
+```bash
+tensorfold serve /models/heretic-nvfp4 --backend cuda --name heretic \
+  --drafter /models/qwen36-dflash --context 4096 --vram-experts auto
+```
+
+The example's context is an explicit operator choice. Without a context override,
+normal capacity admission applies; a larger admitted context can leave a smaller
+expert pool. `--no-drafts` and request field `"draft": false` use the serial target
+reference. An automatically resolved drafter is used only when the family's
+separate checkpoint is present locally; explicit `--drafter` selects its path.
+
+When resident experts cannot fit the minimum admitted state, omitted
+`--vram-experts` selects RAM-backed experts automatically. A numeric GiB budget or
+`auto` explicitly selects the bounded pool; `--vram-experts-pin off|auto|on` controls
+authority registration. The pool reserves future KV, retained states, draft
+contexts and runtime scratch before choosing its final size. It requires discrete
+VRAM, a fresh native CUDA allocator and stable allocator configuration through
+startup. Reused/unproved allocator state fails explicitly. Resident execution may
+use unified memory. Both new expert implementations currently execute eagerly;
+the affine native-MTP graph path remains separate.
+
+Native component checks have passed on the RTX PRO 2000 Blackwell host. Full-model
+quality, throughput selection and immutable installed-image qualification remain
+pending; no new tokens/s result is claimed here yet.
 
 ## Mac execution
 
@@ -103,7 +149,8 @@ must complete without contained stream errors and retain the fresh serial token 
 The CUDA figures below are retained upstream historical measurements at the source above, not a new
 qualification of this fork or its pinned deployment environment.
 
-CUDA reads this model's MLX 4-bit checkpoint only; NVFP4 and EXL3 exports of it are not read yet. Prompts take bf16
+The historical measurements below use the MLX 4-bit checkpoint; the CT NVFP4 path
+is described separately above, and EXL3 exports are not read. Affine prompts take bf16
 activations by default: 0.90-0.96x the FP8 prompt path from 2k to 128k, and 1.23-1.89x vLLM on NVIDIA's NVFP4 export
 from 2k to 64k. `--prefill-fp8` restores the FP8 path ([prompt precision](cuda.md#prompt-precision)).
 

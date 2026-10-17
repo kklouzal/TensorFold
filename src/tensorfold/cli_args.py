@@ -123,7 +123,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
-    speed.add_argument("--drafter-bits", type=int, default=4, help="quantize the draft model's linears (0: bf16)")
+    speed.add_argument("--drafter-bits", type=int, default=None,
+                       help="draft linear precision (0: bf16; Qwen MoE DFlash CUDA also accepts 16); "
+                            "default: 4 on MLX, stored precision for Qwen MoE DFlash on CUDA")
+    speed.add_argument("--draft-rows", type=int, default=None,
+                       help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
+                            "the draft model's block size)")
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "

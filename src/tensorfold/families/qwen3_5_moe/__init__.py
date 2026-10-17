@@ -16,6 +16,9 @@ MODELS = ("TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP", "mlx-community/Qwen3.6-35B-
 REQUIRED_FILES = {MODELS[0]: ("mtp-4bit.safetensors",)}
 DRAFTER = "z-lab/Qwen3.6-35B-A3B-DFlash"      # Preserve the fork's implicit Mac drafter pending native MTP selection.
 CUDA_DRAFTER = ""                             # CUDA drafts with the checkpoint's MTP layer.
+CUDA_DRAFTER_BITS = True
+CUDA_DRAFT_ROWS = True
+QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors")}
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.dense.v1"
 KERNEL_VERSION = "v1"
 MLX_MODEL_FILE = True
@@ -25,13 +28,39 @@ CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet p
 
 
 def check(model_dir: str | Path) -> None:
-    """One GPU, MLX 4-bit weights in groups of 64."""
+    """The original affine format or an original CT NVFP4 checkpoint."""
 
     from tensorfold.families import OWN_MODEL_HELP, describe_quantization, quantization, read_config
 
+    from tensorfold.cuda.nvfp4.format import is_quantized
+
+    if is_quantized(Path(model_dir)):
+        check_vram_experts(model_dir, "auto")
+        return
     if quantization(read_config(model_dir)) != CUDA_QUANTIZATION:
         raise ValueError(f"{TITLE}'s CUDA engine reads MLX 4-bit weights in groups of 64 ({MODELS[0]}); this "
                          f"checkpoint has {describe_quantization(read_config(model_dir))}. {OWN_MODEL_HELP}")
+
+
+def check_vram_experts(model_dir, gib, *, tp=1):
+    """Budget and format gate, usable before the payload has been downloaded."""
+    from tensorfold.families import read_config
+
+    from .ram_experts import check as check_budget
+
+    check_budget(model_dir, gib, tp=tp)
+    raw = read_config(model_dir)
+    quant = raw.get("quantization_config") or {}
+    if (quant.get("quant_method") != "compressed-tensors"
+            or quant.get("format") != "nvfp4-pack-quantized"):
+        raise ValueError("Qwen MoE --vram-experts requires original compressed-tensors NVFP4 weights")
+
+
+def cuda_drafter(model_dir):
+    """Affine keeps native MTP; CT NVFP4 may use the family's separately pulled DFlash model."""
+    from tensorfold.families import quant_method, read_config
+
+    return DRAFTER if quant_method(read_config(model_dir)) == "compressed-tensors" else CUDA_DRAFTER
 
 
 def mtp_file(model_dir: Path) -> Path | None:
@@ -134,10 +163,29 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     """One GPU: MTP chains verified exactly, or the serial reference when no_drafts is set."""
     # parallel above 1 decodes that many requests together.
 
-    if drafter:
-        raise ValueError(f"{TITLE} drafts with its own MTP layer on CUDA: a separate draft model does not apply")
     if int(tp) != 1:
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
+    from tensorfold.cuda.nvfp4.format import is_quantized
+
+    if is_quantized(Path(model_dir)):
+        check_vram_experts(model_dir, options.get("vram_experts", "auto"))
+        if mtp_drafts is not None:
+            raise ValueError("this CT NVFP4 checkpoint uses separate DFlash proposals: --mtp-drafts is for a native MTP head")
+        from .cuda.nvfp4_engine import QwenNvfp4MoeEngine
+
+        return QwenNvfp4MoeEngine(
+            Path(model_dir), Path(drafter) if drafter and not no_drafts else None,
+            context=context, context_explicit=options.get("context_explicit"),
+            allow_copy=not no_drafts,
+            streams=max(1, int(options.get("parallel") or 1)),
+            **{name: options[name] for name in ("vram_experts", "vram_experts_pin", "drafter_bits",
+                                               "eos_token_ids", "chat_template_file", "chat_template_name")
+               if options.get(name) is not None},
+            max_rows=options.get("draft_rows"))
+    if drafter:
+        raise ValueError(f"{TITLE} affine CUDA drafts with its own MTP layer; a separate draft model does not apply")
+    if any(options.get(name) is not None for name in ("vram_experts", "draft_rows", "drafter_bits")):
+        raise ValueError("Qwen MoE RAM expert pools and external draft controls currently require CT NVFP4 weights")
     from .cuda import DEPTH
     from .cuda.engine import Qwen36Engine
 

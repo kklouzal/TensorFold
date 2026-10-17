@@ -261,7 +261,8 @@ def _model_context(model_dir: Path) -> int:
     return int(limit) if isinstance(limit, int) and limit > 0 else 0
 
 
-def _drafter(family: Any, choice: str, backend: str = "mlx", *, mtp_drafts: int | None = None) -> str:
+def _drafter(family: Any, choice: str, backend: str = "mlx", *, mtp_drafts: int | None = None,
+             model_dir: Path | None = None) -> str:
     """The draft model directory for ``--drafter`` (auto: the family's draft model if it has been pulled)."""
 
     from tensorfold import hub
@@ -277,6 +278,10 @@ def _drafter(family: Any, choice: str, backend: str = "mlx", *, mtp_drafts: int 
     repo = getattr(
         family.package, "CUDA_DRAFTER" if backend == "cuda" else "DRAFTER", getattr(family.package, "DRAFTER", "")
     )
+    if backend == "cuda" and model_dir is not None:
+        select = getattr(family.package, "cuda_drafter", None)
+        if select is not None:
+            repo = select(model_dir)
     if not repo:
         return ""
     found = hub.cached(repo)
@@ -322,7 +327,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     sampling = _sampling_defaults(args, model_dir)  # refuse invalid defaults before acquiring the engine
     reply_tokens = _reply_tokens(args, model_dir)
     started = time.perf_counter()
-    drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda")
+    drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
     options: dict[str, Any] = {
         "drafter": drafter,
         "tp": int(args.tp),
@@ -332,6 +337,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "no_drafts": bool(args.no_drafts),
     }
     options.update(_model_overrides(args))
+    if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
+        options["drafter_bits"] = args.drafter_bits
+    if getattr(args, "draft_rows", None) is not None:
+        options["draft_rows"] = args.draft_rows
     if getattr(args, "expert_ranks", 1) > 1:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
@@ -684,7 +693,7 @@ def _serve_mlx_start(
     options: dict[str, Any] = {
         "lane_kernels": args.lane_kernels,
         "drafter": drafter,
-        "drafter_bits": args.drafter_bits,
+        "drafter_bits": 4 if args.drafter_bits is None else args.drafter_bits,
         "parallel": parallel,
     }
     options.update(_vision_options(args))

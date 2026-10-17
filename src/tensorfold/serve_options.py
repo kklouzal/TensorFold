@@ -67,6 +67,13 @@ def name_priority(args: argparse.Namespace) -> dict[str, str]:
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
     """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
 
+    draft_rows = getattr(args, "draft_rows", None)
+    if draft_rows is not None:
+        if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)
+                or type(draft_rows) is not int or not 2 <= draft_rows <= 128):
+            raise ValueError("--draft-rows requires supported CUDA DFlash and an integer from 2 through 128")
+        if _cuda_streams(getattr(args, "parallel", "auto")) > 1 and draft_rows > 16:
+            raise ValueError("--draft-rows supports at most 16 rows with --parallel")
     ranks = getattr(args, "expert_ranks", 1)
     shards = getattr(args, "expert_shards", None)
     if ranks != 1 or shards is not None:
