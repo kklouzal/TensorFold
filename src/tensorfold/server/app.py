@@ -497,7 +497,10 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         )
         spec = self._resolve_sampling(fields, temperature, prompt_ids)
         drafts = self.use_proposer and fields.get("draft", True) is not False
-        shaped = thinking and any(fields.get(k) is not None for k in grammar.FIELDS)
+        # strict tools' calls follow their grammar (server.strict_tools); refusal() checked them before any stream
+        plan = self.strict_calls(tools, required=bool(fields.get("tool_call_required")),
+                                 parallel=fields.get("parallel_tool_calls") is not False)
+        shaped = thinking and (plan is not None or any(fields.get(k) is not None for k in grammar.SPECS))
         think_end = self._token_id(self.think_markers[1]) if shaped else -1  # a grammar starts after it
 
         def make_job() -> ChatJob:
@@ -517,8 +520,9 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 ignore_eos=stops.ignore_eos,
                 stop_check=stops if stops.strings else None,
                 cancellation=cancellation,
-                call_gate=self._call_gate(fields, prompt_ids, tools),
-                constraint=grammar.request_constraint(self, fields, think_end if think_end >= 0 else None),
+                call_gate=self._call_gate(fields, prompt_ids, tools) if plan is None else None,   # strict: grammar
+                constraint=grammar.request_constraint(self, fields, think_end if think_end >= 0 else None,
+                                                      plan.spec if plan is not None else None),
                 vision=rendered.vision,
             )
             budget = int(fields.get("thinking_budget") or self.thinking_budget) if thinking else 0
@@ -558,7 +562,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         # tool calls stream as OpenAI tool_call deltas while they are written
         from tensorfold.engine.tool_draft import ToolCallStreamer
 
-        calls_stream = ToolCallStreamer(tools) if (tools and on_delta is not None) else None
+        calls_stream = ((plan.reader() if plan is not None else ToolCallStreamer(tools))
+                        if (tools and on_delta is not None) else None)
         visible_text = IncrementalText(self.tokenizer, self.tokenizer_lock)
         replay: list[int] = []  # tokens a preempted job already delivered, owed again by its rerun
         preemptions = 0
@@ -614,7 +619,11 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 if piece:
                     streamed_reasoning = reasoning_so_far
                     on_delta({"reasoning_content": piece})
-            shown = hide_tool_calls(answer, finished=False) if calls_stream is not None else answer
+            if calls_stream is None:
+                shown = answer
+            else:
+                shown = (plan.content(answer, finished=False) if plan is not None
+                         else hide_tool_calls(answer, finished=False))
             visible = streaming_visible_text(shown)
             delta = visible[len(streamed) :]
             if delta:
@@ -632,10 +641,14 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             text = stops.visible(raw_text)
         if thinking or self.think_markers == CHANNEL_MARKERS:
             reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers)
+            if plan is not None and content and self.think_markers[1] not in text and not self._strict_accepts(
+                    plan, content):
+                reasoning_text, content = text, ""   # a call written in a think block that never closed, ungrammatical
             reasoning = reasoning_text.strip() or None
         else:
             content, reasoning = parse_harmony_output(text)
-        stops.flush(on_delta, content, reasoning, streamed, streamed_reasoning, calls_stream is not None)
+        shows = (lambda answer: plan.content(answer, finished=True)) if plan is not None else True
+        stops.flush(on_delta, content, reasoning, streamed, streamed_reasoning, calls_stream is not None and shows)
         stream = job.stream
         seconds = max(0.0, job.finished_at - job.submitted_at)
         decode_seconds = max(0.0, job.finished_at - job.prefilled_at) if job.prefilled_at else 0.0
@@ -647,6 +660,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             "stop_sequence": matched_stop(raw_text, stops.strings),
             "reasoning": reasoning,
             "tool_calls_streamed": bool(calls_stream is not None and calls_stream.streamed),
+            "strict_calls": plan,                  # ToolCallPolicy.finish reads strict calls with it
             "finish_reason": stream.finish_reason if stream is not None else "length",
             "prompt_tokens": len(prompt_ids),
             "cached_tokens": int(job.cached_tokens),

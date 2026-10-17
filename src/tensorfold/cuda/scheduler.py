@@ -299,12 +299,12 @@ class Scheduler:
         return done
 
     def _yield(self) -> None:
-        """Lanes full, a foreground request waiting: the newest background stream (no grammar or images) re-queues."""
+        """Lanes full, a foreground request waiting: the newest background stream (no images) re-queues."""
 
         if self.decoder.live() < self.max_streams or not self.waiting.foreground():
             return
         live = list(getattr(self.decoder, "streams", {}).values())
-        stream = next((s for s in reversed(live) if s.background and not s.done and s.constraint is None
+        stream = next((s for s in reversed(live) if s.background and not s.done
                        and s.vision is None and len(s.out) < s.count), None)
         if stream is None:
             return

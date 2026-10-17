@@ -88,7 +88,7 @@ def maintained():
                      strip_trailing_stops=strip_trailing_stops, reasoning_count=reasoning_count,
                      streaming_visible_text=streaming_visible_text, matched_stop=matched_stop, unanswered=unanswered,
                      _token_sha=lambda ids: hashlib.sha256(",".join(str(t) for t in ids).encode()).hexdigest()[:12],
-                     grammar=SimpleNamespace(FIELDS=(), request_constraint=lambda *a: None))
+                     grammar=SimpleNamespace(FIELDS=(), SPECS=(), request_constraint=lambda *a: None))
     exec(compile(source, str(path), "exec"), namespace)
     return namespace["RequestApp"], local, metrics, counts
 
@@ -104,6 +104,7 @@ def fixture(second, *, second_error=None):
     app.system_prefix_len = lambda *a, **k: 0
     app._resolve_sampling = lambda *a: None
     app._call_gate = lambda *a: None
+    app.strict_calls = lambda *a, **k: None                # no strict tools: the lenient path
     app._round_profile = lambda *a: ""
     app.effort_for = lambda *a: None
     app.exact_mode, app.checkpoints = {"mode": "exact", "engine": "lanes"}, None
