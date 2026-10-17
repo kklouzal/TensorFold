@@ -472,14 +472,18 @@ class Follower:
         try:
             if session._receive("ep/admitted") != b"ready":
                 raise RuntimeError("expert leader refused group admission")
-            self.session._ensure_reader()
             from tensorfold.cuda.capacity import (
                 available_bytes,
                 cuda_limit_bytes,
                 cuda_reserve_bytes,
                 host_cgroup_bytes,
                 host_stream_bytes,
+                unified,
             )
+            if session.budget == "auto" and unified(session.torch):
+                raise ValueError("--vram-experts auto requires a discrete CUDA GPU; on unified memory use a numeric "
+                                 "expert budget or load the experts resident")
+            self.session._ensure_reader()
             host_need = (session.layout.host_bytes + session.layout.staging_bytes
                          + session.layout.loading_bytes + session.layout.metadata_host_bytes)
             rooms = [room for room in (host_stream_bytes(), host_cgroup_bytes()) if room is not None]

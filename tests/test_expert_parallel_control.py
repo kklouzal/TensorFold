@@ -559,3 +559,40 @@ def test_expert_factory_hands_successful_consumer_the_live_session(expert_factor
                                  "Follower" if rank else "FlashNextEngine", consumer)
     assert expert_factory.create(tmp_path, no_drafts=True, expert_ranks=2, rank=rank, vram_experts="auto") is token
     assert expert_factory.sessions[0].close_calls == []
+
+
+
+def test_unified_follower_refuses_auto_before_reads_and_recovers_with_explicit_budget(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+        get_device_properties=lambda device: SimpleNamespace(is_integrated=True), memory_allocated=lambda: 0))
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.delenv(capacity.LIMIT_ENV, raising=False)
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemTotal": 64 * gib, "MemAvailable": 26 * gib})
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda: None)
+
+    def session(budget, events):
+        def receive(key):
+            events.append(key)
+            return b"ready"
+        return SimpleNamespace(budget=budget, torch=runtime, _receive=receive,
+            _ensure_reader=lambda: events.append("reader"), reader=SimpleNamespace(where={}), mtp=False,
+            layout=SimpleNamespace(host_bytes=gib, staging_bytes=0, loading_bytes=0, metadata_host_bytes=0,
+                                   gpu_bytes=gib, loading_device_bytes=0), workspace_bytes=0,
+            cfg=SimpleNamespace(layers=1, quant="mlx"), load_bank=lambda *args: events.append("bank"),
+            finish_loading=lambda: events.append("finished"), close=lambda **kw: events.append(kw))
+
+    rejected = []
+    with pytest.raises(ValueError, match="auto requires a discrete CUDA GPU"):
+        Follower(session("auto", rejected))
+    assert rejected == ["ep/admitted", {"abort": True}]
+    assert capacity.available_bytes(runtime) == 18 * gib  # Device zero never lowers the shared eight-GiB floor.
+    recovered = []
+    follower = Follower(session(1, recovered))
+    assert recovered == ["ep/admitted", "reader", "bank", "finished"]
+    assert not hasattr(follower, "expert_headroom_bytes")
+    follower.close()
+    assert recovered[-1] == {"abort": False}
