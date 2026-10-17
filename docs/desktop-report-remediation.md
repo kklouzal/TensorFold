@@ -14,6 +14,13 @@ checked-in EXL3/two-slot profile remains unchanged unless the operator selects
 another command or policy. These features do not establish a throughput gain
 on the reported 5090/4080 desktop or make a checkpoint fit its available RAM.
 
+The supplied desktop report measured **71.92 GiB of packed affine expert
+authority** for its checkpoint. Its ModelOpt inventory listed **63.3 GiB of
+routed experts** and **47.7 GiB of n-gram tables**. These components already
+exceed the profile's 56-decimal-GB EXL3 limit before loading workspace; use the
+checkpoint-specific `TF_RAM_BYTES` setting and host admission. SSD table reads
+change residency, while file pages and the rest of the host still consume RAM.
+
 ## RAM experts, host registration and storage
 
 `--vram-experts GIB|auto` keeps immutable packed expert authority in system RAM
