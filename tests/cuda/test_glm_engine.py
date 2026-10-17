@@ -405,7 +405,7 @@ def test_prompt_chunks_leave_the_same_state(engine):
                                       Sampling(1234, 1.0, 0, 0.9, 0.02), None],
                          ids=["sampled", "min_p", "nucleus", "greedy"])
 def test_drafted_replies_equal_serial(engine, sampling):
-    prompt = list(np.random.default_rng(5).integers(0, 1000, size=37))
+    prompt = np.random.default_rng(5).integers(0, 1000, size=37).tolist()
     serial, stats = _generate(engine, prompt, sampling, draft=False)
     assert len(serial) == 24 and stats["drafts"] is False and stats.get("drafted", 0) == 0
     for policy in (None, "auto", "1", "2", "3", "c3:0.35", "a:0.6:0.85"):
@@ -421,7 +421,7 @@ def test_drafted_replies_equal_serial(engine, sampling):
 def test_drafter_choice_equals_serial(engine_f, sampling):
     """Every policy with both drafters loaded, and the per-round choice made to switch often."""
 
-    prompt = list(np.random.default_rng(6).integers(0, 1000, size=41))
+    prompt = np.random.default_rng(6).integers(0, 1000, size=41).tolist()
     serial, _ = _generate(engine_f, prompt, sampling, draft=False, tokens=40)
     seen = set()
     from tensorfold.families.glm5_next.cuda.engine import encode_policy
@@ -439,7 +439,7 @@ def test_drafter_choice_resumes(engine_f):
 
     sampling = Sampling(11, 1.0, 20, 0.95)
     rng = np.random.default_rng(12)
-    first = list(rng.integers(0, 1000, size=30))
+    first = rng.integers(0, 1000, size=30).tolist()
     reply, stats = _generate(engine_f, first, sampling, policy="auto:1:1:0", tokens=30)
     assert set(stats["drafters"]) == {"m", "f"}
     after = first + reply + [21, 22]
@@ -456,7 +456,7 @@ def test_drafter_choice_resumes(engine_f):
 @pytest.mark.parametrize("sampling", [Sampling(7, 1.0, 20, 0.95), None], ids=["sampled", "greedy"])
 def test_resumed_prompts_equal_fresh_prefills(engine, sampling):
     rng = np.random.default_rng(9)
-    first = list(rng.integers(0, 1000, size=70))
+    first = rng.integers(0, 1000, size=70).tolist()
     reply, _ = _generate(engine, first, sampling)
     after_reply = first + reply + [5, 6, 7]
     warm, stats = _generate(engine, after_reply, sampling)
@@ -486,7 +486,7 @@ def test_exl3_checkpoint_drafted_equals_serial(engine_x, sampling):
     assert engine_x.w.layers[1].moe.shared is not None
     assert engine_x._effective(encode_policy("auto")) == encode_policy(EXL3_AUTO)       # the default drafts DFlash2
     assert engine_x._effective(encode_policy("auto:1:1:0")) == encode_policy("auto:1:1:0")
-    prompt = list(np.random.default_rng(8).integers(0, 1000, size=45))
+    prompt = np.random.default_rng(8).integers(0, 1000, size=45).tolist()
     serial, _ = _generate(engine_x, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "auto:1:1:0", "f3", "fc5:0.3", "2", "c3:0.35", "a:0.6:0.85"):
         drafted, stats = _generate(engine_x, prompt, sampling, policy=policy, tokens=32)
@@ -537,7 +537,7 @@ def test_decision_between_chats_preserves_replies(engine_f, cache_bytes, policy)
 def test_exl3_checkpoint_resumes(engine_x):
     sampling = Sampling(21, 1.0, 20, 0.95)
     rng = np.random.default_rng(22)
-    first = list(rng.integers(0, 1000, size=70))
+    first = rng.integers(0, 1000, size=70).tolist()
     reply, _ = _generate(engine_x, first, sampling, policy="auto:1:1:0", tokens=20)
     after = first + reply + [31, 32]
     warm, stats = _generate(engine_x, after, sampling)
@@ -592,7 +592,7 @@ def test_no_mtp_head_drafts_with_dflash2(engine_n, sampling):
     assert engine_n._effective(encode_policy("auto")) == encode_policy(DFLASH_POLICY)
     assert engine_n._effective(encode_policy("2")) == encode_policy("f2")
     assert engine_n._effective(encode_policy("0")) == encode_policy("0")
-    prompt = list(np.random.default_rng(13).integers(0, 1000, size=39))
+    prompt = np.random.default_rng(13).integers(0, 1000, size=39).tolist()
     serial, _ = _generate(engine_n, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "auto", "2", "c3:0.35", "a:0.6:0.85", "f3"):
         drafted, stats = _generate(engine_n, prompt, sampling, policy=policy, tokens=32)
@@ -640,7 +640,7 @@ def test_mtp_off_beside_dflash2_gives_the_same_replies(engine_off, engine_f, sam
     assert off._effective(encode_policy("auto")) == encode_policy(DFLASH_POLICY)
     assert off._effective(encode_policy("auto:1:1:0")) == encode_policy(DFLASH_POLICY)
     assert off._effective(encode_policy("2")) == encode_policy("f2")
-    prompt = list(np.random.default_rng(6).integers(0, 1000, size=41))
+    prompt = np.random.default_rng(6).integers(0, 1000, size=41).tolist()
     serial, _ = _generate(on, prompt, sampling, draft=False, tokens=40)
     assert _generate(off, prompt, sampling, draft=False, tokens=40)[0] == serial
     for policy in (None, "auto", "auto:1:1:0", "2", "c3:0.35", "a:0.6:0.85", "f3", "fc5:0.3"):
@@ -653,7 +653,7 @@ def test_mtp_off_resumes(engine_off):
     """Kept prompt states without the head's rows resume like fresh prefills."""
 
     sampling = Sampling(11, 1.0, 20, 0.95)
-    first = list(np.random.default_rng(12).integers(0, 1000, size=30))
+    first = np.random.default_rng(12).integers(0, 1000, size=30).tolist()
     reply, _ = _generate(engine_off, first, sampling, tokens=30)
     after = first + reply + [21, 22]
     for policy in ("auto", "2", "f3"):
@@ -680,7 +680,7 @@ def engine_long(tmp_path_factory):
 def test_drafted_replies_equal_serial_past_the_dense_limit(engine_long, sampling):
     """Past 2,051 tokens a window's rows must score like serial steps (2 index heads, not GLM-5.3-Flash's 32)."""
 
-    prompt = list(np.random.default_rng(11).integers(0, 1000, size=2100))
+    prompt = np.random.default_rng(11).integers(0, 1000, size=2100).tolist()
     serial, _ = _generate(engine_long, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "2", "c3:0.35"):
         drafted, _ = _generate(engine_long, prompt, sampling, policy=policy, tokens=32)

@@ -32,7 +32,7 @@ def engine_long(tmp_path_factory):
 
 
 def _prompt(seed=11, n=PROMPT):
-    return list(np.random.default_rng(seed).integers(0, 1000, size=n))
+    return np.random.default_rng(seed).integers(0, 1000, size=n).tolist()
 
 
 def test_sparse_graphs_are_used_past_the_dense_limit(engine_long):
