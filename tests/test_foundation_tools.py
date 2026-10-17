@@ -99,6 +99,24 @@ def test_contract_mutation_and_relative_paths_refused(foundation):
         tools.compiler_command(foundation.contract, role="unknown", arguments=[])
 
 
+def test_managed_activation_reuses_owners_sdk_verification(foundation, tmp_path, monkeypatch):
+    def unexpected_scan(*args, **kwargs):
+        raise AssertionError("managed owner already verified the immutable SDK inventory")
+
+    monkeypatch.setattr(tools, "_headers", unexpected_scan)
+    monkeypatch.setattr(tools.hashlib, "file_digest", unexpected_scan)
+    env = tools.toolchain_environment(foundation.contract, cache_root=str(tmp_path), verify_content=False)
+    assert env["CC"] == foundation.kwargs["wrapper_cc"]
+    Path(foundation.kwargs["cc"]).write_text("changed size")
+    with pytest.raises(ValueError, match="changed"):
+        tools.toolchain_environment(foundation.contract, cache_root=str(tmp_path), verify_content=False)
+
+
+def test_content_mode_requires_boolean(foundation, tmp_path):
+    with pytest.raises(ValueError, match="boolean"):
+        tools.toolchain_environment(foundation.contract, cache_root=str(tmp_path), verify_content=0)
+
+
 def test_capture_requires_valid_tools_and_owned_helpers(foundation):
     executable(foundation.home / "bin/ptxas", "#!/bin/sh\nprintf 'unrecognized tool\\n'\n")
     with pytest.raises(ValueError, match="recognized version"):
@@ -108,6 +126,17 @@ def test_capture_requires_valid_tools_and_owned_helpers(foundation):
 def test_capture_refuses_header_directory_alias(foundation):
     (foundation.include / "alias").symlink_to(foundation.include, target_is_directory=True)
     with pytest.raises(ValueError, match="directory alias"):
+        tools.capture_toolchain(**foundation.kwargs)
+
+
+@pytest.mark.parametrize("kind", ["dangling", "fifo"])
+def test_capture_refuses_unaccounted_header_entry(foundation, kind):
+    path = foundation.include / "bad-entry"
+    if kind == "dangling":
+        path.symlink_to(foundation.include / "missing")
+    else:
+        os.mkfifo(path)
+    with pytest.raises(ValueError, match="not a regular file or directory"):
         tools.capture_toolchain(**foundation.kwargs)
 
 
@@ -151,6 +180,26 @@ def test_wrapper_exec_preserves_compiler_termination_signal(foundation):
     result = subprocess.run([foundation.kwargs["wrapper_cc"], "input.c"], env=env,
                             capture_output=True, text=True, check=False)
     assert result.returncode == -signal.SIGTERM
+
+
+@pytest.mark.parametrize("signal_name", ["SIGPIPE", "SIGXFSZ"])
+def test_native_compiler_inherits_subprocess_restored_signals(foundation, tmp_path, signal_name):
+    cc = shutil.which("cc")
+    if cc is None or not hasattr(signal, signal_name):
+        pytest.skip("native compiler and platform signal required")
+    source = tmp_path / "native.c"
+    source.write_text('#include <signal.h>\n#include <stdio.h>\n#include <string.h>\n'
+                      'int main(int n,char **v){if(n==2&&!strcmp(v[1],"--version")){puts("native");return 0;}'
+                      f'raise({signal_name});return 88;}}\n')
+    native = tmp_path / "native-compiler"
+    subprocess.run([cc, str(source), "-o", str(native)], check=True, capture_output=True)
+    contract = tools.capture_toolchain(**{**foundation.kwargs, "cc": str(native), "cxx": str(native)})
+    foundation.manifest.write_text(json.dumps({"toolchain": contract}))
+    env = {**os.environ, tools.CONTRACT_ENV: str(foundation.manifest)}
+    direct = subprocess.run([str(native), "input.c"], env=env, capture_output=True, check=False)
+    wrapped = subprocess.run([foundation.kwargs["wrapper_cc"], "input.c"], env=env,
+                             capture_output=True, check=False)
+    assert direct.returncode == wrapped.returncode == -getattr(signal, signal_name)
 
 
 def mock_triton(monkeypatch, contract):
