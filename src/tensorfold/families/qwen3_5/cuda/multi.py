@@ -334,8 +334,8 @@ class MultiDecoder:
         return [s] if s.done else []
 
     def _batch(self) -> list[tuple[Stream, int]]:
-        """Foreground prompts for one prefill forward, oldest first, each to its next kept state or its end: STEP rows
-        in all while streams decode, a forward's prompt rows otherwise; the last one in takes the rows left."""
+        """Foreground prompts oldest first, each to its next kept state or end: at most STEP rows while streams
+        decode, always within the forward's admitted prompt rows; the last one takes the rows left."""
 
         room = getattr(self.w, "prompt_rows", CHUNK)
         if any(not x.done for x in self.streams.values()):
