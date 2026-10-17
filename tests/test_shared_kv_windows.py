@@ -328,6 +328,68 @@ def test_accounting_failure_before_or_after_publication_contains_the_decoder(
 
 @pytest.mark.torch
 @pytest.mark.usefixtures("allocations")
+@pytest.mark.parametrize("operation", ["grow", "shrink"])
+@pytest.mark.parametrize("diagnostic", ["wrapper", "traceback"])
+def test_traceback_held_storage_blocks_inference_until_model_retirement(monkeypatch, operation, diagnostic):
+    import importlib
+    import traceback
+    import weakref
+
+    import torch
+
+    from tensorfold.cuda.streams import Stream
+    from tests.test_cuda_growing_caches import decoder, weights
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
+    dec = decoder(multi, state, torch, room=1 << 62)
+    dec.failed_slots = []
+    dec._memory_error = None
+    st = state.State(weights(), 256, 4, "int4", limit=65536)
+    initial = st.cache_bytes()
+    if operation == "shrink":
+        st.resize(8192)
+        dec.memory_gate.take(st.cache_bytes() - initial)
+    primary, secondary = OSError("replacement failed"), MemoryError("failure diagnostic failed")
+    retained = []
+
+    def failed(*args):
+        uncommitted = torch.zeros(16)
+        retained.append(weakref.ref(uncommitted))
+        raise primary
+
+    def diagnostic_failed(*args):
+        raise secondary
+
+    with monkeypatch.context() as patch:
+        patch.setattr(state, "_rows", failed)
+        patch.setattr(state if diagnostic == "wrapper" else traceback,
+                      "KVResizeError" if diagnostic == "wrapper" else "clear_frames", diagnostic_failed)
+        with pytest.raises(OSError) as caught:
+            if operation == "grow":
+                dec._grow(st, 300)
+            else:
+                dec._shrink(st)
+        assert caught.value is primary
+        if diagnostic == "traceback":
+            assert st._resize_frames_pending is not None and retained[0]() is not None
+            assert dec._memory_error is primary
+            for use in (lambda: dec.admit(Stream([1], 1)), dec.round):
+                with pytest.raises(OSError) as contained:
+                    use()
+                assert contained.value is primary
+        else:
+            assert st._resize_frames_pending is None and retained[0]() is None
+            assert getattr(dec, "_memory_error", None) is None
+    dec._quarantine(st)
+    dec.recover_failed_slots()
+    assert not dec.failed_slots and dec.free == [st] and dec.memory_gate.held == 0
+    assert st._resize_frames_pending is None and retained[0]() is None
+    assert getattr(dec, "_memory_error", None) is (primary if diagnostic == "traceback" else None)
+
+
+@pytest.mark.torch
+@pytest.mark.usefixtures("allocations")
 @pytest.mark.parametrize("failure_type", [MemoryError, KeyboardInterrupt])
 def test_failed_slot_publication_restores_quarantine_before_retry(failure_type):
     import importlib

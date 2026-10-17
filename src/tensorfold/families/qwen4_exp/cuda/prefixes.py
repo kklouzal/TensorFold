@@ -9,6 +9,8 @@ Past ``keep``, a chain's spare points go before any value: a chain keeps one poi
 (its ``LADDER``), so a prompt that diverges anywhere in it resumes within about that distance again, not cold.
 """
 
+from tensorfold.cleanup import raise_failures
+
 LADDER = 4096          # tokens: the nearest band of a chain's ladder, each farther band twice as wide
 
 
@@ -83,9 +85,12 @@ def slot_for(owner, prompt: list[int], reuse: bool):
                 spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"])
                 _use(owner, best[1])
                 return spare, {"state": best[2], "tail": best[3]}, len(best[0])
-        except Exception:
-            owner.free.append(spare)
-            owner._shrink(spare, force=True)
+        except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
+            try:
+                owner._quarantine(spare)
+                owner._retire_failed_slot(spare)
+            except BaseException as cleanup:  # noqa: BLE001 - preserve fork and exclusive-retirement failures
+                raise_failures(primary, [cleanup])
             raise
         owner.free.append(spare)        # no room for the copy: a cold prefill would need as much, so resume in place
     best = _best(owner.kept, prompt, busy) if reuse else None
