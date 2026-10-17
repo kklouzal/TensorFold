@@ -149,12 +149,14 @@ class Qwen27Engine:
                                          offload=vision_offload)
         self._prepare_serving(model_dir, streams=streams, keep=keep)
 
-    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int) -> None:
+    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int, max_rows: int | None = None) -> None:
         """Prepare request state after loading/admission and optional drafter/vision.
 
         The loader establishes torch, tp/rank, allow_copy, capacity_plan,
         context_window, w, draft, vision and chat_template before this call.
         ``keep`` is the normalized retained-prefix count used by admission.
+        ``max_rows`` overrides the concurrent decoder's window before calibration;
+        omitting it preserves that decoder's default.
         Calibration completes before publishing a running scheduler.
         """
         from tensorfold.cuda.capacity import config
@@ -186,7 +188,7 @@ class Qwen27Engine:
 
             self.multi = MultiDecoder(self.w, self.draft, allow_copy=allow_copy, rank=rank, world=tp,
                                       context=self.capacity_plan["cache_slots"], keep=keep, points=self.points,
-                                      vision=self.vision)
+                                      vision=self.vision, **({"max_rows": max_rows} if max_rows is not None else {}))
             self.multi.model_dir = self.model_dir             # rank 1 compiles a request's grammar from it
             self.multi.calibrate(streams)
             if rank == 0:
