@@ -153,7 +153,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     reads its two scalar calibrations before code/scale payload. Packing one
     projection at a time bounds CPU temporary storage by three projection blobs.
     Resident loading releases CPU code/scale authority after synchronous device
-    transfer, retaining only24 bytes/expert of prepared calibration metadata.
+    transfer, retaining36 bytes/expert of original and prepared calibration metadata.
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
