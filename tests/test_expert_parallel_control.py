@@ -273,6 +273,30 @@ def test_unresolved_session_retains_explicit_owner_and_still_retires_other_ranks
             real_retire(owners[0], time.monotonic())
 
 
+def test_failed_owner_diagnostic_preserves_original_failure_and_retires_independent_rank(monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+    real_retire = launcher._retire
+    owners = []
+    primary, diagnostic = OSError("injected session retirement failure"), MemoryError("owner diagnostic unavailable")
+    def retire(child, deadline):
+        owners.append(child)
+        if len(owners) == 1:
+            raise primary
+        real_retire(child, deadline)
+    def unavailable(*args):
+        raise diagnostic
+    monkeypatch.setattr(launcher, "_retire", retire)
+    monkeypatch.setattr(launcher, "UnresolvedRankSessions", unavailable)
+    try:
+        with pytest.raises(OSError) as caught:
+            launcher.supervise([[sys.executable, "-c", "pass"]] * 2, [dict(os.environ)] * 2, grace=.1)
+        assert caught.value is primary and caught.value.__cause__ is diagnostic
+        assert len(owners) == 2 and owners[0].returncode is None and owners[1].returncode is not None
+    finally:
+        if owners and owners[0].returncode is None:
+            real_retire(owners[0], time.monotonic())
+
+
 def test_lost_direct_child_reservation_never_signals_or_rescans_numeric_session(monkeypatch):
     import tensorfold.cuda.expert_launch as launcher
     child = SimpleNamespace(pid=12345, returncode=None)

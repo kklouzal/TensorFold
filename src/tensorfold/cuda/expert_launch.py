@@ -100,10 +100,26 @@ def supervise(commands, environments, *, grace=10.0):
         raise ValueError("expert rank retirement grace must be a finite nonnegative duration")
     if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "pidfd_open")) or not hasattr(signal, "pidfd_send_signal"):
         raise RuntimeError("expert launcher requires Linux waitid/WNOWAIT and pidfd session ownership")
-    children, primary, result = [], None, 1
+    # Allocate ownership and diagnostic slots before any child exists. Publishing
+    # a returned Popen or a cleanup failure must not need list growth.
+    children = [None] * len(commands)
+    cleanup_errors = [None] * (3 * len(commands))
+    unresolved = [False] * len(commands)
+    primary, result = None, 1
+
+    def retain_unresolved(index, child, failure):
+        # Publish the authoritative failure first. If diagnostic construction
+        # fails, that exception's retained frame owns child/failure/slots; the
+        # outer loop still retires every independent rank.
+        cleanup_errors[3 * index + 1] = failure
+        try:
+            cleanup_errors[3 * index + 1] = UnresolvedRankSessions((child,), failure)
+        except BaseException as diagnostic:  # noqa: BLE001 - diagnostic exhaustion cannot skip peer retirement
+            cleanup_errors[3 * index + 2] = diagnostic
+
     try:
-        for command, environment in zip(commands, environments):
-            children.append(subprocess.Popen(command, env=environment, start_new_session=True))
+        for index, (command, environment) in enumerate(zip(commands, environments)):
+            children[index] = subprocess.Popen(command, env=environment, start_new_session=True)
         departure = None
         while True:
             statuses = [_exited(child) for child in children]
@@ -120,31 +136,45 @@ def supervise(commands, environments, *, grace=10.0):
             time.sleep(.05)
     except BaseException as error:  # noqa: BLE001 - cleanup preserves primary cancellation/spawn failure
         primary = error
-    errors = []
-    unresolved = []
     deadline = time.monotonic() + grace
-    for child in children:
+    for index, child in enumerate(children):
+        if child is None:
+            continue
         try:
             _exited(child)  # confirm our unreaped child identity before any numeric group signal
         except BaseException as error:  # noqa: BLE001 - never signal an identity with unresolved ownership
-            unresolved.append(child)
-            errors.append(UnresolvedRankSessions((child,), error))
+            unresolved[index] = True
+            retain_unresolved(index, child, error)
             continue
         try:
             os.killpg(child.pid, signal.SIGTERM)  # unreaped leader still reserves this group identity
         except ProcessLookupError:
             pass
         except BaseException as error:  # noqa: BLE001 - still attempt owned pidfd retirement below
-            errors.append(error)
-    for child in children:
-        if any(child is owner for owner in unresolved):
+            cleanup_errors[3 * index] = error
+    for index, child in enumerate(children):
+        if child is None or unresolved[index]:
             continue  # ownership could not be established: no later numeric SID actions
         try:
             _retire(child, deadline)
         except BaseException as error:  # noqa: BLE001 - retain child owners and surface all cleanup failures
-            errors.append(UnresolvedRankSessions((child,), error))
+            retain_unresolved(index, child, error)
+    try:
+        errors = [error for error in cleanup_errors if error is not None]
+    except BaseException as diagnostic:  # noqa: BLE001 - all retirements attempted; retain original statuses in frame
+        if primary is None:
+            for error in cleanup_errors:
+                if error is not None:
+                    primary = error
+                    break
+        if primary is None:
+            raise
+        raise primary from diagnostic
     if errors and primary is None and result:
-        primary = RuntimeError(f"expert rank group failed with status {result}")
+        try:
+            primary = RuntimeError(f"expert rank group failed with status {result}")
+        except BaseException as diagnostic:  # noqa: BLE001 - original cleanup status and owners remain authoritative
+            raise errors[0] from diagnostic
     raise_failures(primary, errors)
     return result
 
