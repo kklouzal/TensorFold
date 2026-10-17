@@ -29,7 +29,7 @@ def test_selected_head_preserves_weight_ownership_and_binds_device_once(monkeypa
     assert target.head.weight is source
     assert drafter_head is target.head
     assert devices == [source.device]
-    for rows, reuse in ((2, 2), (3, 4), (4, 4), (8, 8), (12, 16), (16, 16)):
+    for rows, reuse in ((2, 2), (3, 8), (4, 8), (8, 8), (12, 16), (16, 16)):
         x = torch.zeros(rows, 2048, dtype=torch.float32)
         assert target.head(x) == "selected"
         assert prepared[-1][0].dtype == torch.bfloat16
