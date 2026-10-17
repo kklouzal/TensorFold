@@ -152,15 +152,31 @@ class Controls(unittest.TestCase):
             self.assertEqual(calls, [])
 
     def test_config_strict_parse_and_authorized_root_contract(self):
+        tree = ast.parse(WEIGHTS.read_bytes())
+        config = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Config')
+        method = next(n for n in config.body if isinstance(n, ast.FunctionDef) and n.name == 'read')
+        self.assertIn("raw = read_config(model_dir)", ast.unparse(method))
+        # Execute the actual reader method, without importing the numerical
+        # weight module. Its malformed metadata must fail before shape use.
+        reader = ast.ClassDef(name='MetadataReader', bases=[], keywords=[], body=[method], decorator_list=[])
+        namespace = {'__name__': 'tensorfold.families.glm5_next.cuda.metadata_source_control',
+                     '__package__': 'tensorfold.families.glm5_next.cuda'}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[reader], type_ignores=[])), str(WEIGHTS), 'exec',
+                     flags=__import__('__future__').annotations.compiler_flag), namespace)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'config.json').write_text('{"hidden_size":1,"hidden_size":2}')
             with self.assertRaises(ValueError):
                 read_metadata_json(checkpoint_path(root, 'config.json'))
-        tree = ast.parse(WEIGHTS.read_bytes())
-        config = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Config')
-        method = next(n for n in config.body if isinstance(n, ast.FunctionDef) and n.name == 'read')
-        self.assertIn("read_metadata_json(checkpoint_path(Path(model_dir), 'config.json'))", ast.unparse(method))
+            with self.assertRaises(ValueError):
+                namespace['MetadataReader'].read(root)
+            with tempfile.TemporaryDirectory() as outside:
+                target = Path(outside) / 'metadata.json'
+                target.write_text('{}')
+                (root / 'config.json').unlink()
+                (root / 'config.json').symlink_to(target)
+                with self.assertRaisesRegex(ValueError, 'outside|authorized'):
+                    namespace['MetadataReader'].read(root)
 
 
 if __name__ == '__main__':

@@ -9,14 +9,13 @@ torch = pytest.importorskip('torch')
 
 
 @pytest.mark.parametrize('storage,options,message', [
-    ('exl3', {'tp': 2, 'rank': 1, 'master': '192.0.2.1', 'vram_experts': 1.}, 'one GPU'),
-    ('modelopt', {'tp': 2, 'rank': 1, 'master': '192.0.2.1', 'vram_experts': 1.}, 'one GPU'),
+    ('exl3', {'tp': 2, 'rank': 1, 'master': '192.0.2.1', 'vram_experts': 1.}, 'one CUDA GPU'),
+    ('modelopt', {'tp': 2, 'rank': 1, 'master': '192.0.2.1', 'vram_experts': 1.}, 'one CUDA GPU'),
     ('mlx', {'vision': True, 'streams': 1, 'vram_experts': 1.}, 'image input'),
     ('exl3', {'ple_on_ssd': True, 'vram_experts': 1.}, '--ple-on-ssd'),
 ])
 def test_unsupported_combinations_refuse_before_rope_ram_cuda_or_weights(monkeypatch, tmp_path, storage, options, message):
     from tensorfold.families import qwen4_exp
-    from tensorfold.families.qwen4_exp import ram_experts
     from tensorfold.families.qwen4_exp.cuda import engine, weights
 
     metadata = {'model_type': 'qwen4_exp'}
@@ -32,7 +31,8 @@ def test_unsupported_combinations_refuse_before_rope_ram_cuda_or_weights(monkeyp
         raise AssertionError('unsupported mode reached shape validation or accelerator setup')
 
     monkeypatch.setattr(qwen4_exp, 'rope_parameters', forbidden)
-    monkeypatch.setattr(ram_experts, 'check', forbidden)
+    # Keep the actual pure budget/format preflight: it owns the one-GPU
+    # refusal. Only shape, accelerator and payload work are forbidden here.
     monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
     monkeypatch.setattr(weights, 'load', forbidden)
     with pytest.raises(ValueError, match=message):

@@ -98,7 +98,7 @@ class OriginControls(unittest.TestCase):
         for name in ("weights.py", "exl3_load.py", "nvfp4_load.py"):
             path = source.parent / name
             text = path.read_text()
-            first = text.index("w.inv_freq = inv.to(torch.float32).to(device)")
+            first = text.index("w.inv_freq = _rotary_frequencies(cfg, device)")
             second = text.index("_ = w.attention_origin", first)
             self.assertLess(first, second)
 
