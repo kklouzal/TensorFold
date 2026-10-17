@@ -15,6 +15,24 @@ from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
 from tensorfold.cuda.nvfp4.host_layout import entry_layout_a4
 
 
+@pytest.fixture(autouse=True)
+def cpu_authority_packing(monkeypatch):
+    """Keep these CPU authority controls independent of CUDA availability.
+
+    Exercise the real transfer/packing helper on CPU while checking the loader
+    requested CUDA. Maintained CUDA controls execute the actual device transfer.
+    """
+    from tensorfold.cuda.nvfp4 import host_experts
+
+    actual = host_experts._pack_authority_projection_a4
+
+    def on_cpu(codes, blocks, device):
+        assert torch.device(device).type == "cuda"
+        return actual(codes, blocks, "cpu")
+
+    monkeypatch.setattr(host_experts, "_pack_authority_projection_a4", on_cpu)
+
+
 class Cache:
     device = torch.device("cuda:0")
 

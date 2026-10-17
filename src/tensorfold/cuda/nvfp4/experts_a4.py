@@ -14,14 +14,14 @@ from .host_layout import authority_fields_a4
 
 
 def pack_projection_a4(weight, scale):
-    """CPU-only bit permutation into code words followed by E4M3 block scales.
+    """Device-local bit permutation into code words followed by E4M3 scales.
 
     No floating conversion is performed. Both output dimensions are multiples
     of64, so native tiles contain no absent/padded output rows.
     """
-    if (weight.device.type != "cpu" or scale.device.type != "cpu" or weight.dtype != torch.uint8
+    if (weight.device.type not in ("cpu", "cuda") or scale.device != weight.device or weight.dtype != torch.uint8
             or weight.ndim != 2 or scale.dtype != torch.float8_e4m3fn):
-        raise ValueError("native A4 packing requires CPU U8 codes and E4M3 scales")
+        raise ValueError("native A4 packing requires same-device CPU/CUDA U8 codes and E4M3 scales")
     n, k = weight.shape[0], weight.shape[1] * 2
     if n <= 0 or k <= 0 or n % 64 or k % 64 or tuple(scale.shape) != (n, k // 16):
         raise ValueError("native A4 projection dimensions/scales must form complete64-wide tiles")

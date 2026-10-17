@@ -43,14 +43,25 @@ def _draft_projection(reader, base, device):
     return (codes.float() * scale.float().reshape(-1, 1)).to(torch.bfloat16)
 
 
+def _original_projection(reader, base, device):
+    """Read original payload on the pack device; scalar conversion stays on CPU."""
+    w = _read(reader, base + ".weight", device=device)
+    s = _read(reader, base + ".weight_scale", device=device)
+    g = _read(reader, base + ".weight_scale_2")
+    if w.dtype != torch.uint8 or s.dtype != torch.float8_e4m3fn or g.numel() != 1:
+        raise ValueError(f"{base}: expected NVFP4 codes, e4m3 block scales and one global scale")
+    return w.unsqueeze(0), s.unsqueeze(0), g.float().reshape(1)
+
+
 def load_nvfp4_host_experts(reader, name, full, device="cuda", *, cache=None, owned_ids=None,
                            include_shared=True):
     """Read only owned routed experts, in compact local order, one expert at a time.
 
     Shared payload is deliberately outside this authority. ``include_shared``
     is accepted with the complete-bank API; its resident owner loads it there.
-    CPU packing only permutes original codes and block-scale bits. Draft-only
-    conversion runs on the same device and operations as the resident loader.
+    Packing permutes original codes and block-scale bits on the selected device;
+    synchronous CPU transfers finish before publishing each expert. Global scale
+    conversion stays on CPU. Draft-only conversion retains the resident math.
     """
     if type(include_shared) is not bool:
         raise ValueError("include_shared must be a bool")
@@ -108,12 +119,7 @@ def load_nvfp4_host_experts(reader, name, full, device="cuda", *, cache=None, ow
                         raise ValueError(f"{base}: FP8 routed experts are supported only in the MTP drafter")
                     triples.append(nvx.quantize(_draft_projection(reader, base, device).unsqueeze(0)))
                 else:
-                    w = _read(reader, base + ".weight")
-                    s = _read(reader, base + ".weight_scale")
-                    g = _read(reader, base + ".weight_scale_2")
-                    if w.dtype != torch.uint8 or s.dtype != torch.float8_e4m3fn or g.numel() != 1:
-                        raise ValueError(f"{base}: expected NVFP4 codes, e4m3 block scales and one global scale")
-                    triples.append((w.unsqueeze(0), s.unsqueeze(0), g.float().reshape(1)))
+                    triples.append(_original_projection(reader, base, device))
         packed = nvx.make(*triples)
         for target, source in ((up, packed.up), (down, packed.down), (us, packed.up_scale), (ds, packed.down_scale)):
             target[local].copy_(source[0].to("cpu"))
@@ -145,19 +151,32 @@ class CachedExperts4:
             yield nvx.Experts4(*payloads, self.width, self.dims, self.limit), mapping
 
 
+def _pack_authority_projection_a4(codes, blocks, device):
+    """Finish one GPU byte permutation and D2H before lending CPU authority.
+
+    Inputs are already validated CPU payloads. Blocking transfers preserve their
+    lifetimes; no device tensor escapes into the long-lived host authority.
+    """
+    from .experts_a4 import pack_projection_a4
+
+    return pack_projection_a4(codes.to(device), blocks.to(device)).to("cpu")
+
+
 def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_ids=None, layer_id=None,
                          swiglu):
     """Load CT routed native-A4 experts in owned local order, without shared reads.
 
     Header/declaration validation precedes authority allocation; each projection
-    reads its two scalar calibrations before code/scale payload. Packing one
-    projection at a time bounds CPU temporary storage by three projection blobs.
+    reads its two scalar calibrations before code/scale payload. Scale admission
+    stays on CPU; one projection's byte permutation runs on the selected GPU and
+    finishes its synchronous D2H before the next projection. The existing native
+    projection loading bound includes its raw, permuted and output byte planes.
     Resident loading releases CPU code/scale authority after synchronous device
     transfer. Serving retains no CPU calibration metadata for either residency.
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4
+    from .experts_a4 import CachedExpertsA4, ExpertsA4
     from .host_layout import authority_fields_a4, entry_layout_a4
 
     device = torch.device(device)
@@ -213,7 +232,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             codes = ctx.read(base + ".weight_packed", device="cpu")
             blocks = ctx.read(base + ".weight_scale", device="cpu")
             fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
-            packed = pack_projection_a4(codes, blocks)
+            packed = _pack_authority_projection_a4(codes, blocks, device)
             (fields[0][local, p] if p < 2 else fields[1][local]).copy_(packed)
             del codes, blocks, packed
     if cache is not None:

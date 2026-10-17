@@ -1,10 +1,11 @@
 """RAM-backed NVFP4 retains stored bytes, native slots and complete-model output."""
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 
 import pytest
 import torch
+from nvfp4_tiny import write
 
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda.expert_cache import HostExpertCache, entry_bytes_for
@@ -14,8 +15,6 @@ from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import load_moe_host
 from tensorfold.families.qwen4_exp.cuda.reader import _Reader
 from tensorfold.families.qwen4_exp.cuda.weights import load
-
-from nvfp4_tiny import write
 
 
 def _close(w):
@@ -35,6 +34,13 @@ def test_nvfp4_ram_layout_sizes_exact_payload_and_keeps_shared_resident(tmp_path
     transform = layout.transform(lambda *_: (99, 0))
     assert transform("model.layers.0.mlp.experts.0.gate_proj.weight", {}) == (0, 0)
     assert transform("model.layers.0.mlp.shared_expert.gate_proj.weight", {}) == (99, 0)
+
+
+def test_routed_gpu_packing_is_admitted_without_mtp(tmp_path):
+    model = write(tmp_path, hidden=512)
+    layout = ram_experts.layout(model, "auto", mtp=False)
+    assert layout.loading_device_bytes == layout.loading_bytes
+    assert layout.loading_device_bytes >= 128 * 128 * 512 + 8 * layout.entry_bytes
 
 
 @pytest.mark.parametrize("field,damage", [

@@ -177,6 +177,14 @@ expert stacks first and never dequantizes or requantizes them. A single fixed GP
 pool is shared across main and MTP layers. By default, two expert-sized pinned buffers stage
 cache misses and cold expert weights stay pageable. Explicit host registration uses direct uploads instead.
 
+ModelOpt NVFP4 routed experts read original packed codes and E4M3 scales on the
+selected CUDA device, permute their original bits there, then synchronously copy
+the result into CPU authority. Global-scale conversion stays on CPU and retains
+the existing arithmetic. Only one expert's raw payload and packing temporaries
+are live at a time; their loading allowance is charged even without an MTP
+bank. This does not quantize activations or change Flash Next's W4A16 math.
+Startup performance qualification of the CUDA packing change remains pending.
+
 For EXL3, CPU authority contains compact original trellis bytes without padding.
 Fixed GPU cells are sized for the largest gate/up/down bundle in the model. With
 numeric budgets or `--vram-experts auto`, final startup sizing can use smaller routed cells when all
