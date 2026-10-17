@@ -473,12 +473,23 @@ class Follower:
             if session._receive("ep/admitted") != b"ready":
                 raise RuntimeError("expert leader refused group admission")
             self.session._ensure_reader()
-            from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes, host_cgroup_bytes, host_stream_bytes
+            from tensorfold.cuda.capacity import (
+                available_bytes,
+                cuda_limit_bytes,
+                cuda_reserve_bytes,
+                host_cgroup_bytes,
+                host_stream_bytes,
+            )
             host_need = (session.layout.host_bytes + session.layout.staging_bytes
                          + session.layout.loading_bytes + session.layout.metadata_host_bytes)
             rooms = [room for room in (host_stream_bytes(), host_cgroup_bytes()) if room is not None]
             if rooms and host_need > min(rooms):
                 raise MemoryError("expert follower host authority/staging exceeds admitted host capacity")
+            if session.budget == "auto":
+                from ..ram_experts import AUTO_HEADROOM_BYTES
+
+                self.expert_headroom_bytes = cuda_reserve_bytes(int(session.torch.cuda.mem_get_info()[1]),
+                                                               default=AUTO_HEADROOM_BYTES)
             room = available_bytes(session.torch)
             limit = cuda_limit_bytes()
             if limit is not None:
@@ -504,9 +515,10 @@ class Follower:
         """Spend remaining absolute/device room while retaining bounded future expert workspace."""
         from tensorfold.cuda.capacity import cuda_limit_bytes
 
-        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes
+        from ..ram_experts import auto_pool_bytes
 
         session, torch = self.session, self.session.torch
+        headroom = self.expert_headroom_bytes
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         free, total = map(int, torch.cuda.mem_get_info())
@@ -514,15 +526,15 @@ class Follower:
         limit = cuda_limit_bytes()
         room = free if limit is None else max(0, min(free, limit - allocated))
         decision = auto_pool_bytes(room, session.cache.entry_bytes, session.cache.score_history_entries,
-                                   workspace_bytes=session.workspace_bytes)
+                                   workspace_bytes=session.workspace_bytes, headroom_bytes=headroom)
         session.cache.configure_before_use(decision["gpu_bytes"])
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         final_free, final_total = map(int, torch.cuda.mem_get_info())
         final_allocated = int(torch.cuda.memory_allocated())
         final_spare = int(torch.cuda.memory_reserved()) - final_allocated
-        future = AUTO_HEADROOM_BYTES + session.workspace_bytes
-        if (final_total != total or final_free < AUTO_HEADROOM_BYTES
+        future = headroom + session.workspace_bytes
+        if (final_total != total or final_free < headroom
                 or final_free + final_spare < future
                 or (limit is not None and final_allocated + future > limit)):
             raise MemoryError("automatic follower expert pool cannot retain its declared workspace")

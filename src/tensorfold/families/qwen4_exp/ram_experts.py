@@ -318,24 +318,26 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
 
 
 def auto_pool_bytes(available: int, entry_bytes: int, expert_count: int, *, control_bytes: int = 0,
-                    growth_bytes: int = 0, snapshot_bytes: int = 0, workspace_bytes: int = 0) -> dict:
+                    growth_bytes: int = 0, snapshot_bytes: int = 0, workspace_bytes: int = 0,
+                    headroom_bytes: int = AUTO_HEADROOM_BYTES) -> dict:
     """One startup allocation from actual remaining device bytes, before any lease.
 
     The caller has already allocated shared weights and every fixed decoder
     buffer. It supplies worst future full-context cache growth/copy overlap,
     retained/in-flight snapshots and unallocated prompt workspace separately.
     Packed weights and per-cell publication controls share the remainder; the
-    explicit 512-MiB headroom is additional to those model-owned allocations.
+    selected headroom (512 MiB by default) is additional to those model-owned allocations.
     """
-    values = (available, entry_bytes, expert_count, control_bytes, growth_bytes, snapshot_bytes, workspace_bytes)
+    values = (available, entry_bytes, expert_count, control_bytes, growth_bytes, snapshot_bytes, workspace_bytes,
+              headroom_bytes)
     if any(type(value) is not int or value < 0 for value in values) or not entry_bytes or not expert_count:
         raise ValueError("auto expert sizing requires nonnegative integer byte counts and positive geometry")
-    reserved = AUTO_HEADROOM_BYTES + growth_bytes + snapshot_bytes + workspace_bytes
+    reserved = headroom_bytes + growth_bytes + snapshot_bytes + workspace_bytes
     cells = min(expert_count, max(0, available - reserved) // (entry_bytes + control_bytes))
     if not cells:
         raise ValueError("CUDA remaining memory cannot fit one automatic expert cell after full service workspace")
     return {"policy": "remaining-device-bytes-after-fixed-service-state-v1", "available_bytes": available,
-            "headroom_bytes": AUTO_HEADROOM_BYTES, "full_context_growth_and_copy_bytes": growth_bytes,
+            "headroom_bytes": headroom_bytes, "full_context_growth_and_copy_bytes": growth_bytes,
             "snapshot_bytes": snapshot_bytes, "unallocated_workspace_bytes": workspace_bytes,
             "reserved_bytes": reserved, "entry_bytes": entry_bytes, "control_bytes_per_cell": control_bytes,
             "logical_expert_count": expert_count, "slots": cells, "gpu_bytes": cells * entry_bytes,

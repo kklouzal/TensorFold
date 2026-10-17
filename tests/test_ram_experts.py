@@ -436,3 +436,23 @@ def test_ram_expert_sidecar_cannot_escape_the_checkpoint_boundary(tmp_path):
     (model / "hf_quant_config.json").symlink_to(foreign)
     with pytest.raises(ValueError, match="authorized roots"):
         ram_experts.check(model, "auto")
+
+
+@pytest.mark.parametrize("headroom", [0, 512 * 2**20])
+def test_auto_pool_charges_selected_margin_and_every_required_allocation(headroom):
+    entry, control = 1024, 32
+    growth, snapshots, workspace = 4096, 2048, 8192
+    available = headroom + growth + snapshots + workspace + 3 * (entry + control) + 17
+    result = ram_experts.auto_pool_bytes(available, entry, 100, control_bytes=control,
+        growth_bytes=growth, snapshot_bytes=snapshots, workspace_bytes=workspace, headroom_bytes=headroom)
+    assert result["slots"] == 3 and result["gpu_bytes"] == 3 * entry
+    assert result["headroom_bytes"] == headroom
+    assert result["reserved_bytes"] == headroom + growth + snapshots + workspace
+    assert result["unused_after_reservations_bytes"] == 17
+    assert result["gpu_bytes"] + result["control_device_bytes"] + result["reserved_bytes"] + 17 == available
+
+
+@pytest.mark.parametrize("headroom", [True, -1, 0.5, float("nan"), "0"])
+def test_auto_pool_rejects_invalid_explicit_headroom(headroom):
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        ram_experts.auto_pool_bytes(2**30, 1024, 100, headroom_bytes=headroom)
