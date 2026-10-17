@@ -79,6 +79,8 @@ def _session_owner(comm, *, store=None):
     session.comm, session.reader = comm, None
     session.cache = SimpleNamespace(close=lambda: None)
     session.source_files = []
+    session.banks, session.nv_workspace = {}, {}
+    session.packed_cache = None
     session.store = store or SimpleNamespace(set=lambda *args: None)
     return session
 
@@ -104,11 +106,21 @@ def test_unresolved_native_abort_retains_cache_and_source_for_retry():
     session = _session_owner(SimpleNamespace(close=retire))
     session.cache = SimpleNamespace(close=lambda: payloads.append("cache"))
     session.source_files = [SimpleNamespace(close=lambda: payloads.append("source"))]
+    bank, workspace, wire, packed = object(), object(), object(), object()
+    session.banks["bank"], session.nv_workspace["scratch"] = bank, workspace
+    session.packed_cache = packed
+    for name in ("x", "pick", "output", "peer", "low"):
+        setattr(session, name, wire)
     with pytest.raises(RuntimeError, match="native abort unresolved"):
         session.close(abort=True)
     assert session.closed and not session.retired and payloads == []
+    assert session.banks["bank"] is bank and session.nv_workspace["scratch"] is workspace
+    assert session.packed_cache is packed
+    assert all(getattr(session, name) is wire for name in ("x", "pick", "output", "peer", "low"))
     session.close()
     assert session.retired and payloads == ["cache", "source"]
+    assert not session.banks and not session.nv_workspace and session.packed_cache is None
+    assert all(not hasattr(session, name) for name in ("x", "pick", "output", "peer", "low"))
     assert attempts == [{"abort": True}, {"abort": True}]
 
 

@@ -115,3 +115,97 @@ def test_native_world1_session_loads_unsharded_banks_runs_and_retires(tmp_path):
         reader.close()
         session.close()
     assert session.retired and session.store is None and not session.source_files
+
+
+def test_native_world1_model_preserves_serial_mtp_and_concurrent_replies(tmp_path):
+    """Actual model/Session integration on one GPU; multi-GPU hardware qualification remains separate."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from test_flashnext_tp import _checkpoint
+
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.cuda.expert_parallel import Session
+
+    _checkpoint(tmp_path)
+    native = FlashNextEngine(tmp_path, depth=2, confidence=0., max_len=128, prefetch=False, graphs=False,
+                             draft_vocab=None)
+    session = Session(tmp_path, ranks=1, shards=None, rank=0, master="127.0.0.1", port=0,
+                      budget=.001, mtp=True)
+    engine = None
+    sampling = Sampling(seed=977, top_k=20, top_p=.95)
+    def generate(model, prompt, draft):
+        out = []
+        model.generate(prompt, 8, sampling, lambda ids: out.extend(ids), draft=draft, stop_eos=False)
+        return out
+    prompts = [[5, 17, 99, 250, 7, 64, 30, 11], [12, 45, 250, 27, 19, 300, 34]]
+    try:
+        expected = [generate(native, p, False) for p in prompts]
+        engine = FlashNextEngine(tmp_path, depth=2, confidence=0., max_len=128, prefetch=False, graphs=False,
+                                  streams=2, draft_vocab=None, vram_experts=.001, expert_session=session)
+        for prompt, reply in zip(prompts, expected):
+            assert generate(engine, prompt, False) == reply
+            assert generate(engine, prompt, True) == reply
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            futures = [workers.submit(generate, engine, prompt, True) for prompt in prompts]
+            assert [future.result() for future in futures] == expected
+    finally:
+        if engine is not None:
+            engine.close()
+        session.close()
+        native.close()
+
+
+def test_native_world1_nvfp4_close_releases_banks_workspace_and_wire_storage(tmp_path):
+    """Keep the closed Session alive while its actual native model storage retires."""
+    import gc
+    import weakref
+
+    from nvfp4_tiny import write
+
+    from tensorfold.families.qwen4_exp.cuda.expert_parallel import Session
+
+    model = write(tmp_path, hidden=512, shared_width=128)
+    session = Session(model, ranks=1, shards=None, rank=0, master="127.0.0.1", port=0,
+                      budget=.001, mtp=True)
+    def payload_ownership():
+        groups = {"wire": [getattr(session, name) for name in ("x", "pick", "output", "peer", "low")],
+                  "pool": [session.cache._pool], "workspace": [], "shared": []}
+        for plan, act in session.nv_workspace.values():
+            groups["workspace"].extend((plan.members, plan.items, plan.counts, plan.rank, plan.hist, act))
+        for bank in session.banks.values():
+            for projection in (bank.shared.gu, bank.shared.down):
+                groups["shared"].extend(value for value in vars(projection).values()
+                                        if isinstance(value, torch.Tensor))
+        storage = {tensor.untyped_storage().data_ptr(): tensor.untyped_storage().nbytes()
+                   for values in groups.values() for tensor in values}
+        return {name: [weakref.ref(tensor) for tensor in values] for name, values in groups.items()}, sum(storage.values())
+    try:
+        banks = [session.load_bank(None, f"model.layers.{i}.mlp", "", session.cfg, "modelopt")
+                 for i in range(session.cfg.layers)]
+        banks.append(session.load_bank(None, "mtp.layers.0.mlp", "", session.cfg, "modelopt"))
+        session.finish_loading()
+        x = torch.ones((1, session.dims), dtype=torch.bfloat16, device="cuda")
+        picks = torch.tensor([list(range(session.slots - 1)) + [session.cfg.experts]],
+                             dtype=torch.int32, device="cuda")
+        for prefill, distributed in ((False, banks[0]), (True, banks[-1])):
+            out = torch.empty((1, session.slots, session.dims),
+                              dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
+            session.run(distributed, x, picks, out, prefill=prefill)
+        references, owned_bytes = payload_ownership()
+        assert all(references.values()) and owned_bytes > 0 and len(session.nv_workspace) == 1
+        # Only the session owns these payloads now; weak tensor references plus
+        # the allocator balance also detect storage retained through another view.
+        del banks, distributed, x, picks, out
+        gc.collect()
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_allocated()
+        session.close()
+        gc.collect()
+        torch.cuda.synchronize()
+        assert session.retired and session.store is None and not session.banks and not session.nv_workspace
+        assert all(not hasattr(session, name) for name in ("x", "pick", "output", "peer", "low"))
+        assert all(reference() is None for values in references.values() for reference in values)
+        assert before - torch.cuda.memory_allocated() >= owned_bytes
+    finally:
+        session.close(abort=True)
