@@ -47,7 +47,7 @@ def test_accepted_parallel_calls_retire_before_expert_authority(monkeypatch):
     def caller(marker):
         try:
             results.append(engine.generate(marker, 2, None, lambda _: None))
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001 -- The parent assertion must observe every worker failure.
             errors.append(error)
 
     calls = [threading.Thread(target=caller, args=(i,)) for i in (1, 2)]

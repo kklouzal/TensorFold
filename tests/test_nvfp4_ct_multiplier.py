@@ -6,7 +6,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from tensorfold.cuda.nvfp4 import checkpoint as ck  # noqa: E402
+from tensorfold.cuda.nvfp4 import checkpoint as ck
 
 
 def test_explicit_multiplier_avoids_reciprocal_reconstruction(monkeypatch):

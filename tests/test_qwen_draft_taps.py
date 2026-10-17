@@ -7,8 +7,8 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from tensorfold.cuda import moe  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.weights import Weights  # noqa: E402
+from tensorfold.cuda import moe
+from tensorfold.families.qwen3_5.cuda.weights import Weights
 
 
 def _weights(layers=64, **kwargs):

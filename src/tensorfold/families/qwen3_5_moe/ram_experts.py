@@ -1,13 +1,13 @@
 """Header-only Qwen MoE CT NVFP4 authority and transactional pool admission."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
-from pathlib import Path
 import sys
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
-from tensorfold.cuda.capacity import Geometry, SIZES, config, headers
+from tensorfold.cuda.capacity import SIZES, Geometry, config, headers
 from tensorfold.cuda.geometry import gdn_geometry, layer_counts, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4, bank_bases_a4, routed_tensor_a4
 
@@ -305,7 +305,8 @@ def plan_pool(plan: Layout, *, raw_free_bytes: int, existing_pool_bytes: int,
     if existing_pool_bytes % plan.entry_bytes or existing_pool_bytes > plan.expert_count * plan.entry_bytes:
         raise ValueError("existing expert pool must contain whole supported expert cells")
     if not callable(allocation_size):
-        raise ValueError("pool sizing requires a proved allocator storage bound")
+        # An unsupported preparation policy is a pool-admission value error.
+        raise ValueError("pool sizing requires a proved allocator storage bound")  # noqa: TRY004
     target = max(future_target_workspace_bytes, plan.runtime_workspace_bytes)
     reserved = future_kv_bytes + future_snapshot_bytes + target + future_draft_workspace_bytes + device_reserve_bytes
     room = raw_free_bytes - reserved

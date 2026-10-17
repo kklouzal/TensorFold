@@ -5,7 +5,6 @@ Payload loading, device operations and owned native allocations are stand-ins;
 these controls do not qualify model arithmetic, CUDA allocation or native pins.
 """
 # Optional CUDA dependencies must be detected before importing backend modules.
-# ruff: noqa: E402
 import json
 import math
 import struct
@@ -69,7 +68,7 @@ def startup(tmp_path, monkeypatch):
                    ("model.language_model.norm.weight", "BF16", (4096,)),
                    ("lm_head.weight", "BF16", (32, 4096))))
     _checkpoint(target, {"text_config": text}, fields)
-    tokenizer = Tokenizer(models.WordLevel({"unknown": 0, "stop": 1}, unk_token="unknown"))  # noqa: S106 - vocabulary label
+    tokenizer = Tokenizer(models.WordLevel({"unknown": 0, "stop": 1}, unk_token="unknown"))
     tokenizer.save(str(target / "tokenizer.json"))
     (target / "tokenizer_config.json").write_text(json.dumps({
         "chat_template": "{% for m in messages %}{{ m.content }}{% endfor %}", "eos_token": "stop"}))
