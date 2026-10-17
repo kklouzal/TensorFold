@@ -2,8 +2,9 @@
 one-layer synthetic DFlash2 drafter: drafted replies equal serial ones for every policy, including the default that
 picks the drafter per round, and a prompt resumed from a kept state gives the reply a fresh prefill gives.
 
-One GPU plays rank 0 of two: its all-gathers hand back two copies of its own partials, a stand-in with real shapes
-and fixed bits (the numbers are not the two-rank model's, the equalities are the engine's)."""
+One GPU plays rank 0 of two: its all-gathers hand back two copies of its own partials, with sampling's vocabulary
+IDs rebased for the second shard. This is a stand-in with real shapes and fixed bits (the numbers are not the
+actual two-rank model's, the equalities are the engine's)."""
 
 from __future__ import annotations
 
@@ -196,7 +197,7 @@ def _drafter(path) -> None:
 
 
 class _TwoCopies:
-    """Rank 0 of two on one GPU: every all-gather returns this rank's input twice."""
+    """Rank 0's partials duplicated on one GPU; typed sampling packets use ``_SamplingGather`` below."""
 
     rank, world = 0, 2
 
@@ -211,6 +212,105 @@ class _TwoCopies:
 
     def ready(self, label: str, **kwargs) -> None:
         pass                                  # the other rank is this one
+
+
+class _SamplingGather:
+    """The duplicate-partial fixture's explicit sampling-wire adapter; no production check is replaced.
+
+    The real codec transports int64 packets as flat float32 words, losing packet shape at the communicator boundary.
+    The scoped fixture below supplies that shape around the unchanged codec. Scores, norms, status and fixed-point
+    masses remain bit-identical; only the synthetic peer's contiguous global vocabulary IDs change.
+    """
+
+    def __init__(self, gather):
+        self.gather = gather
+        self.packet = None
+
+    def __call__(self, words):
+        packet = self.packet
+        assert packet is not None and packet.dtype == torch.int64
+        both = self.gather(words)
+        peer = both[1].view(torch.int64).reshape(packet.shape)
+        width = V // 2
+        if packet.ndim == 1:
+            assert packet.shape == (4,), "the fixture models contiguous, equally sized vocabulary shards"
+            peer[3].add_(peer[0])                 # same width, peer offset follows rank zero's shard
+        else:
+            assert packet.ndim == 2
+            columns = packet.shape[1]
+            if columns == 3:
+                # Nucleus header: (FP64 max bits, width, status). Greedy packet: (FP32 bits, global ID, status).
+                # The fixture's local IDs are below width, so this distinction is construction-guaranteed.
+                peer[:, 1] = torch.where(peer[:, 1] == width, peer[:, 1], peer[:, 1] + width)
+                return both
+            if columns >= 3 * width + 2:         # nucleus shares: value, ID, mass, total mass, shard width
+                assert (columns - 2) % 3 == 0
+                count = (columns - 2) // 3
+            else:                               # top-k: value, ID, optional norm, status
+                count = (columns - 1) // 2
+            ids = peer[:, count:2 * count]
+            ids.copy_(torch.where(ids >= 0, ids + width, ids))  # retain -1 padding exactly
+        return both
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _sampling_contract():
+    """Supply typed mock-role metadata around the real sampler codec for this module's two-copy communicator."""
+
+    from tensorfold.cuda import sampling
+    from tensorfold.families.glm5_next.cuda import decode
+
+    original_codec, original_gather = sampling._stacked, decode.comm_gather
+
+    def gather(comm):
+        raw = original_gather(comm)
+        return _SamplingGather(raw) if isinstance(comm, _TwoCopies) else raw
+
+    def stacked(gather, packet):
+        if not isinstance(gather, _SamplingGather):
+            return original_codec(gather, packet)
+        assert gather.packet is None, "the fixture's sampling operation is not reentrant"
+        gather.packet = packet
+        try:
+            return original_codec(gather, packet)
+        finally:
+            gather.packet = None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(decode, "comm_gather", gather)
+        patch.setattr(sampling, "_stacked", stacked)
+        yield
+
+
+def test_two_copy_sampling_transport_keeps_disjoint_ids_and_serial_samples():
+    """A full-vocabulary one-rank oracle and the fixture's two equal score shards make identical keyed choices."""
+
+    from tensorfold.cuda.sampling import ShardSampler, comm_gather, one_rank, sample_shards
+    from tensorfold.families.glm5_next.cuda import decode
+
+    comm = _TwoCopies()
+    with pytest.raises(ValueError, match="distinct global token IDs"):
+        ShardSampler(V // 2, "cuda", gather=comm_gather(comm), world=2)
+    gather = decode.comm_gather(comm)
+    plan = ShardSampler(V // 2, "cuda", gather=gather, world=2, native_greedy=False)
+    whole = ShardSampler(V, "cuda", gather=one_rank, world=1, native_greedy=False)
+    logits = torch.randn((3, V // 2), generator=torch.Generator(device="cuda").manual_seed(514), device="cuda")
+    for sampling in (None, Sampling(19, 1.0, 20, 0.95), Sampling(23, 0.8, 0, 0.9, 0.02)):
+        got = sample_shards(logits, [10, 11, 12], sampling, plan=plan)
+        expected = sample_shards(torch.cat([logits, logits], dim=1), [10, 11, 12], sampling, plan=whole)
+        assert got == expected
+
+    from tensorfold.cuda import sampling as packets
+
+    for packet, expected in (
+        ([[0x3F800000, 0x40000000, 1, -1, 2]], [[0x3F800000, 0x40000000, 513, -1, 2]]),
+        ([[0x3F800000, 3, 2]], [[0x3F800000, 515, 2]]),
+        ([[0x4000000000000000, V // 2, 0]], [[0x4000000000000000, V // 2, 0]]),
+    ):
+        sent = torch.tensor(packet, dtype=torch.int64, device="cuda")
+        got = packets._stacked(gather, sent)
+        assert torch.equal(got[0], sent)
+        assert torch.equal(got[1], sent.new_tensor(expected))
 
 
 @pytest.fixture(scope="module")
