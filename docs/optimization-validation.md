@@ -18,6 +18,34 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## CUDA failure remediation, 2026-10-17
+
+The remediation follows source `0240cefea90fcd83a593384259b7346875e3603c` and preserves the previous
+41 failing and 45 error IDs and their logs. Focused checks identify separate causes: Qwen MoE's missing
+private-cache arena origin; compiler-dependent Triton/native operation order; a one-ULP defect in the Torch
+PLE sum comparator; generic weighted BF16 expert mode differing from GLM's declared combine; stale GLM
+vocabulary/token-type fixtures; and an obsolete FileBaton expectation under pinned Torch advisory locks.
+No production validator, numerical tolerance, exact-token assertion or optional-check prerequisite is weakened.
+
+At this checkpoint the original failing groups pass their focused checks: Qwen 10, QMM/distributed 83,
+GLM EXL3 75, attention/PLE 47 plus final attention 54, and native build 2 with 27 CPU build controls.
+These counts overlap and identify different frozen sources; they are not a summed final-image suite.
+The combined source also passes all 54 restored GLM tests after both fixture repairs. Final immutable
+installed-source and whole-CUDA qualification, process-cleanup followup and their exact identities are
+recorded after the source freeze. Raw development evidence is retained in
+`/home/kklouzal/tensorfold-remediate-20261017`; the preceding qualification packet remains unchanged.
+
+The numerical correction preserves selected native CUDA arithmetic. Legacy Triton/untiled results can
+change where implicit contraction differed. GLM's current model forward already used its family combine;
+the corrected generic weighted BF16 API now honors the same rounding. Default Flash Next FP32 expert
+arithmetic remains unchanged. The PLE production implementation was correct for the independently checked
+fixtures; its old Torch sum oracle was off by one ULP. See [contracts](cuda-kernel-contracts.md).
+
+Component EXL3 timings retain exact outputs but do not qualify model-wide throughput or equivalence.
+Existing API/statistics readout-performance limitations below remain separate; this remediation makes no
+new overall monitoring-overhead claim. Apple, real two-GPU execution and fresh GB10 qualification remain
+outside the owner-selected local-host run.
+
 ## API/statistics and strict tools: local qualification, 2026-10-17
 
 Runtime source `2dd77a9a794a9d2349c43adf487b12f21a0a5d0f` integrates the interrupted cleanup,

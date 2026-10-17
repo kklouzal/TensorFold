@@ -73,6 +73,11 @@ The chat template thinks by default, as on vLLM: replies reason in `reasoning_co
 
 ## CUDA execution
 
+Private copies of a retained MTP attention cache keep its model-owned arena origin as well as its
+committed rows and position. The copied K/V buffers remain private. Resumed and concurrent requests
+must complete without contained stream errors and retain the fresh serial token sequence.
+
+
 The CUDA figures below are retained upstream historical measurements at the source above, not a new
 qualification of this fork or its pinned deployment environment.
 

@@ -84,6 +84,35 @@ An empty chain returns empty outputs and leaves the final state untouched. Its
 prefill recurrence and verify recurrence retain their distinct rounding orders;
 each recurrence remains invariant to its supported chunking or tree grouping.
 
+## Affine accumulation and prompt attention
+
+CUDA's four-bit lane epilogue adds each group's dot product and affine bias correction as
+`acc = fma_rn(group_sum, bias, fma_rn(dot, scale, acc))` in FP32. Groups and split-K partials
+retain their specified order. The stored-layout Triton lane and row-parallel partial use the same explicit
+FMA chain as the packed native kernels. Implicit `acc + dot * scale + group_sum * bias` is insufficient:
+a compiler may round each product separately. This correction can change the older Triton/untiled results;
+it preserves the selected native CUDA order and promises no cross-backend Metal bit identity.
+
+Prompt attention uses absolute 64-key partitions and the native online-softmax denominator recurrence
+`l = fma_rn(l, alpha, tile_sum)`. The Triton path explicitly follows that recurrence. Its Q/K/V/output
+head-row offsets widen to int64 before multiplying row, head and dimension strides. Positions still obey
+the signed-int kernel range, including the last padded query block; the adapter rejects out-of-range
+metadata before narrowing. Numerical comparisons retain bit identity and independent cancellation checks.
+
+Queries and caches are contiguous BF16 on one CUDA device, with positive head counts and HK dividing H.
+Native dimensions 128/256 require query alignment of 4/16 bytes, cache alignment of 16 bytes and output
+alignment of 4 bytes. Triton's dimension-64 path keeps its naturally aligned views. Explicit output is
+disjoint from queries and each cache's filled `[0, p0 + W)` prefix; an unfilled tail may hold output.
+The head grid must fit the selected device. Empty query windows return empty output without a launch.
+
+Flash Next's precomputed n-gram group sums must agree with the consuming group-sum kernel for the stored
+BF16 rows. Test fixtures use independent exact arithmetic to distinguish a faulty reduction comparator
+from a production-kernel defect; a generic PyTorch reduction tree does not define those bits by itself.
+
+GLM's BF16 expert mode rounds each weighted FP32 slot product before adding it in slot order. The
+shared weighted expert path chooses that native specialization before launch. FP32 expert mode retains
+its existing FMA chain; a device loop does not switch between the two policies.
+
 ## QMM buffers and aliases
 
 Row-strided x, scales and biases remain supported where the native kernel
