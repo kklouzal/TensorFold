@@ -413,8 +413,26 @@ class HostExpertCache:
             self._policy.register(layer_id, count)
             self._layers = layers
             self._fields = fields
+            # Retain the unchanged staged HOT path when every registered source
+            # is pageable. Resolve direct/mixed capability once at registration.
+            if any(pinned):
+                self._copy = self._copy_capable
 
     def _copy(self, layer: _Layer, expert: int, slot: int, stream) -> int:
+        staging = self._next_stage
+        self._next_stage = (staging + 1) % self.staging_slots
+        event = self._stage_events[staging]
+        if self._stage_pending[staging] and not event.query():
+            event.synchronize()  # CPU must not overwrite an in-flight pinned H2D source
+        for source, target, field in zip(layer.source, layer.views, layer.fields):
+            pinned = self._staging[staging].narrow(0, field.offset, field.size).view(field.dtype).view(field.shape)
+            pinned.copy_(source[expert])
+            target[slot].copy_(pinned, non_blocking=True)
+        event.record(stream)
+        self._stage_pending[staging] = True
+        return sum(field.size for field in layer.fields)
+
+    def _copy_capable(self, layer: _Layer, expert: int, slot: int, stream) -> int:
         if layer.staging_required:
             staging = self._next_stage
             self._next_stage = (staging + 1) % self.staging_slots
