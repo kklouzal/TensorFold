@@ -447,14 +447,12 @@ class _Schema:
 
         local = _Schema(node, where)
         source = json.dumps(node, ensure_ascii=False, separators=(",", ":"))
-        marker = "__tensorfold_constraint__"
-        while marker in source:
-            marker += "_"
+        marker = _namespace(source, "__tensorfold_constraint_")
         replacements: list[tuple[str, str]] = []
 
         def convert(current: dict[str, Any]) -> dict[str, Any]:
             special = None
-            if current.get("uniqueItems") is True:
+            if current.get("uniqueItems") is True and "array" in _own_types(current):
                 item = current.get("items")
                 seen = set()
                 while isinstance(item, dict) and "$ref" in item and id(item) not in seen:
@@ -501,19 +499,22 @@ class _Schema:
             from tensorfold.engine.grammar import _message
 
             raise _refuse(where, f"the grammar cannot be enforced: {_message(exc)}") from None
+        prefix = _namespace(text, "tf_helpers_")
         for i, (word, replacement) in enumerate(replacements):
             # EBNF identifiers are lexical tokens; rewrite only them, never a terminal or a character class.
             rules = {}
             for line in replacement.splitlines():
                 name, body = line.split(" ::= ", 1)
                 rules[name] = body
-            rename = {name: f"tf_{i}_{name}" for name in rules}
+            rename = {name: f"{prefix}{i}_{name}" for name in rules}
             token = re.compile(r'"(?:[^"\\]|\\.)*"|\[(?:[^\]\\]|\\.)*\]|[A-Za-z_][A-Za-z_0-9]*')
             lines = [rename[name] + " ::= " + token.sub(lambda m: rename.get(m[0], m[0]), body)
                      for name, body in rules.items()]
             literal = json.dumps(json.dumps(word, ensure_ascii=False), ensure_ascii=False)
             if literal not in text:
-                raise RuntimeError("xgrammar's JSON schema EBNF did not retain a constraint marker")
+                # The copied tool root can contain unreferenced schemas. The native converter emits only reachable
+                # definitions; a marker it never emits needs neither substitution nor retained helper rules.
+                continue
             text = text.replace(literal, rename["root"])
             text += "\n" + "\n".join(lines)
         return {"type": "grammar", "grammar": text}
@@ -593,6 +594,16 @@ def _unescape(part: str) -> str:
     """A JSON pointer segment's text (RFC 6901)."""
 
     return part.replace("~1", "/").replace("~0", "~")
+
+
+def _namespace(text: str, prefix: str) -> str:
+    """A numbered prefix absent from ``text``, found in linear input work without incrementally rescanning it."""
+
+    used = set(re.findall(re.escape(prefix) + r"([0-9]+)_", text))
+    number = 0
+    while str(number) in used:
+        number += 1
+    return f"{prefix}{number}_"
 
 
 def _canonical(value: Any) -> str:
