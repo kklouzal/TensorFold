@@ -157,11 +157,16 @@ class CapacityBoundary(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another rank"):
             capacity.headers(self.root, rank=1)
 
-    def test_config_selection_keeps_valid_existing_precedence(self):
+    def test_config_selection_keeps_text_shape_and_reconciles_quantization(self):
         p = self.root / "config.json"
         p.write_text(json.dumps({"hidden_size": 9, "text_config": {"hidden_size": 4},
+                                "quantization": {"bits": 4}, "quantization_config": {"bits": 4}}))
+        self.assertEqual(capacity.config(self.root),
+                         {"hidden_size": 4, "_quantization": {"bits": 4, "quant_method": "mlx"}})
+        p.write_text(json.dumps({"hidden_size": 9, "text_config": {"hidden_size": 4},
                                 "quantization": {"bits": 4}, "quantization_config": {"bits": 8}}))
-        self.assertEqual(capacity.config(self.root), {"hidden_size": 4, "_quantization": {"bits": 4}})
+        with self.assertRaisesRegex(ValueError, "conflicting checkpoint quantization"):
+            capacity.config(self.root)
         p.write_text(json.dumps({"hidden_size": 9, "text_config": None}))
         self.assertEqual(capacity.config(self.root)["hidden_size"], 9)
 

@@ -236,6 +236,17 @@ CUDA context and workspace memory the estimate does not count. `TENSORFOLD_MEMOR
 (at least 2 GiB), and `TENSORFOLD_CUDA_MEMORY_LIMIT_GB` caps the grant from above in GiB, an absolute budget like
 the MLX one. A floor close to the smallest can end requests with CUDA errors mid-reply
 (`PYTORCH_CUDA_ALLOC_CONF` `=` `expandable_segments:True` reduces fragmentation near the cap).
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB` separately sets the discrete GPU reserve,
+accepting finite values from zero to the device's size. It overrides the global
+reserve for discrete CUDA admission and the automatic expert cache's usual
+512 MiB margin, without subtracting it twice. Unset retains existing defaults.
+For a dedicated host with an 8 GiB RAM reserve and all available VRAM, set
+`TENSORFOLD_MEMORY_RESERVE_GIB=8` and `TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0`,
+leave absolute memory-cap variables unset, and launch without container CPU/RAM
+caps. Mandatory allocations and future KV/workspace reservations still apply.
+Host admission observes available RAM at its boundary; it cannot reserve that
+headroom against other processes. The local qualification additionally monitors
+`MemAvailable` and stops its owned validation server if it falls below 8 GiB.
 Unified-memory GPUs share physical RAM with host buffers and file-backed model data. Admission uses the
 host's available memory, reclaimable page cache included, less a floor of a tenth of RAM (at least 4 GiB) that
 `TENSORFOLD_MEMORY_RESERVE_GIB` can move, and considers mapped-table residency when sizing an automatic

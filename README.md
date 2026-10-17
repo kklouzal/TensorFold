@@ -359,6 +359,14 @@ Attention, routing and required non-expert weights stay on the GPU. Each slot's 
 
 The cache capacity is fixed for the engine's lifetime. Restart after changing context, slot count or its budget. `auto` does not promise every reported VRAM byte becomes cache; mandatory allocations and headroom remain. The weights are shared across slots, but slot state is not, so more slots can reduce cache capacity. Host expert authority must fit the host budget alongside mapped n-gram pages, preparation, transfers and the rest of the process.
 
+For a dedicated discrete-GPU host, `TENSORFOLD_MEMORY_RESERVE_GIB=8` and
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0` keep an 8 GiB host admission reserve and
+remove the optional GPU reserve, including the automatic expert pool's 512 MiB
+margin. Required weights, KV, scratch and future workspace still count. Leave
+absolute memory caps unset and remove container CPU/RAM caps when granting the
+whole host. This setting does not lower a unified-memory host's RAM reserve.
+See [memory budgeting](docs/recipes/cuda.md#requests-and-memory).
+
 The single-GPU path supports affine4/group-32, EXL3 and ModelOpt NVFP4 checkpoints on supported CUDA hardware. Same-host expert ranks additionally partition affine4/NVFP4 routed experts across distinct GPUs; EXL3 remains single-GPU. Tensor parallelism, MLX and other families still refuse `--vram-experts`. `auto` requires separate VRAM; unified-memory systems use a numeric budget when appropriate. `--ssd-experts` remains the separate MLX option.
 
 `--vram-experts-pin` defaults to `off` until representative end-to-end selection supports a different default. Opted-in registration must admit the complete authority backing plus future loading/staging requirements; source bytes stay owned until copies and consumers retire. NVFP4 offload retains Flash Next's existing W4A16 grouped arithmetic, including on SM120. The optional [packed affine cache](docs/packed-expert-cache.md) needs both `TENSORFOLD_PACKED_EXPERT_CACHE` and an explicit positive `TENSORFOLD_PACKED_EXPERT_CACHE_BYTES` disk quota; it is disabled by default. Source/integrity checks still precede a warm hit. See [desktop contracts](docs/desktop-report-remediation.md) for reduced KV capacity, expert topology, resources and verification limits.

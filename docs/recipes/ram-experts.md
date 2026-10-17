@@ -43,9 +43,17 @@ budgeted future state and workspace. It sizes the pool once before the first
 expert lease; it does not compete with requests for memory at runtime. Unified
 memory devices retain the existing numeric-budget behavior and reject `auto`.
 
+On a dedicated discrete-GPU host, explicitly setting
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0` removes that optional margin. Positive
+values replace it with the specified GiB reserve. The selected value is captured
+once and shared by pool planning, final admission and the runtime memory gate,
+including expert followers. Required future KV, snapshots and workspace remain
+reserved. `TENSORFOLD_MEMORY_RESERVE_GIB=8` independently retains 8 GiB of host
+admission headroom; the discrete-only override never lowers unified RAM reserves.
+
 An explicit `TENSORFOLD_CUDA_MEMORY_LIMIT_GB` is an absolute allocation cap:
 automatic sizing subtracts existing allocations and retains its future workspace
-and 512 MiB margin within that cap as well as physical free memory.
+and selected margin within that cap as well as physical free memory.
 `--kv-full-windows N` can reserve fewer full windows than concurrent slots with
 `--vram-experts auto`; the slots then share an enforced growth budget. Requests
 can wait or fail explicitly under pressure. Omit it to retain every slot's full

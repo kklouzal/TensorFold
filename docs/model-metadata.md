@@ -9,7 +9,8 @@ errors, rather than permission to reinterpret weights.
 
 | Setting | Automatic input | Explicit override |
 | --- | --- | --- |
-| Quantized weights and activations | Model/text quantization blocks and recognized ModelOpt `hf_quant_config.json`, including per-layer schemes and excluded projections; actual tensor types, shapes and scales are checked | CUDA `--precision full` requests BF16 activations against the stored weights; `--precision checkpoint` retains declared supported activation math |
+| Quantized weights | Model/text quantization blocks and recognized ModelOpt `hf_quant_config.json`, including per-layer schemes and excluded projections; actual storage must match the selected family reader | Choose a checkpoint in a supported format; flags do not reinterpret its stored bytes |
+| Dense Qwen CUDA NVFP4 activations | Per-projection declared activation schemes, validated storage/scales and actual GPU capabilities | `--precision full` requests BF16 activations against stored weights; `--precision checkpoint` selects declared supported math |
 | Reply EOS | Model, generation and tokenizer EOS declarations, deduplicated in stable order | Repeat `--eos-token-id ID` to replace reply EOS IDs |
 | Chat formatting | Checkpoint Jinja or tokenizer-config template, including named `default`/`tool_use` templates | `--chat-template FILE` or `--chat-template-name NAME` |
 | Sampling | `generation_config.json`: `do_sample`, `temperature`, `top_k`, `top_p`, `min_p` | Corresponding launch flags, then request fields |
@@ -25,7 +26,7 @@ EXL3 sidecars; they do not execute model code. With `HF_HUB_OFFLINE=1`, only fil
 already present can be used. Finish downloading a snapshot before taking it offline.
 Local directories are used as supplied, without remote lookups.
 
-A declared config/text quantization block takes precedence over legacy EXL3
+A nonempty declared config/text quantization block takes precedence over legacy EXL3
 inventory sidecars. With no declaration, explicit quantization-method sidecars
 are detected before capability checks; an unsupported method is refused early.
 Unneeded EXL3 tensor inventories are not repeatedly parsed or copied into the
@@ -39,9 +40,9 @@ algorithms are not automatically implemented by reading their configuration.
 Inherited `max_new_tokens` must be a positive integer. Explicit nonpositive
 `--max-tokens` values retain the existing request-owner minimum of one reply token.
 
-Quantization module selectors support literal names, `*`/`?` globs and a bounded
+Quantization targets support literal module names, the `Linear` class and a bounded
 `re:` subset: literals, escaped punctuation, `.` and `.*`, with optional `^`/`$`
-anchors. Other regular-expression operators are refused during preparation.
+anchors. Exclusions also support `*`/`?` globs. Other regular-expression operators are refused during preparation.
 Checkpoint-controlled patterns never execute a general backtracking regex.
 
 Dense Qwen CUDA also honors an explicit attention-layer layout, including an
@@ -67,6 +68,9 @@ vision, remote code, GPU topology and lossy KV formats still require their expli
 controls. Thinking remains enabled by default when supported, with `--no-thinking`
 and per-request controls; arbitrary Jinja defaults are not inferred as a safe
 server-wide reasoning policy.
+The new per-projection activation selection applies to dense Qwen's NVFP4 reader;
+other family readers retain their documented arithmetic, including Flash Next's
+existing W4A16 expert path. Metadata recognition does not add a missing kernel.
 
 Native calibrated activation math requires usable positive FP32 calibration,
 inverse and combined scales. Unsupported scale ranges are diagnosed during

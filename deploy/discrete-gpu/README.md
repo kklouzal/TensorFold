@@ -31,6 +31,14 @@ margin. It does not allocate every reported free GPU byte. See the
 [RAM expert contract](../../docs/recipes/ram-experts.md) and
 [KV formats](../../README.md#kv-cache-formats).
 
+The profile's limits above are deployment defaults. Dedicated-host validation can
+remove the container memory, CPU and PID caps and set
+`TENSORFOLD_MEMORY_RESERVE_GIB=8` plus
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0` in the container environment. This grants
+all available discrete VRAM after mandatory allocations while retaining the
+8 GiB host admission reserve. Monitor host `MemAvailable` when sharing RAM with
+other processes; startup admission cannot prevent those processes growing later.
+
 The 2026-10-10 deployment on the RTX PRO 2000 Blackwell host admitted the
 full configured window and completed ordinary and streaming generations.
 Same-container restart and subsequent complete generations also passed, with
