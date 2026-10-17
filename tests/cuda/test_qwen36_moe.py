@@ -253,7 +253,30 @@ def _solo(w, head, prompt, sampling, count, confidence=0.3):
 
 def _drain(dec):
     while dec.live():
-        dec.finish(dec.round())
+        done = dec.round()
+        assert all(s.error is None for s in done), [s.error for s in done if s.error is not None]
+        dec.finish(done)
+
+
+def test_a_private_head_cache_preserves_its_attention_origin_and_absorbed_rows():
+    """Resuming copies the retained rows into private buffers in the same attention arena."""
+
+    from tensorfold.families.qwen3_5_moe.cuda.mtp import Cache
+
+    w, _ = _model()
+    cache = Cache(w, 4)
+    cache.pos = 3
+    cache.k[:cache.pos].fill_(7)
+    cache.v[:cache.pos].fill_(-3)
+    private = multi.own(cache, 12)
+    assert private.origin is cache.origin
+    assert private.pos == cache.pos and private.k.shape[0] == private.v.shape[0] == 12
+    assert private.k.data_ptr() != cache.k.data_ptr() and private.v.data_ptr() != cache.v.data_ptr()
+    assert torch.equal(private.k[:cache.pos], cache.k[:cache.pos])
+    assert torch.equal(private.v[:cache.pos], cache.v[:cache.pos])
+    private.k[:cache.pos].zero_()
+    private.v[:cache.pos].zero_()
+    assert torch.all(cache.k[:cache.pos] == 7) and torch.all(cache.v[:cache.pos] == -3)
 
 
 def test_head_rows_of_several_streams_equal_each_alone():
