@@ -625,11 +625,15 @@ class App:
         reports = progress is not None and "progress" in inspect.signature(self.engine.generate).parameters
 
         def generate(ids: list[int], count: int, feed: Callable[[list[int]], bool]) -> Any:
+            nonlocal released
             if yielding and cached:                 # a run after a cut: foreground requests waiting go first
-                turns.give()
+                release()
                 waited = time.perf_counter()
-                turns.take(True, cancelled)
-                queued[0] += time.perf_counter() - waited
+                try:
+                    turns.take(True, cancelled)
+                    released = False                # ownership returns only after take succeeds
+                finally:
+                    queued[0] += time.perf_counter() - waited
             extra = dict(options)
             if prepared.grammar is not None:    # response_format: a fresh grammar state, after </think> when thinking
                 spec, compiled = prepared.grammar
