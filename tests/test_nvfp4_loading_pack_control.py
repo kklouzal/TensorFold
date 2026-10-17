@@ -5,6 +5,7 @@ import struct
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("triton")
 
 from nvfp4_a4_inputs import PREFIX, Context, swiglu
 from test_nvfp4_a4_host_control import Cache
