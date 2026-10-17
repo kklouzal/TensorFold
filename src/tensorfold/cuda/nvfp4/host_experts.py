@@ -150,6 +150,12 @@ def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, i
     """Complete local expert bank for leader or EP follower, without backbone reads."""
     from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 
+    device = torch.device(device)
+    if device.type != "cuda":
+        raise ValueError("NVFP4 cached expert execution requires a CUDA device")
+    device = torch.device("cuda", torch.cuda.current_device() if device.index is None else device.index)
+    if device != cache.device:
+        raise ValueError("NVFP4 bank and expert cache must use the same CUDA device")
     ids = _ids(full.experts, owned_ids)
     authority = load_nvfp4_host_experts(reader, name, full, device, cache=cache, owned_ids=ids,
                                       include_shared=include_shared)

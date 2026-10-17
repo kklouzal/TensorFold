@@ -102,6 +102,13 @@ def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_pa
         assert torch.equal(out[~mask], torch.zeros_like(out[~mask]))
         with pytest.raises(ValueError, match="out-of-range"):
             bank.run_picks(x[:1], torch.full_like(picks[:1], 99), out[:1], prefill=prefill)
+        alias = torch.empty_like(out)
+        alias_x = alias.view(torch.bfloat16)[:, 0, :bank.dims]
+        with pytest.raises(ValueError, match="overlap"):
+            bank.run_picks(alias_x, picks, alias, prefill=prefill)
+        pool_out = cache._pool[:out[:1].numel() * out.element_size()].view(out.dtype).view_as(out[:1])
+        with pytest.raises(ValueError, match="overlap"):
+            bank.run_picks(x[:1], picks[:1], pool_out, prefill=prefill)
     finally:
         reader.close()
         cache.close()
