@@ -280,8 +280,10 @@ round 0.954x at one stream (0.954, 0.952, 0.957) and 0.946x at four (0.944, 0.94
 2.0% (geometric mean +1.7%, every new-build start above every old one per request), prompt passes 0.2 to 0.7%, with
 identical tokens; the build reproduced the reference reply tokens at ~30k, ~150k, ~300k and ~650k. GB10 lane and
 expert-tile table candidates (ABCDDCBA, one and four streams) were inconclusive (base pass-to-pass spread 1.5% at one
-stream, 2.8% at four), so the GB10 keeps its previous launches; lane plus tile at four streams (round 0.980x) remains
-an open GB10 candidate. Rejected on sm_120: a router decode tile of 16 experts (no in-round gain; reverted),
+stream, 2.8% at four), so the GB10 keeps its previous launches. The 2026-10-15 follow-up closed the lane/tile
+candidates without selection: full lane+tile regressed one-stream verify time, tile alone remained inconclusive, and
+the lane table restricted to at most four rows established no complete-round gain across both regions. The original
+launches remain selected. Rejected on sm_120: a router decode tile of 16 experts (no in-round gain; reverted),
 prefetching shared-expert weights into L2 during routing (1.006 to 1.018x slower), and a fused top-k plus plan kernel
 (1.7 to 3.5x slower). Left open below round A/B resolution (< ~0.1% of a round each): alternative lane blocks for the
 attention output, DeltaNet/attention 17- to 20-row and per-layer-embedding projections. Full-model quality is
