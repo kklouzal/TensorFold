@@ -15,7 +15,7 @@ from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 
-from tensorfold.cleanup import rollback
+from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.cuda.expert_parallel import MAX_ROWS, MAX_SLOTS, AffineBank, ownership
 
 TIMEOUT = 600.0
@@ -85,7 +85,7 @@ class Session:
         self.comm = self.reader = self.cache = None
         self.source_files = []
         self.source_identity = []
-        self.closed = False
+        self.closed = self.retired = False
         self.sequence = 0
         self.lock = threading.RLock()
         self.banks = {}
@@ -110,6 +110,10 @@ class Session:
         if base.host_bytes % total:
             raise ValueError("expert authority geometry does not divide into complete per-expert cells")
         self.layout = replace(base, host_bytes=(base.host_bytes // total) * local)
+        # The same-host group must fit collectively before followers allocate
+        # their disjoint authorities. Per-rank admission alone races this bound.
+        self.group_host_bytes = base.host_bytes + ranks * (base.staging_bytes + base.loading_bytes
+            + base.metadata_host_bytes + base.control_host_bytes + (4 << 20))
         text = config(model_dir)
         self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
                                            + self.slots * self.cfg.moe_width * 2) + (4 << 20)
@@ -145,9 +149,11 @@ class Session:
         index = read_metadata_json(checkpoint_path(self.model_dir, "model.safetensors.index.json"))
         files = []
         for shard in sorted(set(index["weight_map"].values())):
-            fd = os.open(checkpoint_path(self.model_dir, shard), os.O_RDONLY | os.O_CLOEXEC)
-            self.source_files.append(fd)
-            st = os.fstat(fd)
+            from tensorfold.families.qwen4_exp.table_file import TableFile
+            file = TableFile(checkpoint_path(self.model_dir, shard))
+            self.source_files.append(file)
+            file.open()
+            st = os.fstat(file.fileno())
             files.append([shard, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns])
             self.source_identity.append(files[-1])
         if len(json.dumps(files).encode()) > 1 << 19:
@@ -160,6 +166,23 @@ class Session:
         if not isinstance(raw, bytes) or len(raw) > maximum:
             raise ValueError("expert rendezvous metadata exceeds its envelope")
         return json.loads(raw)
+
+    def _receive(self, key):
+        deadline = time.monotonic() + self.timeout
+        while not self.store.check([key]):
+            for rank in range(self.world):
+                if self.store.check([f"ep/failed/{rank}"]):
+                    raise RuntimeError(f"expert rank {rank} failed; the group must retire")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("expert control acknowledgement exceeded its deadline")
+            time.sleep(.01)
+        return self.store.get(key)
+
+    def admit_followers(self):
+        """Leader's full host/backbone admission completed; followers may allocate their banks."""
+        if self.rank != 0:
+            raise RuntimeError("only the expert leader grants group admission")
+        self.store.set("ep/admitted", "ready")
 
     def _ensure_reader(self):
         if self.reader is None:
@@ -234,7 +257,7 @@ class Session:
             self.store.set(f"ep/work/{rank}", frame)
         ready = [f"ep/ready/{rank}" for rank in range(1, self.world)]
         for key in ready:
-            if self.store.get(key) != str(self.sequence).encode():
+            if self._receive(key) != str(self.sequence).encode():
                 raise RuntimeError("expert follower acknowledged another work sequence")
             self.store.delete_key(key)
 
@@ -294,31 +317,66 @@ class Session:
 
     def close(self, *, abort=False):
         with self.lock:
-            if self.closed:
+            if self.retired:
                 return
-            if not abort and self.rank == 0 and getattr(self, "keys", None) is not None:
-                self._publish(-1, 0, False)
-            if self.comm is not None:
-                self.comm.close(abort=abort)
-                self.comm = None
-            if self.reader is not None:
-                self.reader.close()
-                self.reader = None
-            if self.cache is not None:
-                self.cache.close()
-                self.cache = None
-            while self.source_files:
-                os.close(self.source_files[-1])
-                self.source_files.pop()
+            failed = abort or self.closed
             self.closed = True
+            errors = []
+            if failed and hasattr(self, "store"):
+                try:
+                    self.store.set(f"ep/failed/{self.rank}", "failed")
+                except BaseException as error:  # noqa: BLE001 - cleanup failures are aggregated
+                    errors.append(error)
+            elif self.rank == 0 and getattr(self, "keys", None) is not None:
+                try:
+                    self._publish(-1, 0, False)
+                except BaseException as error:  # noqa: BLE001 - abort native work after a failed stop frame
+                    errors.append(error)
+                    failed = True
+            if self.comm is not None:
+                try:
+                    self.comm.close(abort=failed)
+                except BaseException as error:  # noqa: BLE001 - retain unresolved native owner
+                    errors.append(error)
+                else:
+                    self.comm = None
+            if self.reader is not None:
+                try:
+                    self.reader.close()
+                except BaseException as error:  # noqa: BLE001 - retain unresolved reader
+                    errors.append(error)
+                else:
+                    self.reader = None
+            # Payloads cannot retire until native work and accepted readers have
+            # reached terminal completion, including on communicator loss.
+            if self.comm is None and self.reader is None:
+                if self.cache is not None:
+                    try:
+                        self.cache.close()
+                    except BaseException as error:  # noqa: BLE001 - retain unresolved leases
+                        errors.append(error)
+                    else:
+                        self.cache = None
+                while self.source_files:
+                    file = self.source_files[-1]
+                    try:
+                        file.close()
+                    except BaseException as error:  # noqa: BLE001 - report and retain failed file owner
+                        errors.append(error)
+                        break
+                    self.source_files.pop()
+            self.retired = self.comm is self.reader is self.cache is None and not self.source_files
+            raise_failures(None, errors)
 
 
 class Follower:
     """CLI owner whose sole runtime is expert work, without any backbone or sequence cache."""
     def __init__(self, session):
         self.session, self.w = session, None
-        self.session._ensure_reader()
         try:
+            if session._receive("ep/admitted") != b"ready":
+                raise RuntimeError("expert leader refused group admission")
+            self.session._ensure_reader()
             from tensorfold.cuda.capacity import available_bytes, host_cgroup_bytes, host_stream_bytes
             host_need = (session.layout.host_bytes + session.layout.staging_bytes
                          + session.layout.loading_bytes + session.layout.metadata_host_bytes)

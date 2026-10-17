@@ -191,6 +191,8 @@ class FlashNextEngine:
                              "host_extra_staging": ram_layout.loading_bytes,
                              "resident_extra": ram_layout.gpu_bytes + ram_layout.metadata_device_bytes
                              + ram_layout.control_device_bytes}
+            if expert_session is not None:
+                host_capacity["host_resident"] = expert_session.group_host_bytes + scratch_host
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    weight_rule,
@@ -199,6 +201,8 @@ class FlashNextEngine:
                                    **automatic_capacity,
                                    **numeric_capacity,
                                    **rope_capacity, **host_capacity)
+        if expert_session is not None:
+            expert_session.admit_followers()
         if ram_layout is not None:
             self.capacity_plan["vram_experts"] = {
                 "host_bytes": ram_layout.host_bytes, "gpu_bytes": ram_layout.gpu_bytes,

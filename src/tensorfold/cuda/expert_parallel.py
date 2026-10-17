@@ -79,29 +79,37 @@ def plan_owned(picks, experts, *, prefill=False, tile=None):
             or type(experts) is not int or not 1 <= experts <= 1024):
         raise ValueError("expert work exceeds the typed row/native-expert plan envelope")
     values = picks.cpu().reshape(-1).tolist()
-    members = [[] for _ in range(experts)]
-    for pair, expert in enumerate(values):
-        if expert == -1:
-            continue
-        if not 0 <= expert < experts:
-            raise ValueError("expert work contains an unowned local expert ID")
-        members[expert].append(pair)
     plan = grouped.Plan(*picks.shape, experts, picks.device, prefill=prefill)
     plan.tile = (grouped.PREFILL_TILE if prefill else grouped.TILE) if tile is None else tile
     if plan.tile not in (grouped.TILE, grouped.PREFILL_TILE):
         raise ValueError("unsupported native expert tile")
-    flat, items = [], []
-    for expert, pairs in enumerate(members):
-        for start in range(0, len(pairs), plan.tile):
-            part = pairs[start:start + plan.tile]
-            items.append((expert, len(flat), len(part)))
-            flat.extend(part)
+    flat, items = owned_items(values, experts, plan.tile)
     if items:
         plan.items[:len(items)].copy_(torch.tensor(items, dtype=torch.int32, device=picks.device))
         plan.members[:len(flat)].copy_(torch.tensor(flat, dtype=torch.int32, device=picks.device))
-    plan.counts.copy_(torch.tensor([len(items), sum(bool(p) for p in members)], dtype=torch.int32,
+    plan.counts.copy_(torch.tensor([len(items), len({item[0] for item in items})], dtype=torch.int32,
                                   device=picks.device))
     return plan
+
+
+def owned_items(values, experts, tile):
+    """Stable native items from a bounded local-ID list; -1 is excluded before native address calculation."""
+    if (type(values) is not list or len(values) > MAX_ROWS * MAX_SLOTS
+            or type(experts) is not int or not 1 <= experts <= 1024 or tile not in (16, 64)):
+        raise ValueError("expert member list exceeds native plan bounds")
+    members = [[] for _ in range(experts)]
+    for pair, expert in enumerate(values):
+        if type(expert) is not int or expert < -1 or expert >= experts:
+            raise ValueError("expert work contains an unowned local expert ID")
+        if expert != -1:
+            members[expert].append(pair)
+    flat, items = [], []
+    for expert, pairs in enumerate(members):
+        for start in range(0, len(pairs), tile):
+            part = pairs[start:start + tile]
+            items.append((expert, len(flat), len(part)))
+            flat.extend(part)
+    return flat, items
 
 
 class AffineBank:
