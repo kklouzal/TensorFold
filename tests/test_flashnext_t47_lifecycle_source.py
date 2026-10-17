@@ -134,6 +134,10 @@ class Controls(unittest.TestCase):
                 rope = NS(rope_type='default', native_context=8192, context_limit=8192, metadata=lambda: {})
                 text = dict(vocab_size=128, hidden_size=64, num_attention_heads=1, num_key_value_heads=2, head_dim=64)
                 providers = {
+                    # These pure preparation boundaries precede device/native
+                    # ownership; their real behavior has separate metadata/KV controls.
+                    'tensorfold.cuda.chat_template': NS(prepare_chat_template=lambda *args, **kwargs: None),
+                    'ram_experts': NS(check_kv_full_windows=lambda value, **kwargs: self.assertIsNone(value)),
                     '': NS(rope_parameters=lambda *args: rope),
                     'kv_formats': NS(get_pair=lambda *args: pair),
                     'torch': NS(cuda=NS(set_device=lambda value: None)),

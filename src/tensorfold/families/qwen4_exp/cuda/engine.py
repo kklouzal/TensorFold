@@ -78,8 +78,6 @@ class FlashNextEngine:
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
-        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
-                                                   template_name=chat_template_name)
         from ..ram_experts import check_kv_full_windows
 
         check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
@@ -87,30 +85,6 @@ class FlashNextEngine:
         from .. import rope_parameters
         from ..kv_formats import get_pair
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
-        import torch
-        from .exl3_pack import admission, extra_files, is_exl3
-        from tensorfold.families import quant_method, read_config
-        exl3 = is_exl3(model_dir)
-        if (exl3 or quant_method(read_config(model_dir)) == "modelopt") and tp != 1:
-            raise ValueError(f"{'EXL3 packs' if exl3 else 'NVFP4 checkpoints'} of Flash Next run on one GPU: drop --tp "
-                             "2, or serve the MLX checkpoint (TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP) on two")
-        if vision and (streams < 2 or tp != 1):
-            raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
-        if exl3 and ple_on_ssd:
-            raise ValueError("--ple-on-ssd reads the MLX checkpoint's n-gram tables; an EXL3 pack maps its own table "
-                             "from its file, so drop --ple-on-ssd")
-        self.rope = rope_parameters(model_dir, yarn_factor)
-        if vram_experts is not None:
-            from ..ram_experts import check
-
-            check(model_dir, vram_experts, tp=tp)
-        from .decode import Engine
-        from .prompt_plan import POINTS, choose as prompt_plan
-        from .weights import draft_token_ids, load
-        from tensorfold.cuda.capacity import admit, config, gather_ints
-        from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
-                                              indexed_stream_geometry, indexed_weights, multi_graph_bytes)
-        chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
         if tp not in (1, 2) or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Flash Next runs on one GPU or two")
         if streams > 1 and tp > 1:
@@ -120,9 +94,37 @@ class FlashNextEngine:
             raise ValueError(f"MTP drafts a round: 0 to {MAX_DEPTH}, not {depth}")
         if not 0.0 <= float(confidence) <= 1.0:
             raise ValueError(f"MTP draft confidence: a probability from 0 to 1, not {confidence}")
-        text = config(model_dir)
+        if vision and (streams < 2 or tp != 1):
+            raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
         if vram_experts_pin not in ("off", "auto", "on") or vram_experts_pin != "off" and vram_experts is None:
             raise ValueError("expert pinning requires a RAM expert budget and off, auto or on")
+        if tp == 2 and not master:
+            raise ValueError("two ranks need rank 0's address (master)")
+        if vram_experts is not None:
+            from ..ram_experts import check
+
+            check(model_dir, vram_experts, tp=tp)
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
+        import torch
+        from .exl3_pack import admission, extra_files, is_exl3
+        from tensorfold.families import quant_method, read_config
+        exl3 = is_exl3(model_dir)
+        if (exl3 or quant_method(read_config(model_dir)) == "modelopt") and tp != 1:
+            raise ValueError(f"{'EXL3 packs' if exl3 else 'NVFP4 checkpoints'} of Flash Next run on one GPU: drop --tp "
+                             "2, or serve the MLX checkpoint (TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP) on two")
+        if exl3 and ple_on_ssd:
+            raise ValueError("--ple-on-ssd reads the MLX checkpoint's n-gram tables; an EXL3 pack maps its own table "
+                             "from its file, so drop --ple-on-ssd")
+        self.rope = rope_parameters(model_dir, yarn_factor)
+        from .decode import Engine
+        from .prompt_plan import POINTS, choose as prompt_plan
+        from .weights import draft_token_ids, load
+        from tensorfold.cuda.capacity import admit, config, gather_ints
+        from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
+                                              indexed_stream_geometry, indexed_weights, multi_graph_bytes)
+        chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
+        text = config(model_dir)
         ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if int(depth) > 0 else None
         if ids is not None and ids.size < tp:
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
@@ -134,8 +136,6 @@ class FlashNextEngine:
         if tp == 2:
             from tensorfold.cuda.comm import open_comm
 
-            if not master:
-                raise ValueError("two ranks need rank 0's address (master)")
             self.comm = open_comm(rank, 2, master, port)
             self.comm.barrier()
         gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None

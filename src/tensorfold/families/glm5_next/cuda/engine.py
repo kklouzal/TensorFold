@@ -142,6 +142,11 @@ class GlmEngine:
 
         from tensorfold.cuda.chat_template import prepare_chat_template
 
+        encode_policy(policy)                           # a bad default fails here, not in the first request
+        world_ranks = getattr(comm, "world", world) if comm is not None else world
+        if (type(world_ranks) is not int or world_ranks not in (2, 4)
+                or type(rank) is not int or not 0 <= rank < world_ranks):
+            raise ValueError("GLM requires an integer rank within two or four ranks")
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         import torch
@@ -154,11 +159,6 @@ class GlmEngine:
         from tensorfold.cuda.geometry import (PREFILL_ROWS, dflash2_geometry, dflash2_weights, mla_geometry,
                                               split_weights)
 
-        encode_policy(policy)                           # a bad default fails here, not in the first request
-        world_ranks = getattr(comm, "world", world) if comm is not None else world
-        if (type(world_ranks) is not int or world_ranks not in (2, 4)
-                or type(rank) is not int or not 0 <= rank < world_ranks):
-            raise ValueError("GLM requires an integer rank within two or four ranks")
         torch.cuda.set_device(0)
         self.torch = torch
         self.rank = rank
