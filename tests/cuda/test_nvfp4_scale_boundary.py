@@ -1,7 +1,9 @@
 """External native UE4M3 scales: real GPU admission, packing and MMA consumption."""
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("triton")
 
 if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
     pytest.skip("native NVFP4 MMA requires an SM12.x GPU", allow_module_level=True)

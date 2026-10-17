@@ -133,7 +133,13 @@ class Fp4Linear:
     @classmethod
     def from_checkpoint(cls, weight: torch.Tensor, weight_scale: torch.Tensor, global_scale: float,
                         act: float | None = None, *, act_inverse: float | None = None) -> "Fp4Linear":
-        """``weight`` uint8 [N, K/2] low nibble first, e4m3 ``weight_scale`` [N, K/16]; ``act``: its input scale."""
+        """Original uint8 [N,K/2] codes and e4m3 [N,K/16] block scales.
+
+        ``act`` is the native input scale used in the final joint factor.
+        ``act_inverse`` preserves CT's original FP32 quantization multiplier;
+        None retains the legacy reciprocal of ``act``. Native metadata is
+        admitted before packing, with no repair of the original scale bytes.
+        """
 
         from tensorfold.cuda.kernels import qmm
 
