@@ -128,6 +128,16 @@ def test_conflicting_theta_refuses_and_present_empty_modern_policy_does_not_fall
     assert DraftConfig.from_dict(raw).rope.rope_type == "default"
 
 
+@pytest.mark.parametrize("declaration", [{"partial_rotary_factor": True},
+                                        {"rope_parameters": {"partial_rotary_factor": True}},
+                                        {"rope_scaling": {"partial_rotary_factor": True}},
+                                        {"partial_rotary_factor": True,
+                                         "rope_parameters": {"partial_rotary_factor": 1}}])
+def test_json_boolean_rotary_fraction_is_not_numeric_one(declaration):
+    with pytest.raises(ValueError, match="full-head rotary"):
+        DraftConfig.from_dict({**config(), **declaration})
+
+
 def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     directory, raw, cfg, arrays, target = fixture
     assert checked_headers(directory)[0] == cfg
