@@ -3,7 +3,10 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("triton")
+
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
@@ -93,6 +96,9 @@ def test_published_architecture_is_separate_from_mtp_and_dflash2():
 
 
 @pytest.mark.parametrize("change", [{"attention_bias": True}, {"hidden_act": "gelu"}, {"sliding_window": 128},
+                                   {"dtype": "float16"}, {"torch_dtype": "float32"},
+                                   {"dtype": "bfloat16", "torch_dtype": "float16"},
+                                   {"quantization_config": {"quant_method": "fp8"}},
                                    {"layer_types": ["full_attention"]}, {"head_dim": 30},
                                    {"dflash_config": {"target_layer_ids": [2, 0], "mask_token_id": 31}},
                                    {"dflash_config": {"target_layer_ids": [0, 0], "mask_token_id": 31}},
@@ -100,6 +106,26 @@ def test_published_architecture_is_separate_from_mtp_and_dflash2():
 def test_unsupported_or_inconsistent_declarations_refuse_before_loading(change):
     with pytest.raises(ValueError):
         DraftConfig.from_dict({**config(), **change})
+
+
+@pytest.mark.parametrize("modern,outer", [(True, None), (False, 10000000), (True, 10000000)])
+def test_rotary_theta_preserves_the_declared_representation(modern, outer):
+    raw = config()
+    raw.pop("rope_theta")
+    if outer is not None:
+        raw["rope_theta"] = outer
+    if modern:
+        raw["rope_parameters"] = {"rope_type": "default", "rope_theta": 10000000}
+    assert DraftConfig.from_dict(raw).rope.theta == 10000000
+
+
+def test_conflicting_theta_refuses_and_present_empty_modern_policy_does_not_fall_back():
+    raw = {**config(), "rope_parameters": {"rope_theta": 10000000}}
+    with pytest.raises(ValueError, match="theta declarations disagree"):
+        DraftConfig.from_dict(raw)
+    raw["rope_parameters"] = {}
+    raw["rope_scaling"] = {"rope_type": "yarn", "factor": 8, "original_max_position_embeddings": 16}
+    assert DraftConfig.from_dict(raw).rope.rope_type == "default"
 
 
 def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
@@ -133,6 +159,52 @@ def test_wrong_target_and_conflicting_capture_binding_refuse(fixture):
     target.binding = (1, 3)
     with pytest.raises(ValueError, match="conflicting"):
         dflash.DFlash(directory, target, context_limit=64)
+
+
+def test_checkpoint_auto_map_python_is_inert(fixture):
+    directory, raw, _cfg, _arrays, target = fixture
+    raw["auto_map"] = {"AutoModel": "dflash.DFlashDraftModel"}
+    (directory / "config.json").write_text(json.dumps(raw))
+    (directory / "dflash.py").write_text("raise RuntimeError('checkpoint Python must never execute')")
+    assert dflash.DFlash(directory, target, context_limit=64).tap_layers == (0, 2)
+
+
+@pytest.mark.parametrize("close_failure", [False, True])
+def test_reader_failure_preserves_primary_and_retirement_outcome(fixture, monkeypatch, close_failure):
+    directory, _raw, _cfg, _arrays, target = fixture
+    primary, cleanup, prior = KeyboardInterrupt("weight read failed"), OSError("close failed"), EOFError("prior")
+    primary.__cause__ = prior
+    events = []
+
+    class Reader:
+        def __init__(self, paths):
+            events.append("open")
+
+        def get(self, name):
+            raise primary
+
+        def close(self):
+            events.append("close")
+            if close_failure:
+                raise cleanup
+
+    monkeypatch.setattr(dflash, "SafeTensors", Reader)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        dflash.DFlash(directory, target, context_limit=64)
+    assert caught.value is primary and events == ["open", "close"]
+    if close_failure:
+        pending, found = [primary], set()
+        while pending:
+            error = pending.pop()
+            if id(error) in found:
+                continue
+            found.add(id(error))
+            pending.extend(e for e in (error.__cause__, error.__context__) if e is not None)
+            if isinstance(error, BaseExceptionGroup):
+                pending.extend(error.exceptions)
+        assert id(cleanup) in found and id(prior) in found
+    else:
+        assert primary.__cause__ is prior
 
 
 def test_context_projection_snapshot_rewind_and_stream_partition(fixture):
@@ -173,6 +245,35 @@ def test_noncausal_block_proposals_do_not_mutate_committed_context(fixture):
     assert draft.finish_tree(launched, 3, 3) == (ids, parents, scores)
     batch = draft.launch_blocks([before, before], [2, 2], 3)
     assert draft.finish_tree(batch[0], 3, 3) == draft.finish_tree(batch[1], 3, 3) == (ids, parents, scores)
+
+
+@pytest.mark.parametrize("failed_copy", [1, 2])
+def test_failed_restore_copy_leaves_previous_context_coherent_and_usable(fixture, monkeypatch, failed_copy):
+    directory, _raw, _cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    taps = torch.ones((5, 128), dtype=torch.bfloat16)
+    draft.add_taps(taps[:3])
+    saved, before = draft.snapshot(), draft._context
+    expected = draft.propose_tree(2, 3, 3)
+    replacement = draft.add_taps_streams([saved], [taps[3:]])[0]
+    calls = 0
+    failure = MemoryError("controlled context sequence copy failure")
+
+    def copy_sequence(value):
+        nonlocal calls
+        calls += 1
+        if calls == failed_copy:
+            raise failure
+        return tuple(value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(dflash, "tuple", copy_sequence, raising=False)
+        with pytest.raises(MemoryError) as caught:
+            draft.restore(replacement)
+        assert caught.value is failure and draft._context is before
+        assert draft.context_end == 3 and draft.propose_tree(2, 3, 3) == expected
+    draft.restore(replacement)
+    assert draft.context_end == 5 and draft.context_len == 5
 
 
 def reference_block(taps, anchor, target, cfg, arrays, inv):

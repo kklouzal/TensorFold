@@ -18,6 +18,7 @@ from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
 from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
+from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
 from ..dflash_metadata import checked_headers, positive
@@ -63,7 +64,7 @@ class DFlash:
             for name, shape in cfg.shapes().items():
                 value = reader.get(name).to(self.device).contiguous()
                 if len(shape) == 2:
-                    self.linears[name] = quantize4(value) if bits == 4 else Plain(value)
+                    self.linears[name] = tile(quantize4(value)) if bits == 4 else Plain(value)
                 else:
                     self.weights[name] = value
         except BaseException as primary:  # noqa: BLE001 - preserve the primary if reader rollback transport fails
@@ -76,8 +77,23 @@ class DFlash:
         else:
             reader.close()
         self.inv_freq = cfg.rope.inverse_frequencies(torch).to(self.device)
-        self.kc, self.vc = [None] * cfg.layers, [None] * cfg.layers
-        self.context_len = self.context_end = 0
+        self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
+
+    @property
+    def kc(self):
+        return self._context[0]
+
+    @property
+    def vc(self):
+        return self._context[1]
+
+    @property
+    def context_len(self):
+        return self._context[2]
+
+    @property
+    def context_end(self):
+        return self._context[3]
 
     def _lin(self, x, name):
         return _mm(x.contiguous(), self.linears[name])
@@ -97,17 +113,20 @@ class DFlash:
         return _rotate(out, cos, sin).contiguous()
 
     def snapshot(self):
-        return list(self.kc), list(self.vc), self.context_len, self.context_end
+        keys, values, length, end = self._context
+        return list(keys), list(values), length, end
 
     def restore(self, snap):
-        keys, values, self.context_len, self.context_end = snap
-        self.kc, self.vc = list(keys), list(values)
+        keys, values, length, end = snap
+        # Sequence copies and tuple allocation may fail. Publish one coherent
+        # context only after both copies succeed; previous snapshots remain live.
+        keys, values = tuple(keys), tuple(values)
+        self._context = keys, values, length, end
 
     def skip(self, count):
         if type(count) is not int or count < 0 or self.context_end + count > self.window:
             raise ValueError("DFlash skipped context must remain within the admitted window")
-        self.kc, self.vc = [None] * self.layers, [None] * self.layers
-        self.context_len, self.context_end = 0, self.context_end + count
+        self._context = (None,) * self.layers, (None,) * self.layers, 0, self.context_end + count
 
     @torch.no_grad()
     def add_taps(self, taps):
