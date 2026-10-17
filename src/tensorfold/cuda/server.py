@@ -652,7 +652,13 @@ class App:
         # an engine that decodes concurrent requests together (``concurrent``) takes them as they come
         if turns is not None:
             waited = time.perf_counter()
-            turns.take(background, cancelled)
+            try:
+                turns.take(background, cancelled)
+            except RequestCancelled:
+                # No engine turn was acquired, but this admitted request still has an outcome and queue time.
+                with health.of(self).running(len(prompt), out, arrived) as request:
+                    request.stats = {"queue_s": round(queued[0] + time.perf_counter() - waited, 4)}
+                    raise
             queued[0] += time.perf_counter() - waited
         released = turns is None
 
@@ -675,6 +681,9 @@ class App:
                         serving[0] = None
                 finally:
                     release()
+                    request.stats = {**(request.stats or {}),
+                                     **timings(request.stats or {}, len(out), queued[0], prepare_s, arrived,
+                                               request.first)}
                 if failed:
                     raise failed[0]
                 if stopped["client"]:                                        # as the Mac server: nothing more is written
@@ -711,8 +720,7 @@ class App:
                 finish = request.outcome = "tool_calls" if calls or (streamed and ended) else ("stop" if ended else "length")
         finally:
             release()
-        stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(stats or {}),
-                 **timings(stats or {}, len(out), queued[0], prepare_s, arrived, request.first),
+        stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(request.stats or {}),
                  "token_sha": token_sha(out)}
         warning = unanswered(finish, chat and thinking, content, calls)
         if warning:
