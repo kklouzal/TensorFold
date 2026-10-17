@@ -23,6 +23,7 @@ void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& inp
     tensor(input, x, at::kFloat, 2, "input calibration");
     tensor(codes, x, at::kByte, 3, "codes");
     tensor(scales, x, at::kByte, 3, "scales");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 8 == 0, "codes require8-byte alignment");
     const auto p = plan.size(0), k = x.size(1), projections = input.size(1);
     TORCH_CHECK(p > 0 && p <= 128 && plan.size(1) == 3 && input.size(0) > 0 && input.size(0) <= INT32_MAX &&
                 (projections == 1 || projections == 2), "plan/calibrations:128pairs maximum, one/two projections");
@@ -46,6 +47,9 @@ void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& b
     tensor(input, blob, at::kFloat, 2, "input calibration");
     tensor(items, blob, at::kInt, 2, "expert items");
     tensor(plan, blob, at::kInt, 2, "pair plan");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 4 == 0 &&
+                reinterpret_cast<uintptr_t>(scales.data_ptr()) % 4 == 0 &&
+                reinterpret_cast<uintptr_t>(blob.data_ptr()) % 8 == 0, "nativeA4 fragment load alignment");
     const auto projections = blob.size(1), p = plan.size(0), cells = blob.size(0);
     TORCH_CHECK(n > 0 && n < INT32_MAX && n % 64 == 0 && k > 0 && k < INT32_MAX && k % 64 == 0 &&
                 sk > 0 && sk <= 8 && (k / 64) % sk == 0, "nativeA4 dimensions/slices must form complete tiles");
