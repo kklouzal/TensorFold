@@ -41,7 +41,7 @@ class DraftConfig:
         names = ("hidden_size", "intermediate_size", "num_attention_heads", "num_key_value_heads", "head_dim",
                  "num_hidden_layers", "num_target_layers", "vocab_size", "block_size")
         d, width, heads, kv, hd, layers, target, vocab, block = [positive(raw.get(k), k) for k in names]
-        if heads % kv or hd & (hd - 1) or any(n % 64 for n in (d, width, heads * hd, kv * hd)):
+        if heads % kv or hd < 16 or hd & (hd - 1) or any(n % 64 for n in (d, width, heads * hd, kv * hd)):
             raise ValueError("DFlash grouped attention and linear dimensions must satisfy native tile geometry")
         if raw.get("attention_bias", False) is not False or raw.get("hidden_act", "silu") != "silu":
             raise ValueError("DFlash requires unbiased projections and SiLU")
@@ -127,7 +127,12 @@ def draft_weights(directory, *, bits=16):
     resident, staging = cfg.head_dim // 2 * 4, 0  # retained FP32 inverse frequencies
     for shape in cfg.shapes().values():
         count = math.prod(shape)
-        resident += count // 2 + count // 64 * 4 if bits == 4 and len(shape) == 2 else count * 2
+        if bits == 4 and len(shape) == 2:
+            rows, columns = shape
+            rows = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to128
+            resident += rows * columns // 2 + rows * (columns // 64) * 4
+        else:
+            resident += count * 2
         # affine4 conversion owns FP32 reductions/codes alongside one BF16 input.
         staging = max(staging, count * (24 if bits == 4 and len(shape) == 2 else 2))
     return Weights(resident, staging, 0)

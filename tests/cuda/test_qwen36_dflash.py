@@ -29,7 +29,7 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
     class Target:
         config = NS(hidden=cfg.hidden, layers=cfg.target_layers, vocab=cfg.vocab)
         norm = torch.ones(cfg.hidden, dtype=torch.bfloat16, device="cuda")
-        embed = torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16().cuda()
+        embed = Plain(torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16().cuda())
         head = Plain(torch.randn((cfg.vocab, cfg.hidden), generator=generator).bfloat16().cuda())
 
         def bind_draft_taps(self, layers):
