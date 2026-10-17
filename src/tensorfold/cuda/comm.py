@@ -5,14 +5,16 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import glob
+import importlib.util
 import os
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Protocol
 
 import torch
 
-from tensorfold.cleanup import rollback, raise_failures
+from tensorfold.cleanup import raise_failures, rollback
 
 _DTYPES = {torch.float32: 7, torch.bfloat16: 9, torch.int32: 2, torch.int64: 4,
            torch.uint8: 1, torch.int8: 0, torch.float16: 6}
@@ -38,23 +40,71 @@ class _UniqueId(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * 128)]
 
 
+def _load_library(path: str, source: str) -> ctypes.CDLL:
+    """An explicitly selected environment provider must load, never silently change."""
+    try:
+        return ctypes.CDLL(path)
+    except OSError as error:
+        raise RuntimeError(f"cannot load NCCL from {source}: {path!r}") from error
+
+
+def _python_nccl_library() -> str | None:
+    """Resolve the current interpreter's NVIDIA namespace, including virtualenv wheels."""
+    parent = importlib.util.find_spec("nvidia")
+    if parent is None or parent.submodule_search_locations is None:
+        return None
+    # NVIDIA's wheel RECORD places the runtime under nccl/lib. Inspect those
+    # paths directly: a dotted spec lookup can execute package initialization
+    # or require the deliberately unimported namespace parent in sys.modules.
+    missing = None
+    for location in parent.submodule_search_locations:
+        path = Path(location) / "nccl" / "lib" / "libnccl.so.2"
+        try:
+            path.stat()
+        except FileNotFoundError as error:
+            try:
+                path.parent.parent.stat()
+            except FileNotFoundError:
+                continue  # this namespace portion has no NCCL package
+            missing = error
+            continue  # namespace portions may contain headers without the library
+        return str(path)
+    if missing is not None:
+        raise RuntimeError("active nvidia.nccl package has no lib/libnccl.so.2; repair that environment "
+                           "or select TF_NCCL_LIB explicitly") from missing
+    return None
+
+
 def _library() -> ctypes.CDLL:
+    """Load lazily; the communicator retains the returned CDLL through native retirement."""
     if os.name == "nt":
         raise RuntimeError("TensorFold does not run tensor-parallel (NCCL) on Windows: CUDA on Windows has no "
                            "libnccl to wrap; use one GPU per process there")
-    candidates = [os.environ.get("TF_NCCL_LIB", "")]
+    override = os.environ.get("TF_NCCL_LIB")
+    if override:
+        return _load_library(override, "TF_NCCL_LIB")
+    packaged = _python_nccl_library()
+    if packaged is not None:
+        return _load_library(packaged, "the active Python environment")
+    bundled = sorted(glob.glob(os.path.join(os.path.dirname(torch.__file__), "lib", "libnccl.so*")))
+    if bundled:
+        return _load_library(bundled[0], "the Torch bundle")
+    candidates = []
     found = ctypes.util.find_library("nccl")
     if found:
         candidates.append(found)
-    candidates += glob.glob("/usr/lib/*/libnccl.so.2") + glob.glob("/usr/local/lib/python3*/dist-packages/nvidia/nccl/lib/libnccl.so.2")
-    candidates += glob.glob(os.path.join(os.path.dirname(torch.__file__), "lib", "libnccl*.so*"))
+    candidates += sorted(glob.glob("/usr/lib/*/libnccl.so.2"))
+    last_error = None
+    attempted = set()
     for path in candidates:
-        if path:
-            try:
-                return ctypes.CDLL(path)
-            except OSError:
-                continue
-    raise RuntimeError("libnccl not found (set TF_NCCL_LIB)")
+        if path in attempted:
+            continue
+        attempted.add(path)
+        try:
+            return ctypes.CDLL(path)
+        except OSError as error:
+            last_error = error
+    raise RuntimeError("libnccl not found in the active environment or system (set TF_NCCL_LIB)") from last_error
 
 
 class NCCL:

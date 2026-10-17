@@ -100,6 +100,23 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.0.
 Replace the documentation address with rank 0's reachable address. Both ranks must agree on context and
 drafting settings. The default rendezvous port is 29551. The rendezvous port and the link between the ranks
 are not authenticated: keep them on a private link, or firewall the port to the peer.
+NCCL discovery first uses the active interpreter's `nvidia.nccl` package locations,
+then Torch's bundled library, then the system linker and native multiarch directories.
+It does not scan unrelated Python installations. A namespace portion without the
+library may be followed by another portion; an installed package with no runtime,
+or a selected wheel/bundled library that cannot load, fails with its original cause.
+Repair that environment instead of silently loading a different NCCL version.
+A nonempty `TF_NCCL_LIB=/absolute/path/to/libnccl.so.2` explicitly selects another
+provider and must itself load successfully; an empty value uses normal discovery.
+
+The same-host expert launcher binds only loopback. Its POSIX listener enables
+`SO_REUSEADDR` before bind so newly started sessions can restart after their peers
+and listener retire, including accepted connections in `TIME_WAIT`. An active
+listener still causes `EADDRINUSE`; no port stealing, `SO_REUSEPORT` or automatic
+different-port retry is enabled. A `TIME_WAIT` socket from an older listener that
+did not enable reuse may still need to expire once. Native FD-handoff failure
+still requires the launcher's rank-process containment, rather than retrying an
+uncertain descriptor in that process.
 GLM requires two CUDA ranks; Flash Next can use one or two and needs `--no-drafts` when its checkpoint lacks an MTP
 head.
 

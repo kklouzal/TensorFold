@@ -156,6 +156,11 @@ explicit retained-owner failure requiring rank-process containment; it is never
 reported as successful cleanup. Rendezvous binds loopback explicitly, which
 limits listening interfaces and supplies no peer authentication. Local ranks
 under the service account and the immutable checkpoint authority are trusted.
+The POSIX listener permits reuse after properly retired sessions, including new
+sessions that leave accepted-side `TIME_WAIT`, while an active listener remains
+exclusive. Older non-reuse sockets can still require their timeout to expire;
+there is no automatic port change. [NCCL discovery and recovery](../RUNBOOK.md#nvidia-gpus)
+also distinguish the active Python wheel from system libraries and explicit overrides.
 
 The launcher uses the package CLI by default outside the container. In the
 fork container, `TENSORFOLD_EXPERT_ENTRYPOINT=/opt/harness/tensorfold_harness.py`
