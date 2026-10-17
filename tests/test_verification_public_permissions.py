@@ -49,6 +49,7 @@ class VerificationPermissions(unittest.TestCase):
         self.assertGreater(index, max(copies))
         for name in ('tests', 'deploy', 'tools', 'CHANGELOG.md'):
             self.assertIn(f'COPY {name} /opt/TensorFold/{name}', stage[:index])
+        self.assertIn('COPY docs/api.md /opt/TensorFold/docs/api.md', stage[:index])
         self.assertIn('COPY src /opt/TensorFold/src', rows[:rows.index('FROM application AS verification')])
         self.assertLess(index, stage.index('WORKDIR /opt/TensorFold'))
         self.assertFalse(any(line.startswith('RUN chmod ') for line in rows[:rows.index('FROM application AS verification')]))
@@ -60,10 +61,10 @@ class VerificationPermissions(unittest.TestCase):
             root = Path(temporary) / 'project'
             root.mkdir(mode=0o700)
             files = []
-            for name in ('src', 'tests', 'tools', 'deploy', 'LICENSES'):
+            for name in ('src', 'tests', 'tools', 'deploy', 'LICENSES', 'docs'):
                 directory = root / name
                 directory.mkdir(mode=0o700)
-                path = directory / 'source.py'
+                path = directory / ('api.md' if name == 'docs' else 'source.py')
                 path.write_bytes(b'public source fixture\n')
                 path.chmod(0o600)
                 os.utime(path, ns=(1_700_000_000_123_456_789, 1_700_000_000_123_456_789))
@@ -81,7 +82,7 @@ class VerificationPermissions(unittest.TestCase):
                       for path in files}
             self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in files[:-1]))
             subprocess.run([*operation[:-1], str(root)], check=True, capture_output=True, timeout=10)
-            for directory in [root, *(root / name for name in ('src', 'tests', 'tools', 'deploy', 'LICENSES'))]:
+            for directory in [root, *(root / name for name in ('src', 'tests', 'tools', 'deploy', 'LICENSES', 'docs'))]:
                 self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o755)
             for path in files:
                 self.assertEqual((hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns), before[path])
