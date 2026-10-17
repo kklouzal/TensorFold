@@ -341,6 +341,54 @@ def test_fused_down_and_combine_equal_the_separate_launches(slots):
         assert torch.equal(fused.view(torch.int32), apart.view(torch.int32)), (slots, R)
 
 
+@pytest.mark.parametrize("slots", (2, 9, 32))
+def test_combine_preserves_the_family_rounding_contract(slots):
+    """GLM rounds products before adding; FP32 mode uses an FMA, in the same slot order.
+
+    These cancellation inputs distinguish the contracts. Every product and sum
+    below is exact in float64 before the explicitly chosen float32 rounding, so
+    the oracle is independent of CUDA/Triton contraction and their kernels.
+    Non-routed slots stay caller-owned through the fused down/combine launch.
+    """
+    from tensorfold.cuda.exl3 import experts
+    from tensorfold.families.glm5_next.cuda import glue
+
+    R, D = 2, 512
+    yc = np.zeros((R, slots, D), dtype=np.float32)
+    wc = np.zeros((R, slots), dtype=np.float32)
+    wc[:, 0] = 1
+    wc[:, 1] = 1 - 2**-23
+    yc[0, 0] = -1
+    yc[1, 0] = 1
+    yc[0, 1, 0::2] = 1 + 2**-23
+    yc[0, 1, 1::2] = 1 + 2**-7
+    yc[1, 1] = -yc[0, 1]
+    fused = np.zeros((R, D), dtype=np.float32)
+    apart = fused.copy()
+    for k in range(slots):
+        product = yc[:, k].astype(np.float64) * wc[:, k, None].astype(np.float64)
+        fused = (fused.astype(np.float64) + product).astype(np.float32)
+        apart = (apart.astype(np.float64) + product.astype(np.float32).astype(np.float64)).astype(np.float32)
+    assert fused[0, 0] == -(2**-46) and apart[0, 0] == 0
+    assert not np.array_equal(fused.view(np.int32), apart.view(np.int32))
+
+    y = torch.from_numpy(yc).cuda()
+    weights = torch.from_numpy(wc).cuda()
+    pick = torch.ones((R, slots), dtype=torch.int32, device="cuda")
+    z = torch.empty((0,), dtype=torch.float32, device="cuda")
+    svh = torch.empty((0,), dtype=torch.float16, device="cuda")
+    out = torch.empty((R, D), dtype=torch.float32, device="cuda")
+    for contract, expected in ((False, apart), (True, fused)):
+        experts._ext().down_combine(z, pick, svh, y.view(R * slots, D), weights, out,
+                                    R, R * slots, D, 1, slots, 1, contract)
+        torch.cuda.synchronize()
+        assert torch.equal(out.view(torch.int32).cpu(), torch.from_numpy(expected.view(np.int32)))
+        assert torch.equal(y.view(torch.int32).cpu(), torch.from_numpy(yc.view(np.int32)))
+    glue.combine(y, weights, out)
+    torch.cuda.synchronize()
+    assert torch.equal(out.view(torch.int32).cpu(), torch.from_numpy(apart.view(np.int32)))
+
+
 # -------------------------------------------------------------------------------------------------- the lane map
 
 def test_lane_map_extracts_every_window():
