@@ -45,7 +45,12 @@ class Qwen36Engine:
     """``eos``, ``generate`` and ``context_window`` for ``tensorfold.cuda.server``; ``streams`` > 1 decodes that many requests together."""
 
     def __init__(self, model_dir: Path, *, depth: int = DEPTH, confidence: float = CONFIDENCE,
-                 context: int | None = None, context_explicit: bool | None = None, streams: int = 1) -> None:
+                 context: int | None = None, context_explicit: bool | None = None, streams: int = 1,
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         import torch
 
         from tensorfold.cuda.capacity import admit
@@ -70,7 +75,7 @@ class Qwen36Engine:
                                                        else linear_weights(name, info)),
                                    extra_files=extra)
         self.context_window = self.capacity_plan["context_window"]
-        self.w = load(model_dir)
+        self.w = load(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
         self.head = self.graphs = None
         if self.depth:
             m = load_mtp(model_dir, self.w)
@@ -86,7 +91,7 @@ class Qwen36Engine:
             self.graphs = Graphs(self.w, self.head, self.context_window + self.depth + 1)
         torch.cuda.empty_cache()
         self.eos = tuple(self.w.config.eos)
-        self.points = resume_points(model_dir)
+        self.points = resume_points(model_dir, template=self.chat_template)
         self.cache = PrefixCache(KEEP)       # (ids, target state, (head cache, held row)) at message starts and ends
         # ``streams`` > 1: up to that many requests decoded together, every stream's window verified in one forward
         self.concurrent = many

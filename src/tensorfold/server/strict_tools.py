@@ -47,6 +47,11 @@ PROBE = [{"role": "user", "content": "x"},
                                                             "tfprobe_bool": True, "tfprobe_null": None,
                                                          "tfprobe_nested": [True, None, {"key": "value"}]}}},
              {"id": "call_1", "type": "function", "function": {"name": "tfprobe_b", "arguments": {}}}]}]
+PROBE_TOOLS = [{"type": "function", "function": {"name": "tfprobe_a", "parameters": {
+    "type": "object", "properties": {"tfprobe_x": {"type": "string"}, "tfprobe_y": {"type": "integer"},
+    "tfprobe_bool": {"type": "boolean"}, "tfprobe_null": {"type": "null"},
+    "tfprobe_nested": {"type": "array", "items": {}}}}}},
+    {"type": "function", "function": {"name": "tfprobe_b", "parameters": {"type": "object", "properties": {}}}}]
 _PROBED = (f"{FUNCTION}tfprobe_a{NAME_END}{PARAMETER}tfprobe_x{NAME_END}tfprobe_v{VALUE_CLOSE}"
            f"{PARAMETER}tfprobe_y{NAME_END}7{VALUE_CLOSE}"
            f"{PARAMETER}tfprobe_bool{NAME_END}true{VALUE_CLOSE}"

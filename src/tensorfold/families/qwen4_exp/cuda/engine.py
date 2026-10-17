@@ -51,7 +51,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off") -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -62,7 +62,7 @@ class FlashNextEngine:
         self.expert_session = expert_session
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -74,7 +74,12 @@ class FlashNextEngine:
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
-                 kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off") -> None:
+                 kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off",
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         from ..ram_experts import check_kv_full_windows
 
         check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
@@ -276,6 +281,7 @@ class FlashNextEngine:
         w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
                  draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
+                 **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
                  **({"expert_loader": expert_session.load_bank} if expert_session is not None else
                     {"vram_experts": vram_experts} if vram_experts is not None else {}),
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
@@ -320,6 +326,9 @@ class FlashNextEngine:
         waited = time.perf_counter() - waited
         w.comm = self.comm
         if self.comm is not None:
+            from tensorfold.cuda.comm import agree_eos
+
+            agree_eos(self.comm, w.cfg.eos, world=tp, device=w.device)
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
         if self.depth > 0 and w.mtp is None:
             raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
@@ -328,7 +337,7 @@ class FlashNextEngine:
 
         # a prompt's message starts to keep states at, or None; the concurrent decoder's passes hold several kept
         # points at no extra pass, so it also keeps the last turn's start (the serial prefill would add a chunk)
-        self.points = resume_points(model_dir, turn=streams > 1)
+        self.points = resume_points(model_dir, turn=streams > 1, template=self.chat_template)
         if vision:
             from tensorfold.vision.qwen_cuda import QwenCudaVision
 

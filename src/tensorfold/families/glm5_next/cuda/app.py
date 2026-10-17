@@ -24,6 +24,24 @@ class ThinkingOffTemplate:
         text = self.inner.render(messages, tools=tools, enable_thinking=enable_thinking, extra=extra)
         return text if enable_thinking else thinking_off(text)
 
+    def selected(self, *, tools=False):
+        return self.inner.selected(tools=tools)
+
+    def provenance(self, *, tools=False):
+        return self.inner.provenance(tools=tools)
+
+    @property
+    def source_name(self):
+        return self.inner.source_name
+
+    @property
+    def source_sha256(self):
+        return self.inner.source_sha256
+
+    @property
+    def selected_name(self):
+        return self.inner.selected_name
+
 
 class GlmApp(App):
     reads_ignore_eos = True             # ``run`` hands it to the engine's request

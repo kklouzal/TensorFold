@@ -30,7 +30,11 @@ class Qwen27Engine:
                  tp_draft: bool = False, allow_copy: bool = True, streams: int = 1,
                  context: int | None = None, context_explicit: bool | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, tree_rows: int | None = None,
-                 keep: int | None = None):
+                 keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         import torch
 
         from tensorfold.cuda.nvfp4.format import is_quantized
@@ -118,11 +122,17 @@ class Qwen27Engine:
                                    startup_copies=int(tp == 2))
         self.context_window = self.capacity_plan["context_window"]
         if tp == 2:
-            full = load(model_dir, prefill_world=tp)
+            full = load(model_dir, prefill_world=tp,
+                        **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)
         else:
-            full = load(model_dir, tiled=True)
+            full = load(model_dir, tiled=True,
+                        **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
             self.w = full
+        if self.comm is not None:
+            from tensorfold.cuda.comm import agree_eos
+
+            agree_eos(self.comm, self.w.config.eos, world=tp, device=self.w.norm.device)
         self.w.prompt_rows = chunk
         self.draft = None
         if draft_dir is not None and (rank == 0 or (tp == 2 and tp_draft)):
@@ -142,7 +152,7 @@ class Qwen27Engine:
 
         self.eos = tuple(self.w.config.eos)
         self.model_dir = Path(model_dir)
-        self.points = resume_points(model_dir)              # message starts a prefill keeps states at
+        self.points = resume_points(model_dir, template=self.chat_template)
         self.cache = PrefixCache(KEEP_ONE)                  # (committed ids, state, drafter snapshot)
         if tp == 1 and not many:              # one GPU: kept buffers stay inside the bytes admission left the caches
             from tensorfold.cuda.streams import KVRoom

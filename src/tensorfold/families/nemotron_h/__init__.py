@@ -118,4 +118,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     explicit = bool(options.get("context_explicit"))
     return NemotronEngine(Path(model_dir), drafts=drafts, confidence=confidence,
                           context=context if explicit else CONTEXT, context_explicit=explicit, tp=int(tp),
-                          rank=int(rank), master=master, port=int(master_port))
+                          rank=int(rank), master=master, port=int(master_port),
+                          **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+                             if options.get(name) is not None})

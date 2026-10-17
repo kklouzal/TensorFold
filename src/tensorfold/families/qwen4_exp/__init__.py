@@ -242,6 +242,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         engine_options["vram_experts_pin"] = vram_experts_pin
     if options.get("kv_full_windows") is not None:
         engine_options["kv_full_windows"] = options["kv_full_windows"]
+    for name in ("eos_token_ids", "chat_template_file", "chat_template_name"):
+        if options.get(name) is not None:
+            engine_options[name] = options[name]
     if expert_ranks > 1:
         if tp != 1:
             raise ValueError("expert parallelism and tensor parallelism cannot be combined")
@@ -250,7 +253,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         from .cuda.expert_parallel import Follower, Session
         session = Session(model_dir, ranks=expert_ranks, shards=expert_shards, rank=rank,
                           master=master or "127.0.0.1", port=master_port, budget=vram_experts, mtp=depth > 0,
-                          pin_mode=vram_experts_pin)
+                          pin_mode=vram_experts_pin,
+                          **({"eos_token_ids": options["eos_token_ids"]} if options.get("eos_token_ids") is not None else {}))
         try:
             if rank:
                 return Follower(session)

@@ -27,7 +27,7 @@ class NemotronEngine:
     def __init__(self, model_dir: Path, *, drafts: int = DRAFTS, confidence: float = CONFIDENCE,
                  draft_ids: str | list[int] | None = "default", context: int | None = None,
                  context_explicit: bool | None = None, tp: int = 1, rank: int = 0, master: str = "",
-                 port: int = 29571) -> None:
+                 port: int = 29571, eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
         self._lifetime = EngineLifetime()
         self.torch = self.comm = self.e = self.mtp = self.serial = self.w = None
         self.cache = []
@@ -36,15 +36,20 @@ class NemotronEngine:
         try:
             self._initialize(model_dir, drafts=drafts, confidence=confidence, draft_ids=draft_ids,
                              context=context, context_explicit=context_explicit, tp=tp, rank=rank,
-                             master=master, port=port)
+                             master=master, port=port, eos_token_ids=eos_token_ids,
+                             chat_template_file=chat_template_file, chat_template_name=chat_template_name)
         except BaseException as error:
             rollback(self, error, lambda: self.close(abort=True))
 
     def _initialize(self, model_dir: Path, *, drafts: int, confidence: float,
                     draft_ids: str | list[int] | None, context: int | None,
                     context_explicit: bool | None, tp: int, rank: int, master: str,
-                    port: int) -> None:
+                    port: int, eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
         """``draft_ids``: "default" (the family's ``draft_ids.txt``, the Mac engine's list), a list, or None (all)."""
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         import torch
 
         from tensorfold.cuda.capacity import admit, gather_ints
@@ -91,7 +96,12 @@ class NemotronEngine:
         self.max_len = -(-self.capacity_plan["cache_slots"] // CHUNK) * CHUNK
         if tp == 2:
             self._same_settings(torch, draft_ids)
-        w = self.w = load(model_dir, mtp=self.drafts > 0)
+        w = self.w = load(model_dir, mtp=self.drafts > 0,
+                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        if self.comm is not None:
+            from tensorfold.cuda.comm import agree_eos
+
+            agree_eos(self.comm, w.config.eos, world=tp, device=w.norm_f.device)
         if self.comm is not None:
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
         if self.drafts and w.mtp is None:

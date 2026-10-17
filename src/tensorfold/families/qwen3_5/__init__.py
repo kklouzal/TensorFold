@@ -331,4 +331,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         streams=streams, context=options.get("context"),
                         context_explicit=options.get("context_explicit"), vision=bool(options.get("vision", False)),
                         vision_urls=bool(options.get("vision_urls", False)),
-                        vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"))
+                        vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
+                        **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+                           if options.get(name) is not None})

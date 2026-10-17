@@ -969,6 +969,20 @@ def test_engines_or_templates_that_cannot_hold_calls_refuse_strict(tmp_path, gra
     assert status == 400 and "could not render a call (no calls here)" in text
 
 
+@pytest.mark.parametrize("tool_support", [False, True])
+def test_strict_probe_uses_the_actual_tool_route_instead_of_default_markup(tmp_path, grammars, tool_support):
+    from tensorfold.server.errors import RequestError
+
+    sources = {"default": "ordinary chat" if tool_support else QWEN_CALLS,
+               "tool_use": QWEN_CALLS if tool_support else "tool route writes other markup"}
+    app = _app(tmp_path, ScriptEngine("x"), grammars, sources)
+    if tool_support:
+        assert app._prepare(_body(False), True).calls is not None
+    else:
+        with pytest.raises(RequestError, match="writes calls otherwise"):
+            app._prepare(_body(False), True)
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_requests_without_strict_tools_decode_as_before(tmp_path, grammars, stream):
     """No strict tool: no constraint reaches the engine, and the lenient parser reads the reply as it always has."""

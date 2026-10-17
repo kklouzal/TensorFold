@@ -193,7 +193,7 @@ class RequestOptions:
         if self.__dict__.get("_strict_markup") is None:            # (supported, why not), read once
             with self.tokenizer_lock:
                 try:
-                    text = self.tokenizer.decode(render_prompt_ids(self.tokenizer, strict_tools.PROBE,
+                    text = self.tokenizer.decode(render_prompt_ids(self.tokenizer, strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS,
                                                                    add_generation_prompt=False))
                     found = (strict_tools.template_supported(text), "writes calls otherwise")
                 except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them

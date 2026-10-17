@@ -119,7 +119,8 @@ class GlmEngine:
 
     def __init__(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str = DEFAULT_POLICY,
                  drafter: Path | None = None, context: int | None = None, context_explicit: bool | None = None, serial_only: bool = False, comm=None,
-                 prefill_rows: int | None = None, world: int = 2) -> None:
+                 prefill_rows: int | None = None, world: int = 2, eos_token_ids=None,
+                 chat_template_file=None, chat_template_name=None) -> None:
         self._lifetime = EngineLifetime()
         self.torch = self.comm = self.w = self.e = self.drafter = None
         self._owns_comm = comm is None
@@ -128,15 +129,21 @@ class GlmEngine:
         try:
             self._initialize(model_dir, rank=rank, master=master, port=port, policy=policy, drafter=drafter,
                              context=context, context_explicit=context_explicit, serial_only=serial_only,
-                             comm=comm, prefill_rows=prefill_rows, world=world)
+                             comm=comm, prefill_rows=prefill_rows, world=world, eos_token_ids=eos_token_ids,
+                             chat_template_file=chat_template_file, chat_template_name=chat_template_name)
         except BaseException as error:
             rollback(self, error, lambda: self.close(abort=True))
 
     def _initialize(self, model_dir: Path, *, rank: int, master: str, port: int, policy: str,
                     drafter: Path | None, context: int | None, context_explicit: bool | None,
-                    serial_only: bool, comm, prefill_rows: int | None, world: int) -> None:
+                    serial_only: bool, comm, prefill_rows: int | None, world: int, eos_token_ids=None,
+                    chat_template_file=None, chat_template_name=None) -> None:
         """``comm``: a communicator with ``all_gather`` and ``barrier`` instead of NCCL between two machines (tests)."""
 
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         import torch
 
         from tensorfold.cuda.comm import open_comm
@@ -160,7 +167,7 @@ class GlmEngine:
         self.comm = comm if comm is not None else open_comm(rank, world_ranks, master, port)
         self.world = world_ranks
         self.comm.barrier()
-        cfg = Config.read(model_dir)
+        cfg = Config.read(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
         # Without --context the window stays dense, attending every key without indexer work.
         explicit = context is not None if context_explicit is None else bool(context_explicit)
         from . import LATENT
@@ -204,11 +211,15 @@ class GlmEngine:
             raise ValueError(("TF_GLM_MTP=0 leaves" if cfg.mtp_layers else "this checkpoint has") + " no MTP head and "
                              "no DFlash2 draft model was given, so every round would decode one token: pull the draft "
                              "model on both machines (--drafter), or pass --no-drafts to both for the serial reference")
-        w = load(model_dir, rank=rank, mtp=self.mtp_on, world=self.world)
+        w = load(model_dir, rank=rank, mtp=self.mtp_on, world=self.world,
+                 **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        self.w = w  # own loaded payloads before the new collective can fail
+        from tensorfold.cuda.comm import agree_eos
+
+        agree_eos(self.comm, w.cfg.eos, world=self.world, device=w.device)
         w.comm = self.comm
         self.comm.ready("loading")                   # a peer stuck loading is named, not waited on in NCCL
         self.comm.barrier()
-        self.w = w
         if rank == 0 and cfg.mtp_layers and not self.mtp_on:
             print("[tensorfold] the checkpoint's MTP head is not loaded (TF_GLM_MTP=" +
                   (os.environ.get("TF_GLM_MTP", "").strip() or MTP_DEFAULT) + "): " +

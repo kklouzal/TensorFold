@@ -60,7 +60,7 @@ def resolve_chat_templates(model_dir, *, template_file=None, template_name=None)
     if template_file is not None and template_name is not None:
         raise ValueError("chat_template_file and chat_template_name are mutually exclusive")
     if template_file is not None:
-        path = Path(template_file)
+        path = Path(template_file).expanduser().resolve(strict=True)  # operator authorizes this exact target
         source = TemplateSource("override", read_text(path.parent, path.name, required=True), str(path))
         return source, source
     if template_name is not None and (type(template_name) is not str or not template_name

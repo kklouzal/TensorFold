@@ -93,7 +93,7 @@ class App:
                  aliases: tuple[str, ...] | list[str] = (), vision_max_images: int | None = None,
                  vision_image_tokens: int | None = None,
                  background_ids: tuple[str, ...] | frozenset[str] = (),
-                 max_pending_requests: int | None = None):
+                 max_pending_requests: int | None = None, chat_template_file=None, chat_template_name=None):
         self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
         self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
         if self._request_limit is not None:
@@ -102,7 +102,7 @@ class App:
                 scheduler.configure_requests(self._request_limit)
             self.run = self._request_limit.wrap(self.run)
             self.decisions = self._request_limit.wrap(self.decisions)
-        from tokenizers import Tokenizer
+        from tensorfold.token_metadata import load_tokenizer
 
         self.engine = engine
         self.vision = getattr(engine, "vision", None)
@@ -114,8 +114,13 @@ class App:
         self.aliases = tuple(str(alias).strip() for alias in aliases if str(alias).strip())
         self.background_ids = frozenset(background_ids)   # --name-priority ID=background: a default for this id
         self.model_dir = Path(model_dir)
-        self.tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
-        self.template = ChatTemplate(model_dir)
+        self.tok = load_tokenizer(model_dir)
+        self.template = getattr(engine, "chat_template", None)
+        options = (None if chat_template_file is None else str(Path(chat_template_file).expanduser().resolve()), chat_template_name)
+        if self.template is None:
+            self.template = ChatTemplate(model_dir, template_file=chat_template_file, template_name=chat_template_name)
+        elif options != (None, None) and options != self.template.options:
+            raise ValueError("engine and server must use the same captured chat template selection")
         self.segments = _segment_encoder(self.tok, self.template)
         self.default_thinking = default_thinking
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
@@ -276,7 +281,7 @@ class App:
             raise RequestError("chat_template_kwargs must be a JSON object or null")
         kwargs = dict(kwargs)
         # reasoning_effort and enable_thinking as the Mac server reads them: the template hears an effort when thinking
-        levels = getattr(self.template, "efforts", frozenset())
+        levels = self.template.selected(tools=tools).efforts
         fields = thinking_fields(body, levels)
         kwargs.pop("enable_thinking", None)
         kwargs.pop("reasoning_effort", None)
@@ -349,7 +354,7 @@ class App:
             raise RequestError(self.engine.refuses_structured_output)
         if getattr(self, "_strict_markup", None) is None:          # (supported, why not), read once
             try:
-                rendered = self.template.render(strict_tools.PROBE, tools=None, enable_thinking=False)
+                rendered = self.template.render(strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS, enable_thinking=False)
                 self._strict_markup = (strict_tools.template_supported(rendered), "writes calls otherwise")
             except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them
                 self._strict_markup = (False, f"could not render a call ({exc})")
@@ -789,7 +794,9 @@ class App:
             probe = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "call_0", "type": "function", "function": {"name": "tfprobe_fn", "arguments": {}}}]}]
             try:
-                text = self.template.render(probe, tools=None, enable_thinking=False)
+                text = self.template.render(probe, tools=[{"type": "function", "function": {
+                    "name": "tfprobe_fn", "parameters": {"type": "object", "properties": {}}}}],
+                    enable_thinking=False)
             except Exception:  # noqa: BLE001 - a template that renders no calls: the opener alone
                 text = ""
             openers = [o for o in ("<tool_call>", "<|tool_call>") if self.tok.token_to_id(o) is not None]
