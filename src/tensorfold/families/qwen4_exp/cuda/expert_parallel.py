@@ -59,6 +59,9 @@ class Session:
     checks bound host waits; cleanup aborts first on failure and preserves owners.
     """
     def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp, pin_mode="off"):
+        # Prepare all cleanup recording before acquiring native/model owners.
+        # Slots: notification, communicator, reader, cache, source, payloads.
+        self._close_outcomes = [None] * 6
         import torch
 
         from tensorfold.cuda.capacity import config
@@ -372,30 +375,31 @@ class Session:
                 return
             failed = abort or self.closed or self.abort_requested.is_set()
             self.closed = True
-            errors = []
+            outcomes = self._close_outcomes
+            outcomes[0] = outcomes[1] = outcomes[2] = outcomes[3] = outcomes[4] = outcomes[5] = None
             if failed and getattr(self, "store", None) is not None:
                 try:
                     self.store.set(f"ep/failed/{self.rank}", "failed")
                 except BaseException as error:  # noqa: BLE001 - cleanup failures are aggregated
-                    errors.append(error)
+                    outcomes[0] = error
             elif not failed and self.rank == 0 and getattr(self, "keys", None) is not None:
                 try:
                     self._publish(-1, 0, False)
                 except BaseException as error:  # noqa: BLE001 - abort native work after a failed stop frame
-                    errors.append(error)
+                    outcomes[0] = error
                     failed = True
             if self.comm is not None:
                 try:
                     self.comm.close(abort=failed)
                 except BaseException as error:  # noqa: BLE001 - retain unresolved native owner
-                    errors.append(error)
+                    outcomes[1] = error
                 else:
                     self.comm = None
             if self.reader is not None:
                 try:
                     self.reader.close()
                 except BaseException as error:  # noqa: BLE001 - retain unresolved reader
-                    errors.append(error)
+                    outcomes[2] = error
                 else:
                     self.reader = None
             # Payloads cannot retire until native work and accepted readers have
@@ -405,7 +409,7 @@ class Session:
                     try:
                         self.cache.close()
                     except BaseException as error:  # noqa: BLE001 - retain unresolved leases
-                        errors.append(error)
+                        outcomes[3] = error
                     else:
                         self.cache = None
                 while self.source_files:
@@ -413,7 +417,7 @@ class Session:
                     try:
                         file.close()
                     except BaseException as error:  # noqa: BLE001 - report and retain failed file owner
-                        errors.append(error)
+                        outcomes[4] = error
                         break
                     self.source_files.pop()
             if self.comm is self.reader is self.cache is None and not self.source_files:
@@ -429,8 +433,36 @@ class Session:
                     self.store = None
                     self.retired = True  # publish only after every owned reference has retired
                 except BaseException as error:  # noqa: BLE001 - retain prior failures and permit partial-release retry
-                    errors.append(error)
-            raise_failures(None, errors)
+                    outcomes[5] = error
+            # Fast locals retain each original status even if preparing the
+            # diagnostic list fails and a later close reuses the fixed journal.
+            notification_error = outcomes[0]
+            communicator_error = outcomes[1]
+            reader_error = outcomes[2]
+            cache_error = outcomes[3]
+            source_error = outcomes[4]
+            payload_error = outcomes[5]
+            if notification_error is not None:
+                primary = notification_error
+            elif communicator_error is not None:
+                primary = communicator_error
+            elif reader_error is not None:
+                primary = reader_error
+            elif cache_error is not None:
+                primary = cache_error
+            elif source_error is not None:
+                primary = source_error
+            else:
+                primary = payload_error
+            try:
+                errors = [error for error in outcomes if error is not None]
+                raise_failures(primary, errors)
+            except BaseException as failure:
+                if primary is None or failure is primary:
+                    raise
+                # Transport exhaustion preserves all original statuses/owners
+                # in this frame rather than replacing the primary failure.
+                raise primary from failure
 
 
 class Follower:

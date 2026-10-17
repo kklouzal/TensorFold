@@ -99,6 +99,7 @@ def test_local_slot_mapping_retains_shared_owner_and_skips_only_other_owners():
 
 def _session_owner(comm, *, store=None):
     session = object.__new__(Session)
+    session._close_outcomes = [None] * 6
     session.lock = threading.RLock()
     session.abort_requested = threading.Event()
     session.running = threading.Event()
@@ -194,6 +195,40 @@ def test_interruption_after_store_release_retries_without_republishing_or_early_
     assert session.retired and session.store is None
 
 
+def test_cleanup_diagnostic_exhaustion_keeps_original_statuses_and_attempts_independent_retirement(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import expert_parallel as ep
+    failures = [OSError("store unavailable"), RuntimeError("communicator unresolved"), OSError("reader unresolved")]
+    events = []
+    def failed(index):
+        def operation(*args, **kwargs):
+            events.append(index)
+            raise failures[index]
+        return operation
+    session = _session_owner(SimpleNamespace(close=failed(1)), store=SimpleNamespace(set=failed(0)))
+    session.reader = SimpleNamespace(close=failed(2))
+    session.cache = SimpleNamespace(close=lambda: pytest.fail("payload released before quiescence"))
+    journal = session._close_outcomes
+    diagnostic = MemoryError("cleanup diagnostic allocation unavailable")
+    def unavailable(*args):
+        raise diagnostic
+    monkeypatch.setattr(ep, "raise_failures", unavailable)
+    with pytest.raises(OSError) as caught:
+        session.close(abort=True)
+    assert caught.value is failures[0] and caught.value.__cause__ is diagnostic
+    assert events == [0, 1, 2] and session._close_outcomes is journal
+    assert journal == [*failures, None, None, None]
+    assert not session.retired and session.comm is not None and session.reader is not None
+    # A retry may reuse the fixed journal, but the transported error's close
+    # frame retains every original status independently of that mutable journal.
+    traceback = caught.value.__traceback__
+    while traceback is not None and traceback.tb_frame.f_code.co_name != "close":
+        traceback = traceback.tb_next
+    assert traceback is not None
+    retained_frame = traceback.tb_frame
+    journal[0] = journal[1] = journal[2] = None
+    assert retained_frame.f_locals["notification_error"] is failures[0]
+    assert retained_frame.f_locals["communicator_error"] is failures[1]
+    assert retained_frame.f_locals["reader_error"] is failures[2]
 def test_follower_never_reads_authority_before_group_admission():
     events = []
     def receive(key):
