@@ -11,6 +11,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -136,7 +137,9 @@ class Session:
 
     def _identity(self, text):
         prop = self.torch.cuda.get_device_properties(0)
-        uuid = str(prop.uuid)
+        device_uuid = str(prop.uuid)
+        with Path("/proc/sys/kernel/random/boot_id").open("rb") as host:
+            host_epoch = str(uuid.UUID(host.read(64).decode("ascii").strip()))
         digest = hashlib.sha256()
         for name in ("config.json", "model.safetensors.index.json"):
             from tensorfold.cuda.tensor_file import checkpoint_path
@@ -165,7 +168,7 @@ class Session:
             self.source_identity.append(files[-1])
         if len(json.dumps(files).encode()) > 1 << 19:
             raise ValueError("expert checkpoint source identity exceeds 512KiB")
-        return [uuid, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
+        return [device_uuid, host_epoch, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
                 self.cfg.moe_width, bool(self.mtp), self.cfg.quant, files]
 
     def _read_json(self, key, maximum):
