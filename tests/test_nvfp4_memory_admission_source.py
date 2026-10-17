@@ -55,20 +55,6 @@ class Contracts(unittest.TestCase):
                 points = [9.5, 17, 13, 25, 12.625]
                 self.assertGreaterEqual(32 * c * k, max(points) * c * k)
 
-    def test_whole_projection_gpu_authority_planes_remain_admitted_above_dense_chunk(self):
-        # No allocation: exercise the independent whole-projection envelope at
-        # tall shapes where a fixed4096-row dense pack bound is insufficient.
-        for n in (512, 4096, 8192, 524288, 1048576):
-            for k in (64, 2048):
-                raw = n * k * 9 // 16 + 8
-                three_planes = 3 * (n * k * 9 // 16)
-                routed = {name.replace("m.", "model.layers.0.mlp.experts.0.gate_proj."): info
-                          for name, info in projection(n, k).items()}
-                self.assertGreaterEqual(memory.loading_bytes(routed), raw + three_planes + (4 << 20))
-                npad, chunk = -(-n // 128) * 128, min(-(-n // 128) * 128, 4096)
-                dense = raw + npad * k // 2 + 4 * npad * k // 16 + 6 * npad * k // 64 + 32 * chunk * k + (4 << 20)
-                self.assertEqual(memory.loading_bytes(projection(n, k)), dense)
-
     def test_head_alias_and_conversions(self):
         for stem in ("lm_head", "model.language_model.embed_tokens"):
             self.assertEqual(memory.loading_bytes({stem + ".weight": tensor("BF16", 248320, 4096)}), 0)

@@ -104,12 +104,10 @@ first borrow and rebuilt transactionally when startup sizes the pool. For this
 checkpoint, each record is 1,769,536 bytes, including 40 bytes of initialized
 padding; admission charges the padding and host registration geometry.
 
-Loading validates original block-scale bytes and scalar calibration on CPU,
-then permutes one projection's packed bytes on CUDA. Its synchronous CPU
-transfer finishes before writing authority or starting the next projection.
-The GPU loading bound includes raw, permuted and output planes, including
-projections taller than the dense packer's chunk size. No temporary device
-storage is retained by the host bank. Loading-speed selection is pending.
+Loading validates original block-scale bytes and scalar calibration on CPU and
+retains the original one-projection CPU byte permutation. GPU loading candidates
+did not establish an improvement in the controlled component/startup region;
+they are not a production backend or fallback.
 
 The shared NVFP4 estimator owns the Reader's physical host-ring reservation.
 The offload plan adds CPU authority and projection workspace without charging

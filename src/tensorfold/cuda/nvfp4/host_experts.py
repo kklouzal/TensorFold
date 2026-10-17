@@ -151,32 +151,19 @@ class CachedExperts4:
             yield nvx.Experts4(*payloads, self.width, self.dims, self.limit), mapping
 
 
-def _pack_authority_projection_a4(codes, blocks, device):
-    """Finish one GPU byte permutation and D2H before lending CPU authority.
-
-    Inputs are already validated CPU payloads. Blocking transfers preserve their
-    lifetimes; no device tensor escapes into the long-lived host authority.
-    """
-    from .experts_a4 import pack_projection_a4
-
-    return pack_projection_a4(codes.to(device), blocks.to(device)).to("cpu")
-
-
 def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_ids=None, layer_id=None,
                          swiglu):
     """Load CT routed native-A4 experts in owned local order, without shared reads.
 
     Header/declaration validation precedes authority allocation; each projection
-    reads its two scalar calibrations before code/scale payload. Scale admission
-    stays on CPU; one projection's byte permutation runs on the selected GPU and
-    finishes its synchronous D2H before the next projection. The existing native
-    projection loading bound includes its raw, permuted and output byte planes.
+    reads its two scalar calibrations before code/scale payload. Packing one
+    projection at a time bounds CPU temporary storage by three projection blobs.
     Resident loading releases CPU code/scale authority after synchronous device
     transfer. Serving retains no CPU calibration metadata for either residency.
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4
+    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4
     from .host_layout import authority_fields_a4, entry_layout_a4
 
     device = torch.device(device)
@@ -232,7 +219,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             codes = ctx.read(base + ".weight_packed", device="cpu")
             blocks = ctx.read(base + ".weight_scale", device="cpu")
             fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
-            packed = _pack_authority_projection_a4(codes, blocks, device)
+            packed = pack_projection_a4(codes, blocks)
             (fields[0][local, p] if p < 2 else fields[1][local]).copy_(packed)
             del codes, blocks, packed
     if cache is not None:
