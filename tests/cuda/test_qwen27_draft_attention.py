@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 
 D = 128
 
@@ -31,7 +31,7 @@ def _reference(q, k, v, keys, values, length, window, scale, causal):
     return torch.cat(outs)
 
 
-@pytest.mark.parametrize("heads,kv_heads,length", [(32, 8, 16), (16, 4, 16), (8, 2, 8)])
+@pytest.mark.parametrize("heads,kv_heads,length", [(32, 8, 16), (32, 4, 16), (16, 4, 16), (8, 2, 8)])
 @pytest.mark.parametrize("causal", [False, True])
 def test_block_attention_matches_masked_attention(heads, kv_heads, length, causal):
     gen = torch.Generator(device="cuda").manual_seed(heads + length + int(causal))

@@ -73,7 +73,8 @@ class DraftConfig:
         if not isinstance(params, dict):
             raise ValueError("DFlash rotary parameters must be an object")  # noqa: TRY004 - external JSON schema
         params = dict(params)
-        if params.get("partial_rotary_factor", raw.get("partial_rotary_factor", 1)) != 1:
+        partials = (raw.get("partial_rotary_factor", 1), params.get("partial_rotary_factor", 1))
+        if any(isinstance(value, bool) or value != 1 for value in partials):
             raise ValueError("DFlash Qwen3 uses full-head rotary dimensions")
         if "rope_theta" in params and "rope_theta" in raw and params["rope_theta"] != raw["rope_theta"]:
             raise ValueError("DFlash rotary theta declarations disagree")
