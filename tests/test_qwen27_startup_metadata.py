@@ -66,7 +66,6 @@ def startup(tmp_path, monkeypatch):
     def resume(directory, *, template):
         assert template.provenance()["source"] == "tokenizer_config.chat_template"
         events.append("resume")
-        return None
 
     monkeypatch.setattr(torch, "tensor", cpu_tensor)
     monkeypatch.setattr(torch, "empty", cpu_empty)
@@ -115,7 +114,7 @@ def test_actual_constructor_completes_after_loading_and_uses_its_actual_transpor
 
 
 def test_actual_tp_constructor_refuses_effective_eos_mismatch_before_resume_setup(startup):
-    directory, state, events, options, gathers = startup
+    directory, state, events, _options, gathers = startup
     state.mismatch = True
     with pytest.raises(RuntimeError, match="different effective EOS"):
         Qwen27Engine(directory, None, tp=2, master="host")
