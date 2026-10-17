@@ -55,6 +55,13 @@ shared gate and backbone projections remain BF16. Native FP4 activations require
 SM 12.x and `--precision checkpoint`; this path explicitly refuses other math
 modes. It does not convert the model to affine weights.
 
+Activation quantization consumes each original CT FP32 input-global multiplier
+directly; reconstructing it from a rounded reciprocal can change FP8 block-scale
+bytes. Output calibration uses separately rounded FP32 input/weight reciprocals
+and their FP32 product. Exactness means the same target math/build and sampling
+rule across serial, drafted, resident and cached execution; it does not promise
+bit identity with another runtime's reduction or epilogue ordering.
+
 The secondary `z-lab/Qwen3.6-35B-A3B-DFlash` at
 `42d3b34d588423cdae7ba8f53a8cf7789346a719` is an eight-layer DFlash v1 block-diffusion
 model, with target residual taps `[1, 10, 19, 28, 37]`, block size 16 and its declared

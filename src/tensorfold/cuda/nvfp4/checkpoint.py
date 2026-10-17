@@ -61,8 +61,13 @@ def _inv(act: float) -> float:
     return float(torch.tensor(1.0, dtype=torch.float32) / torch.tensor(act, dtype=torch.float32))
 
 
-def quant4(x: torch.Tensor, act: float, tb: int = 0) -> Rows4:
-    """bf16 rows -> NVFP4 under input scale ``act``: per-16 e4m3 scales, e2m1 codes to nearest even (``tb``: tiled)."""
+def quant4(x: torch.Tensor, act: float, tb: int = 0, *, inverse: float | None = None) -> Rows4:
+    """BF16 rows to NVFP4; ``inverse`` preserves an admitted CT multiplier without reciprocal roundtripping.
+
+    An explicit inverse is the original positive finite FP32 checkpoint value,
+    validated when its immutable projection is constructed. ``act`` still
+    determines the separately rounded output calibration.
+    """
 
     x = _rows(x)
     m, k = x.shape
@@ -70,7 +75,7 @@ def quant4(x: torch.Tensor, act: float, tb: int = 0) -> Rows4:
     codes = torch.empty((mpad if tb else m, k // 2), dtype=torch.uint8, device=x.device)
     shape = (mpad // tb, k // 64, tb, 4) if tb else (k // 64, mpad, 4)
     scales = (torch.empty if tb else torch.zeros)(shape, dtype=torch.uint8, device=x.device)
-    _ext().quant4(x, _inv(act), codes, scales, tb)
+    _ext().quant4(x, _inv(act) if inverse is None else inverse, codes, scales, tb)
     return Rows4(codes, scales)
 
 
@@ -99,10 +104,15 @@ def alpha(act: float, scale: float) -> float:
     return float(torch.tensor(act, dtype=torch.float32) * torch.tensor(scale, dtype=torch.float32))
 
 
-def _rowsq(mode: int, x: torch.Tensor, act: float, tb: int = 0):
+def _rowsq(mode: int, x: torch.Tensor, act: float, tb: int = 0, *, inverse: float | None = None):
     """Rows quantized for ``mode`` under the static input scale ``act`` (``tb``: the prompt GEMM's tiles)."""
 
-    return quant4(x, act, tb) if mode == A4 else (quant8(x, act, tb), None)
+    return quant4(x, act, tb, inverse=inverse) if mode == A4 else (quant8(x, act, tb), None)
+
+
+def _quantization_key(lin) -> tuple[float, float | None]:
+    """Equal direct scales do not prove equal original CT multipliers."""
+    return float(lin.act), getattr(lin, "act_inverse", None)
 
 
 def _out(m: int, lin, out: torch.Tensor | None, f32: bool) -> torch.Tensor:
@@ -166,7 +176,7 @@ def matmul(mode: int, x: torch.Tensor, lin, out: torch.Tensor | None = None, f32
     """bf16 rows (M, K) @ an NVFP4 (``A4``) or FP8 (``A8``) linear in checkpoint mode -> (M, n); K slices by shape."""
 
     y = _out(x.shape[0], lin, out, f32)
-    _lane(mode, _rowsq(mode, x, lin.act), lin, y, f32)
+    _lane(mode, _rowsq(mode, x, lin.act, inverse=getattr(lin, "act_inverse", None)), lin, y, f32)
     if out is not None and y is not out:
         out.copy_(y)
     return y
@@ -177,7 +187,7 @@ def prompt(mode: int, x: torch.Tensor, lin, out: torch.Tensor | None = None, f32
     """Prompt rows (M, K) bf16 @ an NVFP4 or FP8 linear in checkpoint math: one K chain a row (chunk-invariant bits)."""
 
     y = _out(x.shape[0], lin, out, f32)
-    _gemm(mode, _rowsq(mode, x, lin.act, _tb(tile)), lin, y, f32, tile)
+    _gemm(mode, _rowsq(mode, x, lin.act, _tb(tile), inverse=getattr(lin, "act_inverse", None)), lin, y, f32, tile)
     if out is not None and y is not out:
         out.copy_(y)
     return y
@@ -190,10 +200,11 @@ def matmul_group(x: torch.Tensor, lins: list, prompt_rows: bool = False, outs: l
     if len(lins) < 2 or any(getattr(lin, "act", None) is None for lin in lins):
         return None
     modes = {A4 if hasattr(lin, "words") else A8 for lin in lins}
-    if len(modes) != 1 or len({float(lin.act) for lin in lins}) != 1:
+    if len(modes) != 1 or len({_quantization_key(lin) for lin in lins}) != 1:
         return None
     mode = modes.pop()
-    rows = _rowsq(mode, x, lins[0].act, _tb(tile) if prompt_rows else 0)
+    rows = _rowsq(mode, x, lins[0].act, _tb(tile) if prompt_rows else 0,
+                  inverse=getattr(lins[0], "act_inverse", None))
     outs = [_out(x.shape[0], lin, None if outs is None else outs[j], False) for j, lin in enumerate(lins)]
     for lin, y in zip(lins, outs):
         _gemm(mode, rows, lin, y, False, tile) if prompt_rows else _lane(mode, rows, lin, y, False)
@@ -205,16 +216,18 @@ def mlp_prompt(x: torch.Tensor, gate, up, down, out: torch.Tensor | None = None)
 
     if not all(hasattr(lin, "words") and getattr(lin, "act", None) is not None for lin in (gate, up, down)):
         return None
-    if float(gate.act) != float(up.act) or gate.n != up.n or gate.npad != gate.n or down.k != gate.n:
+    if _quantization_key(gate) != _quantization_key(up) or gate.n != up.n or gate.npad != gate.n or down.k != gate.n:
         return None
     if gate.k % 128 or down.k % 128:
         return None
-    rows = quant4(x, gate.act)
+    rows = quant4(x, gate.act, inverse=getattr(gate, "act_inverse", None))
     m, mpad = x.shape[0], rows.scales.shape[1]
     codes = torch.empty((m, down.k // 2), dtype=torch.uint8, device=x.device)
     scales = torch.empty((down.k // 64, mpad, 4), dtype=torch.uint8, device=x.device)
+    down_inverse = getattr(down, "act_inverse", None)
     _ext().gemm_gu_ck(rows.codes, rows.scales, gate.words, gate.bs, up.words, up.bs, alpha(gate.act, gate.scale),
-                      alpha(up.act, up.scale), gate.npad, gate.k, _inv(down.act), codes, scales, SWIGLU_FP32)
+                      alpha(up.act, up.scale), gate.npad, gate.k,
+                      _inv(down.act) if down_inverse is None else down_inverse, codes, scales, SWIGLU_FP32)
     y = _out(m, down, out, False)
     _gemm(A4, Rows4(codes, scales), down, y, False, 0)
     return y

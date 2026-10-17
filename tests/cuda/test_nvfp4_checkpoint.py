@@ -68,6 +68,19 @@ def test_nvfp4_rows_are_the_checkpoint_format_byte_for_byte(m, k):
     assert torch.equal(got_sf, want_sf8)
 
 
+def test_original_ct_multiplier_retains_sensitive_e4m3_rounding():
+    # Independent exact-rational/RNE counterexample: raw g*(.5*F32(1/6))
+    # lies on the E4M3 midpoint and rounds to even0x0a. F32(1/F32(1/g))
+    # shifts below that midpoint, producing0x09 instead.
+    raw = float(torch.tensor(0x3E63FFFF, dtype=torch.int32).view(torch.float32))
+    act = float(torch.tensor(1., dtype=torch.float32) / torch.tensor(raw))
+    x = torch.full((1, 64), .5, dtype=torch.bfloat16, device="cuda")
+    direct, legacy = checkpoint.quant4(x, act, inverse=raw), checkpoint.quant4(x, act)
+    assert torch.equal(direct.scales[:, 0], torch.full_like(direct.scales[:, 0], 0x0A))
+    assert torch.equal(legacy.scales[:, 0], torch.full_like(legacy.scales[:, 0], 0x09))
+    assert torch.equal(direct.codes, torch.full_like(direct.codes, 0x77))
+
+
 @pytest.mark.parametrize("m,k", [(1, 64), (7, 2048)])
 def test_fp8_rows_are_e4m3_under_the_static_scale_in_fragment_order(m, k):
     x, act = _rows(m, k, 50 + m), 0.0071
