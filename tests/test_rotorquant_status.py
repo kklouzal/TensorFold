@@ -22,6 +22,7 @@ def state(status=(0, -2), world=2, pair=None):
     st.kv_status = None if status is None else torch.tensor(status, dtype=torch.int32)
     st._kv_peer_status = torch.empty((world, 2), dtype=torch.int32) if world > 1 else None
     st._kv_pending, st._kv_error = status is not None, None
+    st._resize_error = st._resize_frames_pending = None
     return st
 
 
