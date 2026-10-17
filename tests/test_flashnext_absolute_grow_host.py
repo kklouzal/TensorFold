@@ -2,12 +2,14 @@
 
 import ast
 import os
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from tensorfold.cuda import capacity
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
 from tensorfold.cuda.streams import Stream
 from tensorfold.families.qwen4_exp.cuda import prefixes
@@ -77,7 +79,8 @@ def rows_array(array, rows, keep):
 
 State = source_class("src/tensorfold/families/qwen4_exp/cuda/state.py", "State",
                      {"cache_bytes", "owned_cache_bytes", "layer_bytes", "resize", "_resize_caches", "_poison_resize"},
-                     {"_rows": rows_array, "KVResizeError": RuntimeError})
+                     {"_rows": rows_array, "KVResizeError": RuntimeError, "traceback": traceback,
+                      "raise_failures": raise_failures})
 
 
 def state(owner):
@@ -85,6 +88,7 @@ def state(owner):
     st.capacity, st.limit, st.layers = 256, 81920, 2
     st.pos, st.mtp_len, st.version = 0, 0, 0
     st._resize_error = st._kv_error = None
+    st._resize_frames_pending = None
     st.image_positions = None
     st.kv_pair = get_pair()
     # This byte-counting state contains no numeric cache payload; numeric checks have their own boundary suite.
