@@ -255,6 +255,7 @@ class LinearQuantization:
 
     def __init__(self, block: dict):
         self.method = block.get("quant_method")
+        self.default_format = block.get("format")
         self.exact = {}
         self.patterns = []
         self.defaults = []
@@ -274,6 +275,9 @@ class LinearQuantization:
                 elif target.startswith("re:"):
                     self.patterns.append((_Pattern(target), group))
                 else:
+                    if self.excluded(target) and any(group.get(field) is not None for field in (
+                            "weights", "input_activations", "output_activations")):
+                        raise ValueError(f"{target}: explicit quantization target conflicts with exclusion")
                     self.exact.setdefault(target, []).append(group)
         algo = block.get("quant_algo")
         if self.method == "modelopt" and algo:
@@ -282,6 +286,8 @@ class LinearQuantization:
             for name, declaration in declarations.items():
                 expected = _algorithm(declaration.get("quant_algo"), declaration.get("group_size"), name)
                 if algo == "MIXED_PRECISION":
+                    if self.excluded(name):
+                        raise ValueError(f"{name}: quantized_layers declaration conflicts with exclusion")
                     # The per-layer map assigns modules. Untargeted groups
                     # describe a format inventory, not a global Linear rule.
                     self.exact[name] = [_merge(expected, group, name)
@@ -323,12 +329,16 @@ class LinearQuantization:
             groups = self.defaults
         if not groups:
             return None
-        selected = groups[0]
-        for group in groups[1:]:
-            for key in ("weights", "input_activations", "output_activations", "format"):
-                left, right = selected.get(key), group.get(key)
-                if isinstance(left, dict) and isinstance(right, dict):
-                    _merge(left, right, f"{name}.{key}")
-                elif left != right:
-                    raise ValueError(f"{name}: conflicting matching quantization groups")
+        selected = {}
+        for group in groups:
+            # Targets select declarations; they do not form part of the
+            # numerical scheme. Every matching semantic constraint survives.
+            semantics = {key: value for key, value in group.items() if key != "targets"}
+            if semantics.get("format") is None:
+                semantics.pop("format", None)
+                if self.default_format is not None:
+                    semantics["format"] = self.default_format
+            for key in ("weights", "input_activations", "output_activations"):
+                semantics.setdefault(key, None)
+            selected = _merge(selected, semantics, f"{name}.matching quantization groups")
         return selected

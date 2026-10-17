@@ -134,13 +134,15 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         if prompt_precision.fp8() and not any(own.values()):
             _validate_fp8_prefill(cfg, 1)
 
-        def act_scale(name: str, got: dict, kind: str, activation: int | None) -> float | None:
+        def act_scale(name: str, got: dict, kind: str, activation: int | None,
+                      weight_scale: float) -> float | None:
             """Only declared, supported activation math consumes a static calibration."""
             if activation is None or not own[kind]:
                 return None
             field = "input_scale" if "input_scale" in got else "input_global_scale"
             scale = fmt.calibration(float(got[field].float().reshape(-1)[0]), name=name + "." + field,
                                     reciprocal=field == "input_global_scale")
+            fmt.native_calibration(scale, weight_scale, name=name)
             used[kind] = True
             return scale
 
@@ -160,15 +162,16 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 g = fmt.calibration(float(g.float().reshape(-1)[0]), name=name + ".weight_global_scale",
                                     reciprocal=reciprocal)
                 lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], g,
-                                                act=act_scale(name, got, "nvfp4", activation))
+                                                act=act_scale(name, got, "nvfp4", activation, g))
                 lin.staging = staging
                 return lin
             if kind == "fp8":
                 s = got["weight_scale"].float().reshape(-1)
                 if s.numel() != 1:
                     raise ValueError(f"{name}: FP8 with {s.numel()} scales; the CUDA engine reads one scale a tensor")
-                return Fp8Linear.from_checkpoint(weight, fmt.calibration(float(s[0]), name=name + ".weight_scale"),
-                                                 act=act_scale(name, got, "fp8", activation))
+                scale = fmt.calibration(float(s[0]), name=name + ".weight_scale")
+                return Fp8Linear.from_checkpoint(weight, scale,
+                                                 act=act_scale(name, got, "fp8", activation, scale))
             w = weight.to(torch.bfloat16).contiguous()
             return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
 

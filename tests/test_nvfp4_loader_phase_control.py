@@ -247,8 +247,12 @@ class MetadataSelection(unittest.TestCase):
                                                     ("input_scale", "F32", [])):
                             headers[base + "." + field] = {"dtype": dtype, "shape": shape}
                     modules["tensorfold.cuda.capacity"].headers = lambda path, headers=headers: headers
-                    modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(**{
-                        n: api[n] for n in ("LinearMetadata", "calibration")})
+                    native_checks = []
+                    def admit(act, weight_scale, native_checks=native_checks, **kwargs):
+                        native_checks.append(act)
+                        return act
+                    modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(
+                        **{n: api[n] for n in ("LinearMetadata", "calibration")}, native_calibration=admit)
                     def packed(*args, native=native, **kwargs):
                         native.append(kwargs["act"])
                         return SimpleNamespace()
@@ -269,6 +273,7 @@ class MetadataSelection(unittest.TestCase):
                     expected = 1.0 if algorithm == "NVFP4" and mode == precision.CHECKPOINT else None
                     self.assertTrue(native)
                     self.assertEqual(native, [expected] * len(native))
+                    self.assertEqual(native_checks, [expected] * len(native) if expected is not None else [])
                     self.assertEqual(result.own, {"nvfp4": expected is not None, "fp8": False})
                     self.assertEqual(result.precision, "checkpoint" if expected is not None else "full")
                     self.assertEqual(overrides, [{"eos_token_ids": (7, 9)}])
