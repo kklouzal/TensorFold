@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from operator import index
 from pathlib import Path
 from typing import Any
 
@@ -318,6 +319,39 @@ class Weights:
     inv_freq: torch.Tensor | None = None             # (rope_dims/2,) fp32
     quant: str = "mlx"                               # "exl3": an EXL3 pack (prompt glue then stays in bf16); "nvfp4"
     prompt_rows: int = 4096                          # a prompt chunk's rows, sized to the GPU: any count, the same bits
+    draft_tap_layers: tuple[int, ...] = (5, 19, 33, 47, 61)  # DFlash2 default; a drafter binds its own before use
+
+    @cached_property
+    def draft_taps(self) -> tuple[int, ...]:
+        """Validated zero-based residual taps, fixed before prompt or verify execution."""
+
+        return self._validated_draft_taps(self.draft_tap_layers)
+
+    def _validated_draft_taps(self, layers) -> tuple[int, ...]:
+        try:
+            taps = tuple(index(i) if not isinstance(i, bool) else -1 for i in layers)
+        except TypeError as exc:
+            raise ValueError("draft target taps must be integer layer indices") from exc
+        if not taps or tuple(sorted(set(taps))) != taps or not 0 <= taps[0] <= taps[-1] < len(self.layers):
+            raise ValueError("draft target taps must be distinct increasing indices inside the complete target")
+        return taps
+
+    def bind_draft_taps(self, layers) -> tuple[int, ...]:
+        """Prepare one drafter's immutable selector before any target execution.
+
+        Construction and binding are serialized by the engine. Once a selector
+        has been observed, a different drafter cannot silently reuse its cache.
+        """
+
+        taps = self._validated_draft_taps(layers)
+        if "draft_taps" in self.__dict__:
+            selected = self.draft_taps
+            if selected != taps:
+                raise ValueError("draft target taps are already bound to a different selector")
+            return selected
+        self.draft_tap_layers = taps
+        self.__dict__["draft_taps"] = taps
+        return taps
 
     @cached_property
     def attention_origin(self) -> torch.Tensor:

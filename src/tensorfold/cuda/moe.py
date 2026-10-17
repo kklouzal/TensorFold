@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -162,6 +163,16 @@ def combine(y: torch.Tensor, wts: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def swiglu_bf16(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+    """BF16 SiLU followed by a BF16 product, matching the Qwen MoE checkpoint reference.
+
+    The intermediate rounding is part of the operator: a fused FP32 SiLU/product
+    is a different activation and must not replace this path without comparison.
+    """
+
+    return torch.nn.functional.silu(gate) * up
+
+
 @dataclass
 class Routed:
     """A layer's router rows [E + 1, D] bf16 (the shared expert's gate row last) and its E + 1 experts."""
@@ -169,6 +180,7 @@ class Routed:
     router: torch.Tensor
     experts: grouped.Experts
     top_k: int
+    run: Callable = moe                         # selected by the loader; affine remains the default
 
     @property
     def count(self) -> int:
@@ -193,5 +205,5 @@ def run(x: torch.Tensor, m: Routed, *, prefill: bool = False) -> torch.Tensor:
     buf = _scratch.get(key)
     if buf is None:
         buf = _scratch[key] = MoEBuffers(size, _Shape(m), x.device, prefill=prefill)
-    moe(x.contiguous(), m.router, m.experts, buf, m.top_k, m.count)
+    m.run(x.contiguous(), m.router, m.experts, buf, m.top_k, m.count)
     return combine(buf.y[:rows], buf.wts[:rows])

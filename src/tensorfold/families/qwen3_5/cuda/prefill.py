@@ -21,7 +21,6 @@ from .qmm_fast import matmul, matmul_partial, tile
 from .weights import Plain, QLinear, Weights
 
 CHUNK = 4096
-TAP_LAYERS = (5, 19, 33, 47, 61)
 
 
 def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
@@ -84,6 +83,7 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
     """Commit ``tokens`` at [st.pos, st.pos + W) into ``st`` without writing through its entries (``every``: all rows' final normed states; ``cut``: also the state after the first ``cut`` rows, the GDN chains run as two launches with one launch's bits)."""
 
     c = w.config
+    tap_layers = w.draft_taps if capture_taps else ()
     pg = prefill_glue if w.fast_prefill and prompt_precision.fp8() else prefill_bf16   # e4m3 rows when prompts take FP8
     W = int(tokens.shape[0])
     if not 0 <= cut < W:
@@ -152,7 +152,7 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
         else:
             x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
             pending = _mlp(h, layer, pg, tp)
-        if capture_taps and i in TAP_LAYERS:
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     st.pos = p0 + W
     normed = None
@@ -245,6 +245,7 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
     windows, DeltaNet chains and attention read its own state. Per item: (last row normed, taps, the state at cut)."""
 
     c = w.config
+    tap_layers = w.draft_taps if capture_taps else ()
     if any(layer.moe is not None for layer in w.layers):
         raise ValueError("a batched prefill takes dense layers only")
     pg = prefill_glue if w.fast_prefill and prompt_precision.fp8() else prefill_bf16
@@ -318,7 +319,7 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
             r = _row_mm(pg.gate_mul(torch.cat(outs), qg, heads=c.heads, head_dim=c.head_dim), attn.o, tp)
         x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
         pending = _mlp(h, layer, pg, tp)
-        if capture_taps and i in TAP_LAYERS:
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     every = torch.cat(taps, dim=-1) if capture_taps else None
     out = []
