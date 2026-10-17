@@ -10,7 +10,6 @@ startup failures. Missing/stale/damaged artifacts explicitly permit repacking.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import json
 import os
@@ -28,11 +27,14 @@ from tensorfold.cleanup import raise_failures
 # Version 1 is native experts_pack.cu's group-32, 160-word block: shuffled
 # nibble words followed by unconverted BF16 scale/bias pairs. Arrays are LE I32;
 # gate then up are interleaved in up's penultimate axis; down has a singleton.
+# Bump LAYOUT for any packed-byte semantic change; source refactors preserving
+# bytes keep this identity. Native packing and independent scalar oracles apply.
 LAYOUT = "grouped-affine4-g32-le-i32-block160-gu-interleaved-v1"
 _MAGIC = b"TFEXPERTCACHE\x00\x01\x00"
 _LIMIT = 4096  # fixed two-array schema (five <=64-bit dimensions each) fits below 4 KiB
 _CHUNK = 8 << 20
 _NAME = re.compile(r"[0-9a-f]{64}\.tfc\Z")
+_TEMP = re.compile(r"\.tmp-[0-9a-f]{32}\Z")
 _SIZES = {"U32": 4, "I32": 4, "BF16": 2}
 
 
@@ -154,6 +156,8 @@ class PackedExpertCache:
     replace its own old entry. No disk JSON is accepted as source hash authority.
     """
     def __init__(self, root, max_bytes):
+        if os.name != "posix":
+            raise ValueError("packed expert cache requires POSIX file locking and directory publication; disable it on this host")
         if type(max_bytes) is not int or max_bytes <= 0:
             raise ValueError("packed expert cache byte limit must be a positive integer")
         if sys.byteorder != "little":
@@ -174,7 +178,9 @@ class PackedExpertCache:
         return cls(root, int(limit))
 
     @contextmanager
-    def _locked(self, exclusive):
+    def _locked(self):
+        import fcntl
+
         root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
         lock = None
         primary = None
@@ -182,7 +188,7 @@ class PackedExpertCache:
             _trusted(os.fstat(root), directory=True)
             lock = os.open(".lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600, dir_fd=root)
             _trusted(os.fstat(lock))
-            fcntl.flock(lock, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            fcntl.flock(lock, fcntl.LOCK_EX)
             yield root
         except BaseException as failure:
             primary = failure
@@ -205,7 +211,7 @@ class PackedExpertCache:
         entries = []
         with os.scandir(root) as directory:
             for entry in directory:
-                if entry.name.startswith(".tmp-"):
+                if _TEMP.fullmatch(entry.name):
                     _trusted(entry.stat(follow_symlinks=False))
                     os.unlink(entry.name, dir_fd=root)
                 elif _NAME.fullmatch(entry.name):
@@ -234,12 +240,13 @@ class PackedExpertCache:
         """Return an explicit hit/miss/damage status; resources/access propagate."""
         expected = self._header(identity, tensors)
         name = identity.key + ".tfc"
-        with self._locked(True) as root:
+        with self._locked() as root:
             self._prune(root)
             try:
                 fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root)
             except FileNotFoundError:
                 return "miss"
+            primary = None
             try:
                 before = os.fstat(fd)
                 _trusted(before)
@@ -277,8 +284,14 @@ class PackedExpertCache:
                     return "hit"
                 except DamagedCache as error:
                     return "rebuild: " + str(error)
+            except BaseException as failure:
+                primary = failure
+                raise
             finally:
-                os.close(fd)
+                try:
+                    os.close(fd)
+                except OSError as failure:
+                    raise_failures(primary, [failure])
 
     def write(self, identity, tensors):
         """Publish completed bytes durably, evicting old owned entries first."""
@@ -295,7 +308,7 @@ class PackedExpertCache:
         if needed > self.max_bytes:
             return "not stored: layer exceeds configured cache byte limit"
         name, temporary = identity.key + ".tfc", ".tmp-" + uuid.uuid4().hex
-        with self._locked(True) as root:
+        with self._locked() as root:
             self._prune(root, needed, 1)
             fd = None
             try:

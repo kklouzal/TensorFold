@@ -1,9 +1,11 @@
 """Exact persisted bytes, source provenance, resource limits and failure paths."""
 from concurrent.futures import ThreadPoolExecutor
+import builtins
+import importlib.util
 import json
 import os
-from pathlib import Path
 import struct
+from types import SimpleNamespace
 
 import pytest
 
@@ -194,14 +196,17 @@ def test_budget_eviction_and_stale_temporaries_are_bounded(tmp_path):
     load(model, cache)
     artifact, = cache.root.glob("*.tfc")
     size = artifact.stat().st_size
-    (cache.root / ".tmp-dead-publisher").write_bytes(b"not published")
+    stale = cache.root / (".tmp-" + "0" * 32)
+    stale.write_bytes(b"not published")
+    unrelated = cache.root / ".tmp-unrelated"
+    unrelated.write_bytes(b"unrelated file")
     cache.max_bytes = size + 4096
     load(model, cache, owned_ids=[0], include_shared=False)
-    assert not list(cache.root.glob(".tmp-*"))
+    assert not stale.exists() and unrelated.read_bytes() == b"unrelated file"
     assert sum(path.stat().st_size for path in cache.root.glob("*.tfc")) <= cache.max_bytes
     cache.max_bytes = 1
     load(model, cache, owned_ids=[2], include_shared=False)
-    assert not list(cache.root.glob(".tmp-*"))
+    assert not stale.exists() and unrelated.read_bytes() == b"unrelated file"
 
 
 def test_environment_requires_explicit_positive_disk_budget(monkeypatch, tmp_path):
@@ -217,6 +222,31 @@ def test_environment_requires_explicit_positive_disk_budget(monkeypatch, tmp_pat
     assert PackedExpertCache.from_environment().max_bytes == 16384
 
 
+def test_disabled_cache_import_and_factory_do_not_require_posix(monkeypatch, tmp_path):
+    """Simulate the optional Windows boundary only; actual POSIX cache execution has separate tests."""
+    import tensorfold.cuda.packed_experts as packed
+
+    actual_import = builtins.__import__
+
+    def imported(name, *args, **kwargs):
+        if name == "fcntl":
+            pytest.fail("disabled cache imported the optional POSIX locking module")
+        return actual_import(name, *args, **kwargs)
+
+    spec = importlib.util.spec_from_file_location("_packed_cache_platform_check", packed.__file__)
+    module = importlib.util.module_from_spec(spec)
+    with monkeypatch.context() as patch:
+        patch.setattr(builtins, "__import__", imported)
+        spec.loader.exec_module(module)
+        module.os = SimpleNamespace(name="nt", environ={})
+        assert module.PackedExpertCache.from_environment() is None
+        module.os.environ = {"TENSORFOLD_PACKED_EXPERT_CACHE": str(tmp_path / "cache"),
+                             "TENSORFOLD_PACKED_EXPERT_CACHE_BYTES": "16384"}
+        with pytest.raises(ValueError, match="requires POSIX"):
+            module.PackedExpertCache.from_environment()
+    assert not (tmp_path / "cache").exists()
+
+
 def test_budget_shrink_is_enforced_on_hits_without_republication(tmp_path):
     model, _, cache = prepared(tmp_path)
     load(model, cache)
@@ -230,7 +260,7 @@ def test_oversized_existing_inventory_is_explicitly_refused(tmp_path):
     cache = PackedExpertCache(tmp_path / "cache", 1 << 20)
     for i in range(4097):
         (cache.root / (f"{i:064x}.tfc")).write_bytes(b"")
-    with cache._locked(True) as root:
+    with cache._locked() as root:
         with pytest.raises(OSError, match="inventory limit"):
             cache._prune(root)
 
@@ -243,6 +273,42 @@ def test_cache_read_io_errors_do_not_become_repack_misses(tmp_path, monkeypatch)
     monkeypatch.setattr(os, "readv", fail)
     with pytest.raises(OSError, match="injected read failure"):
         load(model, cache)
+
+
+@pytest.mark.parametrize("read_failure", [False, True])
+def test_cache_read_close_failure_preserves_primary_and_is_not_a_miss(tmp_path, monkeypatch, read_failure):
+    model, _, cache = prepared(tmp_path)
+    load(model, cache)
+    actual_open, actual_close = os.open, os.close
+    artifact_fds = set()
+    primary = OSError("primary payload read failure")
+    cleanup = OSError("artifact close failure")
+
+    def opened(path, flags, *args, **kwargs):
+        fd = actual_open(path, flags, *args, **kwargs)
+        if str(path).endswith(".tfc"):
+            artifact_fds.add(fd)
+        return fd
+
+    def close(fd):
+        actual_close(fd)
+        if fd in artifact_fds:
+            artifact_fds.remove(fd)
+            raise cleanup
+
+    def read(fd, buffers):
+        raise primary
+
+    monkeypatch.setattr(os, "open", opened)
+    monkeypatch.setattr(os, "close", close)
+    if read_failure:
+        monkeypatch.setattr(os, "readv", read)
+    with pytest.raises(OSError) as caught:
+        load(model, cache)
+    assert caught.value is (primary if read_failure else cleanup)
+    if read_failure:
+        assert caught.value.__cause__ is cleanup
+    assert not artifact_fds
 
 
 def test_atomic_cache_replacement_during_read_cannot_publish_mixed_authority(tmp_path, monkeypatch):
