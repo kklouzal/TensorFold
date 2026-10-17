@@ -118,6 +118,7 @@ def cache_fixture():
     cache._layers = {0: SimpleNamespace(count=2, source=(SimpleNamespace(_version=0),), versions=(0,),
                                        views=("borrowed-views",))}
     cache._pool = cache._staging = object()
+    cache.pin_policy = None
     cache.hits = cache.misses = cache.evictions = cache.copied_bytes = 0
     cache.copy_error = None
     cache.copy_calls = 0
