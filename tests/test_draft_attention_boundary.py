@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
-
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src/tensorfold/families/qwen3_5/cuda/draft_attention.py'
 
@@ -81,7 +80,7 @@ def wrappers(path, *, allow_allocations=True):
     nodes = [copy.deepcopy(n) for n in tree.body if isinstance(n, ast.FunctionDef)
              and n.name in ('block_attention', 'append')]
     module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
-    exec(compile(module, str(path), 'exec', flags=__import__('__future__').annotations.compiler_flag), namespace)
+    exec(compile(module, str(path), 'exec', flags=__import__('__future__').annotations.compiler_flag), namespace)  # noqa: S102 - owned AST with explicit SDK substitutes
     return namespace, calls
 
 
@@ -100,11 +99,36 @@ class Boundary(unittest.TestCase):
         self.assertEqual(calls[-1][2], (2, 2))
         self.assertEqual(calls[-1][4]['G'], 2)
         self.assertEqual(calls[-1][4]['LP'], 16)
+        self.assertFalse(calls[-1][4]['TILED'])
         namespace, calls = wrappers(SOURCE)
         outs = namespace['append'](Tensor((2, 4, 64)), [None, Tensor((2, 5, 64))], [1, 3], 4)
         self.assertEqual([v.shape for v in outs], [(2, 1, 64), (2, 4, 64)])
         self.assertEqual(calls[2], ('table', (16, 16, 16, 32, 0, 1, 0, 1, 5, 3, 1, 4), 'int64'))
         self.assertEqual(calls[-1][2], (2, 2, 1))
+
+    def test_wide_blocks_tile_queries_without_changing_complete_key_geometry(self):
+        for length, tiled, tiles in ((16, False, 1), (32, False, 1), (64, True, 4),
+                                     (97, True, 8), (128, True, 8)):
+            with self.subTest(length=length):
+                namespace, calls = wrappers(SOURCE)
+                args = [Tensor((32, 2 * length, 128)), Tensor((4, 2 * length, 128)),
+                        Tensor((4, 2 * length, 128)), [Tensor((4, n, 128)) for n in (3, 5)],
+                        [Tensor((4, n, 128)) for n in (3, 5)], length, 256, .125]
+                out = namespace['block_attention'](*args)
+                self.assertEqual(out.shape, (2 * length, 32 * 128))
+                options = calls[-1][4]
+                self.assertEqual(calls[-1][2], (2, 4, tiles) if tiled else (2, 4))
+                self.assertEqual(options['TILED'], tiled)
+                self.assertEqual((options['BM'], options['BN']), (128, 64))
+                padded = 1 << (length - 1).bit_length()
+                self.assertEqual(options['LP'], padded)
+                # Every valid (query head, block row) occurs exactly once;
+                # tile tails never create an extra read/store lane.
+                rows = [tile * 128 + row for tile in range(tiles) for row in range(128)] if tiled else range(8 * padded)
+                covered = [(row // padded, row % padded) for row in rows
+                           if row < 8 * padded and row % padded < length]
+                expected = [(head, row) for head in range(8) for row in range(length)]
+                self.assertEqual(covered, expected)
 
     def test_block_invalid_metadata_stops_before_allocation_and_launch(self):
         cases = []
