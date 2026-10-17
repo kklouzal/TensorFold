@@ -141,6 +141,10 @@ class KVNumericError(RuntimeError):
     """A RotorQuant frame failed validation; its sequence requires explicit reset."""
 
 
+class KVResizeError(RuntimeError):
+    """A failed cache resize requires exclusive retirement before this slot can be reused."""
+
+
 class State:
     """Committed caches of one sequence (and the MTP head's attention layer); grown by ``ensure`` up to ``limit``."""
 
@@ -173,7 +177,8 @@ class State:
         self._kv_peer_status = (torch.empty((world, 2), dtype=torch.int32, device=dev)
                                 if self.kv_status is not None and world > 1 else None)
         self._kv_pending = False
-        self._kv_error: KVNumericError | None = None
+        self._kv_error: KVNumericError | KVResizeError | None = None
+        self._resize_error: BaseException | None = None
         self.limit = int(capacity if limit is None else limit)     # the rows this sequence may grow to
         capacity = min(int(capacity), self.limit)
         self.capacity = capacity
@@ -225,10 +230,10 @@ class State:
     def kv_begin(self) -> None:
         """Mark GPU writes unchecked; never clear a previous numeric failure."""
 
-        if self.kv_status is None:
-            return
         if self._kv_error is not None:
             raise self._kv_error
+        if self.kv_status is None:
+            return
         self._kv_pending = True
 
     def kv_check(self) -> None:
@@ -239,11 +244,11 @@ class State:
         until ``reset``. CUDA/runtime failures propagate unchanged.
         """
 
+        if self._kv_error is not None:
+            raise self._kv_error
         status = self.kv_status
         if status is None:
             return
-        if self._kv_error is not None:
-            raise self._kv_error
         if not self._kv_pending:
             return
         if status.is_cuda and torch.cuda.is_current_stream_capturing():
@@ -254,10 +259,10 @@ class State:
         """``kv_check`` from status words a caller read back after this frame's last status write (its own wait):
         the same latch, without a readback of its own."""
 
-        if self.kv_status is None:
-            return
         if self._kv_error is not None:
             raise self._kv_error
+        if self.kv_status is None:
+            return
         if self._kv_pending:
             self._kv_latch(bits, layer)
 
@@ -300,7 +305,21 @@ class State:
     def cache_bytes(self, rows: int | None = None) -> int:
         """Bytes of the caches that grow with context at ``rows`` rows (now: ``capacity``), the MTP head's included."""
 
+        if rows is None and getattr(self, "_resize_error", None) is not None:
+            # A failed layer-at-a-time replacement can leave different layers
+            # at different sizes. The old capacity is no longer an accounting
+            # authority, even though no such geometry may be used for inference.
+            return self.owned_cache_bytes()
         return self.layers * self.layer_bytes(rows)
+
+    def owned_cache_bytes(self) -> int:
+        """Actual attached cache storage; used only for failed resize accounting and retirement."""
+
+        total = sum(cache.nbytes for cache in self.kc)
+        total += sum(array.nbytes for arrays in (self.ikc, self.pooled) for array in arrays)
+        if hasattr(self, "mtp_kc"):
+            total += self.mtp_kc.nbytes + self.mtp_ikc.nbytes + self.mtp_pooled.nbytes
+        return total
 
     def layer_bytes(self, rows: int | None = None) -> int:
         """One attention layer's share of ``cache_bytes``: what a resize holds twice at once."""
@@ -328,23 +347,81 @@ class State:
         keep = max(self.pos, self.mtp_len)
         if rows < keep:
             raise ValueError(f"a {rows}-row cache can't keep {keep} committed rows")
-        blocks, kept_blocks = -(-rows // self.ratio), -(-keep // self.ratio)
-        for i in range(len(self.kc)):            # a layer at a time: its old buffers go before the next one's come
-            self.kc[i] = self.kc[i].resized(rows, self.pos)
-            self.ikc[i] = _rows(self.ikc[i], rows, self.pos)
-            self.pooled[i] = _rows(self.pooled[i], blocks, kept_blocks)
-        if hasattr(self, "mtp_kc"):
-            mtp_blocks = -(-self.mtp_len // self.ratio)
-            self.mtp_kc = self.mtp_kc.resized(rows, self.mtp_len)
-            self.mtp_ikc = _rows(self.mtp_ikc, rows, self.mtp_len)
-            self.mtp_pooled = _rows(self.mtp_pooled, blocks, mtp_blocks)
+        try:
+            self._resize_caches(rows, self.pos, self.mtp_len)
+        except BaseException as error:
+            self._poison_resize(error)
+            raise
         self.capacity = rows
+        self.version += 1
+        return self.cache_bytes() - before
+
+    def _resize_caches(self, rows: int, pos: int, mtp_len: int) -> None:
+        """Commit one complete layer at a time; at most one layer's replacement overlaps its old storage."""
+
+        blocks, kept_blocks = -(-rows // self.ratio), -(-max(pos, mtp_len) // self.ratio)
+        cache = index = pooled = None
+        try:
+            for i in range(len(self.kc)):
+                cache = self.kc[i].resized(rows, pos)
+                index = _rows(self.ikc[i], rows, pos)
+                pooled = _rows(self.pooled[i], blocks, kept_blocks)
+                self.kc[i], self.ikc[i], self.pooled[i] = cache, index, pooled
+                cache = index = pooled = None
+            if hasattr(self, "mtp_kc"):
+                cache = self.mtp_kc.resized(rows, mtp_len)
+                index = _rows(self.mtp_ikc, rows, mtp_len)
+                pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
+                self.mtp_kc, self.mtp_ikc, self.mtp_pooled = cache, index, pooled
+        finally:
+            # Tracebacks retain this frame. Uncommitted replacements must not
+            # survive an allocation/copy failure as unaccounted cache authority.
+            cache = index = pooled = None
+
+    def _poison_resize(self, error: BaseException) -> None:
+        import traceback
+
+        self._resize_error = error
+        self._kv_error = KVResizeError("cache resize failed; this sequence requires exclusive cache retirement")
+        self._kv_error.__cause__ = error
+        self.version += 1
+        # Retain the traceback's stack, while releasing failed helpers' local
+        # replacement tensors (including KVCache.resized and _rows). Attached
+        # arrays stay owned and charged until explicit retirement succeeds.
+        traceback.clear_frames(error.__traceback__)
+
+    def recover_resize(self, w: Weights, rows: int) -> int:
+        """Exclusively discard a failed sequence and rebuild its cache geometry.
+
+        The decoder removes kept aliases before calling, then returns the slot
+        to its free pool only on success. Fence pending copies/consumers before
+        replacing storage. A failed fence/rebuild/reset retains poison and all
+        attached ownership; its caller preserves the primary and cleanup errors.
+        """
+
+        if self._resize_error is None:
+            raise RuntimeError("cache retirement requires a failed resize")
+        if type(rows) is not int or not 0 < rows <= self.limit:
+            raise ValueError("retired cache rows must be a positive integer within the slot limit")
+        before = self.owned_cache_bytes()
+        try:
+            if self.pos_dev.is_cuda:
+                torch.cuda.current_stream(self.pos_dev.device).synchronize()
+            self._resize_caches(rows, 0, 0)
+            self.capacity = rows
+            self._resize_error = self._kv_error = None
+            self.reset(w)
+        except BaseException as error:
+            self._poison_resize(error)
+            raise
         self.version += 1
         return self.cache_bytes() - before
 
     def reset(self, w: Weights) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
+        if self._resize_error is not None:
+            raise self._kv_error
         if self.kv_status is not None:
             self.kv_status.zero_()
             self.kv_status[1].fill_(-2)
