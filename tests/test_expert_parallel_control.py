@@ -1,13 +1,15 @@
 """Expert ownership, bounded work wire and rank-process failure contracts; no GPU emulation."""
 import os
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from tensorfold.cuda.expert_launch import supervise
 from tensorfold.cuda.expert_parallel import Ownership, ownership
-from tensorfold.families.qwen4_exp.cuda.expert_parallel import decode_frame
+from tensorfold.families.qwen4_exp.cuda.expert_parallel import Follower, Session, decode_frame
 
 
 def test_asymmetric_shards_cover_every_expert_exactly_once():
@@ -61,3 +63,56 @@ def test_local_slot_mapping_retains_shared_owner_and_skips_only_other_owners():
     assert Ownership((341, 171), 1).local(picks).tolist() == [[-1, -1, 0, 170, -1]]
     with pytest.raises(ValueError):
         Ownership((341, 171), 1).local(torch.tensor([513]))
+
+
+def _session_owner(comm, *, store=None):
+    session = object.__new__(Session)
+    session.lock = threading.RLock()
+    session.rank, session.world = 0, 2
+    session.closed = session.retired = False
+    session.comm, session.reader = comm, None
+    session.cache = SimpleNamespace(close=lambda: None)
+    session.source_files = []
+    session.store = store or SimpleNamespace(set=lambda *args: None)
+    return session
+
+
+def test_failed_failure_notification_still_aborts_and_retires_payloads():
+    retired = []
+    def failed_store(*args):
+        raise OSError("leader disappeared")
+    session = _session_owner(SimpleNamespace(close=lambda **kw: retired.append(kw)),
+                             store=SimpleNamespace(set=failed_store))
+    with pytest.raises(OSError, match="leader disappeared"):
+        session.close(abort=True)
+    assert retired == [{"abort": True}]
+    assert session.retired
+
+
+def test_unresolved_native_abort_retains_cache_and_source_for_retry():
+    attempts, payloads = [], []
+    def retire(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RuntimeError("native abort unresolved")
+    session = _session_owner(SimpleNamespace(close=retire))
+    session.cache = SimpleNamespace(close=lambda: payloads.append("cache"))
+    session.source_files = [SimpleNamespace(close=lambda: payloads.append("source"))]
+    with pytest.raises(RuntimeError, match="native abort unresolved"):
+        session.close(abort=True)
+    assert session.closed and not session.retired and payloads == []
+    session.close()
+    assert session.retired and payloads == ["cache", "source"]
+    assert attempts == [{"abort": True}, {"abort": True}]
+
+
+def test_follower_never_reads_authority_before_group_admission():
+    events = []
+    def receive(key):
+        events.append(key)
+        raise MemoryError("group admission refused")
+    session = SimpleNamespace(_receive=receive, _ensure_reader=lambda: events.append("reader"),
+                              close=lambda **kw: events.append(kw))
+    with pytest.raises(MemoryError, match="group admission refused"):
+        Follower(session)
+    assert events == ["ep/admitted", {"abort": True}]
