@@ -34,6 +34,10 @@ class DraftConfig:
     def from_dict(cls, raw):
         if raw.get("architectures") != ["DFlashDraftModel"] or raw.get("model_type") != "qwen3":
             raise ValueError("this adapter requires Qwen3 DFlash v1, not native MTP or DFlash2")
+        if any(raw.get(key) not in (None, "bfloat16") for key in ("dtype", "torch_dtype")):
+            raise ValueError("DFlash declared execution dtype must be bfloat16")
+        if raw.get("quantization_config") not in (None, {}):
+            raise ValueError("DFlash checkpoint quantization declarations are unsupported; supply BF16 draft weights")
         names = ("hidden_size", "intermediate_size", "num_attention_heads", "num_key_value_heads", "head_dim",
                  "num_hidden_layers", "num_target_layers", "vocab_size", "block_size")
         d, width, heads, kv, hd, layers, target, vocab, block = [positive(raw.get(k), k) for k in names]
@@ -61,13 +65,19 @@ class DraftConfig:
             raise ValueError("DFlash RMS epsilon must be finite and positive")
         # Reuse the owned YaRN interpolation/amplitude implementation, with
         # Qwen3's full-dimensional text RoPE instead of Flash Next's partial default.
-        params = raw.get("rope_parameters") or raw.get("rope_scaling") or {}
+        params = raw.get("rope_parameters")
+        if params is None:
+            params = raw.get("rope_scaling")
+        if params is None:
+            params = {}
         if not isinstance(params, dict):
             raise ValueError("DFlash rotary parameters must be an object")  # noqa: TRY004 - external JSON schema
         params = dict(params)
         if params.get("partial_rotary_factor", raw.get("partial_rotary_factor", 1)) != 1:
             raise ValueError("DFlash Qwen3 uses full-head rotary dimensions")
-        params.update(rope_theta=raw.get("rope_theta", 10000), partial_rotary_factor=1)
+        if "rope_theta" in params and "rope_theta" in raw and params["rope_theta"] != raw["rope_theta"]:
+            raise ValueError("DFlash rotary theta declarations disagree")
+        params.update(rope_theta=params.get("rope_theta", raw.get("rope_theta", 10000)), partial_rotary_factor=1)
         rope = RopeParameters.from_config({**raw, "rope_parameters": params})
         return cls(d, width, heads, kv, hd, layers, target, vocab, tuple(taps), mask, block, float(eps), rope)
 
