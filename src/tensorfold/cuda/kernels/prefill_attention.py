@@ -62,7 +62,10 @@ def _attend(Q, K, V, OUT, p0, W, H: tl.constexpr, HK: tl.constexpr, D: tl.conste
 
 
 def attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: int, *, scale: float) -> torch.Tensor:
-    """q (W, H, D) bf16 at positions [p0, p0 + W); the caches must already hold every key through p0 + W - 1."""
+    """q (W, H, D) bf16 at positions [p0, p0 + W); caches hold every key through p0 + W - 1.
+
+    Native D128/D256 queries require 4/16-byte alignment; their caches require 16-byte alignment.
+    """
 
     hk = _check(q, k_cache, v_cache, p0)
     _, h, d = q.shape

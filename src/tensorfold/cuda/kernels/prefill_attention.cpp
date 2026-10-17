@@ -24,6 +24,11 @@ void prefill_attention(const at::Tensor& q, const at::Tensor& k, const at::Tenso
     TORCH_CHECK(k.size(0) >= p0 + q.size(0), "caches must hold the chunk's keys");
     TORCH_CHECK(out.device() == q.device() && out.is_contiguous() && out.sizes() == q.sizes() &&
                 out.scalar_type() == at::kBFloat16, "out: like q on q's CUDA device");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(q.data_ptr()) % (q.size(2) == 128 ? 4 : 16) == 0,
+                "q requires 4-byte alignment for D128 or 16-byte alignment for D256");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(k.data_ptr()) % 16 == 0 &&
+                reinterpret_cast<uintptr_t>(v.data_ptr()) % 16 == 0, "cache reads require 16-byte alignment");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % 4 == 0, "output stores require 4-byte alignment");
     // Only [0, p0 + W) of each contiguous cache is read. Unfilled tails may hold output.
     const int64_t keys = p0 + q.size(0);
     const int64_t cache_reads = keys == 0 ? 0 : (k.numel() / k.size(0)) * keys;

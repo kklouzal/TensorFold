@@ -119,6 +119,18 @@ def test_prompt_attention_rejects_invalid_head_tiles(hpc):
         _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, hpc)
 
 
+@pytest.mark.parametrize("target,dim", [("q", 128), ("q", 256), ("k", 128), ("v", 128), ("out", 128)])
+def test_native_prompt_attention_rejects_misaligned_views(target, dim):
+    q = torch.zeros((2, 2, dim), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((6, 1, dim), device="cuda", dtype=torch.bfloat16)
+    tensors = {"q": q, "k": k, "v": torch.zeros_like(k), "out": torch.empty_like(q)}
+    tensor = tensors[target]
+    tensors[target] = torch.empty(tensor.numel() + 1, device="cuda", dtype=tensor.dtype)[1:].view_as(tensor)
+    assert tensors[target].is_contiguous()
+    with pytest.raises(RuntimeError, match="alignment"):
+        _ext().prefill_attention(tensors["q"], tensors["k"], tensors["v"], tensors["out"], 0, dim**-0.5, 1)
+
+
 @pytest.mark.parametrize("alias", ["q", "partial_q", "k", "partial_k", "v"])
 def test_prompt_attention_rejects_output_overlapping_reads(alias):
     q = torch.zeros((2, 2, 128), device="cuda", dtype=torch.bfloat16)
