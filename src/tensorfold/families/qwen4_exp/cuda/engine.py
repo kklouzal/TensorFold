@@ -460,7 +460,7 @@ class FlashNextEngine:
         """
         from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes, reserved_growth
         from .prompt_plan import POINTS
-        from tensorfold.cuda.capacity import available_bytes
+        from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
 
         cache = self.w.meta["expert_cache"]
         decoder = self.multi if streams > 1 else self.e
@@ -496,16 +496,23 @@ class FlashNextEngine:
         torch.cuda.empty_cache()
         free, total = map(int, torch.cuda.mem_get_info())
         accounted = int(torch.cuda.memory_allocated())
+        limit = cuda_limit_bytes()
+        # The configured cap is absolute live allocation, rather than another
+        # free-memory allowance. Fixed service state has already consumed it.
+        room = free if limit is None else max(0, min(free, limit - accounted))
         control = 32 if hasattr(cache, "control_device_bytes") else 0
-        decision = auto_pool_bytes(free, cache.entry_bytes, cache.score_history_entries, control_bytes=control,
+        decision = auto_pool_bytes(room, cache.entry_bytes, cache.score_history_entries, control_bytes=control,
                                    growth_bytes=growth + overlap, snapshot_bytes=snapshots, workspace_bytes=transient)
         cache.configure_before_use(decision["gpu_bytes"])
         torch.cuda.synchronize()
         torch.cuda.empty_cache()
         final_free, final_total = map(int, torch.cuda.mem_get_info())
-        final_spare = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+        final_allocated = int(torch.cuda.memory_allocated())
+        final_spare = int(torch.cuda.memory_reserved()) - final_allocated
+        future = AUTO_HEADROOM_BYTES + growth + overlap + snapshots + transient
         if (final_total != total or final_free < AUTO_HEADROOM_BYTES
-                or final_free + final_spare < AUTO_HEADROOM_BYTES + growth + overlap + snapshots + transient):
+                or final_free + final_spare < future
+                or (limit is not None and final_allocated + future > limit)):
             raise MemoryError("automatic expert pool cannot retain its declared full service workspace")
         if streams > 1:
             from tensorfold.cuda.memory_gate import MemoryGate, torch_live
@@ -518,7 +525,8 @@ class FlashNextEngine:
         if self.kv_full_windows is not None:
             decision["policy"] = "remaining-device-bytes-after-fixed-service-state-shared-kv-v1"
         decision.update(physical_total_bytes=total, fixed_allocated_bytes_before_pool=accounted,
-                        allocated_bytes_after_pool=int(torch.cuda.memory_allocated()),
+                        physical_free_bytes_before_pool=free, cuda_memory_limit_bytes=limit,
+                        allocated_bytes_after_pool=final_allocated,
                         physical_free_bytes_after_pool=final_free, kept_snapshot_count=retained,
                         allocator_spare_bytes_after_pool=final_spare, vision_workspace_bytes=vision_workspace_bytes,
                         snapshot_bytes_each=snapshot, full_context_growth_bytes=full_growth,

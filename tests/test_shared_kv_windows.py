@@ -113,17 +113,27 @@ def test_all_blocked_decoders_end_newest_explicitly_and_oldest_finishes_its_full
 
 
 @pytest.mark.parametrize("windows,selected", [(None, 4), (1, 1), (2, 2), (9, 4)])
-def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(windows, selected, capsys):
+@pytest.mark.parametrize("cap", [None, 0.5, 6, 8])
+@pytest.mark.parametrize("overallocate", [False, True])
+def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
+        windows, selected, cap, overallocate, capsys, monkeypatch):
+    from tensorfold.cuda.capacity import LIMIT_ENV
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
     from tensorfold.families.qwen4_exp.cuda.prompt_plan import POINTS
     from tensorfold.families.qwen4_exp.ram_experts import AUTO_HEADROOM_BYTES
 
     gib, entry = 2**30, 2**20
+    if cap is None:
+        monkeypatch.delenv(LIMIT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(LIMIT_ENV, str(cap))
     allocated = [gib]
     cache = NS(entry_bytes=entry, score_history_entries=32768, host_bytes=4 * gib)
+    configurations = []
 
     def configure(nbytes):
-        allocated[0] += nbytes - entry
+        configurations.append(nbytes)
+        allocated[0] += nbytes - entry + (2 * entry if overallocate else 0)
         cache.gpu_bytes = nbytes
         cache.capacity = cache.resident_capacity = nbytes // entry
 
@@ -152,6 +162,16 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(window
                          mem_get_info=lambda: (16 * gib - allocated[0], 16 * gib),
                          memory_allocated=lambda: allocated[0], memory_reserved=lambda: allocated[0]))
     vision = 7 * entry
+    if cap == 0.5:
+        with pytest.raises(ValueError, match="cannot fit one automatic expert cell"):
+            engine._configure_auto_experts(runtime, 4, vision_workspace_bytes=vision)
+        assert not configurations and allocated == [gib]
+        return
+    if overallocate:
+        with pytest.raises(MemoryError, match="declared full service workspace"):
+            engine._configure_auto_experts(runtime, 4, vision_workspace_bytes=vision)
+        assert len(configurations) == 1
+        return
     engine._configure_auto_experts(runtime, 4, vision_workspace_bytes=vision)
     result = engine.capacity_plan["vram_experts_auto"]
     snapshots = 8 + 4 * POINTS
@@ -170,6 +190,11 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(window
     assert result["policy"] == ("remaining-device-bytes-after-fixed-service-state-v1" if windows is None else
                                 "remaining-device-bytes-after-fixed-service-state-shared-kv-v1")
     assert result["physical_free_bytes_after_pool"] >= result["reserved_bytes"]
+    assert result["physical_free_bytes_before_pool"] == 15 * gib
+    assert result["cuda_memory_limit_bytes"] == (None if cap is None else cap * gib)
+    assert result["available_bytes"] == (15 * gib if cap is None else (cap - 1) * gib)
+    if cap is not None:
+        assert allocated[0] + result["reserved_bytes"] <= cap * gib
     assert engine.capacity_plan["serving_peak_bytes_estimate"] == allocated[0] + result["reserved_bytes"] - AUTO_HEADROOM_BYTES
     assert ("request errors possible" in capsys.readouterr().out) is (windows is not None)
 
