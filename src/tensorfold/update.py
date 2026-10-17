@@ -301,6 +301,10 @@ def _update_editable(clone: Path, tag: str) -> int:
 def update(*, check_only: bool = False, force: bool = False) -> int:
     """``tensorfold update``: install the newest release (or say this one is current)."""
 
+    if os.environ.get("TF_FOUNDATION_STATE") and not check_only:
+        print("[tensorfold] this managed CUDA image protects its foundation; rebuild the image with "
+              "the selected foundation inputs to update TensorFold", file=sys.stderr)
+        return 1
     tag = latest_release(timeout=10.0, use_cache=False)
     if tag is None:
         print(f"[tensorfold] could not resolve a published release for {REPO} ({RELEASES_API})", file=sys.stderr)

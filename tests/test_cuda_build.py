@@ -449,6 +449,7 @@ def _pip_site(tmp_path, nvcc=True):
 
 
 def test_with_no_toolkit_the_pip_one_beside_torch_builds_and_links(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("TF_FOUNDATION_STATE", raising=False)  # Unmanaged pip-toolkit capability.
     monkeypatch.delenv("CUDA_HOME", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.delenv("TORCH_EXTENSIONS_DIR", raising=False)
@@ -462,6 +463,7 @@ def test_with_no_toolkit_the_pip_one_beside_torch_builds_and_links(tmp_path, mon
 
 
 def test_a_toolkit_torch_found_or_no_pip_toolkit_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("TF_FOUNDATION_STATE", raising=False)  # Unmanaged toolkit discovery.
     monkeypatch.delenv("CUDA_HOME", raising=False)
     home, torch, ext = _pip_site(tmp_path)
     ext.CUDA_HOME = "/usr/local/cuda"

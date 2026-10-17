@@ -59,12 +59,6 @@ services:
       TENSORFOLD_VIDEO_TOKENS: '16384'
       # failure-only captures (a reply that ended inside its think block): at most 32 files and 256 MiB
       TENSORFOLD_FAILURE_CAPTURE_DIR: /cache/failure-captures
-      # This image's host cache is separate from the retained rollback cache.
-      TORCH_EXTENSIONS_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/torch_extensions
-      TRITON_CACHE_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/triton
-      CUDA_CACHE_PATH: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/cuda
-      TORCHINDUCTOR_CACHE_DIR: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/inductor
-      XDG_CACHE_HOME: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/xdg
     volumes:
       - type: bind
         source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}

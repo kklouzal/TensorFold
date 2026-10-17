@@ -305,17 +305,21 @@ cgroup, so host memory must also be observed; this one observation is not a
 guaranteed free-memory floor. This record does not relabel the earlier exhaustive
 AMD64 or historical GB10 checks as new runs.
 
+Current builds require the [managed foundation inputs](foundation.md): separately sealed nightly dependencies and native CUDA providers, plus explicit generated-pin and artifact contexts. The recorded earlier CUDA13.4.1 images below retain their original qualification. Latest-base refresh qualification must be recorded separately.
+
 Build from the repository root:
 
 ```bash
 docker buildx build --platform linux/arm64 --load --target runtime \
+  --build-context foundation_pins=./generated-arm64 \
+  --build-context foundation_artifacts=./artifacts-arm64 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
   --build-arg MAX_JOBS=20 \
   --tag tensorfold-gb10-fork:local --file deploy/gb10/Dockerfile .
 docker compose -f deploy/gb10/compose.yaml config --quiet
 ```
 
-The Dockerfile uses NVIDIA's NGC CUDA DL inference development base, pinned by
+The earlier qualified Dockerfile used NVIDIA's NGC CUDA DL inference development base, pinned by
 its immutable multiarchitecture OCI index. It selects the original ARM64 child
 or the audited AMD64 child, then validates the actual Linux/Python architecture
 before installing the matching locks. That supplies NVCC, CUDA headers and forward-compatibility
@@ -337,6 +341,8 @@ Build AMD64 on the target's native Docker host with the same file:
 
 ```bash
 docker buildx build --platform linux/amd64 --load --target runtime \
+  --build-context foundation_pins=./generated-amd64 \
+  --build-context foundation_artifacts=./artifacts-amd64 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
   --tag tensorfold-fork:amd64 --file deploy/gb10/Dockerfile .
 ```
@@ -350,7 +356,7 @@ paths, model, memory pool and context for the target machine using actual
 admission and measured peaks. A 16 GiB card does not inherit the GB10's available
 memory or the original MLX checkpoint's host-fit assumptions.
 
-cuDNN uses the complete hash-pinned wheel provider. Build-time aliases in
+In those earlier images, cuDNN used the complete hash-pinned wheel provider. Build-time aliases in
 `/opt/tensorfold-cudnn` cover its major, minor and full-version SONAME lookups;
 that directory leads the library search path. The NGC inference base has a
 reduced cuDNN library set, so ordinary wheel-directory precedence can mix
@@ -499,11 +505,13 @@ CPU verification, from the repository root:
 
 ```bash
 docker buildx build --load --target verification \
+  --build-context foundation_pins=./generated-arm64 \
+  --build-context foundation_artifacts=./artifacts-arm64 \
   --tag tensorfold-gb10-fork:verification --file deploy/gb10/Dockerfile .
-docker run --rm --network none \
+docker run --rm --network none --entrypoint python3 \
   -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
-  tensorfold-gb10-fork:verification \
-  -o pythonpath=tests \
+  tensorfold-gb10-fork:verification /opt/tensorfold-pins/foundation_guard.py run -- \
+  python3 -m pytest -o pythonpath=tests \
   tests/test_native_ssd.py tests/test_harness_tokenizer.py \
   tests/test_qwen4_exp_yarn.py -q
 ```
@@ -560,7 +568,9 @@ shutdown after the CUDA suite, which exited successfully. Small isolated compile
 and GPU probes did not reproduce them. Sustained full-model memory behavior still
 needs validation; the warnings are retained rather than suppressed.
 
-To refresh dependency locks, resolve the updated pins in the matching Linux
+For current foundation refreshes, follow [the schema2 native generation, build and audit procedure](foundation.md). The following commands document the historical schema1 refresh and must not be used to promote old pins as new foundation inputs.
+
+To reproduce those earlier dependency locks, resolve the recorded pins in the matching Linux
 CPython 3.12 environment with `pip install --dry-run --ignore-installed --report
 REPORT.json`, including the three exact wheel pins and verification packages.
 Run the generator in an environment with `packaging` installed:

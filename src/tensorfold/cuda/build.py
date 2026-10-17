@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 import os
 from pathlib import Path
 import shutil
@@ -172,6 +173,17 @@ def _pip_flags() -> tuple[str, ...]:
 def pip_toolkit(cpp_extension: Any, torch: Any) -> list[str]:
     """No toolkit found (CUDA_HOME, nvcc, /usr/local/cuda): NVIDIA's pip one beside torch, its cudart linked by name."""
 
+    if os.environ.get("TF_FOUNDATION_STATE"):
+        with Path(os.environ["TF_FOUNDATION_STATE"]).open("rb") as stream:
+            raw = stream.read(64 * 2**20 + 1)
+        if len(raw) > 64 * 2**20:
+            raise ValueError("managed CUDA foundation state exceeds its bound")
+        expected = Path(json.loads(raw)["toolchain"]["cuda_home"]).resolve(strict=True)
+        if (os.environ.get("CUDA_HOME") is None or Path(os.environ["CUDA_HOME"]).resolve(strict=True) != expected
+                or cpp_extension.CUDA_HOME is None or Path(cpp_extension.CUDA_HOME).resolve(strict=True) != expected
+                or not (expected / "bin/nvcc").is_file()):
+            raise RuntimeError("managed CUDA foundation requires its selected native toolkit; rebuild the image")
+        return []
     if cpp_extension.CUDA_HOME is not None or not getattr(torch.version, "cuda", None):
         return []
     home = Path(torch.__file__).resolve().parents[1] / "nvidia" / f"cu{torch.version.cuda.split('.')[0]}"

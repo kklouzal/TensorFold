@@ -1,0 +1,14 @@
+# Optional native build overlay for either maintained service Compose profile.
+# Pass both generated native inputs; the serving-only profiles need no build dirs.
+services:
+  tensorfold:
+    build:
+      context: ../..
+      dockerfile: deploy/gb10/Dockerfile
+      target: runtime
+      additional_contexts:
+        foundation_pins: ${TF_FOUNDATION_PINS:?Set TF_FOUNDATION_PINS to the generated native pin directory}
+        foundation_artifacts: ${TF_FOUNDATION_ARTIFACTS:?Set TF_FOUNDATION_ARTIFACTS to the audited local artifact directory}
+      args:
+        SOURCE_REVISION: ${TF_SOURCE_REVISION:-uncommitted}
+        MAX_JOBS: ${TF_BUILD_JOBS:-8}

@@ -120,23 +120,19 @@ uncertain descriptor in that process.
 GLM requires two CUDA ranks; Flash Next can use one or two and needs `--no-drafts` when its checkpoint lacks an MTP
 head.
 
-### RTX cards without Docker
+### Managed RTX CUDA installation
 
-On an RTX 40 or 50 series card or an RTX PRO Blackwell, pip alone is enough. torch comes from PyPI and the CUDA
-compiler from NVIDIA's own wheels, all in a virtual environment, with no root and no container:
+For production CUDA, prepare the [audited native foundation inputs](deploy/gb10/foundation.md)
+and build the maintained image. The foundation supplies the selected official
+nightly Torch/Triton and CUDA providers; installing stable Torch or another CUDA
+wheel family into that environment is not an update procedure. App/test installs
+use disjoint hash locks, exact constraints and full foundation audits. Managed
+`tensorfold update` refuses in-place changes and directs an immutable rebuild.
 
-```bash
-python3 -m venv ~/tf-venv && . ~/tf-venv/bin/activate
-python -m pip install torch ninja "cuda-toolkit[nvcc,cccl]==13.0.*"
-python -m pip install git+https://github.com/kklouzal/TensorFold.git@python-0.6
-tensorfold pull Vontra/Qwen3.8-27B-MLX-4bit z-lab/Qwen3.8-27B-DFlash2
-tensorfold serve Vontra/Qwen3.8-27B-MLX-4bit --name local-model --host 127.0.0.1 --port 8080
-```
-
-Match the compiler wheel to torch's CUDA version, which `python -c "import torch; print(torch.version.cuda)"`
-prints; PyPI's torch 2.14 uses CUDA 13.0. The first start compiles the kernels and names the compiler it found. On
-a card other jobs share, set `TENSORFOLD_MEMORY_RESERVE_GIB` to the memory TensorFold should leave free and pass an
-explicit `--context`.
+Unmanaged developer environments retain package/toolkit discovery for diagnosis.
+Their dependency stack and native execution need their own qualification; they
+do not inherit a managed image's provider or model evidence. On a card other jobs
+share, reserve the actual required memory and select context through admission.
 
 <a id="win-nvidia"></a>
 
