@@ -14,8 +14,9 @@ from tensorfold.families.qwen4_exp import ram_experts
 from test_cuda_geometry import allocations, bytes_in  # noqa: F401 (pytest fixture registration)
 
 
-def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, routed_bits=2):
-    text = {"hidden_size": 256, "moe_intermediate_size": 128, "shared_expert_intermediate_size": 128,
+def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, routed_bits=2,
+               hidden=256, width=128):
+    text = {"hidden_size": hidden, "moe_intermediate_size": width, "shared_expert_intermediate_size": width,
             "num_experts": 3, "num_experts_per_tok": 2, "num_hidden_layers": 2,
             "max_position_embeddings": 128}
     (path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": text,
@@ -34,10 +35,11 @@ def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, rout
     if mtp:
         bases.append("mtp.layers.0.mlp")
     for base in bases:
-        add(base + ".gate.weight", "BF16", [3, 256])
-        add(base + ".shared_expert_gate.weight", "BF16", [1, 256])
+        add(base + ".gate.weight", "BF16", [3, hidden])
+        add(base + ".shared_expert_gate.weight", "BF16", [1, hidden])
         for expert, bits in [(f"experts.{i}", routed_bits) for i in range(3)] + [("shared_expert", shared_bits)]:
-            for projection, k, n in (("gate_proj", 256, 128), ("up_proj", 256, 128), ("down_proj", 128, 256)):
+            for projection, k, n in (("gate_proj", hidden, width), ("up_proj", hidden, width),
+                                    ("down_proj", width, hidden)):
                 prefix = f"{base}.{expert}.{projection}"
                 add(prefix + ".trellis", "I16", [k // 16, n // 16, int(bits * 16)])
                 add(prefix + ".su" if signs else prefix + ".suh", "I16" if signs else "F16",
@@ -66,7 +68,7 @@ def test_compact_authority_maximum_cell_and_resident_logical_scales(tmp_path, mt
     assert plan.host_bytes == layers * (3 * small + large)
     assert plan.authority_allocations == (3 * small + large,) * layers
     assert plan.host_bytes < layers * 4 * large
-    assert plan.staging_bytes == 2 * large
+    assert plan.staging_bytes == 2 * 64 * 2**10
     assert plan.metadata_device_bytes == layers * 4 * (3 * 8 + 3 * 4)
     assert plan.metadata_host_bytes == layers * 4 * 28
     assert plan.control_device_bytes == plan.slots * 32
@@ -88,6 +90,19 @@ def test_supported_original_widths_remain_distinct(tmp_path, routed_bits, shared
     plan = ram_experts.layout(tmp_path, 0.001)
     assert plan.entry_bytes == 3 * 256 * 128 * shared_bits // 8
     assert plan.host_bytes == 3 * (3 * 3 * 256 * 128 * routed_bits // 8 + plan.entry_bytes)
+
+
+def test_large_exl3_cells_budget_rounded_staging_beside_live_loading_temporary(tmp_path):
+    # Header-only sparse checkpoint: no large payload is allocated or loaded.
+    checkpoint(tmp_path, mtp=False, hidden=4096, width=6144)
+    plan = ram_experts.layout(tmp_path, 0.125, mtp=False)
+    entry = 36 * 2**20
+    assert plan.entry_bytes == entry and plan.loading_bytes == 2 * entry
+    rounded_staging = 2 * 64 * 2**20
+    temporary = 2 * entry
+    assert plan.staging_bytes == rounded_staging
+    assert 2 * entry + plan.loading_bytes < rounded_staging + temporary
+    assert plan.staging_bytes + plan.loading_bytes >= rounded_staging + temporary
 
 
 def test_exl3_pin_plan_uses_complete_compact_banks_and_remaining_workspace(tmp_path, monkeypatch):

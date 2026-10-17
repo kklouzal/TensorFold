@@ -300,11 +300,17 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
     slots = min(count, requested // largest)
     if not slots:
         raise ValueError(f"--vram-experts needs at least one packed EXL3 expert ({largest / GIB:.6f} GiB)")
-    # Three logical pointer/width tables per layer; prepared FP16 scales are
-    # already included by the resident weight transform.
+    # The pinned runtime's caching host allocator can round each of the two
+    # staging payloads up to the next power of two.
+    # EXL3's loading bound is a separate two-entry temporary, unlike affine's
+    # deliberately wider packing bound. Charge the rounded payload separately;
+    # driver/allocator metadata stays within the host admission reserve.
+    # Three logical pointer/width tables per layer and prepared FP16 scales
+    # remain separately accounted by the resident weight transform.
     payload = slots * largest
     final = arena_plan(tuple(specs), payload, payload + slots * 32)
-    return Layout(largest, slots, payload, total, 2 * largest,
+    staging = 2 * (1 << (largest - 1).bit_length())
+    return Layout(largest, slots, payload, total, staging,
                   max(64 * 2**20, 2 * largest), "exl3", count * (3 * 8 + 3 * 4), count * 28,
                   slots * 32, final.publication_host_bytes, gib == "auto",
                   authority_allocations=tuple(allocations))
