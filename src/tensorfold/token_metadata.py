@@ -1,0 +1,107 @@
+"""Model-owned reply-stop metadata, independent from training/segmentation IDs.
+
+Resolve once during preparation. Only the tokenizer's named EOS role adds a
+token stop; other special tokens have no implied end-of-reply meaning.
+"""
+from __future__ import annotations
+
+from tensorfold.checkpoint_metadata import read_json
+
+
+def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):
+    """Validate native token IDs without accepting booleans, coercions or empty overrides."""
+    if vocab_size is not None and (type(vocab_size) is not int or vocab_size <= 0):
+        raise ValueError("vocabulary size must be a positive native integer")
+    values = () if value is None else value if type(value) in (list, tuple) else (value,)
+    if any(type(item) is not int or item < 0 or (vocab_size is not None and item >= vocab_size)
+           for item in values):
+        raise ValueError(f"{field} must contain nonnegative native integer IDs within the model vocabulary")
+    out = tuple(dict.fromkeys(values))
+    if required and not out:
+        raise ValueError(f"{field} requires at least one token ID")
+    return out
+
+
+def _content(value, field):
+    if isinstance(value, dict):
+        value = value.get("content")
+    if value is not None and (type(value) is not str or not value):
+        raise ValueError(f"{field} must be a nonempty token string or AddedToken content")
+    return value
+
+
+def _lookup_eos(model_dir, config, token, vocab_size):
+    """Resolve exact token content, including added tokens; never encode to an unknown-token fallback."""
+    tokenizer = read_json(model_dir, "tokenizer.json")
+    actual = []
+    if tokenizer is not None:
+        added = tokenizer.get("added_tokens", [])
+        if not isinstance(added, list):
+            raise ValueError("tokenizer.json added_tokens must be a list")
+        for entry in added:
+            if not isinstance(entry, dict):
+                raise ValueError("tokenizer.json added tokens must be objects")  # noqa: TRY004 - external JSON schema
+            if entry.get("content") == token:
+                actual.extend(token_ids(entry.get("id"), field="tokenizer EOS added-token ID",
+                                        vocab_size=vocab_size, required=True))
+        model = tokenizer.get("model")
+        model = {} if model is None else model
+        if not isinstance(model, dict):
+            raise ValueError("tokenizer.json model must be an object")
+        vocab = model.get("vocab", {})
+        if isinstance(vocab, dict):
+            if token in vocab:
+                actual.extend(token_ids(vocab[token], field="tokenizer EOS vocabulary ID",
+                                        vocab_size=vocab_size, required=True))
+        elif isinstance(vocab, list):  # Unigram stores [token, score] entries in ID order.
+            for index, entry in enumerate(vocab):
+                if not isinstance(entry, list) or len(entry) != 2 or type(entry[0]) is not str:
+                    raise ValueError("tokenizer Unigram vocabulary must contain token/score pairs")
+                if entry[0] == token:
+                    actual.extend(token_ids(index, field="tokenizer EOS vocabulary ID", vocab_size=vocab_size))
+        else:
+            raise ValueError("tokenizer vocabulary must be a mapping or Unigram token/score list")
+    declared = []
+    decoder = config.get("added_tokens_decoder")
+    decoder = {} if decoder is None else decoder
+    if not isinstance(decoder, dict):
+        raise ValueError("added_tokens_decoder must be an object")  # noqa: TRY004 - external JSON schema
+    for key, entry in decoder.items():
+        if _content(entry, "added_tokens_decoder content") == token:
+            try:
+                index = int(key)
+            except (ValueError, TypeError):
+                raise ValueError("added_tokens_decoder EOS key must be an integer ID") from None
+            declared.extend(token_ids(index, field="declared tokenizer EOS ID", vocab_size=vocab_size))
+    actual, declared = tuple(dict.fromkeys(actual)), tuple(dict.fromkeys(declared))
+    if len(actual) > 1 or len(declared) > 1 or (actual and declared and actual != declared):
+        raise ValueError("tokenizer EOS content has conflicting token IDs")
+    if tokenizer is not None and not actual:
+        raise ValueError("declared tokenizer EOS content is absent from tokenizer.json")
+    found = actual or declared
+    if not found:
+        raise ValueError("declared tokenizer EOS content has no authoritative token ID")
+    return found
+
+
+def resolve_eos(model_dir, configured=None, *, vocab_size=None, override=None, fallback=None):
+    """Stable model, generation and named tokenizer EOS union, or explicit replacement.
+
+    ``configured`` is the caller's authoritative model EOS; an optional family
+    fallback applies only when no metadata declares an EOS. ``override=None`` is
+    omitted, while any explicit override must be nonempty and valid. Training
+    and n-gram segmentation EOS are intentionally outside this reply contract.
+    """
+    if override is not None:
+        return token_ids(override, field="eos_token_ids override", vocab_size=vocab_size, required=True)
+    found = list(token_ids(configured, field="model eos_token_id", vocab_size=vocab_size))
+    generation = read_json(model_dir, "generation_config.json") or {}
+    found.extend(token_ids(generation.get("eos_token_id"), field="generation eos_token_id", vocab_size=vocab_size))
+    config = read_json(model_dir, "tokenizer_config.json") or {}
+    special = read_json(model_dir, "special_tokens_map.json") or {}
+    token = _content(config.get("eos_token", special.get("eos_token")), "tokenizer eos_token")
+    if token is not None:
+        found.extend(_lookup_eos(model_dir, config, token, vocab_size))
+    if not found and fallback is not None:
+        found.extend(token_ids(fallback, field="family default eos_token_id", vocab_size=vocab_size))
+    return token_ids(found, vocab_size=vocab_size, required=True)
