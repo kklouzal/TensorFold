@@ -16,18 +16,8 @@ from .bf16 import b16_from_rows, quantize4, stack_b16
 from .qmm import Q4, dequantize, make_q4, stack_q4
 from .reader import _DT, _groups, _Reader, _rows, _rows_at, norms_around_one  # noqa: F401
 from .weight_types import (
-    GDNW,
-    HC,
-    MTPW,
-    PLEW,
-    AttnW,  # noqa: F401 (re-exported)
-    Config,
-    LayerW,
-    MoEW,
-    Weights,
-    draft_token_ids,
-    stop_ids,
-)
+    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids, stop_ids)  # noqa: F401 (re-exported)
+
 
 _PLAIN = (torch.bfloat16, torch.float16, torch.float32)
 
@@ -436,13 +426,16 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                              f"checkpoints, not {cfg.quant}")
         around_one = norms_around_one(rd, prefix + mbase, chosen)
         if ram_layout is not None:
-            from tensorfold.cuda.capacity import config
             from tensorfold.cuda.expert_cache import HostExpertCache
 
-            from ..expert_authority import pin_policy
-            policy = pin_policy(config(model_dir), ram_layout, vram_experts_pin, future_bytes=_pin_future_bytes)
-            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, pin_policy=policy)
-            if ram_layout.format == "affine4":
+            pin_options = {}
+            if vram_experts_pin != "off":
+                from ..expert_authority import pin_policy
+                from tensorfold.cuda.capacity import config
+                pin_options["pin_policy"] = pin_policy(config(model_dir), ram_layout, vram_experts_pin,
+                                                       future_bytes=_pin_future_bytes)
+            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
+            if cfg.quant == "mlx":
                 from tensorfold.cuda.packed_experts import PackedExpertCache
                 packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"

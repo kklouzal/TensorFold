@@ -329,6 +329,13 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     owners = {"engine": engine}
     primary = None
     try:
+        if getattr(args, "expert_ranks", 1) > 1 and args.rank != 0:
+            # Expert-only followers have no backbone/HTTP precision factory.
+            # The leader validates those options against its actual weights.
+            stacks.arm()
+            print(f"[tensorfold] expert rank {args.rank} ready; following rank 0", flush=True)
+            engine.follow()
+            return 0
         weights = getattr(engine, "w", None)
         fp8 = prompt_precision.fp8() and bool(getattr(weights, "fast_prefill", False))
         if asked and not fp8 and getattr(weights, "precision", "full") == precision.CHECKPOINT:
