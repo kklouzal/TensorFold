@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.cuda.expert_parallel import owned_items
 from tensorfold.cuda.nvfp4 import experts as nvx
 from tensorfold.cuda.expert_window import ExpertWindow
 
@@ -133,15 +134,10 @@ class CachedMoE4:
             plan, act = scratch
             plan.prefill = bool(prefill)
             plan.tile = nvx.PREFILL_TILE if prefill else grouped.TILE
-            members, items = [], []
             # Deterministic expert/row-slot ordering agrees with grouped.route;
             # unowned and resident-shared pairs never enter the routed plan.
-            for expert in range(self.routed):
-                pairs = torch.nonzero(cpu.reshape(-1) == expert, as_tuple=False).reshape(-1).tolist()
-                for at in range(0, len(pairs), plan.tile):
-                    chunk = pairs[at:at + plan.tile]
-                    items.append((expert, len(members), len(chunk)))
-                    members.extend(chunk)
+            values = [expert if expert < self.routed else -1 for expert in cpu.reshape(-1).tolist()]
+            members, items = owned_items(values, max(1, self.routed), plan.tile)
             if members:
                 plan.members[:len(members)].copy_(torch.tensor(members, dtype=torch.int32))
                 _run_cached_items(x[lo:hi], self.routed_experts, plan, act, out[lo:hi].view(-1, self.dims),
