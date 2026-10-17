@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 from types import ModuleType
+from typing import Callable
 import unittest
 from unittest.mock import patch
 
@@ -43,7 +44,7 @@ def header_function():
                  and any(isinstance(target, ast.Name) and target.id == "SIZES" for target in node.targets))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "headers")
     module = ast.fix_missing_locations(ast.Module(body=[sizes, function], type_ignores=[]))
-    namespace = dict(os=os, Path=Path, __name__="tensorfold.cuda.capacity", __package__="tensorfold.cuda")
+    namespace = dict(os=os, Path=Path, Callable=Callable, __name__="tensorfold.cuda.capacity", __package__="tensorfold.cuda")
     exec(compile(module, str(path), "exec"), namespace)
     return namespace["headers"]
 
