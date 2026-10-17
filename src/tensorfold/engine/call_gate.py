@@ -6,6 +6,10 @@ import re
 from typing import Any, Callable, Sequence
 
 _ANSWER, _LEAD, _NAME, _DONE = range(4)
+# Shared markup authority for gate discovery and server reply processing:
+# Qwen, Gemma 4, and DeepSeek-V4's DSML block, in their existing order.
+CALL_MARKS = (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>"),
+              ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"))
 
 
 def call_format(rendered: str, name: str, openers: Sequence[str]) -> tuple[str, str, str] | None:
@@ -20,13 +24,14 @@ def call_format(rendered: str, name: str, openers: Sequence[str]) -> tuple[str, 
     markers = tuple(opener for opener in openers if opener)
     if not name or not markers:
         return None
-    pattern = "|".join(re.escape(token) for token in (*markers, "</tool_call>", "<tool_call|>", name))
+    closers = tuple(closer for opener, closer in CALL_MARKS if opener in markers)
+    pattern = "|".join(re.escape(token) for token in (*markers, *closers, name))
     opened = result = None
     for match in re.finditer(pattern, rendered):
         token = match.group()
         if token in markers:
             opened = token, match.end()
-        elif token in ("</tool_call>", "<tool_call|>"):
+        elif token in closers:
             opened = None
         elif opened is not None:
             opener, start = opened
