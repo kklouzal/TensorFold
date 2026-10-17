@@ -32,6 +32,22 @@ def vision_workspace() -> int:
     return int(value) * 2**20
 
 
+def _expert_authority(cache) -> tuple[str, dict | None]:
+    """Publish the completed loader's registration result, including auto refusals."""
+    policy = cache.pin_policy
+    if policy is None:
+        return "pageable host authority", None
+    receipt = policy.receipt()
+    pinned = receipt["pinned_bytes"]
+    if pinned == cache.host_bytes:
+        label = "pinned host authority"
+    elif not pinned:
+        label = "pageable host authority"
+    else:
+        label = f"host authority ({pinned / 2**30:.2f} GiB pinned, {(cache.host_bytes - pinned) / 2**30:.2f} GiB pageable)"
+    return label, receipt
+
+
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
 
@@ -293,7 +309,9 @@ class FlashNextEngine:
                 serving_peak_bytes_estimate=serving, total_bytes_estimate=total,
                 full_mapped_working_set_bytes_estimate=total + initial["mapped_table_bytes"],
                 estimate_scope="numeric: original conservative header loading forecast and final bounded expert arena")
-            print(f"[tensorfold] RAM experts: {cache.host_bytes / 2**30:.2f} GiB pageable host authority, "
+            authority, pin_receipt = _expert_authority(cache)
+            pool["host_pin"] = pin_receipt
+            print(f"[tensorfold] RAM experts: {cache.host_bytes / 2**30:.2f} GiB {authority}, "
                   f"{cache.gpu_bytes / 2**30:.2f} GiB GPU pool ({cache.resident_capacity} resident cells, "
                   f"{cache.capacity} experts per lease); cache misses transfer weights", flush=True)
         tables_read = bool(reads)
@@ -565,7 +583,9 @@ class FlashNextEngine:
                                                 allow_lone_growth=self.kv_full_windows is None)
         if self.kv_full_windows is not None:
             decision["policy"] = "remaining-device-bytes-after-fixed-service-state-shared-kv-v1"
+        authority, pin_receipt = _expert_authority(cache)
         decision.update(physical_total_bytes=total, fixed_allocated_bytes_before_pool=accounted,
+                        host_pin=pin_receipt,
                         physical_free_bytes_before_pool=free, cuda_memory_limit_bytes=limit,
                         allocated_bytes_after_pool=final_allocated,
                         physical_free_bytes_after_pool=final_free, kept_snapshot_count=retained,
@@ -599,7 +619,7 @@ class FlashNextEngine:
             estimate_scope="auto: measured fixed device allocation plus explicit future service bounds; initial header loading forecast retained separately")
         reservation = (f"{streams} full-context slots" if self.kv_full_windows is None else
                        f"{windows} full-context windows shared by {streams} slots (waits and request errors possible)")
-        print(f"[tensorfold] RAM experts auto: {cache.host_bytes / 2**30:.2f} GiB pageable host authority, "
+        print(f"[tensorfold] RAM experts auto: {cache.host_bytes / 2**30:.2f} GiB {authority}, "
               f"{cache.gpu_bytes / 2**30:.2f} GiB GPU pool ({cache.resident_capacity} resident cells, "
               f"{cache.capacity} experts per lease); "
               f"{reservation} and {retained} snapshots reserved, 512 MiB headroom", flush=True)

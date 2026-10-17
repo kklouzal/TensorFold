@@ -11,6 +11,18 @@ from tests.test_cuda_geometry import allocations  # noqa: F401 - pytest fixture
 from tests.test_flashnext_absolute_grow_host import AbsoluteGrowthTests as _GrowthCase
 
 
+@pytest.mark.parametrize("pinned,label", [(0, "pageable host authority"), (2**30, "pinned host authority"),
+                                          (2**29, "host authority (0.50 GiB pinned, 0.50 GiB pageable)")])
+def test_startup_describes_actual_pinning_including_partial_auto_refusal(pinned, label):
+    from tensorfold.families.qwen4_exp.cuda.engine import _expert_authority
+
+    receipt = {"pinned_bytes": pinned, "registration_refusals": int(pinned != 2**30)}
+    cache = NS(host_bytes=2**30, pin_policy=NS(receipt=lambda: receipt))
+    assert _expert_authority(cache) == (label, receipt)
+    cache.pin_policy = None
+    assert _expert_authority(cache) == ("pageable host authority", None)
+
+
 @pytest.mark.parametrize("value", [0, -1, True, 1.0, "2"])
 def test_invalid_window_count_fails_before_checkpoint_access(value):
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
@@ -128,7 +140,7 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(
     else:
         monkeypatch.setenv(LIMIT_ENV, str(cap))
     allocated = [gib]
-    cache = NS(entry_bytes=entry, score_history_entries=32768, host_bytes=4 * gib)
+    cache = NS(entry_bytes=entry, score_history_entries=32768, host_bytes=4 * gib, pin_policy=None)
     configurations = []
 
     def configure(nbytes):
