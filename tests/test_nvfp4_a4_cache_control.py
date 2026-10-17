@@ -9,7 +9,6 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from nvfp4_a4_inputs import PREFIX, Context, swiglu
-from test_nvfp4_a4_host_control import cpu_authority_packing as cpu_authority_packing  # noqa: PLC0414 - pytest fixture re-export.
 from test_nvfp4_a4_host_control import oracle_blob
 
 from tensorfold.cuda.expert_cache import HostExpertCache, _layout

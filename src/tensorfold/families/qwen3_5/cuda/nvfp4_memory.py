@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import math
 
-from tensorfold.cuda.nvfp4.host_layout import routed_tensor_a4
 from tensorfold.cuda.read_budget import reader_host_bytes
 
 _DIRECT_WEIGHT_SUFFIXES = (".norm", ".input_layernorm", ".post_attention_layernorm", ".q_norm", ".k_norm",
@@ -74,12 +73,6 @@ def projection_loading_bytes(entries: dict) -> dict:
             # Checkpoint pack4 uses fewer temporaries than the same bound.
             need = raw + npad * k // 2 + 4 * npad * k // 16 + 6 * npad * k // 64 + 32 * c * k
             need += 4 << 20  # fixed index/shift tensors and small expression inputs
-            # Routed native-A4 authority uses a device-local byte permutation
-            # before its synchronous D2H. Whole-projection raw/permuted/output
-            # planes need an independent bound when N exceeds the dense pack
-            # loop's4096-row chunk. It retains no final GPU expert bank here.
-            if routed_tensor_a4(stem + ".weight_packed"):
-                need = max(need, raw + 3 * (n * k * 9 // 16) + (4 << 20))
         elif dtype == "F8_E4M3":
             if len(shape) != 2 or min(shape) <= 0 or shape[1] % 64:
                 raise ValueError(f"{stem}: loading bound needs positive FP8 dimensions and K divisible by 64")

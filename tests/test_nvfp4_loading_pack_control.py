@@ -38,21 +38,21 @@ def test_modelopt_original_payload_requests_pack_device_but_global_conversion_st
     assert global_scale.view(torch.int32)[0] == torch.tensor(.03125).view(torch.int32)
 
 
-def test_ct_packing_failure_preserves_primary_and_never_publishes_partial_bank(monkeypatch):
-    from tensorfold.cuda.nvfp4 import host_experts
+def test_ct_cpu_packing_failure_preserves_primary_and_never_publishes_partial_bank(monkeypatch):
+    from tensorfold.cuda.nvfp4 import experts_a4
 
     ctx, cache = Context(), Cache()
     primary = KeyboardInterrupt("packing interrupted")
     calls = []
 
-    def fail(codes, scales, device):
-        calls.append((codes.device.type, scales.device.type, str(device)))
+    def fail(codes, scales):
+        calls.append((codes.device.type, scales.device.type))
         raise primary
 
-    monkeypatch.setattr(host_experts, "_pack_authority_projection_a4", fail)
+    monkeypatch.setattr(experts_a4, "pack_projection_a4", fail)
     with pytest.raises(KeyboardInterrupt) as caught:
         load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, swiglu=swiglu)
-    assert caught.value is primary and calls == [("cpu", "cpu", "cuda:0")]
+    assert caught.value is primary and calls == [("cpu", "cpu")]
     assert ctx.reads == [f"{PREFIX}.experts.0.gate_proj.{suffix}" for suffix in
                          ("weight_global_scale", "input_global_scale", "weight_packed", "weight_scale")]
     assert not cache._layers and not ctx.used
@@ -60,8 +60,8 @@ def test_ct_packing_failure_preserves_primary_and_never_publishes_partial_bank(m
     assert struct.unpack("I", struct.pack("f", raw))[0] == 0x3e63ffff
 
 
-def test_device_local_packer_refuses_cross_device_before_payload_use():
+def test_cpu_packer_refuses_non_cpu_payload_before_use():
     codes = torch.zeros((64, 32), dtype=torch.uint8)
     scales = torch.empty((64, 4), dtype=torch.float8_e4m3fn, device="meta")
-    with pytest.raises(ValueError, match="same-device CPU/CUDA"):
+    with pytest.raises(ValueError, match="requires CPU"):
         pack_projection_a4(codes, scales)

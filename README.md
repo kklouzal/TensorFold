@@ -13,11 +13,11 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 implementation (2026-10-17):** original compressed-tensors NVFP4 experts and their native activation math now have a separate CUDA loader, resident/RAM expert banks and a DFlash v1 draft adapter. The [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1) records the hardware restrictions, flags and pending full-model/installed-image qualification. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
-NVFP4 host-authority loading packs original routed payload on CUDA and completes
-its CPU transfer before publication. ModelOpt scalar conversion and CT native
-scale/calibration admission stay on CPU; loading admission includes the GPU
-packing peak. Exact-byte, peak-allocation and startup qualification of this
-loading change is pending; no startup-speed claim is made here.
+ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
+completes its CPU transfer before publication. Scalar conversion stays on CPU;
+loading admission includes the GPU packing peak. CT native-A4 retains its CPU
+byte permutation. Final installed qualification of the ModelOpt loading change
+is pending; no full-ModelOpt startup-speed claim is made here.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
