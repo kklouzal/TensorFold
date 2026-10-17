@@ -203,16 +203,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     def ple_nvfp4(name: str, ple_index: int) -> PLEW:
         """A PLE layer with bf16, FP8, NVFP4 or MLX 4-bit n-gram shards and bf16 projections."""
 
-        if ple_on_ssd:
-            raise ValueError("--ple-on-ssd reads the MLX checkpoint's n-gram shards from disk; an NVFP4 checkpoint's "
-                             "tables stay memory-mapped, so drop --ple-on-ssd")
         ngram = cfg.ngram(ple_index)
         base = name + ".ple_embedding."
         ngram.check(raw(base + "layer_multipliers").cpu().numpy(), raw(base + "ngram_heads_offsets").cpu().numpy(),
                     raw(base + "ngram_heads_vocab_sizes").cpu().numpy())
         keys = shard_keys(prefix + base + "ngram_embedding", cfg.ngram_shards, rd.where)
         table = ple_tables.acquire(open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
-                                               lambda n: table_scale(base, n)))
+                                               lambda n: table_scale(base, n), ssd=ple_on_ssd))
         if getattr(table, "width", ngram.dims) != ngram.dims:
             raise ValueError(f"the n-gram rows hold {table.width} values, expected {ngram.dims}")
         if table.rows != ngram.rows:
@@ -277,6 +274,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     def moe_nvfp4(name: str) -> MoEW:
         """The NVFP4 checkpoint's MoE: FP4 routed experts (bf16 in the MTP layer), the bf16 shared expert and gate."""
 
+        nonlocal next_expert_layer
         from . import nvfp4_moe
 
         router = raw(name + ".gate.weight").to(torch.bfloat16)
@@ -284,6 +282,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         router = torch.cat([router, sgate[None]]).contiguous()
         if expert_loader is not None:
             return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
+        if expert_cache is not None:
+            from tensorfold.cuda.nvfp4.host_experts import load_moe_host
+
+            bank = load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
+                                 layer_id=next_expert_layer)
+            next_expert_layer += 1
+            return MoEW(router, bank)
         e = full.experts
         w_ = full.moe_width
         gs = full.nvfp4_group
@@ -439,7 +444,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         if expert_cache is not None:
             from ..ram_experts import expert_tensor
 
-            ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
+            ahead = [[name for name in names if not expert_tensor(name)
+                      and not (cfg.quant == "modelopt" and ".mlp.experts." in name)] for names in ahead]
         layer_events: list = []                           # each layer's event, recorded once its work is queued
         for k, i in enumerate(chosen):
             if len(layer_events) >= 2:                    # at most two layers queued ahead of the GPU

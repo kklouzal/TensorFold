@@ -5,7 +5,7 @@ in the same change when flags, defaults, cache policy, RAM/VRAM budgeting, or
 qualified performance results change. State each measurement's model, runtime,
 context, parallelism, and evidence scope.
 
-`--vram-experts GIB|auto` keeps Flash Next's affine 4-bit or EXL3 expert weights in pageable
+`--vram-experts GIB|auto` keeps Flash Next's affine 4-bit, EXL3 or NVFP4 expert weights in
 system RAM and allocates a bounded shared cache on the GPU. This is useful on
 machines with separate host RAM and limited NVIDIA VRAM. It uses the ordinary
 CUDA kernels; it has no GB10 hardware dependency. The existing CUDA compute
@@ -126,11 +126,11 @@ compilation overhead was not isolated. It is not a warm four-request throughput
 measurement. All measurements used the pinned
 PyTorch `2.16.0.dev20261006+cu134`/CUDA 13.4 runtime.
 
-The adapters support Flash Next MLX affine 4-bit/group-32 and EXL3 checkpoints
+The adapters support Flash Next MLX affine 4-bit/group-32, EXL3 and ModelOpt NVFP4 checkpoints
 on one CUDA GPU. They include every routed expert, the shared expert in each layer,
 and the MTP expert layer when drafts are enabled. EXL3 retains each original
 trellis stream and bit width, including supported half-bit widths; all experts
-within a layer must use the same native codebook. NVFP4, tensor parallelism,
+within a layer must use the same native codebook. Tensor parallelism,
 MLX, and other model families refuse this flag. `--ssd-experts` remains the MLX
 checkpoint-streaming option and is now explicitly refused on CUDA. With affine
 checkpoints, `--ple-on-ssd` controls the separate n-gram tables. EXL3 checkpoints
