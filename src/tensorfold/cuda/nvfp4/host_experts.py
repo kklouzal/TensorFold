@@ -206,6 +206,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
                 fields[3][local, 0], fields[5][local, 0] = scale, act
             codes = ctx.read(base + ".weight_packed", device="cpu")
             blocks = ctx.read(base + ".weight_scale", device="cpu")
+            fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
             packed = pack_projection_a4(codes, blocks)
             (fields[0][local, p] if p < 2 else fields[1][local]).copy_(packed)
             del codes, blocks, packed

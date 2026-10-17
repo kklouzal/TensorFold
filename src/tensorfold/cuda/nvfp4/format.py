@@ -221,6 +221,23 @@ def dequant(scheme_name: str, weight: np.ndarray, scale: np.ndarray | None = Non
     return weight.astype(np.float32)
 
 
+def validate_native_a4_scales(scales, *, name: str) -> None:
+    """Admit original block-scale bytes for the native MMA's unsigned E4M3.
+
+    PTX 8.7 section 5.2.3 defines ue4m3 as seven unsigned bits with a zero MSB;
+    0x7f is NaN. The finite encoding range is therefore 0x00..0x7e. Zero is
+    valid. This payload check runs once at loading, never in the bit permuter
+    or the unchanged W4A16 path. U8 bytes and E4M3 checkpoint tensors are both
+    accepted; validation never changes their representation or contents.
+    """
+    import torch
+
+    if scales.dtype not in (torch.uint8, torch.float8_e4m3fn):
+        raise ValueError(f"{name}: native A4 block scales require U8 bytes or E4M3 checkpoint values")
+    if scales.numel() and int(scales.view(torch.uint8).amax()) > 0x7e:
+        raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
+
+
 def native_calibration(act: float, weight_scale: float, *, name: str) -> float:
     """Admit the exact FP32 inverse/product used by checkpoint native math.
 

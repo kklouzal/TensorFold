@@ -124,3 +124,56 @@ def test_grouped_candidate_windows_preserve_every_pair_and_both_resource_limits(
         got.extend((e, row, slot) for row, slot, e in pairs)
     expected = [(e, row, slot) for e in sorted(groups) for row, slot in groups[e]]
     assert got == expected
+
+
+@pytest.mark.parametrize("dtype", [torch.uint8, torch.float8_e4m3fn])
+def test_native_scale_admission_exhausts_byte_domain_without_mutation(dtype):
+    from tensorfold.cuda.nvfp4.format import validate_native_a4_scales
+
+    for byte in range(256):
+        original = torch.tensor([[0, byte, 0x7e]], dtype=torch.uint8)
+        scale = original.view(dtype)
+        if byte in set(range(127)):
+            validate_native_a4_scales(scale, name="independent byte-domain oracle")
+        else:
+            with pytest.raises(ValueError, match="finite unsigned E4M3"):
+                validate_native_a4_scales(scale, name="independent byte-domain oracle")
+        assert torch.equal(scale.view(torch.uint8), original)
+
+
+@pytest.mark.parametrize("byte", [0x7f, 0x80, 0xff])
+def test_invalid_routed_scale_payload_stops_before_pack_or_publication(monkeypatch, byte):
+    from tensorfold.cuda.nvfp4 import experts_a4
+
+    ctx, cache = Context(), Cache()
+    name = PREFIX + ".experts.0.gate_proj.weight_scale"
+    ctx.payload[name].view(torch.uint8).reshape(-1)[-1] = byte
+    monkeypatch.setattr(experts_a4, "pack_projection_a4", lambda *args: pytest.fail("packed invalid native scales"))
+    with pytest.raises(ValueError, match=r"gate_proj.weight_scale: native A4 block scales"):
+        load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, swiglu=swiglu)
+    assert len(ctx.reads) == 4 and ctx.reads[-1] == name
+    assert not cache._layers and not ctx.used
+
+
+def test_valid_zero_max_scales_are_preserved_and_unowned_invalid_payload_is_never_read(monkeypatch):
+    from tensorfold.cuda.nvfp4 import format as fmt
+
+    ctx, cache = Context(), Cache()
+    untouched = PREFIX + ".experts.1.gate_proj.weight_scale"
+    ctx.payload[untouched].view(torch.uint8).fill_(0xff)
+    calls = []
+    actual = fmt.validate_native_a4_scales
+
+    def recorded(value, *, name):
+        calls.append(name)
+        return actual(value, name=name)
+
+    monkeypatch.setattr(fmt, "validate_native_a4_scales", recorded)
+    base = PREFIX + ".experts.2.gate_proj"
+    scale = ctx.payload[base + ".weight_scale"].view(torch.uint8)
+    scale.reshape(-1)[0], scale.reshape(-1)[-1] = 0x00, 0x7e
+    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, owned_ids=[2], swiglu=swiglu)
+    assert bank.count == 1 and len(calls) == 3
+    assert untouched not in ctx.reads
+    expected = oracle_blob(ctx.payload[base + ".weight_packed"], scale)
+    assert torch.equal(cache._layers[0][0][0, 0], expected)
