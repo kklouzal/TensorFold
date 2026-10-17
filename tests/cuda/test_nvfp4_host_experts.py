@@ -220,7 +220,7 @@ def test_public_engine_admits_and_closes_nvfp4_host_authority_with_ssd(tmp_path,
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 
     model = write(tmp_path, hidden=512, ple_nvfp4=True)
-    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", "64")
+    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", "256")
     entry = ram_experts.layout(model, "auto").entry_bytes
     options = dict(depth=2, draft_vocab=128, max_len=128, context_explicit=True, prefetch=False, graphs=True,
                    ple_on_ssd=True)
