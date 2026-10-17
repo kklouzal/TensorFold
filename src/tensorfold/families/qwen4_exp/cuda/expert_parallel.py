@@ -428,14 +428,18 @@ class Follower:
             if session._receive("ep/admitted") != b"ready":
                 raise RuntimeError("expert leader refused group admission")
             self.session._ensure_reader()
-            from tensorfold.cuda.capacity import available_bytes, host_cgroup_bytes, host_stream_bytes
+            from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes, host_cgroup_bytes, host_stream_bytes
             host_need = (session.layout.host_bytes + session.layout.staging_bytes
                          + session.layout.loading_bytes + session.layout.metadata_host_bytes)
             rooms = [room for room in (host_stream_bytes(), host_cgroup_bytes()) if room is not None]
             if rooms and host_need > min(rooms):
                 raise MemoryError("expert follower host authority/staging exceeds admitted host capacity")
+            room = available_bytes(session.torch)
+            limit = cuda_limit_bytes()
+            if limit is not None:
+                room = min(room, max(0, limit - int(session.torch.cuda.memory_allocated())))
             if (session.layout.gpu_bytes + session.workspace_bytes
-                    + getattr(session.layout, "loading_device_bytes", 0) > available_bytes(session.torch)):
+                    + getattr(session.layout, "loading_device_bytes", 0) > room):
                 raise MemoryError("expert follower device pool/loading/workspace exceeds admitted device capacity")
             names = session.reader.where
             prefix = "language_model." if "language_model.model.embed_tokens.weight" in names else ""
@@ -447,13 +451,39 @@ class Follower:
                 session.load_bank(None, key, "", session.cfg, session.cfg.quant)
             session.finish_loading()
             if session.budget == "auto":
-                from ..ram_experts import auto_pool_bytes
-                free, _ = session.torch.cuda.mem_get_info()
-                selected = auto_pool_bytes(int(free), session.cache.entry_bytes, session.cache.score_history_entries,
-                                           workspace_bytes=session.workspace_bytes)
-                session.cache.configure_before_use(selected["gpu_bytes"])
+                self._configure_auto_experts()
         except BaseException as error:  # noqa: BLE001 - rollback re-raises cancellation and failure
             rollback(self, error, lambda: self.close(abort=True))
+
+    def _configure_auto_experts(self):
+        """Spend remaining absolute/device room while retaining bounded future expert workspace."""
+        from tensorfold.cuda.capacity import cuda_limit_bytes
+
+        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes
+
+        session, torch = self.session, self.session.torch
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        free, total = map(int, torch.cuda.mem_get_info())
+        allocated = int(torch.cuda.memory_allocated())
+        limit = cuda_limit_bytes()
+        room = free if limit is None else max(0, min(free, limit - allocated))
+        decision = auto_pool_bytes(room, session.cache.entry_bytes, session.cache.score_history_entries,
+                                   workspace_bytes=session.workspace_bytes)
+        session.cache.configure_before_use(decision["gpu_bytes"])
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        final_free, final_total = map(int, torch.cuda.mem_get_info())
+        final_allocated = int(torch.cuda.memory_allocated())
+        final_spare = int(torch.cuda.memory_reserved()) - final_allocated
+        future = AUTO_HEADROOM_BYTES + session.workspace_bytes
+        if (final_total != total or final_free < AUTO_HEADROOM_BYTES
+                or final_free + final_spare < future
+                or (limit is not None and final_allocated + future > limit)):
+            raise MemoryError("automatic follower expert pool cannot retain its declared workspace")
+        session.auto_pool_decision = {**decision, "explicit_device_limit_bytes": limit,
+                                      "fixed_allocated_bytes": allocated,
+                                      "final_allocated_bytes": final_allocated}
 
     def follow(self):
         self.session.follow()
