@@ -27,19 +27,51 @@ PLE sum comparator; generic weighted BF16 expert mode differing from GLM's decla
 vocabulary/token-type fixtures; and an obsolete FileBaton expectation under pinned Torch advisory locks.
 No production validator, numerical tolerance, exact-token assertion or optional-check prerequisite is weakened.
 
-At this checkpoint the original failing groups pass their focused checks: Qwen 10, QMM/distributed 83,
-GLM EXL3 75, attention/PLE 47 plus final attention 54, and native build 2 with 27 CPU build controls.
-These counts overlap and identify different frozen sources; they are not a summed final-image suite.
-The combined source also passes all 54 restored GLM tests after both fixture repairs. Final immutable
-installed-source and whole-CUDA qualification, process-cleanup followup and their exact identities are
-recorded after the source freeze. Raw development evidence is retained in
-`/home/kklouzal/tensorfold-remediate-20261017`; the preceding qualification packet remains unchanged.
+Frozen runtime/test/build source `a7b9feed34a814d62bf944de646ac3ed7bf3149e` produced runtime image
+`sha256:1528158f426991935c05adfc61a949734a2ccb2b1dba56cd53349b80627b3328`, verification image
+`sha256:3d6a57cf578884d60ad360d632dc6be98a082aaceb8a6f869fd39a74752a9cb6`, and wheel
+`c50a39c6735dbd546317d7f5bbb1319c25b5b5612b0381e91619bb4837afe8fa`.
+The ordinary installed-package gates passed **7,642 CPU tests** (168 explicit skips), **2,012 CUDA tests**
+(97 explicit skips), and **231 unprivileged public controls** (six explicit skips), with zero failures/errors.
+All 41 earlier failures and 45 setup errors are remediated. The killed-build case now verifies the actual
+lock protocol under its updated name. Two CPU and 28 CUDA warnings are existing Torch allocator API
+deprecations, retained without suppression. The installed audit matched all 501 owned files; three omitted
+README files contain no runtime code. No source overlay supplied the qualified package.
+
+The same RTX PRO 2000 Blackwell/SM120 host and pinned Python 3.12/Torch 2.16-dev/CUDA 13.4/Triton 3.9
+stack passed fresh three-format exactness: two streams, 64 outputs each, RotorQuant8-norm/8/6-norm,
+aggregate hash `67a762f3ac80e419`. The actual Flash Next EXL3 checkpoint passed the installed HTTP gate
+at context 16,384/four slots, RQ8-norm, BF16 prompts and MTP 4/confidence 0.5 under the recorded 56 GB/no-swap
+profile. Strict tools, the actual 31-tool catalog, unsupported-schema refusal, repeat/serial/drafted tokens,
+SSE usage/progress, four concurrent versus solo replies, final zero logical owners and SIGINT exit 0/no OOM
+passed. Nine fixed sequential replies match the previous build by request position; four concurrent replies
+match with each prompt's solo oracle, and the text SSE choices/token IDs also match exactly. No failure
+capture was produced. These fixed inputs do not establish general answer quality or all-configuration bits.
+
+The whole CUDA nonmatrix run excludes the unchanged KV-pair matrix module. Its earlier 1,666-pass subset retains
+its original `2dd77a9a`/image identity: an independent source/dependency proof covers exactly seven unchanged
+preparation/encoder/oracle families, not the 3,430 deselected cases or a fresh exhaustive matrix run.
+An initial cold CUDA run was deliberately interrupted near 54% and preserved with exit 2; only the complete
+restarted run qualifies. Standard compiler-cache reuse kept original keys/metadata and the same pinned ABI;
+it makes no cold-compilation or startup timing claim.
+
+The [machine-readable receipt](verification-cuda-remediation-20261017.json) records source, images,
+counts, baseline provenance, limits and evidence hashes. Raw development evidence remains in
+`/home/kklouzal/tensorfold-remediate-20261017`; preceding failed logs and receipts remain unchanged.
+This closing documentation update preserves qualified runtime/test/build bytes; a future rebuild has its
+own wheel metadata and image identity.
 
 The numerical correction preserves selected native CUDA arithmetic. Legacy Triton/untiled results can
 change where implicit contraction differed. GLM's current model forward already used its family combine;
 the corrected generic weighted BF16 API now honors the same rounding. Default Flash Next FP32 expert
 arithmetic remains unchanged. The PLE production implementation was correct for the independently checked
 fixtures; its old Torch sum oracle was off by one ULP. See [contracts](cuda-kernel-contracts.md).
+
+Pinned Torch uses OS advisory build locks: killing the owner releases the lock even when its marker file
+remains. Do not delete that persistent marker to recover a build. Legacy FileBaton recovery instructions
+apply only to a runtime actually using FileBaton, after its owners have stopped. The Linux-native test
+keeps child identity until all session members retire; its pidfd and waitid/WNOWAIT prerequisites were
+verified on the recorded Linux 7.0.0-31 host. This changes test supervision, not runtime platform support.
 
 Component EXL3 timings retain exact outputs but do not qualify model-wide throughput or equivalence.
 Existing API/statistics readout-performance limitations below remain separate; this remediation makes no
