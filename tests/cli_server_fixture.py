@@ -5,6 +5,24 @@ closes it. These fixtures acquire no sockets and preserve that lifetime.
 """
 
 import threading
+from hashlib import sha256
+from types import SimpleNamespace
+
+
+def cuda_cli_engine(**members):
+    """A prepared engine publishes reply EOS independently of listener tests."""
+    return SimpleNamespace(**{"eos": (2,), **members})
+
+
+def cuda_cli_app(*, effective_context_window, **members):
+    """Publish a concrete prepared template identity, without reading a model."""
+    source = "{{ fixture }}"
+
+    def provenance():
+        return {"name": "default", "source": "cli_server_fixture", "sha256": sha256(source.encode()).hexdigest()}
+
+    return SimpleNamespace(**{"effective_context_window": effective_context_window,
+                             "template": SimpleNamespace(provenance=provenance), **members})
 
 
 def install_cli_server(monkeypatch, request, module, *, on_serve=None):
