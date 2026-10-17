@@ -228,9 +228,7 @@ def test_parallel_tool_images_keep_their_tool_id_and_content_order():
 
 
 @pytest.mark.parametrize("backend", ["mlx", "cuda"])
-def test_tool_image_reaches_the_vision_renderer_as_its_tool_result(backend, tmp_path):
-    from types import SimpleNamespace
-
+def test_tool_image_reaches_the_vision_renderer_as_its_tool_result(backend, tmp_path, monkeypatch):
     from tensorfold.server.messages import normalize_messages
     from tests.test_vision_server import Frontend, Tokenizer, image_messages
 
@@ -248,7 +246,7 @@ def test_tool_image_reaches_the_vision_renderer_as_its_tool_result(backend, tmp_
             def render(messages, **kwargs):
                 rendered.append(normalize_messages(messages, allow_images=kwargs.get("allow_images", False)))
                 return "rendered image prompt"
-            app.template = SimpleNamespace(render=render)
+            monkeypatch.setattr(app.template, "render", render)
         else:
             app.tokenizer = Tokenizer()
             app.effort_levels, app.enable_thinking, app.reasoning_effort = frozenset(), False, None

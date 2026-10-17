@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("jinja2")
 
-from tests.cli_server_fixture import install_cli_server
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 from tensorfold import cli
 from tensorfold.serve_options import check as _check_serve_options
@@ -138,8 +138,8 @@ def test_serve_hands_the_background_ids_to_the_cuda_app(tmp_path, monkeypatch, r
 
     made = []
     family = SimpleNamespace(title="Test family", model_type="test",
-                             package=SimpleNamespace(cuda_engine=lambda *a, **k: SimpleNamespace(max_len=8192)))
-    monkeypatch.setattr(server, "App", lambda *a, **k: made.append(k) or SimpleNamespace(effective_context_window=8192))
+                             package=SimpleNamespace(cuda_engine=lambda *a, **k: cuda_cli_engine(max_len=8192)))
+    monkeypatch.setattr(server, "App", lambda *a, **k: made.append(k) or cuda_cli_app(effective_context_window=8192))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
                                           "--name", "qwen3.6", "--alias", "qwen3.6-bg",

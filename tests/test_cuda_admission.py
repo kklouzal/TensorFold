@@ -199,21 +199,21 @@ def test_omitted_reply_reservation_keeps_default_capping(model_dir, chat, option
     assert engine.calls[0][1] == 1
 
 
-def test_template_tools_and_thinking_are_prepared_once(model_dir):
+def test_template_tools_and_thinking_are_prepared_once(model_dir, monkeypatch):
     engine = Engine()
     app = server.App(engine, model_dir, "test", context_window=12)
     counts = {"render": 0, "encode": 0}
-    original_template, original_tok = app.template, app.tok
+    original_render, original_tok = app.template.render, app.tok
 
     def render(*args, **kwargs):
         counts["render"] += 1
-        return original_template.render(*args, **kwargs)
+        return original_render(*args, **kwargs)
 
     def encode(*args, **kwargs):
         counts["encode"] += 1
         return original_tok.encode(*args, **kwargs)
 
-    app.template = SimpleNamespace(render=render)
+    monkeypatch.setattr(app.template, "render", render)
     app.tok = SimpleNamespace(encode=encode, decode=original_tok.decode)
     body = request(8, True, max_tokens=1, stream=True,
                    tools=[{"type": "function", "function": {"name": "test"}}],
@@ -309,13 +309,13 @@ def test_zero_or_null_reply_limit_keeps_default(model_dir, field, value):
     assert engine.calls[0][1] == 3
 
 
-def test_template_value_error_is_not_request_error(model_dir):
+def test_template_value_error_is_not_request_error(model_dir, monkeypatch):
     app = server.App(Engine(), model_dir, "test")
 
     def broken_template(*args, **kwargs):
         raise ValueError("template failed")
 
-    app.template = SimpleNamespace(render=broken_template)
+    monkeypatch.setattr(app.template, "render", broken_template)
     with pytest.raises(ValueError, match="template failed") as error:
         app.prepare(request(2, True), True)
     assert not isinstance(error.value, server.RequestError)
