@@ -29,6 +29,10 @@ def test_partial_layers_remain_charged_and_cannot_be_reset_or_published(allocati
     state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
     st = filled(state, torch, dtype)
     before, version = attached_bytes(st), st.version
+    cache = st.kc[0]
+    cache_row_bytes = sum(t[0].nbytes for t in (cache.k, cache.v, cache.ks, cache.vs)
+                          if t.shape[0] == 256)
+    index_row_bytes = st.ikc[0][0].nbytes
     failure = MemoryError("controlled index/pool allocation failure")
     row, temporary = state._rows, []
     calls = 0
@@ -48,7 +52,8 @@ def test_partial_layers_remain_charged_and_cannot_be_reset_or_published(allocati
             st.resize(512)
     assert caught.value is failure and st._resize_error is failure
     completed = (failed_row - 1) // 2
-    expected = before + completed * (st.layer_bytes(512) - st.layer_bytes(256))
+    expected = (before + completed * (st.layer_bytes(512) - st.layer_bytes(256))
+                + 256 * cache_row_bytes + (256 * index_row_bytes if failed_row % 2 == 0 else 0))
     assert st.capacity == 256 and st.version > version
     assert st.cache_bytes() == attached_bytes(st) == expected
     assert all(item() is None for item in temporary), "failed helper frames retained unaccounted replacement storage"
