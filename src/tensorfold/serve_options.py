@@ -215,7 +215,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
         raise ValueError(f"--tp 4: {family.title} runs on one or two GPUs on CUDA")
     port = getattr(args, "master_port", 29551)
     # Every follower connects to this same CLI value; no channel advertises a leader's ephemeral port.
-    if tp > 1 and (type(port) is not int or not 1 <= port <= 65535):
+    if max(tp, getattr(args, "expert_ranks", 1)) > 1 and (type(port) is not int or not 1 <= port <= 65535):
         raise ValueError("--master-port must be an integer from 1 to 65535 for multiple ranks")
     if getattr(family, "model_type", "") == "qwen4_exp":
         streams = _cuda_streams(getattr(args, "parallel", "auto"))

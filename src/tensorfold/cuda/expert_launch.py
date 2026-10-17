@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import subprocess
@@ -83,6 +84,8 @@ def supervise(commands, environments, *, grace=10.0):
     """Own Linux rank sessions through partial spawn, departure and signal/error cleanup."""
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
+    if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace < 0:
+        raise ValueError("expert rank retirement grace must be a finite nonnegative duration")
     if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "pidfd_open")) or not hasattr(signal, "pidfd_send_signal"):
         raise RuntimeError("expert launcher requires Linux waitid/WNOWAIT and pidfd session ownership")
     children, primary, result = [], None, 1

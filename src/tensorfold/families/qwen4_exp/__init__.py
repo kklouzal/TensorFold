@@ -219,6 +219,12 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                          "has one): without it every round would decode one token. Serve a checkpoint with the "
                          "head, or pass --no-drafts for the serial reference")
     confidence = CONFIDENCE if mtp_confidence is None else float(mtp_confidence)
+    if type(expert_ranks) is not int or not 1 <= expert_ranks <= 4:
+        raise ValueError("--expert-ranks must be 1 through 4")
+    if expert_shards is not None:
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.expert_parallel import ownership
+        ownership(expert_ranks, expert_shards, rank, int(config(model_dir)["num_experts"]))
     session = None
     if expert_ranks > 1:
         if tp != 1:

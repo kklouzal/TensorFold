@@ -361,6 +361,8 @@ class Session:
                 self.following.clear()
 
     def close(self, *, abort=False):
+        if type(abort) is not bool:
+            raise ValueError("typed expert-group abort policy required")
         if abort or self.running.is_set() or self.following.is_set():
             self.abort_requested.set()  # wake an owner before waiting for its wire lease
         with self.lock:
