@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 from dataclasses import replace
-from datetime import timedelta
 from pathlib import Path
 
 from tensorfold.cleanup import raise_failures, rollback
@@ -61,14 +60,17 @@ class Session:
     """
     def __init__(self, model_dir, *, ranks, shards, rank, master, port, budget, mtp, pin_mode="off"):
         import torch
-        from torch.distributed import TCPStore
 
         from tensorfold.cuda.capacity import config
-        from tensorfold.cuda.comm import NCCL
+        from tensorfold.cuda.comm import BACKEND_ENV, NCCL
+        from tensorfold.cuda.local_store import open_store
 
         from ..ram_experts import layout
         from .weight_types import Config
 
+        backend = os.environ.get(BACKEND_ENV, "").strip().lower() or "nccl"
+        if backend != "nccl":
+            raise ValueError(f"expert parallelism requires {BACKEND_ENV}=nccl; unsupported override {backend!r}")
         self.comm = self.reader = self.cache = None
         self.source_files = []
         self.source_identity = []
@@ -123,7 +125,7 @@ class Session:
         self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
                                            + self.slots * self.cfg.moe_width * 2) + (4 << 20)
         try:
-            self.store = TCPStore(master, port, ranks, rank == 0, timeout=timedelta(seconds=self.timeout))
+            self.store = open_store(master, port, ranks, rank, timeout_s=self.timeout)
             identity = self._identity(text)
             self.store.set(f"ep/identity/{rank}", json.dumps(identity))
             peers = [self._read_json(f"ep/identity/{r}", 1 << 20) for r in range(ranks)]

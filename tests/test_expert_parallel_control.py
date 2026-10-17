@@ -30,6 +30,26 @@ def test_direct_ownership_requires_immutable_validated_counts():
     assert owner.counts == (3, 3)
 
 
+@pytest.mark.parametrize("backend", ["fast", "roce", "unknown"])
+def test_expert_session_refuses_transport_override_before_checkpoint_or_device_work(monkeypatch, tmp_path, backend):
+    monkeypatch.setenv("TF_COMM_BACKEND", backend)
+    with pytest.raises(ValueError, match="requires TF_COMM_BACKEND=nccl"):
+        Session(tmp_path, ranks=2, shards="3,3", rank=0, master="127.0.0.1", port=29551,
+                budget="auto", mtp=False)
+
+
+@pytest.mark.parametrize("backend", ["", "  NCCL  "])
+def test_expert_session_accepts_normalized_native_transport_policy(monkeypatch, tmp_path, backend):
+    from tensorfold.families.qwen4_exp.cuda.weight_types import Config
+    monkeypatch.setenv("TF_COMM_BACKEND", backend)
+    def metadata(path):
+        raise RuntimeError("accepted transport reached checkpoint metadata")
+    monkeypatch.setattr(Config, "read", metadata)
+    with pytest.raises(RuntimeError, match="accepted transport reached checkpoint metadata"):
+        Session(tmp_path, ranks=2, shards="3,3", rank=0, master="127.0.0.1", port=29551,
+                budget="auto", mtp=False)
+
+
 @pytest.mark.parametrize("ranks,shards,rank,experts", [
     (2, "341,170", 0, 512), (2, "512", 0, 512), (2, "0,512", 0, 512),
     (2, "341,171", 2, 512), (2, "341,171", True, 512), (2, "1,x", 0, 512),
