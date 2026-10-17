@@ -596,6 +596,64 @@ def test_cancelling_a_yielded_background_request_keeps_the_foreground_turn(tmp_p
     assert totals["queue_seconds"] == metrics.counters_now(app).queue.total == 0.625
 
 
+def test_repeated_lane_yields_sum_decode_segments_and_preserve_prior_counters(monkeypatch):
+    from tensorfold.cuda import scheduler as scheduling
+    from tensorfold.cuda.streams import Stream
+
+    clock = [102.0]
+    monkeypatch.setattr(scheduling.time, "perf_counter", lambda: clock[0])
+    prior = Stream([1], 8, started=90.0, finished=91.0, queue_s=0.125, prefill_s=0.125,
+                   rounds=1, drafted=2, accepted=1, min_rows=2)
+    first = Stream([1], 8, background=True, out=[2], started=100.0, queue_s=0.25, prefill_s=0.25,
+                   rounds=2, drafted=3, accepted=1, min_rows=3, carry=prior.stats())
+
+    class Decoder:
+        def __init__(self):
+            self.streams = {0: first}
+
+        def live(self):
+            return len(self.streams)
+
+        def finish(self, streams):
+            for stream in streams:
+                assert stream.finished == clock[0]       # publication must follow this segment's closing clock
+                self.streams.pop(stream.sid)
+
+    decoder = Decoder()
+    scheduler = scheduling.Scheduler(decoder, max_streams=1)
+    box = object()
+    scheduler.boxes[id(first)] = box
+    foreground = (Stream([9], 1), object())
+    scheduler.waiting.put(foreground)
+
+    def yield_lane():
+        scheduler._yield()
+        assert scheduler.waiting.get_nowait() == foreground
+        replay, owner = scheduler.waiting.get_nowait()
+        assert owner is box and not scheduler.boxes and not decoder.streams
+        scheduler.waiting.put(foreground)
+        return replay
+
+    second = yield_lane()
+    assert second.carry["decode_s"] == 3.0 and second.carry["queue_s"] == 0.375
+    second.started, second.queue_s, second.prefill_s = 103.0, 0.5, 0.375
+    second.take([2, 3])                         # replay the owed token, then write a fresh one
+    second.rounds, second.drafted, second.accepted, second.min_rows = 3, 4, 2, 4
+    decoder.streams[second.sid] = second
+    scheduler.boxes[id(second)] = box
+    clock[0] = 106.0
+    third = yield_lane()
+    assert third.carry["decode_s"] == 6.0 and third.carry["queue_s"] == 0.875
+    third.started, third.finished, third.queue_s, third.prefill_s = 108.0, 112.0, 0.125, 0.5
+    third.rounds, third.drafted, third.accepted, third.min_rows = 4, 6, 4, 5
+    combined = third.stats()
+    assert {key: combined[key] for key in ("decode_s", "queue_s", "prefill_s", "rounds", "drafted", "accepted",
+                                           "min_rows")} == {
+        "decode_s": 10.0, "queue_s": 1.0, "prefill_s": 1.25, "rounds": 10, "drafted": 15, "accepted": 8,
+        "min_rows": 2}
+    assert scheduler.yields == 2
+
+
 def documented_fields():
     """docs/api.md's /stats table, its shorthand expanded: ``.x`` continues the previous field's section and
     ``{a,b}`` lists siblings."""
