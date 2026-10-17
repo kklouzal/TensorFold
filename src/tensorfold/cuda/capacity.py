@@ -103,7 +103,8 @@ def config(model_dir: str | Path) -> dict:
     return text
 
 
-def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path] | None = None) -> dict:
+def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path] | None = None,
+            observer: Callable[[int, dict], None] | None = None) -> dict:
     """Inspect one operation's checkpoint metadata without caching its namespace.
 
     Indexed targets are authorized before opening headers, resolved again once
@@ -111,10 +112,18 @@ def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path]
     reader's input-immutability contract covers this metadata operation; these
     checks detect observed namespace changes, not every transient filesystem
     mutation. No resolved path survives this invocation.
+
+    ``observer`` runs once per completely validated raw header, before its
+    entries are copied/filtered. Its offset includes the eight-byte prefix.
+    The callback may inspect borrowed entries (including ``__metadata__``),
+    but must neither retain nor mutate them. It must own its own accumulated
+    scalar result; headers never stores the callback beyond this operation.
     """
     from .tensor_file import checkpoint_path, read_header, read_metadata_json
 
     path = Path(model_dir)
+    if observer is not None and not callable(observer):
+        raise ValueError("header observer must be callable or null")
     if rank is not None and (type(rank) is not int or rank < 0):
         raise ValueError("checkpoint rank must be a nonnegative integer or null")
     files = list(files or []) or (sorted(path.glob(f"*.rank{rank}.safetensors")) if rank is not None else [])
@@ -156,7 +165,9 @@ def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path]
     # Explicit files retain their lexical names for the rank/split contract.
     out, located = {}, {}
     for file, authorized in authorized_files:
-        _, entries = read_header(authorized, SIZES)
+        offset, entries = read_header(authorized, SIZES)
+        if observer is not None:
+            observer(offset, entries)
         for name, info in entries.items():
             if name == "__metadata__":
                 continue
