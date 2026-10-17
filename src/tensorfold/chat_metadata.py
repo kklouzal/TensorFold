@@ -13,6 +13,10 @@ from pathlib import Path
 from tensorfold.checkpoint_metadata import read_json, read_text
 
 
+class MissingChatTemplate(ValueError):
+    """No template metadata exists; bare model execution may omit a chat frontend."""
+
+
 @dataclass(frozen=True)
 class TemplateSource:
     name: str
@@ -79,6 +83,8 @@ def resolve_chat_templates(model_dir, *, template_file=None, template_name=None)
             sources[name] = TemplateSource(name, source, filename)
     selected = "default" if template_name is None else template_name
     if selected not in sources:
+        if not sources and template_name is None:
+            raise MissingChatTemplate("no model chat template metadata")
         raise ValueError("no selected chat template; provide a model default or explicit chat_template_name/file")
     default = sources[selected]
     return default, sources.get("tool_use", default) if template_name is None else default
