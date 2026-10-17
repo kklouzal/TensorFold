@@ -75,13 +75,24 @@ def attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0:
 
 def triton_attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: int, *, scale: float,
                      out: torch.Tensor | None = None) -> torch.Tensor:
-    """The same through ``_attend``: the bits' definition, one program a 64-row block and query head."""
+    """The same through ``_attend``: one program a 64-row block and query head.
+
+    Explicit output must be disjoint from q and each cache's filled [0, p0 + W) prefix.
+    """
 
     w, h, d = q.shape
     hk = _check(q, k_cache, v_cache, p0)
-    out = torch.empty_like(q) if out is None else out
-    if (out.shape != q.shape or out.device != q.device or out.dtype != q.dtype or not out.is_contiguous()):
-        raise ValueError("prefill attention: out must be contiguous and like q on q's CUDA device")
+    if out is None:
+        out = torch.empty_like(q)
+    else:
+        if (out.shape != q.shape or out.device != q.device or out.dtype != q.dtype or not out.is_contiguous()):
+            raise ValueError("prefill attention: out must be contiguous and like q on q's CUDA device")
+        begin, end = out.data_ptr(), out.data_ptr() + out.numel() * out.element_size()
+        cache_reads = (p0 + w) * hk * d
+        for read, count in ((q, q.numel()), (k_cache, cache_reads), (v_cache, cache_reads)):
+            read_begin = read.data_ptr()
+            if max(begin, read_begin) < min(end, read_begin + count * read.element_size()):
+                raise ValueError("prompt attention output must not overlap q or filled cache inputs")
     if w == 0:
         return out
     _attend[(triton.cdiv(w, BM), h)](q, k_cache, v_cache, out, p0, w, H=h, HK=hk, D=d, BM=BM, BN=BN, SCALE=scale,
