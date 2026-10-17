@@ -6,7 +6,6 @@ import bz2
 import codecs
 from contextlib import contextmanager
 import gzip
-import json
 import os
 import stat
 from dataclasses import dataclass, field
@@ -17,27 +16,14 @@ import numpy as np
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.checkpoint_metadata import read_config
+from tensorfold.token_metadata import resolve_eos
 
 from ..host_table import BF16Table, HostTable
 from ..ssd_table import SSDTable
 from ..rope import RopeParameters
 from .ngram import NGram
 from .qmm import Q4
-
-
-def stop_ids(configured: Any, generation: Path) -> tuple[int, ...]:
-    """config.json's end-of-reply ids, then generation_config.json's it lacks (EXL3 packs keep <|im_end|> there)."""
-
-    def ids(value: Any) -> list[int]:
-        return [] if value is None else [int(e) for e in value] if isinstance(value, list) else [int(value)]
-
-    found = ids(configured)
-    if generation.exists():
-        found += ids(json.loads(generation.read_text()).get("eos_token_id"))
-    out = tuple(dict.fromkeys(found))
-    if not out:
-        raise ValueError("no eos_token_id in config.json or generation_config.json")
-    return out
 
 
 @dataclass
@@ -86,8 +72,8 @@ class Config:
     rope: RopeParameters | None = None  # immutable startup policy; tiny synthetic fixtures default to native RoPE
 
     @classmethod
-    def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None) -> "Config":
-        raw = json.loads((Path(model_dir) / "config.json").read_text())
+    def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None, eos_token_ids=None) -> "Config":
+        raw = read_config(model_dir)
         policy = rope if rope is not None else RopeParameters.from_config(raw)
         t = dict(raw.get("text_config") or raw)
         # unset, the gate is hidden_act (itself "silu" when unset), as transformers' Qwen4ExpConfig resolves it
@@ -96,7 +82,8 @@ class Config:
             raise ValueError(f"output_gate_type {gate!r}: the CUDA backend's DeltaNet kernels support 'sigmoid' only")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
         teos = t.get("eos_token_id")
-        eos = stop_ids(raw.get("eos_token_id", teos), Path(model_dir) / "generation_config.json")
+        eos = resolve_eos(model_dir, raw.get("eos_token_id", teos), vocab_size=int(t["vocab_size"]),
+                          override=eos_token_ids)
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
         method = str(quant.get("quant_method") or "mlx").lower()
         groups = quant.get("config_groups") or {}

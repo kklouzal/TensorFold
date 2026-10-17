@@ -7,7 +7,8 @@ import pytest
 pytest.importorskip("torch")
 pytest.importorskip("triton")          # Flash Next's CUDA weights import its triton kernels
 
-from tensorfold.families.qwen4_exp.cuda.weights import Config, stop_ids  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.weights import Config  # noqa: E402
+from tensorfold.token_metadata import resolve_eos  # noqa: E402
 
 IM_END, ENDOFTEXT = 248046, 248044
 TEXT = {
@@ -52,11 +53,23 @@ def test_without_generation_config_the_config_ids_are_used(tmp_path):
 def test_scalar_and_missing_values(tmp_path):
     gen = tmp_path / "generation_config.json"
     gen.write_text(json.dumps({"eos_token_id": IM_END}))
-    assert stop_ids(ENDOFTEXT, gen) == (ENDOFTEXT, IM_END)
+    assert resolve_eos(tmp_path, ENDOFTEXT) == (ENDOFTEXT, IM_END)
     gen.write_text(json.dumps({"temperature": 1.0}))
-    assert stop_ids([ENDOFTEXT], gen) == (ENDOFTEXT,)
+    assert resolve_eos(tmp_path, [ENDOFTEXT]) == (ENDOFTEXT,)
+    absent = tmp_path / "absent"
+    absent.mkdir()
     with pytest.raises(ValueError, match="eos_token_id"):
-        stop_ids(None, tmp_path / "absent.json")
+        resolve_eos(absent)
+
+
+def test_named_tokenizer_eos_is_reply_stop_but_does_not_change_training_ple_eos(tmp_path):
+    d = checkpoint(tmp_path, {"model_type": "qwen4_exp", "text_config": {**TEXT, "eos_token_id": ENDOFTEXT}},
+                   {"eos_token_id": ENDOFTEXT})
+    (d / "tokenizer_config.json").write_text(json.dumps({"eos_token": {"content": "turn_end"},
+        "added_tokens_decoder": {str(IM_END): {"content": "turn_end", "special": True}}}))
+    assert Config.read(d).eos == (ENDOFTEXT, IM_END)
+    overridden = Config.read(d, eos_token_ids=[7, 7, 0])
+    assert overridden.eos == (7, 0) and overridden.ple_eos == ENDOFTEXT
 
 
 # transformers' Qwen4ExpConfig: an unset output_gate_type is hidden_act, whose own default is "silu"
