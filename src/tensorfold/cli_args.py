@@ -157,13 +157,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="stream routed experts from the checkpoint into a GPU pool of this many GiB, for models "
                             "past the memory budget (the rest stays resident; output is the resident model's)")
     speed.add_argument("--vram-experts", type=_vram_experts, default=None, metavar="GIB|auto",
-                       help="Flash Next affine 4-bit or EXL3 CUDA: keep experts in system RAM; use this many GiB "
+                       help="Flash Next affine 4-bit, EXL3 or NVFP4 CUDA: keep experts in system RAM; use this many GiB "
                             "for a shared GPU expert cache, or auto to use the room left after weights, slot state "
-                            "and workspace (one GPU; routing and precision preserved; slower on misses)")
+                            "and workspace (routing and precision preserved; affine/NVFP4 also support expert ranks)")
     speed.add_argument("--ple-on-ssd", action="store_true",
-                       help="Flash Next: read the n-gram (PLE) tables from the checkpoint on SSD at each lookup "
-                            "instead of holding them in memory. A trade: a few percent of decode speed for about "
-                            "40 GiB less at peak (the tables are 29.8 GiB); a 128 GB Mac needs it")
+                       help="Flash Next: read supported n-gram (PLE) table rows from SSD at lookup; CUDA supports "
+                            "affine, BF16, FP8 and NVFP4 tables; EXL3 retains its native mapped table. "
+                            "Memory and latency depend on checkpoint format and storage")
     speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
                        help="Flash Next CUDA RAM experts auto: reserve N full KV windows across concurrent slots")
     speed.add_argument("--vram-experts-pin", choices=("off", "auto", "on"), default="off",
@@ -183,10 +183,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
                       help="comma-separated routed-expert counts per expert rank, covering every expert exactly")
     cuda.add_argument("--rank", type=int, choices=(0, 1, 2, 3), default=0,
-                      help="with --tp 2/4: this machine's rank; rank 0 serves HTTP, others follow it")
-    cuda.add_argument("--master", default="", help="with --tp 2/4: rank 0's address on the link between the ranks")
+                      help="tensor/expert rank index; rank 0 serves HTTP, others follow it")
+    cuda.add_argument("--master", default="", help="rank 0 rendezvous address; expert ranks require same-host loopback")
     cuda.add_argument("--master-port", type=int, default=29551,
-                      help="with --tp 2/4: rank 0's rendezvous port (1 to 65535, the same on every rank)")
+                      help="rank 0 rendezvous port (1 to 65535, the same on every tensor/expert rank)")
     cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16",
                       help="KV cache: bf16 (the default), int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
