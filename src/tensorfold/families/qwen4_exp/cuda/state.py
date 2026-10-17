@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import traceback
+
 import numpy as np
 import torch
 
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda import experts as grouped
 from tensorfold.cuda import moe as moe_mod
 
@@ -179,6 +182,7 @@ class State:
         self._kv_pending = False
         self._kv_error: KVNumericError | KVResizeError | None = None
         self._resize_error: BaseException | None = None
+        self._resize_frames_pending = None
         self.limit = int(capacity if limit is None else limit)     # the rows this sequence may grow to
         capacity = min(int(capacity), self.limit)
         self.capacity = capacity
@@ -230,8 +234,9 @@ class State:
     def kv_begin(self) -> None:
         """Mark GPU writes unchecked; never clear a previous numeric failure."""
 
-        if self._kv_error is not None:
-            raise self._kv_error
+        error = self._kv_error if self._kv_error is not None else self._resize_error
+        if error is not None:
+            raise error
         if self.kv_status is None:
             return
         self._kv_pending = True
@@ -244,8 +249,9 @@ class State:
         until ``reset``. CUDA/runtime failures propagate unchanged.
         """
 
-        if self._kv_error is not None:
-            raise self._kv_error
+        error = self._kv_error if self._kv_error is not None else self._resize_error
+        if error is not None:
+            raise error
         status = self.kv_status
         if status is None:
             return
@@ -259,8 +265,9 @@ class State:
         """``kv_check`` from status words a caller read back after this frame's last status write (its own wait):
         the same latch, without a readback of its own."""
 
-        if self._kv_error is not None:
-            raise self._kv_error
+        error = self._kv_error if self._kv_error is not None else self._resize_error
+        if error is not None:
+            raise error
         if self.kv_status is None:
             return
         if self._kv_pending:
@@ -375,16 +382,31 @@ class State:
             self.mtp_pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
 
     def _poison_resize(self, error: BaseException) -> None:
-        import traceback
-
         self._resize_error = error
-        self._kv_error = KVResizeError("cache resize failed; this sequence requires exclusive cache retirement")
-        self._kv_error.__cause__ = error
-        self.version += 1
+        self._kv_error = None
+        if self._resize_frames_pending is None:
+            self._resize_frames_pending = error.__traceback__
+        failures = []
+        try:
+            self._kv_error = KVResizeError("cache resize failed; this sequence requires exclusive cache retirement")
+            self._kv_error.__cause__ = error
+        except BaseException as diagnostic:
+            failures.append(diagnostic)
+        try:
+            self.version += 1
+        except BaseException as diagnostic:
+            failures.append(diagnostic)
         # Retain the traceback's stack, while releasing failed helpers' local
         # replacement tensors (including KVCache.resized and _rows). Attached
         # arrays stay owned and charged until explicit retirement succeeds.
-        traceback.clear_frames(error.__traceback__)
+        try:
+            traceback.clear_frames(self._resize_frames_pending)
+        except BaseException as diagnostic:
+            failures.append(diagnostic)
+        else:
+            self._resize_frames_pending = None
+        if failures:
+            raise_failures(error, failures)
 
     def recover_resize(self, w: Weights, rows: int) -> int:
         """Exclusively discard a failed sequence and rebuild its cache geometry.
@@ -403,6 +425,12 @@ class State:
         try:
             if self.pos_dev.is_cuda:
                 torch.cuda.current_stream(self.pos_dev.device).synchronize()
+            if self._resize_frames_pending is not None:
+                # These frames may retain replacements not attached to State.
+                # Do not allocate or publish another geometry until every old
+                # temporary is retired after its stream's consumers complete.
+                traceback.clear_frames(self._resize_frames_pending)
+                self._resize_frames_pending = None
             self._resize_caches(rows, 0, 0)
             self.capacity = rows
             self._resize_error = self._kv_error = None
@@ -417,7 +445,7 @@ class State:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
         if self._resize_error is not None:
-            raise self._kv_error
+            raise self._kv_error if self._kv_error is not None else self._resize_error
         if self.kv_status is not None:
             self.kv_status.zero_()
             self.kv_status[1].fill_(-2)
