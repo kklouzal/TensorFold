@@ -8,7 +8,7 @@ from tensorfold.families.qwen3_5.cuda.weights import Plain
 
 # Only these measured row counts use a different launch geometry. Every row
 # keeps the incumbent ordered FP32 FMA chain, XOR reduction and BF16 rounding.
-_ROWS = (0, 0, 2, 8, 8, 0, 0, 0, 8, 0, 0, 0, 16, 0, 0, 0, 16)
+_ROWS = (0, 0, 2, 8, 8, 0, 0, 8, 8, 0, 0, 0, 16, 0, 0, 16, 16)
 
 
 class _RowsHead(Plain):

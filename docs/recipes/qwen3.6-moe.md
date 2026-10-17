@@ -112,6 +112,16 @@ Native component checks have passed on the RTX PRO 2000 Blackwell host. Full-mod
 quality, throughput selection and immutable installed-image qualification remain
 pending; no new tokens/s result is claimed here yet.
 
+Concurrent prompt prefill runs the routed MoE over the aggregate batch with the
+same BF16 post-attention boundary as separate prefills. Each stream retains its
+own convolution, recurrent, attention and DFlash context. The scheduler bounds
+the aggregate prompt rows by the admitted forward limit, including while other
+streams decode. Routed batched prefill supports one GPU. The SM120 BF16
+vocabulary head keeps its ordered singleton arithmetic while reusing weights
+for the seven- and fifteen-row DFlash proposal tails; prompt projection is
+unchanged. Fresh installed numerical, concurrency and performance checks for
+these increments remain pending.
+
 ## Mac execution
 
 Macs verify on the dense family's row decoder, with every verification width checked at load against

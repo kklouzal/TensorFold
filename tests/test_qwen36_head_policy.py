@@ -29,7 +29,7 @@ def test_selected_head_preserves_weight_ownership_and_binds_device_once(monkeypa
     assert target.head.weight is source
     assert drafter_head is target.head
     assert devices == [source.device]
-    for rows, reuse in ((2, 2), (3, 8), (4, 8), (8, 8), (12, 16), (16, 16)):
+    for rows, reuse in ((2, 2), (3, 8), (4, 8), (7, 8), (8, 8), (12, 16), (15, 16), (16, 16)):
         x = torch.zeros(rows, 2048, dtype=torch.float32)
         assert target.head(x) == "selected"
         assert prepared[-1][0].dtype == torch.bfloat16
@@ -65,7 +65,7 @@ def test_singleton_and_unmeasured_rows_keep_original_dispatch(monkeypatch):
     monkeypatch.setattr(b16, "_ext", lambda: NS(b16_linear_rows=lambda *args: pytest.fail("unmeasured row dispatch")))
     monkeypatch.setattr(b16, "matmul", lambda *args: calls.append(args) or "incumbent")
     prepared = policy.prepare_head(Plain(weight()))
-    for rows in (1, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 32, 64, 128):
+    for rows in (1, 5, 6, 9, 10, 11, 13, 14, 17, 32, 64, 128):
         x = torch.zeros(rows, 2048, dtype=torch.bfloat16)
         assert prepared(x) == "incumbent"
         assert calls[-1] == (x, prepared.weight)
