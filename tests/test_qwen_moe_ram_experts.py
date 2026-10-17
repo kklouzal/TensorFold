@@ -75,6 +75,12 @@ def test_bad_public_budget_rejects_before_checkpoint_io(budget):
         ram.layout("/absent", budget)
 
 
+def test_large_finite_integer_budget_caps_at_logical_experts_without_float_conversion(tmp_path):
+    checkpoint(tmp_path)
+    plan = ram.layout(tmp_path, 10 ** 1000)
+    assert plan.slots == plan.expert_count == 6
+
+
 @pytest.mark.parametrize("field,value", [("num_experts", True), ("num_hidden_layers", 0),
     ("hidden_size", 63), ("num_experts_per_tok", 4)])
 def test_invalid_geometry_rejects_before_header_acquisition(tmp_path, monkeypatch, field, value):
