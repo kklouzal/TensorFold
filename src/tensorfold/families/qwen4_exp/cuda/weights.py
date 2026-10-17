@@ -283,9 +283,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         if expert_loader is not None:
             return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
         if expert_cache is not None:
-            from tensorfold.cuda.nvfp4.host_experts import load_moe_host
-
-            bank = load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
+            bank = nvfp4_moe.load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
                                  layer_id=next_expert_layer)
             next_expert_layer += 1
             return MoEW(router, bank)
