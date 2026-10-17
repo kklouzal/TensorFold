@@ -6,16 +6,15 @@ The allocation model proves logical storage bounds, not allocator/driver peaks.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
-from functools import partial
 import gc
-from pathlib import Path
 import random
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPACITY = ROOT / "src/tensorfold/cuda/capacity.py"

@@ -1,15 +1,15 @@
 """Model-owned attention address contracts; stdlib only, no numerical runtime."""
 from __future__ import annotations
-
 import __future__
+
 import ast
-from dataclasses import dataclass
-from functools import cached_property
 import gc
-from pathlib import Path
-from types import SimpleNamespace
 import unittest
 import weakref
+from dataclasses import dataclass
+from functools import cached_property
+from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTENTION = ROOT / "src/tensorfold/cuda/kernels/attention.py"

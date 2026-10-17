@@ -5,16 +5,14 @@ import struct
 from types import SimpleNamespace
 
 import numpy as np
-
 import pytest
-
-
-from tests.mlx_host_protocol_fakes import cli_protocol, mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
-from tests.cli_server_fixture import prepared_tokenizer
 
 from tensorfold import cli
 from tensorfold.engine import memory
 from tensorfold.engine.prefill_plan import PrefillPlan
+from tests.cli_server_fixture import prepared_tokenizer
+from tests.mlx_host_protocol_fakes import cli_protocol
+from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
 
 
 class CPUCache:
