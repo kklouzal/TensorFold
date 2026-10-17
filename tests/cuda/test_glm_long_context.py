@@ -15,6 +15,7 @@ if not torch.cuda.is_available():
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 
 from test_glm_engine import _checkpoint, _forget, _generate, _TwoCopies  # noqa: E402  (pytest puts tests/cuda on sys.path)
+from test_glm_engine import _sampling_contract as _sampling_contract  # noqa: E402 - register scoped mock transport
 
 PROMPT = 2100              # past the dense limit: the first reply token is already a sparse row
 CONTEXT = 2600
