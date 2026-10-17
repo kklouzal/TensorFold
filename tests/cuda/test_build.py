@@ -1,9 +1,10 @@
 """Real nvcc extension builds: cache reuse and recovery after a builder is killed while holding Torch's lock."""
 
 import os
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from pathlib import Path
 import select
+import selectors
 import signal
 import subprocess
 import sys
@@ -30,8 +31,8 @@ cpp_extension._run_ninja_build = interrupted
 
 def _start(env: dict) -> subprocess.CompletedProcess:
     with _child(START, env) as process:
-        stdout, stderr = process.communicate(timeout=1800)
-        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+        stdout, stderr = _communicate(process, timeout=1800)
+        return subprocess.CompletedProcess(process.args, _exited(process), stdout, stderr)
 
 
 @contextmanager
@@ -68,53 +69,114 @@ def _line(process, stderr, timeout=600):
     deadline = time.monotonic() + timeout
     line = bytearray()
     while not line.endswith(b"\n"):
-        ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
-        assert ready, f"no line within {timeout} s; child exit={process.poll()}; stderr={stderr.read_text()}"
+        remaining = deadline - time.monotonic()
+        ready = select.select([process.stdout], [], [], remaining)[0] if remaining > 0 else []
+        assert ready, f"no line within {timeout} s; child exit={_exited(process)}; stderr={stderr.read_text()}"
         byte = os.read(process.stdout.fileno(), 1)
-        assert byte, f"child stdout closed; exit={process.poll()}; stderr={stderr.read_text()}"
+        assert byte, f"child stdout closed; exit={_exited(process)}; stderr={stderr.read_text()}"
         line.extend(byte)
     return line.decode().strip()
 
 
-def _session_groups(session):
-    """Live groups in this owned Linux session; an exited zombie cannot perform more compiler work."""
+def _exited(process):
+    """Observe exit without reaping: the direct child's PID reserves our session identity until cleanup."""
 
-    groups = set()
-    for entry in Path('/proc').iterdir():
-        if not entry.name.isdecimal():
-            continue
-        try:
-            # comm may contain spaces/parentheses/non-UTF8 bytes; fields after its final ')' are ASCII metadata.
-            fields = (entry / 'stat').read_bytes().rsplit(b') ', 1)[1].split()
-        except (FileNotFoundError, ProcessLookupError):
-            continue                              # the process exited while the snapshot was read
-        if int(fields[3]) == session and fields[0] not in (b'Z', b'X'):
-            groups.add(int(fields[2]))
-    return groups
+    status = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if status is None:
+        return None
+    return status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+
+
+def _wait_exit(process, timeout):
+    deadline = time.monotonic() + timeout
+    while (status := _exited(process)) is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        time.sleep(min(0.01, remaining))
+    return status
+
+
+def _communicate(process, timeout):
+    """Drain both captured pipes under one deadline, retaining the unreaped session leader."""
+
+    deadline = time.monotonic() + timeout
+    streams = (process.stdout, process.stderr)
+    buffers = [bytearray(), bytearray()]
+    with selectors.DefaultSelector() as selector:
+        for index, stream in enumerate(streams):
+            if stream is not None:
+                selector.register(stream, selectors.EVENT_READ, index)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            events = selector.select(remaining) if remaining > 0 else []
+            if not events:
+                raise subprocess.TimeoutExpired(process.args, timeout, bytes(buffers[0]), bytes(buffers[1]))
+            for key, _ in events:
+                data = os.read(key.fd, 65536)
+                if data:
+                    buffers[key.data].extend(data)
+                else:
+                    selector.unregister(key.fileobj)
+    _wait_exit(process, max(0, deadline - time.monotonic()))
+    return tuple(bytes(data).decode(stream.encoding, stream.errors).replace('\r\n', '\n').replace('\r', '\n')
+                 if stream is not None else None for stream, data in zip(streams, buffers))
+
+
+@contextmanager
+def _session_members(session):
+    """Pin each live session member before inspection; neither proc FDs nor pidfds retarget reused PIDs."""
+
+    members = []
+    with ExitStack() as handles:
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdecimal():
+                continue
+            try:
+                # Open the proc directory BEFORE the pidfd, then inspect that same directory. If the PID was
+                # reused between opens, old proc FDs fail rather than describe the replacement process.
+                directory = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    pidfd = os.pidfd_open(int(entry.name))
+                    try:
+                        with os.fdopen(os.open('stat', os.O_RDONLY, dir_fd=directory), 'rb') as stat:
+                            fields = stat.read().rsplit(b') ', 1)[1].split()
+                        # comm may contain spaces/parentheses/non-UTF8 bytes; the remaining metadata is ASCII.
+                        if int(fields[3]) == session and fields[0] not in (b'Z', b'X'):
+                            members.append((pidfd, int(fields[2])))
+                            handles.callback(os.close, pidfd)
+                            pidfd = None
+                    finally:
+                        if pidfd is not None:
+                            os.close(pidfd)
+                finally:
+                    os.close(directory)
+            except (FileNotFoundError, ProcessLookupError):
+                continue                          # process retired during the owned-handle snapshot
+        yield members
 
 
 def _stop(process):
     if getattr(process, '_session_retired', False):
         return
+    if process.returncode is not None:
+        raise RuntimeError("build leader was reaped before session cleanup; session identity is no longer reserved")
     deadline = time.monotonic() + 30
     while True:
-        groups = _session_groups(process.pid)
-        for group in groups:
-            try:
-                os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
-                pass                              # the entire group already exited
-        remaining = deadline - time.monotonic()
-        if process.returncode is None:
-            try:
-                process.wait(timeout=max(0, min(remaining, 0.05)))
-            except subprocess.TimeoutExpired:
-                pass
-        # Re-snapshot after the leader exits: children forked during the first scan must also be retired.
-        remaining_groups = _session_groups(process.pid)
-        if process.returncode is not None and not remaining_groups:
+        with _session_members(process.pid) as members:
+            for pidfd, _ in members:
+                try:
+                    signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass                          # this exact process already exited; never signal a reused PID/PGID
+        # The leader remains an unreaped zombie while rescanning children forked during the first snapshot.
+        with _session_members(process.pid) as members:
+            remaining_groups = {group for _, group in members}
+        if _exited(process) is not None and not remaining_groups:
+            process.wait(timeout=0)                # only reap after quiescence; never scan/signal this SID again
             process._session_retired = True
             return
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"build session {process.pid} did not retire within 30 s; live groups {sorted(remaining_groups)}")
         time.sleep(min(0.01, remaining))
@@ -146,7 +208,7 @@ def test_a_killed_build_releases_or_reports_its_actual_lock(tmp_path):
             assert _line(owner, owner_stderr) == str(lock)
             assert (lock.parent / "build.ninja").is_file()
             assert not (lock.parent / (NAME + cpp_extension.LIB_EXT)).exists()
-            assert owner.poll() is None
+            assert _exited(owner) is None
             if advisory:
                 _advisory_recovery(owner, env, lock, tmp_path, cpp_extension)
             else:
@@ -176,13 +238,13 @@ cpp_extension.FileLock = ObservedLock
             assert _line(waiter, waiter_stderr).startswith(f"[tensorfold] building CUDA extension {NAME}")
             assert _line(waiter, waiter_stderr) == "acquiring " + str(lock)
             with pytest.raises(subprocess.TimeoutExpired):
-                waiter.wait(timeout=0.2)
+                _wait_exit(waiter, timeout=0.2)
             _stop(owner)
             assert owner.returncode < 0
             # No unlink: killing the owner must release the kernel lock, and the
             # waiting JIT must finish the interrupted extension's native build.
-            output, _ = waiter.communicate(timeout=1800)
-            assert waiter.returncode == 0, waiter_stderr.read_text()
+            output, _ = _communicate(waiter, timeout=1800)
+            assert _exited(waiter) == 0, waiter_stderr.read_text()
             assert "killed build" not in output and "delete the lock" not in output
             assert lock.is_file()
     again = _start(env)
@@ -198,7 +260,7 @@ def _baton_recovery(owner, env, lock, tmp_path):
         with _child(START, env, stderr=errors) as waiter:
             line = _line(waiter, waiter_stderr)
             assert str(lock) in line and "stop this start, delete the lock and start again" in line
-            assert waiter.poll() is None
+            assert _exited(waiter) is None
     lock.unlink()
     again = _start(env)
     assert again.returncode == 0, again.stderr
