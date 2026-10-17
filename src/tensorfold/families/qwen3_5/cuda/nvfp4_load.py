@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -43,6 +45,26 @@ class Plain8(Plain):
 
     def nbytes(self) -> int:
         return super().nbytes() + self.rows8.nbytes()
+
+
+@dataclass(frozen=True)
+class MLPContext:
+    """Borrowed loading context for a family-specific MLP constructor.
+
+    Names are checkpoint-absolute. ``read`` consumes each tensor exactly once,
+    on the requested device; an expert factory can therefore build its final
+    CPU authority without first placing expert payload on the GPU. The callback
+    must finish before returning and retain tensors, not this reader context.
+    ``used`` records actual native activation math for the startup declaration.
+    """
+
+    info: dict[str, tuple[str, list[int]]]
+    metadata: Any
+    read: Callable
+    linear: Callable
+    checkpoint_math: bool
+    own: dict[str, bool]
+    used: dict[str, bool]
 
 
 def weight_bytes(name: str, info: dict) -> tuple[int, int]:
@@ -98,7 +120,7 @@ def maths() -> tuple[dict[str, bool], str]:
     return own, f"full ({gpu} has neither the block-scaled FP4 nor the FP8 mma): bf16 activations, the stored weights"
 
 
-def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None):
+def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None):
     """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored."""
 
     from tensorfold.cuda.capacity import headers
@@ -179,6 +201,15 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         def get(name: str) -> torch.Tensor:
             return t.pop(root + name).contiguous()
 
+        def read(name: str, *, device=None) -> torch.Tensor:
+            if device is None:
+                return t.pop(name)
+            del t.where[name]
+            return t.files.get(name, device)
+
+        context = (MLPContext(info, metadata, read, linear, checkpoint_math, own, used)
+                   if mlp is not None else None)
+
         def norm(name: str) -> torch.Tensor:
             """A centred RMSNorm weight (stored as gamma - 1) with its 1 back, as the MLX converter wrote it."""
 
@@ -202,10 +233,14 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 attn = Attention(q=linear(q + "self_attn.q_proj"), k=linear(q + "self_attn.k_proj"),
                                  v=linear(q + "self_attn.v_proj"), o=linear(q + "self_attn.o_proj"),
                                  q_norm=norm(p + "self_attn.q_norm.weight"), k_norm=norm(p + "self_attn.k_norm.weight"))
-            layers.append(Layer(linear=cfg.is_linear(i), input_norm=norm(p + "input_layernorm.weight"),
-                                post_norm=norm(p + "post_attention_layernorm.weight"), gdn=gdn, attn=attn,
-                                gate=linear(q + "mlp.gate_proj"), up=linear(q + "mlp.up_proj"),
-                                down=linear(q + "mlp.down_proj")))
+            input_norm = norm(p + "input_layernorm.weight")
+            post_norm = norm(p + "post_attention_layernorm.weight")
+            fields = (mlp(q + "mlp.", context, cfg) if mlp is not None else
+                      {"gate": linear(q + "mlp.gate_proj"), "up": linear(q + "mlp.up_proj"),
+                       "down": linear(q + "mlp.down_proj")})
+            layers.append(Layer(linear=cfg.is_linear(i), input_norm=input_norm,
+                                post_norm=post_norm, gdn=gdn, attn=attn,
+                                **{"gate": None, "up": None, "down": None, **fields}))
         # Layer packing has finished; unused staging bins need not coexist
         # with the late embedding/head allocations in the reserved footprint.
         torch.cuda.empty_cache()
