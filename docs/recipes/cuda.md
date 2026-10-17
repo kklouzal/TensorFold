@@ -160,6 +160,17 @@ public constructor without admission, loader or precision hooks. Checkpoint/mode
 and model allocations and reservations returned to zero on close. This coverage does not establish other
 export layouts, drafted or concurrent decoding, cross-precision equality or broader quality.
 
+The current installed desktop image also ran the real ModelOpt export
+`surogate/Qwen3.5-9B-NVFP4`, revision `3410fbc4f4075661f58f6b222d05b6dde646b8c1`,
+in both precision modes with four slots and a configured 16,384-token window.
+Each mode reproduced three 512-token coding replies and passed supported
+API/concurrent/strict-JSON checks through composite verification. This export
+needs explicit `stop: ["<|im_end|>"]`; its JSON-call template correctly refuses
+XML-only strict function tools and the strict Harness catalog. The
+[qualification](../small-nvfp4-validation.md) gives exact observed rates,
+resource limits, images and retained failed test assumptions. It does not
+qualify Flash Next's RAM-backed experts or new drafting/vision configurations.
+
 `nvidia/Qwen3.8-27B-NVFP4` ran on an RTX PRO 6000 Blackwell Max-Q and a DGX Spark (GB10). The SM 8.9, 9.0 and 10.0
 builds are compiled, and their math is checked on Blackwell: the SM 8.9-10.x choice served with drafted == serial,
 and the split-K reduction those GPUs take without clusters bit for bit against the clusters' one. They have not run

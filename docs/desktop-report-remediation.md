@@ -252,6 +252,11 @@ blanket latency gain or unchanged-capacity claim follows from these features.
 
 ## Installed local qualification
 
+The later [smaller pretrained NVFP4 record](small-nvfp4-validation.md) qualifies
+a dense ModelOpt 9B checkpoint on this same installed image. The full ModelOpt
+and offload gaps in this desktop-report section concern Flash Next's separate
+routed-expert/SSD-table workload.
+
 Frozen runtime `b551e68f` was built as the ordinary installed wheel in the
 maintained Dockerfile. All 512 packaged owned source files matched the captured
 source. Corrected verification images retain the serving image's exact

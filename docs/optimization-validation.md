@@ -18,6 +18,25 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Smaller pretrained NVFP4, 2026-10-17
+
+The ordinary installed desktop image `c74633ad…`/runtime `b551e68f` ran
+`surogate/Qwen3.5-9B-NVFP4` revision `3410fbc4…`. Its full weight SHA256 matched
+the publisher. Native FP4 activations and BF16 activations against the same
+NVFP4 weights were qualified separately: three identical 512-token replies
+per mode, supported HTTP/SSE/strict-JSON checks and concurrent/solo identity.
+The observed single-request rates were 24.06–24.27 and 34.41–34.73 tok/s;
+different output contracts preclude a quality-preserving speedup claim.
+
+The [record](small-nvfp4-validation.md) and
+[receipt](verification-small-nvfp4-20261017.json) retain the explicit stop policy,
+original default-EOS failure, family-specific unsupported feature refusals,
+and composite live-capture/offline validation. The recorded host minimum was
+53,324,820,480 available bytes against an 8 GiB floor. This dense checkpoint
+has no routed experts or n-gram tables; it cannot qualify the reported full
+Flash Next ModelOpt offload path. No application/model/dependency changes or
+new deployment were needed.
+
 ## Desktop report remediation, 2026-10-17
 
 Runtime `b551e68f` implements admitted optional registered expert authority,
