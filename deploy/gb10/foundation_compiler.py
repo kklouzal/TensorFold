@@ -3,6 +3,7 @@
 
 import json
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -22,6 +23,12 @@ def main() -> None:
     if contract["contract_path"] != path:
         raise ValueError("foundation compiler manifest path differs from its contract")
     command = compiler_command(contract, role=role, arguments=sys.argv[1:])
+    # Triton/Torch use subprocess's default restore_signals=True. Python startup
+    # ignores these signals again; restore that native-child contract before exec.
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        value = getattr(signal, name, None)
+        if value is not None:
+            signal.signal(value, signal.SIG_DFL)
     os.execv(command[0], command)
 
 

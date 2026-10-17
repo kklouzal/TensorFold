@@ -34,20 +34,23 @@ def _digest(value: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _file(path: str | Path, *, executable: bool = False) -> dict:
+def _file(path: str | Path, *, executable: bool = False, verify_content: bool = True) -> dict:
     selected = Path(path)
     if not selected.is_absolute():
         raise ValueError(f"foundation path must be absolute: {path}")
     real = selected.resolve(strict=True)
     if not real.is_file() or (executable and not os.access(real, os.X_OK)):
         raise ValueError(f"foundation provider is not a {'executable ' if executable else ''}file: {path}")
-    with real.open("rb") as stream:
-        sha = hashlib.file_digest(stream, "sha256").hexdigest()
-    return {"path": str(selected), "realpath": str(real), "sha256": sha, "size": real.stat().st_size}
+    record = {"path": str(selected), "realpath": str(real), "size": real.stat().st_size}
+    if verify_content:
+        with real.open("rb") as stream:
+            record["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+    return record
 
 
-def _check_file(record: dict, *, executable: bool = False) -> None:
-    if _file(record["path"], executable=executable) != record:
+def _check_file(record: dict, *, executable: bool = False, verify_content: bool = True) -> None:
+    expected = record if verify_content else {key: value for key, value in record.items() if key != "sha256"}
+    if _file(record["path"], executable=executable, verify_content=verify_content) != expected:
         raise ValueError(f"foundation provider changed: {record['path']}")
 
 
@@ -63,6 +66,8 @@ def _headers(include: Path) -> list[dict]:
     for path in sorted(include.rglob("*")):
         if path.is_symlink() and path.is_dir():
             raise ValueError(f"foundation include directory alias is unsupported: {path}")
+        if not path.is_dir() and not path.is_file():
+            raise ValueError(f"foundation include entry is not a regular file or directory: {path}")
         if path.is_file():
             record = _file(path)
             if not Path(record["realpath"]).is_relative_to(include):
@@ -151,7 +156,7 @@ def _validate_contract(contract: dict) -> None:
         raise ValueError("foundation toolchain contract identity changed")
 
 
-def toolchain_environment(contract: dict, *, cache_root: str) -> dict[str, str]:
+def toolchain_environment(contract: dict, *, cache_root: str, verify_content: bool = True) -> dict[str, str]:
     """Validate immutable providers once, then return early-publication settings.
 
     ``cache_root`` must already identify the sealed runtime/architecture and
@@ -160,15 +165,21 @@ def toolchain_environment(contract: dict, *, cache_root: str) -> dict[str, str]:
     providers. No environment is mutated here. The owner publishes this mapping
     transactionally, before runtime descriptors/compiler caches are initialized.
     SDK-wide content hashing is preparation-only, never on a kernel launch.
+    A managed owner may set ``verify_content=False`` only after its sealed
+    inventory/package/file-identity verification and under the same immutable
+    lifetime contract. That avoids duplicating its SDK scan; selected provider
+    paths, sizes, executability and the sealed contract digest are still checked.
     """
     _validate_contract(contract)
-    if _headers(Path(contract["include"])) != contract["headers"]:
+    if type(verify_content) is not bool:
+        raise ValueError("verify_content must be a boolean")
+    if verify_content and _headers(Path(contract["include"])) != contract["headers"]:
         raise ValueError("foundation include tree changed")
     for group in ("tools", "compilers", "wrappers", "helpers"):
         for record in contract[group].values():
-            _check_file(record, executable=group != "helpers")
+            _check_file(record, executable=group != "helpers", verify_content=verify_content)
     for name in ("libdevice", "cupti"):
-        _check_file(contract[name])
+        _check_file(contract[name], verify_content=verify_content)
     cache = Path(cache_root)
     if not cache.is_absolute():
         raise ValueError("foundation compiler cache root must be absolute")
