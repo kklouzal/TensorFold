@@ -57,3 +57,75 @@ def bank_bases(infos, text, mtp=True):
                     if scale.get("dtype") not in ("BF16", "F16", "F32") or list(scale.get("shape", ())) not in ([], [1]):
                         raise ValueError(f"--vram-experts: invalid NVFP4 expert global scale {b}")
     return tuple(sorted(bases))
+
+
+_A4_EXPERT = re.compile(
+    r"^(?P<bank>(?:model(?:\.language_model)?|language_model\.model)\.layers\.(?P<layer>\d+)\.mlp)"
+    r"\.experts\.(?P<expert>\d+)\.(?P<projection>[^.]+)\.(?P<field>[^.]+)$")
+_A4_FIELDS = ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale")
+_A4_PROJECTIONS = ("gate_proj", "up_proj", "down_proj")
+
+
+def authority_fields_a4(count, width, dims):
+    """Native-A4 CPU authority fields, separate from Flash Next's W4A16 blocks.
+
+    A projection blob holds checkpoint FP4 code words, then its tiled E4M3
+    block scales. Per-expert global/input fields hold the direct FP32 values
+    consumed by native checkpoint math, with CT reciprocal convention resolved.
+    """
+    if type(count) is not int or not 1 <= count <= 1023:
+        raise ValueError("native A4 expert count must lie in [1, 1023]")
+    if any(type(n) is not int or not 0 < n < 2**31 or n % 64 for n in (width, dims)):
+        raise ValueError("native A4 expert dimensions must be positive int32 multiples of 64")
+    blob = 9 * width * dims // 16
+    fields = (((count, 2, blob), "U8"), ((count, blob), "U8"),
+              ((count, 2), "F32"), ((count, 1), "F32"), ((count, 2), "F32"), ((count, 1), "F32"))
+    if count * 2 * blob > 2**63 - 1:
+        raise ValueError("native A4 authority exceeds tensor storage size limits")
+    return fields
+
+
+def routed_tensor_a4(name):
+    """Main routed CT projection fields only; shared and secondary drafts stay separate."""
+    match = _A4_EXPERT.fullmatch(name)
+    return bool(match and match["projection"] in _A4_PROJECTIONS and match["field"] in _A4_FIELDS)
+
+
+def bank_bases_a4(infos, text):
+    """Validate complete main-bank CT NVFP4 headers before any authority allocation."""
+    layers, count = text["num_hidden_layers"], text["num_experts"]
+    width, dims = text["moe_intermediate_size"], text["hidden_size"]
+    authority_fields_a4(count, width, dims)
+    if type(layers) is not int or layers <= 0:
+        raise ValueError("native A4 layer count must be a positive integer")
+    banks = {}
+    layer_ids = set()
+    for name, info in infos.items():
+        match = _A4_EXPERT.fullmatch(name)
+        if match is None:
+            continue
+        if match["projection"] not in _A4_PROJECTIONS or match["field"] not in _A4_FIELDS:
+            raise ValueError(f"native A4 expert field is unsupported: {name}")
+        expert = int(match["expert"])
+        if not 0 <= expert < count:
+            raise ValueError(f"native A4 expert index is outside configured bank: {name}")
+        layer_ids.add(int(match["layer"]))
+        bank = banks.setdefault(match["bank"], {})
+        key = (expert, match["projection"], match["field"])
+        if key in bank:
+            raise ValueError(f"duplicate native A4 expert field: {name}")
+        bank[key] = info
+    if len(layer_ids) != layers or min(layer_ids, default=-1) != 0 or max(layer_ids, default=-1) != layers - 1:
+        raise ValueError("native A4 checkpoint must contain every configured main expert layer")
+    if len(banks) != layers:
+        raise ValueError("native A4 checkpoint has conflicting main expert bank prefixes")
+    for name, bank in banks.items():
+        if len(bank) != count * 12:
+            raise ValueError(f"{name}: native A4 expert bank is incomplete")
+        for (expert, projection, field), info in bank.items():
+            n, k = (dims, width) if projection == "down_proj" else (width, dims)
+            dtype, shape = (("U8", [n, k // 2]) if field == "weight_packed" else
+                            ("F8_E4M3", [n, k // 16]) if field == "weight_scale" else ("F32", [1]))
+            if info.get("dtype") != dtype or list(info.get("shape", ())) != shape:
+                raise ValueError(f"{name}.experts.{expert}.{projection}.{field}: invalid native A4 storage")
+    return tuple(sorted(banks))
