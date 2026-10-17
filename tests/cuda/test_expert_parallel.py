@@ -67,7 +67,7 @@ def test_native_one_rank_nccl_broadcast_and_deferred_error_check():
             torch.cuda.synchronize()
             comm.check()
             assert value.cpu().tolist() == [3, 5, 7]
-        agree_eos(comm, (0, 2**40 + 3, 0), world=1, device="cuda")
+        agree_eos(comm.all_gather, (0, 2**40 + 3, 0), world=1, device="cuda")
         with pytest.raises(ValueError):
             comm.send(value, 0)
     finally:

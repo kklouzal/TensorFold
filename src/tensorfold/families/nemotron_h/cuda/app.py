@@ -101,7 +101,7 @@ class NemotronEngine:
         if self.comm is not None:
             from tensorfold.cuda.comm import agree_eos
 
-            agree_eos(self.comm, w.config.eos, world=tp, device=w.norm_f.device)
+            agree_eos(self.comm.all_gather, w.config.eos, world=tp, device=w.norm_f.device)
         if self.comm is not None:
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
         if self.drafts and w.mtp is None:

@@ -129,10 +129,11 @@ class Qwen27Engine:
             full = load(model_dir, tiled=True,
                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
             self.w = full
-        if self.comm is not None:
+        if tp == 2:
             from tensorfold.cuda.comm import agree_eos
 
-            agree_eos(self.comm, self.w.config.eos, world=tp, device=self.w.norm.device)
+            agree_eos(lambda send, recv: dist.all_gather_into_tensor(recv, send),
+                      self.w.config.eos, world=tp, device=self.w.norm.device)
         self.w.prompt_rows = chunk
         self.draft = None
         if draft_dir is not None and (rank == 0 or (tp == 2 and tp_draft)):

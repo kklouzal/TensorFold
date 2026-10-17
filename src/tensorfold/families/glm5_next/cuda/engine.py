@@ -216,7 +216,7 @@ class GlmEngine:
         self.w = w  # own loaded payloads before the new collective can fail
         from tensorfold.cuda.comm import agree_eos
 
-        agree_eos(self.comm, w.cfg.eos, world=self.world, device=w.device)
+        agree_eos(self.comm.all_gather, w.cfg.eos, world=self.world, device=w.device)
         w.comm = self.comm
         self.comm.ready("loading")                   # a peer stuck loading is named, not waited on in NCCL
         self.comm.barrier()
