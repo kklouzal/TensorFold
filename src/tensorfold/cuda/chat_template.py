@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,8 @@ from tensorfold.chat_metadata import MissingChatTemplate, TemplateSource, resolv
 from tensorfold.checkpoint_metadata import read_json
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
 from tensorfold.server.request_options import effort_levels
+
+from .tensor_file import _regular_stream, checkpoint_path
 
 
 @dataclass(frozen=True)
@@ -65,7 +68,6 @@ class ChatTemplate:
         self._routes = tuple(routes)
         active = self._routes[0]
         self.template, self.efforts, self.late_system = active.template, active.efforts, active.late_system
-        self.source_name, self.source_sha256, self.selected_name = active.source.origin, active.sha256, active.source.name
 
     def selected(self, *, tools=False):
         """The captured compilation used by this request route; no metadata I/O or compilation."""
@@ -88,8 +90,19 @@ class ChatTemplate:
 
 def prepare_chat_template(model_dir, *, template_file=None, template_name=None):
     """Capture before engine preparation; bare model APIs may have no chat metadata."""
-    if template_file is None and template_name is None and not (Path(model_dir) / "tokenizer.json").is_file():
-        return None
+    if template_file is None and template_name is None:
+        root = Path(model_dir)
+        path = checkpoint_path(root, "tokenizer.json")
+        if not stat.S_ISDIR(root.stat().st_mode):
+            raise NotADirectoryError(f"{root}: checkpoint metadata root must be a directory")
+        try:
+            (root / "tokenizer.json").lstat()
+        except FileNotFoundError:
+            return None
+        # Establish presence/type without parsing the tokenizer twice. The
+        # immutable checkpoint contract spans this admission and its later read.
+        with _regular_stream(path):
+            pass
     try:
         return ChatTemplate(model_dir, template_file=template_file, template_name=template_name)
     except MissingChatTemplate:

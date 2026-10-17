@@ -1,10 +1,13 @@
 """Actual family factories and early constructor refusal, without CUDA execution."""
 import importlib
 import json
+import os
 
 import pytest
 import torch
 from jinja2 import TemplateSyntaxError
+
+from tensorfold.cuda.chat_template import prepare_chat_template
 
 
 FAMILIES = [
@@ -45,3 +48,41 @@ def test_invalid_selected_template_is_compiled_and_refused_before_device_setup(
     keywords = {"rank": 0, "master": "127.0.0.1", "port": 29551} if family == "glm5_next" else {}
     with pytest.raises(TemplateSyntaxError):
         constructor(*args, chat_template_file=bad, **keywords)
+
+
+@pytest.mark.parametrize("family,relative,classname,options", FAMILIES)
+@pytest.mark.parametrize("kind", ["directory", "dangling", "fifo", "outside"])
+def test_present_invalid_tokenizer_cannot_bypass_early_template_admission(
+        tmp_path, monkeypatch, family, relative, classname, options, kind):
+    path = tmp_path / "tokenizer.json"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "dangling":
+        path.symlink_to(tmp_path / "missing.json")
+    elif kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("POSIX checkpoint FIFO boundary")
+        os.mkfifo(path)
+    else:
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.json"
+        outside.write_text("{}")
+        path.symlink_to(outside)
+    backend = importlib.import_module(f"tensorfold.families.{family}.{relative}")
+    def unexpected(*args, **kwargs):
+        pytest.fail("invalid tokenizer reached CUDA device setup")
+    monkeypatch.setattr(torch.cuda, "set_device", unexpected)
+    monkeypatch.setattr(torch.cuda, "synchronize", unexpected)
+    constructor = getattr(backend, classname)
+    args = (tmp_path, None) if family == "qwen3_5" else (tmp_path,)
+    keywords = {"rank": 0, "master": "127.0.0.1", "port": 29551} if family == "glm5_next" else {}
+    with pytest.raises((ValueError, FileNotFoundError)):
+        constructor(*args, **keywords)
+
+
+def test_true_absence_still_allows_bare_model_api_without_template(tmp_path):
+    assert prepare_chat_template(tmp_path) is None
+
+
+def test_absent_tokenizer_does_not_hide_invalid_model_root(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        prepare_chat_template(tmp_path / "missing-root")

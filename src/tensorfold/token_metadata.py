@@ -29,10 +29,12 @@ def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):
     return out
 
 
-def _content(value, field):
+def _content(value, field, *, required=False):
+    if value is None and not required:
+        return None
     if isinstance(value, dict):
         value = value.get("content")
-    if value is not None and (type(value) is not str or not value):
+    if type(value) is not str or not value:
         raise ValueError(f"{field} must be a nonempty token string or AddedToken content")
     return value
 
@@ -74,7 +76,7 @@ def _lookup_eos(model_dir, config, token, vocab_size):
     if not isinstance(decoder, dict):
         raise ValueError("added_tokens_decoder must be an object")  # noqa: TRY004 - external JSON schema
     for key, entry in decoder.items():
-        if _content(entry, "added_tokens_decoder content") == token:
+        if _content(entry, "added_tokens_decoder content", required=True) == token:
             try:
                 index = int(key)
             except (ValueError, TypeError):

@@ -30,18 +30,6 @@ class ThinkingOffTemplate:
     def provenance(self, *, tools=False):
         return self.inner.provenance(tools=tools)
 
-    @property
-    def source_name(self):
-        return self.inner.source_name
-
-    @property
-    def source_sha256(self):
-        return self.inner.source_sha256
-
-    @property
-    def selected_name(self):
-        return self.inner.selected_name
-
 
 class GlmApp(App):
     reads_ignore_eos = True             # ``run`` hands it to the engine's request
