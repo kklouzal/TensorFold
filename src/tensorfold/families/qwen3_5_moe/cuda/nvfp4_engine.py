@@ -13,6 +13,8 @@ from tensorfold.families.qwen3_5.cuda.engine import KEEP, KEEP_ONE, Qwen27Engine
 class QwenNvfp4MoeEngine(Qwen27Engine):
     """One target worker; accepted calls retain all expert and draft owners through completion."""
 
+    _experimental_cache_layout = 'single-blob-grouped'
+
     def __init__(self, model_dir, draft_dir=None, *, context=None, context_explicit=None, streams=1,
                  vram_experts=None, vram_experts_pin="off", drafter_bits=16, max_rows=None,
                  allow_copy=True, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
@@ -43,12 +45,13 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                                               total_bytes, unified)
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.cuda.geometry import prompt_row_bytes, prompt_rows
-        from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
+        from tensorfold.cuda.nvfp4.blob_host_a4 import load_blob_host_experts_a4 as load_host_experts_a4
         from tensorfold.families.qwen3_5.cuda.nvfp4_load import weight_bytes
         from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 
         from ..dflash_metadata import DraftConfig, draft_geometry, draft_weights
-        from ..ram_experts import layout, plan_pool, runtime_geometry
+        from ..ram_experts import plan_pool, runtime_geometry
+        from .blob_variant_a4 import layout
         from .weights import load
 
         if precision.mode() != precision.CHECKPOINT:
@@ -98,15 +101,16 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                       if plan is not None else 0)
         if plan is not None:
             from tensorfold.cuda.allocation_bound import pool_allocation_bound
-            from tensorfold.cuda.expert_cache import HostExpertCache
             from tensorfold.cuda.expert_pin import ExpertPinPolicy
+            from tensorfold.cuda.nvfp4.blob_cache_a4 import BlobExpertCache
 
             before_pool = torch.cuda.memory._snapshot()
             pins = ExpertPinPolicy(plan.host_bytes, mode=vram_experts_pin,
                                    future_bytes=host_extra + host_weight_staging,
                                    allocation_bytes=plan.authority_allocations)
             try:
-                self.expert_cache = HostExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins)
+                self.expert_cache = BlobExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins,
+                                                   width=text["moe_intermediate_size"], dims=text["hidden_size"])
             except BaseException as primary:
                 rollback(pins, primary, pins.close)
             allocate = pool_allocation_bound(torch, self.expert_cache._pool, before_snapshot=before_pool)
