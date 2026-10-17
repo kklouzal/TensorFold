@@ -357,26 +357,22 @@ class State:
             raise
 
     def _resize_caches(self, rows: int, pos: int, mtp_len: int) -> None:
-        """Commit one complete layer at a time; at most one layer's replacement overlaps its old storage."""
+        """Keep the original component allocation/release order and one-layer copy-peak bound.
+
+        Failure may leave individual components at different sizes; poison and
+        actual attached-byte accounting handle that state without grouping new
+        allocations and extending the old index/pool buffers' lifetimes.
+        """
 
         blocks, kept_blocks = -(-rows // self.ratio), -(-max(pos, mtp_len) // self.ratio)
-        cache = index = pooled = None
-        try:
-            for i in range(len(self.kc)):
-                cache = self.kc[i].resized(rows, pos)
-                index = _rows(self.ikc[i], rows, pos)
-                pooled = _rows(self.pooled[i], blocks, kept_blocks)
-                self.kc[i], self.ikc[i], self.pooled[i] = cache, index, pooled
-                cache = index = pooled = None
-            if hasattr(self, "mtp_kc"):
-                cache = self.mtp_kc.resized(rows, mtp_len)
-                index = _rows(self.mtp_ikc, rows, mtp_len)
-                pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
-                self.mtp_kc, self.mtp_ikc, self.mtp_pooled = cache, index, pooled
-        finally:
-            # Tracebacks retain this frame. Uncommitted replacements must not
-            # survive an allocation/copy failure as unaccounted cache authority.
-            cache = index = pooled = None
+        for i in range(len(self.kc)):
+            self.kc[i] = self.kc[i].resized(rows, pos)
+            self.ikc[i] = _rows(self.ikc[i], rows, pos)
+            self.pooled[i] = _rows(self.pooled[i], blocks, kept_blocks)
+        if hasattr(self, "mtp_kc"):
+            self.mtp_kc = self.mtp_kc.resized(rows, mtp_len)
+            self.mtp_ikc = _rows(self.mtp_ikc, rows, mtp_len)
+            self.mtp_pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
 
     def _poison_resize(self, error: BaseException) -> None:
         import traceback
