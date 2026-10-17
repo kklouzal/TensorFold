@@ -6,6 +6,7 @@ ROOT gates; no SDK or installed extension is imported by these controls.
 """
 from __future__ import annotations
 import ast
+from collections.abc import Callable
 from contextlib import contextmanager
 import json
 import os
@@ -15,7 +16,6 @@ import sys
 import tempfile
 import threading
 from types import ModuleType
-from typing import Callable
 import unittest
 from unittest.mock import patch
 

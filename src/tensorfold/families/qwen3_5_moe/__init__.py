@@ -30,9 +30,8 @@ CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet p
 def check(model_dir: str | Path) -> None:
     """The original affine format or an original CT NVFP4 checkpoint."""
 
-    from tensorfold.families import OWN_MODEL_HELP, describe_quantization, quantization, read_config
-
     from tensorfold.cuda.nvfp4.format import is_quantized
+    from tensorfold.families import OWN_MODEL_HELP, describe_quantization, quantization, read_config
 
     if is_quantized(Path(model_dir)):
         check_vram_experts(model_dir, "auto")

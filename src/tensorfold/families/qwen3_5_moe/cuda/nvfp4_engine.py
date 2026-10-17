@@ -1,10 +1,10 @@
 """Qwen CT NVFP4 MoE with original A4 math and separately verified DFlash proposals."""
 from __future__ import annotations
 
+import threading
 from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
-import threading
 
 from tensorfold.cleanup import rollback
 from tensorfold.families.qwen3_5.cuda.engine import KEEP, KEEP_ONE, Qwen27Engine
@@ -31,7 +31,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                         vram_experts=vram_experts, vram_experts_pin=vram_experts_pin,
                         drafter_bits=drafter_bits, max_rows=max_rows, allow_copy=allow_copy, eos_token_ids=eos_token_ids,
                         chat_template_file=chat_template_file, chat_template_name=chat_template_name)
-        except BaseException as primary:
+        except BaseException as primary:  # noqa: BLE001 -- Interrupts must also retire partial owners; rollback reraises.
             rollback(self, primary, self.close)
 
     def _start(self, model_dir, draft_dir, *, context, context_explicit, streams, vram_experts,
@@ -39,8 +39,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         import torch
 
         from tensorfold.cuda import moe, precision, prompt_precision
-        from tensorfold.cuda.capacity import (admit, available_bytes, config, cuda_reserve_bytes,
-                                              total_bytes, unified)
+        from tensorfold.cuda.capacity import admit, available_bytes, config, cuda_reserve_bytes, total_bytes, unified
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.cuda.geometry import prompt_row_bytes, prompt_rows
         from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
@@ -107,7 +106,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                                    allocation_bytes=plan.authority_allocations)
             try:
                 self.expert_cache = HostExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins)
-            except BaseException as primary:
+            except BaseException as primary:  # noqa: BLE001 -- Preserve pinned ownership through interrupt rollback.
                 rollback(pins, primary, pins.close)
             allocate = pool_allocation_bound(torch, self.expert_cache._pool, before_snapshot=before_pool)
             allocator = allocate.receipt

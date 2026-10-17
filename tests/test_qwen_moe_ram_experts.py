@@ -1,9 +1,9 @@
 """Independent CT payload, reserved-workspace and transaction-peak oracles."""
-from dataclasses import replace
 import json
 import math
 import struct
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -271,7 +271,7 @@ def test_runtime_freezes_header_inputs_and_accepts_inferred_head_dimension():
 @pytest.mark.parametrize("kwargs", [{"streams": True}, {"keep": -1}, {"max_rows": 129},
                                    {"prompt_rows": 511}, {"streams": 1 << 30}])
 def test_runtime_rejects_invalid_policy_or_grouped_index_overflow(kwargs):
-    policy = dict(streams=1, keep=4, max_rows=16, prompt_rows=512)
+    policy = {"streams": 1, "keep": 4, "max_rows": 16, "prompt_rows": 512}
     policy.update(kwargs)
     with pytest.raises(ValueError):
         ram.runtime_geometry(runtime_text(), **policy)
