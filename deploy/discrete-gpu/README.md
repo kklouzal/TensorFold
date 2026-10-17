@@ -17,8 +17,9 @@ total context alongside the prompt. The HTTP and unfinished-request caps are
 32 and eight; accepted requests beyond the two active slots can queue.
 
 Three-bit KV is an explicit accuracy/memory tradeoff and can change output.
-The 56,000,000,000-byte RAM limit is about 52.2 GiB; the equal memory/swap limit
-adds no swap allowance. `--vram-experts auto` reserves required weights, slot
+`TF_RAM_BYTES` defaults to **56,000,000,000 bytes** (about 52.2 GiB), the
+recorded EXL3 profile. The same value sets RAM and RAM-plus-swap limits, adding
+no swap allowance. Select a checkpoint-specific limit before launch. `--vram-experts auto` reserves required weights, slot
 state and scratch before sizing the shared expert pool, including its safety
 margin. It does not allocate every reported free GPU byte. See the
 [RAM expert contract](../../docs/recipes/ram-experts.md) and
@@ -60,6 +61,30 @@ service runs. The previously tested 2.05-bpw EXL3 snapshot occupied about 62.8 G
 on disk, including its mapped n-gram table; that is different from resident RAM.
 Provide room for compiler caches, temporary files and logs as well.
 
+A Hugging Face snapshot can contain links into repository-local or cache-wide
+blob stores. Binding only that snapshot at `/model` can leave dangling links
+and removes the original cache ancestry used for path authorization. For this
+profile, materialize a complete model tree at a fresh destination first:
+
+```bash
+TF_SNAPSHOT=/absolute/path/to/hub/models--owner--model/snapshots/recorded-revision
+TF_MODEL_DIR=/absolute/path/to/materialized-model
+test ! -e "$TF_MODEL_DIR" && cp -aL -- "$TF_SNAPSHOT" "$TF_MODEL_DIR"
+```
+
+Allow disk space for the copied payloads, check that the copy completed, and
+verify the checkpoint revision/content before using `TF_MODEL_DIR` in `.env`.
+A complete owned cache may instead be mounted read-only with its directory
+layout preserved and the actual snapshot path supplied to `serve`; a flat
+snapshot-only bind does not supply that layout. Do not make the entire host
+cache writable to solve broken links. The source loader supports managed HF
+shared blobs only through the snapshot's own repository blob link, a real
+shared `blobs` directory with regular `.huggingface-shared-blobs` marker `1\n`,
+and canonical regular `<2-hex-prefix>/<64-hex-hash>` payloads. Other cache paths
+remain outside its authority. See the [HF layout source](https://github.com/huggingface/huggingface_hub/blob/v1.32.0/src/huggingface_hub/utils/_shared_blobs.py).
+Keep the model, links and cache contents immutable while loading or serving;
+stop readers before modifying or collecting those files.
+
 Create the cache, temporary and work directories before launch. UID/GID
 1000:1000 needs write and traverse access to those directories, plus read and
 traverse access to the model directory. Choose dedicated service directories
@@ -73,6 +98,74 @@ The root filesystem is read-only, with all capabilities dropped and
 architecture cache namespaces remain in effect. Keep cache files while a live
 service or compiler uses them. Model/native cache contents are not source code
 to edit inside the container.
+
+### Select the intended NVIDIA devices
+
+The base profile retains `gpus: all`. On a mixed-vendor host, select the NVIDIA
+UUID explicitly through the optional device-request override. Set
+`TF_GPU_UUID` in `.env` from `nvidia-smi -L`, then include the same files for
+`config`, `up`, `ps`, `logs`, `stop` and later updates:
+
+```bash
+docker compose --env-file deploy/discrete-gpu/.env \
+  -f deploy/discrete-gpu/compose.yaml \
+  -f deploy/discrete-gpu/compose.gpus.yaml config
+```
+
+Alternatively, use `compose.cdi.yaml` with `TF_CDI_DEVICE` set to an exact
+NVIDIA name from `nvidia-ctk cdi list`, such as `nvidia.com/gpu=GPU-...`.
+Native CDI needs Linux Docker Engine with CDI enabled and its NVIDIA
+specification installed; Docker enables CDI by default from Engine 28.3.0.
+The override clears the base GPU request with Compose `!reset` and suppresses
+the image's legacy `NVIDIA_VISIBLE_DEVICES=all` injection. Select one override
+mechanism. See [Docker CDI](https://docs.docker.com/reference/cli/docker/container/run/#cdi-devices),
+[NVIDIA CDI setup](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html)
+and [Compose merge rules](https://docs.docker.com/reference/compose-file/merge/#reset-value).
+
+```bash
+nvidia-ctk cdi list
+docker compose --env-file deploy/discrete-gpu/.env \
+  -f deploy/discrete-gpu/compose.yaml \
+  -f deploy/discrete-gpu/compose.cdi.yaml config
+```
+
+For a supported multi-GPU model configuration, copy the chosen override and
+use an explicit ordered list. For device requests, the replacement is:
+
+```yaml
+services:
+  tensorfold:
+    gpus: !override
+      - driver: nvidia
+        device_ids: [GPU-first-uuid, GPU-second-uuid]
+```
+
+For CDI, keep `gpus: !reset []` and `NVIDIA_VISIBLE_DEVICES: void`, and replace
+`devices` with `!override [nvidia.com/gpu=GPU-first-uuid, nvidia.com/gpu=GPU-second-uuid]`.
+Include that file last. This selects visibility only: choose the corresponding
+supported model parallelism and device arguments separately. Check actual
+visible UUIDs inside the container before loading a model; successful Compose
+parsing does not establish GPU availability, execution or multi-GPU correctness.
+
+### Set host capacity and restart behavior
+
+Set `TF_RAM_BYTES` to a positive decimal byte count that fits the checkpoint's
+actual resident authority, loading/staging peak, pinned buffers and mapped-file
+working set as well as serving state. The default is the measured EXL3 profile,
+not a budget for every affine or NVFP4 checkpoint. Raising a cgroup ceiling
+does not create host RAM or bypass TensorFold admission. Leave measured host
+headroom for the OS, other services, compiler/transient allocations and page
+cache. Confirm startup estimates, host `MemAvailable` and cgroup
+`memory.current`/`memory.events`; a mapped table's file size alone does not
+establish its resident peak. Stop or reduce competing allocations before retrying
+an admission refusal. No universal host-headroom byte count is prescribed.
+
+`TF_RESTART_POLICY` retains `unless-stopped` by default. During setup, choose
+`no` for a single attempt or `on-failure:3` to limit Docker's failure retries.
+Docker already increases restart delays and resets that delay after a run of
+at least ten seconds. A retry cannot fix an unchanged capacity refusal; inspect
+the first failure and correct its settings. Use Docker as the single restart
+owner. See [Docker restart behavior](https://docs.docker.com/reference/cli/docker/container/run/#restart-policies---restart).
 
 `TF_BIND_IP` defaults to `127.0.0.1`, and `TF_PORT` defaults to `8080`. For remote
 clients, set a specific trusted host interface and apply the service's access
@@ -91,8 +184,8 @@ docker compose --env-file deploy/discrete-gpu/.env \
 The service uses eight compiler jobs, a 256-process limit, and rotated local
 logs of 20 MB each with three files. Docker's `unless-stopped` policy restarts
 an exited service and starts it after a daemon reboot unless manually stopped.
-Ensure Docker starts at boot. Use Docker as the single restart owner rather
-than adding a competing host process manager. See
+Ensure Docker starts at boot if using that policy. The optional `on-failure`
+policy does not provide the same daemon-restart behavior. See
 [Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/).
 
 ## Readiness, stop and update
@@ -102,7 +195,10 @@ allows a 15-minute startup period, then polls every 30 seconds with a 10-second
 timeout and three retries. Health status does not automatically restart a live
 unhealthy process. Inspect startup logs for actual context, cache allocation
 and memory admission; a rejected configuration needs a deliberate settings
-change.
+change. With the pinned Torch runtime, an interrupted builder releases its OS
+advisory lock automatically. A persistent `lock` file is not evidence of a live
+or stranded owner: do not unlink it. Inspect the actual runtime, cache path,
+compiler processes and first failure before diagnosing a build hang.
 
 For the default publication, verify both readiness and a complete generation:
 

@@ -77,10 +77,10 @@ services:
         host_ip: ${TF_BIND_IP:-127.0.0.1}
         protocol: tcp
     gpus: all
-    mem_limit: '56000000000'
-    memswap_limit: '56000000000'
+    mem_limit: '${TF_RAM_BYTES:-56000000000}'
+    memswap_limit: '${TF_RAM_BYTES:-56000000000}'
     pids_limit: 256
-    restart: unless-stopped
+    restart: '${TF_RESTART_POLICY:-unless-stopped}'
     stop_signal: SIGINT
     stop_grace_period: 60s
     ulimits:
