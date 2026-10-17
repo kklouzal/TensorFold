@@ -6,6 +6,7 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
+from tensorfold.cuda.kernels import qmm
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 from tensorfold.families.qwen3_5_moe.cuda.dflash import DFlash
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, draft_weights
@@ -13,6 +14,16 @@ from tests.test_qwen36_dflash import config
 
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
+
+
+@pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])
+def test_native_affine_single_group_layout_keeps_exact_dyadic_outputs(rows, columns):
+    words = torch.zeros((rows, columns // 8), dtype=torch.int32, device="cuda")
+    scales = torch.ones((rows, columns // 64), dtype=torch.bfloat16, device="cuda")
+    biases = torch.full_like(scales, 1 / 64)
+    packed = qmm.pack(words, scales, biases, 64)
+    actual = qmm.matmul(torch.ones((2, columns), dtype=torch.bfloat16, device="cuda"), packed)
+    assert torch.equal(actual, torch.full((2, rows), columns / 64, dtype=torch.bfloat16, device="cuda"))
 
 
 @pytest.mark.parametrize("bits", [16, 4])
