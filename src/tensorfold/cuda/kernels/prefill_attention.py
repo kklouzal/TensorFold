@@ -14,6 +14,13 @@ BN = 64
 
 
 @triton.jit
+def _head_offsets(rows, head, heads: tl.constexpr, dim: tl.constexpr):
+    """Contiguous head-row offsets: widen before multiplying, including caches beyond 4 GiB."""
+
+    return (rows.to(tl.int64) * heads + head) * dim
+
+
+@triton.jit
 def _tile(q, k, v, m, l, o, valid, SCALE: tl.constexpr):
     s = tl.dot(q, tl.trans(k)).to(tl.float32) * SCALE
     s = tl.where(valid, s, float("-inf"))
@@ -39,7 +46,8 @@ def _attend(Q, K, V, OUT, p0, W, H: tl.constexpr, HK: tl.constexpr, D: tl.conste
     ok = rows < W
     pos = p0 + rows
     d = tl.arange(0, D)
-    q = tl.load(Q + (rows[:, None] * H + head) * D + d[None, :], mask=ok[:, None], other=0.0)
+    offsets = _head_offsets(rows, head, H, D)
+    q = tl.load(Q + offsets[:, None] + d[None, :], mask=ok[:, None], other=0.0)
     m = tl.full((BM,), float("-inf"), tl.float32)
     l = tl.zeros((BM,), tl.float32)
     o = tl.zeros((BM, D), tl.float32)
@@ -48,17 +56,19 @@ def _attend(Q, K, V, OUT, p0, W, H: tl.constexpr, HK: tl.constexpr, D: tl.conste
     full = (first_pos + 1) // BN                  # tiles every row of the block sees whole
     for t in range(full):
         keys = t * BN + tl.arange(0, BN)
-        k = tl.load(K + (keys[:, None] * HK + hk) * D + d[None, :])
-        v = tl.load(V + (keys[:, None] * HK + hk) * D + d[None, :])
+        cache_offsets = _head_offsets(keys, hk, HK, D)
+        k = tl.load(K + cache_offsets[:, None] + d[None, :])
+        v = tl.load(V + cache_offsets[:, None] + d[None, :])
         m, l, o = _tile(q, k, v, m, l, o, keys[None, :] <= pos[:, None], SCALE)
     for t in range(full, last_pos // BN + 1):
         keys = t * BN + tl.arange(0, BN)
         seen = keys <= last_pos
-        k = tl.load(K + (keys[:, None] * HK + hk) * D + d[None, :], mask=seen[:, None], other=0.0)
-        v = tl.load(V + (keys[:, None] * HK + hk) * D + d[None, :], mask=seen[:, None], other=0.0)
+        cache_offsets = _head_offsets(keys, hk, HK, D)
+        k = tl.load(K + cache_offsets[:, None] + d[None, :], mask=seen[:, None], other=0.0)
+        v = tl.load(V + cache_offsets[:, None] + d[None, :], mask=seen[:, None], other=0.0)
         m, l, o = _tile(q, k, v, m, l, o, keys[None, :] <= pos[:, None], SCALE)
     out = o / l[:, None]
-    tl.store(OUT + (rows[:, None] * H + head) * D + d[None, :], out.to(tl.bfloat16), mask=ok[:, None])
+    tl.store(OUT + offsets[:, None] + d[None, :], out.to(tl.bfloat16), mask=ok[:, None])
 
 
 def attention(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: int, *, scale: float) -> torch.Tensor:
@@ -120,7 +130,7 @@ def _check(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: in
         raise ValueError("prefill attention: caches must be bf16 (keys, positive HK, D) on q's CUDA device")
     hk = k_cache.shape[1]
     if (not isinstance(p0, int) or p0 < 0 or w > 2**31 - 128 or h > 2**31 - 1
-            or p0 > 2**31 - 64 - w):
+            or p0 > 2**31 - 128 - w):
         raise ValueError("prefill attention position/dimensions exceed int32")
     if k_cache.shape[0] < p0 + w or h % hk:
         raise ValueError("prefill attention: caches must hold the chunk's keys; heads a multiple of kv heads")

@@ -20,7 +20,7 @@ void prefill_attention(const at::Tensor& q, const at::Tensor& k, const at::Tenso
     // The kernel uses signed-int rows/positions, including padding a final 64-key tile and 128-row CTA.
     constexpr int64_t limit = std::numeric_limits<int>::max();
     TORCH_CHECK(q.size(0) <= limit - 127 && q.size(1) <= limit && k.size(1) <= limit &&
-                p0 >= 0 && p0 <= limit - 63 - q.size(0), "prompt attention position/dimensions exceed int32");
+                p0 >= 0 && p0 <= limit - 127 - q.size(0), "prompt attention position/dimensions exceed int32");
     TORCH_CHECK(k.size(0) >= p0 + q.size(0), "caches must hold the chunk's keys");
     TORCH_CHECK(out.device() == q.device() && out.is_contiguous() && out.sizes() == q.sizes() &&
                 out.scalar_type() == at::kBFloat16, "out: like q on q's CUDA device");

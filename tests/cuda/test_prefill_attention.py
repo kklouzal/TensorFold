@@ -6,11 +6,34 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.cuda.kernels.prefill_attention import _ext, attention, triton_attention
+import triton
+import triton.language as tl
+
+from tensorfold.cuda.kernels.prefill_attention import _ext, _head_offsets, attention, triton_attention
 
 # 27B, Qwen3.6-35B-A3B, Nemotron, GLM-5.3 per-head keys (TF_GLM_LATENT=0), a small group
 SHAPES = [(24, 4, 256), (16, 2, 256), (32, 2, 128), (32, 32, 256), (12, 4, 128), (12, 4, 64)]
 CHUNKS = [(0, 1), (0, 100), (0, 333), (17, 7), (64, 64), (1000, 129), (4133, 300)]
+
+
+@triton.jit
+def _write_offsets(ROWS, OUT, head, HEADS: tl.constexpr, DIM: tl.constexpr):
+    at = tl.arange(0, 4)
+    rows = tl.load(ROWS + at)
+    tl.store(OUT + at, _head_offsets(rows, head, HEADS, DIM))
+
+
+@pytest.mark.parametrize("heads,head,dim", [(1, 0, 128), (32768, 32767, 128), (32768, 0, 256)])
+def test_attention_head_offsets_widen_before_multiplication(heads, head, dim):
+    """Exercise >2**31 element offsets on-device without allocating multi-GiB operands."""
+
+    rows = [0, 1, 513, 2**24 + 3]
+    device_rows = torch.tensor(rows, device="cuda", dtype=torch.int32)
+    out = torch.empty(4, device="cuda", dtype=torch.int64)
+    _write_offsets[(1,)](device_rows, out, head, HEADS=heads, DIM=dim, num_warps=1)
+    expected = [(row * heads + head) * dim for row in rows]
+    assert max(expected) > 2**31
+    assert out.cpu().tolist() == expected
 
 
 def _caches(gen, keys, kv_heads, dim):
@@ -117,6 +140,32 @@ def test_prompt_attention_rejects_invalid_head_tiles(hpc):
     k = torch.zeros((1, 1, 128), device="cuda", dtype=torch.bfloat16)
     with pytest.raises(RuntimeError, match="heads a block"):
         _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, hpc)
+
+
+def test_prompt_attention_reserves_position_range_for_inactive_query_rows():
+    q = torch.zeros((1, 2, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.zeros((1, 1, 128), device="cuda", dtype=torch.bfloat16)
+    # Fits the final 64-key tile, but not the native CTA's up-to-127 padded queries.
+    p0 = 2**31 - 96
+    for implementation in (attention, triton_attention):
+        with pytest.raises(ValueError, match="int32"):
+            implementation(q, k, k, p0, scale=0.125)
+    with pytest.raises(RuntimeError, match="int32"):
+        _ext().prefill_attention(q, k, k, torch.empty_like(q), p0, 0.125, 1)
+
+
+def test_native_prompt_attention_rejects_head_count_before_narrowing():
+    q = torch.empty((0, 2**31, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.empty((0, 1, 128), device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="int32"):
+        _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, 1)
+
+
+def test_native_prompt_attention_rejects_head_grid_outside_device_limit():
+    q = torch.empty((1, 65536, 128), device="cuda", dtype=torch.bfloat16)
+    k = torch.empty((1, 1, 128), device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="head grid"):
+        _ext().prefill_attention(q, k, k, torch.empty_like(q), 0, 0.125, 1)
 
 
 @pytest.mark.parametrize("target,dim", [("q", 128), ("q", 256), ("k", 128), ("v", 128), ("out", 128)])
