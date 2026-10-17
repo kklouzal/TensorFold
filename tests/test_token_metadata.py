@@ -69,6 +69,26 @@ def test_missing_eos_token_never_becomes_unknown_token_id(tmp_path):
         resolve_eos(tmp_path, 1, vocab_size=4)
 
 
+@pytest.mark.parametrize("value", [{}, {"content": None}, {"content": ""}, {"content": 2}])
+def test_present_eos_added_token_requires_nonempty_string_content(tmp_path, value):
+    write(tmp_path, "tokenizer_config.json", {"eos_token": value})
+    with pytest.raises(ValueError, match="tokenizer eos_token"):
+        resolve_eos(tmp_path, 1, vocab_size=4)
+    assert resolve_eos(tmp_path, 1, vocab_size=4, override=[3]) == (3,)
+
+
+@pytest.mark.parametrize("value", [None, {}, {"content": None}, {"content": ""}, "", 2])
+def test_present_added_token_decoder_entries_require_content(tmp_path, value):
+    write(tmp_path, "tokenizer_config.json", {"eos_token": "end", "added_tokens_decoder": {"2": value}})
+    with pytest.raises(ValueError, match="added_tokens_decoder content"):
+        resolve_eos(tmp_path, 1, vocab_size=4)
+
+
+def test_null_eos_role_is_distinct_from_malformed_added_token_object(tmp_path):
+    write(tmp_path, "tokenizer_config.json", {"eos_token": None})
+    assert resolve_eos(tmp_path, 1, vocab_size=4) == (1,)
+
+
 def test_legacy_special_map_and_decoder_only_metadata_resolve_named_eos(tmp_path):
     write(tmp_path, "special_tokens_map.json", {"eos_token": "end"})
     write(tmp_path, "tokenizer_config.json", {"added_tokens_decoder": {"2": {"content": "end"}}})
