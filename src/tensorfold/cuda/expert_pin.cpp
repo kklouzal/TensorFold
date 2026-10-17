@@ -51,7 +51,10 @@ public:
         const auto begin = reinterpret_cast<uintptr_t>(storage_.data_ptr());
         const auto address = reinterpret_cast<uintptr_t>(tensor.data_ptr());
         const auto extent = static_cast<uint64_t>(storage_.numel());
-        const auto bytes = static_cast<uint64_t>(tensor.numel()) * tensor.element_size();
+        const auto count = static_cast<uint64_t>(tensor.numel());
+        TORCH_CHECK(count <= std::numeric_limits<uint64_t>::max() / tensor.element_size(),
+                    "registered tensor byte range exceeds address arithmetic");
+        const auto bytes = count * tensor.element_size();
         return address >= begin && address - begin <= extent && bytes <= extent - (address - begin);
     }
     ~Registration() noexcept {
