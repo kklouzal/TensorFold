@@ -57,7 +57,8 @@ to one stream, while successful checks allow the lane engine to combine requests
 ## CUDA
 
 On CUDA Flash Next serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
-files a Mac serves, and the only format two ranks and `--ple-on-ssd` read. `tensorfold serve` loads the checkpoint
+files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
+NVFP4. CUDA `--ple-on-ssd` supports affine, BF16, FP8 and NVFP4 tables. `tensorfold serve` loads the checkpoint
 you name; it picks none by itself. Use the [container setup](../../RUNBOOK.md#nvidia-gpus) for any of them. Prompts
 take bf16 activations by default; what that costs against the FP8 prompt path (`--prefill-fp8`) depends on the
 format ([prompt precision](cuda.md#prompt-precision)):
@@ -187,8 +188,8 @@ each reply of concurrent requests (`--parallel 4`) equals the same request alone
 through the same code; its replies have not been checked on their own.
 
 Not supported here:
-- `--tp 2` and `--ple-on-ssd` on an NVFP4 checkpoint stop at startup: two ranks read the MLX checkpoint, and the
-  NVFP4 exports' tables stay memory-mapped.
+- `--tp 2` on an NVFP4 checkpoint stops at startup. Same-host `--expert-ranks` distributes only routed experts;
+  it has a separate [setup and qualification scope](../desktop-report-remediation.md).
 - `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` (186 GB; bf16 linears and n-gram table) has the RadixArk layout apart
   from its bf16 table, which the loader reads, but the whole checkpoint has not been loaded or served here, so it
   is not listed as tested.

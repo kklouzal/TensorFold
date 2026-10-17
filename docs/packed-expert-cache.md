@@ -6,7 +6,7 @@ service cache, outside the read-only model mount:
 
 ```bash
 export TENSORFOLD_PACKED_EXPERT_CACHE=/cache/packed-experts
-export TENSORFOLD_PACKED_EXPERT_CACHE_BYTES=<positive-byte-budget>
+export TENSORFOLD_PACKED_EXPERT_CACHE_BYTES="${TF_PACKED_CACHE_BYTES:?set TF_PACKED_CACHE_BYTES to a positive byte budget}"
 ```
 
 Both variables are required when enabling persistence. Set the byte budget from

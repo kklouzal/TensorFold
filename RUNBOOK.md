@@ -73,10 +73,13 @@ the NVFP4 (ModelOpt FP4) checkpoint `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` 
 included, whose table ships as BF16 rows with no per-shard `scales`, a layout the reader takes as it is.
 
 CUDA `--parallel auto` serves one request at a time. To share rounds, set `--parallel N` greater than
-one for Qwen3.8-27B or Flash Next on one or two ranks. Pass the same N on both ranks.
+one for Qwen3.8-27B on one or two tensor ranks, or Flash Next on one tensor rank.
+Flash Next refuses concurrent tensor-parallel execution. Its separate same-host NCCL expert-rank mode
+keeps request state and vision on rank 0 and supports concurrent requests; see the
+[desktop guide](docs/desktop-report-remediation.md) for asymmetric GPU shards and coverage limits.
 GLM and Nemotron CUDA keep serial request scheduling.
 
-For two ranks, start a container on each host with network devices and locked-memory support:
+For two tensor-parallel ranks, start a container on each host with network devices and locked-memory support:
 
 ```bash
 docker run -it --gpus all --ipc=host --network host --device /dev/infiniband \
@@ -96,8 +99,7 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.0.
 
 Replace the documentation address with rank 0's reachable address. Both ranks must agree on context and
 drafting settings. The default rendezvous port is 29551. The rendezvous port and the link between the ranks
-are not authenticated: keep them on a private link, or firewall the port to the peer. Flash Next under
-`--parallel` also opens one ephemeral TCP port on rank 0's address for rank 1's messages; the same applies to it.
+are not authenticated: keep them on a private link, or firewall the port to the peer.
 GLM requires two CUDA ranks; Flash Next can use one or two and needs `--no-drafts` when its checkpoint lacks an MTP
 head.
 
@@ -187,7 +189,7 @@ package installation do not change a running container's code.
 | Rejected checkpoint | Quantization, model family and draft-head requirements |
 | Client cannot connect | Server process, `/health`, base URL and model ID |
 | Two-rank startup waits | Link reachability, rendezvous port, NCCL devices and matching settings |
-| CUDA start stops after `loading …`, GPU idle | `kill -USR1 <pid>` prints every thread's Python stack. A wait in the extension build is a build lock, whose path the start log names: when no other build is running, stop the start, delete the lock and start again |
+| CUDA start stops after `loading …`, GPU idle | `kill -USR1 <pid>` prints every thread's Python stack. Inspect the named extension-build path and live builder. Pinned Torch uses an OS advisory lock released when its owner exits; its persistent marker must remain. Stop the owning start before retrying; do not delete a live or persistent advisory-lock marker. |
 
 Unsupported architectures or formats need a family implementation. See [adding a family](docs/recipes/adding-a-family.md)
 or [adding a CUDA family](docs/recipes/adding-a-cuda-family.md); forcing an unsupported checkpoint to load
