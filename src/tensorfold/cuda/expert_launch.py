@@ -14,6 +14,18 @@ from pathlib import Path
 from tensorfold.cleanup import raise_failures
 
 
+class UnresolvedRankSessions(RuntimeError):
+    """Retain failed session owners until explicit recovery or rank-process containment.
+
+    Callers retain this error and must not reap, rescan or signal its numeric
+    session IDs. An unresolved retirement is never successful group shutdown.
+    """
+    def __init__(self, sessions, failure):
+        super().__init__("expert session retirement unresolved; retain owners until process containment")
+        self.sessions = tuple(sessions)
+        self.__cause__ = failure
+
+
 def _exited(process):
     # WNOWAIT reserves the session leader's numeric identity until all owned
     # compiler groups retire. Popen.poll/communicate/wait must not reap it early.
@@ -81,7 +93,7 @@ def _retire(process, deadline):
 
 
 def supervise(commands, environments, *, grace=10.0):
-    """Own Linux rank sessions through partial spawn, departure and signal/error cleanup."""
+    """Exclusively own direct-child waits and Linux rank sessions through group retirement."""
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace < 0:
@@ -109,19 +121,28 @@ def supervise(commands, environments, *, grace=10.0):
     except BaseException as error:  # noqa: BLE001 - cleanup preserves primary cancellation/spawn failure
         primary = error
     errors = []
+    unresolved = []
     deadline = time.monotonic() + grace
     for child in children:
+        try:
+            _exited(child)  # confirm our unreaped child identity before any numeric group signal
+        except BaseException as error:  # noqa: BLE001 - never signal an identity with unresolved ownership
+            unresolved.append(child)
+            errors.append(UnresolvedRankSessions((child,), error))
+            continue
         try:
             os.killpg(child.pid, signal.SIGTERM)  # unreaped leader still reserves this group identity
         except ProcessLookupError:
             pass
-        except BaseException as error:  # noqa: BLE001 - continue retiring other rank sessions
+        except BaseException as error:  # noqa: BLE001 - still attempt owned pidfd retirement below
             errors.append(error)
     for child in children:
+        if any(child is owner for owner in unresolved):
+            continue  # ownership could not be established: no later numeric SID actions
         try:
             _retire(child, deadline)
         except BaseException as error:  # noqa: BLE001 - retain child owners and surface all cleanup failures
-            errors.append(error)
+            errors.append(UnresolvedRankSessions((child,), error))
     if errors and primary is None and result:
         primary = RuntimeError(f"expert rank group failed with status {result}")
     raise_failures(primary, errors)
