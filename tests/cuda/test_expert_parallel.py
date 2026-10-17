@@ -57,7 +57,7 @@ def test_empty_owned_selection_never_reads_native_expert_storage():
 
 
 def test_native_one_rank_nccl_broadcast_and_deferred_error_check():
-    from tensorfold.cuda.comm import NCCL
+    from tensorfold.cuda.comm import NCCL, agree_eos
     comm = NCCL()
     try:
         comm.open(0, 1, "127.0.0.1", 0)
@@ -67,6 +67,7 @@ def test_native_one_rank_nccl_broadcast_and_deferred_error_check():
             torch.cuda.synchronize()
             comm.check()
             assert value.cpu().tolist() == [3, 5, 7]
+        agree_eos(comm, (0, 2**40 + 3, 0), world=1, device="cuda")
         with pytest.raises(ValueError):
             comm.send(value, 0)
     finally:
