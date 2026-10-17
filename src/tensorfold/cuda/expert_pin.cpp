@@ -11,8 +11,11 @@
 class Registration {
     at::Tensor storage_;
     bool active_ = false;
+    bool attempted_ = false;
     int close_error_ = 0;
 public:
+    Registration(const Registration&) = delete;
+    Registration& operator=(const Registration&) = delete;
     explicit Registration(at::Tensor storage) : storage_(std::move(storage)) {
         const long page = sysconf(_SC_PAGESIZE);
         TORCH_CHECK(page > 0 && storage_.device().is_cpu() && storage_.scalar_type() == at::kByte &&
@@ -24,14 +27,15 @@ public:
                     "host registration must own complete aligned pages");
     }
     int pin() {
-        TORCH_CHECK(!active_ && close_error_ == 0, "host registration already active or poisoned");
+        TORCH_CHECK(storage_.defined() && !attempted_, "host registration already attempted or closed");
+        attempted_ = true;
         const auto status = cudaHostRegister(storage_.data_ptr(), storage_.numel(), cudaHostRegisterPortable);
         active_ = status == cudaSuccess;
         return static_cast<int>(status);
     }
     int close() {
         if (close_error_) return close_error_; // an ambiguous failed cleanup is not retried
-        if (!active_) return 0;
+        if (!active_) { storage_ = at::Tensor(); return 0; }
         const auto status = cudaHostUnregister(storage_.data_ptr());
         if (status == cudaSuccess) {
             active_ = false;
