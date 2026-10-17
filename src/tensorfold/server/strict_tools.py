@@ -43,10 +43,16 @@ SEPARATOR = "\n"                             # between calls
 PROBE = [{"role": "user", "content": "x"},
          {"role": "assistant", "content": "", "tool_calls": [
              {"id": "call_0", "type": "function",
-              "function": {"name": "tfprobe_a", "arguments": {"tfprobe_x": "tfprobe_v", "tfprobe_y": 7}}},
+              "function": {"name": "tfprobe_a", "arguments": {"tfprobe_x": "tfprobe_v", "tfprobe_y": 7,
+                                                            "tfprobe_bool": True, "tfprobe_null": None,
+                                                         "tfprobe_nested": [True, None, {"key": "value"}]}}},
              {"id": "call_1", "type": "function", "function": {"name": "tfprobe_b", "arguments": {}}}]}]
 _PROBED = (f"{FUNCTION}tfprobe_a{NAME_END}{PARAMETER}tfprobe_x{NAME_END}tfprobe_v{VALUE_CLOSE}"
-           f"{PARAMETER}tfprobe_y{NAME_END}7{VALUE_CLOSE}{CLOSE}{SEPARATOR}{FUNCTION}tfprobe_b{NAME_END}{CLOSE}")
+           f"{PARAMETER}tfprobe_y{NAME_END}7{VALUE_CLOSE}"
+           f"{PARAMETER}tfprobe_bool{NAME_END}true{VALUE_CLOSE}"
+           f"{PARAMETER}tfprobe_null{NAME_END}null{VALUE_CLOSE}"
+           f'{PARAMETER}tfprobe_nested{NAME_END}[true, null, {{"key": "value"}}]{VALUE_CLOSE}'
+           f"{CLOSE}{SEPARATOR}{FUNCTION}tfprobe_b{NAME_END}{CLOSE}")
 
 
 def template_supported(rendered: str) -> bool:
@@ -61,7 +67,7 @@ _ANNOTATIONS = frozenset({"title", "description", "default", "examples", "$comme
                           "writeOnly"})
 _KEYWORDS = _ANNOTATIONS | {"type", "enum", "const", "anyOf", "$ref", "$defs", "definitions", "properties", "required",
                             "additionalProperties", "items", "minItems", "maxItems", "pattern", "format", "minimum",
-                            "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"}
+                            "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "uniqueItems"}
 # OpenAI's strict-mode limits (developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); the nesting
 # limit also bounds anyOf and $defs nested in one another between two property or items levels
 MAX_NESTING, MAX_PROPERTIES, MAX_ENUM_VALUES, MAX_SCHEMA_CHARS = 10, 5000, 1000, 120_000
@@ -79,7 +85,7 @@ _LENGTHS = {"minLength", "maxLength"}
 _RANGES = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
 # keywords that constrain one JSON type: xgrammar 0.2.8 applies them only beside an explicit type
 _TYPED = {"pattern", "format", "multipleOf", "items", "minItems", "maxItems", "properties", "required",
-          "additionalProperties", *_RANGES}
+          "additionalProperties", "uniqueItems", *_RANGES}
 
 _HEX = "[0-9a-fA-F]"
 _OCTET = "(25[0-5]|(2[0-4]|1?[0-9])?[0-9])"
@@ -164,6 +170,7 @@ class _Schema:
     def __init__(self, root: dict[str, Any], where: str) -> None:
         self.root, self.where = root, where
         self.properties = self.chars = self.enums = 0
+        self._unique = False
         self._typed_anyof: list[tuple[dict[str, Any], set[str], str]] = []   # checked once all nodes are
         self._types: dict[int, frozenset[str]] = {}       # solved node types by id (the request holds the nodes)
         self._copies: dict[tuple[str, str], tuple[dict[str, Any], set[str], int, int]] = {}   # rebased defs, root
@@ -251,7 +258,10 @@ class _Schema:
             if not isinstance(node["enum"], list) or not node["enum"]:
                 raise _refuse(where, "enum must be a non-empty list")
             self.enums += len(node["enum"])
-            self.chars += sum(len(v) for v in node["enum"] if isinstance(v, str))
+            enum_chars = sum(len(v) for v in node["enum"] if isinstance(v, str))
+            if len(node["enum"]) > 250 and enum_chars > 15_000:
+                raise _refuse(where, "an enum with more than 250 values is limited to 15000 string characters")
+            self.chars += enum_chars
             # xgrammar 0.2.8 enforces const alone when both stand: const must be one of the enum's values (written
             # alike, so 1 beside 1.0 is refused too)
             try:
@@ -273,9 +283,13 @@ class _Schema:
         for key in ("minItems", "maxItems"):
             if key in node and (type(node[key]) is not int or node[key] < 0):
                 raise _refuse(where, f"{key} must be a non-negative integer")
+        if "uniqueItems" in node:
+            if type(node["uniqueItems"]) is not bool:
+                raise _refuse(where, "uniqueItems must be a boolean")
+            self._unique |= node["uniqueItems"]
         if "pattern" in node:
             _regex(node["pattern"], where)
-        if "format" in node and node["format"] not in FORMATS:
+        if "format" in node and (not isinstance(node["format"], str) or node["format"] not in FORMATS):
             raise _refuse(where, f"format must be one of {', '.join(FORMATS)}")
         if "$ref" in node:
             self.resolve(node["$ref"], where)
@@ -420,6 +434,90 @@ class _Schema:
         found = list(options.values())
         return found[0] if len(found) == 1 else {"type": "or", "elements": found}
 
+    def json_format(self, node: dict[str, Any], where: str) -> dict[str, Any]:
+        """JSON values, replacing finite uniqueness constraints with exact bounded owned EBNF rules.
+
+        xgrammar's schema conversion remains authoritative for every other checked keyword. A marker absent from the
+        source schema locates each replacement in its emitted EBNF; it can never replace an actual property or value.
+        """
+
+        if not self._unique:
+            return {"type": "json_schema", "json_schema": node, "style": "json", "max_whitespace_cnt": BLANKS}
+        from tensorfold.server.strict_grammar import unique_array
+
+        local = _Schema(node, where)
+        source = json.dumps(node, ensure_ascii=False, separators=(",", ":"))
+        marker = "__tensorfold_constraint__"
+        while marker in source:
+            marker += "_"
+        replacements: list[tuple[str, str]] = []
+
+        def convert(current: dict[str, Any]) -> dict[str, Any]:
+            special = None
+            if current.get("uniqueItems") is True:
+                item = current.get("items")
+                seen = set()
+                while isinstance(item, dict) and "$ref" in item and id(item) not in seen:
+                    seen.add(id(item))
+                    item = local.resolve(item["$ref"], where)
+                values = item.get("enum") if isinstance(item, dict) else None
+                if not isinstance(values, list) or not values or any(not isinstance(v, str) for v in values):
+                    raise _refuse(where, "uniqueItems needs a string enum with at most 10 distinct values")
+                values = list(dict.fromkeys(v for v in values if "const" not in item or v == item["const"]))
+                if 2 ** len(values) > MAX_SUBSCHEMAS:
+                    raise _refuse(where, "uniqueItems needs a string enum with at most 10 values")
+                # Checked enum schemas have only type/enum/const and annotations beside them; filtering const here
+                # preserves the intersection, and duplicate enum entries denote the same JSON string value.
+                special = unique_array(values, current.get("minItems", 0), current.get("maxItems"), BLANKS)
+                if "null" in _own_types(current):
+                    special = special.replace("root ::= ", 'root ::= "null" | ', 1)
+            if special is not None:
+                word = marker + str(len(replacements))
+                replacements.append((word, special))
+                return {"const": word}
+            out = dict(current)
+            for keyword, key, child in _subschemas(current):
+                if key is None:
+                    out[keyword] = convert(child)
+                else:
+                    if out[keyword] is current[keyword]:
+                        out[keyword] = dict(current[keyword]) if isinstance(current[keyword], dict) else list(
+                            current[keyword])
+                    out[keyword][key] = convert(child)
+            return out
+
+        converted = convert(node)
+        if not replacements:
+            return {"type": "json_schema", "json_schema": node, "style": "json", "max_whitespace_cnt": BLANKS}
+        try:
+            import xgrammar as xgr
+
+            text = str(xgr.Grammar.from_json_schema(converted, max_whitespace_cnt=BLANKS))
+        except ImportError:
+            from tensorfold.engine.grammar import EXTRA
+
+            raise RequestError(f"strict function tools need xgrammar on the server: pip install '{EXTRA}'") from None
+        except (RuntimeError, ValueError, TypeError) as exc:
+            from tensorfold.engine.grammar import _message
+
+            raise _refuse(where, f"the grammar cannot be enforced: {_message(exc)}") from None
+        for i, (word, replacement) in enumerate(replacements):
+            # EBNF identifiers are lexical tokens; rewrite only them, never a terminal or a character class.
+            rules = {}
+            for line in replacement.splitlines():
+                name, body = line.split(" ::= ", 1)
+                rules[name] = body
+            rename = {name: f"tf_{i}_{name}" for name in rules}
+            token = re.compile(r'"(?:[^"\\]|\\.)*"|\[(?:[^\]\\]|\\.)*\]|[A-Za-z_][A-Za-z_0-9]*')
+            lines = [rename[name] + " ::= " + token.sub(lambda m: rename.get(m[0], m[0]), body)
+                     for name, body in rules.items()]
+            literal = json.dumps(json.dumps(word, ensure_ascii=False), ensure_ascii=False)
+            if literal not in text:
+                raise RuntimeError("xgrammar's JSON schema EBNF did not retain a constraint marker")
+            text = text.replace(literal, rename["root"])
+            text += "\n" + "\n".join(lines)
+        return {"type": "grammar", "grammar": text}
+
     def json(self, node: dict[str, Any], where: str) -> tuple[dict[str, Any], int]:
         """``node`` as a schema of its own (refs into the tool's schema kept), for a JSON value's grammar, and how many
         characters of the tool's definitions and root it copies in: the definitions it refers to (all of them with the
@@ -471,6 +569,24 @@ class _Schema:
             self._copies[key] = (copy, _refs(node), len(json.dumps(copy, ensure_ascii=False, separators=(",", ":"))),
                                  _count(node))
         return self._copies[key]
+
+
+def validate_response_schema(root: dict[str, Any], where: str) -> None:
+    """Reject schemas whose requested strict response-format constraints the pinned compiler cannot enforce.
+
+    Tool-specific grammar substitutions are not applied to response formats; those capabilities are explicitly
+    refused here. Ordinary non-strict/guided schemas keep their existing compiler behavior.
+    """
+
+    root = {key: value for key, value in root.items() if key != "$schema"}
+    schema = _Schema(root, where)
+    schema.check()
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.get("uniqueItems") is True:
+            raise _refuse(where, "uniqueItems cannot be enforced in strict response_format schemas")
+        stack.extend(sub for _, _, sub in _subschemas(node))
 
 
 def _unescape(part: str) -> str:
@@ -755,7 +871,7 @@ class Plan:
                     value = {"type": "or", "elements": [value, _const("null")]}
             else:
                 own, copies = schema.json(sub, at)
-                value = {"type": "json_schema", "json_schema": own, "style": "json", "max_whitespace_cnt": BLANKS}
+                value = schema.json_format(own, at)
                 mode, copied = JSON, copied + copies
             part = _seq(_const(f"{PARAMETER}{key}{NAME_END}"), value, _const(VALUE_CLOSE))
             parts.append(part if key in required else {"type": "optional", "content": part})
