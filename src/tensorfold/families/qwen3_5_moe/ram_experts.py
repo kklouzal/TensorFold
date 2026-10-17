@@ -10,6 +10,7 @@ from pathlib import Path
 from tensorfold.cuda.capacity import Geometry, config, headers
 from tensorfold.cuda.geometry import gdn_geometry, layer_counts, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, routed_tensor_a4
+from tensorfold.cuda.read_budget import pinned_backing_bytes
 
 GIB = 1 << 30
 _READ_PIECE = 64 << 20
@@ -136,7 +137,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
         raise ValueError(f"--vram-experts needs at least one native CT expert ({entry / GIB:.6f} GiB)")
     # The single (2,entry) Torch pinned allocation rounds within its ceil-log2
     # bucket on the pinned runtime, including configured nonrounded blocks.
-    staging = 1 << (2 * entry - 1).bit_length()
+    staging = pinned_backing_bytes(2 * entry)
     # CPU projection authority/packing allowance is additional to the shared
     # nvfp4_memory estimator's Reader rings. Charge that physical ring once.
     # The separate filesystem window does not retain the whole checkpoint.

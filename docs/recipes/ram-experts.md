@@ -189,6 +189,9 @@ NVFP4 admission counts the Reader's two pinned allocations with their allocator
 bucket rounding (a 256 MiB backing bound on the pinned runtime), alongside the
 larger of buffered source bytes and a subsequent CPU field publication. This is
 host allowance; it does not add 256 MiB to device packing scratch.
+The expert upload staging allocation uses the same pinned bucket bound. Staged
+Windows reads instead reserve their cached pinned read buckets alongside CPU
+publication; their actual execution qualification remains separate.
 
 For EXL3, CPU authority contains compact original trellis bytes without padding.
 Fixed GPU cells are sized for the largest gate/up/down bundle in the model. With

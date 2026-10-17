@@ -165,5 +165,5 @@ def weight_estimate(model_dir, transform):
     # Reader rings remain live alongside conversion/read staging. Preserve the
     # original CPU allowance and add those physical backings exactly once;
     # offload's additional authority allowance deliberately excludes the rings.
-    host = reader_host_bytes(max(existing.staging, largest))
+    host = reader_host_bytes(largest, max(existing.staging, largest))
     return Weights(existing.resident + padding, staging, existing.mapped), host
