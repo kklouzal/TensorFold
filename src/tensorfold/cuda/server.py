@@ -352,17 +352,34 @@ class App:
             raise RequestError("this model's engine does not enforce strict function tools: send strict false")
         if getattr(self.engine, "refuses_structured_output", None):
             raise RequestError(self.engine.refuses_structured_output)
-        if getattr(self, "_strict_markup", None) is None:          # (supported, why not), read once
+        if getattr(self, "_strict_markup", None) is None:          # (plan factory, why not), read once
             try:
                 rendered = self.template.render(strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS, enable_thinking=False)
-                self._strict_markup = (strict_tools.template_supported(rendered), "writes calls otherwise")
             except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them
                 self._strict_markup = (False, f"could not render a call ({exc})")
+            else:
+                why = "writes calls otherwise"
+                if strict_tools.template_supported(rendered):
+                    plan = strict_tools.Plan
+                else:
+                    from tensorfold.server import strict_scalar_tools
+
+                    messages = strict_scalar_tools.false_probe()
+                    plan = None
+                    try:
+                        rendered_false = self.template.render(messages, tools=strict_tools.PROBE_TOOLS,
+                                                              enable_thinking=False)
+                    except Exception as exc:  # noqa: BLE001 - the actual false-value template route must render too
+                        why = f"could not render a call ({exc})"
+                    else:
+                        if strict_scalar_tools.template_supported(rendered, rendered_false):
+                            plan = strict_scalar_tools.Plan
+                self._strict_markup = (plan, why)
         if not self._strict_markup[0]:
             raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
                                f"and this model's chat template {self._strict_markup[1]}: send strict false")
-        return strict_tools.Plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
-                                 parallel=not policy.single, offered=body.get("tools"))
+        return self._strict_markup[0](tools, required=tool_choice_requires_call(body.get("tool_choice")),
+                                      parallel=not policy.single, offered=body.get("tools"))
 
     def _thought(self, prepared: PreparedRequest, text: str, finished: bool) -> tuple[str, str]:
         """A strict reply's (reasoning, answer): a call written in a think block that never closed is the answer only
@@ -706,7 +723,7 @@ class App:
                 text = stops.visible(raw_text)
                 if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
                     raw_answer = self._thought(prepared, text, True)[1] if chat and thinking else text
-                    content, calls = strict.parse(raw_answer, max_calls=policy.max_calls)
+                    content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
                 elif tools:
                     text = normalize_qwen_tool_markup(text)    # a call missing only its closer is a call before the think split
                     raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
@@ -726,8 +743,11 @@ class App:
                 if tail:
                     final["content"] = tail
                 ended = stopped["stop"] or bool(out and out[-1] in ends)
-                # calls already streamed as deltas make a finished reply a tool-call turn, as the client has received them
-                finish = request.outcome = "tool_calls" if calls or (streamed and ended) else ("stop" if ended else "length")
+                # An emitted head is not a completed strict call. Retain all
+                # prior calls/partial deltas, but report the actual stop/budget
+                # outcome when any opened strict call remained unfinished.
+                finished_calls = (calls or (streamed and ended)) and (strict is None or calls_complete)
+                finish = request.outcome = "tool_calls" if finished_calls else ("stop" if ended else "length")
         finally:
             release()
         stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(request.stats or {}),

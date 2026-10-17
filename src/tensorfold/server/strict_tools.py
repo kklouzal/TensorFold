@@ -914,6 +914,17 @@ class Plan:
         reader.read(answer, finished=finished)
         return "".join(reader.text)
 
+    def parse_finished(self, answer: str, *, max_calls: int | None = None):
+        """Return parsed content/calls and whether every opened call completed.
+
+        The completion observer is separate from legacy parse/content callers;
+        a truncated final call stays text and never changes an earlier call.
+        """
+        reader = self.reader()
+        reader.read(answer, finished=True)
+        calls = reader.calls if max_calls is None else reader.calls[:max_calls]
+        return "".join(reader.text).strip(), calls or None, not getattr(reader, "_unfinished", False)
+
 
 def _too_large() -> RequestError:
     return RequestError(f"tools: the strict tools' call grammar exceeds {MAX_GRAMMAR_BYTES >> 20} MiB (each JSON "
@@ -1024,6 +1035,7 @@ class Reader:
             raise CallMarkupError("the reply's call markup left its grammar")
         if not finished:
             return
+        self._unfinished = True             # terminal partial call only; complete-call token paths are unchanged
         self.text.append(answer[self._at:])
         self.pos, self._state = len(answer), "text"
 

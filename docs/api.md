@@ -259,17 +259,23 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   in the schema's order; ones not in `required` may be left out, never repeated or added. A string parameter's value
   is its raw text, as the template renders arguments; a string-or-null parameter is raw text or `null` (read as
   null); any other value is JSON per the parameter's schema (`true`, `null`), with at most 32 blank characters in a
-  run. Flash Next's template renders such values as JSON too; a template that renders them as Python (`True`, `None`,
-  as some Qwen3.5 templates do) is refused before generation. The template probe checks booleans, null and nested
-  values as well as strings and numbers.
+  run. CUDA also recognizes the exact XML profile that renders scalar booleans/null as `True`, `False`, `None`,
+  while retaining raw strings and canonical JSON containers. It constrains those scalar spellings and returns
+  canonical JSON arguments. A raw string `True` or `None` remains a string. A nullable raw string is refused when
+  its grammar may also spell `None`, since the template cannot distinguish that string from null; an unambiguous
+  enum or a pattern proved to exclude it can be enforced. Recognition checks booleans, null and nested values as
+  well as strings and numbers; other encodings remain unsupported. The standard JSON-scalar XML path is unchanged.
 - **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
   `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
   `parallel_tool_calls: false` ends the reply after its first call.
 - **Tools without `strict`** in the same request keep their names and markup well formed; their values are not
   checked and decode as for any request.
 - **Reading:** the server reads strict replies exactly as the grammar wrote them, not with the lenient parser above.
-  `arguments` keeps each JSON value as the model wrote it (spacing included), and streamed deltas add up to the same
-  string. A call cut short by `max_tokens` or a stop string stays text. A call written inside a think block that never
+  `arguments` keeps each JSON value as the model wrote it (spacing included); the Python-scalar XML profile converts
+  only its scalar spellings to JSON. Streamed deltas add up to the same argument string. A call cut short by
+  `max_tokens` or a stop string stays text; streaming clients may already have received its partial call deltas.
+  On CUDA, an unfinished strict call reports `length` or `stop`, including when an earlier call completed, and never claims
+  a `tool_calls` finish. Earlier completed calls remain available. A call written inside a think block that never
   closes becomes the answer only when the grammar accepts the whole answer, and otherwise stays reasoning.
 
 The supported schemas are [OpenAI's strict-mode
