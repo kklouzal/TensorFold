@@ -35,7 +35,7 @@ def vision_workspace() -> int:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None) -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -46,7 +46,7 @@ class FlashNextEngine:
         self.expert_session = expert_session
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -57,7 +57,12 @@ class FlashNextEngine:
                  prefetch: bool = True, graphs: bool = True, streams: int = 1, ple_on_ssd: bool = False,
                  kv_dtype: str = "bf16", share: float = 0.0, vision: bool = False, vision_urls: bool = False,
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, expert_session=None) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
+                 kv_full_windows: int | None = None, expert_session=None) -> None:
+        from ..ram_experts import check_kv_full_windows
+
+        check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
+        self.kv_full_windows = kv_full_windows
         from .. import rope_parameters
         from ..kv_formats import get_pair
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
@@ -456,9 +461,11 @@ class FlashNextEngine:
 
         Runs before Scheduler starts or any warmup borrows a cache lease. Full
         context growth, a layer's resize overlap and every kept/in-flight
-        snapshot remain available; the cache is fixed throughout serving.
+        snapshot remain available; the cache is fixed throughout serving. An
+        explicit --kv-full-windows shares that many full windows across slots,
+        with no lone-stream escape from the selected growth budget.
         """
-        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes
+        from ..ram_experts import AUTO_HEADROOM_BYTES, auto_pool_bytes, reserved_growth
         from .prompt_plan import POINTS
         from tensorfold.cuda.capacity import available_bytes
 
@@ -466,7 +473,9 @@ class FlashNextEngine:
         decoder = self.multi if streams > 1 else self.e
         states = self.multi.free if streams > 1 else [self.e.st, self.serial.st]
         state = states[0]
-        growth = sum(st.cache_bytes(st.limit) - st.cache_bytes() for st in states)
+        each = [st.cache_bytes(st.limit) - st.cache_bytes() for st in states]
+        full_growth = sum(each)
+        growth, windows = reserved_growth(each, self.kv_full_windows)
         overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth else 0
         wide = self.w.cfg.streams * self.w.cfg.hidden
         snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
@@ -511,12 +520,17 @@ class FlashNextEngine:
             raw_live = torch_live(torch, lambda runtime: available_bytes(runtime, reserve=0))
             # _grow already charges its one-layer copy overlap in fits(extra).
             self.multi.memory_gate = MemoryGate(growth + overlap, reserve=0,
-                                                live=lambda: max(0, raw_live() - AUTO_HEADROOM_BYTES))
+                                                live=lambda: max(0, raw_live() - AUTO_HEADROOM_BYTES),
+                                                allow_lone_growth=self.kv_full_windows is None)
+        if self.kv_full_windows is not None:
+            decision["policy"] = "remaining-device-bytes-after-fixed-service-state-shared-kv-v1"
         decision.update(physical_total_bytes=total, fixed_allocated_bytes_before_pool=accounted,
                         allocated_bytes_after_pool=int(torch.cuda.memory_allocated()),
                         physical_free_bytes_after_pool=final_free, kept_snapshot_count=retained,
                         allocator_spare_bytes_after_pool=final_spare, vision_workspace_bytes=vision_workspace_bytes,
-                        snapshot_bytes_each=snapshot, full_context_growth_bytes=growth,
+                        snapshot_bytes_each=snapshot, full_context_growth_bytes=full_growth,
+                        reserved_context_growth_bytes=growth, kv_full_windows_requested=self.kv_full_windows,
+                        kv_full_windows_reserved=windows, kv_stream_slots=len(states),
                         layer_resize_overlap_bytes=overlap, prompt_transient_bytes=transient,
                         prefill_rows=decoder.pbuf.rows, shared_attention_routing_recurrent_buffers_already_allocated=True,
                         lazy_EXL3_prompt_workspace_materialized=self.w.x3 is not None,
@@ -541,10 +555,12 @@ class FlashNextEngine:
             full_mapped_working_set_bytes_estimate=max(initial_plan["startup_peak_bytes_estimate"], final_serving_estimate)
                                                    + initial_plan["mapped_table_bytes"],
             estimate_scope="auto: measured fixed device allocation plus explicit future service bounds; initial header loading forecast retained separately")
+        reservation = (f"{streams} full-context slots" if self.kv_full_windows is None else
+                       f"{windows} full-context windows shared by {streams} slots (waits and request errors possible)")
         print(f"[tensorfold] RAM experts auto: {cache.host_bytes / 2**30:.2f} GiB pageable host authority, "
               f"{cache.gpu_bytes / 2**30:.2f} GiB GPU pool ({cache.resident_capacity} resident cells, "
               f"{cache.capacity} experts per lease); "
-              f"{streams} full-context slots and {retained} snapshots reserved, 512 MiB headroom", flush=True)
+              f"{reservation} and {retained} snapshots reserved, 512 MiB headroom", flush=True)
 
     @property
     def kv_dtype(self) -> str:
@@ -873,6 +889,9 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+        multi = getattr(self, "multi", None)
+        if multi is not None:
+            multi.recover_failed_slots()
         seen = set()
         for decoder in (getattr(self, 'multi', None), getattr(self, 'e', None), getattr(self, 'serial', None)):
             for name in ('buf', 'mbuf'):

@@ -50,7 +50,7 @@ def engine(scheduler=None):
     e.scheduler = scheduler
     e.w = SimpleNamespace(device="owned-device", meta={"expert_cache": Resource(e.events, "cache-close")})
     plan = Resource(e.events, "plan-close")
-    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None)
+    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None, recover_failed_slots=lambda: None)
     e.e = e.serial = None
     e.tp, e.vision, e.depth, e.max_len, e.cache = 1, None, 4, 2053, []
     e._serial = lambda *args, **kwargs: {"serial": True}
@@ -89,6 +89,24 @@ class LifetimeControls(unittest.TestCase):
 
     def tearDown(self):
         self.stub.stop()
+
+    def test_failed_slot_retirement_keeps_engine_resources_until_close_retry(self):
+        e = engine()
+        failure = MemoryError("controlled failed-slot retirement")
+
+        def fail():
+            raise failure
+
+        e.multi.recover_failed_slots = fail
+        with self.assertRaises(MemoryError) as caught:
+            e.close()
+        self.assertIs(caught.exception, failure)
+        self.assertFalse(e._closed)
+        self.assertEqual(e.events, [])
+        e.multi.recover_failed_slots = lambda: None
+        e.close()
+        self.assertTrue(e._closed)
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
 
     def test_postclose_rejects_before_limits_or_decoder_dispatch_and_keeps_fixed_owner(self):
         e = engine()

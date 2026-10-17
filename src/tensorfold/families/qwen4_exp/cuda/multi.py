@@ -8,27 +8,32 @@ import time
 import numpy as np
 import torch
 
-from tensorfold.cuda.logprobs import capture
-from tensorfold.cuda.kernels import gdn
-
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
+from tensorfold.cuda.kernels import gdn
+from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
-from tensorfold.cuda.sampling import (TokenMap, collect_streams, launch_streams, repaired_choose, validate_policy,
-                                     validate_rows)
+from tensorfold.cuda.sampling import (
+    TokenMap,
+    collect_streams,
+    launch_streams,
+    repaired_choose,
+    validate_policy,
+    validate_rows,
+)
 from tensorfold.cuda.streams import Stream, accept
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
-from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
+from ..cuda import CONFIDENCE, DEPTH
 from . import attn_multi, gdn_multi, image_rows, multi_graphs, prefixes
-from .forward import (Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead,
-                      stage)
+from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
+from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, pass_limit
 from .state import ENDS, Buffers, KVNumericError, State
-from ..cuda import CONFIDENCE, DEPTH
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
 GIB = 1024**3
@@ -101,6 +106,7 @@ class MultiDecoder:
         # slots start small and grow with their stream's context, up to the window, while the gate has room
         self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
                            kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype) for _ in range(slots)]
+        self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window
         free = torch_live(torch, available_bytes) if torch.cuda.is_available() else None
@@ -144,6 +150,11 @@ class MultiDecoder:
         while not self.memory_gate.fits(grow + st.layer_bytes(size)):     # a layer's old buffers stay until its copy
             if not self._evict_kept(st, protect=protect):
                 if alone:
+                    if not self.memory_gate.allow_lone_growth:
+                        raise NoRoom(
+                            f"Growing this request's attention caches to {size} tokens cannot fit the shared "
+                            "KV reservation and remaining device memory. Retry it, shorten the prompt or "
+                            "max_tokens, reduce --context, or increase --kv-full-windows.")
                     limit = cuda_limit_bytes() if torch.cuda.is_available() else None
                     if limit is not None:
                         # A lone stream may use its startup reserve without exceeding the copy peak cap.
@@ -171,9 +182,54 @@ class MultiDecoder:
     def _shrink(self, st: State, *, force: bool = False) -> None:
         """An idle slot back to its first rows: its caches' memory returns to the gate."""
 
-        st.reset(self.w)
-        if force or st.capacity > FIRST:
-            self.memory_gate.give(-st.resize(min(FIRST, st.limit)))
+        before, primary, errors = st.cache_bytes(), None, []
+        try:
+            if st._resize_error is not None:
+                st.recover_resize(self.w, min(FIRST, st.limit))
+            else:
+                st.reset(self.w)
+                if force or st.capacity > FIRST:
+                    st.resize(min(FIRST, st.limit))
+        except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation
+            primary = error
+            try:
+                self._quarantine(st)
+            except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
+                errors.append(cleanup)
+        try:
+            # Even a failed rebuild/reset may have changed attached storage.
+            delta = st.cache_bytes() - before
+            if delta >= 0:
+                self.memory_gate.take(delta)
+            else:
+                self.memory_gate.give(-delta)
+        except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
+            errors.append(cleanup)
+        raise_failures(primary, errors)
+
+    def _quarantine(self, st: State) -> None:
+        """Retain a failed exclusive slot; neither admission nor kept prefixes may borrow it."""
+
+        if all(owned is not st for owned in self.failed_slots):
+            self.failed_slots.append(st)
+        self._drop_kept(st)
+        self.free = [owned for owned in self.free if owned is not st]
+
+    def _retire_failed_slot(self, st: State) -> None:
+        self._shrink(st, force=True)
+        self.free.append(st)                         # failed publication leaves the quarantine owner intact
+        self.failed_slots.remove(st)
+
+    def recover_failed_slots(self) -> None:
+        """Retry exclusive retirement after request/worker quiescence; failed owners remain retained."""
+
+        errors = []
+        for st in tuple(self.failed_slots):
+            try:
+                self._retire_failed_slot(st)
+            except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation
+                errors.append(error)
+        raise_failures(None, errors)
 
     def _evict_kept(self, keep: State, *, protect: State | None = None) -> bool:
         """Free the least valuable idle kept chain (never ``keep`` or ``protect``); False when none is left."""
@@ -209,11 +265,13 @@ class MultiDecoder:
         """Before a round: grow each live window oldest-first; a stream that can't grow makes the newest end."""
 
         live = sorted((s for s in self.streams.values() if not s.done), key=lambda s: s.sid)
+        alone = len(live) == 1 and (self.memory_gate.allow_lone_growth or
+                                   not any(not s.done for s in self.filling))
         blocked, ended = False, []
         for s in live:
             rows = max(s.st.pos, s.st.mtp_len) + len(s.drafts) + self.depth + 2
             try:
-                s.waiting = rows > s.st.capacity if blocked else not self._grow(s.st, rows, alone=len(live) == 1)
+                s.waiting = rows > s.st.capacity if blocked else not self._grow(s.st, rows, alone=alone)
             except NoRoom as exc:
                 s.error, s.done, s.waiting = exc, True, False
                 self.held.pop(s.sid, None)
@@ -344,6 +402,13 @@ class MultiDecoder:
                 self.free.append(st)
             else:
                 self._remember(list(s.prompt[:s.cached]), st, resume["state"], resume["tail"])
+            raise
+        except Exception as primary:
+            try:
+                self._quarantine(st)
+                self._retire_failed_slot(st)
+            except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
+                raise_failures(primary, [cleanup])
             raise
         e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows)
         e._draft_map = self._draft_map
@@ -897,14 +962,24 @@ class MultiDecoder:
                 self.free.append(s.st)
 
     def drop(self) -> list[Stream]:
+        prior, errors = tuple(self.failed_slots), []
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.filling, self.fills = [], {}
         for s in live:
             self.streams.pop(s.sid, None)
             self.held.pop(s.sid, None)
             self._drop_kept(s.st)
-            self._shrink(s.st)
-            self.free.append(s.st)
+            try:
+                self._shrink(s.st)
+                self.free.append(s.st)
+            except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation
+                errors.append(error)
+        for st in prior:
+            try:
+                self._retire_failed_slot(st)
+            except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation
+                errors.append(error)
+        raise_failures(None, errors)
         return live
 
 
