@@ -86,7 +86,8 @@ def test_existing_affine_per_layer_aliases_and_unrelated_fields_are_preserved():
 
 
 def test_declared_modelopt_activation_conflict_is_not_filled_from_a_sidecar():
-    group = {"weights": {"num_bits": 4, "type": "float", "group_size": 16}, "targets": ["Linear"]}
+    group = {"weights": {"num_bits": 4, "type": "float", "group_size": 16},
+             "input_activations": None, "targets": ["Linear"]}
     with pytest.raises(ValueError, match="conflict"):
         effective_config({"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4",
                                                    "config_groups": {"group_0": group}}}, None, where="x")
@@ -108,3 +109,15 @@ def test_safe_regex_subset_matches_independent_regex_for_all_small_names():
         match = _Pattern(pattern)
         for name in names:
             assert bool(match.match(name)) == bool(re.match(pattern[3:], name)), (pattern, name)
+
+
+def test_partial_modelopt_groups_are_completed_from_declared_algorithm_only():
+    got = effective_config({"quantization": {"quant_method": "modelopt", "quant_algo": "NVFP4",
+                           "config_groups": {"group_0": {"weights": {"group_size": 16}}}}},
+                           None, where="partial")
+    group = got["quantization_config"]["config_groups"]["group_0"]
+    assert group["weights"]["num_bits"] == 4
+    assert group["input_activations"]["num_bits"] == 4
+    ct = effective_config({"quantization_config": {"quant_method": "compressed-tensors",
+                          "config_groups": {"g": {"weights": {"num_bits": 4}}}}}, None, where="ct")
+    assert LinearQuantization(ct["quantization_config"]).resolve("mlp").get("input_activations") is None
