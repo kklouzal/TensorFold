@@ -19,11 +19,17 @@ from tensorfold.cuda.nvfp4.host_experts import _pack_authority_projection_a4
 from tensorfold.families.qwen3_5.cuda.nvfp4_memory import projection_loading_bytes
 
 
-def payload(n, k):
-    codes = (torch.arange(n * k // 2, dtype=torch.int64) * 17 % 256).to(torch.uint8).view(n, k // 2)
+def payload(n, k, *, seed=1701):
+    generator = torch.Generator().manual_seed(seed + n * 31 + k * 17)
+    codes = torch.randint(0, 256, (n, k // 2), dtype=torch.uint8, generator=generator)
     # General bit permutation deliberately covers all encodings, independently
     # of the native-A4 consumer's separately enforced unsigned finite contract.
-    scales = (torch.arange(n * k // 16, dtype=torch.int64) * 23 % 256).to(torch.uint8).view(n, k // 16)
+    scales = torch.randint(0, 256, (n, k // 16), dtype=torch.uint8, generator=generator)
+    # Keep every encoding represented without periodic identical rows. Gate,
+    # up and down also receive distinct local seeds in their combined oracle.
+    scales.reshape(-1)[:256] = torch.randperm(256, generator=generator).to(torch.uint8)
+    assert torch.unique(codes, dim=0).shape[0] == n
+    assert torch.equal(torch.unique(scales), torch.arange(256, dtype=torch.uint8))
     return codes, scales.view(torch.float8_e4m3fn)
 
 
@@ -55,7 +61,7 @@ def test_ct_gpu_permutation_equals_independent_cpu_bytes_and_releases_device_sto
 
 @pytest.mark.parametrize("width,dims", [(128, 512), (512, 2048), (512, 2560), (1024, 2560)])
 def test_modelopt_gpu_pack_matches_cpu_original_bytes_and_admitted_peak(width, dims):
-    original = [payload(width, dims), payload(width, dims), payload(dims, width)]
+    original = [payload(width, dims, seed=1701), payload(width, dims, seed=2802), payload(dims, width, seed=3903)]
     globals_ = [torch.tensor([struct.unpack("f", struct.pack("I", bits))[0]], dtype=torch.float32)
                 for bits in (0x3fb7f13d, 0x3e63ffff, 0x3d013579)]
     cpu = nvx.make(*(tuple(t.unsqueeze(0) for t in values) + (scale,)

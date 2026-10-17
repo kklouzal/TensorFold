@@ -111,6 +111,11 @@ The GPU loading bound includes raw, permuted and output planes, including
 projections taller than the dense packer's chunk size. No temporary device
 storage is retained by the host bank. Loading-speed selection is pending.
 
+The shared NVFP4 estimator owns the Reader's physical host-ring reservation.
+The offload plan adds CPU authority and projection workspace without charging
+that same ring again. Ring accounting does not change the Reader's span size or
+the GPU scratch allowance.
+
 The cache owns the CPU authority and GPU pool. Cached banks retain geometry and
 cache identity, with no separate CPU calibration copies. A lease fences native
 consumers before reuse or close. Failed allocation or view preparation before

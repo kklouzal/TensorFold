@@ -13,7 +13,6 @@ from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, ro
 
 GIB = 1 << 30
 _READ_PIECE = 64 << 20
-_READ_ALIGN = 4096
 _PAIR_WINDOW = 128
 
 
@@ -138,11 +137,10 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     # The single (2,entry) Torch pinned allocation rounds within its ceil-log2
     # bucket on the pinned runtime, including configured nonrounded blocks.
     staging = 1 << (2 * entry - 1).bit_length()
-    # Reader's two (64MiB+3*alignment) pinned blocks each round to 128MiB.
-    # Buffered fallback's current 64MiB filesystem window is reclaimable; no
-    # claim that the complete source checkpoint must stay resident is made.
-    reader = 2 * (1 << (_READ_PIECE + _READ_ALIGN - 1).bit_length())
-    loading = max(64 << 20, 8 * entry) + reader
+    # CPU projection authority/packing allowance is additional to the shared
+    # nvfp4_memory estimator's Reader rings. Charge that physical ring once.
+    # The separate filesystem window does not retain the whole checkpoint.
+    loading = max(64 << 20, 8 * entry)
     # Decoded raw, normalized capacity and loader dictionaries can coexist.
     # Three complete decoded inventories conservatively also cover parser
     # object-pair lists and span-sort work (their objects/keys are recounted).

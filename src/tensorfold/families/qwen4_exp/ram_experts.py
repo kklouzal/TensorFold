@@ -200,9 +200,12 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
 
 
 def _nvfp4_layout(model_dir, gib, text, mtp):
+    from tensorfold.cuda.capacity import SIZES
     from tensorfold.cuda.nvfp4.host_layout import bank_bases
+    from tensorfold.cuda.read_budget import reader_host_bytes
 
-    banks = bank_bases(headers(model_dir), text, mtp)
+    entries = headers(model_dir)
+    banks = bank_bases(entries, text, mtp)
     width, dims = text["moe_intermediate_size"], text["hidden_size"]
     # 144 int32 words per tile; global FP32 gate/up and down scales have
     # separate 16-byte-aligned fields in HostExpertCache.
@@ -219,7 +222,24 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
     e = text["num_experts"]
     tiles = (width // 32) * (dims // 32) * 144 * 4
     allocations = (e * 2 * tiles, e * tiles, e * 8, e * 4) * len(banks)
-    return Layout(entry, slots, slots * entry, sum(allocations), 2 * entry, loading,
+    # Existing generic host staging has no separately charged Reader rings.
+    # Only one expert row of a stacked MTP field is read, never its full bank.
+    # Nonstacked main codes use M/2 bytes; FP8 MTP codes use M. Scalar/row/block
+    # scales are smaller at the already validated dimensions (both >=32).
+    raw = width * dims // 2
+    for bank in banks:
+        if not bank.startswith("mtp."):
+            continue
+        if bank + ".experts.gate_up_proj" in entries:
+            raw = max(raw, 2 * width * dims * SIZES[entries[bank + ".experts.gate_up_proj"]["dtype"]],
+                      width * dims * SIZES[entries[bank + ".experts.down_proj"]["dtype"]])
+        elif any(entries[f"{bank}.experts.{e}.{p}.weight"]["dtype"] == "F8_E4M3"
+                 for e in range(text["num_experts"]) for p in ("gate_proj", "up_proj", "down_proj")):
+            raw = max(raw, width * dims)
+    # D2H's largest field is the packed gate/up pair, after reads have ended.
+    # Three retained scalar read spans fit nine alignment pages alongside it.
+    host_loading = max(loading, reader_host_bytes(raw, 2 * tiles) + 9 * 4096)
+    return Layout(entry, slots, slots * entry, sum(allocations), 2 * entry, host_loading,
                   "nvfp4", automatic=gib == "auto",
                   loading_device_bytes=loading,
                   authority_allocations=allocations)
