@@ -98,6 +98,26 @@ def test_incomplete_expert_group_and_subcell_budget_fail_before_payload(tmp_path
         ram_experts.layout(tmp_path, 1 / 2**30)
 
 
+@pytest.mark.parametrize("layers", [2**62, 3])
+def test_exl3_layer_coverage_rejects_configured_counts_without_expanding_them(tmp_path, layers):
+    checkpoint(tmp_path)
+    path = tmp_path / "config.json"
+    raw = json.loads(path.read_text())
+    raw["text_config"]["num_hidden_layers"] = layers
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="every configured main EXL3 expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
+def test_exl3_layer_coverage_requires_contiguous_ids_inside_the_count(tmp_path, monkeypatch):
+    checkpoint(tmp_path)
+    entries = capacity.headers(tmp_path)
+    changed = {name.replace("layers.1.", "layers.3."): info for name, info in entries.items()}
+    monkeypatch.setattr(ram_experts, "headers", lambda _: changed)
+    with pytest.raises(ValueError, match="every configured main EXL3 expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
 def test_bad_configured_layer_width_and_mixed_codebooks_fail_before_payload(tmp_path):
     text, entries = checkpoint(tmp_path)
     text["num_hidden_layers"] = 3
