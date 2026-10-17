@@ -608,9 +608,12 @@ def open_table(model_dir: Path, shards: list[tuple[str, str]], scale, *, ssd: bo
                              e4m3_values=e4m3(np.arange(256)), e2m1_values=E2M1)
         elif kind == "fp8":
             lut = _fp8_lut(scale("weight_scale"))
-            decode = lambda codes: lut[codes]
+
+            def decode(codes):
+                return lut[codes]
         else:
-            decode = lambda bits: bits.view(np.uint16)
+            def decode(bits):
+                return bits.view(np.uint16)
         return EncodedSSDTable(files, kind, decode,
                                weight_scale=float(scale("weight_scale")) if kind == "bf16" else 1.0)
     if used[0] == "nvfp4":

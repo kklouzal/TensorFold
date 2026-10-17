@@ -10,7 +10,6 @@ from contextlib import contextmanager
 
 import torch
 
-from tensorfold.cuda import experts as grouped
 from . import experts as nvx
 
 

@@ -13,7 +13,7 @@ from tensorfold.families.qwen4_exp import ram_experts
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import load_moe_host
 from tensorfold.families.qwen4_exp.cuda.reader import _Reader
-from tensorfold.families.qwen4_exp.cuda.weights import Config, load
+from tensorfold.families.qwen4_exp.cuda.weights import load
 
 from nvfp4_tiny import write
 
