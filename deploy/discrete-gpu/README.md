@@ -1,3 +1,5 @@
+The current image build requires [audited native foundation inputs](../gb10/foundation.md). Use the optional `../gb10/compose.build.yaml` overlay to build with explicit pin/artifact contexts; serving an already qualified immutable image does not need those directories. The managed image refuses in-place dependency updates.
+
 # Discrete GPU deployment
 
 This profile targets a native AMD64 Linux host with a separate NVIDIA GPU,

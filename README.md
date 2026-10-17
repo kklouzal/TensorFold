@@ -83,7 +83,9 @@ The CUDA backend defaults to a compute-capability floor of **8.9** and refuses u
 
 ### Pinned container stack
 
-The [Dockerfile](deploy/gb10/Dockerfile) builds from the NVIDIA NGC CUDA DL inference development image:
+The [Dockerfile](deploy/gb10/Dockerfile) now requires explicit generated native foundation inputs and protects the CUDA SDK and selected nightly package closure in a separate prefix. See the [managed foundation build and audit contract](deploy/gb10/foundation.md). The immutable latest-base candidate is CUDA13.4.3 cuDNN development; its fresh native/model qualification is separate from the historical results below.
+
+The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference development image:
 
 ```text
 nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:f86c199a302a3a7405d5f055adf1311cd660e85d8a66cf452be6eb45d5768639
@@ -106,8 +108,11 @@ git clone --branch python-0.6 https://github.com/kklouzal/TensorFold.git
 cd TensorFold
 git rev-parse HEAD
 
+# Prepare audited native inputs first: deploy/gb10/foundation.md
 TF_BUILD_JOBS=8
 docker buildx build --platform linux/amd64 --load --target runtime \
+  --build-context foundation_pins=./generated-amd64 \
+  --build-context foundation_artifacts=./artifacts-amd64 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
   --build-arg MAX_JOBS="$TF_BUILD_JOBS" \
   --tag tensorfold-fork:local --file deploy/gb10/Dockerfile .
@@ -805,12 +810,15 @@ The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, mai
 
 ```bash
 docker buildx build --platform linux/amd64 --load --target verification \
+  --build-context foundation_pins=./generated-amd64 \
+  --build-context foundation_artifacts=./artifacts-amd64 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
   --build-arg MAX_JOBS="$TF_BUILD_JOBS" \
   --tag tensorfold-fork:verification --file deploy/gb10/Dockerfile .
 docker run --rm --network none --memory 3g --memory-swap 3g \
-  --pids-limit 512 --cpus 2 \
-  tensorfold-fork:verification -q tests/test_http_service_limits.py
+  --pids-limit 512 --cpus 2 --entrypoint python3 \
+  tensorfold-fork:verification /opt/tensorfold-pins/foundation_guard.py run -- \
+  python3 -m pytest -o pythonpath=tests -q tests/test_http_service_limits.py
 ```
 
 The completed installed-origin Linux CPU qualification used normal verification image `sha256:aeef439e98eb2c885e5c131105e2d9b612410e81336d6fa63c36078eb6522b64`, with the Source06 wheel `80f1…` above, Python 3.12 and pytest 8.4.2. A read-only qualified fixture supplied maintained tests/tools while the package and native provider remained the normal installed copies. The qualified Source06 manifest contained **387 modules**; its **386-path Linux inventory** completed in **25 successful chunks**, totaling **6,369 cases**: **6,214 non-skipped passes**, **zero failures/errors**, and **155 explicit skips**. One additional Apple-only module with two tests was excluded off target. Skips remain unrun for their declared targets; CPU source/fake controls do not qualify GPU/model numerics, Apple execution or true two-GPU behavior.
