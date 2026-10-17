@@ -309,6 +309,7 @@ class Scheduler:
         if stream is None:
             return
         box = self.boxes[id(stream)]
+        stream.finished = time.perf_counter()     # close this decode segment before continued() carries its timings
         self.decoder.finish([stream])
         self.waiting.put((stream.continued(), box))
         self.boxes.pop(id(stream))
