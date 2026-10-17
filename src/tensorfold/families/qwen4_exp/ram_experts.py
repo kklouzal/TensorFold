@@ -184,7 +184,8 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
         raise ValueError("--vram-experts: checkpoint has no complete affine4 expert layers")
     main_layers = {int(match.group(1)) for base in bundles
                    if (match := re.search(r"(?:^|\.)model\.layers\.(\d+)\.mlp$", base))}
-    if main_layers != set(range(int(text["num_hidden_layers"]))):
+    layers = text["num_hidden_layers"]
+    if len(main_layers) != layers or min(main_layers, default=-1) != 0 or max(main_layers, default=-1) != layers - 1:
         raise ValueError("--vram-experts: checkpoint must contain every configured main expert layer")
     requested = entry if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
     slots = min(count, requested // entry)
@@ -256,7 +257,8 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
              else prefix.split(".shared_expert.", 1)[0] for prefix in projections}
     main = {int(match.group(1)) for base in bases
             if (match := re.search(r"(?:^|\.)model(?:\.language_model)?\.layers\.(\d+)\.mlp$", base))}
-    if main != set(range(text["num_hidden_layers"])):
+    layers = text["num_hidden_layers"]
+    if len(main) != layers or min(main, default=-1) != 0 or max(main, default=-1) != layers - 1:
         raise ValueError("--vram-experts: checkpoint must contain every configured main EXL3 expert layer")
     if any(not (re.search(r"(?:^|\.)model(?:\.language_model)?\.layers\.\d+\.mlp$", base)
                 or re.fullmatch(r"mtp\.layers\.0\.mlp", base)) for base in bases):
