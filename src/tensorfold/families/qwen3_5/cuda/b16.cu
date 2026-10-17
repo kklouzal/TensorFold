@@ -277,6 +277,36 @@ at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor
     return y;
 }
 
+// A separately prepared bias-free projection. Keep the incumbent b16_linear
+// and by_rows dispatch unchanged: only explicitly selected weights call here.
+at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t rows) {
+    TORCH_CHECK(rows == 2 || rows == 4 || rows == 8 || rows == 16, "B16 reused rows must be2,4,8 or16");
+    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
+    pair_in(x, w);
+    const bool is_half = x.scalar_type() == at::kHalf;
+    TORCH_CHECK(is_half || x.scalar_type() == at::kBFloat16, "only fp16 and bf16 weights are supported");
+    dimensions(x, w, false);
+    TORCH_CHECK(x.size(1) % 8 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
+                "K must be a multiple of8 and x16-byte aligned");
+    grid_dimensions(x, w.size(0), (int)rows, 4, false);
+    at::cuda::CUDAGuard guard(x.device());
+    const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
+    auto y = at::empty({M, N}, x.options());
+    if (is_half) {
+        if (rows == 2) launch<half, 2, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else if (rows == 4) launch<half, 4, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else if (rows == 8) launch<half, 8, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else launch<half, 16, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+    } else {
+        if (rows == 2) launch<__nv_bfloat16, 2, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else if (rows == 4) launch<__nv_bfloat16, 4, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else if (rows == 8) launch<__nv_bfloat16, 8, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+        else launch<__nv_bfloat16, 16, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return y;
+}
+
 // Two weights of the same rows in one launch (the GDN gates b and a): each output ``b16_linear``'s bits.
 std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w0, const at::Tensor& w1) {
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2 && x.size(1) % 8 == 0 &&
