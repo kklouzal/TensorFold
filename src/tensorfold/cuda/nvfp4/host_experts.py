@@ -88,7 +88,7 @@ def load_nvfp4_host_experts(reader, name, full, device="cuda", *, cache=None, ow
                         raise ValueError(f"{base}: incompatible NVFP4 block/global scales")
 
     def empty(shape, dtype):
-        if cache is not None and hasattr(cache, "allocate_authority"):
+        if cache is not None:
             return cache.allocate_authority(shape, dtype=dtype, tag=name)
         return torch.empty(shape, dtype=dtype, device="cpu")
 

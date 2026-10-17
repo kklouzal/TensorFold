@@ -478,13 +478,11 @@ def _fp8_lut(scale):
     return lut
 
 
-def _decode_nvfp4(codes, blocks, scale, e4m3_values):
+def _decode_nvfp4(codes, blocks, scale, e4m3_values, e2m1_values):
     """Mapped and positional readers share the checkpoint's one-round BF16 decoder."""
-    from tensorfold.cuda.nvfp4.format import E2M1
-
     width = codes.shape[1] * 2
     nib = np.stack([codes & 0xF, codes >> 4], -1).reshape(codes.shape[0], width)
-    v = (E2M1[nib] * np.repeat(e4m3_values[blocks], 16, axis=1)).astype(np.float32) * np.float32(scale)
+    v = (e2m1_values[nib] * np.repeat(e4m3_values[blocks], 16, axis=1)).astype(np.float32) * np.float32(scale)
     f32 = v.astype(np.float32).view(np.uint32).astype(np.uint64)
     return ((f32 + 0x7FFF + ((f32 >> 16) & 1)) >> 16).astype(np.uint16)
 
@@ -544,9 +542,9 @@ class NVFP4Table(BF16Table):
             self.wrow = self.width // 2
             self.nbytes = sum(a.nbytes for a in self.values + self.scales)
             self.g = np.float32(scale)
-            from tensorfold.cuda.nvfp4.format import e4m3
+            from tensorfold.cuda.nvfp4.format import E2M1, e4m3
 
-            self.e4m3 = e4m3(np.arange(256))
+            self.e2m1, self.e4m3 = E2M1, e4m3(np.arange(256))
 
     def gather(self, ids: np.ndarray) -> np.ndarray:
         """Rows ``ids`` (global) -> [n, W] uint16: bf16 bits of the fp32 code x block scale x table scale, rounded once."""
@@ -562,7 +560,7 @@ class NVFP4Table(BF16Table):
             codes[at], blocks[at] = self.values[f][local[at]], self.scales[f][local[at]]
 
         _copy_rows(self._life, self._pool, shard, copy)
-        return _decode_nvfp4(codes, blocks, self.g, self.e4m3)
+        return _decode_nvfp4(codes, blocks, self.g, self.e4m3, self.e2m1)
 
     def lock(self) -> bool:
         return False
@@ -604,9 +602,10 @@ def open_table(model_dir: Path, shards: list[tuple[str, str]], scale, *, ssd: bo
 
         kind = used[0]
         if kind == "nvfp4":
-            from tensorfold.cuda.nvfp4.format import e4m3
+            from tensorfold.cuda.nvfp4.format import E2M1, e4m3
 
-            decode = partial(_decode_nvfp4, scale=np.float32(scale("weight_scale_2")), e4m3_values=e4m3(np.arange(256)))
+            decode = partial(_decode_nvfp4, scale=np.float32(scale("weight_scale_2")),
+                             e4m3_values=e4m3(np.arange(256)), e2m1_values=E2M1)
         elif kind == "fp8":
             lut = _fp8_lut(scale("weight_scale"))
             decode = lambda codes: lut[codes]
