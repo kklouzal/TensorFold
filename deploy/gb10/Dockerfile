@@ -37,7 +37,8 @@ LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
       deployment.torch="2.16.0.dev20261006+cu134" \
       deployment.triton="3.9.0+gitaad2a60d"
 # /stats and /metrics build_info report it (server.source_revision); like the label, it names, not proves, the source
-ENV TENSORFOLD_SOURCE_REVISION=${SOURCE_REVISION}
+ENV TENSORFOLD_SOURCE_REVISION=${SOURCE_REVISION} \
+    TENSORFOLD_EXPERT_ENTRYPOINT=/opt/harness/tensorfold_harness.py
 COPY pyproject.toml setup.py README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/TensorFold/
 COPY LICENSES /opt/TensorFold/LICENSES
 COPY src /opt/TensorFold/src
