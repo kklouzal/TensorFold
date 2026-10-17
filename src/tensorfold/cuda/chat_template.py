@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from tensorfold.chat_metadata import MissingChatTemplate, TemplateSource, resolve_chat_templates
-from tensorfold.checkpoint_metadata import read_json
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
 from tensorfold.server.request_options import effort_levels
+from tensorfold.token_metadata import resolve_token_roles
 
 from .tensor_file import _regular_stream, checkpoint_path
 
@@ -33,9 +33,8 @@ class ChatTemplate:
         import jinja2.ext
         from jinja2.sandbox import ImmutableSandboxedEnvironment
 
-        cfg = read_json(model_dir, "tokenizer_config.json") or {}
         self.options = (None if template_file is None else str(Path(template_file).expanduser().resolve()), template_name)
-        special = read_json(model_dir, "special_tokens_map.json") or {}
+        self.specials = resolve_token_roles(model_dir)
         sources = resolve_chat_templates(model_dir, template_file=template_file, template_name=template_name)
 
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -49,11 +48,6 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
-        self.specials = {key: (value.get("content") if isinstance(value, dict) else value)
-                         for key in ("bos_token", "eos_token", "pad_token", "unk_token")
-                         if (value := cfg.get(key, special.get(key))) is not None}
-        if any(type(value) is not str for value in self.specials.values()):
-            raise ValueError("template special tokens must be strings or AddedToken content")
         compiled, routes = {}, []
         probe_tools = [{"type": "function", "function": {"name": "tf_template_probe",
                         "parameters": {"type": "object", "properties": {}}}}]
