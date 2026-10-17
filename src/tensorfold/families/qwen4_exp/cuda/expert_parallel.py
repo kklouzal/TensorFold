@@ -252,7 +252,7 @@ class Session:
                                      authority=self.cache, packed_cache=self.packed_cache)
             local = AffineBank(CachedExperts(host, self.cache, len(self.banks)))
         else:
-            from tensorfold.cuda.nvfp4.host_experts import load_moe_host
+            from .nvfp4_moe import load_moe_host
             local = load_moe_host(self.reader, key, cfg, "cuda", cache=self.cache,
                                   owned_ids=self.owner.ids, include_shared=self.rank == 0,
                                   workspace=self.nv_workspace)

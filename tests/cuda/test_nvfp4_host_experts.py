@@ -8,9 +8,10 @@ import torch
 
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda.expert_cache import HostExpertCache, entry_bytes_for
-from tensorfold.cuda.nvfp4.host_experts import load_moe_host, load_nvfp4_host_experts
+from tensorfold.cuda.nvfp4.host_experts import load_nvfp4_host_experts
 from tensorfold.families.qwen4_exp import ram_experts
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
+from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import load_moe_host
 from tensorfold.families.qwen4_exp.cuda.reader import _Reader
 from tensorfold.families.qwen4_exp.cuda.weights import Config, load
 

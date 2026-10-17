@@ -245,3 +245,42 @@ def moe(x: torch.Tensor, xs: torch.Tensor, router_rows: torch.Tensor, ex: MoE4, 
     nvx.down(buf.act.view(-1, ex.width), ex.routed_experts, buf.plan, buf.y.view(-1, ex.dims), rows, skip=ex.routed)
     buf.y[:rows, top_k] = _shared(ex.shared.down, buf.act[:rows, top_k], prompt, not prompt)
     return buf
+
+
+def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, include_shared=True, layer_id=None,
+                  workspace=None):
+    """Complete local expert bank for leader or EP follower, without backbone reads."""
+    from tensorfold.cuda.nvfp4.host_experts import CachedExperts4, _ids, _read, load_nvfp4_host_experts
+
+    device = torch.device(device)
+    if device.type != "cuda":
+        raise ValueError("NVFP4 cached expert execution requires a CUDA device")
+    device = torch.device("cuda", torch.cuda.current_device() if device.index is None else device.index)
+    if device != cache.device:
+        raise ValueError("NVFP4 bank and expert cache must use the same CUDA device")
+    ids = _ids(full.experts, owned_ids)
+    authority = load_nvfp4_host_experts(reader, name, full, device, cache=cache, owned_ids=ids,
+                                      include_shared=include_shared)
+    if layer_id is None:
+        layer_id = len(cache._layers)
+    routed = CachedExperts4(authority, cache, layer_id) if authority is not None else None
+    shared = None
+    if include_shared:
+        base = name + ".shared_expert."
+        if reader.info(base + "gate_proj.weight")["dtype"] == "F8_E4M3":
+            from tensorfold.cuda.nvfp4.linear import Mx8Linear
+
+            def linear(projections):
+                words = torch.cat([_read(reader, base + p + ".weight", device=device) for p in projections])
+                scales = torch.cat([_read(reader, base + p + ".weight_scale", device=device) for p in projections])
+                if scales.dtype != torch.uint8:
+                    raise ValueError(f"{base}: shared FP8 experts require MXFP8 block scales")
+                return Mx8Linear.from_checkpoint(words, scales)
+
+            shared = Expert4(linear(("gate_proj", "up_proj")), linear(("down_proj",)))
+        else:
+            shared = expert4_from_bf16(*[
+                _read(reader, base + p + ".weight", device=device).to(torch.bfloat16)
+                for p in ("gate_proj", "up_proj", "down_proj")])
+    return CachedMoE4(routed, shared, full.moe_width, full.hidden, len(ids), full.top_k + 1,
+                              workspace=workspace)
