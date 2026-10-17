@@ -99,8 +99,8 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     """Validate original CT expert fields and size the final six-field authority.
 
     The shared expert remains a separately resident native CT operation. Every
-    weight/input global is preserved as FP32 authority, never reconstructed
-    from ModelOpt calibration or converted through BF16.
+    weight/input global contributes FP32 native calibration authority under
+    CT's reciprocal convention, never ModelOpt calibration or BF16 metadata.
     """
     check(model_dir, gib, tp=tp)
     text = config(model_dir)
@@ -137,7 +137,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     # The single (2,entry) Torch pinned allocation rounds within its ceil-log2
     # bucket on the pinned runtime, including configured nonrounded blocks.
     staging = 1 << (2 * entry - 1).bit_length()
-    # Reader's two (64MiB+alignment) pinned pieces each round to 128MiB.
+    # Reader's two (64MiB+3*alignment) pinned blocks each round to 128MiB.
     # Buffered fallback's current 64MiB filesystem window is reclaimable; no
     # claim that the complete source checkpoint must stay resident is made.
     reader = 2 * (1 << (_READ_PIECE + _READ_ALIGN - 1).bit_length())
