@@ -15,7 +15,8 @@ def bank_bases(infos, text, mtp=True):
              and (mtp or not n.startswith("mtp."))}
     main = {int(m.group(1)) for b in bases if (m := re.search(r"(?:^|\.)layers\.(\d+)\.mlp$", b))
             and not b.startswith("mtp.")}
-    if main != set(range(text["num_hidden_layers"])):
+    layers = text["num_hidden_layers"]
+    if len(main) != layers or min(main, default=-1) != 0 or max(main, default=-1) != layers - 1:
         raise ValueError("--vram-experts: NVFP4 checkpoint must contain every configured main expert layer")
     e, width, dims = text["num_experts"], text["moe_intermediate_size"], text["hidden_size"]
 

@@ -1,6 +1,7 @@
 """RAM-backed NVFP4 retains stored bytes, native slots and complete-model output."""
 
 from copy import deepcopy
+import json
 
 import pytest
 import torch
@@ -54,6 +55,16 @@ def test_invalid_nvfp4_headers_stop_before_any_authority_allocation(tmp_path, mo
     monkeypatch.setattr(ram_experts, "headers", lambda _: infos)
     monkeypatch.setattr(torch, "empty", lambda *a, **k: pytest.fail("allocated before validating headers"))
     with pytest.raises(ValueError, match="--vram-experts"):
+        ram_experts.layout(model, "auto")
+
+
+def test_nvfp4_layer_coverage_does_not_expand_untrusted_config_counts(tmp_path):
+    model = write(tmp_path, hidden=512)
+    path = model / "config.json"
+    raw = json.loads(path.read_text())
+    raw["text_config"]["num_hidden_layers"] = 2**62
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="every configured main expert layer"):
         ram_experts.layout(model, "auto")
 
 
