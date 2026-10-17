@@ -54,7 +54,16 @@ def ownership(ranks, shards, rank, experts):
         counts = (experts,)
     else:
         try:
-            counts = tuple(int(part) for part in shards.split(",")) if isinstance(shards, str) else tuple(shards)
+            if isinstance(shards, str):
+                # Native EMAX bounds each positive count to four digits and
+                # world<=4 bounds the entire comma-separated wire grammar.
+                if len(shards) > 19:
+                    raise ValueError("expert count grammar exceeds native plan bounds")
+                counts = tuple(int(part) for part in shards.split(","))
+            else:
+                if type(shards) not in (tuple, list) or len(shards) > 4:
+                    raise ValueError("expert counts require a bounded list")
+                counts = tuple(shards)
         except (ValueError, TypeError):
             raise ValueError("--expert-shards requires comma-separated expert counts") from None
     owner = Ownership(counts, rank)
@@ -150,3 +159,6 @@ class AffineBank:
                 grouped.gate_up(x, hot, window, act, rows)
                 grouped.down(act, hot, window, out.view(rows * slots, self.dims), rows)
             start = end
+        # Caller retains this borrowed scratch until current-stream completion,
+        # including pinned plan-upload sources and their recorded events.
+        return plan, scratch, act

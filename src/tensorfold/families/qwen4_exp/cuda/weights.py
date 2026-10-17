@@ -7,17 +7,27 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from tensorfold.cuda import experts as grouped
+
 from ..host_table import open_table, shard_keys
 from ..ple_lifetime import PLETables, _note, _retain_failure
 from ..rope import RopeParameters
 from .bf16 import b16_from_rows, quantize4, stack_b16
-from tensorfold.cuda import experts as grouped
-
 from .qmm import Q4, dequantize, make_q4, stack_q4
-from .reader import _DT, _Reader, _groups, _rows, _rows_at, norms_around_one  # noqa: F401
+from .reader import _DT, _groups, _Reader, _rows, _rows_at, norms_around_one  # noqa: F401
 from .weight_types import (
-    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids, stop_ids)  # noqa: F401 (re-exported)
-
+    GDNW,
+    HC,
+    MTPW,
+    PLEW,
+    AttnW,  # noqa: F401 (re-exported)
+    Config,
+    LayerW,
+    MoEW,
+    Weights,
+    draft_token_ids,
+    stop_ids,
+)
 
 _PLAIN = (torch.bfloat16, torch.float16, torch.float32)
 
@@ -430,14 +440,15 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
             pin_options = {}
             if vram_experts_pin != "off":
-                from ..expert_authority import pin_policy
                 from tensorfold.cuda.capacity import config
+                from ..expert_authority import pin_policy
 
                 pin_options["pin_policy"] = pin_policy(config(model_dir), ram_layout, vram_experts_pin,
                                                         future_bytes=_pin_future_bytes)
             expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
-            from tensorfold.cuda.packed_experts import PackedExpertCache
-            packed_cache = PackedExpertCache.from_environment()
+            if ram_layout.format == "affine4":
+                from tensorfold.cuda.packed_experts import PackedExpertCache
+                packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"
                  else triple("model.embed_tokens"))
         loaded = []

@@ -31,6 +31,7 @@ def test_owned_banks_equal_native_full_bank_slots_under_eviction(prefill):
     actual = torch.zeros_like(expected)
     entry = full.bytes_per_expert()
     cache = HostExpertCache(entry, entry, "cuda")
+    borrowed = []
     try:
         for rank in range(2):
             owner = Ownership((3, 3), rank)
@@ -39,11 +40,12 @@ def test_owned_banks_equal_native_full_bank_slots_under_eviction(prefill):
             bank = AffineBank(CachedExperts(local, cache, rank))
             part = torch.empty_like(actual)
             local_picks = owner.local(picks)
-            bank.run_picks(x, local_picks, part, prefill=prefill)
+            borrowed.append(bank.run_picks(x, local_picks, part, prefill=prefill))
             actual.copy_(torch.where((local_picks >= 0).unsqueeze(-1), part, actual))
         torch.cuda.synchronize()
         assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
         assert cache.evictions > 0
+        borrowed.clear()
     finally:
         cache.close()
 
@@ -69,3 +71,47 @@ def test_native_one_rank_nccl_broadcast_and_deferred_error_check():
             comm.send(value, 0)
     finally:
         comm.close()
+
+
+def test_native_world1_session_loads_unsharded_banks_runs_and_retires(tmp_path):
+    """Exercise actual Session loader, NCCL calls, all prompt packets and owned close on one real GPU."""
+    from test_flashnext_tp import _checkpoint
+
+    from tensorfold.families.qwen4_exp.cuda.expert_parallel import Session
+    from tensorfold.families.qwen4_exp.cuda.reader import _Reader
+
+    _checkpoint(tmp_path)
+    (tmp_path / "model.safetensors.index.json").unlink()
+    session = Session(tmp_path, ranks=1, shards=None, rank=0, master="127.0.0.1", port=0,
+                      budget=.001, mtp=False)
+    reader = _Reader(tmp_path, "cuda")
+    try:
+        banks = [session.load_bank(None, f"model.layers.{i}.mlp", "", session.cfg, "mlx") for i in range(2)]
+        session.finish_loading()
+        base = "model.layers.0.mlp"
+        def matrix(projection):
+            return tuple(torch.cat([reader.get(f"{base}.switch_mlp.{projection}.{field}"),
+                                    reader.get(f"{base}.shared_expert.{projection}.{field}")[None]])
+                         for field in ("weight", "scales", "biases"))
+        reference = grouped.make([matrix("gate_proj"), matrix("up_proj")], matrix("down_proj"), 32)
+        rows, slots, dims = 257, session.slots, session.dims
+        gen = torch.Generator().manual_seed(721)
+        x = torch.randn((rows, dims), generator=gen).bfloat16().cuda()
+        picks = torch.tensor([list(range(slots - 1)) + [session.cfg.experts]] * rows,
+                             dtype=torch.int32, device="cuda")
+        for prefill in (False, True):
+            expected = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32,
+                                   device="cuda")
+            act = torch.empty((rows * slots, session.cfg.moe_width), dtype=torch.bfloat16, device="cuda")
+            plan = grouped.Plan(rows, slots, session.cfg.experts + 1, "cuda", prefill=prefill)
+            grouped.route(picks, plan)
+            grouped.gate_up(x, reference, plan, act, rows)
+            grouped.down(act, reference, plan, expected.view(rows * slots, dims), rows)
+            actual = torch.empty_like(expected)
+            session.run(banks[0], x, picks, actual, prefill=prefill)
+            assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+        assert session.sequence == 6  # 128 +128 +1 packets per arithmetic mode
+    finally:
+        reader.close()
+        session.close()
+    assert session.retired and session.store is None and not session.source_files
