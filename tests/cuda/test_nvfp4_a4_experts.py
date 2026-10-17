@@ -187,7 +187,8 @@ def test_grouped_native_boundary_refuses_empty_extreme_strides_before_launch():
     ext.gemm(codes, scales, blob, calibration, calibration, items, plan, out, n, k, 1, True)
     assert torch.count_nonzero(out) == 0
     x = torch.ones((1, k), dtype=torch.bfloat16, device="cuda")
-    ext.quantize(x, plan, calibration, codes, scales)
+    singleton_input = x.as_strided((1, k), (maximum, 1))
+    ext.quantize(singleton_input, plan, calibration, codes, scales)
     want_codes, want_scales = checkpoint.quant4(x, 1.)
     assert torch.equal(codes[0], want_codes)
     assert torch.equal(scales[0, 0], want_scales[:, 0].reshape(-1))
