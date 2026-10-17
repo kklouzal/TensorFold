@@ -17,7 +17,7 @@ class Ownership:
     rank: int
 
     def __post_init__(self):
-        if (not 1 <= len(self.counts) <= 4 or type(self.rank) is not int
+        if (type(self.counts) is not tuple or not 1 <= len(self.counts) <= 4 or type(self.rank) is not int
                 or not 0 <= self.rank < len(self.counts)
                 or any(type(n) is not int or n <= 0 for n in self.counts)
                 or sum(self.counts) > 1023):
