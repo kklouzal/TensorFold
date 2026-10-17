@@ -176,10 +176,168 @@ def test_final_auto_pool_receipt_and_gate_preserve_all_other_reservations(window
 
 @pytest.mark.torch
 @pytest.mark.usefixtures("allocations")
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("phase", ["during", "after_success"])
+def test_interrupted_grow_charges_actual_partial_or_completed_replacement(monkeypatch, failure_type, phase):
+    import importlib
+
+    import torch
+
+    from tests.test_cuda_growing_caches import decoder, weights
+    from tests.test_flashnext_resize_failure import attached_bytes
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
+    dec = decoder(multi, state, torch, room=1 << 62)
+    dec.failed_slots = []
+    st = state.State(weights(), 256, 4, "int4", limit=65536)
+    before = attached_bytes(st)
+    original, resize = state._rows, st.resize
+    primary = failure_type("interrupted replacement")
+    calls = 0
+
+    def failed_rows(array, rows, keep):
+        nonlocal calls
+        calls += 1
+        if calls == 3:                           # one complete layer has already replaced its old storage
+            raise primary
+        return original(array, rows, keep)
+
+    def after_success(rows):
+        resize(rows)
+        raise primary
+
+    with monkeypatch.context() as patch:
+        if phase == "during":
+            patch.setattr(state, "_rows", failed_rows)
+        else:
+            patch.setattr(st, "resize", after_success)
+        with pytest.raises(failure_type) as caught:
+            dec._grow(st, 300)
+    added = attached_bytes(st) - before
+    assert caught.value is primary and added > 0
+    assert st._resize_error is (primary if phase == "during" else None)
+    assert st.cache_bytes() == before + added
+    assert dec.memory_gate.held == added
+    dec._quarantine(st)
+    dec.recover_failed_slots()
+    assert dec.memory_gate.held == 0 and dec.free == [st] and not dec.failed_slots
+
+
+@pytest.mark.torch
+@pytest.mark.usefixtures("allocations")
+@pytest.mark.parametrize("resize_failure", [False, True])
+@pytest.mark.parametrize("after_publication", [False, True])
+@pytest.mark.parametrize("operation", ["grow", "shrink"])
+def test_accounting_failure_before_or_after_publication_contains_the_decoder(
+        monkeypatch, resize_failure, after_publication, operation):
+    import importlib
+
+    import torch
+
+    from tensorfold.cuda.streams import Stream
+    from tests.test_cuda_growing_caches import decoder, weights
+    from tests.test_flashnext_resize_failure import attached_bytes
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
+    dec = decoder(multi, state, torch, room=1 << 62)
+    dec.failed_slots = []
+    st = state.State(weights(), 256, 4, "int4", limit=65536)
+    initial, others = attached_bytes(st), 12345
+    if operation == "shrink":
+        st.resize(8192)
+    before = attached_bytes(st)
+    primary, cleanup = KeyboardInterrupt("resize interruption"), RuntimeError("accounting publication failure")
+
+    class PublicationFailure(MemoryGate):
+        failure = None
+
+        @property
+        def held(self):
+            return self._held
+
+        @held.setter
+        def held(self, value):
+            if self.failure is not None:
+                failure, self.failure = self.failure, None
+                if after_publication:
+                    self._held = value
+                raise failure
+            self._held = value
+
+    gate = dec.memory_gate = PublicationFailure(1 << 62, 0)
+    gate.take(others + before - initial)
+    gate.failure = cleanup
+    resize = st.resize
+
+    def interrupted(rows):
+        resize(rows)
+        raise primary
+
+    with monkeypatch.context() as patch:
+        if resize_failure:
+            patch.setattr(st, "resize", interrupted)
+        with pytest.raises(KeyboardInterrupt if resize_failure else RuntimeError) as caught:
+            if operation == "grow":
+                dec._grow(st, 300)
+            else:
+                dec._shrink(st)
+    after = attached_bytes(st)
+    assert caught.value is (primary if resize_failure else cleanup) and after != before
+    assert gate.held == others + (after if after_publication else before) - initial
+    if resize_failure:
+        assert primary.__cause__ is cleanup
+    for operation in (lambda: dec.admit(Stream([1], 1)), dec.round):
+        with pytest.raises(RuntimeError) as contained:
+            operation()
+        assert contained.value is cleanup
+    gate.held = others + after - initial         # only repair the injected test gate for exclusive resource retirement
+    dec._quarantine(st)
+    dec.recover_failed_slots()
+    assert gate.held == others and dec.free == [st] and not dec.failed_slots
+    with pytest.raises(RuntimeError) as contained:
+        dec.admit(Stream([1], 1))                # successful retirement never clears an unproven model budget
+    assert contained.value is cleanup
+
+
+@pytest.mark.torch
+@pytest.mark.usefixtures("allocations")
+@pytest.mark.parametrize("failure_type", [MemoryError, KeyboardInterrupt])
+def test_failed_slot_publication_restores_quarantine_before_retry(failure_type):
+    import importlib
+
+    import torch
+
+    from tests.test_cuda_growing_caches import decoder, weights
+
+    state = importlib.import_module("tensorfold.families.qwen4_exp.cuda.state")
+    multi = importlib.import_module("tensorfold.families.qwen4_exp.cuda.multi")
+    dec = decoder(multi, state, torch, room=1 << 62)
+    st = state.State(weights(), 256, 4, "int4", limit=65536)
+    dec.failed_slots = [st]
+    failure = failure_type("interrupted free-slot publication")
+
+    class InterruptedPublication(list):
+        def append(self, item):
+            super().append(item)
+            raise failure
+
+    dec.free = InterruptedPublication()
+    with pytest.raises(failure_type) as caught:
+        dec.recover_failed_slots()
+    assert caught.value is failure and dec.free == [] and dec.failed_slots == [st]
+    dec.recover_failed_slots()
+    assert dec.free == [st] and not dec.failed_slots and dec.memory_gate.held == 0
+
+
+@pytest.mark.torch
+@pytest.mark.usefixtures("allocations")
 @pytest.mark.parametrize("failed_call", [1, 3, 5])
 @pytest.mark.parametrize("cleanup_failure", [False, True])
+@pytest.mark.parametrize("failure_type", [MemoryError, KeyboardInterrupt, SystemExit])
 def test_failed_admission_retires_partial_storage_and_preserves_following_request(
-        monkeypatch, failed_call, cleanup_failure):
+        monkeypatch, failed_call, cleanup_failure, failure_type):
     import importlib
 
     import torch
@@ -198,7 +356,8 @@ def test_failed_admission_retires_partial_storage_and_preserves_following_reques
     dec.free = [st]
     before = st.cache_bytes()
     original = state._rows
-    primary, cleanup = MemoryError("controlled admission resize failure"), RuntimeError("controlled retirement reset failure")
+    primary = failure_type("controlled admission resize failure")
+    cleanup = RuntimeError("controlled retirement reset failure")
     calls = 0
 
     def failed_rows(array, rows, keep):
@@ -212,7 +371,7 @@ def test_failed_admission_retires_partial_storage_and_preserves_following_reques
         patch.setattr(state, "_rows", failed_rows)
         if cleanup_failure:
             patch.setattr(st, "reset", lambda _: (_ for _ in ()).throw(cleanup))
-        with pytest.raises(MemoryError) as caught:
+        with pytest.raises(failure_type) as caught:
             dec.admit(Stream([1] * 300, 8, draft=False))
     assert caught.value is primary
     assert not dec.live() and not dec.kept and not dec.fills
