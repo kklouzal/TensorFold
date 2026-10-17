@@ -295,12 +295,21 @@ def compiler(owner, model_dir: str | Path, stop_ids: Sequence[int]) -> Grammars:
     return found
 
 
+def check_stopping(fields: dict[str, Any], spec: Spec | None) -> None:
+    """A grammar's EOS must end generation: suppressing it would release its mask after termination."""
+
+    if spec is not None and fields.get("ignore_eos") is True:
+        raise RequestError(f"ignore_eos true cannot be combined with {spec.field}: structured output must stop at "
+                           "its grammar's end-of-sequence token")
+
+
 def request_constraint(owner, fields: dict[str, Any], think_end: int | None, spec: Spec | None = None
                        ) -> "Constraint | None":
     """A fresh constraint for a request's grammar fields, or ``spec`` (strict tools' calls), or None (``owner`` has
     ``model_dir`` and ``stop_ids``)."""
 
     spec = spec if spec is not None else request_spec(fields)
+    check_stopping(fields, spec)
     if spec is None:
         return None
     grammars = compiler(owner, owner.model_dir, owner.stop_ids)
@@ -338,6 +347,7 @@ def refusal(body: dict[str, Any], owner=None) -> str | None:
                 spec = plan.spec if plan is not None else spec
             elif strict_tools.wanted(tools):
                 return "this server does not enforce strict function tools: send strict false"
+        check_stopping(body, spec)
         if spec is not None and getattr(owner, "model_dir", None) is not None:
             compiler(owner, owner.model_dir, owner.stop_ids).compile(spec)   # cached for the request's own compile
     except RequestError as exc:
@@ -356,7 +366,10 @@ class Window:
 
 
 class Constraint:
-    """One reply's grammar at its chosen tokens: keeps and masks verify rows, follows the chosen tokens."""
+    """One reply's grammar at its chosen tokens: keeps and masks verify rows, follows the chosen tokens.
+
+    The generation owner stops at the grammar's EOS; request admission rejects ignore_eos for active constraints.
+    """
 
     def __init__(self, xgr, compiled, vocab_size: int, *, think_end: int | None = None) -> None:
         self.xgr, self.compiled = xgr, compiled
@@ -531,4 +544,4 @@ def _mask_mlx(logits, window: Window, offset: int = 0):
 
 
 __all__ = ["Constraint", "EXTRA", "FIELDS", "GrammarError", "Grammars", "KINDS", "SPECS", "Spec", "Window", "compiler",
-           "for_model", "pack", "refusal", "request_constraint", "request_spec", "vocab_size"]
+           "check_stopping", "for_model", "pack", "refusal", "request_constraint", "request_spec", "vocab_size"]
