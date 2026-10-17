@@ -172,3 +172,77 @@ def test_full_heretic_geometry_is_not_a_gpu_residency_estimate(tmp_path, monkeyp
     assert plan.runtime_workspace_bytes == 5308416
     assert plan.gpu_bytes == plan.entry_bytes and plan.automatic
     assert replace(plan, automatic=False).host_bytes == plan.host_bytes
+
+
+def runtime_text():
+    return {"hidden_size": 128, "moe_intermediate_size": 64, "num_experts": 3,
+            "num_experts_per_tok": 2, "num_hidden_layers": 2,
+            "layer_types": ["linear_attention", "full_attention"],
+            "num_attention_heads": 4, "num_key_value_heads": 2, "head_dim": 32,
+            "vocab_size": 17, "linear_num_key_heads": 1, "linear_num_value_heads": 2,
+            "linear_key_head_dim": 4, "linear_value_head_dim": 8, "linear_conv_kernel_dim": 3}
+
+
+def test_single_runtime_keeps_all_prefix_states_and_every_retained_moe_shape():
+    plan = ram.runtime_geometry(runtime_text(), streams=1, keep=4, max_rows=3, prompt_rows=512)
+    small = plan.components(1024)
+    # Recurrent matrix2*8*4*F32 + two convolution rows of24 BF16 =352B.
+    # Four kept prefixes + current + commit =six independently retained states.
+    assert small["future_snapshot_bytes"] == 6 * 352
+    # One full-attention layer plus its growth copy, two heads of32 BF16 K/V.
+    assert small["future_kv_bytes"] == 2 * 1024 * 256
+    # Separate constructor-shape census: decode16=31652; prompt16..512
+    # =19364+38664+77264+154464+308864+623832. This includes the
+    # otherwise-unused grouped arrays and wide rank/hist for1536 pairs.
+    # Dense record/operator bound=7867264; native A4 transient=458752.
+    assert small["future_target_workspace_bytes"] == 7867264 + 31652 + 1222452 + 458752 + 17408
+    assert plan.geometry.bytes_at(1024) == sum(small.values())
+    assert plan.geometry.needed(1021) == sum(small.values())
+    large = plan.components(4096)
+    assert large["future_kv_bytes"] == 2 * 4096 * 256
+    assert large["future_snapshot_bytes"] == small["future_snapshot_bytes"]
+    assert large["future_target_workspace_bytes"] - small["future_target_workspace_bytes"] == 52224
+
+
+def test_parallel_runtime_reserves_full_growth_of_private_and_kept_kv():
+    plan = ram.runtime_geometry(runtime_text(), streams=4, keep=3, max_rows=3, prompt_rows=512)
+    small, large = plan.components(1024), plan.components(4096)
+    assert small["future_kv_bytes"] == (4 + 1) * 1024 * 256
+    assert small["future_snapshot_bytes"] == (2 * 4 + 3 + 2) * 352 + (3 + 1) * 1024 * 256
+    assert large["future_snapshot_bytes"] - small["future_snapshot_bytes"] == 4 * 3072 * 256
+    # Calibration retains16,32,64-row decode buckets even for3-row requests.
+    assert small["future_target_workspace_bytes"] == 29117952 + 221308 + 1222452 + 458752 + 69632
+    assert plan.geometry.bytes_at(4096) == sum(large.values())
+    assert large["future_kv_bytes"] + large["future_snapshot_bytes"] > 4 * small["future_kv_bytes"]
+
+
+def test_runtime_freezes_header_inputs_and_accepts_inferred_head_dimension():
+    text = runtime_text()
+    del text["head_dim"]
+    plan = ram.runtime_geometry(text, streams=1, keep=0, max_rows=1, prompt_rows=512)
+    expected = plan.components(2048)
+    text["hidden_size"] = 1
+    text["layer_types"].clear()
+    assert plan.components(2048) == expected
+    assert plan.geometry.reserve == 1
+    with pytest.raises(ValueError, match="cache_slots"):
+        plan.components(-1)
+
+
+@pytest.mark.parametrize("kwargs", [{"streams": True}, {"keep": -1}, {"max_rows": 129},
+                                   {"prompt_rows": 511}, {"streams": 1 << 30}])
+def test_runtime_rejects_invalid_policy_or_grouped_index_overflow(kwargs):
+    policy = dict(streams=1, keep=4, max_rows=16, prompt_rows=512)
+    policy.update(kwargs)
+    with pytest.raises(ValueError):
+        ram.runtime_geometry(runtime_text(), **policy)
+
+
+@pytest.mark.parametrize("field,value", [("linear_conv_kernel_dim", 0), ("num_attention_heads", False),
+                                       ("layer_types", ["linear_attention"]),
+                                       ("layer_types", ["linear_attention", "unknown"])])
+def test_runtime_rejects_bad_header_before_workspace_arithmetic(field, value):
+    text = runtime_text()
+    text[field] = value
+    with pytest.raises(ValueError):
+        ram.runtime_geometry(text, streams=1, keep=4, max_rows=16, prompt_rows=512)
