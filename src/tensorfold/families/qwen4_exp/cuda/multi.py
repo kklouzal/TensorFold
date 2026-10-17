@@ -114,6 +114,7 @@ class MultiDecoder:
         live = free
         self.memory_gate = MemoryGate(live() if live is not None else 1 << 62,
                                       reserve=max(2 * GIB, workspace_bytes), live=live)
+        self._memory_error: BaseException | None = None
         self.streams: dict[int, Stream] = {}
         self.filling: list[Stream] = []                  # admitted, prompts still prefilling (oldest first)
         # stream id -> [its engine, drafts?, next row, kept states, the streams row before the next (its MTP tail)]
@@ -169,12 +170,21 @@ class MultiDecoder:
                                 f"{LIMIT_ENV} if more GPU memory is available.")
                     break
                 return False
+        # This worker is the gate's sole writer. Capture after any evictions,
+        # then reconcile from owned storage even if replacement or its return
+        # is interrupted; a partially executed take() cannot double-charge.
+        gate, held_before, primary = self.memory_gate, self.memory_gate.held, None
         try:
-            added = st.resize(size)
-        except Exception:
-            self.memory_gate.take(st.cache_bytes() - before)
+            st.resize(size)
+        except BaseException as error:  # noqa: BLE001 - charge attached storage even after interrupted replacement
+            primary = error
             raise
-        self.memory_gate.take(added)
+        finally:
+            try:
+                gate.held = held_before + st.cache_bytes() - before
+            except BaseException as cleanup:  # noqa: BLE001 - preserve failed resize and accounting outcomes
+                self._memory_error = cleanup
+                raise_failures(primary, [cleanup])
         if torch.cuda.is_available():
             torch.cuda.empty_cache()             # the old buffers back to the system: MemAvailable stays true
         return True
@@ -182,6 +192,7 @@ class MultiDecoder:
     def _shrink(self, st: State, *, force: bool = False) -> None:
         """An idle slot back to its first rows: its caches' memory returns to the gate."""
 
+        gate, held_before = self.memory_gate, self.memory_gate.held
         before, primary, errors = st.cache_bytes(), None, []
         try:
             if st._resize_error is not None:
@@ -198,13 +209,14 @@ class MultiDecoder:
                 errors.append(cleanup)
         try:
             # Even a failed rebuild/reset may have changed attached storage.
-            delta = st.cache_bytes() - before
-            if delta >= 0:
-                self.memory_gate.take(delta)
-            else:
-                self.memory_gate.give(-delta)
+            gate.held = held_before + st.cache_bytes() - before
         except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
+            self._memory_error = cleanup
             errors.append(cleanup)
+            try:
+                self._quarantine(st)
+            except BaseException as ownership:  # noqa: BLE001 - retain failures while preserving slot ownership
+                errors.append(ownership)
         raise_failures(primary, errors)
 
     def _quarantine(self, st: State) -> None:
@@ -217,8 +229,15 @@ class MultiDecoder:
 
     def _retire_failed_slot(self, st: State) -> None:
         self._shrink(st, force=True)
-        self.free.append(st)                         # failed publication leaves the quarantine owner intact
-        self.failed_slots.remove(st)
+        try:
+            self.free.append(st)
+            self.failed_slots.remove(st)
+        except BaseException as primary:  # noqa: BLE001 - undo partial publication before a later retry
+            try:
+                self._quarantine(st)
+            except BaseException as cleanup:  # noqa: BLE001 - preserve publication and ownership-repair failures
+                raise_failures(primary, [cleanup])
+            raise
 
     def recover_failed_slots(self) -> None:
         """Retry exclusive retirement after request/worker quiescence; failed owners remain retained."""
@@ -386,6 +405,9 @@ class MultiDecoder:
     def admit(self, s: Stream) -> None:
         """Queue a request in a free slot (a kept prompt end it extends, if any); rounds prefill its prompt."""
 
+        error = getattr(self, "_memory_error", None)
+        if error is not None:
+            raise error
         room = self.capacity - len(s.prompt) - self.depth - 1
         if room < 1:
             raise ValueError(f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context")
@@ -403,7 +425,7 @@ class MultiDecoder:
             else:
                 self._remember(list(s.prompt[:s.cached]), st, resume["state"], resume["tail"])
             raise
-        except Exception as primary:
+        except BaseException as primary:  # noqa: BLE001 - recover the popped slot even after interrupted growth
             try:
                 self._quarantine(st)
                 self._retire_failed_slot(st)
@@ -673,6 +695,9 @@ class MultiDecoder:
     def round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
+        error = getattr(self, "_memory_error", None)
+        if error is not None:
+            raise error
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
