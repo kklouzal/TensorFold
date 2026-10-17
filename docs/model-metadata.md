@@ -82,6 +82,10 @@ effective reply EOS, selected template source/hash and reply-token limit on CUDA
 These identify the bindings actually prepared, rather than rereading files to
 describe running state.
 
+[Local installed-image verification](model-metadata-validation.md) covers real
+NVFP4 defaults and overrides, automatic context fitting, Flash Next regression
+and the dedicated-host zero-VRAM-reserve policy, with execution limits stated.
+
 The schema contracts follow the pinned
 [ModelOpt exporter](https://github.com/NVIDIA/Model-Optimizer/blob/0.46.0/modelopt/torch/export/convert_hf_config.py),
 [Transformers generation settings](https://huggingface.co/docs/transformers/main_classes/text_generation)

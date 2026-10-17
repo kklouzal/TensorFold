@@ -761,7 +761,7 @@ The 360.63-second whole operation included startup and first native compilation.
 cgroup RAM peaked at 47.386 GB within 56 GB with no swap. This is the completed current
 baseline API gate, not an API throughput/tail comparison, all-format/model quality proof
 or 524k-context qualification. Future changed code/images require their relevant source,
-model/API and resource qualification. See the [README API qualification](../README.md#current-installed-cliapi-qualification).
+model/API and resource qualification. See the [README API qualification](../README.md#earlier-installed-cliapi-qualification).
 
 The final frozen-source shipping gates are also complete for commit `07f4294306aba4cc6e1851b9c774fbf89d234900`, runtime UID `e7a15d7331560e25bc31bcd5caedf27c6c81c7dbc6d19b2f74d281c78534daba`: serving image `sha256:b091954b6556a540123d2872d30fe86905344f4b24a6ff47e8361269916f7117`, verification image `sha256:46f16ad6498378a3d9a186dcbfc671c1459e86765a2ee21b950291517968455f`, and shared wheel `4d79339aa56286d6d5863e1d37c6584abacb79938ca97c75386649f62f32fbd2`. Both normal Python 3.12 installed native/source audits passed 15 controls without skips. The separate baked CPU24 packaging batch passed 343 cases, with eight explicit skips, over 16 modules as UID 1000 without a checkout mount; genuine CHANGELOG/update/public-permissions checks passed. These counts do not replace or extend the historical Source06 full CPU snapshot.
 

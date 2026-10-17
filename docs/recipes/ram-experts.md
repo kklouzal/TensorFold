@@ -145,7 +145,7 @@ speedup, general answer quality, HTTP performance or sustained four-full-context
 capacity. The original notification policy remains selected; its guarded
 alternative did not establish repeatable superiority across independent
 starts. The current normal installed CLI/API baseline also passed its seven functional groups;
-see the [README API qualification](../../README.md#current-installed-cliapi-qualification).
+see the [README API qualification](../../README.md#earlier-installed-cliapi-qualification).
 Final candidate decisions and changed shipping-runtime requalification remain separate.
 See the [current reference in the README](../../README.md#current-default-prefetch-reference).
 
