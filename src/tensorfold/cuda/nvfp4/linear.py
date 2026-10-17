@@ -124,6 +124,7 @@ class Fp4Linear:
     layout: str = "nvfp4"
     staging: Staging | None = None   # shared by the model's NVFP4 projections (prompts)
     act: float | None = None         # checkpoint math: the static input scale; words in the FP4 mma's order
+    act_inverse: float | None = None  # original CT input multiplier; None keeps ModelOpt's reciprocal path
 
     @property
     def npad(self) -> int:
@@ -131,7 +132,7 @@ class Fp4Linear:
 
     @classmethod
     def from_checkpoint(cls, weight: torch.Tensor, weight_scale: torch.Tensor, global_scale: float,
-                        act: float | None = None) -> "Fp4Linear":
+                        act: float | None = None, *, act_inverse: float | None = None) -> "Fp4Linear":
         """``weight`` uint8 [N, K/2] low nibble first, e4m3 ``weight_scale`` [N, K/16]; ``act``: its input scale."""
 
         from tensorfold.cuda.kernels import qmm
@@ -139,9 +140,18 @@ class Fp4Linear:
         n, k = weight.shape[0], weight.shape[1] * 2
         if k % 64:
             raise ValueError(f"NVFP4 weight [{n}, {k}]: K must be a multiple of 64")
+        if act_inverse is not None and act is None:
+            raise ValueError("an explicit NVFP4 activation inverse requires native activation math")
         if act is not None:
             from . import checkpoint
+            from .format import calibration, validate_native_a4_scales
 
+            if act_inverse is not None:
+                inverse = calibration(act_inverse, name="NVFP4 native activation inverse")
+                act_inverse = float(torch.tensor(inverse, dtype=torch.float32))
+            # MMA consumes unsigned UE4M3, unlike W4A16's signed E4M3 reads.
+            # Validate external bytes once, before native packing/consumption.
+            validate_native_a4_scales(weight_scale, name="NVFP4 native weight_scale")
             npad = -(-n // 64) * 64
             packed = checkpoint.pack4(weight, npad)
         else:
@@ -152,7 +162,8 @@ class Fp4Linear:
         bs = torch.zeros((npad, k // 16), dtype=torch.uint8, device=weight.device)
         bs[:n] = weight_scale.contiguous().view(torch.uint8)
         bs = bs.view(npad // 64, 64, k // 64, 4).permute(0, 2, 1, 3).contiguous()
-        return cls(packed, bs, float(global_scale), n, k, act=None if act is None else float(act))
+        return cls(packed, bs, float(global_scale), n, k, act=None if act is None else float(act),
+                   act_inverse=act_inverse)
 
     def nbytes(self) -> int:
         return self.words.numel() * 4 + self.bs.numel()
@@ -161,7 +172,7 @@ class Fp4Linear:
         """Outputs [64 t0, 64 t1) as views, no copy (decode only: the prompt GEMM wants 128-column multiples)."""
 
         return Fp4Linear(self.words[t0:t1], self.bs[t0:t1], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
-                         act=self.act)
+                         act=self.act, act_inverse=self.act_inverse)
 
     def __call__(self, x: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
         if self.act is not None:
