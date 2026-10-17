@@ -4,13 +4,18 @@ The real constructor, geometry, pool planner and shared serving preparation run.
 Payload loading, device operations and owned native allocations are stand-ins;
 these controls do not qualify model arithmetic, CUDA allocation or native pins.
 """
+# Optional CUDA dependencies must be detected before importing backend modules.
+# ruff: noqa: E402
 import json
 import math
 import struct
 from types import SimpleNamespace as NS
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("triton")
+
 from tokenizers import Tokenizer, models
 
 from tensorfold.cuda import allocation_bound, capacity, expert_cache, expert_pin, geometry, precision, prompt_precision
