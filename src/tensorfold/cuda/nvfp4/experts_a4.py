@@ -96,7 +96,8 @@ class ExpertsA4:
         These ordinary CPU tensors are immutable model-owned derived metadata.
         Original input multipliers remain unchanged in authority and on device.
         """
-        self.prepared_inputs = tuple(torch.empty_like(source) for source in self.scalars[2:])
+        self.prepared_inputs = tuple(torch.empty(source.shape, dtype=torch.float32, device="cpu")
+                                     for source in self.scalars[2:])
         for source, target in zip(self.scalars[2:], self.prepared_inputs):
             for expert in range(self.count):
                 for projection in range(source.shape[1]):

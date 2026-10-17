@@ -228,7 +228,7 @@ def test_bank_prepares_exact_scalar_reciprocals_once_and_run_never_recomputes_th
     assert len(calls) == 3 * bank.count
     assert sum(t.numel() * t.element_size() for t in bank.prepared_inputs) == 12 * bank.count
     for source, prepared in zip(bank.scalars[2:], bank.prepared_inputs):
-        assert prepared.device.type == "cpu" and prepared.dtype == torch.float32
+        assert prepared.device.type == "cpu" and prepared.dtype == torch.float32 and not prepared.is_pinned()
         for row in range(bank.count):
             for projection in range(source.shape[1]):
                 assert float(prepared[row, projection]) == original_inv(float(source[row, projection]))
