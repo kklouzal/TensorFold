@@ -70,9 +70,6 @@ def _algorithm(name, group_size, where):
 
 def _scheme(group, where):
     result = deepcopy(_object(group, where))
-    # Absence is meaningful: the compressed-tensors schema defines it as no
-    # input/output quantization, not an invitation to infer one from tensors.
-    result.setdefault("input_activations", None)
     for key in ("weights", "input_activations", "output_activations"):
         spec = result.get(key)
         if spec is None:
@@ -127,8 +124,15 @@ def _block(value, where):
             generated = {"group_0": dict(_algorithm(algo, result.get("group_size"), where), targets=["Linear"])}
         if not groups:
             result["config_groups"] = generated
-        # Existing groups are authoritative detailed schemes. The resolver
-        # cross-checks per-layer algorithm declarations against those groups.
+        elif algo != "MIXED_PRECISION":
+            # ModelOpt's algorithm is a declaration, so partial group records
+            # can complement it. An explicit null is retained and conflicts
+            # with an algorithm that declares activation quantization.
+            expected = _algorithm(algo, result.get("group_size"), where)
+            result["config_groups"] = {name: _merge(expected, group, f"{where}.{name}")
+                                       for name, group in result["config_groups"].items()}
+        # Mixed groups retain their own declarations. The prepared resolver
+        # cross-checks their per-layer algorithm records.
     return result
 
 
@@ -298,8 +302,11 @@ class LinearQuantization:
                 return False
         return True
 
+    def excluded(self, name: str) -> bool:
+        return name in self.ignored_exact or any(pattern.match(name) for pattern in self.ignored)
+
     def resolve(self, name: str) -> dict | None:
-        if name in self.ignored_exact or any(pattern.match(name) for pattern in self.ignored):
+        if self.excluded(name):
             return None
         groups = list(self.exact.get(name, ()))
         if self.method == "modelopt":
