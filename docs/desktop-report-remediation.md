@@ -143,8 +143,12 @@ It supplies rank/topology flags and loopback rendezvous itself; do not repeat
 `--master-port` after the `serve` separator. The group checks distinct devices,
 a common host epoch and matching checkpoint/configuration before expert work.
 The launcher requires Linux pidfd/waitid session ownership. Failure or
-interruption retires owned rank/compiler sessions with bounded cleanup and
-preserves errors.
+interruption attempts bounded retirement of owned rank/compiler sessions and
+preserves errors. An unresolved child or native descriptor handoff remains an
+explicit retained-owner failure requiring rank-process containment; it is never
+reported as successful cleanup. Rendezvous binds loopback explicitly, which
+limits listening interfaces and supplies no peer authentication. Local ranks
+under the service account and the immutable checkpoint authority are trusted.
 
 The launcher uses the package CLI by default outside the container. In the
 fork container, `TENSORFOLD_EXPERT_ENTRYPOINT=/opt/harness/tensorfold_harness.py`
