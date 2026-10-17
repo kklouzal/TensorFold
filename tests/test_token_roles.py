@@ -38,6 +38,25 @@ def test_modern_absent_role_does_not_inherit_legacy_role(tmp_path):
     assert resolve_token_roles(tmp_path) == {}
 
 
+@pytest.mark.parametrize("role", ["bos_token", "pad_token", "unk_token"])
+@pytest.mark.parametrize("value", ["", {"content": ""}])
+def test_rendering_only_roles_preserve_valid_empty_string_content(tmp_path, role, value):
+    write(tmp_path, "tokenizer_config.json", {role: value, "added_tokens_decoder": {},
+                                               "chat_template": f"[{{{{ {role}|default('missing') }}}}]"})
+    assert resolve_token_roles(tmp_path) == {role: ""}
+    template = ChatTemplate(tmp_path)
+    assert template.specials == {role: ""}
+    assert template.render([{"role": "user", "content": "hello"}], tools=None, enable_thinking=True) == "[]"
+
+
+@pytest.mark.parametrize("role", ["bos_token", "pad_token", "unk_token"])
+@pytest.mark.parametrize("value", [{}, {"content": None}, {"content": 2}])
+def test_empty_string_support_does_not_admit_malformed_rendering_token_objects(tmp_path, role, value):
+    write(tmp_path, "tokenizer_config.json", {role: value})
+    with pytest.raises(ValueError, match=f"tokenizer {role}"):
+        resolve_token_roles(tmp_path)
+
+
 @pytest.mark.parametrize("decoder", [None, [], False, "decoder"])
 def test_present_malformed_modern_decoder_is_not_legacy_absence(tmp_path, decoder):
     write(tmp_path, "tokenizer_config.json", {"added_tokens_decoder": decoder})
