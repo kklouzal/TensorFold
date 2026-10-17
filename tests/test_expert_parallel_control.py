@@ -21,6 +21,15 @@ def test_asymmetric_shards_cover_every_expert_exactly_once():
     assert ownership(1, None, 0, 512).counts == (512,)
 
 
+def test_direct_ownership_requires_immutable_validated_counts():
+    with pytest.raises(ValueError):
+        Ownership([3, 3], 0)
+    counts = [3, 3]
+    owner = ownership(2, counts, 0, 6)
+    counts[0] = 99
+    assert owner.counts == (3, 3)
+
+
 @pytest.mark.parametrize("ranks,shards,rank,experts", [
     (2, "341,170", 0, 512), (2, "512", 0, 512), (2, "0,512", 0, 512),
     (2, "341,171", 2, 512), (2, "341,171", True, 512), (2, "1,x", 0, 512),
