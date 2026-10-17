@@ -170,7 +170,7 @@ def test_early_check_accepts_format_only_probes_and_complete_normalized_configs(
         assert raw == before
 
 
-@pytest.mark.parametrize("raw", [None, [], {"text_config": None}, {"text_config": []},
+@pytest.mark.parametrize("raw", [None, [], {"text_config": []},
                                  {"layer_types": ["full_attention"]},
                                  {"full_attention_interval": 0},
                                  {"head_dim": 256, "partial_rotary_factor": 3 / 256},
@@ -193,6 +193,13 @@ def test_early_check_refuses_recognized_math_the_cuda_kernels_do_not_implement(r
 
 def test_supported_activation_and_attention_bias_defaults_are_explicit():
     validate_cuda_metadata({"hidden_act": "silu", "attention_bias": False})
+
+
+@pytest.mark.parametrize("nested", [None, {}])
+def test_empty_or_null_text_config_keeps_existing_outer_config_semantics(nested):
+    validate_cuda_metadata({"text_config": nested, "num_hidden_layers": 4, "head_dim": 256})
+    with pytest.raises(ValueError, match="hidden_act"):
+        validate_cuda_metadata({"text_config": nested, "hidden_act": "gelu"})
 
 
 def test_early_interval_validation_does_not_expand_an_untrusted_scalar_count():
