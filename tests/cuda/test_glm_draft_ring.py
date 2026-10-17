@@ -14,6 +14,7 @@ if not torch.cuda.is_available():
 
 from tensorfold.cuda.geometry import draft_ring_rows  # noqa: E402
 from test_glm_engine import DRAFT, D, V, _drafter  # noqa: E402
+from test_glm_engine import _sampling_contract as _sampling_contract  # noqa: E402 - register scoped mock transport
 
 
 @pytest.mark.parametrize("window", [2047, 48])
