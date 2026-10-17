@@ -27,7 +27,7 @@ def _integer(value, name, minimum=0):
 def check(model_dir, gib, *, tp=1):
     """Validate the public budget before checkpoint IO; this cache owns one GPU."""
     if gib != "auto" and (isinstance(gib, bool) or not isinstance(gib, (int, float))
-                          or not math.isfinite(gib) or gib <= 0):
+                          or (isinstance(gib, float) and not math.isfinite(gib)) or gib <= 0):
         raise ValueError("--vram-experts must be auto or a finite positive GiB count")
     if type(tp) is not int or tp != 1:
         raise ValueError("Qwen MoE --vram-experts supports one CUDA GPU (--tp 1)")
