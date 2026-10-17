@@ -269,7 +269,7 @@ class LinearQuantization:
                 self.ignored_exact.add(pattern)
         for name, value in (block.get("config_groups") or {}).items():
             group = _scheme(value, f"quantization.config_groups.{name}")
-            for target in group.get("targets", ["Linear"]):
+            for target in group.get("targets", [] if block.get("quant_algo") == "MIXED_PRECISION" else ["Linear"]):
                 if target == "Linear":
                     self.defaults.append(group)
                 elif target.startswith("re:"):
@@ -282,6 +282,11 @@ class LinearQuantization:
                 "Linear": {"quant_algo": algo, "group_size": block.get("group_size")}}
             for name, declaration in declarations.items():
                 expected = _algorithm(declaration.get("quant_algo"), declaration.get("group_size"), name)
+                if algo == "MIXED_PRECISION":
+                    # The per-layer map assigns modules. Untargeted groups
+                    # describe a format inventory, not a global Linear rule.
+                    self.exact[name] = [_merge(expected, group, name)
+                                        for group in self.exact.get(name, ())] or [expected]
                 if name == "Linear":
                     candidates = self.defaults + [g for groups in self.exact.values() for g in groups]
                     candidates += [g for _, g in self.patterns]
@@ -322,6 +327,9 @@ class LinearQuantization:
         selected = groups[0]
         for group in groups[1:]:
             for key in ("weights", "input_activations", "output_activations", "format"):
-                if selected.get(key) != group.get(key):
+                left, right = selected.get(key), group.get(key)
+                if isinstance(left, dict) and isinstance(right, dict):
+                    _merge(left, right, f"{name}.{key}")
+                elif left != right:
                     raise ValueError(f"{name}: conflicting matching quantization groups")
         return selected

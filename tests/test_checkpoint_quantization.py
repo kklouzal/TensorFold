@@ -121,3 +121,17 @@ def test_partial_modelopt_groups_are_completed_from_declared_algorithm_only():
     ct = effective_config({"quantization_config": {"quant_method": "compressed-tensors",
                           "config_groups": {"g": {"weights": {"num_bits": 4}}}}}, None, where="ct")
     assert LinearQuantization(ct["quantization_config"]).resolve("mlp").get("input_activations") is None
+
+
+def test_mixed_untargeted_inventory_never_assigns_all_formats_to_every_linear():
+    layers = {"model.layers.0.mlp.experts": {"quant_algo": "NVFP4", "group_size": 16},
+              "model.layers.0.attn": {"quant_algo": "MXFP8", "group_size": 32}}
+    q = {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION", "quantized_layers": layers,
+         "config_groups": {"mx": {"weights": {"num_bits": 8, "group_size": 32}},
+                           "fp4": {"weights": {"num_bits": 4, "group_size": 16}}}}
+    got = effective_config({"quantization_config": q}, None, where="inventory")
+    assert got["quantization_config"]["config_groups"] == q["config_groups"]
+    policy = LinearQuantization(got["quantization_config"])
+    assert policy.resolve("model.layers.0.mlp.experts.7.gate_proj")["weights"]["num_bits"] == 4
+    assert policy.resolve("model.layers.0.attn")["weights"]["group_size"] == 32
+    assert policy.resolve("model.other") is None
