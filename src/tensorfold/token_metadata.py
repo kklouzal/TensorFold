@@ -29,13 +29,14 @@ def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):
     return out
 
 
-def _content(value, field, *, required=False):
+def _content(value, field, *, required=False, allow_empty=False):
     if value is None and not required:
         return None
     if isinstance(value, dict):
         value = value.get("content")
-    if type(value) is not str or not value:
-        raise ValueError(f"{field} must be a nonempty token string or AddedToken content")
+    if type(value) is not str or (not value and not allow_empty):
+        expected = "a token string" if allow_empty else "a nonempty token string"
+        raise ValueError(f"{field} must be {expected} or AddedToken content")
     return value
 
 
@@ -56,7 +57,7 @@ def resolve_token_roles(model_dir, *, config=None):
         legacy = read_json(model_dir, "special_tokens_map.json") or {}
         roles.update((key, legacy[key]) for key in keys if key in legacy)
     return {key: content for key, value in roles.items()
-            if (content := _content(value, f"tokenizer {key}")) is not None}
+            if (content := _content(value, f"tokenizer {key}", allow_empty=key != "eos_token")) is not None}
 
 
 def _lookup_eos(model_dir, config, token, vocab_size):
