@@ -2,10 +2,11 @@
 
 import json
 import threading
+from typing import ClassVar
 
 import pytest
-
 from http_fakes import post
+
 from tensorfold.engine.call_gate import CallGate
 from tensorfold.server.errors import RequestError
 from tensorfold.server.request_options import RequestOptions
@@ -31,9 +32,9 @@ def test_tools_offered_for_each_choice():
 
 class _App:
     served_name = "fake"
-    model_ids = ["fake"]
+    model_ids: ClassVar[list[str]] = ["fake"]
     max_batch_size = 1
-    exact_mode = {"mode": "exact"}
+    exact_mode: ClassVar[dict[str, str]] = {"mode": "exact"}
     accepts_sampling = True
 
     def chat(self, messages, **kwargs):

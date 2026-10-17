@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 _ANSWER, _LEAD, _NAME, _DONE = range(4)
 # Shared markup authority for gate discovery and server reply processing:
@@ -58,7 +59,7 @@ class CallGate:
 
     @classmethod
     def after_prompt(cls, prompt: Sequence[int], opener: int, blank: Callable[[int], bool], *, think_open: int = -1,
-                     think_end: int = -1, **named: Any) -> "CallGate":
+                     think_end: int = -1, **named: Any) -> CallGate:
         """A gate held while ``prompt`` leaves a think block open (its last opener after its last end)."""
 
         last = {int(t): i for i, t in enumerate(prompt) if int(t) in (think_open, think_end)}
