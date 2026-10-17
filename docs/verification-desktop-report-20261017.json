@@ -150,7 +150,6 @@
       "both_exit_zero": true,
       "both_sigint_shutdown_zero": true,
       "both_oom_killed": false,
-      "strict_catalog_tools": 31,
       "checks": "health/models/errors, tokenize/input_tokens, seeded repeated/serial/drafted token identity, SSE usage/progress, enforced strict tool, unsupported schema400, actual catalog, four concurrent versus solo, final stats/metrics and zero logical request owners",
       "cross_revision": {
         "files": {
@@ -172,7 +171,10 @@
           "pin on, two full KV windows/four slots"
         ],
         "performance_claim": null
-      }
+      },
+      "catalog_tool_definitions": 31,
+      "catalog_strict_true": 9,
+      "catalog_explicit_strict_false": 22
     },
     "installed_harness_child": {
       "exit_code": 0,
@@ -317,8 +319,8 @@
   ],
   "evidence_manifest": {
     "path": "/home/kklouzal/tensorfold-report-remediation-20261017/evidence-sha256.json",
-    "sha256": "f7e22e809bb040c2ff74477d4e303ffd597cff9e104be2486d5c7233d644ecbd",
-    "entries": 9517,
+    "sha256": "6a3034ae8ea629625b2eee4e1f5f37904dd09cbdb0fdf833f0451580de4076a1",
+    "entries": 9519,
     "scope": "Completed source captures, build/gate/control/profile/benchmark records in this packet at seal time. Later operational closure files are separate.",
     "mutable_ledgers_and_generated_caches_excluded": true
   },
