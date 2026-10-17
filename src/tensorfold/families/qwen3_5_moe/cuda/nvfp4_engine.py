@@ -118,7 +118,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             model_dir, context, context_explicit, torch, runtime.geometry, transform,
             weight_estimator=partial(weight_estimate, transform=transform),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
-            resident_extra=plan.gpu_bytes if plan is not None and not plan.automatic else 0,
+            resident_extra=allocate(plan.gpu_bytes) if plan is not None and not plan.automatic else 0,
             draft_dir=draft_dir, draft_weights=partial(draft_weights, bits=bits), draft_geometry=draft_runtime)
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
