@@ -74,6 +74,10 @@ class ExpertPinPolicy:
             raise ValueError("expert pin geometry must exactly cover the planned positive allocations")
         self._remaining = None if allocation_bytes is None else Counter(allocation_bytes)
         self._pins = [None] * (0 if allocation_bytes is None else len(allocation_bytes))
+        # Retirement must finish before diagnostic allocation can interrupt it.
+        # Fixed journals retain raw outcomes even if error construction fails.
+        self._close_codes = [0] * len(self._pins)
+        self._close_errors = [None] * len(self._pins)
         self._count = self.allocated_bytes = self.pinned_bytes = self.refusals = 0
         self._closed = False
         self._failure = None
@@ -180,35 +184,50 @@ class ExpertPinPolicy:
                 raise
 
     def _retire_all(self):
-        errors = []
         primary = None
-        for owner in reversed(self._pins):
+        for index in range(len(self._pins) - 1, -1, -1):
+            owner = self._pins[index]
+            self._close_codes[index] = 0
+            self._close_errors[index] = None
             if owner is not None:
                 try:
                     code = owner.close()
                 except BaseException as error:
+                    self._close_errors[index] = error
+                    if primary is None:
+                        primary = error
+                else:
+                    self._close_codes[index] = code
+        try:
+            active = any(owner is not None and owner.active for owner in self._pins)
+            if not active:
+                self._pins.clear()
+                self._closed = True
+            errors = [error for error in reversed(self._close_errors) if error is not None and error is not primary]
+            for code in reversed(self._close_codes):
+                if code:
+                    error = PinCleanupError(self, code)
                     if primary is None:
                         primary = error
                     else:
                         errors.append(error)
+            if active:
+                # A transported outcome owns unresolved native registrations.
+                error = PinCleanupError(self, "unretired registration")
+                if primary is None:
+                    primary = error
                 else:
-                    if code:
-                        errors.append(PinCleanupError(self, code))
-        active = any(owner is not None and owner.active for owner in self._pins)
-        if active:
-            # Keep the model owner in the transported outcome even when
-            # the primary was an opaque exception or KeyboardInterrupt.
-            errors.append(PinCleanupError(self, "unretired registration"))
+                    errors.append(error)
+        except BaseException as diagnostic:
+            # All independent native closes have already been attempted. The
+            # raw journals and self remain traceback-owned if diagnosis fails.
+            if primary is not None:
+                raise primary from diagnostic
+            raise
         if errors or primary is not None:
-            self._failure = "host_unregister_failed"
             from tensorfold.cleanup import raise_failures
 
-            if not active:
-                self._pins.clear()
-                self._closed = True
             raise_failures(primary, errors)
-        self._pins.clear()
-        self._closed = True
 
 
 @lru_cache(maxsize=1)

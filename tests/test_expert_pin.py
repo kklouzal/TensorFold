@@ -196,3 +196,39 @@ def test_close_exception_preserves_primary_and_retires_independent_owners(monkey
     assert isinstance(primary.__cause__, pin.PinCleanupError)
     assert primary.__cause__.owner is policy
     assert not policy.receipt()["closed"]
+
+
+def test_close_diagnostic_exhaustion_preserves_primary_after_every_native_retirement(monkeypatch):
+    native = ready(monkeypatch)
+    policy = pin.ExpertPinPolicy(24, mode="on", allocation_bytes=(8, 8, 8))
+    for _ in range(3):
+        policy.empty((2,), dtype=torch.int32)
+    primary = KeyboardInterrupt("controlled independent close interruption")
+    exhausted = MemoryError("controlled cleanup diagnostic exhaustion")
+    closed = []
+
+    def close(index):
+        closed.append(index)
+        if index == 2:
+            raise primary
+        if index == 1:
+            return 700
+        native.owners[index].active = False
+        return 0
+
+    for index, owner in enumerate(native.owners):
+        owner.close = lambda index=index: close(index)
+
+    def no_diagnostic(*args):
+        raise exhausted
+
+    monkeypatch.setattr(pin, "PinCleanupError", no_diagnostic)
+    with pytest.raises(KeyboardInterrupt) as failure:
+        policy.close()
+    assert failure.value is primary and primary.__cause__ is exhausted
+    assert closed == [2, 1, 0]
+    assert policy._close_errors[2] is primary and policy._close_codes[1] == 700
+    assert native.owners[2].active and native.owners[1].active and not native.owners[0].active
+    assert policy._pins and not policy.receipt()["closed"]
+    with pytest.raises(RuntimeError, match="failed"):
+        policy.empty((0,), dtype=torch.int32)
