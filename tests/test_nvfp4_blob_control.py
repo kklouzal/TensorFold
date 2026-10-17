@@ -82,6 +82,18 @@ def test_blob_loader_rejects_mismatched_geometry_before_allocation_or_payload():
     assert not cache.allocations and not context.reads
 
 
+@pytest.mark.parametrize("count", [1, 2, 4])
+def test_native_views_keep_literal_entry_stride_at_singleton_and_larger_capacities(count):
+    geometry = blob_geometry_a4(64, 128)
+    blob = torch.zeros((count, geometry.entry_bytes), dtype=torch.uint8)
+    views = native_views(blob, geometry)
+    for view, field in zip(views, geometry.fields):
+        assert view.stride(0) * view.element_size() == geometry.entry_bytes
+        assert view.data_ptr() == blob.data_ptr() + field.offset
+        assert tuple(view.shape) == (count, *field.shape)
+        assert view[0].is_contiguous()
+
+
 def test_replacement_prepares_all_views_before_commit_and_commit_allocates_no_views(monkeypatch):
     cache = CPUBlobCache()
     source = torch.zeros((2, cache.entry_bytes), dtype=torch.uint8)

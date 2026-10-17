@@ -18,9 +18,19 @@ def native_views(blob, geometry):
     if (blob.dtype != torch.uint8 or blob.ndim != 2 or not blob.is_contiguous()
             or blob.shape[0] <= 0 or blob.shape[1] != geometry.entry_bytes):
         raise ValueError("private A4 blob must be contiguous U8[count,aligned_entry]")
-    return tuple(blob.narrow(1, field.offset, field.size).view(
-        torch.uint8 if field.dtype == "U8" else torch.float32).view(blob.shape[0], *field.shape)
-                 for field in geometry.fields)
+    result = []
+    for field in geometry.fields:
+        typed = blob.narrow(1, field.offset, field.size).view(
+            torch.uint8 if field.dtype == "U8" else torch.float32)
+        inner, stride = [], 1
+        for size in reversed(field.shape):
+            inner.append(stride)
+            stride *= size
+        # view() can canonicalize an unused singleton expert stride. Explicit
+        # strides preserve the entry format at capacity1 as well as after growth.
+        result.append(typed.as_strided((blob.shape[0], *field.shape),
+                      (geometry.entry_bytes // typed.element_size(), *reversed(inner))))
+    return tuple(result)
 
 
 class BlobExpertCache(HostExpertCache):
