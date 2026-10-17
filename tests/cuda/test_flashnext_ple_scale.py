@@ -2,8 +2,24 @@
 
 import pytest
 import torch
+from fractions import Fraction
 
 from tensorfold.families.qwen4_exp.cuda import glue
+from tensorfold.cuda.kernels.qmm import group_sums
+
+
+def _exact_group_sums(values):
+    """Independent exact sums for these finite BF16 fixtures, then one FP32 rounding.
+
+    Fraction does not inherit either GPU reduction tree. The equality check
+    proves the intermediate FP64 conversion is exact, excluding double rounding.
+    """
+
+    groups = values.cpu().float().reshape(-1, 32).tolist()
+    exact = [sum(map(Fraction, group), Fraction()) for group in groups]
+    intermediates = [float(value) for value in exact]
+    assert all(Fraction(value) == reference for value, reference in zip(intermediates, exact))
+    return torch.tensor(intermediates, dtype=torch.float32, device=values.device).reshape(values.shape[0], -1)
 
 
 @pytest.mark.parametrize("value", [1.0, 0.000199])
@@ -28,7 +44,10 @@ def test_table_scale_follows_dequantization_and_updates_group_sums(value, packed
         glue.ple_embed_bf16(rows, values, heads, dims, out, sums, scale=factor)
     expected = (plain.float() * factor).to(torch.bfloat16)
     assert torch.equal(out, expected)
-    assert torch.equal(sums, expected.float().reshape(rows, -1, 32).sum(-1))
+    assert torch.equal(sums, _exact_group_sums(expected))
+    # The projection's precomputed XS must have the ordinary matmul's bits.
+    # Torch's reduction tree can round differently even on this small group.
+    assert torch.equal(sums, group_sums(out, 32))
     if factor == 1:
         assert torch.equal(out, plain) and torch.equal(sums, plain_sums)
 
