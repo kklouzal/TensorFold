@@ -7,6 +7,9 @@ import threading
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from transformers import PreTrainedTokenizerFast
+
+from tests.cli_server_fixture import prepared_tokenizer
 
 from tests.mlx_host_protocol_fakes import cli_protocol
 from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
@@ -277,6 +280,7 @@ def test_a_non_kv_entry_such_as_a_draft_slot_counts_as_fixed_memory():
 def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
     """Run `tensorfold serve` up to its HTTP loop with a stub app; returns the app's keyword arguments and output."""
 
+    tokenizer = prepared_tokenizer(tmp_path, PreTrainedTokenizerFast)
     with cli_protocol(monkeypatch, "0.0"):
         monkeypatch.setattr(memory_budget, "physical_memory_bytes", lambda: 128 * GIB)
         monkeypatch.setattr("faulthandler.register", lambda *args, **kwargs: None)
@@ -291,13 +295,14 @@ def _serve_to_app(monkeypatch, tmp_path, argv, capsys):
         monkeypatch.setattr(hub, "is_repo_id", lambda model: False)
         monkeypatch.setattr(hub, "resolve", lambda *args, **kwargs: tmp_path)
         family = SimpleNamespace(title="fixture", model_type="fixture",
-                                 package=SimpleNamespace(load=lambda *args, **kwargs: (object(), object())))
+                                 package=SimpleNamespace(load=lambda *args, **kwargs: (object(), tokenizer)))
         monkeypatch.setattr(families, "detect", lambda path: family)
         made = {}
         apps, servers = [], []
 
         class App:
             def __init__(self, model, tokenizer, **kwargs):
+                assert tokenizer.eos_token_ids == (2,)
                 made.update(kwargs)
                 self.close_calls = 0
                 apps.append(self)

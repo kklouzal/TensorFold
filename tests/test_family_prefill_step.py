@@ -7,9 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 
 import pytest
+from transformers import PreTrainedTokenizerFast
 
 
 from tests.mlx_host_protocol_fakes import cli_protocol, mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
+from tests.cli_server_fixture import prepared_tokenizer
 
 from tensorfold import cli
 from tensorfold.engine import memory
@@ -50,11 +52,13 @@ def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, 
     header = json.dumps({"fixture.weight": {"dtype": "F16", "shape": [1], "data_offsets": [0, 2]}}).encode()
     header += b" " * (-len(header) % 8)
     (model_dir / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + b"\x00\x00")
+    tokenizer = prepared_tokenizer(model_dir, PreTrainedTokenizerFast)
 
     class Built(Exception):
         pass
 
     def app(*args, **kwargs):
+        assert args[1] is tokenizer and tokenizer.eos_token_ids == (2,)
         seen["plan"] = kwargs["engine_factory"].keywords["prefill_plan"]
         seen["rows"] = kwargs["max_rows"]
         raise Built
@@ -62,7 +66,7 @@ def test_the_plan_takes_the_chosen_step_and_cuts_replies_256_apart(monkeypatch, 
     monkeypatch.setattr("tensorfold.server.app.ChatApp", app)
     monkeypatch.setattr("tensorfold.engine.prefill_step.choose", lambda make, steps, *a, **k: max(steps))
     for settings, step in (({"prefill_steps": (4096, 2048), "max_rows": 4}, 4096), ({"max_rows": 4}, 2048)):
-        package = SimpleNamespace(load=lambda model_dir, **options: (SimpleNamespace(), None),
+        package = SimpleNamespace(load=lambda model_dir, **options: (SimpleNamespace(), tokenizer),
                                   engine_settings=lambda model, s=settings: dict(s), kernel_version=lambda m: "k")
         family = SimpleNamespace(title="fake", model_type="fake", package=package)
         with pytest.raises(Built):

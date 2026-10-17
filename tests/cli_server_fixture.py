@@ -18,6 +18,26 @@ def prepared_chat_template(directory, source="fixture"):
     return ChatTemplate(directory)
 
 
+def prepared_tokenizer(directory, tokenizer_type):
+    """Real HF tokenizer and files; resolve its class before MLX protocol scopes.
+
+    The caller supplies the already imported runtime class so dependency
+    discovery cannot mistake an explicit host-only MLX fixture for its SDK.
+    """
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    vocab = {"[UNK]": 0, "user": 1, "stop": 2, "assistant": 3, "word": 4}
+    backend = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tokenizer = tokenizer_type(tokenizer_object=backend, unk_token="[UNK]", eos_token="stop",
+                               chat_template="{% for m in messages %}{{ m.role }} {{ m.content }} {% endfor %}")
+    tokenizer.save_pretrained(directory)
+    config = directory / "config.json"
+    if not config.exists():
+        config.write_text(json.dumps({"model_type": "fixture", "vocab_size": len(vocab), "eos_token_id": 2}))
+    return tokenizer
+
+
 def cuda_cli_engine(**members):
     """A prepared engine publishes reply EOS independently of listener tests."""
     return SimpleNamespace(**{"eos": (2,), **members})
