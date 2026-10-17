@@ -150,3 +150,45 @@ def test_grouped_native_a4_candidate_matches_admitted_baseline_with_actual_proje
         assert cache.evictions > 0 if capacity < 4 else cache.evictions == 0
     finally:
         cache.close()
+
+
+def test_grouped_native_boundary_refuses_empty_extreme_strides_before_launch():
+    """Valid zero-storage Tensor metadata must not overflow a native guard.
+
+    All ordinary arguments are initialized and minimally sized, so the malformed
+    output reaches its own boundary check. Immediate refusal plus a following
+    successful quantizer proves no deferred trap/context poisoning was hidden.
+    """
+    from tensorfold.cuda.nvfp4.grouped_a4 import _ext
+
+    ext = _ext()
+    n = k = 64
+    codes = torch.zeros((1, 1, k // 2), dtype=torch.uint8, device="cuda")
+    scales = torch.zeros((1, 1, k // 16), dtype=torch.uint8, device="cuda")
+    blob = torch.zeros((1, 1, n * k * 9 // 16), dtype=torch.uint8, device="cuda")
+    calibration = torch.ones((1, 1), dtype=torch.float32, device="cuda")
+    items = torch.tensor([[0, 0, 1]], dtype=torch.int32, device="cuda")
+    plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
+    maximum = torch.iinfo(torch.int64).max
+    for shape, strides in (((0, 2, n), (0, 2**62, 1)),
+                           ((0, 2, n), (maximum, maximum, 1)),
+                           ((2, 0, n), (maximum, maximum, 1)),
+                           ((0, 0, n), (maximum, maximum, 1))):
+        out = torch.empty_strided(shape, strides, dtype=torch.bfloat16, device="cuda")
+        assert out.untyped_storage().nbytes() == 0
+        with pytest.raises(RuntimeError, match="nativeA4 output: positive separate slots"):
+            ext.gemm(codes, scales, blob, calibration, calibration, items, plan, out, n, k, 1, True)
+    empty_input = torch.empty_strided((0, k), (maximum, 1), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(RuntimeError, match="x: BF16 rows"):
+        ext.quantize(empty_input, plan, calibration, codes, scales)
+    # Singleton dimensions permit unused extreme strides; their actual extent
+    # is only64 values, so checked geometry must preserve that supported case.
+    out = torch.empty_strided((1, 1, n), (maximum, n, 1), dtype=torch.bfloat16, device="cuda")
+    ext.gemm(codes, scales, blob, calibration, calibration, items, plan, out, n, k, 1, True)
+    assert torch.count_nonzero(out) == 0
+    x = torch.ones((1, k), dtype=torch.bfloat16, device="cuda")
+    ext.quantize(x, plan, calibration, codes, scales)
+    want_codes, want_scales = checkpoint.quant4(x, 1.)
+    assert torch.equal(codes[0], want_codes)
+    assert torch.equal(scales[0, 0], want_scales[:, 0].reshape(-1))
+    torch.cuda.synchronize()
