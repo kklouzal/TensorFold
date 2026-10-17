@@ -4,6 +4,7 @@ from importlib import metadata
 from types import SimpleNamespace
 
 
+from tests.cli_server_fixture import prepared_tokenizer
 from tests.mlx_host_protocol_fakes import mlx_host_protocol as _mlx_host_protocol  # noqa: F401 (pytest registration)
 
 from tensorfold import cli, families
@@ -14,18 +15,20 @@ from tensorfold.server import app
 def test_snapshot_identity_changes_with_mlx_lm_version(monkeypatch, tmp_path, mlx_host_protocol):
     (tmp_path / "config.json").write_text('{"model_type":"fake"}')
     (tmp_path / "model.safetensors").write_bytes(b"owned host-only identity fixture")
+    tokenizer = prepared_tokenizer(tmp_path)
     captured = []
 
     class Captured(Exception):
         pass
 
     def capture(*args, **kwargs):
+        assert args[1] is tokenizer and tokenizer.eos_token_ids == (2,)
         captured.append(kwargs["model_id"])
         raise Captured
 
     monkeypatch.setattr(app, "ChatApp", capture)
     monkeypatch.setattr(families, "kernel_version", lambda *args: "fixed-kernels")
-    family = SimpleNamespace(title="fake", model_type="fake", package=SimpleNamespace(load=lambda *a, **k: (None, None)))
+    family = SimpleNamespace(title="fake", model_type="fake", package=SimpleNamespace(load=lambda *a, **k: (None, tokenizer)))
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--no-drafts", "--prompt-cache-gib", "0"])
     for version in ("0.31.3", "0.31.4"):
         monkeypatch.setattr(metadata, "version", lambda name, value=version: value)

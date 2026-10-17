@@ -166,7 +166,8 @@ class OwnershipControls(unittest.TestCase):
         function = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4")))
         helper_tree = ast.parse((PATH / "weights.py").read_text())
         helpers = [n for n in helper_tree.body if isinstance(n, ast.FunctionDef)
-                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill")]
+                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill",
+                                  "_rotary_frequencies")]
         module = ast.Module(body=[*helpers, function], type_ignores=[])
 
         def weights(*a, **kw):
@@ -198,6 +199,7 @@ class OwnershipControls(unittest.TestCase):
             exec(compile(module, str(path), "exec", flags=__import__("__future__").annotations.compiler_flag), scope)
             self.modules["tensorfold.families.qwen3_5.cuda.weights"]._close_failed_checkpoint = scope["_close_failed_checkpoint"]
             self.modules["tensorfold.families.qwen3_5.cuda.weights"]._validate_fp8_prefill = scope["_validate_fp8_prefill"]
+            self.modules["tensorfold.families.qwen3_5.cuda.weights"]._rotary_frequencies = scope["_rotary_frequencies"]
             return scope[function.name](self.home, device="cpu")
 
     def test_group_allocation_failure_retains_primary_native_and_reader_statuses(self):

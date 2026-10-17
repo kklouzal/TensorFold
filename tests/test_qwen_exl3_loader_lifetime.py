@@ -54,7 +54,7 @@ class Ownership(unittest.TestCase):
             return {'lm_head': object()}
         helper_tree = ast.parse((BASE / 'weights.py').read_text())
         helpers = [n for n in helper_tree.body if isinstance(n, ast.FunctionDef)
-                   and n.name in ('_close_failed_checkpoint', '_close_failed_checkpoint_impl')]
+                   and n.name in ('_close_failed_checkpoint', '_close_failed_checkpoint_impl', '_rotary_frequencies')]
         scope = {'__name__': 'tensorfold.families.qwen3_5.cuda.opaque',
                  '__package__': 'tensorfold.families.qwen3_5.cuda', 'Path': Path,
                  '_where': lambda _: {}, '_files': lambda *args: reader,
@@ -69,6 +69,7 @@ class Ownership(unittest.TestCase):
         exec(compile(ast.Module(body=[*helpers, load], type_ignores=[]), '<actual-exl3-owner>', 'exec',
                      flags=__import__('__future__').annotations.compiler_flag), scope)
         weights._close_failed_checkpoint = scope['_close_failed_checkpoint']
+        weights._rotary_frequencies = scope['_rotary_frequencies']
         with patch.dict(sys.modules, modules):
             try:
                 result = scope['load_exl3'](Path('/opaque-checkpoint'), device='cpu')
