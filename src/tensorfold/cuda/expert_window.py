@@ -54,4 +54,3 @@ class ExpertWindow:
         self.uploaded.record(torch.cuda.current_stream(self.plan.items.device))
         self.pending = True
         return self.plan
-

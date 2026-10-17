@@ -257,6 +257,10 @@ maintained Dockerfile. All 512 packaged owned source files matched the captured
 source. Corrected verification images retain the serving image's exact
 application layers; the [machine-readable receipt](verification-desktop-report-20261017.json)
 names runtime, test revisions, image digests, wheel hash and retained evidence.
+One final empty EOF line was removed from the shared ExpertWindow module;
+the pinned Python 3.12 check proved its complete compiled code and AST location
+attributes identical. The receipt records both file hashes and this narrow
+post-qualification cleanup.
 
 The complete CPU rerun passed **7,994 cases** with 177 explicit skips. The full
 non-matrix CUDA run passed 2,046 cases with 97 explicit skips and found three stale
@@ -322,7 +326,11 @@ four-arm blocks and 99.1667% paired log-ratio intervals for a six-comparison
 family. Four-request rows used 12 balanced Williams-order blocks and 99.6429%
 intervals for a 14-comparison family. Both used the larger of ordinary and
 predeclared Bartlett lag-4 variance. Kernels were warm; every complete token
-sequence and copied-byte count matched its reference. The four-request test
+sequence matched its reference. Single-request copied-byte counts also matched.
+Parallel copied-byte counts differed between the pageable and registered arms
+in six of twelve serial blocks and nine of twelve MTP blocks; all counters were
+retained. These complete wall-time comparisons include the observed cache-work
+differences and do not isolate a pure DMA transfer effect. The four-request test
 used the maintained **MultiDecoder/Stream combined prompt/decode/MTP path**;
 HTTP and outer scheduler-queue costs were excluded. These finite-run intervals
 are conditional on this host and workload, not population or tail guarantees.

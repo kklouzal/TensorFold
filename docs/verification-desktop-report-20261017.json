@@ -12,7 +12,7 @@
   "corrected_cuda_verification_image": "sha256:b23795dd95644a44ab1ecd928dc5c9d224cb469055f70d5b83caa79365cedfa9",
   "wheel_sha256": "166b060a9bc6297195b30e10107a12f438040824a0e90d9264daac23338508ae",
   "runtime_source_uid": "da04e51f468fd181fdc2bed7c9e69ad4f53202f0e31ac5dd68528948f562c3ff",
-  "artifact_identity": "Corrected verification targets use the maintained Dockerfile and clean committed test captures. Their complete application layers are byte-identical to the serving image, as image-proof.json records. Closing documentation preserves runtime/build/test bytes; a future README rebuild changes wheel metadata.",
+  "artifact_identity": "Corrected verification targets use the maintained Dockerfile and clean committed test captures. Their complete application layers are byte-identical to the serving image, as image-proof.json records. Closing documentation and one separately verified bytecode-neutral terminal whitespace cleanup follow qualification; their raw source difference is explicit below. A future README rebuild changes wheel metadata.",
   "installed_package": {
     "source": "b551e68f7ae552ba1636fcc1967fd3534747d376",
     "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
@@ -284,7 +284,7 @@
       "qualification": "Actual host Compose/UUID/CDI visibility and CUDA arithmetic, path boundary and build recovery gates; resource/restart contracts documented."
     }
   ],
-  "performance_selection": "See desktop-report-remediation.md controlled performance section and sealed transfer/routing dispositions, packed receipt and NVFP4 first/warm/prior-inclusive analyses. Separate measured gains are not additive; no friend-machine speed prediction.",
+  "performance_selection": "See desktop-report-remediation.md and sealed component records. Parallel direct-DMA wall-time gains include observed cache-work differences; byte counts match only in the single-request study. Separate gains are not additive; no pure-transfer causal or friend-machine speed prediction.",
   "historical_kv_subset": {
     "passed": 1666,
     "source_revision": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
@@ -312,7 +312,8 @@
     "root/cpu-final-proof.json",
     "root/final-source-proof.json",
     "corrected-tests/image-proof.json",
-    "corrected-cuda-tests/image-proof.json"
+    "corrected-cuda-tests/image-proof.json",
+    "root/window-eof-proof.json"
   ],
   "evidence_manifest": {
     "path": "/home/kklouzal/tensorfold-report-remediation-20261017/evidence-sha256.json",
@@ -320,5 +321,19 @@
     "entries": 9517,
     "scope": "Completed source captures, build/gate/control/profile/benchmark records in this packet at seal time. Later operational closure files are separate.",
     "mutable_ledgers_and_generated_caches_excluded": true
+  },
+  "post_qualification_cleanup": {
+    "file": "src/tensorfold/cuda/expert_window.py",
+    "proof": {
+      "python": "3.12.3",
+      "old_sha256": "11bc20aadf3809eda1f872090511392a4a2b51cd86f2af0fe6baf03dafcf9c9d",
+      "new_sha256": "0983ddf362c12f5b99ccc33319b2f2e19e4277bfacc7ad2a00e2a51c294ad7d7",
+      "difference": "one empty terminal line removed",
+      "ast_and_location_attributes_identical": true,
+      "complete_marshaled_code_identical": true,
+      "marshaled_code_sha256": "3df878617983de246a369bc8289b146d1668d13f8992b57cfe3517b3bf3694cf"
+    },
+    "evidence": "root/window-eof-proof.json",
+    "scope": "One empty terminal line only; no execution, line-location, ownership, numerical or resource behavior change."
   }
 }
