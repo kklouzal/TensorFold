@@ -152,3 +152,23 @@ def test_close_failure_retains_registration_owner_in_owning_error(monkeypatch):
         policy.close()
     assert failure.value.owner is policy and native.owners[0].active
     assert policy._pins and not policy.receipt()["closed"]
+
+
+def test_close_exception_preserves_primary_and_retires_independent_owners(monkeypatch):
+    native = ready(monkeypatch)
+    policy = pin.ExpertPinPolicy(24, mode="on", allocation_bytes=(8, 16))
+    policy.empty((2,), dtype=torch.int32)
+    policy.empty((4,), dtype=torch.int32)
+    primary = KeyboardInterrupt()
+
+    def interrupted():
+        raise primary
+
+    native.owners[1].close = interrupted
+    with pytest.raises(KeyboardInterrupt) as failure:
+        policy.close()
+    assert failure.value is primary
+    assert not native.owners[0].active and native.owners[1].active
+    assert isinstance(primary.__cause__, pin.PinCleanupError)
+    assert primary.__cause__.owner is policy
+    assert not policy.receipt()["closed"]
