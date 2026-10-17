@@ -7,10 +7,10 @@ from __future__ import annotations
 import __future__
 
 import ast
+import unittest
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace as NS
-import unittest
 
 BASE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen3_5/cuda"
 
