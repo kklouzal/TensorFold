@@ -2,21 +2,37 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Sequence
 
 _ANSWER, _LEAD, _NAME, _DONE = range(4)
 
 
 def call_format(rendered: str, name: str, openers: Sequence[str]) -> tuple[str, str, str] | None:
-    """(opener, lead, tail) of the template's call to ``name``: the text before the name, and the mark that ends it."""
+    """Derive the rendered probe call's opener, lead and name-ending mark.
 
-    at = rendered.rfind(name)
-    starts = [(rendered.rfind(opener, 0, at), opener) for opener in openers]
-    start, opener = max(starts, default=(-1, ""))
-    if at < 0 or start < 0:
+    Schemas can repeat the probe name before or after the historical call.
+    Only its first occurrence within an open call belongs to that call's
+    header; closing markup ends that scope. A trailing generation opener
+    without a name must not hide the preceding probe. Discovery is linear
+    in the rendered text and runs only when preparing a template's gate.
+    """
+    markers = tuple(opener for opener in openers if opener)
+    if not name or not markers:
         return None
-    end = at + len(name)
-    return opener, rendered[start + len(opener):at], rendered[end:end + 1] if end < len(rendered) else ""
+    pattern = "|".join(re.escape(token) for token in (*markers, "</tool_call>", "<tool_call|>", name))
+    opened = result = None
+    for match in re.finditer(pattern, rendered):
+        token = match.group()
+        if token in markers:
+            opened = token, match.end()
+        elif token in ("</tool_call>", "<tool_call|>"):
+            opened = None
+        elif opened is not None:
+            opener, start = opened
+            result = opener, rendered[start:match.start()], rendered[match.end():match.end() + 1]
+            opened = None  # later copies in arguments are not function names
+    return result
 
 
 class CallGate:
