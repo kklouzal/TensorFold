@@ -417,6 +417,27 @@ def test_vision_offload_is_a_cuda_option_that_needs_vision(tmp_path, flags, back
         cli._check_serve_options(args, family, backend)
 
 
+@pytest.mark.parametrize("flags,backend,message", [
+    (["--tokenizer", "t.json"], "mlx", "--tokenizer is read by the CUDA server"),
+    (["--tokenizer", "t.json", "--vision"], "cuda", "cannot be combined with --vision"),
+    (["--tokenizer", "t.json", "--tp", "2", "--master", "10.0.0.1"], "cuda", "serves one rank only"),
+    (["--tokenizer", "t.json"], "cuda", None),
+])
+def test_tokenizer_override_is_a_cuda_text_option(tmp_path, flags, backend, message):
+    """Image prompts are encoded by the vision processor's own checkpoint tokenizer, which --tokenizer does not reach;
+    other ranks would compile grammars from a tokenizer nobody checks against rank 0's."""
+
+    from tensorfold.families import qwen3_5
+
+    args = cli.build_parser().parse_args(["serve", str(tmp_path)] + flags)
+    family = SimpleNamespace(title=qwen3_5.TITLE, package=qwen3_5, model_type="qwen3_5")
+    if message is None:
+        assert cli._check_serve_options(args, family, backend) is None
+        return
+    with pytest.raises(ValueError, match=message):
+        cli._check_serve_options(args, family, backend)
+
+
 @pytest.mark.parametrize("rank", [1, 2, 3])
 def test_four_rank_followers_retire_the_owned_engine_without_http(tmp_path, monkeypatch, rank):
     events = []

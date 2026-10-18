@@ -186,7 +186,8 @@ class Grammars:
 
     @classmethod
     def for_model(cls, model_dir: str | Path, vocab_size: int, stop_ids: Sequence[int]) -> "Grammars":
-        """From the checkpoint's ``tokenizer.json``: ``vocab_size`` is the logits' width, ``stop_ids`` its eos ids."""
+        """From the served ``tokenizer.json`` (``--tokenizer``'s, else the checkpoint's): ``vocab_size`` is the logits'
+        width, ``stop_ids`` its eos ids."""
 
         try:
             import xgrammar as xgr
@@ -195,9 +196,13 @@ class Grammars:
             raise RequestError(f"structured output needs xgrammar on the server: pip install '{EXTRA}'") from None
         from tensorfold.token_metadata import tokenizer_override
 
-        override = tokenizer_override()                           # --tokenizer: the same vocabulary, as validated
-        tok = PreTrainedTokenizerFast(tokenizer_file=str(override.path if override is not None
-                                                         else Path(model_dir) / "tokenizer.json"))
+        override = tokenizer_override()          # --tokenizer: the text admitted at startup, never the file again
+        if override is not None:
+            from tokenizers import Tokenizer
+
+            tok = PreTrainedTokenizerFast(tokenizer_object=Tokenizer.from_str(override.text))
+        else:
+            tok = PreTrainedTokenizerFast(tokenizer_file=str(Path(model_dir) / "tokenizer.json"))
         return cls(xgr.TokenizerInfo.from_huggingface(tok, vocab_size=int(vocab_size), stop_token_ids=list(stop_ids)))
 
     def compile(self, spec: Spec):

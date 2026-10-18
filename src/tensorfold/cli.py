@@ -509,8 +509,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
         raise ValueError(f"--ple-on-ssd: {family.title} has no n-gram (PLE) tables to read from SSD")
     backend = _backend(args.backend, family)
     _check_serve_options(args, family, backend, config_dir)
-    if getattr(args, "tokenizer_file", None) is not None and backend != "cuda":
-        raise ValueError("--tokenizer is read by the CUDA server; MLX serves the checkpoint's tokenizer")
     if backend == "mlx" and getattr(family.package, "MLX_MODEL_FILE", False):
         from tensorfold.families.model_code import authorize_model_code
 
