@@ -35,7 +35,7 @@ def _windows(groups, capacity):
         yield batch, ids
 
 
-def run(bank, x, picks, out, *, prefill):
+def run(bank, x, picks, out, *, prefill, maximum_id=None):
     """Fill routed slots with the prepared bank's exact native A4 math."""
     from tensorfold.cuda.kernels import qmm
 
@@ -48,7 +48,10 @@ def run(bank, x, picks, out, *, prefill):
     down_sk = 1 if prefill else qmm.split_k(bank.dims, bank.width)
     for lo in range(0, x.shape[0], PAIRS):
         groups = {}
-        for row, values in enumerate(picks[lo:lo + PAIRS].cpu().tolist()):
+        snapshot = picks[lo:lo + PAIRS].cpu()
+        if maximum_id is not None and bool(((snapshot < -1) | (snapshot > maximum_id)).any()):
+            raise ValueError("native A4 local picks contain an out-of-range expert")
+        for row, values in enumerate(snapshot.tolist()):
             for slot, expert in enumerate(values):
                 if 0 <= expert < bank.count:
                     groups.setdefault(expert, []).append((lo + row, slot))
