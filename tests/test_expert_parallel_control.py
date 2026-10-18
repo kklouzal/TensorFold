@@ -427,6 +427,8 @@ def test_rank_source_identity_requires_matching_requested_expert_pin_policy(tmp_
             session.source_files, session.source_identity = [], []
             session.owner, session.slots, session.dims = Ownership((1, 1), rank), 2, 32
             session.cfg, session.mtp = SimpleNamespace(moe_width=32, quant="mlx"), False
+            session.math_policy = {"requested": "checkpoint", "native_a4": False, "reason": "non-native-full",
+                                   "rank_native_capabilities": [False, False], "banks": [], "native_workspace_bytes": 0}
             session.torch = SimpleNamespace(cuda=SimpleNamespace(
                 get_device_properties=lambda _, rank=rank: SimpleNamespace(uuid=f"GPU-{rank}")))
             identities.append(session._identity({}))
