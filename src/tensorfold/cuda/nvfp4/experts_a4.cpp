@@ -63,7 +63,8 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 8 == 0, "codes require8-byte alignment");
     const auto p = codes.size(1), k = x.size(1), projections = input.size(1);
     TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : ((p <= 128 || (direct && p <= 65535)) && plan.size(0) == p && plan.size(1) == 3)) && input.size(0) > 0 && input.size(0) <= INT32_MAX &&
-                (projections == 1 || projections == 2), "plan/calibrations:128pairs maximum, one/two projections");
+                (projections == 1 || projections == 2),
+                "plan/calibrations require at most128 legacy pairs or65535 direct rows, one/two projections");
     TORCH_CHECK(codes.size(0) == projections && codes.size(1) == p && codes.size(2) == k / 2 &&
                 scales.size(0) == projections && scales.size(1) == p && scales.size(2) == k / 16,
                 "quantization buffers must match projection/pair/input dimensions");
