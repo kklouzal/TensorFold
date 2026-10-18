@@ -178,3 +178,35 @@ def test_direct_activation_quantizer_extremes_ties_underflow_and_signed_zero():
     assert torch.equal(scales[0].cpu(), expected_scales)
     assert torch.equal(codes[0, 1], torch.full_like(codes[0, 1], 0xf7))
     torch.cuda.synchronize()
+
+
+@pytest.mark.parametrize("n,k", [(64, 64), (128, 192), (640, 2560)])
+def test_gpu_load_pack_is_exact_independent_foreign_byte_permutation(n, k):
+    from test_nvfp4_a4_host_control import oracle_blob
+
+    from tensorfold.cuda.nvfp4.modelopt_experts import pack_projection_a4_device
+
+    raw = (torch.arange(n * k // 2, dtype=torch.int64) * 31 % 256).to(torch.uint8).reshape(n, k // 2)
+    scales = (torch.arange(n * k // 16, dtype=torch.int64) * 17 % 256).to(torch.uint8).reshape(n, k // 16)
+    expected = oracle_blob(raw, scales.view(torch.float8_e4m3fn))
+    packed = pack_projection_a4_device(raw.cuda(), scales.cuda().view(torch.float8_e4m3fn))
+    assert torch.equal(packed.cpu(), expected)
+
+
+def test_gpu_loader_checks_every_original_scale_before_publication():
+    from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+
+    reader = Reader()
+    name = f"{PREFIX}.experts.2.down_proj.weight_scale"
+    reader.payload[name].view(torch.uint8)[-1, -1] = 0x80
+    entry = 3 * 64 * 128 * 9 // 16 + 64
+    cache = ModelOptExpertCache(entry, entry, "cuda:0", width=64, dims=128)
+    try:
+        with pytest.raises(ValueError, match="finite unsigned E4M3"):
+            load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0", cache=cache)
+        assert not cache._layers
+        assert name in reader.reads
+        assert len(reader.reads) == len(reader.payload)
+        torch.cuda.synchronize()
+    finally:
+        cache.close()
