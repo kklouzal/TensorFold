@@ -16,6 +16,7 @@ import pytest
 pytest.importorskip("triton")
 torch = pytest.importorskip("torch")
 
+from tensorfold.cuda import precision
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.weights import Config  # noqa: E402
 
@@ -57,7 +58,10 @@ def test_the_header_names_every_tensor(tiny: Path) -> None:
 def test_the_loader_builds_the_nvfp4_faces(tiny: Path) -> None:
     from tensorfold.families.qwen4_exp.cuda.weights import load
 
-    w = load(tiny, mtp=True, draft_vocab=None)
+    # This decoder proves the W4A16 weight representation, independently of
+    # the native checkpoint-A4 bank and its different six-field layout.
+    with precision.using(precision.FULL, asked=True):
+        w = load(tiny, mtp=True, draft_vocab=None)
     assert w.cfg.quant == "modelopt"
     l0 = w.layers[0]
     moe = l0.moe
@@ -110,7 +114,10 @@ def test_the_reader_finds_the_published_naming(tmp_path: Path) -> None:
 
     if not torch.cuda.is_available():                                   # the loader builds CUDA tensors
         pytest.skip("the loader builds CUDA tensors")
-    a, b = load(plain, mtp=True, draft_vocab=None), load(named, mtp=True, draft_vocab=None)
+    # Both sides compare the four W4A16 fields by their public loader layout.
+    # Other engine/graph tests in this module keep checkpoint-native defaults.
+    with precision.using(precision.FULL, asked=True):
+        a, b = load(plain, mtp=True, draft_vocab=None), load(named, mtp=True, draft_vocab=None)
     assert b.cfg.quant == "modelopt" and len(b.layers) == len(a.layers)
     for i, (x, y) in enumerate(zip(a.layers, b.layers, strict=True)):
         for face in ("up", "down", "up_scale", "down_scale"):
