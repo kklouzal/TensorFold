@@ -6,7 +6,6 @@ token stop; other special tokens have no implied end-of-reply meaning.
 from __future__ import annotations
 
 import hashlib
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,19 +34,6 @@ class TokenizerOverride:
 _override: TokenizerOverride | None = None     # set once at startup (``use_tokenizer``); one process serves one model
 
 
-def _read_override(path: Path) -> tuple[str, dict]:
-    from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, _metadata_object, _regular_stream
-
-    with _regular_stream(path) as stream:
-        size = os.fstat(stream.fileno()).st_size
-        if not 0 < size <= MAX_HEADER_BYTES:
-            raise ValueError(f"{path}: tokenizer.json size must lie in [1, {MAX_HEADER_BYTES}]")
-        raw = stream.read(size + 1)
-    if len(raw) != size:
-        raise ValueError(f"{path}: tokenizer.json changed during its read")
-    return raw.decode("utf-8"), _metadata_object(raw, path)
-
-
 def _meaning(model: dict | None) -> dict | None:
     """The vocabulary model with BPE merges in one spelling: tokenizers writes a merge as "a b" (legacy) or [a, b]."""
 
@@ -73,8 +59,12 @@ def use_tokenizer(path, model_dir) -> TokenizerOverride:
 
     if _override is not None:
         raise RuntimeError("the tokenizer override is set once, at startup")
+    from tensorfold.cuda.tensor_file import _metadata_object
+
     path = Path(path).expanduser().resolve()
-    text, value = _read_override(path)
+    text = read_text(path.parent, path.name, required=True)   # one bounded regular read, as for --chat-template FILE
+    raw = text.encode("utf-8")
+    value = _metadata_object(raw, path)
     own = read_json(model_dir, "tokenizer.json", required=True)
     for key, same in (("model", _meaning(value.get("model")) == _meaning(own.get("model"))),
                       ("added_tokens", value.get("added_tokens") == own.get("added_tokens"))):
@@ -86,7 +76,7 @@ def use_tokenizer(path, model_dir) -> TokenizerOverride:
     if unknown:
         raise ValueError(f"--tokenizer {path}: unknown tokenizer.json sections {unknown}")
     differs = tuple(key for key in TEXT_SECTIONS if value.get(key) != own.get(key))
-    _override = TokenizerOverride(path, text, hashlib.sha256(text.encode("utf-8")).hexdigest(), differs)
+    _override = TokenizerOverride(path, text, hashlib.sha256(raw).hexdigest(), differs)
     return _override
 
 

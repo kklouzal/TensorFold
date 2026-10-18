@@ -102,7 +102,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="CUDA: encode and decode with this tokenizer.json instead of the checkpoint's; its "
                                  "vocabulary, merges and added tokens must equal the checkpoint's (only text handling "
                                  "such as the pre-tokenizer may differ), e.g. the base model's when a fine-tune ships "
-                                 "an altered one")
+                                 "an altered one; one rank, not with --vision")
     generation.add_argument("--temperature", type=float, default=None,
                             help="0 decodes greedily (default: the model's generation_config.json, else 0)")
     generation.add_argument("--top-p", type=float, default=None,

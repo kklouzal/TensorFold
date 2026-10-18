@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from copy import deepcopy
 
@@ -51,6 +52,7 @@ def test_text_handling_override_is_used_for_every_encode(checkpoint, tmp_path):
     upstream["model"]["merges"] = [" ".join(m) for m in upstream["model"]["merges"]]   # the legacy merge spelling
     got = token_metadata.use_tokenizer(_write(tmp_path, upstream), checkpoint)
     assert got.differs == ("pre_tokenizer",) and "pre_tokenizer" in got.line()
+    assert got.sha256 == hashlib.sha256((tmp_path / "override.json").read_bytes()).hexdigest()   # the file as read
     after = token_metadata.load_tokenizer(checkpoint).encode(text).ids
     assert before == [2, 3] and after == [4]                            # the merge applies inside one pre-token
     assert token_metadata.tokenizer_override() is got
