@@ -272,7 +272,7 @@ class Gemma4Engine:
                     embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
             result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
                                          output_logits=False, output_taps=self.head is not None,
-                                         trusted_tokens=True)
+                                         trusted_tokens=True, prompt=True)
             if self.head is not None:
                 self.head.append(self._draft, self._taps(result))
             if end == len(prompt):

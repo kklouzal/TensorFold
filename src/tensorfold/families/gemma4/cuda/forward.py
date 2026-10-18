@@ -15,6 +15,8 @@ import torch
 import triton
 import triton.language as tl
 
+from tensorfold.cuda.nvfp4 import checkpoint
+
 from . import attention
 from .state import State, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
@@ -97,6 +99,10 @@ class Gemma4Target:
     def __init__(self, weights: Gemma4Weights):
         self.weights, self.config = weights, weights.config
         attention.check_geometry(self.config)
+        # CT native projections: prompt rows on the prompt GEMM, and projections sharing an input quantize it
+        # once when their original input multipliers are equal (matmul_group proves it per call, each output
+        # keeps its own bits). MLX affine projections have one row-invariant kernel for every row count.
+        self._prompt_gemm = self._group_projections = weights.numerics == "ct_nvfp4"
         self.device = weights.norm.device
         policy = weights.numerics
         if policy == "mlx":
@@ -191,8 +197,14 @@ class Gemma4Target:
     @torch.inference_mode()
     def forward(self, tokens, state: State, *, embeddings: torch.Tensor | None = None,
                 vision_blocks: Sequence[tuple[int, int]] = (), output_logits: bool = True,
-                output_taps: bool = True, trusted_tokens: bool = False) -> ForwardResult:
+                output_taps: bool = True, trusted_tokens: bool = False, prompt: bool = False) -> ForwardResult:
         """Verify/commit one causal token block; caller rolls back rejected suffix.
+
+        ``prompt`` selects the prompt GEMM for the quantized projections. Its
+        rows have their own (row-count invariant) bits, different from the
+        decode lane matmul's: the engine runs every prompt row, and only
+        prompt rows, through it, so a position's arithmetic never depends on
+        whether its prefix came from the cache.
 
         Embeddings, when supplied, already include text sqrt(hidden) scaling and
         visual replacements. A visual block must fit wholly in this call so its
@@ -226,7 +238,7 @@ class Gemma4Target:
             state.pos.fill_(start)
             chunks = (start + rows - 1) // attention.GLOBAL_CHUNK + 1
             hidden, logits, taps = self._layers(h, state, rows, chunks, block_starts, block_ends, longest,
-                                                output_logits, output_taps)
+                                                output_logits, output_taps, prompt)
             state.advance(rows)
             return ForwardResult(hidden, logits, taps, start)
         except BaseException:
@@ -260,13 +272,23 @@ class Gemma4Target:
             raise ValueError("Gemma4 staged full-attention grid must cover the last row within the admitted context")
         try:
             return self._layers(self.embed_tokens(tokens), state, rows, chunks, None, None, 0, output_logits,
-                                output_taps)
+                                output_taps, False)
         except BaseException:
             state.poisoned = True
             raise
 
+    def _project(self, x, lins, prompt: bool):
+        """Projections of one input: one activation quantization for a group sharing its input scale."""
+        if self._group_projections and len(lins) > 1:
+            outs = checkpoint.matmul_group(x, lins, prompt_rows=prompt)
+            if outs is not None:
+                return outs
+        if prompt and self._prompt_gemm:
+            return [lin.prefill(x) for lin in lins]
+        return [lin(x) for lin in lins]
+
     def _layers(self, h, state: State, rows: int, chunks: int, block_starts, block_ends, longest: int,
-                output_logits: bool, output_taps: bool):
+                output_logits: bool, output_taps: bool, prompt: bool):
         c = self.config
         mlx = self.weights.numerics == "mlx"
         slots = sliding_slots(c.window, rows, c.heads // c.kv_heads, longest)
@@ -277,26 +299,28 @@ class Gemma4Target:
         for i, layer in enumerate(self.weights.layers):
             sliding, index = state.slot[i]
             normed = self._norm(h, layer.input_norm, c.eps)
-            q_raw, k_raw = layer.q(normed), layer.k(normed)
             if sliding:
+                q_raw, k_raw, v_raw = self._project(normed, (layer.q, layer.k, layer.v), prompt)
                 keys, values = state.keys[index], state.values[index]
-                q = attention.prep_sliding(q_raw, k_raw, layer.v(normed), layer.q_norm, layer.k_norm,
+                q = attention.prep_sliding(q_raw, k_raw, v_raw, layer.q_norm, layer.k_norm,
                                            self._inverse[i], state.pos, keys, values, eps=c.eps,
                                            round_normalized=mlx)
                 out = attention.sliding(q, keys, values, state.pos, block_starts, block_ends,
                                         window=c.window, slots=slots, blocks=bool(longest))
             else:
+                q_raw, k_raw = self._project(normed, (layer.q, layer.k), prompt)
                 raw, inv = state.raw[index], state.inv[index]
                 q = attention.prep_full(q_raw, k_raw, layer.q_norm, self._inverse[i], state.pos, raw, inv,
                                         eps=c.eps, round_normalized=mlx)
                 out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
                                      round_normalized=mlx)
-            h = h + self._norm(layer.o(out.reshape(rows, -1)), layer.attention_norm, c.eps)
+            attended = self._project(out.reshape(rows, -1), (layer.o,), prompt)[0]
+            h = h + self._norm(attended, layer.attention_norm, c.eps)
             residual = h
             dense_in = self._norm(h, layer.mlp_norm, c.eps)
-            gate, up = layer.gate(dense_in), layer.up(dense_in)
+            gate, up = self._project(dense_in, (layer.gate, layer.up), prompt)
             active = self._geglu(gate, up)
-            dense = self._norm(layer.down(active), layer.dense_output_norm, c.eps)
+            dense = self._norm(self._project(active, (layer.down,), prompt)[0], layer.dense_output_norm, c.eps)
             picks, routing = self._route(h, layer)
             expert_in = self._norm(h, layer.expert_norm, c.eps)
             routed = layer.experts.forward(expert_in, picks, routing)
