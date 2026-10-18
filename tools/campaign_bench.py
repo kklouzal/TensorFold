@@ -110,10 +110,56 @@ def get_json(url: str, *, timeout: float = 30) -> dict:
         return json.loads(resp.read())
 
 
+class Progress:
+    """The heartbeat a supervisor (the GB10 runner's watchdog) reads while a tool streams: one small JSON file,
+    replaced atomically, holding the current phase ("prefill" until the first stream chunk, "decode" after it, "idle"
+    between requests), when that phase started, the last chunk's time, the request's expected prompt tokens and its
+    chunk count. Facts only: the supervisor owns the stall policy. Writes are rate-limited to one per second except
+    at phase changes. One per process: ``configure`` sets the path once (tools here are single-threaded CLIs);
+    without it every call is a no-op."""
+
+    path: str | None = None
+    state: dict = {}
+    written = 0.0
+
+    @classmethod
+    def configure(cls, path: str | None) -> None:
+        cls.path, cls.state, cls.written = path, {}, 0.0
+        cls.update("idle", force=True)
+
+    @classmethod
+    def update(cls, phase: str, *, force: bool = False, **fields) -> None:
+        if cls.path is None:
+            return
+        now = time.time()
+        if phase != cls.state.get("phase"):
+            cls.state = {"phase": phase, "phase_since": now}
+            force = True
+        cls.state.update(fields, last_event=now, pid=os.getpid())
+        if force or now - cls.written >= 1.0:
+            temporary = f"{cls.path}.{os.getpid()}.tmp"
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(cls.state, f)
+            os.replace(temporary, cls.path)
+            cls.written = now
+
+
+def expected_tokens(body: dict) -> int:
+    """A request's prompt size for the watchdog's prefill allowance: token ids as given, else a generous estimate of
+    one token per two characters of its messages or prompt text."""
+
+    prompt = body.get("prompt")
+    if isinstance(prompt, list):
+        return len(prompt)
+    text = prompt if isinstance(prompt, str) else json.dumps(body.get("messages", ""))
+    return len(text) // 2
+
+
 def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, timeout: float = TIMEOUT_S,
-                route: str = "/v1/chat/completions") -> dict:
+                route: str = "/v1/chat/completions", prompt_tokens: int | None = None) -> dict:
     """One streamed completion (chat by default; ``route="/v1/completions"`` for a text or token-id ``prompt``):
-    client timings, text, reasoning, the final usage and ``tensorfold`` block."""
+    client timings, text, reasoning, the final usage and ``tensorfold`` block. Reports its phase to ``Progress``
+    (``prompt_tokens``, when known, sizes the supervisor's prefill allowance; else ``expected_tokens``)."""
 
     body = {**body, "stream": True, "stream_options": {"include_usage": True}}
     req = urllib.request.Request(base + route, data=json.dumps(body).encode(),
@@ -123,6 +169,8 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
     usage = runtime = finish = None
     content, reasoning, calls = [], [], []
     pieces = 0
+    Progress.update("prefill", prompt_tokens=prompt_tokens if prompt_tokens is not None else expected_tokens(body),
+                    chunks=0)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         protocol.response_type(resp, "text/event-stream")
         headers = time.perf_counter()
@@ -144,7 +192,14 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
                 first = now if first is None else first
                 last = now
                 pieces += sum(1 for t in texts if t)
+            # progress for the watchdog: generated text, reasoning or call deltas (the role chunk opens the stream
+            # before the prefill and is no progress); a prompt_progress frame refreshes the prefill phase
+            if any(texts) or calls and any((c.get("delta") or {}).get("tool_calls") for c in chunk.get("choices", [])):
+                Progress.update("decode", chunks=Progress.state.get("chunks", 0) + 1)
+            elif chunk.get("prompt_progress"):
+                Progress.update("prefill", prompt_progress=chunk["prompt_progress"])
     done = time.perf_counter()
+    Progress.update("idle", force=True)
     if usage is None or runtime is None:
         raise ValueError("stream ended without usage and the tensorfold block (include_usage)")
     return {"sent": sent, "headers": headers, "first": first, "last": last, "done": done, "pieces": pieces,
@@ -409,7 +464,7 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
             body = request_body(profile, item, step)
             before = host_snapshot()
             with MemSampler() as sampler:
-                record = stream_chat(url, body)
+                record = stream_chat(url, body, prompt_tokens=item["prompt_tokens"])
             ids = reply_token_ids(record)
             row = {"prompt": item["id"], "depth": item["depth"], "task": item["task"], "thinking": item["thinking"],
                    "step": index, "sampling": step["sampling"], "seed": body.get("seed"),
@@ -662,6 +717,7 @@ def main() -> int:
     for name in ("url", "profile", "prompts", "out"):
         r.add_argument(name)
     r.add_argument("--meta", help="JSON written by the runner: image id, args, env, cache dir, container")
+    r.add_argument("--progress", help="heartbeat file for a watchdog (see Progress)")
     r.add_argument("--label", default="")
     r.add_argument("--depths", default="", help="comma-separated depth names (default: all)")
     r.add_argument("--tasks", default="", help="comma-separated task names (default: all)")
@@ -677,6 +733,7 @@ def main() -> int:
     elif args.command == "prompts":
         prompts(args.url.rstrip("/"), args.profile, args.corpus, args.out)
     elif args.command == "run":
+        Progress.configure(args.progress)
         select = {"depths": [d for d in args.depths.split(",") if d], "tasks": [t for t in args.tasks.split(",") if t],
                   "thinking": None if args.thinking == "both" else args.thinking == "on"}
         run(args.url.rstrip("/"), args.profile, args.prompts, args.out, meta=args.meta, label=args.label,

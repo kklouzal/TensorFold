@@ -31,12 +31,12 @@ if sys.version_info < (3, 11):
 
 if __package__:
     from .benchmark_output import write_json
-    from .campaign_bench import (chat_request, corpus_text, file_sha256, first_difference, get_json, post_json,
-                                 reply_token_ids, stream_chat)
+    from .campaign_bench import (Progress, chat_request, corpus_text, file_sha256, first_difference, get_json,
+                                 post_json, reply_token_ids, stream_chat)
 else:
     from benchmark_output import write_json
-    from campaign_bench import (chat_request, corpus_text, file_sha256, first_difference, get_json, post_json,
-                                reply_token_ids, stream_chat)
+    from campaign_bench import (Progress, chat_request, corpus_text, file_sha256, first_difference, get_json,
+                                post_json, reply_token_ids, stream_chat)
 
 # ---------------------------------------------------------------------------------------------------------------
 # tool-call suite: strict-compatible schemas (every property required, no additional properties)
@@ -328,7 +328,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             messages = needle_prompt(text, lo, fractions, codes)
             body = {"model": profile["model"], "messages": messages, "temperature": 0, "max_tokens": budget,
                     "chat_template_kwargs": kwargs, "return_token_ids": True}
-            reply = stream_chat(url, body)
+            reply = stream_chat(url, body, prompt_tokens=target)
             answer = reply["content"]
             found = {vault: code in answer for vault, code in codes.items()}
             row = {"depth": depth, "target": target, "thinking": thinking,
@@ -508,10 +508,12 @@ def main() -> int:
     ap.add_argument("--min-needle-recall", type=float, help="minimum recall at every depth (unset: report)")
     ap.add_argument("--evict-requests", type=int, default=6,
                     help="distinct ~600-token prompts sent to displace kept prefix-cache states before a cold request")
+    ap.add_argument("--progress", help="heartbeat file for a watchdog (campaign_bench.Progress)")
     ap.add_argument("--allow-nondeterminism", action="store_true", help="report determinism without a verdict")
     ap.add_argument("--allow-greedy-identity-failure", action="store_true",
                     help="report drafted-vs-serial identity without a verdict")
     args = ap.parse_args()
+    Progress.configure(args.progress)
     url = args.url.rstrip("/")
     profile = json.loads(Path(args.profile).read_text())
     chosen = list(GATES) if args.gate == "all" else [args.gate]

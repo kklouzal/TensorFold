@@ -209,9 +209,26 @@ def _write_inputs(tmp_path):
 def test_run_records_every_scheduled_request_with_its_metrics(tmp_path):
     _write_inputs(tmp_path)
     seen = []
+    phases = []
+    original = bench.Progress.update
+
+    def recorded(phase, **fields):
+        phases.append(phase)
+        original(phase, **fields)
+
     with fake_server(seen) as url:
-        bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
-                  meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None})
+        bench.Progress.configure(str(tmp_path / "progress.json"))
+        bench.Progress.update = recorded
+        try:
+            bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
+                      meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None})
+        finally:
+            bench.Progress.update = original
+            beat = json.loads((tmp_path / "progress.json").read_text())
+            bench.Progress.configure(None)
+    # the watchdog heartbeat: each request prefills, then decodes (the role-free text chunks), then is idle
+    assert phases[:3] == ["prefill", "decode", "decode"] and phases.count("prefill") == 3 and beat["phase"] == "idle"
+    assert bench.expected_tokens({"prompt": [1, 2, 3]}) == 3 and bench.expected_tokens({"prompt": "abcd"}) == 2
     common = {"model": "m", "messages": [{"role": "user", "content": "x"}], "max_tokens": 8,
               "chat_template_kwargs": {"enable_thinking": False}, "return_token_ids": True, "ignore_eos": True,
               "stream": True, "stream_options": {"include_usage": True}}
