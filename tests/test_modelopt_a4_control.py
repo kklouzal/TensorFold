@@ -159,7 +159,7 @@ def test_real_cache_registration_admits_only_the_two_exact_complete_layouts():
     replacement = torch.empty(2 * cache.entry_bytes, dtype=torch.uint8)
     views, _ = cache._replacement_views(replacement, 2)
     assert [tuple(v.shape[0] for v in views[i]) for i in range(3)] == [(2,) * 6, (2,) * 4, (2,) * 6]
-    wrong = (*a4[:4], a4[4][:, :1], a4[5])
+    wrong = (*a4[:4], a4[4][:, :1].contiguous(), a4[5])
     with pytest.raises(ValueError, match="only its admitted"):
         cache.register(3, wrong)
     assert 3 not in cache._layers and 3 not in cache._policy.frequency

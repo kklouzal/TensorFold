@@ -330,13 +330,14 @@ def test_invalid_cgroup_membership_cannot_escape_controller_root(monkeypatch, me
 
 
 @pytest.fixture
-def ram_loader(monkeypatch):
+def ram_loader(monkeypatch, tmp_path):
     """CPU-only loader fault injection, including real success-path final cleanup."""
 
     torch = pytest.importorskip("torch")
     from tensorfold.cuda import expert_cache
     from tensorfold.families.qwen4_exp.cuda import exl3, weights
 
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": {}}))
     calls = []
     reader = NS(has=lambda name: False, layer_names=lambda *a: [],
                 get=lambda name: torch.ones((2, 8)), close=lambda: calls.append("reader close"),
@@ -348,7 +349,7 @@ def ram_loader(monkeypatch):
     rope = NS(inverse_frequencies=lambda framework: torch.zeros(1), metadata=lambda: {})
     cfg = NS(rope=rope, layers=0, quant="mlx", vocab=2)
     monkeypatch.setattr(ram_experts, "check", lambda *a, **k: None)
-    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: NS(gpu_bytes=2048, entry_bytes=1024, format="affine4"))
+    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: ram_experts.Layout(1024, 2, 2048, 0, 0, 0))
     monkeypatch.setattr(exl3, "is_exl3", lambda *a: False)
     monkeypatch.setattr(weights.Config, "read", lambda *a, **k: cfg)
     monkeypatch.setattr(weights, "_Reader", lambda *a: reader)
@@ -361,6 +362,14 @@ def ram_loader(monkeypatch):
         assert device == "cpu"
     monkeypatch.setattr(torch.cuda, "synchronize", cpu_fence)
     return NS(weights=weights, reader=reader, cache=cache, calls=calls)
+
+
+def test_invalid_quantization_metadata_precedes_reader_and_cache_acquisition(tmp_path, monkeypatch, ram_loader):
+    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": 42}))
+    monkeypatch.setattr(ram_loader.weights, "_Reader", lambda *_: pytest.fail("reader acquired before metadata refusal"))
+    with pytest.raises(ValueError, match="quantization"):
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
+    assert ram_loader.calls == []
 
 
 def test_reader_initialization_failure_precedes_expert_cache_acquisition(tmp_path, monkeypatch, ram_loader):
