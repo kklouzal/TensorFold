@@ -130,9 +130,13 @@ def serving(startup, monkeypatch):
     directory, _state, events, _options, _gathers = startup
     owner = object.__new__(Qwen27Engine)
     failures = NS(calibrate=None, start=None, close=None)
-    decoders, actors = [], []
+    decoders, actors, allocator_settings = [], [], []
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty_cache"))
-    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda settings: events.append("allocator"))
+    def configure_allocator(settings):
+        allocator_settings.append(settings)
+        events.append("allocator")
+
+    monkeypatch.setattr(torch._C, "_accelerator_setAllocatorSettings", configure_allocator)
 
     class Decoder:
         def __init__(self, w, draft, **kwargs):
@@ -170,7 +174,7 @@ def serving(startup, monkeypatch):
     monkeypatch.setattr(multi, "MultiDecoder", Decoder)
     monkeypatch.setattr(scheduler, "Scheduler", Actor)
     return NS(owner=owner, directory=directory, events=events,
-              failures=failures, decoders=decoders, actors=actors)
+              failures=failures, decoders=decoders, actors=actors, allocator_settings=allocator_settings)
 
 
 @pytest.mark.parametrize("tp,rank,streams", [(1, 0, 1), (2, 0, 1), (2, 1, 1),
@@ -183,6 +187,9 @@ def test_actual_constructor_serving_setup_keeps_serial_and_rank_bookkeeping(serv
         assert owner.eos == (3, 1) and owner.model_dir == fixture.directory
         assert owner.cache.keep == 4 and owner.cache.entries == []
         assert fixture.events.index("load") < fixture.events.index("empty_cache") < fixture.events.index("resume")
+        assert fixture.allocator_settings == (["expandable_segments:True"] if streams > 1 and tp == 1 else [])
+        if fixture.allocator_settings:
+            assert fixture.events.index("device") < fixture.events.index("allocator") < fixture.events.index("load")
         assert owner.concurrent is (streams > 1)
         if streams == 1:
             assert not fixture.decoders and not fixture.actors
@@ -301,7 +308,7 @@ def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup,
         def _prepare_serving(self, model_dir, *, streams, keep):
             super()._prepare_serving(model_dir, streams=streams, keep=keep, max_rows=self.max_rows)
 
-    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda settings: None)
+    monkeypatch.setattr(torch._C, "_accelerator_setAllocatorSettings", lambda settings: None)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
     monkeypatch.setattr(multi.MultiDecoder, "__init__", initialize_decoder)
     monkeypatch.setattr(multi.MultiDecoder, "calibrate", cold_calibration)
