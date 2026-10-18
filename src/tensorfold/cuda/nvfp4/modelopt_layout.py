@@ -47,7 +47,8 @@ def a4_read_plan(names, banks, count):
 
     Matrix fields are read directly through get_rows on the packing device;
     queuing them would duplicate I/O/uploads. Original scalar calibrations are
-    consumed through get on CPU. Unknown/non-A4/shared/MTP names keep their
+    rank0 values use get on CPU; singleton arrays retain direct CPU get_rows.
+    Unknown/non-A4/shared/MTP names keep their
     default CUDA prefetch. Preserve order and never infer format from a suffix.
     """
     if type(count) is not int or count <= 0:

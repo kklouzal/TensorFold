@@ -7,19 +7,22 @@ import pytest
 torch = pytest.importorskip("torch")
 from safetensors.torch import save_file
 
+from tensorfold.cuda.nvfp4.host_experts import _read
 from tensorfold.cuda.nvfp4.modelopt_layout import a4_read_plan
 from tensorfold.families.qwen4_exp.cuda.reader import _Reader
 
 
-def test_native_scalar_queue_returns_original_cpu_bits_without_cuda_or_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("shape", [(), (1,), (1, 1)])
+def test_native_scalar_queue_returns_original_cpu_bits_without_cuda_or_fallback(tmp_path, monkeypatch, dtype, shape):
     prefix = "model.language_model.layers.0.mlp"
     values = {}
     for projection in ("gate_proj", "up_proj", "down_proj"):
         base = prefix + ".experts.0." + projection
         values[base + ".weight"] = torch.arange(64 * 64, dtype=torch.int64).to(torch.uint8).reshape(64, 64)
         values[base + ".weight_scale"] = torch.full((64, 8), 0x23, dtype=torch.uint8).view(torch.float8_e4m3fn)
-        values[base + ".input_scale"] = torch.tensor(0x3b350913, dtype=torch.int32).view(torch.float32)
-        values[base + ".weight_scale_2"] = torch.tensor(0x3959e79f, dtype=torch.int32).view(torch.float32)
+        values[base + ".input_scale"] = torch.full(shape, .001964750699698925, dtype=dtype)
+        values[base + ".weight_scale_2"] = torch.full(shape, .00020781018247362226, dtype=dtype)
     file = tmp_path / "bank.safetensors"
     save_file(values, str(file))
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": dict.fromkeys(values, file.name)}))
@@ -41,9 +44,10 @@ def test_native_scalar_queue_returns_original_cpu_bits_without_cuda_or_fallback(
         reader.queue_host_scalars(host)
         assert reader.reads.ahead == accepted
         for name in host:
-            got = reader.get(name)
+            got = _read(reader, name)
             assert got.device.type == "cpu" and got.shape == values[name].shape
-            assert torch.equal(got.view(torch.int32), values[name].view(torch.int32))
+            assert got.dtype == dtype
+            assert torch.equal(got.reshape(-1).view(torch.uint8), values[name].reshape(-1).view(torch.uint8))
         assert not reader.reads.ahead and reader.reads.stream is None
     finally:
         reader.close()
@@ -63,8 +67,8 @@ def test_queue_default_device_and_host_refusal_preserve_the_existing_reader_cont
     reader.queue_host_scalars(["value"])
     assert recorded[-1] == ([("value", "bank", 108, 112, None)], None)
     before = len(recorded)
-    reader.info = lambda _name: {"dtype": "F32", "shape": (1,)}
-    with pytest.raises(ValueError, match="F32 scalar"):
+    reader.info = lambda _name: {"dtype": "F32", "shape": (2,)}
+    with pytest.raises(ValueError, match="floating singleton"):
         reader.queue_host_scalars(["value"])
     assert len(recorded) == before
 
@@ -83,7 +87,7 @@ def test_cpu_scalar_queue_never_coalesces_unrequested_matrix_gaps():
                         ([("c", "bank", 4096, 4100, None)], None)]
     assert sum(items[-1][3] - items[0][2] for items, _ in recorded) == 12
     reader.info = lambda _name: {"data_offsets": [0, 4], "path": "bank", "byte_offset": 0,
-                                "dtype": "F32", "shape": (1,)}
-    with pytest.raises(ValueError, match="F32 scalar"):
+                                "dtype": "F32", "shape": (2,)}
+    with pytest.raises(ValueError, match="floating singleton"):
         reader.queue_host_scalars(["a"])
     assert len(recorded) == 2
