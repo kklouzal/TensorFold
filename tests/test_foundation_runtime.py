@@ -344,6 +344,7 @@ def test_vision_mapping_requires_explicit_phase_and_allows_exact_two_roles(prepa
     assert runtime.mapped_runtime(contract, map_line(prepared.root / "libcuda.so.1")) == []
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux ELF linker and /proc/self/maps integration")
 def test_actual_elf_parser_dependency_order_and_maps(runtime, tmp_path):
     compiler = shutil.which("cc")
     if compiler is None or shutil.which("readelf") is None:
