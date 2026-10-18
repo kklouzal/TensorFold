@@ -437,6 +437,7 @@ class MultiDecoder:
             graphs.capture(prepared=True)  # no allocations into the graph pool since prepare_capture above
         except BaseException as primary:
             self._failed_graphs = graphs
+            graphs.retain_failure(primary)
             if graphs.admitted:
                 try:
                     self._publish_graphs(graphs, resolution, captured=False)

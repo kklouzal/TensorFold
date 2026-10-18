@@ -35,7 +35,7 @@ from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_request
 from . import attn_multi, gdn_multi
 from .forward import _kv_begin, _kv_check, compute, ple_conv_streams, stage, stage_late
 from .mtp import mtp_compute, mtp_stage
-from .service_memory import private_pool_spare
+from .service_memory import failure_frame_values, private_pool_spare
 
 MIB = 1 << 20
 
@@ -115,6 +115,16 @@ class RoundGraphs:
         self.private_spare_bytes = 0
         self.allocator_record: dict = {}
         self.admitted = False
+        self.failure = self.failure_traceback = self.failure_cause = self.failure_context = None
+        self.failure_frames = None
+
+    def retain_failure(self, primary) -> None:
+        """Own the original tensor-bearing frames independently of later exception traceback clearing."""
+        if self.failure is None:
+            self.failure_traceback = BaseException.__traceback__.__get__(primary)
+            self.failure_cause = BaseException.__cause__.__get__(primary)
+            self.failure_context = BaseException.__context__.__get__(primary)
+            self.failure = primary
 
     # -- replay ------------------------------------------------------------------------------------------------
     def verify_forward(self, segs) -> torch.Tensor | None:
@@ -222,6 +232,7 @@ class RoundGraphs:
             self._keys(states)
         except BaseException as error:
             primary = error
+            self.retain_failure(primary)
         finally:
             if enabled:
                 gc.enable()
@@ -257,6 +268,9 @@ class RoundGraphs:
             raise_failures(primary, [])
 
     def _account_pool(self) -> None:
+        if self.failure is not None and self.failure_frames is None:
+            self.failure_frames = failure_frame_values(self.failure, self.failure_traceback,
+                                                        self.failure_cause, self.failure_context)
         try:
             segments = torch.cuda.memory_snapshot(mempool_id=self.pool, include_traces=False)
             self.private_spare_bytes = private_pool_spare(segments, self.pool, self.dec.w.device.index or 0)
