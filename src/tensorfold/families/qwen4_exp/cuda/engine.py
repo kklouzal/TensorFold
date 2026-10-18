@@ -148,7 +148,7 @@ class FlashNextEngine:
         rows0 = chunk or PREFILL_ROWS
         from tensorfold.cuda import precision
         from tensorfold.cuda.nvfp4.modelopt_layout import (
-            activation_banks, resident_loading_host_bytes, runtime_workspace_bytes)
+            activation_banks, loading_device_bytes, resident_loading_host_bytes, runtime_workspace_bytes)
 
         modelopt = not exl3 and quant_method(read_config(model_dir)) == "modelopt"
         native_a4 = (modelopt
@@ -202,6 +202,14 @@ class FlashNextEngine:
                                  "expert budget or load the experts resident")
         automatic_capacity = {}
         numeric_capacity = {}
+        if a4_banks:
+            from tensorfold.cuda.capacity import Weights, estimate_weights
+
+            def a4_loading_weights(directory):
+                original = estimate_weights(directory, weight_rule, rank=rank)
+                return Weights(original.resident, max(original.staging, loading_device_bytes(text)), original.mapped), original.staging
+
+            numeric_capacity["weight_estimator"] = a4_loading_weights
         ram_layout = None
         if vram_experts is not None:
             from tensorfold.cuda.capacity import Geometry, cuda_reserve_bytes

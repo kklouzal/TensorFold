@@ -72,32 +72,17 @@ def runtime_workspace_bytes(text, *, rows, prompt_rows, mtp_a4=False, cached=Fal
 
 
 def resident_loading_host_bytes(text):
-    """One complete six-field CPU bank plus a projection's raw/pack/join peak.
+    """Four ordinary CPU calibration arrays; resident payload packing stays GPU.
 
-    Banks transfer to CUDA sequentially and release their CPU authority before
-    the next bank. Reader staging is already charged by ordinary weight loading.
+    Original read staging is charged by ordinary weight loading. No complete
+    CPU packed authority or D2H payload is retained for resident A4 banks.
     """
-    width, dims, count = text["moe_intermediate_size"], text["hidden_size"], text["num_experts"]
-    blob = 9 * width * dims // 16
-    return count * (3 * blob + 24) + 3 * blob
+    return 24 * text["num_experts"]
 
 
-def expert_group_policy(policies):
-    """One preparation-time arithmetic policy for all expert ranks.
-
-    A heterogeneous group retains the supported W4A16 region uniformly; its
-    expert assignment must not select activation precision incidentally.
-    """
-    if (not isinstance(policies, list) or not policies or any(not isinstance(p, list) or len(p) != 2
-            or p[0] not in ("checkpoint", "full") or type(p[1]) is not bool for p in policies)):
-        raise ValueError("expert rank math capabilities require a mode and native-FP4 boolean")
-    modes = {p[0] for p in policies}
-    if len(modes) != 1:
-        raise ValueError("expert ranks require matching explicit precision modes")
-    native = policies[0][0] == "checkpoint" and all(p[1] for p in policies)
-    reason = ("all-native" if native else "explicit-full" if policies[0][0] == "full" else
-              "mixed-capability-full" if any(p[1] for p in policies) else "non-native-full")
-    return native, reason
+def loading_device_bytes(text):
+    """GPU raw/permuted/joined peak for one complete projection's byte packing."""
+    return 3 * (9 * text["moe_intermediate_size"] * text["hidden_size"] // 16)
 
 
 def cached_control_host_bytes(text):
