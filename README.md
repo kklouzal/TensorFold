@@ -83,7 +83,7 @@ The CUDA backend defaults to a compute-capability floor of **8.9** and refuses u
 
 ### Pinned container stack
 
-The [Dockerfile](deploy/gb10/Dockerfile) now requires explicit generated native foundation inputs and protects the CUDA SDK and selected nightly package closure in a separate prefix. See the [managed foundation build and audit contract](deploy/gb10/foundation.md). The immutable latest-base candidate is CUDA13.4.3 cuDNN development; its fresh native/model qualification is separate from the historical results below.
+The [Dockerfile](deploy/gb10/Dockerfile) now requires explicit generated native foundation inputs and protects the CUDA SDK and selected nightly package closure in a separate prefix. See the [managed foundation build and audit contract](deploy/gb10/foundation.md). The selected design uses CUDA13.4.3 cuDNN development, genuine official nightlies, native core providers and explicitly protected TorchVision bundled-runtime exceptions. Fresh installed-image/GPU/model qualification remains separate from the historical results below.
 
 The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference development image:
 
@@ -91,7 +91,7 @@ The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference de
 nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:f86c199a302a3a7405d5f055adf1311cd660e85d8a66cf452be6eb45d5768639
 ```
 
-The recorded **2026-10-06** stack is CUDA **13.4.1**, CPython **3.12**, PyTorch **`2.16.0.dev20261006+cu134`**, TorchVision **`0.30.0.dev20261006+cu134`**, Triton **`3.9.0+gitaad2a60d`**, and xgrammar **0.2.8**. These are reproducible pins, rather than a floating “latest” install. [ARM64 pins](deploy/gb10/nightly-pins.json) and [AMD64 pins](deploy/gb10/nightly-pins-amd64.json) contain separate child-image and wheel hashes; matching runtime/test lock files are installed with hash checks. Architecture selection rejects a mismatched native target.
+The recorded **2026-10-06** stack is CUDA **13.4.1**, CPython **3.12**, PyTorch **`2.16.0.dev20261006+cu134`**, TorchVision **`0.30.0.dev20261006+cu134`**, Triton **`3.9.0+gitaad2a60d`**, and xgrammar **0.2.8**. These are reproducible pins, rather than a floating “latest” install. [ARM64 pins](deploy/gb10/history/20261006/nightly-pins.json) and [AMD64 pins](deploy/gb10/history/20261006/nightly-pins-amd64.json) contain separate child-image and wheel hashes; matching runtime/test lock files are installed with hash checks. Architecture selection rejects a mismatched native target.
 
 The image includes the extension build toolchain and isolates compiler caches by architecture and CUDA/Torch/Triton identity. It contains no model weights. Install [Docker Engine](https://docs.docker.com/engine/install/), a compatible NVIDIA host driver, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) first. The Toolkit guide covers `nvidia-ctk runtime configure --runtime=docker` and restarting the host Docker daemon; do that host setup before building or running the service. The compatibility launcher validates the effective driver/runtime environment. Forward compatibility on a tested GB10 driver does not establish support for every desktop driver.
 

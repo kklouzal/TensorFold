@@ -36,6 +36,7 @@ def prepare_environment() -> dict[str, str]:
     from foundation_guard import read_json, verify
     environment = dict(os.environ)
     environment.pop("_CUDA_COMPAT_STATUS", None)
+    environment.pop("TF_FOUNDATION_RUNTIME_PHASE", None)
     state_path = environment.get("TF_FOUNDATION_STATE")
     if not state_path:
         raise RuntimeError("CUDA launch requires its sealed foundation state")

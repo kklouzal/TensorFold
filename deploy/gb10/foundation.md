@@ -1,10 +1,11 @@
 # Managed CUDA foundation
 
 The Docker build requires an immutable official NGC CUDA development base and
-the selected genuine official nightly wheels. CUDA13.4.3 is the newest audited
-base candidate; an official base matching the available nightly is permitted
-when verified redirection cannot use the newer SDK. The actual selected pin
-manifest and fresh qualification identify the resulting foundation. The base supplies the CUDA
+the selected genuine official nightly wheels. The selected base is CUDA13.4.3 cuDNN development. Official AMD64 roots use
+Torch20261017, TorchVision20261007 and Tritonfc8; ARM64 uses its distinct official
+Torch20261014/TorchVision20261006 artifacts. The selected pin manifest names
+actual whole-wheel hashes. CPU provider selection passed separately; fresh
+installed-image/GPU/model qualification and ARM64 execution remain separate gates. The base supplies the CUDA
 headers, compiler, tools, cuDNN and NCCL. The selected nightly Torch/Triton and
 all their Python dependency versions belong to a separate protected prefix,
 `/opt/tensorfold-foundation`; TensorFold, application dependencies and test
@@ -25,7 +26,7 @@ Triton wheel identities. Pin schema2
 records the immutable base, target, distinct cache key, explicit
 `foundation_roots` with required extras, and exact whole-wheel hashes.
 
-A native pip dry-run report must include the actual selected full application
+A pip dry-run report must include the actual selected full application
 and verification dependency closure. Binary wheel acquisition remains official
 HTTPS, including the official `download-r2.pytorch.org` redirect host; local
 file wheel reports are refused.
@@ -37,12 +38,15 @@ python3 deploy/gb10/lock_dependencies.py --architecture amd64 \
   --report generated-amd64/resolver.json --output-directory generated-amd64
 ```
 
-Use `--architecture arm64` and its native pin/report inputs for ARM64. The
+Use `--architecture arm64` with its actual ARM64 wheel pins. Supported
+`--cross-report` generation preserves the real AMD64 resolver environment and
+checks target ARM64 markers/tags/closure; it is metadata validation, not ARM64
+execution. A native ARM64 report can instead be generated on that host. The
 outputs are separate foundation/runtime/test locks, exact protected constraints
 and a provenance manifest. Do not hand-edit generated locks. The selector
 validates the base and every relationship between pins, manifest and all locks
-before publishing the native selection. Historical checked-in schema1 pins
-retain their earlier evidence; they cannot stand in for newly generated inputs.
+before publishing the native selection. Earlier schema1 data is archived byte-for-byte under `history/20261006`; it is
+evidence and a test oracle, not a deployment fallback.
 A cross-architecture resolver report does not qualify native execution.
 
 Put any explicitly declared native add-on `.deb` artifacts and acquisition
@@ -51,7 +55,7 @@ receipts in a minimal regular-file artifact directory.
 Only these artifacts are installed; missing Debian dependencies fail the build
 rather than resolving another toolkit. Add-ons cannot replace installed base
 packages. ARM64 remains a supported native build target; its image requires
-actual official ARM64 wheel hashes and a native resolver report. An AMD64 wheel
+actual official ARM64 wheel hashes and a validated native or explicitly cross-resolved report. An AMD64 wheel
 or invented hash cannot qualify it.
 
 ## Build and audit
@@ -101,7 +105,14 @@ execute GPU JPEG decoding. It validates the effective Driver API in fresh childr
 forward-compatibility libraries only after a successful actual-device probe.
 NVIDIA's entrypoint still executes; final native-provider proof runs after its
 environment transformations. A stale compatibility marker grants no admission.
-Triton's supported compiler/tool/libdevice overrides are checked against actual
+The final consumer interpreter preloads the sealed core libraries with strong
+process-lifetime owners before Torch; the supported `TORCH_USE_RTLD_GLOBAL`
+selection avoids its wheel-provider preload. Preparatory launcher/driver/compiler
+interpreters skip these native preloads. Only exact official TorchVision RECORD
+members for bundled CUDART/NVJPEG are allowed as additional physical providers
+under the approved no-override exception. CUDA bindings' static bundled CUDART
+is recorded separately. The graph therefore does not claim every component uses
+only the base runtime. Triton's supported compiler/tool/libdevice overrides are checked against actual
 resolved providers. An owned compiler wrapper puts the selected SDK headers
 first without changing Triton source.
 

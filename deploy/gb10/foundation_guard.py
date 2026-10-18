@@ -164,7 +164,7 @@ def install_native_addons(manifest: dict, *, artifacts: Path, sdk_baseline: Path
     current = native_packages(pattern)
     if current != sdk_versions(sdk_baseline.read_text(), pattern):
         raise ValueError("native addons require the unchanged base SDK")
-    artifacts = []
+    packages = []
     for item in manifest.get("native_addons", []):
         path = artifacts / item["artifact"]
         if path.parent != artifacts or digest(path) != item["sha256"]:
@@ -178,9 +178,9 @@ def install_native_addons(manifest: dict, *, artifacts: Path, sdk_baseline: Path
                                  check=False, capture_output=True, text=True)
         if present.returncode == 0 and present.stdout.strip() == "installed":
             raise ValueError("native addon cannot replace an installed base package")
-        artifacts.append(str(path))
-    if artifacts:
-        subprocess.run(["dpkg", "--install", *artifacts], check=True)
+        packages.append(str(path))
+    if packages:
+        subprocess.run(["dpkg", "--install", *packages], check=True)
         subprocess.run(["apt-mark", "hold", *(item["package"] for item in manifest["native_addons"])], check=True)
     check_base_sdk(manifest, sdk_baseline, pattern)
 
@@ -221,6 +221,10 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
     site.mkdir(parents=True, exist_ok=True)
     activation = site / "00_tensorfold_foundation.pth"
     bootstrap = site / "tensorfold_foundation_bootstrap.py"
+    runtime_helper = site / "tensorfold_foundation_runtime.py"
+    policy_helper = site / "foundation_policy.py"
+    shutil.copyfile(Path(__file__).with_name("foundation_runtime.py"), runtime_helper)
+    shutil.copyfile(Path(__file__).with_name("foundation_policy.py"), policy_helper)
     shutil.copyfile(Path(__file__).with_name("foundation_bootstrap.py"), bootstrap)
     hook = "try:\n import tensorfold_foundation_bootstrap\nexcept BaseException:\n import os; os._exit(78)"
     activation.write_text(f"import sys; sys.path.insert(0, {str(site_directory(foundation))!r}); exec({hook!r})\n")
@@ -231,11 +235,12 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
     config = application / "pip.conf"
     config.write_text(f"[global]\nrequire-virtualenv = true\nconstraint = {constraint}\n")
     compiler_packages = native_packages(COMPILER_PACKAGES)
+    compiler_files = native_files(compiler_packages)
     addons = {item["package"]: item["version"] for item in manifest.get("native_addons", [])}
     native = native_files(before | addons)
     nccl_library, nccl_version = select_nccl(manifest, foundation, native)
     addon_artifacts = {artifacts / item["artifact"]: item["sha256"] for item in manifest.get("native_addons", [])}
-    files = set(addon_artifacts) | tree_files(foundation) | native | native_files(compiler_packages) | {manifest_path, constraint, activation, config, bootstrap, sdk_baseline, sdk_baseline.with_name("base-sdk.sha256"), sdk_baseline.with_name("base-sdk-links.tsv"), pattern_path}
+    files = set(addon_artifacts) | tree_files(foundation) | native | compiler_files | {manifest_path, constraint, activation, config, bootstrap, runtime_helper, policy_helper, sdk_baseline, sdk_baseline.with_name("base-sdk.sha256"), sdk_baseline.with_name("base-sdk-links.tsv"), pattern_path}
     for key in ("tools", "compilers", "wrappers", "helpers"):
         files.update(Path(row["path"]) for row in toolchain[key].values())
     files.update(Path(row["path"]) for row in toolchain["headers"])
@@ -249,6 +254,17 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
              "files": {str(path): identity(path, full=True) for path in sorted(files)}}
     if any(state["files"][str(path)]["sha256"] != expected for path, expected in addon_artifacts.items()):
         raise ValueError("native addon artifact changed before sealing")
+    from foundation_runtime import capture_runtime
+    state["runtime"] = capture_runtime(foundation=foundation, manifest=manifest, native_files=native | compiler_files,
+        sealed_files=state["files"], nccl_library=nccl_library, cupti_library=toolchain["cupti"]["path"])
+    profile_path = state_path.with_name("runtime-profile.json")
+    state["runtime_profile_path"] = str(profile_path)
+    write_json(profile_path, state["runtime"])
+    state["files"][str(profile_path)] = identity(profile_path, full=True)
+    cpu_driver = (Path(toolchain["cuda_home"]) / "compat/libcuda.so.1").resolve(strict=True)
+    if str(cpu_driver) not in state["native_files"]:
+        raise ValueError("CPU runtime validation requires the sealed compatibility driver for load-only admission")
+    state["cpu_driver"] = str(cpu_driver)
     state["cache_key"] = hashlib.sha256(json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     publish_state(state, state_path)
     return state
@@ -259,6 +275,8 @@ def publish_state(state: dict, path: Path) -> None:
     from foundation_tools import toolchain_environment
     values = toolchain_environment(state["toolchain"], cache_root="/cache/" + state["cache_key"], verify_content=False)
     values.update(TF_FOUNDATION_STATE=str(path), TF_NCCL_LIB=state["nccl_library"],
+                  TF_FOUNDATION_RUNTIME_PROFILE=state["runtime_profile_path"], TF_FOUNDATION_CPU_DRIVER=state["cpu_driver"],
+                  TORCH_USE_RTLD_GLOBAL="1", CUDA_PATH=state["toolchain"]["cuda_home"],
                   PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
     environment_file = site_directory(Path(state["application"])) / "tensorfold-foundation-environment.json"
     write_json(environment_file, values)
@@ -302,7 +320,20 @@ def environment(state: dict) -> dict[str, str]:
     override = os.environ.get("TF_NCCL_LIB")
     if override and Path(override).resolve(strict=True) != Path(state["nccl_library"]):
         raise ValueError("TF_NCCL_LIB conflicts with selected foundation provider")
-    values.update(TF_NCCL_LIB=state["nccl_library"], PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    values.update(TF_NCCL_LIB=state["nccl_library"], TF_FOUNDATION_RUNTIME_PROFILE=state["runtime_profile_path"],
+                  TF_FOUNDATION_CPU_DRIVER=state["cpu_driver"], TORCH_USE_RTLD_GLOBAL="1",
+                  CUDA_PATH=state["toolchain"]["cuda_home"], PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    cupti = Path(state["toolchain"]["cupti"]["path"]).resolve(strict=True)
+    requested_nvtx = os.environ.get("NVTX_INJECTION64_PATH")
+    if requested_nvtx:
+        if Path(requested_nvtx).resolve(strict=True) != cupti:
+            raise ValueError("NVTX_INJECTION64_PATH conflicts with selected foundation CUPTI")
+        values["NVTX_INJECTION64_PATH"] = str(cupti)
+    libraries = [part for part in os.environ.get("LD_LIBRARY_PATH", "").split(":") if part]
+    compat = str(Path(state["toolchain"]["cuda_home"]) / "compat")
+    position = 1 if libraries[:1] == [compat] else 0
+    libraries.insert(position, state["toolchain"]["cupti_dir"])
+    values["LD_LIBRARY_PATH"] = ":".join(dict.fromkeys(libraries))
     values["PATH"] = state["toolchain"]["cuda_home"] + "/bin:" + os.environ.get("PATH", "")
     return values
 
@@ -321,17 +352,21 @@ def vision_proof(torch, torchvision) -> dict:
 
 
 def native_proof(state: dict) -> dict:
-    """Run only in a fresh child after FC/loader environment publication."""
+    """Inspect the same-process prepared profile before and after actual consumers."""
+    from foundation_runtime import mapped_runtime
+    bootstrap = sys.modules.get("tensorfold_foundation_bootstrap")
+    expected = state["files"][state["runtime_profile_path"]]["sha256"]
+    if (bootstrap is None or not bootstrap.RUNTIME_OWNERS or expected != bootstrap.ACTIVE_PROFILE_SHA256):
+        raise ValueError("native proof requires same-process foundation activation through guard run or the CUDA launcher")
+    before = mapped_runtime(state["runtime"])
     import torch
-    import torchvision
     import triton
     from foundation_tools import verify_triton_selection
     root = Path(state["foundation"])
-    for module in (torch, triton, torchvision):
+    for module in (torch, triton):
         if not Path(module.__file__).resolve().is_relative_to(root):
             raise ValueError(f"native module does not come from foundation: {module.__name__}")
     tools = verify_triton_selection(state["toolchain"], triton)
-    vision = vision_proof(torch, torchvision)
     if Path(os.environ.get("TF_NCCL_LIB", "")).resolve(strict=True) != Path(state["nccl_library"]):
         raise ValueError("TF_NCCL_LIB conflicts with selected foundation provider")
     import ctypes
@@ -343,24 +378,23 @@ def native_proof(state: dict) -> dict:
     status = nccl.ncclGetVersion(ctypes.byref(version))
     if status != 0 or version.value <= 0 or (state["nccl_version"] is not None and version.value != state["nccl_version"]):
         raise ValueError(f"selected NCCL native API version differs: status={status}, version={version.value}")
-    approved = set(state["native_files"]) | {state["nccl_library"]}
-    loaded = []
-    for line in Path("/proc/self/maps").read_text().splitlines():
-        parts = line.split(maxsplit=5)
-        if len(parts) != 6 or not parts[5].startswith("/"):
-            continue
-        path = Path(parts[5]).resolve(strict=True)
-        # libcuda is the host/selected forward-compat driver, not the base SDK.
-        if re.match(r"lib(?:cudart|cudnn|nccl|cublas|cufft|cufile|cupti|curand|cusolver|cusparse|cudss|npp|nvjpeg|nvfatbin|nvptxcompiler|nvrtc|nvJitLink|nvToolsExt|nvshmem)", path.name):
-            if path.name.startswith("libnccl.so") and str(path) != state["nccl_library"]:
-                raise ValueError(f"second physical NCCL provider is loaded: {path}")
-            if str(path) not in approved:
-                raise ValueError(f"loaded CUDA library is outside sealed providers: {path}")
-            loaded.append(str(path))
+    core = mapped_runtime(state["runtime"])
+    import torchvision
+    if not Path(torchvision.__file__).resolve().is_relative_to(root):
+        raise ValueError("TorchVision does not come from protected foundation")
+    vision = vision_proof(torch, torchvision)
+    providers = mapped_runtime(state["runtime"], allow_vision=True)
     if torch.cuda.is_initialized():
         raise ValueError("foundation startup proof unexpectedly initialized CUDA")
-    return {"torch": torch.__version__, "triton": triton.__version__, "loaded_sdk": sorted(set(loaded)),
-            "tools": tools, "torchvision": torchvision.__version__, "vision": vision, "nccl_library": state["nccl_library"], "nccl_version": version.value, "cuda_initialized": False}
+    static = state["manifest"]["roles"]["foundation"].get("cuda-bindings")
+    return {"torch": torch.__version__, "triton": triton.__version__, "providers_before_torch": before,
+            "providers_after_torch": core, "providers": providers, "loaded_sdk": [row["path"] for row in providers],
+            "tools": tools, "torchvision": torchvision.__version__, "vision": vision,
+            "nccl_library": state["nccl_library"], "nccl_version": version.value, "cuda_initialized": False,
+            "driver_role": bootstrap.DRIVER_ROLE,
+            "static_runtime_exceptions": {} if static is None else {"cuda-bindings": {
+                "version": static["version"], "url": static["url"], "sha256": static["sha256"],
+                "authority": "official static CUDART has no supported replacement; user permits protected component runtime"}}}
 
 
 def role_lines(manifest: dict, role: str) -> list[str]:
@@ -461,6 +495,7 @@ def main() -> None:
             if not argv:
                 parser.error("run requires an executable after --")
             values = dict(os.environ, **environment(state))
+            values.pop("TF_FOUNDATION_RUNTIME_PHASE", None)
             if args.command == "checked-run":
                 expected = json.loads(values["TF_CUDA_DRIVER_PROOF"])
                 selected = subprocess.run([sys.executable, str(Path(__file__).with_name("cuda_driver_probe.py")),
@@ -470,7 +505,12 @@ def main() -> None:
                 if actual["library"] != expected["library"]:
                     raise ValueError("post-entrypoint driver provider differs from admitted CUDA proof")
                 values["TF_CUDA_DRIVER_PROOF"] = json.dumps(dict(actual, mode=expected["mode"]))
+                values["TF_FOUNDATION_RUNTIME_PHASE"] = "cuda"
                 subprocess.run([sys.executable, str(Path(__file__).resolve()), "native-proof"], env=values, check=True)
+            else:
+                if any(Path("/dev").glob("nvidia[0-9]*")):
+                    raise RuntimeError("CPU guard run has NVIDIA devices; use the CUDA launcher for actual driver admission")
+                values["TF_FOUNDATION_RUNTIME_PHASE"] = "cpu"
             os.execvpe(argv[0], argv, values)
         elif args.command in ("verify", "audit"):
             verify(state, full=args.command == "audit")

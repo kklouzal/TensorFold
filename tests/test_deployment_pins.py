@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy/gb10"
+HISTORY = DEPLOY / "history/20261006"
 
 
 @pytest.fixture
@@ -27,9 +28,9 @@ def scripts(monkeypatch):
 
 def report_and_pins(architecture="amd64", machine="x86_64"):
     suffix = "-amd64" if architecture == "amd64" else ""
-    pins = json.loads((DEPLOY / ("nightly-pins" + suffix + ".json")).read_text())
-    # The checked-in schema-1 pins retain historical evidence until the owner
-    # selects a complete latest foundation. These reports are synthetic only.
+    pins = json.loads((HISTORY / ("nightly-pins" + suffix + ".json")).read_text())
+    # Archived schema-1 pins provide independent historical seeds. Reports
+    # derived from them here are synthetic and do not select deployment inputs.
     pins.update({"schema_version": 2,
                  "base_index": "nvcr.io/nvidia/cuda-dl-base:synthetic@sha256:" + "b" * 64,
                  "foundation_roots": list(pins["wheels"])})
@@ -119,7 +120,7 @@ def test_cross_kernel_markers_need_native_environment(scripts):
 
 
 def test_arm64_audited_nightlies_remain_fixed():
-    pins = json.loads((DEPLOY / "nightly-pins.json").read_text())
+    pins = json.loads((HISTORY / "nightly-pins.json").read_text())
     assert pins["base"].endswith("sha256:b2d6023181b13e4ca5bc770cbad5e2585d199cf01cb757d58896345b457f7e68")
     assert {name: value["sha256"] for name, value in pins["wheels"].items()} == {
         "torch": "f36987f1c8dc4587b43be718752ca195398017ab7cc6e2c77bbfbcae59e31f20",
