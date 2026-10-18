@@ -13,7 +13,7 @@ errors, rather than permission to reinterpret weights.
 | Dense Qwen CUDA NVFP4 activations | Per-projection declared activation schemes, validated storage/scales and actual GPU capabilities | `--precision full` requests BF16 activations against stored weights; `--precision checkpoint` selects declared supported math |
 | Reply EOS | Model, generation and tokenizer EOS declarations, deduplicated in stable order | Repeat `--eos-token-id ID` to replace reply EOS IDs |
 | Chat formatting | Checkpoint Jinja or tokenizer-config template, including named `default`/`tool_use` templates | `--chat-template FILE` or `--chat-template-name NAME` |
-| Sampling | `generation_config.json`: `do_sample`, `temperature`, `top_k`, `top_p`, `min_p` | Corresponding launch flags, then request fields |
+| Sampling | `generation_config.json`: `do_sample`, `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty` | Corresponding launch flags (and `--presence-penalty`, `--frequency-penalty`), then request fields |
 | Reply limit | `generation_config.json` `max_new_tokens`, otherwise 4096 | `--max-tokens`, then the request's reply limit |
 | Context/RoPE | Model's supported native window and RoPE metadata, fitted to available memory | `--context` and supported family-specific RoPE flags |
 

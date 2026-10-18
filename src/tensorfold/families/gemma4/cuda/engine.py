@@ -248,9 +248,10 @@ class Gemma4Engine:
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True,
                  stop_eos: bool = True, *, vision=None, constraint=None,
-                 background: bool = False, progress=None) -> dict[str, Any]:
+                 background: bool = False, progress=None, penalties=None) -> dict[str, Any]:
         import torch
         from tensorfold.cuda.sampling import sample_rows
+        from tensorfold.engine.penalties import History
 
         prompt = _prompt_ids(prompt, self.target.config.vocab)
         if type(max_tokens) is not int or max_tokens < 1:
@@ -259,6 +260,7 @@ class Gemma4Engine:
             raise ValueError(f"Gemma4 prompt and reply exceed the {self.context_window}-token admitted context")
         if vision is not None and tuple(prompt[:len(vision.token_ids)]) != tuple(vision.token_ids):
             raise ValueError("Gemma4 prepared media does not belong to this prompt")
+        history = History(penalties, prompt) if penalties is not None and penalties.active else None
         queued = time.perf_counter()
         with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
             started = time.perf_counter()
@@ -268,9 +270,13 @@ class Gemma4Engine:
             logits = logits.clone() if constraint is not None else logits
             if constraint is not None:
                 constraint.mask(logits)
+            if history is not None:              # never in place on the immutable prefix entry's logits
+                logits = history.apply(logits, copy=constraint is None)
             first = sample_rows(logits, [len(prompt)], sampling)[0]
             if constraint is not None:
                 constraint.advance([first])
+            if history is not None:
+                history.extend([first])
             prefill_s = time.perf_counter() - started
             decoded = time.perf_counter()
             out = [first]
@@ -286,9 +292,10 @@ class Gemma4Engine:
                 inputs = [out[-1]]
                 if active_drafts and room > 1:
                     limit = min(self.max_rows - 1, room - 1)
-                    launched = self.head.launch_blocks([companion], inputs, limit, samplings=[sampling])[0]
-                    # Proposals start at the anchor's position + 1, where coupled drafts key the target's noise.
-                    guesses, parents, _ = self.head.finish_tree(launched, state.position + 1, limit, sampling)
+                    launched = self.head.launch_blocks([companion], inputs, limit, histories=[history])[0]
+                    # The proposals start at the anchor's position + 1 (the drafter contract's context length).
+                    guesses, parents, _ = self.head.finish_tree(launched, state.position + 1, limit, sampling,
+                                                                history)
                     if parents != list(range(-1, len(guesses) - 1)):
                         raise RuntimeError("Gemma4 DFlash returned a non-chain proposal")
                     if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
@@ -305,8 +312,12 @@ class Gemma4Engine:
                 logits = result.logits
                 if constraint is not None:
                     constraint.mask(logits, window)
+                if history is not None:          # row r follows the reply and the drafts inputs[1..r]
+                    logits = history.apply(logits, inputs)
                 sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
                 chosen = _accepted(sampled, inputs, room, eos)
+                if history is not None:
+                    history.extend(chosen)
                 state.rollback(position + len(chosen))
                 if active_drafts:
                     companion = self.head.add_taps_streams([companion], [self._taps(result, len(chosen))])[0]

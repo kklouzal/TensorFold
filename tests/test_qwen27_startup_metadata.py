@@ -339,7 +339,7 @@ def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup,
             pass
 
         class Draft:
-            def launch_blocks(self, snapshots, pending, guesses, block, samplings=None):
+            def launch_blocks(self, snapshots, pending, guesses, block, histories=None):
                 assert snapshots == ["snapshot"] and pending == [2]
                 assert guesses == expected - 1 and block == expected
                 raise ProposalReached

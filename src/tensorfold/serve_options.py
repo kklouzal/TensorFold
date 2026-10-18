@@ -27,7 +27,9 @@ def check_numbers(args: argparse.Namespace) -> None:
     for name in ("max_http_connections", "max_pending_requests", "max_engine_calls"):
         optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
-    for name in (*budgets, "temperature", "top_p", "min_p", "decode_share", "mtp_confidence", "yarn_factor"):
+    penalties = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+    for name in (*budgets, "temperature", "top_p", "min_p", *penalties, "decode_share", "mtp_confidence",
+                 "yarn_factor"):
         value = getattr(args, name, None)
         if value is None:
             continue
@@ -39,6 +41,10 @@ def check_numbers(args: argparse.Namespace) -> None:
                 raise ValueError(f"{flag} must be {'positive' if name == 'ssd_experts' else 'nonnegative'}")
         if name in ("top_p", "min_p", "mtp_confidence") and not 0 <= value <= 1:
             raise ValueError(f"{flag} must be between 0 and 1")
+        if name in ("presence_penalty", "frequency_penalty") and not -2 <= value <= 2:
+            raise ValueError(f"{flag} must be between -2 and 2")
+        if name == "repetition_penalty" and value <= 0:
+            raise ValueError(f"{flag} must be greater than 0")
 
 
 def _served_name(args: argparse.Namespace) -> str:

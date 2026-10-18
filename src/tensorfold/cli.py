@@ -192,7 +192,9 @@ def _generation_config(model_dir: Path, *, overrides: dict[str, Any] | None = No
     config = read_json(model_dir, "generation_config.json") or {}
     if config.get("do_sample") is not None and type(config["do_sample"]) is not bool:
         raise ValueError("generation_config.json do_sample must be a boolean or null")
-    sampling = {k: config[k] for k in ("temperature", "top_k", "top_p", "min_p") if config.get(k) is not None}
+    # repetition_penalty is the one penalty Hugging Face generation configs carry; vLLM reads it as a default too
+    sampling = {k: config[k] for k in ("temperature", "top_k", "top_p", "min_p", "repetition_penalty")
+                if config.get(k) is not None}
     if config.get("do_sample") is False:
         sampling["temperature"] = 0.0
     elif config.get("do_sample") is True and "temperature" not in sampling:
@@ -205,7 +207,8 @@ def _generation_config(model_dir: Path, *, overrides: dict[str, Any] | None = No
 
 def _sampling_defaults(args: argparse.Namespace, model_dir: Path) -> dict[str, Any]:
     return _generation_config(model_dir, overrides={
-        name: getattr(args, name, None) for name in ("temperature", "top_k", "top_p", "min_p")
+        name: getattr(args, name, None) for name in ("temperature", "top_k", "top_p", "min_p", "presence_penalty",
+                                                     "frequency_penalty", "repetition_penalty")
     })
 
 
@@ -682,6 +685,12 @@ def _serve_mlx_start(
     from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
 
     sampling = _sampling_defaults(args, model_dir)  # before model loading or background workers
+    # the Metal engines have no penalty path: requests asking for one are refused, defaults are named and not applied
+    unapplied = {k: sampling.pop(k) for k in ("presence_penalty", "frequency_penalty", "repetition_penalty")
+                 if k in sampling}
+    if any(value != (1.0 if name == "repetition_penalty" else 0.0) for name, value in unapplied.items()):
+        print(f"[tensorfold] the Metal backend does not apply penalties; not applying defaults {unapplied}",
+              file=sys.stderr, flush=True)
     reply_tokens = _reply_tokens(args, model_dir)
     started = time.perf_counter()
     if args.no_drafts:

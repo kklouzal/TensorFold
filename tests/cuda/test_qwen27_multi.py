@@ -149,6 +149,36 @@ def test_decoder_streams_equal_serial(serial_too, curve):
         assert s.rounds < 23 or not s.draft
 
 
+def test_penalized_streams_equal_their_serial_decodes():
+    """Lanes with and without penalties share rounds: each penalized stream's rows follow its own reply and path,
+    its first token included, and every stream keeps its serial tokens."""
+    from tensorfold.engine.penalties import History, Penalties
+    from tensorfold.families.qwen3_5.cuda.decode import draft_decode
+
+    w = _model()
+    penalties = [Penalties(presence=1.2, frequency=0.5, repetition=1.3), None, Penalties(repetition=0.8),
+                 Penalties(frequency=1.5)]
+
+    def serial(prompt, sampling, p):
+        h = History(p, prompt) if p is not None else None
+        st, first = prefill(w, prompt, sampling, history=h)
+        return draft_decode(w, st, prompt, first, 24, sampling, None, allow_copy=False, history=h).tokens
+
+    refs = {tuple(p): serial(p, smp, pen) for p, smp, pen in zip(PROMPTS[:4], SAMPLINGS, penalties)}
+    assert refs[tuple(PROMPTS[0])] != _serial(w, PROMPTS[0], SAMPLINGS[0], 24)
+    dec = _Oracle(w, refs)
+    streams = []
+    for prompt, sampling, pen in zip(PROMPTS[:4], SAMPLINGS, penalties):
+        got: list[int] = []
+        s = Stream(prompt, 24, sampling, emit=lambda new, got=got: got.extend(new), penalties=pen)
+        dec.admit(s)
+        streams.append((s, got))
+    while dec.live():
+        dec.finish(dec.round())
+    for s, got in streams:
+        assert got == refs[tuple(s.prompt)], s.prompt
+
+
 def test_scheduler_serves_concurrent_requests_exactly():
     w = _model()
     refs = {tuple(p): _serial(w, p, smp, 20) for p, smp in zip(PROMPTS, SAMPLINGS)}

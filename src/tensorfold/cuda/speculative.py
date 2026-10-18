@@ -1,9 +1,10 @@
-"""The GPU half of coupled drafting: one candidate packet per drafter launch, read back once.
+"""Block-drafter proposals for one launch: the drafter's argmax, penalized as the target's rows are, read back once.
 
-A block drafter's logits rows go through ``launch``: the rows of sampled streams get their top candidates (and, for a
-top-k-off nucleus, each row's log-sum-exp at its stream's temperature) packed into one int64 tensor on the drafter's
-stream, with no host wait. ``chain`` turns a stream's read-back rows into its coupled chain of proposals with
-``tensorfold.engine.speculative.coupled``. Greedy streams keep their callers' argmax proposals unchanged.
+GB10 card-sampling sweeps (agent E, 2026-10-18) measured the DFlash drafters' argmax at least as accepted as proposals
+drawn under the target's keyed noise (``tensorfold.engine.speculative.coupled``) or verified by rejection sampling,
+so block drafters propose their argmax for every request. A request with presence/frequency/repetition penalties
+proposes the argmax of its penalized candidates instead: row ``j`` counts the reply and proposals 0..j-1, exactly as
+the target's verify row ``j`` will, so penalized requests keep their acceptance. ``Chains`` wraps one launch.
 """
 
 from __future__ import annotations
@@ -13,72 +14,80 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
-from tensorfold.engine.exact_sampling import MARGIN, Sampling
-from tensorfold.engine.speculative import coupled
+from tensorfold.cuda.sampling import valid_scores
+from tensorfold.engine.exact_sampling import MARGIN
 
-NUCLEUS_DRAFT = 256     # candidates a top_k-off draft reads per row: a nucleus wider than this is truncated
-
-
-def sampled(sampling: Sampling | None) -> bool:
-    return sampling is not None and sampling.temperature > 0
+# candidates a penalized stream reads per row: the top plus MARGIN, plus room for the tokens penalties push past it
+PENALIZED_CANDIDATES = 1 + MARGIN + 32
 
 
-def count(samplings: Sequence[Sampling | None], width: int) -> int:
-    """Candidates per row covering every sampled stream's rule: top_k + MARGIN (MARGIN keeps boundary ties), or
-    ``NUCLEUS_DRAFT`` with top_k off; 0 when every stream is greedy."""
+class Chains:
+    """A block drafter's launched chains, one per live stream, and their readback (one host wait, first ``finish``).
 
-    need = [int(s.top_k) + MARGIN if s.top_k else NUCLEUS_DRAFT for s in samplings if sampled(s)]
-    return min(width, max(need)) if need else 0
-
-
-def launch(logits: torch.Tensor, samplings: Sequence[Sampling | None], rows: int) -> torch.Tensor | None:
-    """Queue the candidate packet of ``logits`` [len(samplings) * rows, V] (stream-major rows), or None if all greedy.
-
-    The packet is [N, 2C + 1] int64: C raw float32 score words, C column ids, then the raw float64 word of the row's
-    log-sum-exp of (scores / temperature) where its stream's nucleus needs one (0 otherwise).
+    ``logits`` [len(histories) * rows, V] holds stream-major rows. ``histories`` holds each stream's penalty
+    history (``tensorfold.engine.penalties.History``) or None; ``finish`` refuses any other one. ``owners`` (tensors
+    the launch's kernels read through pointers) stay alive until the readback completes.
     """
 
-    if logits.ndim != 2 or logits.shape[0] != len(samplings) * rows:
-        raise ValueError("draft candidates need stream-major rows, one block of rows per stream")
-    c = count(samplings, logits.shape[1])
-    if not c:
-        return None
-    scores = logits.float()
-    values, cols = torch.topk(scores, c, dim=-1, sorted=False)
-    norms = torch.zeros((scores.shape[0], 1), dtype=torch.float64, device=scores.device)
-    nucleus = [i for i, s in enumerate(samplings) if sampled(s) and not s.top_k and 0.0 < s.top_p < 1.0]
-    if nucleus:
-        inverse = torch.tensor([1.0 / max(float(samplings[i].temperature), 1e-6) for i in nucleus],
-                               dtype=torch.float64, device=scores.device).repeat_interleave(rows)[:, None]
-        at = torch.tensor([i * rows + r for i in nucleus for r in range(rows)], device=scores.device)
-        norms[at] = torch.logsumexp(scores[at].double() * inverse, dim=-1, keepdim=True)
-    return torch.cat([values.contiguous().view(torch.int32).to(torch.int64), cols, norms.view(torch.int64)], dim=1)
+    def __init__(self, logits: torch.Tensor, histories: Sequence, rows: int, owners=None):
+        if logits.ndim != 2 or logits.shape[0] != len(histories) * rows:
+            raise ValueError("draft rows must be stream-major, one block of rows per stream")
+        best, tokens = logits.max(-1)
+        scores = (torch.logsumexp(logits, -1) - best).view(len(histories), rows).cumsum(-1).view(-1)
+        parts = [tokens[:, None], scores.float().view(torch.int32).to(torch.int64)[:, None]]
+        if any(h is not None for h in histories):
+            values, cols = torch.topk(logits.float(), min(PENALIZED_CANDIDATES, logits.shape[1]), dim=-1,
+                                      sorted=False)
+            parts += [values.contiguous().view(torch.int32).to(torch.int64), cols]
+        self.words = torch.cat(parts, dim=1)
+        self.histories, self.owners, self.host, self.rows = list(histories), owners, None, rows
+
+    def finish(self, row: int, max_nodes: int, history=None) -> tuple[list[int], list[int], list[float]]:
+        """Stream ``row``'s chain: (tokens, parents, cumulative ``-log`` confidences)."""
+
+        if self.histories[row] is not history:
+            raise ValueError("a draft block must finish under the penalties it was launched with")
+        if self.host is None:
+            words = self.words.cpu().numpy()
+            c = (words.shape[1] - 2) // 2
+            self.host = (words[:, 0].reshape(-1, self.rows).tolist(),
+                         words[:, 1].astype(np.int32).view(np.float32).reshape(-1, self.rows).tolist(),
+                         (words[:, 2:2 + c].astype(np.int32).view(np.float32), words[:, 2 + c:]) if c else None)
+            self.owners = self.words = None
+        if history is None:
+            ids, scores = self.host[0][row], self.host[1][row]
+        else:
+            ids, scores = penalized(*(part[row * self.rows:(row + 1) * self.rows] for part in self.host[2]), history)
+        ids = ids[:max_nodes]
+        return ids, list(range(-1, len(ids) - 1)), scores[:max_nodes]
 
 
-def read(packet: torch.Tensor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """The host copy of a launched packet: (values float32, column ids int64, norms float64)."""
+def penalized(values: np.ndarray, ids: np.ndarray, history) -> tuple[list[int], list[float]]:
+    """A chain of the argmax of each row's penalized candidates, row ``j`` counting the proposals before it.
 
-    words = packet.cpu().numpy()
-    c = (words.shape[1] - 1) // 2
-    values = words[:, :c].astype(np.int32).view(np.float32)
-    if np.isnan(values).any() or np.isposinf(values).any():
-        raise ValueError("draft scores contain NaN or positive infinity")
-    return values, words[:, c:2 * c], np.ascontiguousarray(words[:, 2 * c]).view(np.float64)
-
-
-def chain(host: tuple[np.ndarray, np.ndarray, np.ndarray], start: int, rows: int, first_position: int,
-          sampling: Sampling, id_map: np.ndarray | None = None) -> tuple[list[int], list[float]]:
-    """A stream's coupled chain: row ``start + j`` proposes the token at absolute position ``first_position + j``.
-
-    Returns (tokens, path scores): scores are cumulative ``-log`` confidences, nondecreasing like the argmax path's.
-    ``id_map`` maps head columns to global token ids (a drafter head over a vocabulary subset).
+    Returns (tokens, cumulative ``-log`` temperature-1 shares over the candidates, like the argmax path's scores).
     """
 
-    values, cols, norms = (part[start:start + rows] for part in host)
-    ids = id_map[cols] if id_map is not None else cols
-    picks, logconf = coupled(values, ids, first_position + np.arange(rows, dtype=np.uint64), sampling,
-                             norms=norms)
-    return [int(t) for t in picks[:, 0]], np.cumsum(-logconf[:, 0]).tolist()
+    # NaN, +inf or a row without a finite score is a drafter defect: refuse it rather than propose a non-token. The
+    # candidates are the row's top, so a finite top candidate is the complete row's condition.
+    valid_scores(values)
+
+    def pick(scores: np.ndarray, rows: slice) -> tuple[np.ndarray, np.ndarray]:
+        best = np.argmax(scores, axis=-1)          # any maximum: a draft's tie order cannot change output
+        at = np.arange(len(best))
+        row = scores.astype(np.float64)
+        return ids[rows][at, best], -np.log(np.exp(row - row[at, best][:, None]).sum(axis=-1))
+
+    # every row penalized by the reply at once; a row whose candidates include an earlier proposal is redone with
+    # the proposals before it counted, as the target's verify row will count them
+    picks, logconf = pick(history.candidates(values, ids), slice(None))
+    tokens: list[int] = []
+    for j in range(len(picks)):
+        if tokens and not set(tokens).isdisjoint(ids[j].tolist()):
+            redone = pick(history.candidates(values[j:j + 1], ids[j:j + 1], tokens), slice(j, j + 1))
+            picks[j], logconf[j] = redone[0][0], redone[1][0]
+        tokens.append(int(picks[j]))
+    return tokens, np.cumsum(-logconf).tolist()
 
 
-__all__ = ["NUCLEUS_DRAFT", "chain", "count", "launch", "read", "sampled"]
+__all__ = ["Chains", "PENALIZED_CANDIDATES", "penalized"]

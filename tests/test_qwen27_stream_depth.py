@@ -20,11 +20,11 @@ class Drafter:
     def __init__(self, depths):
         self.depths, self.blocks = depths, []
 
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None, samplings=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
         self.blocks.append(block)
         return list(range(len(snaps)))
 
-    def finish_tree(self, launched, length, max_nodes, sampling):
+    def finish_tree(self, launched, length, max_nodes, sampling, history=None):
         d = self.depths[launched]
         return list(range(1, d + 1)), list(range(-1, d - 1)), [0.01 * (i + 1) for i in range(d)]
 
@@ -35,7 +35,7 @@ def decoder(multi, monkeypatch, depths, costs=None):
     dec.rank, dec.world, dec.split, dec.drafts, dec.device = 0, 1, False, True, None
     dec.draft = Drafter(depths)
     dec.streams = {sid: SimpleNamespace(snap=None, sampling=None, st=SimpleNamespace(pos=10), draft=True,
-                                        constraint=None) for sid in range(len(depths))}
+                                        constraint=None, history=None) for sid in range(len(depths))}
     monkeypatch.setattr(multi, "multi_tree_forward", lambda w, wins, **kw: (None, None, None, None))
     monkeypatch.setattr(multi, "sample_streams", lambda logits, starts, positions, samplings: [[]] * len(samplings))
     return dec
@@ -166,3 +166,45 @@ def test_the_curve_times_both_sides_of_each_row_step(allocations):  # noqa: F811
     assert multi.calibration_rows(1) == [1, 2, 4, 8, 12, 16]
     rows = multi.calibration_rows(8)
     assert {16, 17, 32, 33, 64, 65, 128} <= set(rows) and rows[-1] == 128 and 129 not in rows
+
+
+def test_tree_streams_draft_and_finish_under_their_own_policies(allocations, monkeypatch):  # noqa: F811
+    """The shared verifier hands the drafter each tree stream's own penalties, in launch order, finishes
+    each block under them at the stream's first proposal position (the plan's context length), and penalizes only
+    a penalized stream's rows, by its window and path; a one-row stream is not drafted."""
+    multi = importlib.import_module("tensorfold.families.qwen3_5.cuda.multi")
+    dec = decoder(multi, monkeypatch, [3, 2, 1])
+    applied = []
+
+    class History:
+        def apply(self, rows, tokens, parents):
+            applied.append((rows, tokens, parents))
+
+    class Rows:                                                        # the faked forward's logits: row slices
+        def float(self):
+            return self
+
+        def __getitem__(self, rows):
+            return rows
+
+    history = History()
+    for sid, policy, penalties in [(0, "first", None), (1, "one-row", None), (2, None, history)]:
+        dec.streams[sid].sampling, dec.streams[sid].history = policy, penalties
+    draft, launched, finished = dec.draft, [], []
+    launch, finish = draft.launch_blocks, draft.finish_tree
+
+    def launch_blocks(snaps, pendings, max_nodes, block=None, histories=None):
+        launched.append(histories)
+        return launch(snaps, pendings, max_nodes, block)
+
+    def finish_tree(block, length, max_nodes, sampling, history=None):
+        finished.append((length, sampling, history))
+        return finish(block, length, max_nodes, sampling)
+
+    monkeypatch.setattr(draft, "launch_blocks", launch_blocks)
+    monkeypatch.setattr(draft, "finish_tree", finish_tree)
+    monkeypatch.setattr(multi, "multi_tree_forward", lambda w, wins, **kw: (Rows(), None, None, [0, 4, 5, 8]))
+    dec._verify([(0, multi.TREE, 5, 20), (1, multi.ONE, 6, 31), (2, multi.TREE, 7, 42)], {})
+    assert launched == [[None, history]]
+    assert finished == [(20, "first", None), (42, None, history)]
+    assert applied == [(slice(5, 8), [7, 1, 2], [-1, 0, 1])]          # stream 2's rows: its window and path

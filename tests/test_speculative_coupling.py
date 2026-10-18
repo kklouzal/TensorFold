@@ -35,33 +35,33 @@ def test_a_drafter_equal_to_the_target_proposes_the_target_choice(s):
     want = choose_rows(logits, ids, positions, s)
     norms = _lse(logits, s.temperature)
     picks, logconf = coupled(logits, ids, positions, s, norms=norms)
-    assert picks[:, 0].tolist() == want
-    assert np.all(np.isfinite(logconf[:, 0])) and np.all(logconf[:, 0] <= 0)
+    assert picks.tolist() == want
+    assert np.all(np.isfinite(logconf)) and np.all(logconf <= 0)
     if s.top_k:     # the candidates the GPU reads (top_k + MARGIN, shuffled) give the same choices
         count = s.top_k + MARGIN
         top = np.argsort(-logits, axis=-1, kind="stable")[:, :count]
         perm = rng.permutation(count)
         sub_ids, sub_vals = top[:, perm], np.take_along_axis(logits, top[:, perm], axis=-1)
-        assert coupled(sub_vals, sub_ids, positions, s)[0][:, 0].tolist() == want
+        assert coupled(sub_vals, sub_ids, positions, s)[0].tolist() == want
 
 
-def test_branches_are_distinct_kept_tokens_in_perturbed_order():
+def test_sharpening_moves_picks_toward_the_drafter_argmax():
+    """sharpen 1 is the serial rule; small values approach the argmax; proposals stay kept tokens."""
     s = Sampling(seed=5, temperature=1.0, top_k=8, top_p=0.9)
     rng = np.random.default_rng(5)
-    logits = _rows(rng, 30, 50)
+    logits = _rows(rng, 400, 50, spread=1.0)
     ids = np.broadcast_to(np.arange(50, dtype=np.int64), logits.shape).copy()
-    positions = np.arange(30, dtype=np.uint64)
-    picks, logconf = coupled(logits, ids, positions, s, branch=12)
+    positions = np.arange(400, dtype=np.uint64)
     kept_ids, scaled = filtered(logits, ids, s)
-    for row in range(30):
-        kept = set(kept_ids[row][np.isfinite(scaled[row])].tolist())
-        real = [t for t in picks[row].tolist() if t >= 0]
-        assert len(real) == len(kept) and set(real) == kept           # every kept token once, then -1 padding
-        assert picks[row].tolist() == real + [-1] * (12 - len(real))
-        finite = logconf[row][: len(real)]
-        assert np.all(np.diff(finite) <= 0) and np.all(np.isinf(logconf[row][len(real):]))
-        assert np.exp(finite).sum() == pytest.approx(1.0)
-    assert coupled(logits, ids, positions, s)[0][:, 0].tolist() == picks[:, 0].tolist()
+    argmax = logits.argmax(-1)
+    agree = []
+    for sharpen in (1.0, 0.5, 0.1, 0.01):
+        picks, logconf = coupled(logits, ids, positions, s, sharpen=sharpen)
+        assert all(t in set(kept_ids[r][np.isfinite(scaled[r])].tolist()) for r, t in enumerate(picks.tolist()))
+        assert np.all(logconf <= 0)
+        agree.append((picks == argmax).mean())
+    assert agree == sorted(agree) and agree[-1] > 0.98 and agree[0] < 0.8
+    assert coupled(logits, ids, positions, s)[0].tolist() == choose_rows(logits, ids, positions, s)
 
 
 def test_filtering_matches_the_serial_rule_cut_for_cut():
@@ -90,7 +90,7 @@ def test_coupling_beats_argmax_drafts_and_meets_the_communication_free_bound():
     ids = np.broadcast_to(np.arange(vocab, dtype=np.int64), target.shape).copy()
     positions = np.arange(rows, dtype=np.uint64)
     serial = np.array(choose_rows(target, ids, positions, s))
-    picks = coupled(drafter, ids, positions, s)[0][:, 0]
+    picks = coupled(drafter, ids, positions, s)[0]
     p = np.exp(target - target.max(-1, keepdims=True)); p /= p.sum(-1, keepdims=True)
     q = np.exp(drafter - drafter.max(-1, keepdims=True)); q /= q.sum(-1, keepdims=True)
     tv = 0.5 * np.abs(p - q).sum(-1)
@@ -100,7 +100,7 @@ def test_coupling_beats_argmax_drafts_and_meets_the_communication_free_bound():
     assert matched <= (1 - tv).mean() + 0.02            # never above the maximal coupling
 
 
-def test_greedy_and_bad_geometry_are_refused():
+def test_bad_geometry_and_calibration_are_refused():
     s = Sampling(seed=1, temperature=1.0, top_k=0, top_p=0.5)
     values, ids = np.zeros((2, 3), np.float32), np.zeros((2, 3), np.int64)
     with pytest.raises(ValueError):
@@ -108,4 +108,18 @@ def test_greedy_and_bad_geometry_are_refused():
     with pytest.raises(ValueError):
         coupled(values, ids, [0], Sampling(seed=1))     # one position per row
     with pytest.raises(ValueError):
-        coupled(values, ids, [0, 1], Sampling(seed=1), branch=0)
+        coupled(values, ids, [0, 1], Sampling(seed=1), sharpen=0.0)
+
+
+def test_a_draft_row_without_a_finite_score_is_refused_not_proposed():
+    """Penalized proposals never hand a verifier a non-token: drafter rows with NaN or no finite score are refused."""
+    speculative = pytest.importorskip("tensorfold.cuda.speculative")
+    from tensorfold.engine.penalties import History, Penalties
+
+    history = History(Penalties(presence=1.0), [5])
+    ids = np.array([[0, 1, 2]] * 2, np.int64)
+    good = np.array([[1.0, 0.5, 0.0]] * 2, np.float32)
+    assert all(t >= 0 for t in speculative.penalized(good, ids, history)[0])
+    for bad in (np.array([[1.0, 0.5, 0.0], [-np.inf] * 3], np.float32), np.array([[np.nan, 0.5, 0.0]] * 2, np.float32)):
+        with pytest.raises(ValueError):
+            speculative.penalized(bad, ids, history)

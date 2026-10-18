@@ -12,6 +12,7 @@ from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
 from tensorfold.cuda.sampling import sample_streams
 from tensorfold.cuda.streams import PrefixCache, Stream, accept, next_fill
 from tensorfold.engine.grammar import GrammarError, pack
+from tensorfold.engine.penalties import History
 
 from .decode import CopyIndex, clone_state
 from .decode_tp import (
@@ -205,6 +206,10 @@ class MultiDecoder:
         """Queue a request on the longest cached prefix of its prompt; rounds prefill the rest a step at a time."""
 
         self._check()
+        if s.penalties is not None:              # a replay admits again with a fresh history
+            if self.world != 1:
+                raise ValueError("presence, frequency and repetition penalties require one GPU (--tp 1)")
+            s.history = History(s.penalties, s.prompt)
         if self.context:
             room = self.context - len(s.prompt) - 1
             if room < 1:
@@ -397,7 +402,8 @@ class MultiDecoder:
                     self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
                 n = len(s.prompt)
                 firsts.append(None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                                s.constraint, plan=self._sampling_plan))
+                                                                s.constraint, plan=self._sampling_plan,
+                                                                history=s.history))
                 if end is not None:
                     self.cache.add(list(s.prompt[:end]), viewed(at[0]) if end < n else kept(at[0]), own(at[1]))
         except Exception as exc:
@@ -437,7 +443,7 @@ class MultiDecoder:
             if stop in s.stops:
                 self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
             first = None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                     s.constraint, plan=self._sampling_plan)
+                                                     s.constraint, plan=self._sampling_plan, history=s.history)
             if end is not None:
                 at, snap = out[1]
                 self.cache.add(list(s.prompt[:end]), viewed(at) if end < n else kept(at), own(snap))
@@ -485,6 +491,8 @@ class MultiDecoder:
         self.last = (start, len(plan), sum(len(t) for t, _ in wins)) if self.costs is not None else None
         for s, (tokens, _), path, end in zip(live, wins, paths, ends):
             new = [tokens[r] for r in path[1:]] + [end]
+            if s.history is not None:
+                s.history.extend(new)
             if s.constraint is not None and s.error is None:
                 try:
                     s.constraint.advance(new)
@@ -533,7 +541,8 @@ class MultiDecoder:
     def _trees(self, plan, blocks) -> dict[int, tuple[list[int], list[int], list[float]]]:
         """Rank 0: each tree stream's nodes, parents and path scores, in the policy's pop order."""
 
-        return {sid: self.draft.finish_tree(blocks[sid], length, self.max_rows - 1, self.streams[sid].sampling)
+        return {sid: self.draft.finish_tree(blocks[sid], length, self.max_rows - 1, self.streams[sid].sampling,
+                                            self.streams[sid].history)
                 for sid, mode, _, length in plan if mode == TREE and blocks.get(sid) is not None}
 
     def _cost(self, rows: int) -> float:
@@ -594,7 +603,7 @@ class MultiDecoder:
         if tree:                                      # every stream's block in one drafter pass
             launched = self.draft.launch_blocks([self.streams[sid].snap for sid, _ in tree],
                                                 [pending for _, pending in tree], self.max_rows - 1, block,
-                                                samplings=[self.streams[sid].sampling for sid, _ in tree])
+                                                histories=[self.streams[sid].history for sid, _ in tree])
             blocks = {sid: block for (sid, _), block in zip(tree, launched)}
         grammars = {}
         if self.rank == 0:
@@ -614,6 +623,12 @@ class MultiDecoder:
         for k, window in grammars.items():          # a constrained stream's rows, each masked by its path
             self.streams[plan[k][0]].constraint.mask(logits[starts[k]:starts[k + 1]], window,
                                                      self.rank * self.w.head.n if self.split else 0)
+        histories = [self.streams[item[0]].history for item in plan] if self.rank == 0 else []
+        if any(h is not None for h in histories):     # penalized streams' rows, each by its path, in FP32 (exact
+            logits = logits.float()                   # for the others: their scores widen without rounding)
+            for k, history in enumerate(histories):
+                if history is not None:
+                    history.apply(logits[starts[k]:starts[k + 1]], *wins[k])
         positions = [[st.pos + d + 1 for d in _paths(parents)[0]] for (_, parents), st in zip(wins, states)]
         samplings = [self.streams[item[0]].sampling for item in plan]
         if self.split:                                # both ranks gather their halves' candidates

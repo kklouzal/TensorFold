@@ -498,10 +498,10 @@ class DFlash2:
 
     @torch.no_grad()
     def launch_blocks(self, snaps: list, pendings: list[int], max_nodes: int, block: int | None = None,
-                      samplings: list | None = None) -> list:
+                      histories: list | None = None) -> list:
         """GPU half of ``propose_tree`` for several streams, each weight read once; None where a context is empty.
 
-        The candidates do not depend on ``samplings``: ``finish_tree``'s tree policy applies each stream's."""
+        The candidates do not depend on penalty ``histories``: ``finish_tree``'s tree policy applies each stream's."""
 
         out: list = [None] * len(snaps)
         live = [i for i, snap in enumerate(snaps) if snap[2] > 0]
@@ -555,8 +555,8 @@ class DFlash2:
             out[i] = (shared, j * (length - 1), length - 1, int(pendings[i]))
         return out
 
-    def finish_tree(self, launched, context_length: int, max_nodes: int,
-                    sampling: Sampling | None = None) -> tuple[list[int], list[int], list[float]]:
+    def finish_tree(self, launched, context_length: int, max_nodes: int, sampling: Sampling | None = None,
+                    history=None) -> tuple[list[int], list[int], list[float]]:
         """The host half: the tree policy over a launched block's candidates; nodes, parents and scores in pop order."""
 
         if launched is None:
@@ -569,9 +569,10 @@ class DFlash2:
         return best_first(ids, floats[:, :16], floats[:, 16:],
                           self.weights["candidate_selector.predecessor_codebook"],
                           self.weights["candidate_selector.successor_codebook"],
-                          pending, min(127, max_nodes), sampling, context_length)
+                          pending, min(127, max_nodes), sampling, context_length, history)
 
     @torch.no_grad()
-    def propose_tree(self, pending: int, context_length: int, max_nodes: int,
-                     sampling: Sampling | None = None, block: int | None = None) -> tuple[list[int], list[int]]:
-        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling)[:2]
+    def propose_tree(self, pending: int, context_length: int, max_nodes: int, sampling: Sampling | None = None,
+                     block: int | None = None, history=None) -> tuple[list[int], list[int]]:
+        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling,
+                                history)[:2]

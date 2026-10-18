@@ -130,8 +130,10 @@ def _tokens(ids: Sequence[int], device: torch.device) -> torch.Tensor:
 
 
 def first_token(w: Weights, normed: torch.Tensor, n: int, sampling: Sampling | None, rank: int = 0,
-                world: int = 1, constraint=None, *, plan: ShardSampler | None = None) -> int:
-    """The token after an ``n``-token prompt from its last row's normed state; two ranks share rank 0's draw."""
+                world: int = 1, constraint=None, *, plan: ShardSampler | None = None, history=None) -> int:
+    """The token after an ``n``-token prompt from its last row's normed state; two ranks share rank 0's draw.
+
+    ``history`` (tensorfold.engine.penalties.History; one GPU only) penalizes the scores and records the token."""
 
     from .forward import _mm
 
@@ -139,10 +141,16 @@ def first_token(w: Weights, normed: torch.Tensor, n: int, sampling: Sampling | N
         logits = _mm(normed, w.head)
         if constraint is not None:              # a reply's grammar (tensorfold.engine.grammar): masked, then followed
             constraint.mask(logits)
+        if history is not None:
+            logits = history.apply(logits)
         first = sample_rows(logits, [n], sampling)[0]
         if constraint is not None:
             constraint.advance([first])
+        if history is not None:
+            history.extend([first])
         return first
+    if history is not None:
+        raise ValueError("penalties require one GPU")
     split = 2 * w.head.n == w.config.vocab          # split_weights(..., split_head=True)
     last = _mm(normed, w.head) if split or rank == 0 else None
     if constraint is not None and last is not None:  # each rank masks the vocabulary columns it holds

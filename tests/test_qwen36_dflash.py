@@ -10,6 +10,7 @@ pytest.importorskip("triton")
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
+from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen3_5_moe.cuda import dflash
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, checked_headers, draft_geometry, draft_weights
 
@@ -365,33 +366,32 @@ def test_complete_proposals_match_direct_published_block_equations(fixture, yarn
     assert ids == expected_ids and scores == expected_scores and parents == [-1, 0, 1]
 
 
-@pytest.mark.parametrize("policy", [dict(temperature=1.0, top_k=20, top_p=.95), dict(temperature=.7, top_k=0, top_p=.8),
-                                    dict(temperature=.6, top_k=4, top_p=1.0, min_p=.1)])
-def test_sampled_proposals_are_coupled_to_the_target_noise_per_stream(fixture, policy):
-    """Each sampled stream proposes ``coupled`` picks of the block's logits keyed at its first proposal position;
-    a greedy stream batched with it keeps its argmax proposals; a policy differing from the launch is refused."""
+def test_proposals_are_the_argmax_and_penalized_streams_count_their_path(fixture):
+    """Every stream proposes the drafter's argmax (sampled ones too); a penalized stream batched with a plain one
+    proposes the argmax of its penalized rows, row j counting the proposals before it; a history differing from the
+    launch is refused."""
     import numpy as np
 
-    from tensorfold.engine.exact_sampling import Sampling
-    from tensorfold.engine.speculative import coupled
+    from tensorfold.engine.penalties import History, Penalties
 
     directory, _raw, cfg, arrays, target = fixture
     draft = dflash.DFlash(directory, target, context_limit=64)
     taps = torch.randn((3, 128), generator=torch.Generator().manual_seed(101)).bfloat16()
     draft.add_taps(taps)
-    sampling = Sampling(seed=77, **policy)
-    logits = reference_logits(taps, 2, target, cfg, arrays, draft.inv_freq)
-    scaled = logits.double() / policy["temperature"]
-    norms = torch.logsumexp(scaled, -1).numpy()
-    ids = np.broadcast_to(np.arange(cfg.vocab, dtype=np.int64), logits.shape).copy()
-    picks, logconf = coupled(logits.numpy(), ids, 10 + np.arange(3), sampling, norms=norms)
-    ids_out, parents, scores = draft.finish_tree(draft.launch_block(2, 3, sampling=sampling), 10, 3, sampling)
-    assert ids_out == picks[:, 0].tolist() and parents == [-1, 0, 1]
-    assert scores == pytest.approx(np.cumsum(-logconf[:, 0]).tolist())
+    expected_ids, expected_scores = reference_block(taps, 2, target, cfg, arrays, draft.inv_freq)
+    sampling = Sampling(seed=77, temperature=1.0, top_k=20, top_p=.95)
+    assert draft.finish_tree(draft.launch_block(2, 3), 10, 3, sampling) == (
+        expected_ids, [-1, 0, 1], pytest.approx(expected_scores))
+    logits = reference_logits(taps, 2, target, cfg, arrays, draft.inv_freq).numpy()
+    history = History(Penalties(presence=2.0, repetition=1.5), [expected_ids[0], 7])
+    history.extend([expected_ids[1]])
+    want = []
+    for row in logits:
+        scores = history.candidates(row[None], np.arange(cfg.vocab)[None], want)[0]
+        want.append(int(np.argmax(scores)))
     before = draft.snapshot()
-    greedy = draft.finish_tree(draft.launch_block(2, 3), 10, 3)
-    batch = draft.launch_blocks([before, before], [2, 2], 3, samplings=[None, sampling])
-    assert draft.finish_tree(batch[0], 10, 3) == greedy
-    assert draft.finish_tree(batch[1], 10, 3, sampling) == (ids_out, parents, scores)
+    batch = draft.launch_blocks([before, before], [2, 2], 3, histories=[None, history])
+    assert draft.finish_tree(batch[0], 10, 3, sampling) == (expected_ids, [-1, 0, 1], pytest.approx(expected_scores))
+    assert draft.finish_tree(batch[1], 10, 3, sampling, history)[0] == want != expected_ids
     with pytest.raises(ValueError):
-        draft.finish_tree(batch[1], 10, 3)
+        draft.finish_tree(batch[1], 10, 3, sampling)

@@ -11,12 +11,14 @@ from tensorfold.server.stopping import stop_options
 
 
 _INTEGER_FIELDS = {"seed", "top_k", "thinking_budget", "max_tokens", "max_completion_tokens"}
+# OpenAI presence/frequency and vLLM repetition penalties (tensorfold.engine.penalties); vLLM SamplingParams' ranges
+PENALTY_FIELDS = ("presence_penalty", "frequency_penalty", "repetition_penalty")
 
 
 def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
     stop_options(fields)
     parsed = dict(fields)
-    for name in (*sorted(_INTEGER_FIELDS), "temperature", "top_p", "min_p"):
+    for name in (*sorted(_INTEGER_FIELDS), "temperature", "top_p", "min_p", *PENALTY_FIELDS):
         value = fields.get(name)
         if value is None:
             continue
@@ -34,6 +36,10 @@ def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
             raise RequestError(f"{name} must be {kind} or null") from exc
         if name in ("top_p", "min_p") and not 0.0 <= number <= 1.0:
             raise RequestError(f"{name} must be between 0 and 1, or null")
+        if name in ("presence_penalty", "frequency_penalty") and not -2.0 <= number <= 2.0:
+            raise RequestError(f"{name} must be between -2 and 2, or null")
+        if name == "repetition_penalty" and number <= 0.0:
+            raise RequestError("repetition_penalty must be greater than 0, or null")
         parsed[name] = max(0, number) if name == "top_k" else number
     return parsed
 

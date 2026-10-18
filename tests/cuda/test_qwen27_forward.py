@@ -135,7 +135,7 @@ def test_decode_trace_records_every_round_and_keeps_serial_tokens():
 
         last_candidates = None
 
-        def propose_tree(self, pending, context_length, max_nodes, sampling):
+        def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
             k = context_length
             right = [ref[k + j] if k + j < len(ref) else 1 for j in range(4)]
             self.last_candidates = np.array([[t] * 16 for t in right])
@@ -185,3 +185,49 @@ def test_wide_copy_windows_keep_serial_tokens():
         if t["source"] == "copy":
             assert t["rows"] <= rows
             rows = next_copy_rows(rows, t["accepted"] == t["rows"] - 1, 8, 64)
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_penalized_tree_and_copy_rounds_keep_serial_tokens(sampled):
+    """Penalties per verify row (the reply plus the row's path): a tree with a wrong sibling, a wrong deep guess
+    and copy windows still commits exactly the serial (one row a round) tokens, and the penalties change them."""
+
+    import dataclasses
+
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import History, Penalties
+
+    base = _model()
+    w = Weights(dataclasses.replace(base.config, layers=64), base.embed, [base.layers[0]] * 64, base.norm,
+                base.head, base.inv_freq)
+    sampling = Sampling(seed=31, temperature=0.9, top_k=20, top_p=0.95) if sampled else None
+    penalties = Penalties(presence=1.2, frequency=0.6, repetition=1.4)
+    prompt = [3, 1, 4, 1, 5, 9, 2, 6]
+
+    def history():
+        h = History(penalties, prompt)
+        h.extend([5])                               # draft_decode's history already holds the pending token
+        return h
+
+    serial = draft_decode(w, State(w), prompt, 5, 40, sampling, None, allow_copy=False, stop_eos=False,
+                          history=history())
+    plain = draft_decode(w, State(w), prompt, 5, 40, sampling, None, allow_copy=False, stop_eos=False)
+    ref = serial.tokens
+    assert ref != plain.tokens
+
+    class Drafter:
+        def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
+            k = context_length - len(prompt)
+            right = [ref[k + j] if k + j < len(ref) else 1 for j in range(4)]
+            guesses = right[:3] + [(right[3] + 1) % 256, (right[0] + 1) % 256]
+            return guesses[:max_nodes], [-1, 0, 1, 2, -1][:max_nodes]
+
+        def add_taps(self, taps):
+            pass
+
+        def in_vocab(self, token):
+            return True
+
+    drafted = draft_decode(w, State(w), prompt, 5, 40, sampling, Drafter(), max_rows=8, allow_copy=True,
+                           stop_eos=False, history=history())
+    assert drafted.tokens == ref and drafted.accepted_drafts > 0

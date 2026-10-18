@@ -206,9 +206,9 @@ class DFlash:
         return x + self._lin(h, base + "mlp.down_proj.weight")
 
     @torch.no_grad()
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None, samplings=None):
-        if len(snaps) != len(pendings) or (samplings is not None and len(samplings) != len(snaps)):
-            raise ValueError("Gemma DFlash requires one anchor token (and sampling policy, if any) per context")
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
+        if len(snaps) != len(pendings) or (histories is not None and len(histories) != len(snaps)):
+            raise ValueError("Gemma DFlash requires one anchor token (and penalty history, if any) per context")
         if type(max_nodes) is not int or not 0 <= max_nodes <= 127:
             raise ValueError("Gemma DFlash proposal count must be an integer from zero through127")
         length = self.block if block is None else positive(block, "block")
@@ -238,40 +238,25 @@ class DFlash:
         h = _norm(x.view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden),
                   self.weights["norm.weight"], self.config.eps)
         logits = self.project_logits(h).float()
-        best, tokens = logits.max(-1)
-        scores = (torch.logsumexp(logits, -1) - best).view(len(live), length - 1).cumsum(-1)
-        # Sampled streams propose under the target's keyed noise (coupled drafting); greedy ones keep the argmax.
-        policies = [None if samplings is None else samplings[i] for i in live]
-        packet = speculative.launch(logits, policies, length - 1)
+        # The argmax proposals; a penalized stream's rows are penalized as the target's will be.
         # Attention receives context pointers through an indirect device table.
         # Keep the immutable owners live until result readback observes completion.
-        shared = [tokens.view(len(live), length - 1), scores, None, active, packet, policies]
+        chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1,
+                                    owners=active)
         for row, i in enumerate(live):
-            out[i] = shared, row
+            out[i] = chains, row
         return out
 
-    def launch_block(self, pending, max_nodes, block=None, sampling=None):
-        return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [sampling])[0]
+    def launch_block(self, pending, max_nodes, block=None, history=None):
+        return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
-    def finish_tree(self, launched, context_length, max_nodes, sampling=None):
+    def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
         """A launched chain; ``context_length`` is the absolute position of its first proposal (the anchor's + 1)."""
         if launched is None:
             return [], [], []
-        shared, row = launched
-        if shared[5][row] != sampling:
-            raise ValueError("Gemma DFlash must finish a block under the sampling policy it was launched with")
-        if shared[2] is None:
-            shared[2] = (shared[0].cpu().tolist(), shared[1].cpu().tolist(),
-                         None if shared[4] is None else speculative.read(shared[4]))
-            shared[3] = shared[4] = None
-        if speculative.sampled(sampling):
-            rows = len(shared[2][0][row])
-            ids, scores = speculative.chain(shared[2][2], row * rows, rows, context_length, sampling)
-        else:
-            ids, scores = shared[2][0][row], shared[2][1][row]
-        ids = ids[:max_nodes]
-        return ids, list(range(-1, len(ids) - 1)), scores[:max_nodes]
+        chains, row = launched
+        return chains.finish(row, max_nodes, history)
 
-    def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None):
-        return self.finish_tree(self.launch_block(pending, max_nodes, block, sampling), context_length, max_nodes,
-                                sampling)[:2]
+    def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None, history=None):
+        return self.finish_tree(self.launch_block(pending, max_nodes, block, history), context_length, max_nodes,
+                                sampling, history)[:2]
