@@ -29,7 +29,7 @@ selects one policy before loading; mixed native/nonnative ranks use W4A16.
 Resident A4 banks retain live GPU routing and graph capture. Installed ARM source
 `bd1f0e9d` passed native A4/extent checks, full-checkpoint serial/MTP identity,
 four concurrent 512-token replies, SSD n-grams, image/video and public CLI strict
-tools on GB10. Its MTP6/4096 MiB graph profile observed 43.27–43.50 single-request
+tools on GB10. Its MTP6/4096 MiB graph profile observed 43.27–43.50 warm single-request
 and 143.80 aggregate completed-HTTP-body tok/s. [Conditions and receipt](docs/gb10-nvfp4-validation.md)
 keep those observations separate from pending final composed-source gates,
 balanced performance selection and the entire fresh RotorQuant suite.
@@ -841,8 +841,11 @@ Source installations print a live throughput line when attached to a terminal. R
 The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, Git for the isolated editable-update regression, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers. Git installation is bracketed by full foundation audits in that target:
 
 Source `16ae6dfc` exposed the missing Git prerequisite in its full installed CPU
-run. The verification target now provisions it; the rebuilt image and full CPU
-rerun remain pending. The runtime service image does not need Git.
+run. Git-provisioned ARM verification images have since been rebuilt and audited.
+The later broad CPU run and focused fixture repairs retain their separate
+[results](docs/gb10-nvfp4-validation.md#composite-checks-and-remaining-scope);
+a clean full-suite rerun for the final composed source remains pending. The
+earlier missing-Git failure is preserved. The runtime service image does not need Git.
 
 ```bash
 # Keep the selected input-preparation variables in this shell.

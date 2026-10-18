@@ -538,9 +538,12 @@ configuration and validation scope.
 CPU verification, from the repository root after the same selected input preparation:
 
 The verification target provisions Git for real repository/update fixtures,
-with full foundation audits before and after installation. The rebuilt image
-and full installed CPU rerun remain pending after source `16ae6dfc` exposed the
-missing prerequisite. The runtime service image does not need this test tool.
+with full foundation audits before and after installation. Git-provisioned ARM
+verification images have since been rebuilt and audited; source `16ae6dfc`'s
+missing-Git failure remains historical. The later broad CPU run and focused
+fixture repairs have [separate results](../../docs/gb10-nvfp4-validation.md#composite-checks-and-remaining-scope).
+A clean full-suite rerun for the final composed source remains pending. The
+runtime service image does not need this test tool.
 
 ```bash
 docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \
