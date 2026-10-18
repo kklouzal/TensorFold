@@ -106,6 +106,24 @@ The table predates a fix to the FP8 lane matmul (its pipeline stages now start o
 1,240 tok/s at 2k / 8k / 16k / 32k / 64k on the FP8 prompt path (today's `--prefill-fp8`), level with the MLX
 checkpoint's. The startup estimate is 62.5 GiB at the 262,144-token window.
 
+### AEON mixed NVFP4 export
+
+`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` (revision `282e6775`) ships a `tokenizer.json` (sha256
+`6f32ce20…`) whose pre-tokenizer splits combining marks from their letters: `\p{L}+` where the model it was tuned from,
+`Qwen/Qwen3.8-27B` (revision `1d4bf0f2`, `tokenizer.json` sha256 `0997f410…`), has `[\p{L}\p{M}]+`. Devanagari, Thai
+and Arabic text with marks therefore encodes into other tokens; English, code, CJK, Korean and Vietnamese samples encode
+the same. The vocabulary, merges and added tokens are equal, so `--tokenizer` admits upstream's file in place of the
+shipped one (the startup log reports `pre_tokenizer, decoder, padding` as differing; the decoder's byte-level options
+leave decoded text unchanged):
+
+```bash
+TOKENIZER=$(python3 -c "from huggingface_hub import hf_hub_download as get; print(get('Qwen/Qwen3.8-27B', 'tokenizer.json', revision='1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0'))")
+tensorfold serve AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED --tokenizer "$TOKENIZER"
+```
+
+These tokenizer results come from CPU comparisons of the two files. End-to-end `tensorfold serve` qualification of this
+export (quality gates, performance) is pending.
+
 ### EXL3 checkpoints (experimental)
 
 The CUDA engine also reads turboderp's EXL3 packs of the model (`turboderp/Qwen3.8-27B-exl3`, a branch per size,
