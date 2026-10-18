@@ -52,8 +52,11 @@ preserved. The [controlled eight-start record](../../docs/gb10-nvfp4-validation.
 now records the user-selected GPU20/split/common MTP6 AUTO four-stream profile
 at 144.17–144.26 aggregate HTTP tok/s, with B/D’s observed single-request edge
 retained and no all-region superiority claim. Further E/F work was stopped;
-this is not a deployment receipt. The entire fresh RotorQuant
-suite, long-context capacity and two-GPU execution remain separate. This does not
+this is not a deployment receipt. The 483-node RQ/KV selection now has
+[composite coverage](../../docs/gb10-nvfp4-validation.md#rqkv-selection--completed-composite):
+192 earlier named passes plus 290 new passes and one optional-extension skip;
+the interrupted whole run remains incomplete. Long-context capacity and two-GPU
+execution remain separate. This does not
 replace the recorded deployed service or inherit the older profile's capacity assumptions.
 
 New builds from the maintained `python-0.6` integration use TensorFold **0.6.6**.

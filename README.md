@@ -40,8 +40,10 @@ A B C D D C B A comparison recorded **144.17–144.26 aggregate HTTP tok/s** for
 GPU20/split/common MTP6 AUTO, the user-selected four-stream profile. B/D retained
 a slight observed warm single-request edge; this is no all-region superiority
 or equivalence claim. [Comparison and limits](docs/gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection)
-retain all observations. Further E/F work was stopped; the fresh full RotorQuant
-suite and deployment receipt remain separate.
+retain all observations. Further E/F work was stopped. The 483-node RQ/KV
+selection has composite coverage: 192 earlier named passes plus 290 new passes
+and one optional-extension skip; the interrupted whole run remains incomplete.
+The deployment receipt remains separate.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
