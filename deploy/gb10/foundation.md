@@ -88,6 +88,8 @@ artifact identities. App and test installers accept only their disjoint generate
 locks, install with hashes and `--no-deps`, and perform full before/after content
 audits. The app wheel receives a separate owned-package/payload check. `pip check`
 continues to validate genuine upstream dependency metadata.
+The C++ runtimes come from the protected compiler-package inventory; private
+copies bundled with SDK tools remain protected but cannot supply that runtime.
 
 `nccl_provider` explicitly selects `native` (default) or protected
 `nvidia-nccl-cu13`. The image binds `TF_NCCL_LIB` to that physical library,
