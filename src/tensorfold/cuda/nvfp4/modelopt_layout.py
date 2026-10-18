@@ -67,19 +67,29 @@ def runtime_workspace_bytes(text, *, rows, prompt_rows, mtp_a4=False, cached=Fal
     if cached:
         return 2 * plan_workspace_bytes(128, 1, width, dims)
     slots = text["num_experts_per_tok"] + 1
-    return plan_workspace_bytes(rows + prompt_rows, slots, width, dims) + (
-        plan_workspace_bytes(rows, slots, width, dims) if mtp_a4 else 0)
+    # A reusable [rows,3] row plan has12bytes/row retained; its one-time
+    # arange/zero construction overlaps another8bytes/row before publication.
+    total_rows = rows + prompt_rows + (rows if mtp_a4 else 0)
+    return plan_workspace_bytes(total_rows, slots, width, dims) + 20 * total_rows
 
 
 def resident_loading_host_bytes(text):
-    """One complete six-field CPU bank plus a projection's raw/pack/join peak.
+    """Four ordinary CPU calibration arrays; resident payload packing stays GPU.
 
-    Banks transfer to CUDA sequentially and release their CPU authority before
-    the next bank. Reader staging is already charged by ordinary weight loading.
+    Original read staging is charged by ordinary weight loading. No complete
+    CPU packed authority or D2H payload is retained for resident A4 banks.
     """
-    width, dims, count = text["moe_intermediate_size"], text["hidden_size"], text["num_experts"]
-    blob = 9 * width * dims // 16
-    return count * (3 * blob + 24) + 3 * blob
+    return 24 * text["num_experts"]
+
+
+def loading_device_bytes(text):
+    """GPU raw/permuted/joined peak for one complete projection's byte packing."""
+    return 3 * (9 * text["moe_intermediate_size"] * text["hidden_size"] // 16)
+
+
+def cached_control_host_bytes(text):
+    """Bounded CPU readback/grouping/lease plan for128 rows of routed picks."""
+    return 192 * 128 * (text["num_experts_per_tok"] + 1) + 64 * 1024
 
 
 def expert_group_policy(policies):
@@ -98,8 +108,3 @@ def expert_group_policy(policies):
     reason = ("all-native" if native else "explicit-full" if policies[0][0] == "full" else
               "mixed-capability-full" if any(p[1] for p in policies) else "non-native-full")
     return native, reason
-
-
-def cached_control_host_bytes(text):
-    """Bounded CPU readback/grouping/lease plan for128 rows of routed picks."""
-    return 192 * 128 * (text["num_experts_per_tok"] + 1) + 64 * 1024

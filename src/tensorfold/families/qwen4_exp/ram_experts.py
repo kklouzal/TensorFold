@@ -248,11 +248,6 @@ def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False, checkpoint=None
     # D2H's largest field is the packed gate/up pair, after reads have ended.
     # Three retained scalar read spans fit nine alignment pages alongside it.
     host_loading = reader_host_bytes(raw, 2 * tiles)
-    if a4_banks:
-        # CPU native packing keeps original code/scales, their permutations,
-        # and the joined projection alive together. Explicit loop retirement
-        # prevents overlap with the following projection's read/transform.
-        host_loading = max(host_loading, reader_host_bytes(3 * tiles))
     host_loading += 9 * 4096
     return Layout(entry, slots, slots * entry, sum(allocations), pinned_backing_bytes(2 * entry), host_loading,
                   "nvfp4", automatic=gib == "auto",

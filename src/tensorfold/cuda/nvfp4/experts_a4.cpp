@@ -11,7 +11,7 @@ void expert_a4_quant_plan_cuda(const at::Tensor&, const at::Tensor&, const at::T
     const at::Tensor&, at::Tensor&, at::Tensor&, int64_t, bool);
 void expert_a4_gemm_plan_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
-    int64_t, int64_t, int64_t, int64_t, bool);
+    int64_t, int64_t, int64_t, int64_t, bool, bool);
 
 static void tensor(const at::Tensor& value, const at::Tensor& on, at::ScalarType type, int rank,
                    const char* name) {
@@ -62,8 +62,9 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
     tensor(scales, x, at::kByte, 3, "scales");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 8 == 0, "codes require8-byte alignment");
     const auto p = codes.size(1), k = x.size(1), projections = input.size(1);
-    TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : (p <= 128 && plan.size(0) == p && plan.size(1) == 3)) && input.size(0) > 0 && input.size(0) <= INT32_MAX &&
-                (projections == 1 || projections == 2), "plan/calibrations:128pairs maximum, one/two projections");
+    TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : ((p <= 128 || (direct && p <= 65535)) && plan.size(0) == p && plan.size(1) == 3)) && input.size(0) > 0 && input.size(0) <= INT32_MAX &&
+                (projections == 1 || projections == 2),
+                "plan/calibrations require at most128 legacy pairs or65535 direct rows, one/two projections");
     TORCH_CHECK(codes.size(0) == projections && codes.size(1) == p && codes.size(2) == k / 2 &&
                 scales.size(0) == projections && scales.size(1) == p && scales.size(2) == k / 16,
                 "quantization buffers must match projection/pair/input dimensions");
@@ -84,7 +85,7 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
 static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
            const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
            const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct = false,
-           const at::Tensor& counts = {}, int64_t slots = 0) {
+           const at::Tensor& counts = {}, int64_t slots = 0, bool common = false) {
     const bool grouped = counts.defined();
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
@@ -96,7 +97,7 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 4 == 0 &&
                 reinterpret_cast<uintptr_t>(scales.data_ptr()) % 4 == 0 &&
                 reinterpret_cast<uintptr_t>(blob.data_ptr()) % 8 == 0, "nativeA4 fragment load alignment");
-    const auto projections = blob.size(1), p = codes.size(1), cells = blob.size(0);
+    const auto projections = blob.size(1), p = grouped ? plan.size(0) : codes.size(1), cells = blob.size(0);
     TORCH_CHECK(n > 0 && n < INT32_MAX && n % 64 == 0 && k > 0 && k < INT32_MAX && k % 64 == 0 &&
                 sk > 0 && sk <= 8 && (k / 64) % sk == 0, "nativeA4 dimensions/slices must form complete tiles");
     TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : (p <= 128 && plan.size(0) == p && plan.size(1) == 3)) && cells > 0 && cells <= INT32_MAX &&
@@ -106,8 +107,11 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
                 "nativeA4 launch exceeds CUDA grid index range");
     TORCH_CHECK(blob.size(2) == (n / 16) * k * 9 && weight.size(0) == cells && weight.size(1) == projections &&
                 input.sizes() == weight.sizes(), "nativeA4 blob/calibration geometry");
-    TORCH_CHECK(codes.size(0) == projections && codes.size(1) == p && codes.size(2) == k / 2 &&
-                scales.size(0) == projections && scales.size(1) == p && scales.size(2) == k / 16,
+    TORCH_CHECK(!common || (grouped && !down && slots > 0 && p % slots == 0),
+                "shared-row activation codes require an up device plan with complete row slots");
+    const auto code_count = common ? p / slots : p, code_projections = common ? 1 : projections;
+    TORCH_CHECK(codes.size(0) == code_projections && codes.size(1) == code_count && codes.size(2) == k / 2 &&
+                scales.size(0) == code_projections && scales.size(1) == code_count && scales.size(2) == k / 16,
                 "nativeA4 quantized pair dimensions");
     TORCH_CHECK(out.is_cuda() && out.device() == blob.device() && out.dim() == 3 && out.size(2) == n &&
                 out.size(0) > 0 && out.size(0) <= INT32_MAX && out.size(1) > 0 && out.size(1) <= INT32_MAX &&
@@ -126,7 +130,7 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
         TORCH_CHECK(counts.numel() == 2 && slots > 0 && slots <= 1024 &&
                     (!down || (out.size(1) == slots && out.size(0) * slots == p)),
                     "device plan output must cover all original row slots");
-        expert_a4_gemm_plan_cuda(codes, scales, blob, weight, input, items, counts, plan, out, n, k, sk, slots, down);
+        expert_a4_gemm_plan_cuda(codes, scales, blob, weight, input, items, counts, plan, out, n, k, sk, slots, down, common);
     } else expert_a4_gemm_cuda(codes, scales, blob, weight, input, items, plan, out, n, k, sk, down, direct);
 }
 
@@ -152,8 +156,8 @@ void quantize_plan(const at::Tensor& x, const at::Tensor& items, const at::Tenso
 
 void gemm_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
-    const at::Tensor& members, at::Tensor out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down) {
-    gemm_impl(codes, scales, blob, weight, input, items, members, out, n, k, sk, down, true, counts, slots);
+    const at::Tensor& members, at::Tensor out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down, bool common) {
+    gemm_impl(codes, scales, blob, weight, input, items, members, out, n, k, sk, down, true, counts, slots, common);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -164,5 +168,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           pybind11::arg("out"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"), pybind11::arg("down"),
           pybind11::arg("direct") = false);
     m.def("quantize_plan", &quantize_plan);
-    m.def("gemm_plan", &gemm_plan);
+    m.def("gemm_plan", &gemm_plan, pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("blob"),
+          pybind11::arg("weight"), pybind11::arg("input"), pybind11::arg("items"), pybind11::arg("counts"),
+          pybind11::arg("members"), pybind11::arg("out"), pybind11::arg("n"), pybind11::arg("k"),
+          pybind11::arg("sk"), pybind11::arg("slots"), pybind11::arg("down"), pybind11::arg("common") = false);
 }

@@ -65,13 +65,15 @@ def test_actual_projection_workspace_counts_every_live_payload_and_temporary():
     # down code+scale360, SiLU+product2560 bytes per pair.
     assert plan_workspace_bytes(1, 1, 640, 2560) == 8360
     text = {"hidden_size": 2560, "moe_intermediate_size": 640, "num_experts_per_tok": 10}
-    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * 11 * 8360
-    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * 11 * 8360
+    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * (11 * 8360 + 20)
+    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * (11 * 8360 + 20)
     assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, cached=True) == 2 * 128 * 8360
 
 
 def test_host_authority_preserves_all_original_direct_scalars_and_payloads():
     torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("GPU-assisted loader byte packing requires CUDA; metadata/rollback controls remain CPU")
     from modelopt_a4_inputs import Reader
 
     from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4
@@ -238,3 +240,37 @@ def test_independent_activation_oracle_saturates_finite_overflow_and_defines_nan
     assert torch.count_nonzero(codes) == torch.count_nonzero(scales) == 0
     codes, scales = quant_reference(torch.full((1, 16), float("nan"), dtype=torch.bfloat16), 1.)
     assert torch.equal(codes, torch.full_like(codes, 0x77)) and torch.count_nonzero(scales) == 0
+
+
+def test_gpu_load_logical_reduction_and_control_peak_is_dominated_by_layer_staging():
+    from tensorfold.cuda.capacity import _estimate_weights_from_headers
+    from tensorfold.cuda.geometry import indexed_weights
+    from tensorfold.cuda.nvfp4.modelopt_layout import loading_device_bytes, resident_loading_host_bytes
+
+    for width, dims, experts in ((64, 64, 1), (640, 2560, 3), (640, 2560, 512)):
+        header = infos(experts, width, dims)
+        text = {"moe_intermediate_size": width, "hidden_size": dims, "num_experts": experts}
+        original = _estimate_weights_from_headers(header, indexed_weights(1, False))
+        block_bytes = width * dims // 16
+        blob = 9 * block_bytes
+        reduction_peak = blob + (block_bytes + 15) // 16 + 6
+        pack_peak = 3 * blob + 2
+        admitted = max(original.staging, loading_device_bytes(text))
+        assert admitted >= max(reduction_peak, pack_peak)
+        assert resident_loading_host_bytes(text) == 24 * experts
+
+
+def test_common_input_proof_checks_every_expert_and_projection_by_exact_bits():
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.nvfp4.modelopt_experts import uniform_input_bits
+
+    values = torch.full((512, 2), .001964750699698925, dtype=torch.float32)
+    assert uniform_input_bits(values)
+    original = values.view(torch.int32)[-1, -1].item()
+    values.view(torch.int32)[-1, -1] = original + 1
+    assert not uniform_input_bits(values)
+    values.view(torch.int32)[-1, -1] = original
+    values.view(torch.int32)[0, 1] = original - 1
+    assert not uniform_input_bits(values)
+    with pytest.raises(ValueError, match="complete contiguous CPU"):
+        uniform_input_bits(values[:, :1])

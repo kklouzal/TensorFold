@@ -50,9 +50,16 @@ def test_actual_projection_shape_device_plan_matches_individual_original_linears
     torch.cuda.synchronize()
 
 
-def test_captured_device_plan_replays_different_picks_and_values_without_cpu_route_read(monkeypatch):
+@pytest.mark.parametrize("common", [False, True])
+def test_captured_device_plan_replays_different_picks_and_values_without_cpu_route_read(monkeypatch, common):
     reader = Reader()
+    if common:
+        value = reader.payload[f"{PREFIX}.experts.0.gate_proj.input_scale"].item()
+        for name, tensor in reader.payload.items():
+            if name.endswith(("gate_proj.input_scale", "up_proj.input_scale")):
+                tensor.fill_(value)
     bank = load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0")
+    assert bank.shared_input is common
     x = torch.ones((3, reader.cfg.hidden), dtype=torch.bfloat16, device="cuda")
     buf = MoEBuffers(3, Shape(reader.cfg), "cuda", prefill=True)
     picks = torch.tensor([[0, 1, 3], [1, 2, 3], [2, 0, 3]], dtype=torch.int32, device="cuda")
@@ -76,7 +83,7 @@ def test_captured_device_plan_replays_different_picks_and_values_without_cpu_rou
         buf.pick.copy_(changed)
         x.fill_(.125 * (step + 1))
         graph.replay()
-        expected = individual_reference(Reader(), x, changed, prefill=True)
+        expected = individual_reference(reader, x, changed, prefill=True)
         assert torch.equal(buf.y, expected)
     torch.cuda.synchronize()
 
@@ -177,6 +184,73 @@ def test_direct_activation_quantizer_extremes_ties_underflow_and_signed_zero():
     assert torch.equal(codes[0].cpu(), expected_codes)
     assert torch.equal(scales[0].cpu(), expected_scales)
     assert torch.equal(codes[0, 1], torch.full_like(codes[0, 1], 0xf7))
+    torch.cuda.synchronize()
+
+
+@pytest.mark.parametrize("n,k", [(64, 64), (128, 192), (640, 2560)])
+def test_gpu_load_pack_is_exact_independent_foreign_byte_permutation(n, k):
+    from test_nvfp4_a4_host_control import oracle_blob
+
+    from tensorfold.cuda.nvfp4.modelopt_experts import pack_projection_a4_device
+
+    raw = (torch.arange(n * k // 2, dtype=torch.int64) * 31 % 256).to(torch.uint8).reshape(n, k // 2)
+    scales = (torch.arange(n * k // 16, dtype=torch.int64) * 17 % 256).to(torch.uint8).reshape(n, k // 16)
+    expected = oracle_blob(raw, scales.view(torch.float8_e4m3fn))
+    packed = pack_projection_a4_device(raw.cuda(), scales.cuda().view(torch.float8_e4m3fn))
+    assert torch.equal(packed.cpu(), expected)
+
+
+def test_gpu_loader_checks_every_original_scale_before_publication():
+    from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+
+    reader = Reader()
+    name = f"{PREFIX}.experts.2.down_proj.weight_scale"
+    reader.payload[name].view(torch.uint8)[-1, -1] = 0x80
+    entry = 3 * 64 * 128 * 9 // 16 + 64
+    cache = ModelOptExpertCache(entry, entry, "cuda:0", width=64, dims=128)
+    try:
+        with pytest.raises(ValueError, match="finite unsigned E4M3"):
+            load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0", cache=cache)
+        assert not cache._layers
+        assert name in reader.reads
+        assert len(reader.reads) == len(reader.payload)
+        torch.cuda.synchronize()
+    finally:
+        cache.close()
+
+
+@pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 17), (True, 129)])
+def test_proven_row_shared_input_matches_general_plan_and_individual_reference(prefill, rows):
+    from tensorfold.cuda.nvfp4.modelopt_experts import ModelOptExpertsA4
+
+    reader = Reader(width=640, dims=2560)
+    direct = reader.payload[f"{PREFIX}.experts.0.gate_proj.input_scale"].item()
+    for name, value in reader.payload.items():
+        if name.endswith(("gate_proj.input_scale", "up_proj.input_scale")):
+            value.fill_(direct)
+    selected = load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0")
+    assert selected.shared_input
+    general = ModelOptExpertsA4(selected.fields, selected.width, selected.dims)
+    x = (torch.randn(rows, 2560, generator=torch.Generator().manual_seed(677)) * .3).to("cuda", torch.bfloat16)
+    buf = MoEBuffers(rows + 1, Shape(reader.cfg), "cuda", prefill=prefill)
+    picks = (torch.arange(rows, dtype=torch.int32, device="cuda")[:, None]
+             + torch.arange(buf.slots, dtype=torch.int32, device="cuda")) % 3
+    picks[:, -1] = 3
+    buf.pick[:rows].copy_(picks)
+    grouped.route(buf.pick[:rows], buf.plan, 16)
+    buf.y.zero_()
+    expected = individual_reference(reader, x, picks, prefill=prefill)
+    # Both policies consume the same reusable backing in alternating order.
+    # No stale projection plane/member order can survive a policy transition.
+    for bank in (selected, general, selected, general):
+        bank.run_plan(x, buf, prefill=prefill)
+        assert torch.equal(buf.y[:rows], expected)
+    codes = buf.modelopt_a4[0].view(-1)[:rows * 1280].view(rows, 1280)
+    scales = buf.modelopt_a4[1].view(-1)[:rows * 160].view(rows, 160)
+    selected.run_plan(x, buf, prefill=prefill)
+    c, s = quant_reference(x.cpu(), direct)
+    assert torch.equal(codes.cpu(), c)
+    assert torch.equal(scales.cpu(), s)
     torch.cuda.synchronize()
 
 

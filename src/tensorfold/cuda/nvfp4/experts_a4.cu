@@ -73,13 +73,13 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
 // (row g, row g+8) x (inputs8t..8t+7,32+8t..39+8t), matching lane4's ldmatrix.
 // Each pair has independent activation scale words, even when the expert's
 // input globals differ from the other projection or the next expert.
-template <bool DOWN, bool F32, bool GROUPED = false, bool DIRECT = false>
+template <bool DOWN, bool F32, bool GROUPED = false, bool DIRECT = false, bool COMMON = false>
 __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const uint8_t* scales,
     const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input,
     int64_t blob_stride, int64_t weight_stride, int64_t input_stride, int cells,
     const int* items, int item_count, const int* plan, int pairs, void* out, int64_t out_row, int64_t out_slot,
     int output_rows, int output_slots, int n, int k, int slices,
-    const int* counts = nullptr, const int* members = nullptr, int slots = 0) {
+    const int* counts = nullptr, const int* members = nullptr, int slots = 0, int code_rows = 0) {
     const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
     const int64_t unit = static_cast<int64_t>(blockIdx.x) * 4 + (threadIdx.x >> 5);
     const int nb = n / 8;
@@ -95,22 +95,43 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
     const int64_t r0 = static_cast<int64_t>(first) + g, r1 = r0 + 8;
     const int kg_count = k / 64, per = kg_count / slices;
     const bool valid0 = g < count, valid1 = g + 8 < count;
+    int64_t input0 = r0, input1 = r1;
+    int64_t scale_row = static_cast<int64_t>(first) + g + 8 * (t & 1);
+    const bool scale_valid = scale_row < first + count;
+    if constexpr (COMMON) {
+        if (valid0) {
+            const int member = members[r0];
+            if (member < 0 || member >= pairs) { __trap(); return; }
+            input0 = member / slots;
+        }
+        if (valid1) {
+            const int member = members[r1];
+            if (member < 0 || member >= pairs) { __trap(); return; }
+            input1 = member / slots;
+        }
+        if (scale_valid) {
+            const int member = members[scale_row];
+            if (member < 0 || member >= pairs) { __trap(); return; }
+            scale_row = member / slots;
+        }
+    }
     const uint8_t* w = blob + static_cast<int64_t>(cell) * blob_stride + projection * blob_bytes;
     const uint8_t* ws = w + static_cast<int64_t>(n) * k / 2;
     float total[4] = {0.f, 0.f, 0.f, 0.f};
     for (int slice = 0; slice < slices; ++slice) {
         float acc[4] = {0.f, 0.f, 0.f, 0.f};
         for (int kg = slice * per; kg < (slice + 1) * per; ++kg) {
-            const int64_t a0at = (static_cast<int64_t>(projection) * pairs + r0) * (k / 2) + kg * 32 + t * 4;
-            const int64_t a1at = (static_cast<int64_t>(projection) * pairs + r1) * (k / 2) + kg * 32 + t * 4;
+            const int64_t code_projection = COMMON ? 0 : projection;
+            const int64_t code_count = COMMON ? code_rows : pairs;
+            const int64_t a0at = (code_projection * code_count + input0) * (k / 2) + kg * 32 + t * 4;
+            const int64_t a1at = (code_projection * code_count + input1) * (k / 2) + kg * 32 + t * 4;
             uint32_t a[4] = {
                 valid0 ? *reinterpret_cast<const uint32_t*>(codes + a0at) : 0u,
                 valid1 ? *reinterpret_cast<const uint32_t*>(codes + a1at) : 0u,
                 valid0 ? *reinterpret_cast<const uint32_t*>(codes + a0at + 16) : 0u,
                 valid1 ? *reinterpret_cast<const uint32_t*>(codes + a1at + 16) : 0u};
-            const int64_t sr = static_cast<int64_t>(first) + g + 8 * (t & 1);
-            const uint32_t sa = sr < first + count ? *reinterpret_cast<const uint32_t*>(
-                scales + (static_cast<int64_t>(projection) * pairs + sr) * (k / 16) + kg * 4) : 0u;
+            const uint32_t sa = scale_valid ? *reinterpret_cast<const uint32_t*>(
+                scales + (code_projection * code_count + scale_row) * (k / 16) + kg * 4) : 0u;
             const int64_t tile = static_cast<int64_t>(cb / 8) * kg_count + kg;
             const uint2 b = reinterpret_cast<const uint2*>(w)[(tile * 8 + cb % 8) * 32 + lane];
             const uint32_t sb = reinterpret_cast<const uint32_t*>(ws)[tile * 64 + (cb % 8) * 8 + g];
@@ -205,22 +226,23 @@ void expert_a4_quant_plan_cuda(const at::Tensor& x, const at::Tensor& items, con
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <bool DOWN, bool F32>
+template <bool DOWN, bool F32, bool COMMON = false>
 void launch_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots) {
-    gemm_kernel<DOWN, F32, true, true><<<dim3((items.size(0) * (n / 8) + 3) / 4, blob.size(1)),
+    gemm_kernel<DOWN, F32, true, true, COMMON><<<dim3((items.size(0) * (n / 8) + 3) / 4, blob.size(1)),
         128, 0, at::cuda::getCurrentCUDAStream()>>>(codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
         blob.data_ptr<uint8_t>(), blob.size(2), weight.data_ptr<float>(), input.data_ptr<float>(),
         blob.stride(0), weight.stride(0), input.stride(0), blob.size(0), items.data_ptr<int>(), items.size(0),
-        nullptr, codes.size(1), out.data_ptr(), out.stride(0), out.stride(1), out.size(0), out.size(1), n, k, sk,
-        counts.data_ptr<int>(), members.data_ptr<int>(), slots);
+        nullptr, members.size(0), out.data_ptr(), out.stride(0), out.stride(1), out.size(0), out.size(1), n, k, sk,
+        counts.data_ptr<int>(), members.data_ptr<int>(), slots, codes.size(1));
 }
 
 void expert_a4_gemm_plan_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
-    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down) {
-    if (!down) launch_plan<false, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down, bool common) {
+    if (common) launch_plan<false, false, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+    else if (!down) launch_plan<false, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
     else if (out.scalar_type() == at::kFloat)
         launch_plan<true, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
     else launch_plan<true, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
