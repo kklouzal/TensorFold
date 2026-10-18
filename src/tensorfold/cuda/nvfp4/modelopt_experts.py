@@ -72,7 +72,9 @@ class ModelOptExpertsA4(ExpertsA4):
         gu.zero_()
         ext = _ext()
         fields = self.fields
-        items = plan.items[:min(pairs, self.count + 1) + pairs // 16]
+        # Plan backing has conservative spare rows, but every live item owns
+        # at least one pair. Never expose more item rows than actual pairs.
+        items = plan.items[:min(pairs, self.count + 1 + pairs // 16)]
         members = plan.members[:pairs]
         common = self.shared_input and rows <= 65535
         if common:
