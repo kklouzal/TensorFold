@@ -157,7 +157,6 @@ class FlashNextEngine:
             native_a4 = checkpoint_math and precision.own_math(torch.cuda.get_device_capability())["nvfp4"]
             if expert_session is not None:
                 native_a4 = expert_session.native_a4
-            a4_banks = ()
             from tensorfold.cuda.capacity import headers
 
             infos = headers(model_dir)
