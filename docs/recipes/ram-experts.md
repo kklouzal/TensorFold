@@ -177,13 +177,22 @@ expert stacks first and never dequantizes or requantizes them. A single fixed GP
 pool is shared across main and MTP layers. By default, two expert-sized pinned buffers stage
 cache misses and cold expert weights stay pageable. Explicit host registration uses direct uploads instead.
 
-ModelOpt NVFP4 routed experts read original packed codes and E4M3 scales on the
+Weight-only ModelOpt NVFP4 routed experts read original packed codes and E4M3 scales on the
 selected CUDA device, permute their original bits there, then synchronously copy
 the result into CPU authority. Global-scale conversion stays on CPU and retains
 the existing arithmetic. Only one expert's raw payload and packing temporaries
 are live at a time; their loading allowance is charged even without an MTP
 bank. This does not quantize activations or change Flash Next's W4A16 math.
 Startup performance qualification of the CUDA packing change remains pending.
+
+Declared static group-16 ModelOpt A4 has a separate native SM12 adapter under
+checkpoint precision. It preserves both direct FP32 calibrations per projection;
+main A4 and draft-converted W4A16 MTP have separately admitted six/four-field
+layouts in the shared fenced pool. Resident A4 uses live GPU routing plans and
+supports graph capture; host-backed leases still decline capture. Explicit full
+precision and the negotiated nonnative expert-group policy retain W4A16. See
+[the precision contract](cuda.md#nvfp4-precision). Full-model and startup
+performance qualification of this new path remains pending.
 
 NVFP4 admission counts the Reader's two pinned allocations with their allocator
 bucket rounding (a 256 MiB backing bound on the pinned runtime), alongside the

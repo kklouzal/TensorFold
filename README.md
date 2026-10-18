@@ -13,13 +13,21 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 qualification (2026-10-17):** the original `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` export now runs with RAM-backed experts and its separate DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell. Installed source `099eb4d0` completed serial/drafted identity, strict tools/JSON, streaming, cancellation and four concurrent 512-token replies. The eight-row BF16 draft profile reached about **37 tok/s** in the balanced single-request comparison; four concurrent requests completed at **57.70 aggregate client tok/s** in a separate profile. [Conditions, immutable images and limits](docs/qwen36-ct-nvfp4-validation.md) retain the numerical contracts and conditional performance analysis. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
-ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
+Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
 byte permutation. Historical source `abb67d62` passed affected installed CPU and
 native loader checks; the [loader qualification status](docs/nvfp4-loading-validation.md)
 keeps those identities separate from pending refreshed-foundation and full-ModelOpt
 startup/performance gates.
+
+Flash Next now selects ModelOpt routed-expert activation math from each
+projection's declaration. Checkpoint precision uses declared static group-16 A4
+on native SM12 GPUs, preserving the original direct input and weight scales.
+Explicit full precision and nonnative devices retain W4A16. An expert group
+selects one policy before loading; mixed native/nonnative ranks use W4A16.
+Resident A4 banks retain live GPU routing and graph capture. Native numerical,
+full-checkpoint MTP/vision and GB10 performance qualification remain pending.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring

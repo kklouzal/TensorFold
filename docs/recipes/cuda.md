@@ -157,6 +157,19 @@ GPU runs under `checkpoint` (its startup line says which; no GPU from 8.9 is ref
 | SM 12.x (RTX 50, RTX PRO 6000 Blackwell, DGX Spark) | FP4 x FP4, block-scaled mma | FP8 x FP8 |
 | SM 8.9-10.x (RTX 40, H100, H200, B200) | W4A16 (bf16 activations) | FP8 x FP8 |
 
+Flash Next ModelOpt routed experts follow their per-projection declarations:
+weight-only projections stay W4A16; declared static group-16 A4 uses native math
+on SM12. A routed bank must have uniform activation declarations; mixed A4 and
+weight-only projections require `--precision full`. Its `input_scale` and
+`weight_scale_2` are direct dequantization scales.
+TensorFold uses explicit FP32 round-to-nearest operations and multiplies the
+original scales for alpha, without a reciprocal roundtrip. This defines its
+native arithmetic; it does not promise bit identity with ModelOpt training
+fakequant or another runtime's approximate-reciprocal kernel. Shared experts,
+backbone and MTP retain their own declared representations and draft exclusions.
+An expert group negotiates one math policy before expert payload allocation: all-native ranks
+can use A4; a group containing a nonnative rank uses W4A16 throughout.
+
 The normal public constructor was exercised on `RishabhSinha/Qwen3.5-9B-NVFP4` revision
 `d51f8fa57a09df7d91a2d84017b7f7cb310887da`, a compressed-tensors `nvfp4-pack-quantized` export,
 on the RTX PRO 2000 Blackwell with 16 GB VRAM and 64 GB RAM. The Source06 image identified in the

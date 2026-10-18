@@ -125,17 +125,23 @@ and workspace. It is not a fit or throughput claim for a 16 GB card. Each cache
 entry retains the original E2M1 codes, e4m3 block-scale bytes and per-expert FP32
 global scales. The shared expert keeps its resident BF16 or MXFP8 representation;
 MTP's BF16/FP8 experts retain their existing draft-only NVFP4 conversion, one
-expert at a time. This path uses the current W4A16 grouped expert arithmetic,
-including on SM120. It does not introduce activation quantization or imply a
-native FP4-MMA throughput gain. Host-backed banks decline CUDA graph capture.
+expert at a time. Weight-only declarations and explicit full precision use
+W4A16. Under checkpoint precision, declared static group-16 A4 projections use
+native SM12 math with their original direct input/weight calibrations. Mixed
+native/nonnative expert ranks negotiate W4A16 for the whole group. Resident A4
+banks consume live GPU routing plans; host-backed banks decline graph capture.
+The [numerical contract](cuda.md#nvfp4-precision) and each mode's validation
+scope remain separate; activation quantization alone is not a throughput claim.
 
 With `--ple-on-ssd`, affine, BF16, FP8 and NVFP4 n-gram shards use their own
 validated row layouts and bounded positional reads. The decoded BF16 bits and
 table-scale behavior match the mapped readers; Linux disables read-ahead but
 does not promise that the OS will retain no file pages. The reader drains
 accepted lookups before closing its descriptors. Full pretrained ModelOpt
-checkpoint and SM89 execution qualification remain pending on the available
-single-SM120 host; generated complete-model and component checks are recorded
+checkpoint and SM89 execution qualification remain pending. The requested pinned
+`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 run is being qualified with
+resident experts, SSD n-grams, native MTP and vision; no result is inferred from
+generated complete-model or component checks, which are recorded
 with their executed source and image in the remediation evidence.
 
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
