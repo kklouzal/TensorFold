@@ -4,6 +4,8 @@ through every round shape (joins, finishes, copy drafts, sparse rows, prompt pas
 
 import gc
 import json
+import traceback
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -468,6 +470,42 @@ def test_a_failed_slot_restore_after_a_failed_capture_is_attached_to_the_capture
     assert caught.value is boom and caught.value.__cause__ is restore
     assert any("cleanup also failed" in note for note in caught.value.__notes__)
     assert dec.graphs is None and gc.isenabled() and pdl.ON == launch
+
+
+def test_failed_capture_tensor_locals_survive_real_frame_clear_and_keep_pool_receipt(monkeypatch):
+    """assertRaises-style traceback clearing cannot change the failed pool's admitted inactive-byte constant."""
+    from tensorfold.families.qwen4_exp.cuda.service_memory import private_pool_spare
+
+    w = _model()
+    refs = _solo(w, PROMPTS[:1], SAMPLINGS[:1], 8, RQ, capacity=1024, prefill_rows=16)
+    dec = MultiDecoder(w, slots=2, capacity=1024, depth=3, kv_dtype=RQ, prefill_rows=16, graphs=True)
+    original, probes = multi_graphs.RoundGraphs._pieces, []
+    boom = RuntimeError("inside the captured forward")
+    def pieces(graphs, run, b):
+        def fail():
+            temporary = torch.empty(4096, dtype=torch.bfloat16, device=w.device)
+            probes.append(weakref.ref(temporary))
+            run()
+            raise boom
+        return original(graphs, fail, b)
+    monkeypatch.setattr(multi_graphs.RoundGraphs, "_pieces", pieces)
+    with pytest.raises(RuntimeError) as caught:
+        dec.capture_graphs()
+    assert caught.value is boom and dec._memory_error is None
+    owner = dec._failed_graphs
+    assert owner is not None and owner.failure_frames
+    traceback.clear_frames(owner.failure_traceback)
+    boom.with_traceback(None)
+    gc.collect()
+    torch.cuda.synchronize()
+    assert probes[0]() is not None
+    snapshot = torch.cuda.memory_snapshot(mempool_id=owner.pool, include_traces=False)
+    assert private_pool_spare(snapshot, owner.pool, w.device.index or 0) == owner.private_spare_bytes
+    stream = Stream(list(PROMPTS[0]), 8, SAMPLINGS[0])
+    dec.admit(stream)
+    while dec.live():
+        dec.finish(dec.round())
+    assert stream.error is None and stream.out == refs[0]
 
 
 def _side_capturing(graphs) -> bool:

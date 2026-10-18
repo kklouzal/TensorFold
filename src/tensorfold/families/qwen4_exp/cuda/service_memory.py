@@ -66,3 +66,35 @@ def private_pool_spare(segments, pool, device):
             raise ValueError("graph pool snapshot must expose settled allocated/active/total byte counts")
         spare += sizes[0] - sizes[1]
     return spare
+
+
+def failure_frame_values(primary, traceback, cause, context):
+    """Own failure-local storage before consumers may clear the exception's frames.
+
+    The journal is bounded by this single capture's distinct error graph and
+    frames; cycles are visited once. Values are strongly retained, not copied
+    or interpreted as tensors. Capture callbacks have completed before entry;
+    the error payload/journal is operation-owned and read-only to consumers.
+    Allocation failure propagates to the capture's poisoned recovery path.
+    """
+    pending = [primary, cause, context]
+    seen_errors, seen_frames, values = set(), set(), []
+    while pending:
+        error = pending.pop()
+        if error is None or id(error) in seen_errors:
+            continue
+        seen_errors.add(id(error))
+        pending.append(BaseException.__cause__.__get__(error))
+        pending.append(BaseException.__context__.__get__(error))
+        if isinstance(error, BaseExceptionGroup):
+            pending.extend(BaseExceptionGroup.exceptions.__get__(error))
+        attributes = BaseException.__dict__["__dict__"].__get__(error)
+        values.append(tuple(attributes.values()))
+        trace = traceback if error is primary else BaseException.__traceback__.__get__(error)
+        while trace is not None:
+            frame = trace.tb_frame
+            if id(frame) not in seen_frames:
+                seen_frames.add(id(frame))
+                values.append(tuple(frame.f_locals.values()))
+            trace = trace.tb_next
+    return tuple(values)

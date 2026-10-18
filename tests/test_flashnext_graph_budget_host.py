@@ -1,6 +1,9 @@
 """Captured-round preparation and live-resource failures without an accelerator runtime."""
 
 import ast
+import gc
+import traceback
+import weakref
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace as NS
@@ -12,6 +15,7 @@ from tensorfold.cuda import capacity, geometry
 from tensorfold.cuda.memory_gate import MemoryGate, torch_live
 from tensorfold.families.qwen4_exp.cuda.service_memory import (
     automatic_graph_bytes,
+    failure_frame_values,
     future_service,
     private_pool_spare,
     reserve_graph_plan,
@@ -187,6 +191,9 @@ def decoder(request=None, live_bytes=5000, header=1000):
             self.private_spare_bytes = 70
             self.admitted = True
 
+        def retain_failure(self, primary):
+            self.failure = primary
+
         def capture(self, *, prepared):
             assert prepared
             captured.append((self.budget, self.spare()))
@@ -317,11 +324,12 @@ def test_successful_capture_publication_failure_retains_its_owner_and_contains_r
 
 def round_graphs():
     free = [100000]
-    cls = source_class("multi_graphs.py", "RoundGraphs", {"_keys", "_has_room", "capture", "_account_pool"},
+    cls = source_class("multi_graphs.py", "RoundGraphs", {"_keys", "_has_room", "capture", "_account_pool", "retain_failure"},
                        {"pdl": NS(ON=False), "time": NS(perf_counter=lambda: 0), "MIB": 1 << 20,
                         "free_bytes": lambda: free[0],
                         "prepare_capture": lambda: None,
                         "live_bytes": lambda: free[0], "private_pool_spare": private_pool_spare,
+                        "failure_frame_values": failure_frame_values,
                         "torch": NS(cuda=NS(synchronize=lambda: None, empty_cache=lambda: None,
                                             memory_snapshot=lambda **kwargs: [
                                                 {"device": 0, "segment_pool_id": (0, 7), "total_size": 128,
@@ -334,6 +342,8 @@ def round_graphs():
     graphs.budget, graphs.bytes, graphs.verify, graphs.mtp = 1 << 40, 0, {}, {}
     graphs.measured, graphs.stopped, graphs.rejected = [], None, None
     graphs.pool, graphs.admitted = (0, 7), False
+    graphs.failure = graphs.failure_traceback = graphs.failure_cause = graphs.failure_context = None
+    graphs.failure_frames = None
     graphs.spare = lambda: free[0] - 1000
     graphs._warm = lambda *args: (None, None)
     def pieces(*args):
@@ -341,6 +351,87 @@ def round_graphs():
         return NS(out=object(), graphs=[object()])
     graphs._pieces = pieces
     return graphs, free
+
+
+def test_failed_pool_keeps_tensor_bearing_frames_after_caller_clears_exception_traceback():
+    pool, _ = round_graphs()
+    live, probes = [], []
+    class PrivateTensor:
+        def __init__(self):
+            live.append(True)
+
+        def __del__(self):
+            live.pop()
+    primary = RuntimeError("failed captured run")
+    native_cause, native_context = OSError("native cause"), KeyError("native context")
+    primary.__cause__, primary.__context__ = native_cause, native_context
+    def fail():
+        temporary = PrivateTensor()
+        probes.append(weakref.ref(temporary))
+        raise primary
+    try:
+        fail()
+    except RuntimeError as caught:
+        pool.retain_failure(caught)
+    pool.dec.w = NS(device=NS(index=0))
+    pool._account_pool()
+    traceback.clear_frames(pool.failure_traceback)
+    primary.with_traceback(None)
+    gc.collect()
+    assert probes[0]() is not None and live == [True]
+    assert pool.failure is primary and pool.failure_traceback is not None
+    assert pool.failure_cause is native_cause
+    # A later propagation must not replace the original tensor-bearing trace.
+    saved = pool.failure_traceback
+    pool.retain_failure(primary)
+    assert pool.failure_traceback is saved
+    pool.failure_traceback = pool.failure_frames = None
+    del saved
+    gc.collect()
+    assert probes[0]() is None and live == []
+
+
+def test_failed_frame_journal_exhaustion_keeps_primary_and_poisons_admission():
+    graphs, _ = round_graphs()
+    graphs.dec.free = [NS(reset=lambda w: None)]
+    graphs.dec.w, graphs.dec.gdn = NS(device=NS(index=0)), NS(parity=0)
+    graphs.dec.buf, graphs.dec.mbuf = NS(gdn_tables=None, attn_step=None), None
+    primary, cleanup = RuntimeError("capture body"), MemoryError("failure frame journal")
+    graphs._keys = lambda states: (_ for _ in ()).throw(primary)
+    graphs._account_pool.__func__.__globals__["failure_frame_values"] = lambda *args: (_ for _ in ()).throw(cleanup)
+    with pytest.raises(RuntimeError) as caught:
+        graphs.capture()
+    assert caught.value is primary and primary.__cause__ is cleanup
+    assert not graphs.admitted and graphs.failure is primary and graphs.failure_traceback is not None
+
+
+@pytest.mark.parametrize("link", ["cause", "context", "group"])
+def test_frame_journal_covers_causal_traces_and_visits_cycles_once(link):
+    probes = []
+    class PrivateTensor:
+        pass
+    def fail():
+        temporary = PrivateTensor()
+        probes.append(weakref.ref(temporary))
+        raise OSError("native capture")
+    try:
+        fail()
+    except OSError as caught:
+        native = caught
+    primary = RuntimeError("capture wrapper")
+    if link == "context":
+        primary.__context__ = native
+    else:
+        primary.__cause__ = ExceptionGroup("native failures", [native]) if link == "group" else native
+    native.__context__ = primary  # a repeated causal edge cannot loop or duplicate the journal forever
+    journal = failure_frame_values(primary, None, primary.__cause__, primary.__context__)
+    traceback.clear_frames(native.__traceback__)
+    native.with_traceback(None)
+    gc.collect()
+    assert probes[0]() is not None
+    del journal
+    gc.collect()
+    assert probes[0]() is None
 
 
 @pytest.mark.parametrize("secondary", [None, "snapshot", "budget"])

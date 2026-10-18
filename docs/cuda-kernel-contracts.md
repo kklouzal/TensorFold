@@ -241,6 +241,10 @@ Concurrent requests, including `draft:false`, stay in the scheduler and use its 
 cannot lazily create a serial graph pool after this snapshot. A failed capture also retains its accounted pool:
 after successful drain/reset and admissible settlement, eager recovery debits its retained bytes and excludes its
 private spare, preserving the original exception. Recapture is refused so pools cannot accumulate. A failed
+pool independently retains its original primary, traceback/native links and a strong journal of original/causal
+frame-local values before public propagation and allocator measurement. `traceback.clear_frames` and clearing the
+caller exception's traceback cannot release those graph-private Tensor locals and invalidate its inactive-byte
+receipt. The journal is operation-owned/read-only; failed journal allocation poisons recovery. A failed
 drain/reset/accounting, unadmitted retained storage or failed publication poisons the decoder until retirement.
 The capture failure stays the raised error; failed cleanup/accounting is attached to it.
 
