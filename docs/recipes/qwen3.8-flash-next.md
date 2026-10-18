@@ -141,7 +141,7 @@ accepted lookups before closing its descriptors. The pinned
 `dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 checkpoint passed actual
 installed resident-expert, SSD, native-MTP, vision and four-request protocols at
 bd1 and AUTO source297. [Exact sources, images and limits](../gb10-nvfp4-validation.md)
-keep those results separate from controlled performance selection, SM89 execution,
+record the user-selected four-stream comparison and retain separate SM89 execution,
 full-context capacity and broader model quality.
 
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
@@ -349,7 +349,8 @@ explicit MiB ceiling (`0` disables capture). Live checks can stop capture with
 a recorded reason; they do not reserve memory against other processes.
 Other rounds run eagerly with the same bits. Automatic sizing passed the
 [source297 installed GB10 model protocols](../gb10-nvfp4-validation.md#source297-auto-graph-protocols);
-controlled performance selection remains separate. `--parallel auto` selects one
+the [four-stream comparison and user choice](../gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection)
+retain observed single-request tradeoffs. `--parallel auto` selects one
 request. Tensor-parallel two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
 requests and supported media stay on rank zero in the separate

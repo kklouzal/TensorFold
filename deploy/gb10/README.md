@@ -46,9 +46,13 @@ selection. The later `297e8487` composition also passed installed MTP0/6 model
 protocols with AUTO graph sizing and 580 focused CPU cases. MTP6 captured all
 192 graph keys; its warm/quartet requests reused 45 of 46 prompt tokens.
 [Separate AUTO results and cache conditions](../../docs/gb10-nvfp4-validation.md#source297-auto-graph-protocols)
-keep correctness qualification distinct from pending controlled performance
-selection. The nine-case native fixture follow-up also passed; its original
-151-pass/1-fail run remains preserved. The entire fresh RotorQuant
+keep correctness qualification distinct from the later comparison. The nine-case
+native fixture follow-up also passed; its original 151-pass/1-fail run remains
+preserved. The [controlled eight-start record](../../docs/gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection)
+now records the user-selected GPU20/split/common MTP6 AUTO four-stream profile
+at 144.17–144.26 aggregate HTTP tok/s, with B/D’s observed single-request edge
+retained and no all-region superiority claim. Further E/F work was stopped;
+this is not a deployment receipt. The entire fresh RotorQuant
 suite, long-context capacity and two-GPU execution remain separate. This does not
 replace the recorded deployed service or inherit the older profile's capacity assumptions.
 
