@@ -14,8 +14,6 @@ from tensorfold.cuda.moe import Routed
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import SUFFIXES
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import load_nvfp4 as load_backbone
 
-from .head import prepare_head
-
 
 @dataclass(frozen=True)
 class SharedExpert:
@@ -126,7 +124,5 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
         bank = expert_factory(context, prefix.removesuffix("."), cfg)
         return {"moe": Routed(router, bank, cfg.top_k, run=NativeMoE(bank, shared))}
 
-    weights = load_backbone(model_dir, device, mlp=mlp,
-                            **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
-    weights.head = prepare_head(weights.head)
-    return weights
+    return load_backbone(model_dir, device, mlp=mlp,
+                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))

@@ -136,10 +136,7 @@ Concurrent prompt prefill runs the routed MoE over the aggregate batch with the
 same BF16 post-attention boundary as separate prefills. Each stream retains its
 own convolution, recurrent, attention and DFlash context. The scheduler bounds
 the aggregate prompt rows by the admitted forward limit, including while other
-streams decode. Routed batched prefill supports one GPU. The SM120 BF16
-vocabulary head keeps its ordered singleton arithmetic while reusing weights
-for the seven- and fifteen-row DFlash proposal tails; prompt projection is
-unchanged. Fresh installed checks cover the aggregate row bound, independent
+streams decode. Routed batched prefill supports one GPU. Fresh installed checks cover the aggregate row bound, independent
 per-stream state, and four concurrent 512-token replies equal to the serial
 reference. That separate four-slot/four-row profile completed 2,048 tokens at
 57.70 aggregate client tok/s; it is not the single-request profile above.
