@@ -305,3 +305,38 @@ def test_legacy_native_tensor_arguments_keep_omitted_boolean_defaults():
     ext.quantize(x, plan, calibration, direct_codes, direct_scales, False, True)
     assert torch.equal(direct_codes, codes) and torch.equal(direct_scales, scales)
     torch.cuda.synchronize()
+
+
+def test_native_local_wire_rejects_bad_ids_without_an_extra_readback_or_borrow(monkeypatch):
+    from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+    from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import MoEA4
+
+    reader = Reader()
+    entry = 3 * 64 * 128 * 9 // 16 + 64
+    cache = ModelOptExpertCache(entry, entry, "cuda:0", width=64, dims=128)
+    try:
+        routed = load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0", cache=cache)
+        bank = MoEA4(routed, None, slots=3)
+        x = torch.ones((1, 128), dtype=torch.bfloat16, device="cuda")
+        out = torch.empty((1, 3, 128), dtype=torch.bfloat16, device="cuda")
+        copies, original = [], torch.Tensor.cpu
+        def snapshot(tensor, *args, **kwargs):
+            copies.append(tuple(tensor.shape))
+            return original(tensor, *args, **kwargs)
+        for invalid in (-2, 3, 99):
+            picks = torch.full((1, 3), invalid, dtype=torch.int32, device="cuda")
+            with monkeypatch.context() as patch:
+                patch.setattr(torch.Tensor, "cpu", snapshot)
+                with pytest.raises(ValueError, match="out-of-range"):
+                    bank.run_picks(x, picks, out, prefill=True)
+            assert copies[-1] == (1, 3)
+            assert cache.misses == 0
+        assert len(copies) == 3
+        picks = torch.tensor([[0, 2, -1]], dtype=torch.int32, device="cuda")
+        bank.run_picks(x, picks, out, prefill=True)
+        assert torch.equal(out, individual_reference(reader, x, picks, prefill=True))
+        with pytest.raises(ValueError, match="configured routed/shared"):
+            bank.run_picks(x, picks[:, :2], out[:, :2], prefill=True)
+        torch.cuda.synchronize()
+    finally:
+        cache.close()
