@@ -17,7 +17,7 @@ def _ext():
     return load(name="tensorfold_nvfp4_experts_a4_v3", sources=[str(here / "experts_a4.cpp"),
                 str(here / "experts_a4.cu")], need=MIN_CAPABILITY,
                 arch_specific=precision.own_math(torch.cuda.get_device_capability())["nvfp4"],
-                extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
+                extra_include_paths=[str(here)], extra_cuda_cflags=["-O3", "--ftz=false", "--prec-div=true"], verbose=False)
 
 
 def _windows(groups, capacity):

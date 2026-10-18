@@ -393,12 +393,16 @@ class HostExpertCache:
         if self._active:
             raise RuntimeError("nested expert leases or registration during a lease are unsupported")
 
+    def _validate_layout(self, size, fields):
+        """Cold registration policy; ordinary caches retain one exact layout."""
+        if size > self.entry_bytes or (self._fields is not None and fields != self._fields):
+            raise ValueError("expert layer layout differs from the fixed hot-pool layout")
+
     def register(self, layer_id: int, payloads: tuple[torch.Tensor, ...]) -> None:
         size, fields, count = _layout(payloads)
         with self._lock:
             self._usable()
-            if size > self.entry_bytes or (self._fields is not None and fields != self._fields):
-                raise ValueError("expert layer layout differs from the fixed hot-pool layout")
+            self._validate_layout(size, fields)
             # Views created in inference mode inherit that mode even when the
             # arena is ordinary. They must remain writable in future leases.
             with torch.inference_mode(False):

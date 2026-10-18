@@ -165,3 +165,18 @@ def entry_layout_a4(width, dims, *, count=1):
     if count * entry > 2**63 - 1:
         raise ValueError("native A4 padded authority exceeds tensor storage size limits")
     return A4EntryLayout(entry, tuple(fields), tuple(padding))
+
+
+def authority_fields_modelopt(count, width, dims, *, native_a4):
+    """Original Flash W4A16 fields or native A4's six direct-calibration fields."""
+    if native_a4:
+        return authority_fields_a4(count, width, dims)
+    if type(count) is not int or not 1 <= count <= 1023:
+        raise ValueError("ModelOpt expert count must lie in [1, 1023]")
+    if any(type(n) is not int or not 0 < n < 2**31 or n % 32 for n in (width, dims)):
+        raise ValueError("ModelOpt expert dimensions must be positive int32 multiples of32")
+    if count * width * dims * 9 // 8 > 2**63 - 1:
+        raise ValueError("ModelOpt authority exceeds tensor storage size limits")
+    return (((count, width // 32, dims // 32, 2, 144), "I32"),
+            ((count, dims // 32, width // 32, 1, 144), "I32"),
+            ((count, 2), "F32"), ((count, 1), "F32"))

@@ -12,6 +12,16 @@
 
 namespace {
 
+// ModelOpt's stored direct input scale feeds alpha unchanged. Quantization
+// separately rounds its reciprocal and every FP32 scale operation. Keep this
+// independent of compiler contraction/fast-div options and the CT convention.
+__device__ __forceinline__ nvfp4q::Scale direct_block_scale(float amax, float inverse) {
+    const float value = __fmul_rn(inverse, __fmul_rn(amax, 0x1.555556p-3f));
+    const auto sf8 = __nv_cvt_float_to_fp8(value, __NV_SATFINITE, __NV_E4M3);
+    const float sf = __half2float(__half(__nv_cvt_fp8_to_halfraw(sf8, __NV_E4M3)));
+    return {static_cast<uint32_t>(sf8), sf != 0.f ? __fdiv_rn(inverse, sf) : 0.f};
+}
+
 template <bool GROUPED, bool DIRECT>
 __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int k,
                               const int* plan, int pairs, const float* input, int cells, int64_t input_stride,
@@ -25,9 +35,9 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
         const int item = pair / 16, local = pair % 16;
         if (counts[0] < 0 || counts[0] > static_cast<int>(gridDim.y)) { __trap(); return; }
         if (item >= counts[0]) return;
-        cell = items[3 * item];
+        cell = items[3LL * item];
         if (cell == cells) return;  // the resident shared expert has its own higher-precision operator
-        const int first = items[3 * item + 1], count = items[3 * item + 2];
+        const int first = items[3LL * item + 1], count = items[3LL * item + 2];
         if (first < 0 || count < 1 || count > 16 || first > pairs - count) { __trap(); return; }
         if (local >= count) return;
         pair = first + local;
@@ -35,8 +45,8 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
         if (member < 0 || member >= pairs) { __trap(); return; }
         row = paired ? pair : member / slots;
     } else {
-        row = paired ? pair : plan[3 * pair];
-        cell = plan[3 * pair + 2];
+        row = paired ? pair : plan[3LL * pair];
+        cell = plan[3LL * pair + 2];
     }
     if (row < 0 || row >= rows || cell < 0 || cell >= cells) { __trap(); return; }
     const float calibration = input[static_cast<int64_t>(cell) * input_stride + projection];
@@ -47,10 +57,13 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
         values[i] = __bfloat162float(x[static_cast<int64_t>(row) * ldx + blk * 16 + i]);
         amax = fmaxf(amax, fabsf(values[i]));
     }
-    const auto sc = nvfp4q::block_scale(amax, inverse);
+    const auto sc = DIRECT ? direct_block_scale(amax, inverse) : nvfp4q::block_scale(amax, inverse);
     uint32_t words[2] = {0u, 0u};
 #pragma unroll
-    for (int i = 0; i < 16; ++i) words[i / 8] |= nvfp4q::e2m1(values[i] * sc.mul) << (4 * (i % 8));
+    for (int i = 0; i < 16; ++i) {
+        const float value = DIRECT ? __fmul_rn(values[i], sc.mul) : values[i] * sc.mul;
+        words[i / 8] |= nvfp4q::e2m1(value) << (4 * (i % 8));
+    }
     const int64_t base = static_cast<int64_t>(projection) * pairs + pair;
     *reinterpret_cast<uint2*>(codes + base * (k / 2) + blk * 8) = make_uint2(words[0], words[1]);
     scales[base * (k / 16) + blk] = static_cast<uint8_t>(sc.sf8);
@@ -74,12 +87,13 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
     if (active_items < 0 || active_items > item_count) { __trap(); return; }
     if (unit >= static_cast<int64_t>(active_items) * nb) return;
     const int item = unit / nb, cb = unit % nb, projection = blockIdx.y;
-    const int cell = items[3 * item], first = items[3 * item + 1], count = items[3 * item + 2];
+    const int cell = items[3LL * item], first = items[3LL * item + 1], count = items[3LL * item + 2];
     if constexpr (GROUPED) { if (cell == cells) return; }
     if (cell < 0 || cell >= cells || first < 0 || count < 1 || count > 16 || first > pairs - count) {
         __trap(); return;
     }
-    const int r0 = first + g, r1 = r0 + 8, kg_count = k / 64, per = kg_count / slices;
+    const int64_t r0 = static_cast<int64_t>(first) + g, r1 = r0 + 8;
+    const int kg_count = k / 64, per = kg_count / slices;
     const bool valid0 = g < count, valid1 = g + 8 < count;
     const uint8_t* w = blob + static_cast<int64_t>(cell) * blob_stride + projection * blob_bytes;
     const uint8_t* ws = w + static_cast<int64_t>(n) * k / 2;
@@ -94,7 +108,7 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
                 valid1 ? *reinterpret_cast<const uint32_t*>(codes + a1at) : 0u,
                 valid0 ? *reinterpret_cast<const uint32_t*>(codes + a0at + 16) : 0u,
                 valid1 ? *reinterpret_cast<const uint32_t*>(codes + a1at + 16) : 0u};
-            const int sr = first + g + 8 * (t & 1);
+            const int64_t sr = static_cast<int64_t>(first) + g + 8 * (t & 1);
             const uint32_t sa = sr < first + count ? *reinterpret_cast<const uint32_t*>(
                 scales + (static_cast<int64_t>(projection) * pairs + sr) * (k / 16) + kg * 4) : 0u;
             const int64_t tile = static_cast<int64_t>(cb / 8) * kg_count + kg;
@@ -111,15 +125,15 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
     const float alpha = __fmul_rn(act, weight[weight_at]);
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
-        const int r = first + g + h * 8;
+        const int64_t r = static_cast<int64_t>(first) + g + h * 8;
         if (r >= first + count) continue;
         int64_t at;
         if constexpr (DOWN) {
             const int member = GROUPED ? members[r] : 0;
-            const int row = GROUPED ? member / slots : plan[3 * r];
-            const int slot = GROUPED ? member % slots : plan[3 * r + 1];
+            const int row = GROUPED ? member / slots : plan[3LL * r];
+            const int slot = GROUPED ? member % slots : plan[3LL * r + 1];
             if (row < 0 || row >= output_rows || slot < 0 || slot >= output_slots ||
-                    (!GROUPED && plan[3 * r + 2] != cell)) {
+                    (!GROUPED && plan[3LL * r + 2] != cell)) {
                 __trap(); return;
             }
             at = static_cast<int64_t>(row) * out_row + static_cast<int64_t>(slot) * out_slot + cb * 8 + t * 2;

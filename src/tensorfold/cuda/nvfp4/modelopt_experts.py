@@ -5,14 +5,12 @@ weight globals are direct dequantization scales. That distinction is prepared
 once; no reciprocal roundtrip may change the stored ModelOpt alpha.
 """
 
-from contextlib import contextmanager
-
 import torch
 
 from tensorfold.cuda.moe import swiglu_bf16
 
 from . import format as fmt
-from .experts_a4 import ExpertsA4, pack_projection_a4
+from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4
 from .grouped_a4 import _ext
 from .host_layout import authority_fields_a4
 
@@ -74,31 +72,14 @@ class ModelOptExpertsA4(ExpertsA4):
                       1 if prefill else qmm.split_k(self.dims, self.width), slots, True)
 
 
-class CachedModelOptExpertsA4(ExpertsA4):
-    """Six-field host authority under the ordinary cache's complete expert lease."""
+class CachedModelOptExpertsA4(CachedExpertsA4):
+    """Original direct calibrations under the shared native-A4 lease contract."""
 
     direct_input = True
-    capturable = False
 
     def __init__(self, fields, cache, layer_id, width, dims):
-        self.width, self.dims, self.count = width, dims, fields[0].shape[0]
-        self.cache, self.layer_id, self.device = cache, layer_id, cache.device
-        self.swiglu = swiglu_bf16
+        super().__init__(fields[0].shape[0], width, dims, cache=cache, layer_id=layer_id, swiglu=swiglu_bf16)
         cache.register(layer_id, tuple(fields))
-
-    @property
-    def capacity(self):
-        return self.cache.capacity
-
-    def device_tensors(self):
-        if self.cache._closed:
-            raise RuntimeError("native ModelOpt A4 expert cache is closed")
-        return (self.cache._pool,)
-
-    @contextmanager
-    def lease(self, ids):
-        with self.cache.lease(self.layer_id, ids) as (fields, mapping):
-            yield fields, mapping
 
 
 def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, layer_id=None):
@@ -113,8 +94,9 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
     if not ids:
         return None
     geometry = authority_fields_a4(len(ids), full.moe_width, full.hidden)
-    allocate = cache.allocate_authority if cache is not None else torch.empty
-    fields = tuple(allocate(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
+    fields = tuple((cache.allocate_authority(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
+                    if cache is not None else
+                    torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32, device="cpu"))
                    for shape, dtype in geometry)
     for local, expert in enumerate(ids):
         for projection, n, k, payload, scalar, column in (
@@ -132,6 +114,9 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
             target.copy_(packed)
             fields[scalar][local, column] = weight_scale
             fields[scalar + 2][local, column] = act
+            # Retire raw/permutation/join temporaries before the next read or
+            # pack. The admitted transform peak is one projection, not two.
+            del words, scales, packed, target
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
         return CachedModelOptExpertsA4(fields, cache, key, full.moe_width, full.hidden)

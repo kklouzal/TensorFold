@@ -131,7 +131,7 @@ class Layout:
         return weights
 
 
-def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_a4: bool = False) -> Layout:
+def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_a4: bool = False, checkpoint=None) -> Layout:
     """Size exact packed affine4 buffers, including shared and optional MTP experts."""
 
     check(model_dir, gib)
@@ -152,7 +152,7 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_
     if is_exl3(Path(model_dir)):
         return _exl3_layout(model_dir, gib, text, mtp)
     if str(text["_quantization"].get("quant_method", "")).lower() == "modelopt":
-        return _nvfp4_layout(model_dir, gib, text, mtp, native_a4=native_a4)
+        return _nvfp4_layout(model_dir, gib, text, mtp, native_a4=native_a4, checkpoint=checkpoint)
     if int(text["shared_expert_intermediate_size"]) != width:
         raise ValueError("--vram-experts requires matching routed and shared expert widths")
     # 160 int32 words per 32x32 tile: 4-bit weights plus BF16 affine scales/biases.
@@ -200,7 +200,7 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_
                                    (int(text["num_experts"]) + 1) * (entry // 3))))
 
 
-def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False):
+def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False, checkpoint=None):
     from tensorfold.cuda.capacity import SIZES
     from tensorfold.cuda.nvfp4.host_layout import bank_bases
     from tensorfold.cuda.read_budget import pinned_backing_bytes, reader_host_bytes
@@ -209,10 +209,10 @@ def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False):
     banks = sorted(bank_bases(entries, text, mtp), key=lambda bank:
                    (bank.startswith("mtp."), int(re.search(r"layers\.(\d+)", bank).group(1))))
     width, dims = text["moe_intermediate_size"], text["hidden_size"]
-    from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
+    from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank, cached_control_host_bytes
 
     a4_banks = tuple(bank for bank in banks if a4_bank(entries, bank, text["num_experts"], text["_quantization"],
-                                                     native=native_a4))
+                                                     native=native_a4, checkpoint=checkpoint))
     # Both native layouts retain the original payload byte count. Static-A4
     # adds two separately aligned input calibration fields; W4A16 MTP banks
     # share the larger pool but allocate/read only their original four fields.
@@ -247,11 +247,18 @@ def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False):
             raw = max(raw, width * dims)
     # D2H's largest field is the packed gate/up pair, after reads have ended.
     # Three retained scalar read spans fit nine alignment pages alongside it.
-    host_loading = reader_host_bytes(raw, 2 * tiles) + 9 * 4096
+    host_loading = reader_host_bytes(raw, 2 * tiles)
+    if a4_banks:
+        # CPU native packing keeps original code/scales, their permutations,
+        # and the joined projection alive together. Explicit loop retirement
+        # prevents overlap with the following projection's read/transform.
+        host_loading = max(host_loading, reader_host_bytes(3 * tiles))
+    host_loading += 9 * 4096
     return Layout(entry, slots, slots * entry, sum(allocations), pinned_backing_bytes(2 * entry), host_loading,
                   "nvfp4", automatic=gib == "auto",
                   loading_device_bytes=loading,
-                  authority_allocations=allocations, native_a4_banks=a4_banks)
+                  authority_allocations=allocations, native_a4_banks=a4_banks,
+                  control_host_bytes=cached_control_host_bytes(text) if a4_banks else 0)
 
 
 def exl3_expert_tensor(name: str) -> bool:

@@ -38,12 +38,6 @@ def decode_frame(raw, *, sequence, banks):
     return bank, rows, bool(prefill)
 
 
-def precision_identity(native_a4, banks):
-    from tensorfold.cuda import precision
-
-    return [precision.mode(), native_a4, list(banks)]
-
-
 class DistributedExperts:
     kernel = "expert_parallel"
     capturable = False
@@ -109,36 +103,51 @@ class Session:
         self.slots, self.dims = self.cfg.top_k + 1, self.cfg.hidden
         from tensorfold.cuda import precision
 
-        self.native_a4 = (self.cfg.quant == "modelopt" and precision.mode() == precision.CHECKPOINT
-                          and precision.own_math(torch.cuda.get_device_capability())["nvfp4"])
-        base = layout(model_dir, budget, mtp=mtp, native_a4=self.native_a4)
-        total = self.cfg.experts + (base.format == "affine4")
-        local = len(self.owner.ids) + (rank == 0 and base.format == "affine4")
-        if base.host_bytes % total:
-            raise ValueError("expert authority geometry does not divide into complete per-expert cells")
-        self.layout = replace(base, host_bytes=(base.host_bytes // total) * local)
-        # The same-host group must fit collectively before followers allocate
-        # their disjoint authorities. Per-rank admission alone races this bound.
-        self.group_host_bytes = base.host_bytes + ranks * (base.staging_bytes + base.loading_bytes
-            + base.metadata_host_bytes + base.control_host_bytes + (4 << 20))
-        if pin_mode not in ("off", "auto", "on"):
-            raise ValueError("expert pin mode must be off, auto or on")
-        from tensorfold.cuda.expert_pin import backing_bytes
-
-        from ..expert_authority import allocations
-        self.allocation_bytes = allocations(text=text, layout=base,
-                                           owned=len(self.owner.ids), shared=rank == 0)
-        self.layout = replace(self.layout, host_bytes=sum(self.allocation_bytes),
-                              authority_allocations=self.allocation_bytes)
-        self.pin_future_bytes = 0
-        if pin_mode != "off":
-            backing = sum(backing_bytes(size) for r, count in enumerate(self.owner.counts)
-                          for size in allocations(text, base, owned=count, shared=r == 0))
-            self.group_host_bytes += max(0, backing - base.host_bytes)
-        self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
-                                           + self.slots * self.cfg.moe_width * 2) + (4 << 20)
+        native_capable = precision.own_math(torch.cuda.get_device_capability())["nvfp4"]
         try:
             self.store = open_store(master, port, ranks, rank, timeout_s=self.timeout)
+            from tensorfold.cuda.nvfp4.modelopt_layout import expert_group_policy
+
+            self.store.set(f"ep/math/{rank}", json.dumps([precision.mode(), native_capable]))
+            policies = [self._read_json(f"ep/math/{r}", 512) for r in range(ranks)]
+            native_group, reason = expert_group_policy(policies)
+            self.native_a4 = self.cfg.quant == "modelopt" and native_group
+            base = layout(model_dir, budget, mtp=mtp, native_a4=self.native_a4,
+                              checkpoint=precision.mode() == precision.CHECKPOINT)
+            total = self.cfg.experts + (base.format == "affine4")
+            local = len(self.owner.ids) + (rank == 0 and base.format == "affine4")
+            if base.host_bytes % total:
+                raise ValueError("expert authority geometry does not divide into complete per-expert cells")
+            self.layout = replace(base, host_bytes=(base.host_bytes // total) * local)
+            # The same-host group must fit collectively before followers allocate
+            # their disjoint authorities. Per-rank admission alone races this bound.
+            self.group_host_bytes = base.host_bytes + ranks * (base.staging_bytes + base.loading_bytes
+                + base.metadata_host_bytes + base.control_host_bytes + (4 << 20))
+            if pin_mode not in ("off", "auto", "on"):
+                raise ValueError("expert pin mode must be off, auto or on")
+            from tensorfold.cuda.expert_pin import backing_bytes
+
+            from ..expert_authority import allocations
+            self.allocation_bytes = allocations(text=text, layout=base,
+                                               owned=len(self.owner.ids), shared=rank == 0)
+            self.layout = replace(self.layout, host_bytes=sum(self.allocation_bytes),
+                                  authority_allocations=self.allocation_bytes)
+            self.pin_future_bytes = 0
+            if pin_mode != "off":
+                backing = sum(backing_bytes(size) for r, count in enumerate(self.owner.counts)
+                              for size in allocations(text, base, owned=count, shared=r == 0))
+                self.group_host_bytes += max(0, backing - base.host_bytes)
+            self.workspace_bytes = MAX_ROWS * (self.dims * 2 + self.slots * 4 + self.slots * self.dims * 12
+                                               + self.slots * self.cfg.moe_width * 2) + (4 << 20)
+            native_workspace = 0
+            if self.layout.native_a4_banks:
+                from tensorfold.cuda.nvfp4.modelopt_layout import runtime_workspace_bytes
+
+                native_workspace = runtime_workspace_bytes(text, rows=MAX_ROWS, prompt_rows=MAX_ROWS, cached=True)
+                self.workspace_bytes += native_workspace
+            self.math_policy = {"native_workspace_bytes": native_workspace, "requested": precision.mode(), "native_a4": bool(self.layout.native_a4_banks),
+                                "reason": reason, "rank_native_capabilities": [p[1] for p in policies],
+                                "banks": list(self.layout.native_a4_banks)}
             identity = self._identity(text)
             self.store.set(f"ep/identity/{rank}", json.dumps(identity))
             peers = [self._read_json(f"ep/identity/{r}", 1 << 20) for r in range(ranks)]
@@ -185,7 +194,7 @@ class Session:
             raise ValueError("expert checkpoint source identity exceeds 512KiB")
         return [device_uuid, host_epoch, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
                 self.cfg.moe_width, bool(self.mtp), self.cfg.quant, self.pin_mode, files,
-                precision_identity(self.native_a4, self.layout.native_a4_banks)]
+                self.math_policy]
 
     def _read_json(self, key, maximum):
         raw = self.store.get(key)
@@ -250,7 +259,13 @@ class Session:
                                      future_bytes=self.layout.loading_bytes + self.layout.staging_bytes
                                      + self.layout.metadata_host_bytes + self.layout.control_host_bytes
                                      + self.pin_future_bytes)
-            self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda", pin_policy=policy)
+            if self.layout.native_a4_banks:
+                from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+
+                self.cache = ModelOptExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda",
+                                                width=cfg.moe_width, dims=cfg.hidden, pin_policy=policy)
+            else:
+                self.cache = HostExpertCache(self.layout.gpu_bytes, self.layout.entry_bytes, "cuda", pin_policy=policy)
             if kind == "mlx":
                 from tensorfold.cuda.packed_experts import PackedExpertCache
                 self.packed_cache = PackedExpertCache.from_environment()
