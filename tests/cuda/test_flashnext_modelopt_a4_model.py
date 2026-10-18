@@ -62,7 +62,8 @@ def _calibrated_model(path):
             layer, expert, projection = int(parts[2]), int(parts[5]), parts[6]
             scale = 2.0 ** (-9 - expert % 2) if projection == "down_proj" else 2.0 ** (-5 + layer)
             stream.seek(8 + size + lo)
-            assert stream.write(struct.pack("<f", scale)) == 4
+            written = stream.write(struct.pack("<f", scale))
+            assert written == 4
             changes.append(name)
     assert len(changes) == 2 * 8 * 3
     return model
@@ -151,7 +152,8 @@ def test_complete_cached_a4_serial_mtp_and_concurrent_equal_resident(tmp_path):
         prompt = [5, 17, 99, 250, 7, 64, 30, 11, 12, 13]
         for sampling in (None, Sampling(seed=7, top_k=20, top_p=.95)):
             expected = _serial(a, prompt, sampling)
-            assert _serial(b, prompt, sampling) == expected
+            cached_serial = _serial(b, prompt, sampling)
+            assert cached_serial == expected
             for weights in (a, b):
                 engine = Engine(weights, capacity=128, max_rows=8, prefill_rows=5, graphs=True)
                 if weights is b:
@@ -162,8 +164,10 @@ def test_complete_cached_a4_serial_mtp_and_concurrent_equal_resident(tmp_path):
         prompts = (prompt, prompt[::-1])
         references = [_serial(a, value, Sampling(seed=7 + index, top_k=20, top_p=.95))
                       for index, value in enumerate(prompts)]
-        assert _concurrent(a, prompts) == references
-        assert _concurrent(b, prompts) == references
+        resident_concurrent = _concurrent(a, prompts)
+        cached_concurrent = _concurrent(b, prompts)
+        assert resident_concurrent == references
+        assert cached_concurrent == references
         assert cache.evictions > 0
     except BaseException as error:  # noqa: BLE001 -- preserve operation failure through independent retirement
         primary = error
