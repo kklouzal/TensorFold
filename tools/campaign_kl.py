@@ -11,7 +11,8 @@ reference dump, the log-probabilities at the reference's top-K ids.
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
   calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
-  gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]  (exit 1 fail, 3 incomplete)
+  gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
+           (exit 0 pass, 1 fail, 3 incomplete or uncalibrated)
 
 ``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
 prompts plus corpus-backed long ones) and each prompt's continuation sampled by this configuration (model-card
@@ -55,6 +56,7 @@ PROMPTS = (
     "Review this Python for bugs: def avg(xs): return sum(xs) / len(xs) if xs else 0 / 0",
 )
 LONG_ASK = "Summarize the document above file by file, noting anything unusual."
+CALIBRATION_VARIANTS = (4, 6)          # reorder-only variants per calibration (campaign decision): min, max
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -367,6 +369,12 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
     _, new, _, new_meta = _load_pair(golden_path, new_path)
     kl_old, p_tail = position_kl(golden, old)
     kl_new, _ = position_kl(golden, new)
+    for path, values in ((old_path, kl_old), (new_path, kl_new)):
+        # NaN compares false with every bound, so a NaN interval would pass; NaN/-inf log-probabilities (a broken
+        # kernel, zero mass on a golden top-K id) leave the comparison undefined
+        if not np.isfinite(values).all():
+            raise ValueError(f"KL(golden || {path}) is not finite at {int((~np.isfinite(values)).sum())} positions "
+                             "(NaN or -inf log-probabilities in the dump or the golden reference)")
     top = golden["ids"][:, 0]
     agree_old = (old["ids"][:, 0] == top).astype(np.float64)
     agree_new = (new["ids"][:, 0] == top).astype(np.float64)
@@ -377,6 +385,7 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
     stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
              for i, name in enumerate(names)}
     return {"golden": golden_path, "golden_sha256": file_sha256(golden_path), "old": old_path, "new": new_path,
+            "old_sha256": file_sha256(old_path), "new_sha256": file_sha256(new_path),
             "positions": int(len(columns)), "golden_source": golden_meta.get("source"),
             "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
             "new_source": new_meta.get("source_revision"), **stats,
@@ -387,14 +396,15 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
 
 def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, block: int = 64,
               resamples: int = 4000, seed: int = 0) -> dict:
-    """Non-inferiority margins from reorder-only variants (the same declared math, another summation order) of the
-    base build, each dumped against the golden reference: delta_kl / delta_agreement = the largest absolute mean
+    """Non-inferiority margins from 4 to 6 reorder-only variants (the same declared math, another summation order) of
+    the base build, each dumped against the golden reference: delta_kl / delta_agreement = the largest absolute mean
     paired difference from the base among the variants. Every variant's differences and intervals are recorded."""
 
     import numpy as np
 
-    if not variants:
-        raise ValueError("calibration needs at least one reorder-only variant")
+    if not CALIBRATION_VARIANTS[0] <= len(variants) <= CALIBRATION_VARIANTS[1]:
+        raise ValueError(f"calibration takes {CALIBRATION_VARIANTS[0]} to {CALIBRATION_VARIANTS[1]} reorder-only "
+                         f"variants, not {len(variants)} (the margin is the largest of their differences)")
     base = np.load(base_path)
     for name, path in variants.items():
         # positive control: the engine is deterministic, so a bit-identical dump means the patch did not load or
@@ -405,25 +415,26 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
             for name, path in variants.items()}
     first = next(iter(rows.values()))
     return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
-            "golden_source": first["golden_source"], "base": base_path, "base_sha256": file_sha256(base_path),
+            "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
             "positions": first["positions"], "bootstrap": first["bootstrap"],
             "delta_kl": max(abs(r["kl_delta"]["mean"]) for r in rows.values()),
             "delta_agreement": max(abs(r["agreement_delta"]["mean"]) for r in rows.values()),
-            "variants": {name: {k: r[k] for k in ("new", "new_source", "kl_new", "kl_delta", "agreement_new",
-                                                   "agreement_delta")} for name, r in rows.items()},
+            "variants": {name: {k: r[k] for k in ("new", "new_sha256", "new_source", "kl_new", "kl_delta",
+                                                   "agreement_new", "agreement_delta")} for name, r in rows.items()},
             "base_values": {k: first[k] for k in ("kl_old", "agreement_old")},
             "method": "delta = max over reorder-only variants of |mean paired difference vs base| (KL(golden||x) "
-                      "and golden top-1 agreement); a change indistinguishable from pure reordering passes"}
+                      "and golden top-1 agreement); the gate passes a change whose 95% intervals lie within these "
+                      "margins and are no wider than them"}
 
 
 def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | None = None, block: int = 64,
          resamples: int = 4000, seed: int = 0) -> dict:
     """Golden-reference non-inferiority gate. With the model's calibration record (margins delta_kl and
     delta_agreement from reorder-only variants): fail when an interval lies wholly beyond its margin; otherwise
-    incomplete when an interval is wider than its margin (insufficient sensitivity: add positions); otherwise pass iff
-    the upper 95% bound of KL(golden||new) - KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement
-    change >= -delta_agreement, fail if not. Without a calibration the status is "uncalibrated" (intervals reported,
-    no verdict)."""
+    incomplete when an interval is wider than its margin (insufficient sensitivity); otherwise pass iff the upper 95%
+    bound of KL(golden||new) - KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement change >=
+    -delta_agreement, fail if not. Without a calibration the status is "uncalibrated" (intervals reported, no verdict;
+    the CLI exits 3 as for incomplete). A calibration belongs to one golden reference (eval set and positions)."""
 
     result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
     kl_low, kl_high = result["kl_delta"]["ci95"]
@@ -484,7 +495,9 @@ def main() -> int:
     k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
     k.add_argument("golden")
     k.add_argument("base")
-    k.add_argument("variants", nargs="+", help="NAME=DUMP of reorder-only variants (dumped with --reference GOLDEN)")
+    k.add_argument("variants", nargs="+",
+                   help=f"NAME=DUMP of {CALIBRATION_VARIANTS[0]} to {CALIBRATION_VARIANTS[1]} reorder-only variants "
+                        "of BASE (dumped with --reference GOLDEN)")
     for parser in (g, k):
         parser.add_argument("--block", type=int, default=64, help="bootstrap block length in positions")
         parser.add_argument("--resamples", type=int, default=4000)
@@ -518,7 +531,8 @@ def main() -> int:
             Path(args.out).write_text(text + "\n")
         print(text)
         if args.command == "gate":
-            return {"fail": 1, "incomplete": 3}.get(result["status"], 0)
+            # no verdict (incomplete, uncalibrated) is never a pass
+            return {"pass": 0, "fail": 1}.get(result["status"], 3)
     return 0
 
 

@@ -866,9 +866,16 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
 - `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
   set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
   plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
-  `gate GOLDEN OLD NEW` compares two configurations against a golden reference: it fails when the 95% block
-  bootstrap interval (circular blocks within eval items) of KL(golden || new) - KL(golden || old) lies above zero or
-  that of the top-1 agreement change lies below zero, and reports both intervals.
+  `gate GOLDEN OLD NEW --calibration CALIBRATION.json` is a non-inferiority test of two configurations against a
+  golden reference, with 95% block bootstrap intervals (circular blocks within eval items) of
+  KL(golden || new) - KL(golden || old) and of the top-1 agreement change. `calibrate GOLDEN BASE NAME=DUMP ...`
+  derives its margins from 4 to 6 reorder-only variants of the base (the same declared math in another summation
+  order): each margin is the largest absolute mean difference of a variant from the base, and the record keeps every
+  variant's difference, interval and dump hash. The gate fails when an interval lies wholly beyond its margin, is
+  `incomplete` when an interval is wider than its margin, and otherwise passes only when the upper KL bound and the
+  lower agreement bound lie within the margins; without a calibration it reports the intervals as `uncalibrated`.
+  Non-finite KL values (NaN or -inf log-probabilities) stop the comparison. Exit status 1 = fail, 3 = incomplete or
+  uncalibrated.
 - `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
   pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
   off for matmuls), in the campaign_kl dump format.

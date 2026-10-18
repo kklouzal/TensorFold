@@ -526,7 +526,7 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
 
     _dump(tmp_path / "golden.npz", golden, 16, golden=True)
     rows = {"old": _log_softmax(np, old), "same": near(old, 0.02), "worse": near(old, 0.5),
-            **{f"reorder{i}": near(old, 0.05) for i in range(3)}}
+            **{f"reorder{i}": near(old, 0.05) for i in range(4)}}
     for name, lp in rows.items():
         _dump(tmp_path / f"{name}.npz", lp, 16, reference=tmp_path / "golden.npz")
     _dump(tmp_path / "engine.npz", golden, 16)                      # an engine dump is no golden reference
@@ -534,10 +534,13 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     with pytest.raises(ValueError, match="not a campaign_golden reference"):
         kl.gate(str(tmp_path / "engine.npz"), str(tmp_path / "old-vs-engine.npz"), str(tmp_path / "old-vs-engine.npz"))
     path = lambda name: str(tmp_path / f"{name}.npz")                          # noqa: E731
-    record = kl.calibrate(path("golden"), path("old"), {f"r{i}": path(f"reorder{i}") for i in range(3)},
-                          resamples=300)
+    variants = {f"r{i}": path(f"reorder{i}") for i in range(4)}
+    record = kl.calibrate(path("golden"), path("old"), variants, resamples=300)
     deltas = [abs(v["kl_delta"]["mean"]) for v in record["variants"].values()]
-    assert record["delta_kl"] == max(deltas) > 0 and len(record["variants"]) == 3
+    assert record["delta_kl"] == max(deltas) > 0 and len(record["variants"]) == 4
+    assert record["variants"]["r0"]["new_sha256"] == kl.file_sha256(path("reorder0"))
+    with pytest.raises(ValueError, match="4 to 6 reorder-only variants, not 3"):
+        kl.calibrate(path("golden"), path("old"), dict(list(variants.items())[:3]), resamples=300)
     assert kl.gate(path("golden"), path("old"), path("same"), resamples=300)["status"] == "uncalibrated"
     passed = kl.gate(path("golden"), path("old"), path("same"), calibration=record, resamples=300)
     failed = kl.gate(path("golden"), path("old"), path("worse"), calibration=record, resamples=300)
@@ -553,7 +556,52 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
         kl.gate(path("golden"), path("old"), path("same"), calibration=record, resamples=200)
     _dump(tmp_path / "copy.npz", rows["old"], 16, reference=tmp_path / "golden.npz")    # a patch that did not load
     with pytest.raises(ValueError, match="bit-identical to the base"):
-        kl.calibrate(path("golden"), path("old"), {"r0": path("reorder0"), "copy": path("copy")}, resamples=300)
+        kl.calibrate(path("golden"), path("old"), dict(variants, r3=path("copy")), resamples=300)
+    broken = rows["same"].copy()
+    broken[[5, 900]] = np.nan                                       # a kernel that returned NaN logits twice
+    _dump(tmp_path / "broken.npz", broken, 16, reference=tmp_path / "golden.npz")
+    with pytest.raises(ValueError, match="not finite at 2 positions"):      # NaN bounds would compare as a pass
+        kl.gate(path("golden"), path("old"), path("broken"), calibration=record, resamples=300)
+
+
+def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
+    """fail when an interval lies wholly beyond its margin (at any width); otherwise incomplete when an interval is
+    wider than its margin; otherwise pass iff both lie within their margins, else fail. No verdict never exits 0."""
+
+    boot = {"block": 64, "resamples": 4000, "seed": 0}
+    record = {"golden_sha256": "g", "eval_sha256": "e", "positions": 10, "bootstrap": boot, "base": "old.npz",
+              "delta_kl": 1.0, "delta_agreement": 0.1, "variants": {f"r{i}": {} for i in range(4)}}
+
+    def paired_with(kl_ci, agree_ci):
+        return lambda *args, **kwargs: {
+            "golden_sha256": "g", "eval_sha256": "e", "positions": 10, "bootstrap": dict(boot),
+            "kl_delta": {"mean": sum(kl_ci) / 2, "ci95": list(kl_ci)},
+            "agreement_delta": {"mean": sum(agree_ci) / 2, "ci95": list(agree_ci)}}
+
+    cases = (((1.2, 1.4), (-0.01, 0.01), "fail", ["kl"]),               # KL wholly beyond its margin
+             ((1.5, 9.0), (-0.01, 0.01), "fail", ["kl"]),               # ... also when wider than the margin
+             ((-0.2, 0.2), (-0.5, -0.2), "fail", ["agreement"]),        # agreement wholly beyond, wide
+             ((-0.5, 0.9), (-0.01, 0.01), "incomplete", []),            # within the margin, wider than it
+             ((-0.2, 0.2), (-0.12, 0.0), "incomplete", []),
+             ((0.5, 1.2), (-0.12, 0.0), "incomplete", []),              # a wide metric outranks a straddle
+             ((0.5, 1.2), (-0.01, 0.01), "fail", ["kl"]),               # narrow, upper bound beyond the margin
+             ((-0.02, 0.02), (-0.11, -0.05), "fail", ["agreement"]),
+             ((-0.4, 0.5), (-0.05, 0.03), "pass", []))
+    for kl_ci, agree_ci, status, failed in cases:
+        monkeypatch.setattr(kl, "paired", paired_with(kl_ci, agree_ci))
+        result = kl.gate("g", "o", "n", calibration=record)
+        assert (result["status"], result["failed"]) == (status, failed), (kl_ci, agree_ci)
+    (tmp_path / "calibration.json").write_text(json.dumps(record))
+    for kl_ci, code in (((-0.4, 0.5), 0), ((1.2, 1.4), 1), ((-0.5, 0.9), 3), (None, 3)):   # None: uncalibrated
+        monkeypatch.setattr(kl, "paired", paired_with(kl_ci or (0.0, 0.0), (-0.01, 0.01)))
+        margins = ["--calibration", str(tmp_path / "calibration.json")] if kl_ci else []
+        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", *margins])
+        assert kl.main() == code
+    for bad in (["r0"], ["=x.npz"], ["r0=a.npz", "r0=b.npz"]):            # NAME=DUMP, distinct names
+        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "calibrate", "g", "b", *bad])
+        with pytest.raises(SystemExit) as stop:
+            kl.main()
+        assert stop.value.code == 2
 
 
 def test_golden_float32_layers_compute_in_float32_and_restore_weight_dtypes():
