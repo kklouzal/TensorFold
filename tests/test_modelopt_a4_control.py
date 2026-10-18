@@ -65,8 +65,8 @@ def test_actual_projection_workspace_counts_every_live_payload_and_temporary():
     # down code+scale360, SiLU+product2560 bytes per pair.
     assert plan_workspace_bytes(1, 1, 640, 2560) == 8360
     text = {"hidden_size": 2560, "moe_intermediate_size": 640, "num_experts_per_tok": 10}
-    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * 11 * 8360
-    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * 11 * 8360
+    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * (11 * 8360 + 20)
+    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * (11 * 8360 + 20)
     assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, cached=True) == 2 * 128 * 8360
 
 
@@ -258,3 +258,19 @@ def test_gpu_load_logical_reduction_and_control_peak_is_dominated_by_layer_stagi
         admitted = max(original.staging, loading_device_bytes(text))
         assert admitted >= max(reduction_peak, pack_peak)
         assert resident_loading_host_bytes(text) == 24 * experts
+
+
+def test_common_input_proof_checks_every_expert_and_projection_by_exact_bits():
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.nvfp4.modelopt_experts import uniform_input_bits
+
+    values = torch.full((512, 2), .001964750699698925, dtype=torch.float32)
+    assert uniform_input_bits(values)
+    original = values.view(torch.int32)[-1, -1].item()
+    values.view(torch.int32)[-1, -1] = original + 1
+    assert not uniform_input_bits(values)
+    values.view(torch.int32)[-1, -1] = original
+    values.view(torch.int32)[0, 1] = original - 1
+    assert not uniform_input_bits(values)
+    with pytest.raises(ValueError, match="complete contiguous CPU"):
+        uniform_input_bits(values[:, :1])
