@@ -225,3 +225,85 @@ def test_native_calibration_keeps_admissible_scale_values_without_reassociation(
     product = torch.tensor(act, dtype=torch.float32) * torch.tensor(weight, dtype=torch.float32)
     assert torch.isfinite(inverse) and inverse > 0 and torch.isfinite(product) and product > 0
     assert fmt.native_calibration(act, weight, name="mlp") == act
+
+
+# Per-channel FP8 weights with dynamic per-token activations (ModelOpt FP8_PER_CHANNEL_PER_TOKEN, as the AEON MIXED
+# Qwen3.8-27B export stores them): an F32 scale an output channel, no input calibration.
+def _channel(n=8, k=64, *, scale_shape=None, input_scale=False):
+    value = {"weight": ("F8_E4M3", [n, k]), "weight_scale": ("F32", [n] if scale_shape is None else scale_shape)}
+    if input_scale:
+        value["input_scale"] = ("F32", [])
+    return value
+
+
+def _per_token_policy(activation=None, *, strategy="channel", algo="FP8_PER_CHANNEL_PER_TOKEN"):
+    from tensorfold.checkpoint_quantization import effective_config
+
+    group = {"targets": ["mlp"], "weights": {"dynamic": False, "num_bits": 8, "type": "float", "strategy": strategy},
+             "input_activations": activation or {"dynamic": False, "num_bits": 8, "type": "float"}}
+    raw = {"quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION",
+                                   "quantized_layers": {"mlp": {"quant_algo": algo}}, "config_groups": {"g": group}}}
+    return fmt.LinearMetadata(effective_config(raw, None, where="test")["quantization_config"])
+
+
+def test_channel_scales_are_their_own_storage_scheme():
+    assert fmt.scheme(_channel()) == "fp8channel"
+    assert fmt.scheme(_channel(scale_shape=[8, 1])) == "fp8channel"
+    assert fmt.scheme({"weight": ("F8_E4M3", [8, 64]), "weight_scale": ("BF16", [8])}) == "fp8channel"
+    assert fmt.scheme(_channel(scale_shape=[])) == "fp8"
+    assert fmt.scheme(_channel(scale_shape=[1])) == "fp8"
+    assert fmt.scheme(_channel(scale_shape=[7])) == "fp8"                          # not one a channel: refused below
+    assert fmt.scheme(_channel(n=1, scale_shape=[1])) == "fp8"                     # one channel is one tensor scale
+
+
+def test_per_token_activations_are_declared_math_without_calibration():
+    policy = _per_token_policy()                                                  # ModelOpt 0.46.0's record
+    assert policy.validate("mlp", _channel(), checkpoint=True) == ("fp8channel", 8)
+    assert policy.validate("mlp", _channel(scale_shape=[8, 1]), checkpoint=True) == ("fp8channel", 8)
+    assert policy.validate("mlp", _channel(), checkpoint=False) == ("fp8channel", None)
+    later = _per_token_policy({"dynamic": True, "num_bits": 8, "type": "float", "strategy": "token"})
+    assert later.validate("mlp", _channel(), checkpoint=True) == ("fp8channel", 8)  # later ModelOpt's record
+    with pytest.raises(ValueError, match="no static input calibration"):
+        policy.validate("mlp", _channel(input_scale=True), checkpoint=True)
+
+
+@pytest.mark.parametrize("headers", [_channel(scale_shape=[]), _channel(scale_shape=[7]),
+                                     {"weight": ("F8_E4M3", [8, 64]), "weight_scale": ("F32", [8, 2])}])
+def test_channel_declarations_need_one_scale_a_channel(headers):
+    with pytest.raises(ValueError):
+        _per_token_policy().validate("mlp", headers, checkpoint=False)
+
+
+def test_tensor_scale_declarations_refuse_channel_storage():
+    policy = fmt.LinearMetadata({"quant_method": "modelopt", "quant_algo": "FP8", "config_groups": {"g": {
+        "targets": ["Linear"], "weights": {"num_bits": 8, "type": "float"},
+        "input_activations": {"num_bits": 8, "type": "float"}}}})
+    with pytest.raises(ValueError, match="strategy"):
+        policy.validate("mlp", _channel(input_scale=True), checkpoint=False)
+
+
+@pytest.mark.parametrize("activation", [{"dynamic": True, "num_bits": 8, "type": "float"},
+                                        {"dynamic": True, "num_bits": 8, "type": "float", "strategy": "tensor"},
+                                        {"dynamic": True, "num_bits": 8, "type": "float", "strategy": "group",
+                                         "group_size": 128},
+                                        {"dynamic": True, "num_bits": 8, "type": "float", "strategy": "token",
+                                         "symmetric": False}])
+def test_other_dynamic_fp8_activation_records_are_refused_in_checkpoint_math(activation):
+    policy = fmt.LinearMetadata({"quant_method": "compressed-tensors", "config_groups": {"g": {
+        "targets": ["Linear"], "weights": {"num_bits": 8, "type": "float", "strategy": "channel"},
+        "input_activations": activation}}})
+    with pytest.raises(ValueError, match="unsupported checkpoint activation"):
+        policy.validate("mlp", _channel(), checkpoint=True)
+    assert policy.validate("mlp", _channel(), checkpoint=False) == ("fp8channel", None)
+
+
+@pytest.mark.torch
+def test_channel_fp8_matches_torch_float8_times_each_row_scale():
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(4)
+    w = rng.integers(0, 256, size=(6, 64), dtype=np.uint8)
+    w[(w & 0x7F) == 0x7F] = 0x10
+    s = (rng.random(6) + 0.25).astype(np.float32)
+    e4 = torch.from_numpy(w).view(torch.float8_e4m3fn).float().numpy()
+    assert np.array_equal(fmt.dequant("fp8channel", w, s), e4 * s[:, None])
+    assert np.array_equal(fmt.dequant("fp8channel", w, s[:, None]), e4 * s[:, None])

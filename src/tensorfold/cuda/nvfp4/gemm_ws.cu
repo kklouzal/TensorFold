@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "../kernels/qmm_frag.cuh"
+#include "epilogue.cuh"
 #include "mma4.cuh"
 
 namespace {
@@ -92,8 +93,8 @@ __device__ __forceinline__ void issue(unsigned char* buf, uint64_t* full, int s,
 template <int MODE, int BM, int BN, int STAGES, int KS, bool F32>
 __global__ void __launch_bounds__(WS<MODE, BM, BN, STAGES, KS>::THREADS) ws_kernel(
         const uint8_t* __restrict__ x, const uint8_t* __restrict__ xs, const uint8_t* __restrict__ w,
-        const uint8_t* __restrict__ ws, float alpha, void* __restrict__ out, int M, int N, int K, int mpad, int npad,
-        int group) {
+        const uint8_t* __restrict__ ws, epilogue::Scales sc, void* __restrict__ out, int M, int N, int K, int mpad,
+        int npad, int group) {
     using G = WS<MODE, BM, BN, STAGES, KS>;
     extern __shared__ __align__(128) unsigned char buf[];
     uint64_t* full = reinterpret_cast<uint64_t*>(buf + STAGES * G::STAGE);
@@ -193,7 +194,8 @@ __global__ void __launch_bounds__(WS<MODE, BM, BN, STAGES, KS>::THREADS) ws_kern
             for (int h = 0; h < 2; ++h) {
                 const int row = m0 + wm * (BM / 2) + i * 16 + g + h * 8;
                 if (row >= M) continue;
-                const float v0 = acc[i][j][2 * h] * alpha, v1 = acc[i][j][2 * h + 1] * alpha;
+                const float2 v = epilogue::pair(sc, row, col, acc[i][j][2 * h], acc[i][j][2 * h + 1]);
+                const float v0 = v.x, v1 = v.y;
                 if (F32) {
                     float* dst = reinterpret_cast<float*>(out) + static_cast<size_t>(row) * N + col;
                     if (col < N) dst[0] = v0;
@@ -212,8 +214,8 @@ __global__ void __launch_bounds__(WS<MODE, BM, BN, STAGES, KS>::THREADS) ws_kern
 }
 
 template <int MODE, int BM, int BN, int STAGES, int KS, bool F32>
-void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws, double alpha,
-            at::Tensor& out, int M, int N, int K, int mpad, int npad) {
+void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
+            const epilogue::Scales& sc, at::Tensor& out, int M, int N, int K, int mpad, int npad) {
     using G = WS<MODE, BM, BN, STAGES, KS>;
     TORCH_CHECK((K / 64) % KS == 0 && mpad % BM == 0, "K in whole stages, rows tiled by the GEMM's height");
     auto kernel = ws_kernel<MODE, BM, BN, STAGES, KS, F32>;
@@ -228,7 +230,7 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
     kernel<<<rows_t * cols_t, G::THREADS, G::SMEM, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const uint8_t*>(x.data_ptr()), xs.defined() ? reinterpret_cast<const uint8_t*>(xs.data_ptr())
         : nullptr, reinterpret_cast<const uint8_t*>(w.data_ptr()), ws.defined() ? reinterpret_cast<const uint8_t*>(
-        ws.data_ptr()) : nullptr, static_cast<float>(alpha), out.data_ptr(), M, N, K, mpad, npad, group);
+        ws.data_ptr()) : nullptr, sc, out.data_ptr(), M, N, K, mpad, npad, group);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -236,27 +238,29 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
 // 3 128 x 128 two steps a stage.
 template <int MODE, bool F32>
 void by_tile(int tile, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-             double alpha, at::Tensor& out, int M, int N, int K, int mpad, int npad) {
+             const epilogue::Scales& sc, at::Tensor& out, int M, int N, int K, int mpad, int npad) {
     switch (tile) {
-        case 2: launch<MODE, 128, 256, MODE == A4 ? 3 : 2, 2, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad, npad);
+        case 2: launch<MODE, 128, 256, MODE == A4 ? 3 : 2, 2, F32>(x, xs, w, ws, sc, out, M, N, K, mpad, npad);
             break;
-        case 3: launch<MODE, 128, 128, 3, 2, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad, npad); break;
-        default: launch<MODE, 128, 256, MODE == A4 ? 4 : 3, 1, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad, npad);
+        case 3: launch<MODE, 128, 128, 3, 2, F32>(x, xs, w, ws, sc, out, M, N, K, mpad, npad); break;
+        default: launch<MODE, 128, 256, MODE == A4 ? 4 : 3, 1, F32>(x, xs, w, ws, sc, out, M, N, K, mpad, npad);
     }
 }
 
 }  // namespace
 
 void gemm_ws_cuda(int64_t mode, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-                  double alpha, at::Tensor& out, int64_t N, int64_t K, int64_t mpad, int64_t npad, int64_t tile,
-                  bool f32) {
+                  double alpha, const at::Tensor& rs, const at::Tensor& cs, at::Tensor& out, int64_t N, int64_t K,
+                  int64_t mpad, int64_t npad, int64_t tile, bool f32) {
     const int M = static_cast<int>(out.size(0)), n = static_cast<int>(N), k = static_cast<int>(K);
     const int mp = static_cast<int>(mpad), np = static_cast<int>(npad), tl = static_cast<int>(tile);
+    const epilogue::Scales sc{static_cast<float>(alpha), rs.defined() ? rs.data_ptr<float>() : nullptr,
+                              cs.defined() ? cs.data_ptr<float>() : nullptr};
     if (mode == A4) {
-        if (f32) by_tile<A4, true>(tl, x, xs, w, ws, alpha, out, M, n, k, mp, np);
-        else by_tile<A4, false>(tl, x, xs, w, ws, alpha, out, M, n, k, mp, np);
+        if (f32) by_tile<A4, true>(tl, x, xs, w, ws, sc, out, M, n, k, mp, np);
+        else by_tile<A4, false>(tl, x, xs, w, ws, sc, out, M, n, k, mp, np);
     } else {
-        if (f32) by_tile<A8, true>(tl, x, xs, w, ws, alpha, out, M, n, k, mp, np);
-        else by_tile<A8, false>(tl, x, xs, w, ws, alpha, out, M, n, k, mp, np);
+        if (f32) by_tile<A8, true>(tl, x, xs, w, ws, sc, out, M, n, k, mp, np);
+        else by_tile<A8, false>(tl, x, xs, w, ws, sc, out, M, n, k, mp, np);
     }
 }

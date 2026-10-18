@@ -13,6 +13,7 @@
 #include <type_traits>
 
 #include "../kernels/qmm_frag.cuh"
+#include "epilogue.cuh"
 #include "mma4.cuh"
 
 namespace {
@@ -54,8 +55,8 @@ struct Tile {
 template <int MODE, typename C, bool F32, bool CLUSTER>
 __global__ void __launch_bounds__(C::THREADS) lane_kernel(
         const uint8_t* __restrict__ x, const uint8_t* __restrict__ xs, const uint8_t* __restrict__ w,
-        const uint8_t* __restrict__ ws, float alpha, void* __restrict__ out, float* __restrict__ part, int M, int N,
-        int K, int SK, int mpad, int group) {
+        const uint8_t* __restrict__ ws, epilogue::Scales sc, void* __restrict__ out, float* __restrict__ part, int M,
+        int N, int K, int SK, int mpad, int group) {
     using T = Tile<MODE, C, CLUSTER>;
     constexpr int THREADS = C::THREADS;
     extern __shared__ __align__(128) unsigned char buf[];
@@ -223,7 +224,10 @@ __global__ void __launch_bounds__(C::THREADS) lane_kernel(
                 v0 = v0 + theirs[2 * pr * THREADS + tid];
                 v1 = v1 + theirs[(2 * pr + 1) * THREADS + tid];
             }
-            if (row < M) put(row, col, v0 * alpha, v1 * alpha);
+            if (row < M) {
+                const float2 v = epilogue::pair(sc, row, col, v0, v1);
+                put(row, col, v.x, v.y);
+            }
         }
         cluster.sync();
 #endif
@@ -243,27 +247,28 @@ __global__ void __launch_bounds__(C::THREADS) lane_kernel(
                         if (col + 1 < N) dst[1] = acc[i][j][2 * h + 1];
                         continue;
                     }
-                    put(row, col, acc[i][j][2 * h] * alpha, acc[i][j][2 * h + 1] * alpha);
+                    const float2 v = epilogue::pair(sc, row, col, acc[i][j][2 * h], acc[i][j][2 * h + 1]);
+                    put(row, col, v.x, v.y);
                 }
             }
     }
 }
 
 template <bool F32>
-__global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__ out, long long total, int SK,
-                              float alpha) {
+__global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__ out, long long total, int SK, int N,
+                              epilogue::Scales sc) {
     const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= total) return;
     float acc = part[i];
     for (int s = 1; s < SK; ++s) acc = acc + part[s * total + i];
-    acc = acc * alpha;
+    acc = epilogue::one(sc, static_cast<int>(i / N), static_cast<int>(i % N), acc);
     if (F32) reinterpret_cast<float*>(out)[i] = acc;
     else reinterpret_cast<__nv_bfloat16*>(out)[i] = __float2bfloat16_rn(acc);
 }
 
 template <int MODE, typename C, bool F32, bool CLUSTER>
-void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws, double alpha,
-            at::Tensor& out, const at::Tensor& part, int M, int N, int K, int SK, int mpad) {
+void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
+            const epilogue::Scales& sc, at::Tensor& out, const at::Tensor& part, int M, int N, int K, int SK, int mpad) {
     using T = Tile<MODE, C, CLUSTER>;
     auto kernel = lane_kernel<MODE, C, F32, CLUSTER>;
     static bool configured = false;
@@ -291,16 +296,16 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
     C10_CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, reinterpret_cast<const uint8_t*>(x.data_ptr()),
         xs.defined() ? reinterpret_cast<const uint8_t*>(xs.data_ptr()) : nullptr,
         reinterpret_cast<const uint8_t*>(w.data_ptr()),
-        ws.defined() ? reinterpret_cast<const uint8_t*>(ws.data_ptr()) : nullptr, static_cast<float>(alpha),
+        ws.defined() ? reinterpret_cast<const uint8_t*>(ws.data_ptr()) : nullptr, sc,
         out.data_ptr(), part.defined() ? part.data_ptr<float>() : nullptr, M, N, K, SK, mpad, group));
 }
 
 // ``tile`` (``checkpoint.lane_tile``): 16, 32, 64 rows by 64 columns, else BM * 1000 + BN; part-filled launches skip.
 template <int MODE, bool F32, bool CLUSTER>
 void by_tile(int tile, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-             double alpha, at::Tensor& out, const at::Tensor& part, int M, int N, int K, int SK, int mpad) {
+             const epilogue::Scales& sc, at::Tensor& out, const at::Tensor& part, int M, int N, int K, int SK, int mpad) {
     auto go = [&](auto cfg) {
-        launch<MODE, decltype(cfg), F32, CLUSTER>(x, xs, w, ws, alpha, out, part, M, N, K, SK, mpad);
+        launch<MODE, decltype(cfg), F32, CLUSTER>(x, xs, w, ws, sc, out, part, M, N, K, SK, mpad);
     };
     auto block = [&](auto full, auto skip) { M % decltype(full)::BM ? go(skip) : go(full); };
     switch (tile) {
@@ -316,38 +321,40 @@ void by_tile(int tile, const at::Tensor& x, const at::Tensor& xs, const at::Tens
 
 template <int MODE>
 void by_output(int tile, bool f32, bool cluster, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w,
-               const at::Tensor& ws, double alpha, at::Tensor& out, const at::Tensor& part, int M, int N, int K,
-               int SK, int mpad) {
+               const at::Tensor& ws, const epilogue::Scales& sc, at::Tensor& out, const at::Tensor& part, int M, int N,
+               int K, int SK, int mpad) {
     if (f32) {
-        if (cluster) by_tile<MODE, true, true>(tile, x, xs, w, ws, alpha, out, part, M, N, K, SK, mpad);
-        else by_tile<MODE, true, false>(tile, x, xs, w, ws, alpha, out, part, M, N, K, SK, mpad);
+        if (cluster) by_tile<MODE, true, true>(tile, x, xs, w, ws, sc, out, part, M, N, K, SK, mpad);
+        else by_tile<MODE, true, false>(tile, x, xs, w, ws, sc, out, part, M, N, K, SK, mpad);
     } else {
-        if (cluster) by_tile<MODE, false, true>(tile, x, xs, w, ws, alpha, out, part, M, N, K, SK, mpad);
-        else by_tile<MODE, false, false>(tile, x, xs, w, ws, alpha, out, part, M, N, K, SK, mpad);
+        if (cluster) by_tile<MODE, false, true>(tile, x, xs, w, ws, sc, out, part, M, N, K, SK, mpad);
+        else by_tile<MODE, false, false>(tile, x, xs, w, ws, sc, out, part, M, N, K, SK, mpad);
     }
 }
 
 }  // namespace
 
 void lane_cuda(int64_t mode, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-               double alpha, at::Tensor& out, const at::Tensor& part, int64_t N, int64_t K, int64_t SK, int64_t mpad,
-               int64_t tile, bool f32) {
+               double alpha, const at::Tensor& rs, const at::Tensor& cs, at::Tensor& out, const at::Tensor& part,
+               int64_t N, int64_t K, int64_t SK, int64_t mpad, int64_t tile, bool f32) {
     // slices add in one order via a cluster's shared memory (sm_90 on) or ``part`` and the reduce: the same bits
     const bool cluster = SK > 1 && SK <= 8 && !part.defined() && at::cuda::getCurrentDeviceProperties()->major >= 9;
     const int M = static_cast<int>(out.size(0)), n = static_cast<int>(N), k = static_cast<int>(K);
     const int sk = static_cast<int>(SK), mp = static_cast<int>(mpad), b = static_cast<int>(tile);
     at::Tensor slices = part;                     // sm_89: no clusters, so slices up to 8 meet here too
     if (SK > 1 && !cluster && !slices.defined()) slices = at::empty({SK, M, N}, out.options().dtype(at::kFloat));
-    if (mode == A4) by_output<A4>(b, f32, cluster, x, xs, w, ws, alpha, out, slices, M, n, k, sk, mp);
-    else by_output<A8>(b, f32, cluster, x, xs, w, ws, alpha, out, slices, M, n, k, sk, mp);
+    const epilogue::Scales sc{static_cast<float>(alpha), rs.defined() ? rs.data_ptr<float>() : nullptr,
+                              cs.defined() ? cs.data_ptr<float>() : nullptr};
+    if (mode == A4) by_output<A4>(b, f32, cluster, x, xs, w, ws, sc, out, slices, M, n, k, sk, mp);
+    else by_output<A8>(b, f32, cluster, x, xs, w, ws, sc, out, slices, M, n, k, sk, mp);
     if (SK > 1 && !cluster) {
         const long long total = static_cast<long long>(M) * N;
         const int threads = 256, blocks = static_cast<int>((total + threads - 1) / threads);
         auto stream = at::cuda::getCurrentCUDAStream();
         if (f32) reduce_kernel<true><<<blocks, threads, 0, stream>>>(slices.data_ptr<float>(), out.data_ptr(), total,
-                                                                     sk, static_cast<float>(alpha));
+                                                                     sk, n, sc);
         else reduce_kernel<false><<<blocks, threads, 0, stream>>>(slices.data_ptr<float>(), out.data_ptr(), total, sk,
-                                                                  static_cast<float>(alpha));
+                                                                  n, sc);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }

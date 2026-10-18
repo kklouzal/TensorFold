@@ -12,6 +12,7 @@ import torch
 from tensorfold.cuda import moe
 from tensorfold.cuda.kernels import attention as tree_attention
 from tensorfold.cuda.kernels import gdn as deltanet
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from .qmm_fast import matmul, matmul_group
@@ -29,7 +30,7 @@ def _mm_group(x: torch.Tensor, ws: list, xs: torch.Tensor | None = None) -> list
 
     if all(isinstance(w, QLinear) for w in ws):
         return matmul_group(x, ws, xs)
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None]   # checkpoint math: quantize once
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)]   # checkpoint math: quantize once
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint

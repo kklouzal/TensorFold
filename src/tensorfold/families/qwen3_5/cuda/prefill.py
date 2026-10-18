@@ -12,6 +12,7 @@ from tensorfold.cuda import moe, prompt_precision
 from tensorfold.cuda.kernels import gdn as deltanet
 from tensorfold.cuda.kernels import qmm as shared
 from tensorfold.cuda.kernels.prefill_attention import attention
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from . import prefill_bf16, prefill_glue
@@ -39,7 +40,7 @@ def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
 def _mm_group(x, ws: list) -> list[torch.Tensor]:
     """Projections of one input: checkpoint-math ones under one input scale quantize the rows once (same bits)."""
 
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None] if torch.is_tensor(x) else []
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)] if torch.is_tensor(x) else []
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint

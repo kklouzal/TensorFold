@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 
 #include "../kernels/qmm_frag.cuh"
+#include "epilogue.cuh"
 
 namespace {
 
@@ -61,8 +62,8 @@ struct Tile {
 template <int MODE, int BM, int BN, int WM, int WN, int STAGES, bool F32, bool CLUSTER>
 __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
         const __nv_bfloat16* __restrict__ x, const unsigned char* __restrict__ w, const uint8_t* __restrict__ bs,
-        float scale, void* __restrict__ out, float* __restrict__ part, int M, int N, int K, int SK, int npad, int ldx,
-        int group) {
+        epilogue::Scales sc, void* __restrict__ out, float* __restrict__ part, int M, int N, int K, int SK, int npad,
+        int ldx, int group) {
     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
     static_assert(BN == 64, "a block reads one 64-column tile of words and scales");
     extern __shared__ __align__(128) unsigned char buf[];
@@ -241,7 +242,8 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
                     if (col + 1 < N) dst[1] = acc[i][j][2 * h + 1];
                     continue;
                 }
-                const float v0 = acc[i][j][2 * h] * scale, v1 = acc[i][j][2 * h + 1] * scale;
+                const float2 v = epilogue::pair(sc, row, col, acc[i][j][2 * h], acc[i][j][2 * h + 1]);
+                const float v0 = v.x, v1 = v.y;
                 if (F32) {
                     float* dst = reinterpret_cast<float*>(out) + static_cast<size_t>(row) * N + col;
                     if (col < N) dst[0] = v0;
@@ -260,19 +262,19 @@ __global__ void __launch_bounds__(WM * WN * 32) qmmf_kernel(
 }
 
 template <bool F32>
-__global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__ out, long long total, int SK,
-                              float scale) {
+__global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__ out, long long total, int SK, int N,
+                              epilogue::Scales sc) {
     const long long i = static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i >= total) return;
     float acc = part[i];
     for (int s = 1; s < SK; ++s) acc = acc + part[s * total + i];
-    acc = acc * scale;
+    acc = epilogue::one(sc, static_cast<int>(i / N), static_cast<int>(i % N), acc);
     if (F32) reinterpret_cast<float*>(out)[i] = acc;
     else reinterpret_cast<__nv_bfloat16*>(out)[i] = __float2bfloat16_rn(acc);
 }
 
 template <int MODE, int BM, bool F32, bool CLUSTER>
-void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
+void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, const epilogue::Scales& sc, at::Tensor& out,
             const at::Tensor& part, int N, int K, int SK, int npad) {
     constexpr int BN = 64, WM = 1, WN = 4, STAGES = 4;
     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
@@ -301,35 +303,35 @@ void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, doub
     }
     C10_CUDA_CHECK(cudaLaunchKernelEx(&config, kernel, reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
         reinterpret_cast<const unsigned char*>(w.data_ptr()),
-        bs.defined() ? reinterpret_cast<const uint8_t*>(bs.data_ptr()) : nullptr, static_cast<float>(scale),
+        bs.defined() ? reinterpret_cast<const uint8_t*>(bs.data_ptr()) : nullptr, sc,
         out.data_ptr(), part.defined() ? part.data_ptr<float>() : nullptr, M, N, K, SK, npad,
         M == 1 ? K : static_cast<int>(x.stride(0)), group));
 }
 
 template <int MODE, bool F32, bool CLUSTER>
-void by_rows(int bm, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
-             const at::Tensor& part, int N, int K, int SK, int npad) {
+void by_rows(int bm, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, const epilogue::Scales& sc,
+             at::Tensor& out, const at::Tensor& part, int N, int K, int SK, int npad) {
     switch (bm) {
-        case 16: launch<MODE, 16, F32, CLUSTER>(x, w, bs, scale, out, part, N, K, SK, npad); break;
-        case 32: launch<MODE, 32, F32, CLUSTER>(x, w, bs, scale, out, part, N, K, SK, npad); break;
-        default: launch<MODE, 64, F32, CLUSTER>(x, w, bs, scale, out, part, N, K, SK, npad); break;
+        case 16: launch<MODE, 16, F32, CLUSTER>(x, w, bs, sc, out, part, N, K, SK, npad); break;
+        case 32: launch<MODE, 32, F32, CLUSTER>(x, w, bs, sc, out, part, N, K, SK, npad); break;
+        default: launch<MODE, 64, F32, CLUSTER>(x, w, bs, sc, out, part, N, K, SK, npad); break;
     }
 }
 
 template <int MODE>
 void by_output(int bm, bool f32, bool cluster, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs,
-               double scale, at::Tensor& out, const at::Tensor& part, int N, int K, int SK, int npad) {
-    if (f32) { if (cluster) by_rows<MODE, true, true>(bm, x, w, bs, scale, out, part, N, K, SK, npad);
-               else by_rows<MODE, true, false>(bm, x, w, bs, scale, out, part, N, K, SK, npad); }
-    else { if (cluster) by_rows<MODE, false, true>(bm, x, w, bs, scale, out, part, N, K, SK, npad);
-           else by_rows<MODE, false, false>(bm, x, w, bs, scale, out, part, N, K, SK, npad); }
+               const epilogue::Scales& sc, at::Tensor& out, const at::Tensor& part, int N, int K, int SK, int npad) {
+    if (f32) { if (cluster) by_rows<MODE, true, true>(bm, x, w, bs, sc, out, part, N, K, SK, npad);
+               else by_rows<MODE, true, false>(bm, x, w, bs, sc, out, part, N, K, SK, npad); }
+    else { if (cluster) by_rows<MODE, false, true>(bm, x, w, bs, sc, out, part, N, K, SK, npad);
+           else by_rows<MODE, false, false>(bm, x, w, bs, sc, out, part, N, K, SK, npad); }
 }
 
 }  // namespace
 
-void qmmf_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
-               const at::Tensor& part, int64_t mode, int64_t N, int64_t K, int64_t SK, int64_t npad, int64_t bm,
-               bool f32) {
+void qmmf_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, const at::Tensor& cs,
+               at::Tensor& out, const at::Tensor& part, int64_t mode, int64_t N, int64_t K, int64_t SK, int64_t npad,
+               int64_t bm, bool f32) {
     // slices add in one order via a cluster's shared memory (sm_90 on) or ``part`` and the reduce: the same bits
     const bool cluster = SK > 1 && SK <= 8 && !part.defined() && at::cuda::getCurrentDeviceProperties()->major >= 9;
     const int n = static_cast<int>(N), k = static_cast<int>(K), sk = static_cast<int>(SK), np = static_cast<int>(npad);
@@ -337,18 +339,19 @@ void qmmf_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, d
     if (SK > 1 && !cluster && !slices.defined())
         slices = at::empty({SK, x.size(0), N}, out.options().dtype(at::kFloat));
     const int b = static_cast<int>(bm);
-    if (mode == FP4) by_output<FP4>(b, f32, cluster, x, w, bs, scale, out, slices, n, k, sk, np);
-    else if (mode == FP8) by_output<FP8>(b, f32, cluster, x, w, bs, scale, out, slices, n, k, sk, np);
-    else if (mode == MXFP8) by_output<MXFP8>(b, f32, cluster, x, w, bs, scale, out, slices, n, k, sk, np);
-    else by_output<FP8G>(b, f32, cluster, x, w, bs, scale, out, slices, n, k, sk, np);
+    const epilogue::Scales sc{static_cast<float>(scale), nullptr, cs.defined() ? cs.data_ptr<float>() : nullptr};
+    if (mode == FP4) by_output<FP4>(b, f32, cluster, x, w, bs, sc, out, slices, n, k, sk, np);
+    else if (mode == FP8) by_output<FP8>(b, f32, cluster, x, w, bs, sc, out, slices, n, k, sk, np);
+    else if (mode == MXFP8) by_output<MXFP8>(b, f32, cluster, x, w, bs, sc, out, slices, n, k, sk, np);
+    else by_output<FP8G>(b, f32, cluster, x, w, bs, sc, out, slices, n, k, sk, np);
     if (SK > 1 && !cluster) {
         const long long total = static_cast<long long>(x.size(0)) * N;
         const int threads = 256, blocks = static_cast<int>((total + threads - 1) / threads);
         auto stream = at::cuda::getCurrentCUDAStream();
         if (f32) reduce_kernel<true><<<blocks, threads, 0, stream>>>(slices.data_ptr<float>(), out.data_ptr(), total,
-                                                                     sk, static_cast<float>(scale));
+                                                                     sk, n, sc);
         else reduce_kernel<false><<<blocks, threads, 0, stream>>>(slices.data_ptr<float>(), out.data_ptr(), total, sk,
-                                                                  static_cast<float>(scale));
+                                                                  n, sc);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
 }
