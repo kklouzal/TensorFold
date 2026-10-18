@@ -95,7 +95,8 @@ def expert_group_policy(policies):
     if len(modes) != 1:
         raise ValueError("expert ranks require matching explicit precision modes")
     native = policies[0][0] == "checkpoint" and all(p[1] for p in policies)
-    reason = "all-native" if native else "explicit-full" if policies[0][0] == "full" else "mixed-capability-full"
+    reason = ("all-native" if native else "explicit-full" if policies[0][0] == "full" else
+              "mixed-capability-full" if any(p[1] for p in policies) else "non-native-full")
     return native, reason
 
 
