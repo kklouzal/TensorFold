@@ -272,6 +272,21 @@ def test_unexercised_cache_paths_make_determinism_incomplete_not_pass(tmp_path, 
     assert gate["identical"] == 2 and gate["exercised"] == {"warm": 0, "recold": 2, "extended": 0}
 
 
+def test_gates_without_cases_are_incomplete_not_pass(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    with fake_server() as url:                             # the only gate prompt is a thinking-off one
+        for gate in ("determinism", "identity"):
+            out = tmp_path / f"{gate}.json"
+            monkeypatch.setattr(sys, "argv", ["campaign_gates.py", gate, "--url", url, "--out", str(out),
+                                              "--profile", str(tmp_path / "profile.json"),
+                                              "--prompts", str(tmp_path / "prompts.json"),
+                                              "--gate-prompts", "short-code-nothink", "--thinking", "on"])
+            assert gates.main() == 3
+            result = json.loads(out.read_text())
+            assert result["status"] == result["gates"][gate]["status"] == "incomplete"
+            assert result["gates"][gate]["verdict"] is None
+
+
 def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):
     _write_inputs(tmp_path)
     with fake_server(ids=False) as url:
@@ -341,16 +356,20 @@ def _outside(np, lp_full, ids):
     return np.where(np.isneginf(top), -np.inf, lse).ravel().astype(np.float64)
 
 
-def _dump(path, lp_full, top_k, reference=None):
+def _dump(path, lp_full, top_k, reference=None, golden=False):
+    """A dump of full log-probability rows; with ``reference`` (a dump's path) a candidate dump against it."""
+
     np = pytest.importorskip("numpy")
     order = np.argsort(-lp_full, axis=-1)[:, :top_k]
     arrays = {"ids": order.astype(np.int32), "lp": np.take_along_axis(lp_full, order, -1).astype(np.float32),
               "tail_lp": _outside(np, lp_full, order), "forced": lp_full[:, 0],
               "entropy": -(np.exp(lp_full) * lp_full).sum(-1), "offsets": np.array([0])}
+    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"], "golden": golden}
     if reference is not None:
-        arrays["at_ref"] = np.take_along_axis(lp_full, reference, -1).astype(np.float32)
-        arrays["at_ref_tail_lp"] = _outside(np, lp_full, reference)
-    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"]}
+        ids = np.load(reference)["ids"].astype(np.int64)
+        arrays["at_ref"] = np.take_along_axis(lp_full, ids, -1).astype(np.float32)
+        arrays["at_ref_tail_lp"] = _outside(np, lp_full, ids)
+        meta["reference_sha256"] = kl.file_sha256(str(reference))
     np.savez(path, meta=json.dumps(meta), **arrays)
     return order
 
@@ -368,15 +387,19 @@ def test_kl_is_exact_with_the_full_vocabulary_and_a_lower_bound_with_top_k(tmp_p
     exact = (np.exp(p) * (p - q)).sum(-1).mean()
     for k, check in ((64, lambda got: math.isclose(got, exact, rel_tol=1e-3)),   # float32 storage
                      (8, lambda got: got <= exact + 1e-6)):
-        ref = _dump(tmp_path / f"ref{k}.npz", p, k)
-        _dump(tmp_path / f"cand{k}.npz", q, k, reference=ref)
+        _dump(tmp_path / f"ref{k}.npz", p, k)
+        _dump(tmp_path / f"cand{k}.npz", q, k, reference=tmp_path / f"ref{k}.npz")
         result = kl.compare(str(tmp_path / f"ref{k}.npz"), str(tmp_path / f"cand{k}.npz"))
         assert check(result["kl"]["mean"]), (k, result["kl"]["mean"], exact)
         assert result["kl"]["kind"] == "lower bound" and not result["identical_logprobs"]
-    same = _dump(tmp_path / "same.npz", p, 8, reference=_dump(tmp_path / "ref.npz", p, 8))
+    _dump(tmp_path / "ref.npz", p, 8)
+    same = _dump(tmp_path / "same.npz", p, 8, reference=tmp_path / "ref.npz")
     result = kl.compare(str(tmp_path / "ref.npz"), str(tmp_path / "same.npz"))
     assert result["kl"]["max"] < 1e-6 and result["top1_agreement"] == 1.0 and result["identical_logprobs"]
     assert same.shape == (50, 8)
+    _dump(tmp_path / "other.npz", q, 8)
+    with pytest.raises(ValueError, match="another reference"):          # same eval and shapes, other reference
+        kl.compare(str(tmp_path / "other.npz"), str(tmp_path / "same.npz"))
 
 
 def test_kl_tail_stays_a_bound_when_the_tail_is_below_float32_resolution(tmp_path):
@@ -394,8 +417,8 @@ def test_kl_tail_stays_a_bound_when_the_tail_is_below_float32_resolution(tmp_pat
         return v - m - np.log(np.exp(v - m).sum(-1, keepdims=True, dtype=np.float32))
 
     exact = (np.exp(_log_softmax(np, x)) * (_log_softmax(np, x) - _log_softmax(np, y))).sum(-1)
-    ref = _dump(tmp_path / "ref.npz", log_softmax32(x), 64)
-    _dump(tmp_path / "cand.npz", log_softmax32(y), 64, reference=ref)
+    _dump(tmp_path / "ref.npz", log_softmax32(x), 64)
+    _dump(tmp_path / "cand.npz", log_softmax32(y), 64, reference=tmp_path / "ref.npz")
     result = kl.compare(str(tmp_path / "ref.npz"), str(tmp_path / "cand.npz"))
     assert result["kl"]["max"] <= exact.max() + 5e-7 and abs(result["kl"]["mean"] - exact.mean()) < 1e-7
     assert 0 < result["tail_mass_ref"]["mean"] < 1e-6
@@ -476,6 +499,22 @@ def test_block_bootstrap_keeps_constant_means_and_never_spans_items():
     assert 0.4 < boot[:, 1].mean() < 0.9                       # mixes both items around the 2/3 position mean
 
 
+def test_block_bootstrap_intervals_centre_on_the_mean_wherever_the_change_sits():
+    # a change in each reply's first 32 positions, and one confined to a short reply: moving blocks that do not wrap
+    # centred these at a third and at a fiftieth of the sample mean (the intervals missed it)
+    np = pytest.importorskip("numpy")
+    front = np.zeros(13 * 256)
+    for item in range(13):
+        front[item * 256:item * 256 + 32] = 1.0
+    short = np.r_[np.ones(40), np.zeros(12 * 256)]
+    for values, offsets in ((front, [i * 256 for i in range(13)]), (short, [0] + [40 + i * 256 for i in range(12)])):
+        boot = kl.block_bootstrap(values[:, None], offsets, block=64, resamples=4000, seed=0)[:, 0]
+        low, high = np.quantile(boot, [0.025, 0.975])
+        assert abs(boot.mean() - values.mean()) < 0.05 * values.mean() and low < values.mean() < high
+    with pytest.raises(ValueError):
+        kl.block_bootstrap(front[:, None], [0], block=0, resamples=10, seed=0)
+
+
 def test_golden_gate_passes_an_equal_error_change_and_fails_a_worse_one(tmp_path):
     np = pytest.importorskip("numpy")
     rng = np.random.default_rng(3)
@@ -483,9 +522,13 @@ def test_golden_gate_passes_an_equal_error_change_and_fails_a_worse_one(tmp_path
     old = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
     same = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
     worse = _log_softmax(np, golden + rng.normal(0, 0.6, golden.shape))
-    ref = _dump(tmp_path / "golden.npz", golden, 16)
+    _dump(tmp_path / "golden.npz", golden, 16, golden=True)
     for name, lp in (("old", old), ("same", same), ("worse", worse)):
-        _dump(tmp_path / f"{name}.npz", lp, 16, reference=ref)
+        _dump(tmp_path / f"{name}.npz", lp, 16, reference=tmp_path / "golden.npz")
+    _dump(tmp_path / "engine.npz", golden, 16)                      # an engine dump is no golden reference
+    _dump(tmp_path / "old-vs-engine.npz", old, 16, reference=tmp_path / "engine.npz")
+    with pytest.raises(ValueError, match="not a campaign_golden reference"):
+        kl.gate(str(tmp_path / "engine.npz"), str(tmp_path / "old-vs-engine.npz"), str(tmp_path / "old-vs-engine.npz"))
     passed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "same.npz"),
                      resamples=500)
     failed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "worse.npz"),
@@ -564,3 +607,14 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
         full = torch.log_softmax(reference(input_ids=ids).logits[0, 3:-1].float(), -1)
     forced = torch.tensor([r["forced"] for r in rows])
     assert dtype == "torch.float32" and torch.allclose(forced, full[torch.arange(7), ids[0, 4:]], atol=1e-5)
+    # a checkpoint without one persistent buffer (layer_scalar multiplies a layer's output) fails instead of loading
+    # the buffer's constructor value
+    from safetensors.torch import load_file, save_file
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    (partial / "config.json").write_text((tmp_path / "config.json").read_text())
+    tensors = load_file(str(tmp_path / "model.safetensors"))
+    dropped = next(key for key in tensors if key.endswith("layer_scalar"))
+    save_file({k: v for k, v in tensors.items() if k != dropped}, str(partial / "model.safetensors"))
+    with pytest.raises(ValueError, match="persistent buffers were not in the checkpoint"):
+        golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, partial, "cpu")

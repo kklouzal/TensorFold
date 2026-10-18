@@ -378,12 +378,12 @@ def _cached(reply: dict) -> int:
 
 def _status(rows: list[dict], allow_failure: bool) -> tuple[str, bool | None]:
     """A gate's status from its rows: fail when any compared pair differs (unless reporting only), incomplete when
-    any required comparison was not exercised (silence is not coverage), else pass. verdict mirrors it (null for
-    incomplete or report-only)."""
+    there are no rows or any required comparison was not exercised (silence is not coverage), else pass. verdict
+    mirrors it (null for incomplete or report-only)."""
 
     if any(not r["identical"] for r in rows):
         return ("report", None) if allow_failure else ("fail", False)
-    if any(not all(r["exercised"].values()) for r in rows):
+    if not rows or any(not all(r["exercised"].values()) for r in rows):
         return "incomplete", None
     return ("report", None) if allow_failure else ("pass", True)
 

@@ -847,7 +847,7 @@ python3 tools/bench_concurrent.py http://127.0.0.1:8080 local \
 
 These report client-observed streamed arrival/first-token timing; they do not measure exact GPU emission timestamps. The strict concurrent comparison checks its declared output/hash reference, while a serial throughput run alone is not an equality proof. Network/proxy buffering affects measurements. Inspect output and process exit status; do not treat a nonempty log as success. See [public benchmark fixtures](docs/recipes/README.md#measurements) and [validation methodology](docs/optimization-validation.md).
 
-For comparing two server configurations at prompt depths up to the full context there are four further tools. The
+For comparing two server configurations at prompt depths up to the full context there are five further tools. The
 bench and gate tools share one JSON profile per model (served name, context, reply budget, end ids, model-card
 sampling per thinking mode, depths and the per-prompt request schedule); the KL tool reads its card sampling:
 
@@ -858,11 +858,20 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   interleaved runs (ABBA), per-cycle ratios against a base configuration plus token identity of repeated requests;
   it lists runs that stopped mid-schedule, replies shorter than the reply budget and mixed tool versions.
 - `tools/campaign_gates.py` (standard library) runs a strict and non-strict tool-call suite, multi-key
-  needle-in-a-haystack recall to the full context, determinism (repeat, prefix-cache warm against cold) and
-  drafted-against-serial (`"draft": false`) identity; thresholds are arguments.
+  needle-in-a-haystack recall to the full context, determinism (repeat, prefix-cache warm against cold, an exact
+  token-id prompt extension through `/v1/completions`) and drafted-against-serial (`"draft": false`) identity;
+  thresholds are arguments. A determinism or identity comparison whose path the server did not exercise (by the
+  `cached` count of the stats block, or a greedy reply that verified no draft) makes the gate `incomplete`, never a
+  pass; exit status 1 = fail, 3 = incomplete.
 - `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
   set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
   plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
+  `gate GOLDEN OLD NEW` compares two configurations against a golden reference: it fails when the 95% block
+  bootstrap interval (circular blocks within eval items) of KL(golden || new) - KL(golden || old) lies above zero or
+  that of the top-1 agreement change lies below zero, and reports both intervals.
+- `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
+  pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
+  off for matmuls), in the campaign_kl dump format.
 - `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
   busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
 

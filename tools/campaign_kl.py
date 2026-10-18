@@ -269,8 +269,9 @@ def _load_pair(ref_path: str, cand_path: str):
         raise ValueError("a dump without log-sum-exp tail masses (made before they were recorded): dump it again")
     if ref["lp"].shape != cand["at_ref"].shape:
         raise ValueError("reference and candidate positions differ")
-    if cand_meta.get("reference_sha256") not in (None, file_sha256(ref_path)):
-        raise ValueError(f"{cand_path} was dumped against another reference than {ref_path}")
+    if cand_meta.get("reference_sha256") != file_sha256(ref_path):
+        raise ValueError(f"{cand_path} was dumped against another reference than {ref_path} (or before dumps "
+                         "recorded their reference's sha256: dump it again)")
     return ref, cand, ref_meta, cand_meta
 
 
@@ -320,36 +321,50 @@ def compare(ref_path: str, cand_path: str) -> dict:
 
 
 def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
-    """Means of ``values`` (columns resampled together, rows = positions) over moving blocks of ``block`` positions
-    drawn with replacement within the eval items (no block spans two items, so the serial correlation of positions
-    inside a reply is kept); returns the resampled means [resamples, columns]."""
+    """Means of ``values`` (columns resampled together, rows = positions) over circular blocks of ``block``
+    positions drawn with replacement within the eval items: no block spans two items, so the serial correlation of
+    positions inside a reply is kept, and a block may wrap from an item's end to its start, so every position lies in
+    equally many blocks. An item of at most ``block`` positions is one block, drawn ``block`` times as often. Every
+    position therefore has the same expected weight and the resampled means centre on the sample mean (plain moving
+    blocks under-weight each item's first and last positions and short items). Returns [resamples, columns]."""
 
     import numpy as np
 
+    if block < 1 or resamples < 1:
+        raise ValueError("bootstrap block and resamples must be positive")
+    values = np.asarray(values, dtype=np.float64)
     bounds = list(offsets) + [len(values)]
-    spans = []
+    sums, sizes, weights = [], [], []
     for first, end in zip(bounds, bounds[1:]):
-        if end - first <= block:                     # a short item is one block
-            spans.append((first, end))
+        item = values[first:end]
+        if len(item) == 0:
+            continue
+        if len(item) <= block:
+            sums.append(item.sum(0)[None])
+            sizes.append([len(item)])
+            weights.append([block])
         else:
-            spans += [(a, a + block) for a in range(first, end - block + 1)]
-    sizes = np.array([b - a for a, b in spans], dtype=np.float64)
-    sums = np.array([values[a:b].sum(0) for a, b in spans])
-    rng = np.random.default_rng(seed)
-    count = max(1, round(len(values) / sizes.mean()))
-    picks = rng.integers(0, len(spans), size=(resamples, count))
+            ring = np.concatenate([item, item[:block - 1]])
+            sums.append(np.lib.stride_tricks.sliding_window_view(ring, block, axis=0).sum(-1))
+            sizes.append([block] * len(item))
+            weights.append([1] * len(item))
+    sums, sizes, weights = np.concatenate(sums), np.concatenate(sizes), np.concatenate(weights).astype(np.float64)
+    count = max(1, round(weights.sum() / block))     # blocks per resample: about as many positions as the eval set
+    picks = np.random.default_rng(seed).choice(len(sums), size=(resamples, count), p=weights / weights.sum())
     return sums[picks].sum(1) / sizes[picks].sum(1)[:, None]
 
 
 def gate(golden_path: str, old_path: str, new_path: str, *, block: int = 64, resamples: int = 4000,
          seed: int = 0) -> dict:
     """Golden-reference gate: KL(golden || new) against KL(golden || old) and golden top-1 agreement, paired per
-    position, with 95% moving-block bootstrap intervals. fail when the KL increase's interval lies above 0 or the
+    position, with 95% circular-block bootstrap intervals. fail when the KL increase's interval lies above 0 or the
     agreement change's interval lies below 0; otherwise pass (the intervals are the margins)."""
 
     import numpy as np
 
     golden, old, golden_meta, old_meta = _load_pair(golden_path, old_path)
+    if not golden_meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference")
     _, new, _, new_meta = _load_pair(golden_path, new_path)
     kl_old, p_tail = position_kl(golden, old)
     kl_new, _ = position_kl(golden, new)
@@ -368,7 +383,8 @@ def gate(golden_path: str, old_path: str, new_path: str, *, block: int = 64, res
             "golden_source": golden_meta.get("source"), "old_source": old_meta.get("source_revision"),
             "new_source": new_meta.get("source_revision"), **stats,
             "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
-            "bootstrap": {"block": block, "resamples": resamples, "seed": seed, "kind": "moving blocks within items"},
+            "bootstrap": {"block": block, "resamples": resamples, "seed": seed, "numpy": np.__version__,
+                          "kind": "circular blocks within items, equal expected weight per position"},
             "status": "fail" if kl_worse or agreement_worse else "pass",
             "failed": [n for n, bad in (("kl", kl_worse), ("agreement", agreement_worse)) if bad],
             "method": "KL(golden||x) on the golden top-K ids plus a merged tail bucket (lower bound to float32 "

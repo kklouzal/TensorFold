@@ -10,12 +10,15 @@ transformers, built with its parameters on the meta device and then filled on th
 tensors (load_bf16); weights stay BF16 in memory, computed constants (rotary frequencies, embedding scale) float32.
 With ``--compute fp32`` (default) every decoder layer is cast to float32 for its own forward and restored afterwards
 (the parameters and buffers return to their original dtypes, so no value changes), and the embeddings, final norm
-and head stay float32; float32 matmuls run at "highest" precision (no TF32).
+and head stay float32; cuBLAS float32 matmuls run at "highest" precision (TF32 off).
 Hidden states, attention, routing, the KV cache and the logits are therefore float32 throughout: the reference is the
-BF16 weights' function, not BF16 activation rounding. Each prompt is prefilled in --chunk token chunks through the
-model's cache, then the answer positions are scored in one forward; the record per position (top-K log-probabilities,
-log tail mass, forced token, entropy) comes from campaign_kl.row_stats. Candidates then dump with
-``campaign_kl.py dump --reference GOLDEN.npz`` and ``campaign_kl.py gate GOLDEN OLD NEW`` decides.
+BF16 weights' function, not BF16 activation rounding. One limit: on CUDA (sm80 and newer) SDPA's float32 attention,
+when it selects PyTorch's memory-efficient kernel, multiplies with CUTLASS 3xTF32 (OpMultiplyAddFastF32: three TF32
+products per float32 product, float32 accumulation, close to float32 accuracy); the TF32 switches do not govern that
+kernel. Each prompt is prefilled in --chunk token chunks through the model's cache, then the answer positions are
+scored in one forward; the record per position (top-K log-probabilities, log tail mass, forced token, entropy) comes
+from campaign_kl.row_stats. Candidates then dump with ``campaign_kl.py dump --reference GOLDEN.npz`` and
+``campaign_kl.py gate GOLDEN OLD NEW`` decides.
 """
 
 from __future__ import annotations
@@ -57,7 +60,8 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
     materialised on ``device`` straight from the checkpoint's safetensors in its stored dtype (BF16): no CPU copy of
     the whole model (on unified memory a CPU load plus a device move would hold the weights twice; transformers'
     device_map path needs accelerate, absent from the image). Every model parameter must come from the checkpoint
-    or be tied to one that did; checkpoint keys without a model tensor fail."""
+    or be tied to one that did, and every persistent buffer (Gemma4's per-layer ``layer_scalar``) must come from it;
+    checkpoint keys without a model tensor fail."""
 
     from safetensors import safe_open
     from transformers.initialization import no_init_weights
@@ -91,8 +95,11 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
         raise ValueError(f"{len(unexpected)} checkpoint tensors have no model tensor, e.g. {unexpected[:5]}")
     model.tie_weights()
     missing = [name for name, param in model.named_parameters() if param.is_meta]
+    missing += [key for key, (module, name) in owners.items() if name in module._buffers
+                and name not in module._non_persistent_buffers_set and key not in loaded]
     if missing:
-        raise ValueError(f"{len(missing)} model parameters were not in the checkpoint, e.g. {missing[:5]}")
+        raise ValueError(f"{len(missing)} model parameters or persistent buffers were not in the checkpoint, "
+                         f"e.g. {missing[:5]}")
     for module in model.modules():                   # computed buffers (float32) join the weights on the device
         for name, buffer in module._buffers.items():
             if buffer is not None and buffer.device != torch.device(device):
@@ -200,7 +207,8 @@ def main() -> int:
             "names": [it["name"] for it in data["items"]], "reference": None, "golden": True,
             "source": args.source, "model_dir": str(model_dir), "architecture": architecture,
             "config_sha256": file_sha256(str(model_dir / "config.json")),
-            "precision": {"weights": "bf16", "compute": args.compute, "tf32": False, "attention": "sdpa",
+            "precision": {"weights": "bf16", "compute": args.compute, "tf32_matmul": False,
+                          "attention": "sdpa (CUDA float32: memory-efficient kernel products in 3xTF32 when selected)",
                           "float32_layer_hooks": counts},
             "versions": {"torch": torch.__version__, "transformers": transformers.__version__},
             "chunk": args.chunk, "device": args.device, "load_s": round(loaded_s, 1), "load": load_report,
