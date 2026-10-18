@@ -233,34 +233,21 @@ def _global_columns(D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr):
 
 
 @triton.jit
-def _global_kv(RAW, INV, KW, FREQ, key, held, hk, HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr,
-               UW: tl.constexpr, ROUND: tl.constexpr):
-    """Rebuild K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv) tiles from raw keys."""
-    ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
-    row = RAW + (key[:, None] * HK + hk) * D
-    inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
-    na = tl.load(row + ca[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
-    nb = tl.load(row + cb[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
-    n0 = tl.load(row + c0[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
-    n1 = tl.load(row + c1[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
-    n2 = tl.load(row + c2[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
-    ka = _scaled(na, tl.load(KW + ca)[None, :], ROUND)
-    kb = _scaled(nb, tl.load(KW + cb)[None, :], ROUND)
-    k0 = _scaled(n0, tl.load(KW + c0)[None, :], ROUND).to(tl.bfloat16)
-    k1 = _scaled(n1, tl.load(KW + c1)[None, :], ROUND).to(tl.bfloat16)
-    k2 = _scaled(n2, tl.load(KW + c2)[None, :], ROUND).to(tl.bfloat16)
-    angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
-    c, s = tl.cos(angle), tl.sin(angle)
-    ka_r = (ka * c - kb * s).to(tl.bfloat16)
-    kb_r = (ka * s + kb * c).to(tl.bfloat16)
-    return (ka_r, kb_r, k0, k1, k2, na.to(tl.bfloat16), nb.to(tl.bfloat16), n0.to(tl.bfloat16),
-            n1.to(tl.bfloat16), n2.to(tl.bfloat16))
+def _normalized(row, cols, inv, held):
+    """One column part of raw key rows times their reciprocal RMS (FP32)."""
+    return tl.load(row + cols[None, :], mask=held[:, None], other=0.0).to(tl.float32) * inv
 
 
 @triton.jit
 def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
                   CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr):
+    """One chunk's online softmax over raw K=V tiles: K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv).
+
+    Each column part is rebuilt where it is consumed (scores first, values after the softmax update, the
+    second read served by the cache), so only one part's tile is live: holding all five parts spills.
+    """
+    ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
     m = tl.full((16,), -float("inf"), tl.float32)
     l = tl.zeros((16,), tl.float32)
     oa = tl.zeros((16, ROT), tl.float32)
@@ -272,12 +259,20 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi
     for at in range(begin, tl.minimum(begin + CH, hi), BK):
         key = at + tl.arange(0, BK)
         held = key < hi
-        ka, kb, k0, k1, k2, va, vb, v0, v1, v2 = _global_kv(RAW, INV, KW, FREQ, key, held, hk, HK, D, ROT, UW, ROUND)
-        scores = tl.dot(qa, tl.trans(ka))
-        scores = tl.dot(qb, tl.trans(kb), scores)
-        scores = tl.dot(q0, tl.trans(k0), scores)
-        scores = tl.dot(q1, tl.trans(k1), scores)
-        scores = tl.dot(q2, tl.trans(k2), scores)
+        row = RAW + (key[:, None] * HK + hk) * D
+        inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
+        ka = _scaled(_normalized(row, ca, inv, held), tl.load(KW + ca)[None, :], ROUND)
+        kb = _scaled(_normalized(row, cb, inv, held), tl.load(KW + cb)[None, :], ROUND)
+        angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
+        c, s = tl.cos(angle), tl.sin(angle)
+        scores = tl.dot(qa, tl.trans((ka * c - kb * s).to(tl.bfloat16)))
+        scores = tl.dot(qb, tl.trans((ka * s + kb * c).to(tl.bfloat16)), scores)
+        scores = tl.dot(q0, tl.trans(_scaled(_normalized(row, c0, inv, held), tl.load(KW + c0)[None, :],
+                                             ROUND).to(tl.bfloat16)), scores)
+        scores = tl.dot(q1, tl.trans(_scaled(_normalized(row, c1, inv, held), tl.load(KW + c1)[None, :],
+                                             ROUND).to(tl.bfloat16)), scores)
+        scores = tl.dot(q2, tl.trans(_scaled(_normalized(row, c2, inv, held), tl.load(KW + c2)[None, :],
+                                             ROUND).to(tl.bfloat16)), scores)
         valid = (key[None, :] <= pos[:, None]) & ok[:, None]
         scores = tl.where(valid, scores, -float("inf"))
         tile_max = tl.max(scores, 1)
@@ -286,11 +281,11 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi
         alpha = tl.where(active, tl.where(m == -float("inf"), 0.0, tl.exp(m - next_m)), 1.0)
         prob = tl.where(valid & active[:, None], tl.exp(scores - next_m[:, None]), 0.0)
         p16 = prob.to(tl.bfloat16)
-        oa = oa * alpha[:, None] + tl.dot(p16, va)
-        ob = ob * alpha[:, None] + tl.dot(p16, vb)
-        o0 = o0 * alpha[:, None] + tl.dot(p16, v0)
-        o1 = o1 * alpha[:, None] + tl.dot(p16, v1)
-        o2 = o2 * alpha[:, None] + tl.dot(p16, v2)
+        oa = oa * alpha[:, None] + tl.dot(p16, _normalized(row, ca, inv, held).to(tl.bfloat16))
+        ob = ob * alpha[:, None] + tl.dot(p16, _normalized(row, cb, inv, held).to(tl.bfloat16))
+        o0 = o0 * alpha[:, None] + tl.dot(p16, _normalized(row, c0, inv, held).to(tl.bfloat16))
+        o1 = o1 * alpha[:, None] + tl.dot(p16, _normalized(row, c1, inv, held).to(tl.bfloat16))
+        o2 = o2 * alpha[:, None] + tl.dot(p16, _normalized(row, c2, inv, held).to(tl.bfloat16))
         l = l * alpha + tl.sum(prob, 1)
         m = next_m
     return m, l, oa, ob, o0, o1, o2
@@ -392,8 +387,9 @@ def check_geometry(config) -> None:
         raise ValueError("Gemma4 CUDA attention offsets exceed int32 at the checkpoint's position limit")
 
 
-def _launch_options(d: int) -> dict:
-    return dict(num_warps=4 if d <= 256 else 8, num_stages=1, enable_fp_fusion=False)
+# Four warps for both head widths: on sm_120/121 eight warps for the 512-wide full-attention tile were
+# slower (dev-01 32k: 425 vs 320 us per layer) despite fewer register spills.
+LAUNCH = dict(num_warps=4, num_stages=1, enable_fp_fusion=False)
 
 
 def prep_sliding(q_raw, k_raw, v_raw, q_norm, k_norm, inverse, pos, keys, values, *, eps: float,
@@ -441,7 +437,7 @@ def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slot
     pl = torch.empty_like(pm)
     _sliding[(tiles, hk, slots)](q, keys, values, pos, block_starts, block_ends, po, pm, pl, rows, ring, slots,
                                  H=h, HK=hk, D=d, G=g, WINDOW=window, BLOCKS=blocks, CH=chunk,
-                                 BK=SLIDING_TILE, SCALE=scale, **_launch_options(d))
+                                 BK=SLIDING_TILE, SCALE=scale, **LAUNCH)
     out = torch.empty_like(q)
     _merge[(rows, h, d // MERGE_COLUMNS)](po, pm, pl, out, pos, slots, H=h, D=d, DS=MERGE_COLUMNS,
                                           CH=chunk, GLOBAL=False, num_warps=1, enable_fp_fusion=False)
@@ -462,7 +458,7 @@ def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bo
         sequential = rows >= SEQUENTIAL_ROWS
     out = torch.empty_like(q)
     common = dict(H=h, HK=hk, D=d, G=g, ROT=ROTATED, UW=(d - 2 * ROTATED) // 3, CH=GLOBAL_CHUNK, BK=GLOBAL_TILE,
-                  ROUND=round_normalized, **_launch_options(d))
+                  ROUND=round_normalized, **LAUNCH)
     if sequential:
         _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
                                 **common)
