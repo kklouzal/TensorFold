@@ -188,7 +188,7 @@ def test_direct_rn_subnormal_scale_intermediate_is_not_flushed_or_reassociated()
     # product A*float32(1/6) must survive before multiplication by2^126.
     direct = 2.**-126
     assert native_calibration(direct, 1., name="independent subnormal boundary") == direct
-    x = torch.tensor([[2.**-126] * 128, [2.**-133] * 128], dtype=torch.bfloat16, device="cuda")
+    x = torch.tensor([[0x0080] * 128, [0x0001] * 128], dtype=torch.uint16, device="cuda").view(torch.bfloat16)
     plan = torch.tensor([[0, 0, 0], [1, 0, 0]], dtype=torch.int32, device="cuda")
     calibration = torch.full((1, 2), direct, dtype=torch.float32, device="cuda")
     codes = torch.empty((2, 2, 64), dtype=torch.uint8, device="cuda")
