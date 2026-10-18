@@ -603,6 +603,7 @@ def test_native_addon_path_is_validated_before_exact_install(guard, tmp_path, mo
         assert verified == [True]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux shared-library maps and ELF integration")
 @pytest.mark.parametrize("script,arguments,activated", [
     ("cuda_entrypoint.py", [], False), ("cuda_driver_probe.py", [], False),
     ("tensorfold-cc", [], False), ("tensorfold-cxx", [], False),
