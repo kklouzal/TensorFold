@@ -239,6 +239,12 @@ def _normalized(row, cols, inv, held):
 
 
 @triton.jit
+def _key(row, cols, inv, held, KW, ROUND: tl.constexpr):
+    """One column part of K before RoPE: bf16(x*inv*w), held in FP32."""
+    return _scaled(_normalized(row, cols, inv, held), tl.load(KW + cols)[None, :], ROUND)
+
+
+@triton.jit
 def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
                   CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr):
@@ -261,18 +267,15 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi
         held = key < hi
         row = RAW + (key[:, None] * HK + hk) * D
         inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
-        ka = _scaled(_normalized(row, ca, inv, held), tl.load(KW + ca)[None, :], ROUND)
-        kb = _scaled(_normalized(row, cb, inv, held), tl.load(KW + cb)[None, :], ROUND)
+        ka = _key(row, ca, inv, held, KW, ROUND)
+        kb = _key(row, cb, inv, held, KW, ROUND)
         angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
         c, s = tl.cos(angle), tl.sin(angle)
         scores = tl.dot(qa, tl.trans((ka * c - kb * s).to(tl.bfloat16)))
         scores = tl.dot(qb, tl.trans((ka * s + kb * c).to(tl.bfloat16)), scores)
-        scores = tl.dot(q0, tl.trans(_scaled(_normalized(row, c0, inv, held), tl.load(KW + c0)[None, :],
-                                             ROUND).to(tl.bfloat16)), scores)
-        scores = tl.dot(q1, tl.trans(_scaled(_normalized(row, c1, inv, held), tl.load(KW + c1)[None, :],
-                                             ROUND).to(tl.bfloat16)), scores)
-        scores = tl.dot(q2, tl.trans(_scaled(_normalized(row, c2, inv, held), tl.load(KW + c2)[None, :],
-                                             ROUND).to(tl.bfloat16)), scores)
+        scores = tl.dot(q0, tl.trans(_key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
+        scores = tl.dot(q1, tl.trans(_key(row, c1, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
+        scores = tl.dot(q2, tl.trans(_key(row, c2, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
         valid = (key[None, :] <= pos[:, None]) & ok[:, None]
         scores = tl.where(valid, scores, -float("inf"))
         tile_max = tl.max(scores, 1)

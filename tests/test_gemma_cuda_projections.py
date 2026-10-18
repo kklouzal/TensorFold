@@ -20,9 +20,9 @@ def linear(n, k, seed, act=0.02, inverse=50.0):
     return Fp4Linear.from_checkpoint(codes, scales.view(torch.float8_e4m3fn), 0.001, act=act, act_inverse=inverse)
 
 
-def dispatcher():
+def dispatcher(native=True):
     target = Gemma4Target.__new__(Gemma4Target)
-    target._prompt_gemm = target._group_projections = True
+    target._native = native
     return target
 
 
@@ -52,8 +52,7 @@ def test_prompt_rows_do_not_depend_on_the_chunk():
 
 
 def test_mlx_affine_numerics_keep_one_kernel():
-    target = Gemma4Target.__new__(Gemma4Target)
-    target._prompt_gemm = target._group_projections = False
+    target = dispatcher(native=False)
     calls = []
     affine = type("Affine", (), {"__call__": lambda self, x: calls.append(x.shape[0]) or x})()
     assert target._project(torch.zeros(3, 4), (affine, affine), True)[0].shape == (3, 4)

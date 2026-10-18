@@ -2,9 +2,9 @@
 
 The single request lane owns persistent target and companion caches, reset or
 restored per request. A single CUDA stream owns all requests. The prefix entry
-holds detached snapshots at prefill positions (row-invariant forwards make a
-snapshot at any position equal to a fresh prefill of that prefix) and includes
-the visual input identity: one at the whole prompt (with its next-token
+includes the visual input identity and holds detached snapshots at prefill
+positions (row-invariant forwards make a snapshot at any position equal to a
+fresh prefill of that prefix): one at the whole prompt (with its next-token
 logits) and one before the prompt's last turn marker, where the next chat turn's
 history rendering departs from this turn's generation prompt.
 """
@@ -21,8 +21,6 @@ from typing import Any, Callable
 from .state import PREFILL_ROWS, widest_forward
 
 PREFIX_SNAPSHOTS = 3     # resident prefix snapshots at most: an entry's two checkpoints + the next prompt's boundary
-
-
 TURN_MARKER = "<|turn>"
 
 
@@ -100,7 +98,7 @@ class Gemma4Engine:
 
         import torch
         from tensorfold.cuda.chat_template import prepare_chat_template
-        from tensorfold.token_metadata import resolve_eos
+        from tensorfold.token_metadata import load_tokenizer, resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
         from .capacity import admit
@@ -144,7 +142,6 @@ class Gemma4Engine:
             self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
                                block=self.max_rows, bits=drafter_bits, rows=forward_rows)
             self._draft = self.head.make_state()
-        from tensorfold.token_metadata import load_tokenizer
         # Absent from a tokenizer: only whole-prompt checkpoints are kept.
         self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
         self._prefix = None
@@ -225,10 +222,9 @@ class Gemma4Engine:
         """Position of the prompt's last turn marker when a checkpoint there can serve the next turn, else 0."""
         if self._turn is None:
             return 0
-        at = max((i for i, token in enumerate(prompt) if token == self._turn), default=0)
-        if not cached < at < len(prompt) or any(begin < at < stop for begin, stop in blocks):
-            return 0
-        return at
+        # From the end down to the cached prefix only: the last marker is normally a few tokens back.
+        at = next((i for i in range(len(prompt) - 1, cached, -1) if prompt[i] == self._turn), 0)
+        return 0 if any(begin < at < stop for begin, stop in blocks) else at
 
     def _prefill(self, prompt, vision, progress, started):
         import torch

@@ -102,7 +102,7 @@ class Gemma4Target:
         # CT native projections: prompt rows on the prompt GEMM, and projections sharing an input quantize it
         # once when their original input multipliers are equal (matmul_group proves it per call, each output
         # keeps its own bits). MLX affine projections have one row-invariant kernel for every row count.
-        self._prompt_gemm = self._group_projections = weights.numerics == "ct_nvfp4"
+        self._native = weights.numerics == "ct_nvfp4"
         self.device = weights.norm.device
         policy = weights.numerics
         if policy == "mlx":
@@ -279,11 +279,11 @@ class Gemma4Target:
 
     def _project(self, x, lins, prompt: bool):
         """Projections of one input: one activation quantization for a group sharing its input scale."""
-        if self._group_projections and len(lins) > 1:
+        if self._native and len(lins) > 1:
             outs = checkpoint.matmul_group(x, lins, prompt_rows=prompt)
             if outs is not None:
                 return outs
-        if prompt and self._prompt_gemm:
+        if prompt and self._native:
             return [lin.prefill(x) for lin in lins]
         return [lin(x) for lin in lins]
 
