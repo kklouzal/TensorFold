@@ -330,6 +330,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
 
     sampling = _sampling_defaults(args, model_dir)  # refuse invalid defaults before acquiring the engine
     reply_tokens = _reply_tokens(args, model_dir)
+    if getattr(args, "tokenizer_file", None) is not None:      # before the engine, templates or grammars read it
+        from tensorfold.token_metadata import use_tokenizer
+
+        print(use_tokenizer(args.tokenizer_file, model_dir).line(), flush=True)
     started = time.perf_counter()
     drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
     options: dict[str, Any] = {
@@ -505,6 +509,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         raise ValueError(f"--ple-on-ssd: {family.title} has no n-gram (PLE) tables to read from SSD")
     backend = _backend(args.backend, family)
     _check_serve_options(args, family, backend, config_dir)
+    if getattr(args, "tokenizer_file", None) is not None and backend != "cuda":
+        raise ValueError("--tokenizer is read by the CUDA server; MLX serves the checkpoint's tokenizer")
     if backend == "mlx" and getattr(family.package, "MLX_MODEL_FILE", False):
         from tensorfold.families.model_code import authorize_model_code
 

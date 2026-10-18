@@ -193,7 +193,11 @@ class Grammars:
             from transformers import PreTrainedTokenizerFast       # xgrammar depends on transformers
         except ImportError:
             raise RequestError(f"structured output needs xgrammar on the server: pip install '{EXTRA}'") from None
-        tok = PreTrainedTokenizerFast(tokenizer_file=str(Path(model_dir) / "tokenizer.json"))
+        from tensorfold.token_metadata import tokenizer_override
+
+        override = tokenizer_override()                           # --tokenizer: the same vocabulary, as validated
+        tok = PreTrainedTokenizerFast(tokenizer_file=str(override.path if override is not None
+                                                         else Path(model_dir) / "tokenizer.json"))
         return cls(xgr.TokenizerInfo.from_huggingface(tok, vocab_size=int(vocab_size), stop_token_ids=list(stop_ids)))
 
     def compile(self, spec: Spec):
