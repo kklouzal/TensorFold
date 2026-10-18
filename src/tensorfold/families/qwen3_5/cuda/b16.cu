@@ -102,7 +102,8 @@ void launch(const at::Tensor& x, const at::Tensor& w, const void* bp, at::Tensor
 // Rows a warp (R) and warps a block for M rows of an (N, K) weight. R never changes a row's bits (its k chain and
 // butterfly are the same for every R); it sets how often the weight streams from memory: ceil(M / R) times. Below
 // 512 rows R is M's next power of two up to 8; past 8 rows a weight under kWideReuse elements keeps R = 8 (twice the
-// blocks: the measured faster choice for those shapes), a larger one takes 16.
+// blocks), a larger one takes 16: the faster of the two at the 16-row verify width for every weight measured on SM
+// 12.0, though not at every other row count.
 constexpr int64_t kWideReuse = int64_t(20) << 20;
 
 struct RowBlock {

@@ -72,7 +72,8 @@ def test_paired_gates_follow_the_policy_with_each_weights_bits():
     a1 = torch.cat([matmul(x[r:r + 1], w1) for r in range(513)])
     for m in POLICY_ROWS:
         y0, y1 = matmul_pair(x[:m], w0, w1)
-        assert torch.equal(y0, a0[:m]) and torch.equal(y1, a1[:m]), m
+        assert (torch.equal(y0.view(torch.int16), a0[:m].view(torch.int16))
+                and torch.equal(y1.view(torch.int16), a1[:m].view(torch.int16))), m
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
