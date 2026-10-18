@@ -458,6 +458,57 @@ def test_checked_run_reprobes_final_driver_before_native_proof_and_exec(guard, s
         assert calls[2][:2] == ("python3", ["python3", "serve.py"])
 
 
+@pytest.mark.parametrize("proof_status", [0, 17])
+def test_checked_run_keeps_proof_stdout_private_and_failure_stderr_visible(
+        guard, sealed, monkeypatch, capfd, proof_status):
+    proof = {"library": "/host/libcuda.so.615.71.09", "mode": "native"}
+    sealed["toolchain"] = {"header_version": 13040}
+    monkeypatch.setattr(guard, "read_json", lambda _: sealed)
+    monkeypatch.setattr(guard, "environment", lambda _: {"TF_CUDA_DRIVER_PROOF": json.dumps(proof)})
+    monkeypatch.setattr(guard.sys, "argv", ["guard", "checked-run", "--", "application"])
+    real_run = subprocess.run
+
+    def run(arguments, **options):
+        if arguments[-1] == "native-proof":
+            code = ("import sys\nprint('private provider JSON')\n"
+                    f"if {proof_status}: print('native proof failure', file=sys.stderr)\n"
+                    f"raise SystemExit({proof_status})\n")
+            return real_run([sys.executable, "-c", code], **options)
+        return subprocess.CompletedProcess(arguments, 0, json.dumps({**proof, "driver_api": 13040, "devices": 1}))
+
+    class Executed(BaseException):
+        pass
+
+    def execute(*_):
+        print("application output")
+        raise Executed
+
+    monkeypatch.setattr(guard.subprocess, "run", run)
+    monkeypatch.setattr(guard.os, "execvpe", execute)
+    if proof_status:
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            guard.main()
+        assert caught.value.returncode == proof_status
+    else:
+        with pytest.raises(Executed):
+            guard.main()
+    captured = capfd.readouterr()
+    assert captured.out == ("" if proof_status else "application output\n")
+    assert captured.err == ("native proof failure\n" if proof_status else "")
+
+
+def test_explicit_native_proof_keeps_its_json_output(guard, sealed, monkeypatch, capsys):
+    report = {"selected_provider": "native foundation"}
+    monkeypatch.setattr(guard, "read_json", lambda _: sealed)
+    monkeypatch.setattr(guard, "verify", lambda _: None)
+    monkeypatch.setattr(guard, "native_proof", lambda _: report)
+    monkeypatch.setattr(guard.sys, "argv", ["guard", "native-proof"])
+    guard.main()
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == report
+    assert captured.err == ""
+
+
 @pytest.mark.parametrize("wheel_provider,nccl_mismatch", [(False, False), (True, False), (False, True)])
 def test_loaded_cuda_provider_must_be_native_sdk_even_if_wheel_is_sealed(guard, sealed, tmp_path, monkeypatch, wheel_provider, nccl_mismatch):
     import types

@@ -506,7 +506,8 @@ def main() -> None:
                     raise ValueError("post-entrypoint driver provider differs from admitted CUDA proof")
                 values["TF_CUDA_DRIVER_PROOF"] = json.dumps(dict(actual, mode=expected["mode"]))
                 values["TF_FOUNDATION_RUNTIME_PHASE"] = "cuda"
-                subprocess.run([sys.executable, str(Path(__file__).resolve()), "native-proof"], env=values, check=True)
+                subprocess.run([sys.executable, str(Path(__file__).resolve()), "native-proof"],
+                               env=values, check=True, stdout=subprocess.DEVNULL)
             else:
                 if any(Path("/dev").glob("nvidia[0-9]*")):
                     raise RuntimeError("CPU guard run has NVIDIA devices; use the CUDA launcher for actual driver admission")
