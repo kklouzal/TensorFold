@@ -169,7 +169,7 @@ def test_graphs_recapture_after_the_buffers_grow(expandable, sampling):
     w, head = _model(vocab=1 << 20)          # two chain widths' logits map the pool's expandable segment twice
     runner = Graphs(w, head, 4 * BUCKET)
     long = [3 + (i * 7) % 200 for i in range(BUCKET)]           # with its reply, past the first BUCKET rows
-    torch.cuda.memory._set_allocator_settings(f"expandable_segments:{expandable}")
+    torch._C._accelerator_setAllocatorSettings(f"expandable_segments:{expandable}")
     try:
         for prompt, depth, rows in ((PROMPTS[1], 3, BUCKET), (PROMPTS[0], 2, BUCKET), (long, 3, 2 * BUCKET),
                                     (PROMPTS[2], 3, 2 * BUCKET)):
@@ -180,7 +180,7 @@ def test_graphs_recapture_after_the_buffers_grow(expandable, sampling):
             assert res.tokens == want and runner.rows == rows
     finally:
         default = "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-        torch.cuda.memory._set_allocator_settings(f"expandable_segments:{default}")
+        torch._C._accelerator_setAllocatorSettings(f"expandable_segments:{default}")
 
 
 def test_a_long_prompt_absorbs_through_the_prefill_kernel_and_decodes_serially():
@@ -237,12 +237,12 @@ SAMPLED = [None, Sampling(1234, 1.0, 20, 0.95), Sampling(99, 0.8, 0, 1.0), Sampl
 def _segments(expandable: bool):
     import os
 
-    torch.cuda.memory._set_allocator_settings(f"expandable_segments:{expandable}")
+    torch._C._accelerator_setAllocatorSettings(f"expandable_segments:{expandable}")
     try:
         yield
     finally:
         default = "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-        torch.cuda.memory._set_allocator_settings(f"expandable_segments:{default}")
+        torch._C._accelerator_setAllocatorSettings(f"expandable_segments:{default}")
 
 
 def _solo(w, head, prompt, sampling, count, confidence=0.3):

@@ -65,7 +65,7 @@ class Qwen36Engine:
         torch.cuda.set_device(0)
         many = streams > 1
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
-            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+            torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         extra = (Path(model_dir) / MTP_FILE,) if self.depth and (Path(model_dir) / MTP_FILE).is_file() else ()
         # one admission for one stream or many (every stream's states and caches, kept prompt ends), before any load
         geometry = ((lambda text: stream_geometry(text, streams, KEEP_MANY, self.depth)) if many else

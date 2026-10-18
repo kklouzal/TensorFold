@@ -63,7 +63,7 @@ class Qwen27Engine:
         self.vision = None
         torch.cuda.set_device(0)
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
-            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+            torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         if tp == 2:
             import torch.distributed as dist
 
