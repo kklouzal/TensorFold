@@ -47,7 +47,7 @@ static void expert_field(const at::Tensor& value, const at::Tensor& on, at::Scal
 
 // Plan rows are (source-row, destination-slot, cache-cell). They are constructed
 // from admitted CPU picks by the owner; kernels also guard every indirect access.
-void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
+static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
                at::Tensor codes, at::Tensor scales, bool paired, bool direct = false,
                const at::Tensor& items = {}, const at::Tensor& counts = {}, int64_t slots = 0) {
     const bool grouped = counts.defined();
@@ -81,7 +81,7 @@ void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& inp
 
 // Codes/scales are pair-major. Items (cell,first,count<=16) group same-expert
 // pairs; decode K slices match checkpoint.matmul's shape-only policy exactly.
-void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
            const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
            const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct = false,
            const at::Tensor& counts = {}, int64_t slots = 0, bool common = false) {
@@ -133,27 +133,39 @@ void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& b
     } else expert_a4_gemm_cuda(codes, scales, blob, weight, input, items, plan, out, n, k, sk, down, direct);
 }
 
+// Keep legacy tensor arguments required at the Python boundary. Undefined
+// implementation-only plan tensors stay in C++; they must never become Python
+// None defaults because the pinned Tensor caster does not accept that value.
+void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
+    at::Tensor codes, at::Tensor scales, bool paired, bool direct) {
+    quantize_impl(x, plan, input, codes, scales, paired, direct);
+}
+
+void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+    const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
+    const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct) {
+    gemm_impl(codes, scales, blob, weight, input, items, plan, out, n, k, sk, down, direct);
+}
+
 void quantize_plan(const at::Tensor& x, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, const at::Tensor& input, at::Tensor codes, at::Tensor scales,
     int64_t slots, bool paired) {
-    quantize(x, members, input, codes, scales, paired, true, items, counts, slots);
+    quantize_impl(x, members, input, codes, scales, paired, true, items, counts, slots);
 }
 
 void gemm_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, at::Tensor out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down, bool common) {
-    gemm(codes, scales, blob, weight, input, items, members, out, n, k, sk, down, true, counts, slots, common);
+    gemm_impl(codes, scales, blob, weight, input, items, members, out, n, k, sk, down, true, counts, slots, common);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quantize", &quantize, pybind11::arg("x"), pybind11::arg("plan"), pybind11::arg("input"),
-          pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("paired") = false, pybind11::arg("direct") = false,
-          pybind11::arg("items") = at::Tensor(), pybind11::arg("counts") = at::Tensor(), pybind11::arg("slots") = 0);
+          pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("paired") = false, pybind11::arg("direct") = false);
     m.def("gemm", &gemm, pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("blob"),
           pybind11::arg("weight"), pybind11::arg("input"), pybind11::arg("items"), pybind11::arg("plan"),
           pybind11::arg("out"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"), pybind11::arg("down"),
-          pybind11::arg("direct") = false, pybind11::arg("counts") = at::Tensor(), pybind11::arg("slots") = 0,
-          pybind11::arg("common") = false);
+          pybind11::arg("direct") = false);
     m.def("quantize_plan", &quantize_plan);
     m.def("gemm_plan", &gemm_plan, pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("blob"),
           pybind11::arg("weight"), pybind11::arg("input"), pybind11::arg("items"), pybind11::arg("counts"),
