@@ -15,23 +15,28 @@ QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
 CENTROID_TABLE_BYTES = 1536  # each Flash Next attention scratch's 64 + 256 float32 centroids (caching-allocator blocks)
 THRESHOLD_TABLE_BYTES = 1024  # and its 255 float32 eight-bit lifting thresholds
 MULTI_GRAPH_ENV = "TENSORFOLD_MULTI_GRAPH_MIB"   # Flash Next's captured concurrent rounds: their memory budget (MiB)
-MULTI_GRAPH_MIB = 512       # its default: driver graph memory plus the graphs' private pool, within which keys are kept
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
 MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
 
 
-def multi_graph_bytes() -> int:
-    """Flash Next's captured-round memory budget from TENSORFOLD_MULTI_GRAPH_MIB (0: no graphs), in bytes."""
+def multi_graph_request() -> int | None:
+    """Captured-round request: None selects remaining service memory; numeric MiB are exact ceilings."""
 
     import os
 
     value = os.environ.get(MULTI_GRAPH_ENV, "").strip()
     if not value:
-        return MULTI_GRAPH_MIB << 20
+        return None
     digits = value.lstrip("0") or "0"                    # bounded before int(): any length is refused by name
     if not (value.isascii() and value.isdecimal()) or len(digits) > 5 or int(digits) > 65536:
         raise ValueError(f"{MULTI_GRAPH_ENV}: 0 to 65,536 MiB, not {value[:32]!r}")
     return int(digits) << 20
+
+
+def multi_graph_bytes() -> int:
+    """Initial header reservation; automatic capture resolves after eager warmup without shrinking this window."""
+
+    return multi_graph_request() or 0
 
 
 def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:

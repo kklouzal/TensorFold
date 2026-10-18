@@ -32,7 +32,8 @@ from . import attn_multi, gdn_multi, image_rows, multi_graphs, prefixes
 from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
 from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
-from .prompt_plan import CUTS, pass_limit
+from .prompt_plan import CUTS, POINTS, pass_limit
+from .service_memory import automatic_graph_bytes, future_service
 from .state import ENDS, Buffers, KVNumericError, State
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -60,9 +61,13 @@ class MultiDecoder:
     def __init__(self, w, *, slots: int, capacity: int, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  stop_eos: bool = True, keep: int = 8, kv_dtype: str = "bf16", prefill_rows: int = PREFILL_ROWS,
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
+                 graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0) -> None:
         if w.comm is not None:
             raise ValueError("concurrent Flash Next runs on one GPU for now")
+        budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
+        if budget is not None and (type(budget) is not int or budget < 0):
+            raise ValueError("captured-round budget must be nonnegative integer bytes or automatic")
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
         from .rotor_decoder import RotorDecoderPolicy
         self.rotor_decoder_policy = RotorDecoderPolicy()
@@ -91,13 +96,16 @@ class MultiDecoder:
         self.mtp_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=True) if w.mtp is not None else None
         # captured rounds (multi_graphs; ``capture_graphs`` at warm-up): None until then, or when not captured
         self.graphs: multi_graphs.RoundGraphs | None = None
+        self._failed_graphs: multi_graphs.RoundGraphs | None = None
         reason = None if graphs else "not requested"
-        budget = multi_graphs.budget_bytes() if graphs else 0
-        if graphs and not budget:
+        if graphs and budget == 0:
             reason = f"{multi_graphs.ENV}=0"
         elif graphs:
             reason = multi_graphs.capturable(w)
-        self.graph_budget = budget if reason is None else 0
+        self.graph_request = budget
+        self.graph_budget = (budget or 0) if reason is None else 0
+        self.graph_header_room = graph_header_room
+        self.vision_workspace_bytes = vision_workspace_bytes
         self.graph_record: dict = {"captured": False, "reason": reason}
         # programmatic dependent launch of the decode kernels: this chip's policy, once (pdl.ON is set each round)
         self.pdl = pdl.select(w.device.index or 0) if torch.cuda.is_available() else False
@@ -390,7 +398,7 @@ class MultiDecoder:
         self._shrink(s.st)
         if all(f is not s.st for f in self.free):
             self.free.append(s.st)
-        if self.graph_budget and self.graphs is None:
+        if self.graph_record["reason"] is None and self.graphs is None:
             self.capture_graphs()
 
     @torch.no_grad()
@@ -400,11 +408,67 @@ class MultiDecoder:
 
         if self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots:
             raise RuntimeError("graphs are captured on idle slots, before any request")
-        graphs = multi_graphs.RoundGraphs(self, self.graph_budget)
-        graphs.capture()
-        self.graphs = graphs
-        self.memory_gate.room -= graphs.room_bytes
-        self.graph_record = {"captured": True, **graphs.record()}
+        if self.graphs is not None or self._failed_graphs is not None:
+            raise RuntimeError("captured-round pools are immutable until this decoder retires")
+        if self.graph_record["reason"] is not None:
+            return
+        multi_graphs.prepare_capture()
+        slots = len(self.free)
+        # Resident serving promises one full native window. Other streams'
+        # growth and kept KV rows remain opportunistic under MemoryGate.
+        growth = max(st.cache_bytes(st.limit) - st.cache_bytes() for st in self.free)
+        future = future_service(self.w, self.free, streams=slots, retained=self.keep + slots * POINTS,
+                                growth_bytes=growth, vision_workspace_bytes=self.vision_workspace_bytes,
+                                minimum_workspace_bytes=self.memory_gate.reserve)
+        live = multi_graphs.live_bytes
+        initial_live = live()
+        automatic = self.graph_request is None
+        if automatic:
+            self.graph_budget = automatic_graph_bytes(initial_live, future["future_bytes"], self.graph_header_room)
+        resolution = {"automatic": automatic, "initial_live_bytes": initial_live,
+                      "header_room_bytes": self.graph_header_room, "future_service": future}
+        if not self.graph_budget:
+            self.graph_record = {"captured": False, "reason": "automatic graph budget has no room after required service",
+                                 "budget_bytes": 0, **resolution}
+            return
+        graphs = multi_graphs.RoundGraphs(self, self.graph_budget, spare=lambda: live() - future["future_bytes"])
+        cleanup_errors = [None]  # preserve a capture primary even if failure accounting/publication also fails
+        try:
+            graphs.capture(prepared=True)  # no allocations into the graph pool since prepare_capture above
+        except BaseException as primary:
+            self._failed_graphs = graphs
+            if graphs.admitted:
+                try:
+                    self._publish_graphs(graphs, resolution, captured=False)
+                except BaseException as cleanup:
+                    self._memory_error = primary
+                    cleanup_errors[0] = cleanup
+                    raise_failures(primary, cleanup_errors)
+            else:
+                # A failed drain/reset/accounting leaves no admissible eager
+                # continuation. Its owner remains explicit until retirement.
+                self._memory_error = primary
+            raise
+        self._publish_graphs(graphs, resolution, captured=True)
+
+    def _publish_graphs(self, graphs, resolution, *, captured):
+        """Prepare fallible metadata before publishing one accounted pool; interrupted publication poisons reuse."""
+        self._failed_graphs = graphs
+        try:
+            live = multi_graphs.service_live_bytes(graphs)
+            record = {"captured": captured,
+                      "reason": None if captured else "capture failed; retained pool accounted, decoder remains eager",
+                      **resolution, **graphs.record()}
+            room = self.memory_gate.room - graphs.room_bytes
+            self.memory_gate.live = live
+            self.memory_gate.room = room
+            self.graph_record = record
+            if captured:
+                self.graphs = graphs
+                self._failed_graphs = None
+        except BaseException as error:
+            self._memory_error = error
+            raise
 
     @torch.no_grad()
     def admit(self, s: Stream) -> None:

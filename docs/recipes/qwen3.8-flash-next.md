@@ -341,8 +341,14 @@ gathered partials in rank order.
 
 On one GPU, `--parallel N` shares forwards across up to N requests: pure
 decode rounds replay CUDA graphs captured at startup within
-`TENSORFOLD_MULTI_GRAPH_MIB` (default 512 MiB; `0` disables capture) and the
-other rounds run eagerly, with the same bits. `--parallel auto` selects one
+the remaining admitted memory by default. It preserves the chosen context,
+one full window's growth, resize overlap, bounded snapshots, vision/serving
+workspace and the configured memory floor; additional streams' context growth
+still shares memory through the gate. `TENSORFOLD_MULTI_GRAPH_MIB=N` sets an
+explicit MiB ceiling (`0` disables capture). Live checks can stop capture with
+a recorded reason; they do not reserve memory against other processes.
+Other rounds run eagerly with the same bits. Automatic sizing's installed GPU
+and performance gates remain pending. `--parallel auto` selects one
 request. Tensor-parallel two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
 requests and supported media stay on rank zero in the separate

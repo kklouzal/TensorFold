@@ -216,12 +216,33 @@ launched (fixed geometry) and write nothing; zero pending counts are the documen
 one private pool, keyed by (PDL, streams, rows) and the DeltaNet parity. What a step's host data shapes runs eagerly
 between the pieces on that step's data: block selection, each stream's n-gram conv tail and the late n-gram reads.
 A round replays one key's pieces in order and reads only static buffers afterwards, so no piece's pool memory is
-an output. Keys are captured only while their measured memory stays within `TENSORFOLD_MULTI_GRAPH_MIB`: a key's
+an output. A numeric `TENSORFOLD_MULTI_GRAPH_MIB` is an exact ceiling; unset/blank selects an allowance from
+remaining memory after eager warmup. Initial header admission chooses its context without graph memory; the
+resolved graph ceiling is bounded by that plan's remaining serving allowance and current live room after required
+service growth. Resident graphs protect one complete native/configured window, one layer's resize overlap, bounded
+kept/in-flight snapshots and the larger of the gate's workspace reserve or vision plus serving transients. Extra
+concurrent KV growth remains opportunistic under the memory gate. The live provider charges the memory floor and
+explicit device cap once. Host expert pools keep their separate fixed-pool window reservation policy.
+Keys are captured only while their measured memory stays within this allowance: a key's
 memory is the drop of free memory across its capture alone, after its eager warm-up's allocator blocks are in
 place, and the stream caches' room loses the larger of the kept keys' sum and the whole capture's settled drop.
 Startup admission plans the budget only where capture can happen: experts that read their plan on the host
-(`--vram-experts`) decline capture and plan none, and the decoder's budget must equal the plan. A capture failure
-stays the raised error; a failed end of its open capture or a failed restore of the slots is attached to it.
+(`--vram-experts`) decline capture and plan none, and the decoder's resolved budget must equal the plan. The original
+context/loading admission remains in the receipt. Fresh live-room checks precede warmup and capture; an attempted
+key that consumes required service room is rejected and recorded. After synchronization, slot reset, collection
+and allocator-cache release, insufficient remaining service room raises `MemoryError`. These observations do not
+guarantee a transient memory floor or reserve memory against other processes. Settled retained bytes must also fit
+the admitted ceiling. Capture safety uses physical available bytes after its floor/cap, without crediting graph
+private-pool cache. A quiescent public `memory_snapshot(mempool_id=..., include_traces=False)` records this pool's
+inactive bytes (`total_size - allocated_size`, with no awaiting-free blocks); the ordinary runtime gate excludes
+those bytes from reusable allocator spare. This constant is valid because replays allocate no tensors into the
+pool and the captured set is immutable until decoder retirement; the live callable retains its pool owner.
+Concurrent requests, including `draft:false`, stay in the scheduler and use its graph-free slot engines, so they
+cannot lazily create a serial graph pool after this snapshot. A failed capture also retains its accounted pool:
+after successful drain/reset and admissible settlement, eager recovery debits its retained bytes and excludes its
+private spare, preserving the original exception. Recapture is refused so pools cannot accumulate. A failed
+drain/reset/accounting, unadmitted retained storage or failed publication poisons the decoder until retirement.
+The capture failure stays the raised error; failed cleanup/accounting is attached to it.
 
 `tensorfold.cuda.pdl.ON`, the launch policy every converted kernel's launch reads, is a process global with an
 explicit contract in `pdl.py`: only the concurrent decoder writes it (construction, each round and capture, each

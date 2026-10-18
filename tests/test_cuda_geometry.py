@@ -112,7 +112,7 @@ MULTI_TEXT = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads
               "vocab_size": 1024, "hc_count": 4}
 
 
-@pytest.mark.parametrize("value,mib", [(None, 512), ("", 512), (" 64 ", 64), ("0", 0), ("0064", 64),
+@pytest.mark.parametrize("value,mib", [(None, 0), ("", 0), (" 64 ", 64), ("0", 0), ("0064", 64),
                                        ("65536", 65536)])
 def test_multi_graph_budget_reads_whole_mebibytes(monkeypatch, value, mib):
     if value is None:

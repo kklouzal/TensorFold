@@ -120,8 +120,8 @@ and multi-CTA sparse-attention select, static round tables with captured CUDA
 graphs, one host wait a step, late n-gram reads, programmatic dependent launch
 and the RotorQuant 6 prompt-pass gather. Its kernel sources equal the A/B
 image's. Only the image and a new kernel-cache bind
-(`cache-python-0.6-perf-20261013`) changed; `TENSORFOLD_MULTI_GRAPH_MIB` keeps
-its 512 MiB default and `TENSORFOLD_MEMORY_RESERVE_GIB` stays 6. Startup
+(`cache-python-0.6-perf-20261013`) changed; that release used the then-default
+512 MiB `TENSORFOLD_MULTI_GRAPH_MIB` and `TENSORFOLD_MEMORY_RESERVE_GIB=6`. Startup
 reported 96.76 GiB within the 112.31 GiB budget, 31.0 GiB for stream caches,
 14.22 GiB for one stream at the full 1,048,576 window, and 61 verify and 30 MTP
 step graphs in 504 MiB. A same-configuration test container and then the
