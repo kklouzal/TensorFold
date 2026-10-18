@@ -1,9 +1,16 @@
-"""One sequence's bounded Gemma 4 caches and explicit speculative ownership.
+"""One sequence's persistent Gemma 4 caches and explicit speculative ownership.
 
 A State has one exclusive forward owner. CUDA operations execute on the owner's
-stream; cross-stream handoff requires the caller's event synchronization. Sliding
-rings preserve max_rows speculative tokens in addition to the visible window.
-Snapshots own detached copies, so branches never alias mutable cache storage.
+stream; cross-stream handoff requires the caller's event synchronization. All
+cache storage is allocated once for the admitted context, so a forward never
+reallocates or copies retained keys and captured graphs keep stable addresses.
+
+Sliding layers own a ring of ``ring`` slots (slot = position % ring) holding
+RoPE'd K and normalized V. A forward publishes its rows before attending, so the
+ring retains window - 1 earlier keys plus the widest forward (``rows``).
+Full-attention layers share K and V: only raw key rows and their FP32
+reciprocal RMS are stored, one row per position. Snapshots own detached copies,
+so branches never alias mutable cache storage.
 """
 
 from __future__ import annotations
@@ -13,128 +20,135 @@ from typing import Any
 
 from .weights import Config
 
+RING_ALIGN = 64
+PREFILL_ROWS = 128       # widest text prefill forward of a request lane
+# Attention geometry (see attention.py): absolute key chunks and query tiles.
+QUERY_TILE = 16          # (row, head) query pairs a program carries; fixed for every row count
+SLIDING_CHUNK = 256      # absolute key chunk of sliding layers
+GLOBAL_CHUNK = 512       # absolute key chunk of full-attention layers
+SEQUENTIAL_ROWS = 17     # full attention folds in one program per query tile from this many rows
+
+
+def widest_forward(verify_rows: int, longest_block: int = 0) -> int:
+    """Rows a lane's State must accept: a prefill chunk, a verification window or
+    one whole visual block (a block is never split across forwards)."""
+    return max(PREFILL_ROWS, verify_rows, longest_block)
+
+
+def sliding_slots(window: int, rows: int, group: int, longest_block: int = 0) -> int:
+    """Chunk slots a query tile can touch: its first row's earliest window key
+    through its last visible key, which a visual block may extend."""
+    span = window - 1 + min(rows, QUERY_TILE // group) + longest_block
+    return (span - 2 + SLIDING_CHUNK) // SLIDING_CHUNK + 1
+
+
+def companion_rings(layer_types, sliding_window: int, block: int, rows: int, window: int) -> tuple[int, ...]:
+    """DraftState slots per companion layer (the allocation and admission share this formula): sliding
+    rings hold the window plus a proposal block and one append's rows on distinct slots; the full layer
+    holds every admitted position."""
+    ring = -(-max(sliding_window + block, rows) // RING_ALIGN) * RING_ALIGN
+    full = -(-window // RING_ALIGN) * RING_ALIGN
+    return tuple(ring if kind == "sliding_attention" else full for kind in layer_types)
+
 
 @dataclass(frozen=True)
 class Snapshot:
-    """Read-only owner of detached cache tensors; callers must not mutate _layers."""
+    """Read-only owner of detached cache tensors; callers must not mutate _layers.
+
+    ``high_water`` keeps the retained-history bound: ring slots of positions
+    below high_water - ring may hold rejected rows written after them.
+    """
     position: int
+    high_water: int
     context: int
-    max_rows: int
+    rows: int
     config: Config
-    _layers: tuple[tuple[Any, Any, int], ...]
+    _layers: tuple[Any, Any, Any, Any]
 
 
-class _Cache:
-    def __init__(self, heads: int, dim: int, ring: int, device) -> None:
-        import torch
-        self.heads, self.dim, self.ring, self.device = heads, dim, ring, device
-        self.keys = torch.empty((0, heads, dim), dtype=torch.bfloat16, device=device)
-        self.values = torch.empty_like(self.keys)
-        self.high_water = 0
-
-    def before(self, position: int, window: int) -> tuple[Any, Any, int]:
-        """Chronological committed rows, with the absolute position of row zero."""
-        import torch
-        first = max(0, position - window + 1) if self.ring else 0
-        if not self.ring or position <= self.ring:
-            return self.keys[first:position], self.values[first:position], first
-        slot, count = first % self.ring, position - first
-        if slot + count <= self.ring:
-            return self.keys[slot:slot + count], self.values[slot:slot + count], first
-        end = slot + count - self.ring
-        return (torch.cat((self.keys[slot:], self.keys[:end])),
-                torch.cat((self.values[slot:], self.values[:end])), first)
-
-    def write(self, keys, values, position: int, context: int) -> None:
-        import torch
-        end = position + keys.shape[0]
-        need = min(self.ring, end) if self.ring else end
-        if self.keys.shape[0] < need:
-            capacity = min(self.ring or context, max(128, ((need + 511) // 512) * 512))
-            new_k = torch.empty((capacity, self.heads, self.dim), dtype=self.keys.dtype, device=self.device)
-            new_v = torch.empty_like(new_k)
-            keep = min(position, self.keys.shape[0])
-            new_k[:keep].copy_(self.keys[:keep])
-            new_v[:keep].copy_(self.values[:keep])
-            self.keys, self.values = new_k, new_v
-        if not self.ring:
-            self.keys[position:end].copy_(keys)
-            self.values[position:end].copy_(values)
-        else:
-            count = min(keys.shape[0], self.ring)
-            start = end - count
-            slot = start % self.ring
-            first = min(count, self.ring - slot)
-            self.keys[slot:slot + first].copy_(keys[-count:][:first])
-            self.values[slot:slot + first].copy_(values[-count:][:first])
-            if first < count:
-                self.keys[:count - first].copy_(keys[-count + first:])
-                self.values[:count - first].copy_(values[-count + first:])
-        self.high_water = max(self.high_water, end)
+def ring_slots(config: Config, context: int, rows: int) -> int:
+    return min(-(-(config.window + rows) // RING_ALIGN) * RING_ALIGN, -(-context // RING_ALIGN) * RING_ALIGN)
 
 
 class State:
-    def __init__(self, config: Config, device, context: int, max_rows: int = 16) -> None:
+    def __init__(self, config: Config, device, context: int, rows: int = 16) -> None:
+        import torch
         if type(context) is not int or not 1 <= context <= config.max_position:
             raise ValueError("Gemma4 state context must fit the checkpoint's position limit")
-        if type(max_rows) is not int or not 1 <= max_rows <= context:
-            raise ValueError("Gemma4 max_rows must be positive and fit the admitted context")
-        self.config, self.device, self.context, self.max_rows = config, device, context, max_rows
+        if type(rows) is not int or not 1 <= rows <= context:
+            raise ValueError("Gemma4 forward rows must be positive and fit the admitted context")
+        self.config, self.device, self.context, self.rows = config, device, context, rows
         self.position = 0
+        self.high_water = 0
         self.poisoned = False
-        self.kv = []
-        for layer in range(config.layers):
-            heads, dim = config.attention_geometry(layer)
-            ring = min(context, config.window + max_rows) if config.sliding(layer) else 0
-            self.kv.append(_Cache(heads, dim, ring, device))
-
-    @property
-    def pos(self) -> int:
-        return self.position
+        self.ring = ring_slots(config, context, rows)
+        sliding = [i for i in range(config.layers) if config.sliding(i)]
+        full = [i for i in range(config.layers) if not config.sliding(i)]
+        # Layer -> (sliding?, index into that kind's stacked storage).
+        self.slot = {i: (True, n) for n, i in enumerate(sliding)}
+        self.slot.update({i: (False, n) for n, i in enumerate(full)})
+        bf16 = torch.bfloat16
+        self.keys = torch.empty((len(sliding), self.ring, config.kv_heads, config.head_dim), dtype=bf16, device=device)
+        self.values = torch.empty_like(self.keys)
+        self.raw = torch.empty((len(full), context, config.global_kv_heads, config.global_head_dim), dtype=bf16,
+                               device=device)
+        self.inv = torch.empty((len(full), context, config.global_kv_heads), dtype=torch.float32, device=device)
+        # Device copy of the forward's first position: kernels and graphs read it.
+        self.pos = torch.zeros((1,), dtype=torch.int32, device=device)
 
     @property
     def nbytes(self) -> int:
-        return sum(t.numel() * t.element_size() for c in self.kv for t in (c.keys, c.values))
+        return sum(t.numel() * t.element_size() for t in (self.keys, self.values, self.raw, self.inv, self.pos))
 
     def check(self, rows: int) -> None:
         if self.poisoned:
             raise RuntimeError("Gemma4 state is poisoned; restore a snapshot or replace the state")
         if type(rows) is not int or rows <= 0 or rows > self.context - self.position:
             raise ValueError("Gemma4 forward rows exceed the admitted context")
+        if rows > self.rows:
+            raise ValueError(f"Gemma4 forward of {rows} rows exceeds the state's {self.rows}-row ring reserve")
 
-    def _detached_layers(self) -> tuple[tuple[Any, Any, int], ...]:
-        if self.poisoned:
-            raise RuntimeError("cannot snapshot a poisoned Gemma4 state")
-        held = []
-        for cache in self.kv:
-            count = min(self.position, cache.ring) if cache.ring else self.position
-            held.append((cache.keys[:count].clone(), cache.values[:count].clone(), cache.high_water))
-        return tuple(held)
+    def reset(self) -> None:
+        """Begin a new sequence in place; stale slots are never read before being rewritten."""
+        self.position = self.high_water = 0
+        self.poisoned = False
+
+    def _ring_index(self, position: int):
+        import torch
+        count = min(position, self.ring)
+        return torch.arange(position - count, position, device=self.device) % self.ring
 
     def snapshot(self) -> Snapshot:
-        return Snapshot(self.position, self.context, self.max_rows, self.config, self._detached_layers())
+        if self.poisoned:
+            raise RuntimeError("cannot snapshot a poisoned Gemma4 state")
+        p = self.position
+        index = self._ring_index(p)
+        layers = (self.keys.index_select(1, index), self.values.index_select(1, index),
+                  self.raw[:, :p].clone(), self.inv[:, :p].clone())
+        return Snapshot(p, self.high_water, self.context, self.rows, self.config, layers)
 
     def restore(self, snapshot: Snapshot) -> None:
         if (not isinstance(snapshot, Snapshot) or snapshot.config != self.config or snapshot.context != self.context
-                or snapshot.max_rows != self.max_rows or len(snapshot._layers) != len(self.kv)):
+                or snapshot.rows != self.rows):
             raise ValueError("Gemma4 snapshot belongs to a different cache contract")
-        replacements = [(keys.clone().to(self.device), values.clone().to(self.device), high)
-                        for keys, values, high in snapshot._layers]
-        # Publication can be interrupted between layers. Such a state must
+        keys, values, raw, inv = snapshot._layers
+        p = snapshot.position
+        # Publication can be interrupted between copies. Such a state must
         # remain unusable until a complete restore succeeds.
         self.poisoned = True
-        for cache, (keys, values, high) in zip(self.kv, replacements):
-            cache.keys, cache.values, cache.high_water = keys, values, high
-        self.position, self.poisoned = snapshot.position, False
+        index = self._ring_index(p)
+        self.keys.index_copy_(1, index, keys)
+        self.values.index_copy_(1, index, values)
+        self.raw[:, :p].copy_(raw)
+        self.inv[:, :p].copy_(inv)
+        # The restored ring holds exactly the snapshot's slots, so it inherits its rollback bound.
+        self.position, self.high_water = p, snapshot.high_water
+        self.poisoned = False
 
-    def fork(self) -> "State":
-        other = State(self.config, self.device, self.context, self.max_rows)
-        # Transfer newly detached copies directly; going through a public
-        # snapshot plus restore would clone the complete prefix twice.
-        for cache, (keys, values, high) in zip(other.kv, self._detached_layers()):
-            cache.keys, cache.values, cache.high_water = keys, values, high
-        other.position = self.position
-        return other
+    def advance(self, rows: int) -> None:
+        """Commit a completed forward's rows (callers roll back rejected suffixes)."""
+        self.position += rows
+        self.high_water = max(self.high_water, self.position)
 
     def rollback(self, position: int) -> None:
         """Keep a committed prefix; reject rollback beyond retained sliding history."""
@@ -142,19 +156,18 @@ class State:
             raise RuntimeError("cannot roll back a poisoned Gemma4 state")
         if type(position) is not int or not 0 <= position <= self.position:
             raise ValueError("Gemma4 rollback position must be a committed prefix")
-        for cache in self.kv:
-            if cache.ring and cache.high_water > cache.ring:
-                first_needed = max(0, position - self.config.window + 1)
-                if first_needed < cache.high_water - cache.ring:
-                    raise ValueError("Gemma4 rollback exceeds retained sliding-window history; restore a snapshot")
+        if self.high_water > self.ring and max(0, position - self.config.window + 1) < self.high_water - self.ring:
+            raise ValueError("Gemma4 rollback exceeds retained sliding-window history; restore a snapshot")
         self.position = position
 
 
-def capacity_bytes(config: Config, context: int, max_rows: int = 16) -> int:
-    """Worst-case BF16 KV residency; current forward scratch/snapshots are additional."""
+def capacity_bytes(config: Config, context: int, rows: int = 16) -> int:
+    """Persistent KV residency of one State; forward scratch and snapshots are additional."""
+    ring = ring_slots(config, context, rows)
     total = 0
     for i in range(config.layers):
-        heads, dim = config.attention_geometry(i)
-        rows = min(context, config.window + max_rows) if config.sliding(i) else context
-        total += rows * heads * dim * 4
+        if config.sliding(i):
+            total += ring * config.kv_heads * config.head_dim * 4
+        else:
+            total += context * config.global_kv_heads * (config.global_head_dim * 2 + 4)
     return total

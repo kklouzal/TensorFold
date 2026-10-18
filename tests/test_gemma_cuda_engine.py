@@ -57,6 +57,9 @@ def _engine(monkeypatch, *, with_head=True):
         def restore(self, snap):
             self.tokens = list(snap)
 
+        def reset(self):
+            self.tokens = []
+
     def scores(total):
         # A unique top, multiple plausible sampled choices, no accidental EOS.
         result = torch.tensor([-3.0 - ((i - total * 7) % 19) / 11 for i in range(19)])
@@ -82,21 +85,32 @@ def _engine(monkeypatch, *, with_head=True):
             return SimpleNamespace(hidden=hidden, logits=self.project_logits(hidden) if output_logits else None,
                                    taps={1: hidden})
 
+    class Draft:
+        def __init__(self):
+            self.taps = []
+
+        def reset(self):
+            self.taps = []
+
+        def snapshot(self):
+            return tuple(self.taps)
+
+        def restore(self, snap):
+            self.taps = list(snap)
+
     class Head:
-        layers = 1
         tap_layers = (1,)
 
-        def add_taps_streams(self, snaps, taps):
-            result = []
-            for snap, value in zip(snaps, taps):
-                before = [] if snap[0][0] is None else snap[0][0]
-                after = [*before, *[int(v) for v in value[:, 0]]]
-                result.append(([after], [None], len(after), len(after)))
-            return result
+        def make_state(self):
+            return Draft()
 
-        def launch_blocks(self, snaps, pending, limit):
-            before = snaps[0][0][0]
-            total = sum(before) + pending[0]
+        def append(self, draft, taps):
+            draft.taps.extend(int(v) for v in taps[:, 0])
+
+        def propose(self, draft, anchor, limit):
+            if not draft.taps:
+                return None
+            total = sum(draft.taps) + anchor
             proposals = []
             for _ in range(limit):
                 token = int(scores(total).argmax())
@@ -105,10 +119,7 @@ def _engine(monkeypatch, *, with_head=True):
             # Force rejection after a correct prefix to expose rollback/tap bugs.
             if len(proposals) > 2:
                 proposals[2] = (proposals[2] + 1) % 19
-            return [proposals]
-
-        def finish_tree(self, launched, *args):
-            return launched, list(range(-1, len(launched) - 1)), []
+            return SimpleNamespace(tokens=proposals)
 
     def sample(logits, positions, sampling):
         if sampling is None:
@@ -118,7 +129,9 @@ def _engine(monkeypatch, *, with_head=True):
 
     engine = Gemma4Engine.__new__(Gemma4Engine)
     engine.target = Target()
+    engine._state = engine.target.make_state()
     engine.head = Head() if with_head else None
+    engine._draft = engine.head.make_state() if with_head else None
     engine.context_window, engine.max_rows, engine.eos = 400, 8, (18,)
     engine.vision = None
     engine._closed, engine._prefix, engine._owner = False, None, None

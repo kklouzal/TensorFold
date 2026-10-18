@@ -1,46 +1,150 @@
-"""Owned BF16 Gemma DFlash proposals over immutable, target-accepted context.
+"""Owned BF16 Gemma DFlash proposals over persistent, target-accepted context.
 
 The companion has causal sliding layers and a noncausal full layer by default.
-Its noise block never enters committed context. The official Torch generator
-uses raw target embedding rows; the borrowed target head owns softcap30 once.
+Its noise block never enters committed context: a proposal writes the block's
+keys and values into slots beyond the committed length, which the next
+accepted context overwrites. The official Torch generator uses raw target
+embedding rows; the borrowed target head owns softcap30 once.
+
+Proposals never change output: the target verifies every proposed token, so
+the companion's arithmetic (row-reuse projections, kernel geometry) only has
+to be deterministic. One DraftState belongs to one request lane; its storage
+is allocated once for the admitted context.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
-from triton.language.core import TRITON_MAX_TENSOR_NUMEL
+import triton
+import triton.language as tl
 
 from tensorfold.cleanup import rollback
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.tensor_file import checkpoint_path
-from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
-from tensorfold.families.qwen3_5.cuda.weights import Plain
+from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
+from . import attention
+from .forward import rms_norm
+from .state import PREFILL_ROWS, companion_rings, sliding_slots
+
+FULL_CHUNK = 1024        # companion full-layer key chunk (no invariance contract: proposals are verified)
 
 
-def _norm(x, weight, eps):
-    # Qwen3 norm, unlike the target's Gemma norm: BF16 normalization rounding
-    # precedes multiplication by the BF16 learned weight, without a +1 offset.
-    value = x.float()
-    return weight * (value * torch.rsqrt(value.square().mean(-1, keepdim=True) + eps)).to(x.dtype)
+@triton.jit
+def _draft_prep(SRC, STRIDE, QW, KW, FREQ, POS, QO, KC, VC, RING,
+                H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, EPS: tl.constexpr):
+    """Qwen3 companion head norms and BF16 RoPE for one (row, head) of fused [k | v | q] rows.
+
+    Programs j < HK publish normalized, rotated keys and HK <= j < 2HK raw
+    values into slot position % RING; later programs rotate query heads into QO.
+    The arithmetic mirrors the Torch companion: BF16 normalization rounding,
+    BF16 weight product, BF16 cos/sin and BF16 rounding of each RoPE product.
+    """
+    row = tl.program_id(0)
+    j = tl.program_id(1)
+    half: tl.constexpr = D // 2
+    d = tl.arange(0, half)
+    pos = tl.load(POS) + row
+    src = SRC + row * STRIDE + j * D
+    x1 = tl.load(src + d)
+    x2 = tl.load(src + half + d)
+    if (j >= HK) & (j < 2 * HK):
+        dst = VC + ((pos % RING) * HK + j - HK) * D
+        tl.store(dst + d, x1)
+        tl.store(dst + half + d, x2)
+    else:
+        f1, f2 = x1.to(tl.float32), x2.to(tl.float32)
+        inv = tl.rsqrt((tl.sum(f1 * f1, 0) + tl.sum(f2 * f2, 0)) / D + EPS)
+        if j < HK:
+            weight = KW
+        else:
+            weight = QW
+        y1 = ((f1 * inv).to(tl.bfloat16).to(tl.float32) * tl.load(weight + d).to(tl.float32)).to(tl.bfloat16)
+        y2 = ((f2 * inv).to(tl.bfloat16).to(tl.float32) * tl.load(weight + half + d).to(tl.float32)).to(tl.bfloat16)
+        angle = pos.to(tl.float32) * tl.load(FREQ + d)
+        c = tl.cos(angle).to(tl.bfloat16).to(tl.float32)
+        s = tl.sin(angle).to(tl.bfloat16).to(tl.float32)
+        y1, y2 = y1.to(tl.float32), y2.to(tl.float32)
+        a = ((y1 * c).to(tl.bfloat16).to(tl.float32) + (-(y2 * s)).to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16)
+        b = ((y2 * c).to(tl.bfloat16).to(tl.float32) + (y1 * s).to(tl.bfloat16).to(tl.float32)).to(tl.bfloat16)
+        if j < HK:
+            dst = KC + ((pos % RING) * HK + j) * D
+        else:
+            dst = QO + (row * H + j - 2 * HK) * D
+        tl.store(dst + d, a)
+        tl.store(dst + half + d, b)
 
 
-def _rotate(x, cos, sin):
-    half = x.shape[-1] // 2
-    return x * cos + torch.cat((-x[..., half:], x[..., :half]), -1) * sin
+def _project(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """BF16 rows @ weight^T sharing weight loads across the rows of a proposal."""
+    m = x.shape[0]
+    if m > 16:
+        return b16.prompt(x, weight)
+    return b16.matmul_rows(x, weight, max(2, 1 << (m - 1).bit_length()))
+
+
+class DraftState:
+    """One lane's committed companion context: persistent per-layer K/V and its length.
+
+    Sliding layers keep a ring of max(window + block, rows) slots (rounded to
+    64): the window plus a proposal block, and one append's rows on distinct
+    slots. The full layer keeps every position of the admitted window.
+    ``length`` counts committed target positions; ``pos`` is its device copy.
+    """
+
+    def __init__(self, cfg, device, window: int, rows: int, block: int):
+        self.rings = companion_rings(cfg.layer_types, cfg.sliding_window, block, rows, window)
+        self.keys = [torch.empty((n, cfg.kv_heads, cfg.head_dim), dtype=torch.bfloat16, device=device)
+                     for n in self.rings]
+        self.values = [torch.empty_like(k) for k in self.keys]
+        self.rows, self.length = rows, 0
+        self.pos = torch.zeros((1,), dtype=torch.int32, device=device)
+
+    def reset(self) -> None:
+        self.length = 0
+
+    def _index(self, layer: int, length: int):
+        count = min(length, self.rings[layer])
+        return torch.arange(length - count, length, device=self.pos.device) % self.rings[layer]
+
+    def snapshot(self):
+        """Detached copies of every retained committed row, in position order."""
+        held = []
+        for i, (k, v) in enumerate(zip(self.keys, self.values)):
+            index = self._index(i, self.length)
+            held.append((k.index_select(0, index), v.index_select(0, index)))
+        return self.length, tuple(held)
+
+    def restore(self, snapshot) -> None:
+        length, held = snapshot
+        for i, (k, v) in enumerate(held):
+            index = self._index(i, length)
+            self.keys[i].index_copy_(0, index, k)
+            self.values[i].index_copy_(0, index, v)
+        self.length = length
+
+
+@dataclass
+class Proposal:
+    """Companion logits for block rows 1..n on the device; host greedy ids on demand."""
+    logits: torch.Tensor          # FP32 [n, vocab], softcapped
+    _tokens: list[int] | None = None
+
+    @property
+    def tokens(self) -> list[int]:
+        if self._tokens is None:
+            self._tokens = self.logits.max(-1).indices.tolist()
+        return self._tokens
 
 
 class DFlash:
-    """One shared companion; per-stream snapshots contain accepted K/V only."""
+    """One shared companion; each lane owns a DraftState of accepted K/V only."""
 
-    world = 1
-    fast = True
-
-    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16):
+    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS):
         if type(bits) is not int or bits != 16:
             raise ValueError("Gemma DFlash proposal weights must retain BF16 storage")
         cfg, _ = checked_headers(draft_dir)
@@ -57,22 +161,21 @@ class DFlash:
             raise ValueError("Gemma DFlash blocks require 2 through128 rows, matching target tree verification")
         if self.block > cfg.sliding_window:
             raise ValueError("Gemma DFlash sliding blocks must fit the declared sliding window")
-        padded = max(16, 1 << (self.block - 1).bit_length())
-        if max(cfg.heads // cfg.kv_heads * padded * cfg.head_dim, 64 * cfg.head_dim) > TRITON_MAX_TENSOR_NUMEL:
-            raise ValueError("Gemma DFlash grouped attention tile exceeds installed Triton tensor capacity")
+        if (cfg.heads % cfg.kv_heads or attention.QUERY_TILE % (cfg.heads // cfg.kv_heads)
+                or cfg.head_dim not in (64, 128, 256)):
+            raise ValueError("Gemma DFlash attention needs a query group dividing 16 and head width 64/128/256")
+        self.rows = positive(rows, "context rows")
+        # Kernel offsets are int32: cached key rows and full-layer chunk partials must index below 2**31.
+        slots = max(companion_rings(cfg.layer_types, cfg.sliding_window, self.block, self.rows, self.window))
+        if max(slots * cfg.kv_heads, self.block * cfg.heads * -(-self.window // FULL_CHUNK)) * cfg.head_dim >= 2**31:
+            raise ValueError("Gemma DFlash attention offsets exceed int32 at this context")
         self.config, self.device, self.bits = cfg, target.device, bits
-        self.hidden, self.layers, self.trained = cfg.hidden, cfg.layers, cfg.block
+        self.hidden = cfg.hidden
         self.tap_layers, self.mask_id = cfg.tap_layers, cfg.mask_id
         self.raw_embed_tokens, self.project_logits = target.raw_embed_tokens, target.project_logits
-        self.weights, self.linears = {}, {}
         reader = SafeTensors([checkpoint_path(Path(draft_dir), "model.safetensors")])
         try:
-            for name, shape in cfg.shapes().items():
-                value = reader.get(name).to(self.device).contiguous()
-                if len(shape) == 2:
-                    self.linears[name] = Plain(value)
-                else:
-                    self.weights[name] = value
+            loaded = {name: reader.get(name).to(self.device).contiguous() for name in cfg.shapes()}
         except BaseException as primary:  # noqa: BLE001 - preserve primary and reader cleanup failures
             try:
                 rollback(reader, primary, reader.close)
@@ -82,182 +185,91 @@ class DFlash:
                 raise primary from transport
         else:
             reader.close()
+        # Fuse projections that share an input: [k | v | q] (the [k | v] prefix
+        # projects committed context) and [gate | up]. Fusion keeps every
+        # output column's own dot product.
+        for layer in range(cfg.layers):
+            base = f"layers.{layer}."
+            attn = base + "self_attn."
+            loaded[base + "kvq"] = torch.cat([loaded.pop(attn + f"{p}_proj.weight") for p in "kvq"])
+            loaded[base + "gate_up"] = torch.cat([loaded.pop(base + f"mlp.{p}_proj.weight") for p in ("gate", "up")])
+        self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.
         # Reusing Flash Next's FP64 default construction would change frequencies.
         exponent = torch.arange(0, cfg.head_dim, 2, dtype=torch.int64).float() / cfg.head_dim
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(self.device)
-        self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
+        self._kv_width = 2 * cfg.kv_heads * cfg.head_dim
 
-    @property
-    def kc(self):
-        return self._context[0]
+    def make_state(self) -> DraftState:
+        return DraftState(self.config, self.device, self.window, self.rows, self.block)
 
-    @property
-    def vc(self):
-        return self._context[1]
-
-    @property
-    def context_len(self):
-        return self._context[2]
-
-    @property
-    def context_end(self):
-        return self._context[3]
-
-    def _lin(self, x, name):
-        return self.linears[name](x.contiguous())
-
-    def _rotary(self, positions):
-        phase = positions.float()[:, None] * self.inv_freq[None]
-        phase = torch.cat((phase, phase), -1)
-        return phase.cos().to(torch.bfloat16)[None], phase.sin().to(torch.bfloat16)[None]
-
-    def _qk(self, x, layer, kind, cos, sin):
+    def _publish(self, fused, state, layer, query: torch.Tensor | None):
         cfg = self.config
-        heads = cfg.heads if kind == "q" else cfg.kv_heads
         base = f"layers.{layer}.self_attn."
-        out = self._lin(x, base + f"{kind}_proj.weight").view(-1, heads, cfg.head_dim)
-        out = _norm(out, self.weights[base + f"{kind}_norm.weight"], cfg.eps).transpose(0, 1)
-        return _rotate(out, cos, sin).contiguous()
-
-    def snapshot(self):
-        keys, values, length, end = self._context
-        return list(keys), list(values), length, end
-
-    def restore(self, snap):
-        keys, values, length, end = snap
-        # Allocation failure must not publish mismatched K/V lists. Tensors are
-        # immutable after publication, so snapshots own lists and share tensors.
-        keys, values = tuple(keys), tuple(values)
-        self._context = keys, values, length, end
-
-    def skip(self, count):
-        if type(count) is not int or count < 0 or self.context_end + count > self.window:
-            raise ValueError("Gemma DFlash skipped context must remain within the admitted window")
-        self._context = (None,) * self.layers, (None,) * self.layers, 0, self.context_end + count
+        programs = 2 * cfg.kv_heads + (cfg.heads if query is not None else 0)
+        _draft_prep[(fused.shape[0], programs)](
+            fused, fused.stride(0), self.weights[base + "q_norm.weight"], self.weights[base + "k_norm.weight"],
+            self.inv_freq, state.pos, query if query is not None else fused, state.keys[layer], state.values[layer],
+            state.rings[layer], H=cfg.heads, HK=cfg.kv_heads, D=cfg.head_dim, EPS=cfg.eps, num_warps=1,
+            enable_fp_fusion=False)
 
     @torch.no_grad()
-    def add_taps(self, taps):
-        """Append only target-verified rows; the caller owns acceptance selection."""
-        self.restore(self.add_taps_streams([self.snapshot()], [taps])[0])
-
-    @torch.no_grad()
-    def add_taps_streams(self, snaps, taps):
-        if len(snaps) != len(taps):
-            raise ValueError("Gemma DFlash requires one accepted target tap tensor per context")
-        if not snaps:
-            return []
+    def append(self, state: DraftState, taps: torch.Tensor) -> None:
+        """Commit target-verified tap rows at positions [length, length + n)."""
         cfg = self.config
-        for snap, value in zip(snaps, taps):
-            if (not isinstance(value, torch.Tensor) or value.ndim != 2
-                    or value.shape[1] != len(self.tap_layers) * self.hidden
-                    or value.dtype != torch.bfloat16 or value.device != self.device
-                    or snap[3] + value.shape[0] > self.window):
-                raise ValueError("Gemma DFlash accepted taps must match the target and admitted positions")
-        sizes = [value.shape[0] for value in taps]
-        rows = sum(sizes)
-        if not rows:
-            return [(list(k), list(v), n, end) for k, v, n, end in snaps]
-        context = _norm(self._lin(torch.cat(taps), "fc.weight"), self.weights["hidden_norm.weight"], cfg.eps)
-        positions = torch.tensor([p for snap, n in zip(snaps, sizes) for p in range(snap[3], snap[3] + n)],
-                                 dtype=torch.int64, device=self.device)
-        cos, sin = self._rotary(positions)
-        keys, values = [list(s[0]) for s in snaps], [list(s[1]) for s in snaps]
-        for layer, kind in enumerate(cfg.layer_types):
-            k = self._qk(context, layer, "k", cos, sin)
-            v = self._lin(context, f"layers.{layer}.self_attn.v_proj.weight")
-            v = v.view(-1, cfg.kv_heads, cfg.head_dim).transpose(0, 1)
-            keep = cfg.sliding_window - 1 if kind == "sliding_attention" else self.window
-            start = 0
-            for stream, n in enumerate(sizes):
-                if n:
-                    for cache, fresh in ((keys[stream], k), (values[stream], v)):
-                        part = fresh[:, start:start + n]
-                        previous = cache[layer]
-                        joined = part if previous is None else torch.cat((previous, part), 1)
-                        tail = joined[:, -keep:]
-                        # Contiguity alone does not compact a one-row/head view.
-                        # Retire discarded rows and other streams' backing too.
-                        sliced = joined.shape[1] > keep or (previous is None and n != rows)
-                        cache[layer] = (tail.clone(memory_format=torch.contiguous_format)
-                                        if sliced else tail.contiguous())
-                start += n
-        return [(k, v, snap[2] + n, snap[3] + n) for k, v, snap, n in zip(keys, values, snaps, sizes)]
-
-    def in_vocab(self, token):
-        return type(token) is int and 0 <= token < self.config.vocab
-
-    def _layer(self, layer, x, snaps, length, cos, sin):
-        cfg, weights = self.config, self.weights
-        base = f"layers.{layer}."
-        h = _norm(x, weights[base + "input_layernorm.weight"], cfg.eps)
-        q, k = (self._qk(h, layer, kind, cos, sin) for kind in ("q", "k"))
-        v = self._lin(h, base + "self_attn.v_proj.weight").view(-1, cfg.kv_heads, cfg.head_dim)
-        # Shared attention uses distance < window+1; the checkpoint's SWA is
-        # strict distance < sliding_window. Full context uses the admitted limit.
-        window = cfg.sliding_window - 1 if cfg.layer_types[layer] == "sliding_attention" else self.window
-        out = block_attention(q, k, v.transpose(0, 1).contiguous(), [s[0][layer] for s in snaps],
-                              [s[1][layer] for s in snaps], length, window, cfg.head_dim ** -0.5,
-                              cfg.causal_layers[layer])
-        x = x + self._lin(out, base + "self_attn.o_proj.weight")
-        h = _norm(x, weights[base + "post_attention_layernorm.weight"], cfg.eps)
-        h = F.silu(self._lin(h, base + "mlp.gate_proj.weight")) * self._lin(h, base + "mlp.up_proj.weight")
-        return x + self._lin(h, base + "mlp.down_proj.weight")
+        if (not isinstance(taps, torch.Tensor) or taps.ndim != 2 or taps.shape[1] != len(self.tap_layers) * self.hidden
+                or taps.dtype != torch.bfloat16 or taps.device != self.device
+                or state.length + taps.shape[0] > self.window or taps.shape[0] > state.rows):
+            raise ValueError("Gemma DFlash accepted taps must match the target and admitted positions")
+        if not taps.shape[0]:
+            return
+        context = rms_norm(_project(taps.contiguous(), self.weights["fc.weight"]), self.weights["hidden_norm.weight"],
+                           cfg.eps)
+        state.pos.fill_(state.length)
+        for layer in range(cfg.layers):
+            kv = self.weights[f"layers.{layer}.kvq"][:self._kv_width]
+            self._publish(_project(context, kv), state, layer, None)
+        state.length += taps.shape[0]
 
     @torch.no_grad()
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
-        if len(snaps) != len(pendings):
-            raise ValueError("Gemma DFlash requires one anchor token per context")
-        if type(max_nodes) is not int or not 0 <= max_nodes <= 127:
+    def propose(self, state: DraftState, anchor: int, count: int) -> Proposal | None:
+        """Logits for up to ``count`` block rows after the anchor, from committed context only."""
+        cfg = self.config
+        if type(count) is not int or not 0 <= count <= 127:
             raise ValueError("Gemma DFlash proposal count must be an integer from zero through127")
-        length = self.block if block is None else positive(block, "block")
-        if not 2 <= length <= self.block:
-            raise ValueError("Gemma DFlash requested block must fit the prepared block size")
-        length = min(length, max_nodes + 1)
-        out = [None] * len(snaps)
-        if length < 2:
-            return out
-        live = [i for i, snap in enumerate(snaps) if snap[2] > 0]
-        if not live:
-            return out
-        length = min(length, *(self.window - snaps[i][3] for i in live))
-        if length < 2:
-            return out
-        if any(not self.in_vocab(pendings[i]) for i in live):
+        length = min(self.block, count + 1, self.window - state.length)
+        if length < 2 or state.length == 0:
+            return None
+        if type(anchor) is not int or not 0 <= anchor < cfg.vocab:
             raise ValueError("Gemma DFlash anchors must be native target-vocabulary token IDs")
-        active = [snaps[i] for i in live]
-        ids = torch.tensor([t for i in live for t in [pendings[i]] + [self.mask_id] * (length - 1)],
-                           dtype=torch.int32, device=self.device)
+        ids = torch.full((length,), self.mask_id, dtype=torch.int32, device=self.device)
+        ids[0] = anchor
         x = self.raw_embed_tokens(ids)
-        positions = torch.tensor([p for snap in active for p in range(snap[3], snap[3] + length)],
-                                 dtype=torch.int64, device=self.device)
-        cos, sin = self._rotary(positions)
-        for layer in range(self.layers):
-            x = self._layer(layer, x, active, length, cos, sin)
-        h = _norm(x.view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden),
-                  self.weights["norm.weight"], self.config.eps)
-        logits = self.project_logits(h).float()
-        best, tokens = logits.max(-1)
-        scores = (torch.logsumexp(logits, -1) - best).view(len(live), length - 1).cumsum(-1)
-        # Attention receives context pointers through an indirect device table.
-        # Keep the immutable owners live until result readback observes completion.
-        shared = [tokens.view(len(live), length - 1), scores, None, active]
-        for row, i in enumerate(live):
-            out[i] = shared, row
-        return out
-
-    def launch_block(self, pending, max_nodes, block=None):
-        return self.launch_blocks([self.snapshot()], [pending], max_nodes, block)[0]
-
-    def finish_tree(self, launched, context_length, max_nodes, sampling=None):
-        if launched is None:
-            return [], [], []
-        shared, row = launched
-        if shared[2] is None:
-            shared[2] = shared[0].cpu().tolist(), shared[1].cpu().tolist()
-            shared[3] = None
-        ids = shared[2][0][row][:max_nodes]
-        return ids, list(range(-1, len(ids) - 1)), shared[2][1][row][:max_nodes]
-
-    def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None):
-        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling)[:2]
+        start = state.length
+        state.pos.fill_(start)
+        # Noncausal layers see the whole block: every row shares [start, start + length).
+        block_start = state.pos.repeat(length)
+        block_end = block_start + length
+        scale = cfg.head_dim ** -0.5
+        group = cfg.heads // cfg.kv_heads
+        for layer, kind in enumerate(cfg.layer_types):
+            base = f"layers.{layer}."
+            h = rms_norm(x, self.weights[base + "input_layernorm.weight"], cfg.eps)
+            fused = _project(h, self.weights[base + "kvq"])
+            q = torch.empty((length, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=self.device)
+            self._publish(fused, state, layer, q)
+            noncausal = not cfg.causal_layers[layer]
+            if kind == "sliding_attention":
+                window, chunk = cfg.sliding_window, attention.SLIDING_CHUNK
+                slots = sliding_slots(window, length, group, length if noncausal else 0)
+            else:
+                window, chunk = 0, FULL_CHUNK
+                slots = (start + length - 1) // chunk + 1
+            out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, block_start, block_end,
+                                    window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk)
+            x = x + _project(out.reshape(length, -1), self.weights[base + "self_attn.o_proj.weight"])
+            h = rms_norm(x, self.weights[base + "post_attention_layernorm.weight"], cfg.eps)
+            gate, up = _project(h, self.weights[base + "gate_up"]).split(cfg.width, dim=-1)
+            x = x + _project(torch.nn.functional.silu(gate) * up, self.weights[base + "mlp.down_proj.weight"])
+        h = rms_norm(x[1:], self.weights["norm.weight"], cfg.eps)
+        return Proposal(self.project_logits(h).float())

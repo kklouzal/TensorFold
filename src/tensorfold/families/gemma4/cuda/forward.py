@@ -15,7 +15,8 @@ import torch
 import triton
 import triton.language as tl
 
-from .state import State
+from . import attention
+from .state import State, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
 
 
@@ -84,80 +85,6 @@ def apply_rope(x: torch.Tensor, inverse: torch.Tensor, position: int) -> torch.T
     return out
 
 
-@triton.jit
-def _attention(Q, K, V, BLOCK_START, BLOCK_END, O, BASE, FIRST, KEYS,
-               H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, WINDOW: tl.constexpr):
-    row, hk = tl.program_id(0), tl.program_id(1)
-    gg = tl.arange(0, 16)
-    dd = tl.arange(0, D)
-    pos = BASE + row
-    block_start = tl.load(BLOCK_START + row)
-    block_end = tl.load(BLOCK_END + row)
-    earliest = tl.maximum(FIRST, pos - WINDOW + 1) if WINDOW else FIRST
-    last = tl.maximum(pos + 1, block_end) if WINDOW else pos + 1
-    q = tl.load(Q + (row * H + hk * G + gg[:, None]) * D + dd[None, :], gg[:, None] < G, 0)
-    m = tl.full((16,), -float("inf"), tl.float32)
-    total = tl.zeros((16,), tl.float32)
-    out = tl.zeros((16, D), tl.float32)
-    # Absolute 32-key tiles preserve row partition invariance. Single-stage
-    # MMA operands must fit GB10 shared memory even for 512-wide global heads.
-    for at in range(earliest // 32 * 32, (last + 31) // 32 * 32, 32):
-        logical = at + tl.arange(0, 32)
-        exists = (logical >= FIRST) & (logical < FIRST + KEYS)
-        visible = (logical <= pos) | ((logical >= block_start) & (logical < block_end))
-        valid = exists & visible & (logical >= earliest) & (logical < last)
-        key = tl.load(K + ((logical[:, None] - FIRST) * HK + hk) * D + dd[None, :], exists[:, None], 0)
-        value = tl.load(V + ((logical[:, None] - FIRST) * HK + hk) * D + dd[None, :], exists[:, None], 0)
-        scores = tl.dot(q, tl.trans(key)).to(tl.float32)
-        scores = tl.where(valid[None, :], scores, -float("inf"))
-        tile_max = tl.max(scores, 1)
-        active = tile_max != -float("inf")
-        next_max = tl.where(active, tl.maximum(m, tile_max), m)
-        alpha = tl.where(active, tl.where(m == -float("inf"), 0.0, tl.exp(m - next_max)), 1.0)
-        prob = tl.where(valid[None, :] & active[:, None], tl.exp(scores - next_max[:, None]), 0.0)
-        out = out * alpha[:, None] + tl.dot(prob.to(tl.bfloat16), value)
-        total = total * alpha + tl.sum(prob, 1)
-        m = next_max
-    result = out / total[:, None]
-    tl.store(O + (row * H + hk * G + gg[:, None]) * D + dd[None, :], result.to(tl.bfloat16), gg[:, None] < G)
-
-
-def attend(q, k, v, position: int, first: int, window: int, block_starts, block_ends):
-    """Q[T,H,D], chronological K/V[N,Hk,D], scale1, causal or visual-block SWA."""
-    if q.shape[-1] not in (64, 128, 256, 512):
-        raise ValueError("Gemma4 CUDA attention head dimensions must be64/128/256/512")
-    h, hk, d = q.shape[1], k.shape[1], q.shape[2]
-    if h % hk or not 1 <= h // hk <= 16:
-        raise ValueError("Gemma4 CUDA attention requires1..16 query heads per KV head")
-    out = torch.empty_like(q)
-    _attention[(q.shape[0], hk)](q, k, v, block_starts, block_ends, out, position, first, k.shape[0],
-                                H=h, HK=hk, D=d, G=h // hk, WINDOW=window,
-                                num_warps=4 if d <= 128 else 8, num_stages=1, enable_fp_fusion=False)
-    return out
-
-
-def attention_reference(q, k, v, position: int, first: int, window: int = 0,
-                        vision_blocks: Sequence[tuple[int, int]] = ()):
-    """Independent unfused FP32 softmax/matmul oracle, not production arithmetic."""
-    output = []
-    logical = torch.arange(first, first + k.shape[0], device=q.device)
-    groups = q.shape[1] // k.shape[1]
-    keys = k.repeat_interleave(groups, dim=1).float().transpose(0, 1)
-    values = v.repeat_interleave(groups, dim=1).float().transpose(0, 1)
-    for row in range(q.shape[0]):
-        pos = position + row
-        mask = logical <= pos
-        if window:
-            for begin, end in vision_blocks:
-                if begin <= pos < end:
-                    mask |= (logical >= begin) & (logical < end)
-            mask &= logical >= pos - window + 1
-        score = torch.einsum("hd,hkd->hk", q[row].float(), keys)
-        probs = torch.softmax(score.masked_fill(~mask, -float("inf")), -1)
-        output.append(torch.einsum("hk,hkd->hd", probs, values).to(q.dtype))
-    return torch.stack(output)
-
-
 @dataclass
 class ForwardResult:
     hidden: torch.Tensor
@@ -169,6 +96,7 @@ class ForwardResult:
 class Gemma4Target:
     def __init__(self, weights: Gemma4Weights):
         self.weights, self.config = weights, weights.config
+        attention.check_geometry(self.config)
         self.device = weights.norm.device
         policy = weights.numerics
         if policy == "mlx":
@@ -180,6 +108,8 @@ class Gemma4Target:
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
         self._router_root = torch.tensor(self.config.hidden**-0.5, dtype=torch.bfloat16, device=self.device)
+        # Device-resident once: a per-forward scalar upload would be a host copy inside captured graphs.
+        self._embed_scale = torch.tensor(self.config.hidden**0.5, dtype=torch.bfloat16, device=self.device)
         self.tap_layers = tuple(i for i in TAP_LAYERS if i < self.config.layers)
         self._inverse = []
         c = self.config
@@ -193,18 +123,17 @@ class Gemma4Target:
             inv[rotated // 2:] = 0
             self._inverse.append(inv)
 
-    def make_state(self, context: int, max_rows: int = 16) -> State:
-        return State(self.config, self.device, context, min(max_rows, context))
+    def make_state(self, context: int, rows: int = 16) -> State:
+        """Persistent caches for one sequence whose forwards carry at most ``rows`` rows."""
+        return State(self.config, self.device, context, min(rows, context))
 
     def raw_embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         """Unscaled tied embedding rows for the official Torch DFlash contract."""
         return self._embedding(ids)
 
     def embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
-        out = self.raw_embed_tokens(ids)
         # MLX and HF both downcast the scalar to the embedding dtype first.
-        scale = torch.tensor(self.config.hidden**0.5, dtype=out.dtype, device=out.device)
-        return out * scale
+        return self.raw_embed_tokens(ids) * self._embed_scale
 
     def project_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         logits = self.weights.embed(hidden)
@@ -234,9 +163,11 @@ class Gemma4Target:
         return picks.to(torch.int32), routing.contiguous()
 
     def _blocks(self, rows: int, position: int, vision_blocks):
+        """Per-row visual block bounds on the device and the longest block in this forward (None, None, 0 without)."""
         starts = [-1] * rows
         ends = [-1] * rows
         previous = -1
+        longest = 0
         for block in vision_blocks:
             if (not isinstance(block, (tuple, list)) or len(block) != 2
                     or any(type(x) is not int for x in block)):
@@ -249,10 +180,13 @@ class Gemma4Target:
                 continue
             if begin < position or end > position + rows:
                 raise ValueError("Gemma4 forward must contain each complete uncommitted visual block")
+            longest = max(longest, end - begin)
             for row in range(begin - position, end - position):
                 starts[row], ends[row] = begin, end
+        if not longest:
+            return None, None, 0
         return (torch.tensor(starts, dtype=torch.int32, device=self.device),
-                torch.tensor(ends, dtype=torch.int32, device=self.device))
+                torch.tensor(ends, dtype=torch.int32, device=self.device), longest)
 
     @torch.inference_mode()
     def forward(self, tokens, state: State, *, embeddings: torch.Tensor | None = None,
@@ -286,58 +220,102 @@ class Gemma4Target:
         if vision_blocks and not self.config.vision_bidirectional:
             raise ValueError("Gemma4 checkpoint does not permit visual-block attention")
         start = state.position
-        block_starts, block_ends = self._blocks(rows, start, vision_blocks)
-        taps = {}
+        block_starts, block_ends, longest = self._blocks(rows, start, vision_blocks)
         try:
             h = self.embed_tokens(tokens) if embeddings is None else embeddings
-            c = self.config
-            for i, layer in enumerate(self.weights.layers):
-                hk, d = c.attention_geometry(i)
-                normed = self._norm(h, layer.input_norm, c.eps)
-                raw_k = layer.k(normed).reshape(rows, hk, d)
-                q = self._norm(layer.q(normed).reshape(rows, c.heads, d), layer.q_norm, c.eps)
-                k = self._norm(raw_k, layer.k_norm, c.eps)
-                v = self._norm(raw_k if layer.v is None else layer.v(normed).reshape(rows, hk, d), None, c.eps)
-                q, k = apply_rope(q, self._inverse[i], start), apply_rope(k, self._inverse[i], start)
-                cache = state.kv[i]
-                if c.sliding(i):
-                    prev_k, prev_v, first = cache.before(start, c.window)
-                    keys, values = torch.cat((prev_k, k)), torch.cat((prev_v, v))
-                else:
-                    cache.write(k, v, start, state.context)
-                    first = 0
-                    keys, values = cache.keys[:start + rows], cache.values[:start + rows]
-                out = attend(q, keys, values, start, first, c.window if c.sliding(i) else 0,
-                             block_starts, block_ends)
-                if c.sliding(i):
-                    cache.write(k, v, start, state.context)
-                h = h + self._norm(layer.o(out.reshape(rows, -1)), layer.attention_norm, c.eps)
-                residual = h
-                dense_in = self._norm(h, layer.mlp_norm, c.eps)
-                gate, up = layer.gate(dense_in), layer.up(dense_in)
-                active = self._geglu(gate, up)
-                dense = self._norm(layer.down(active), layer.dense_output_norm, c.eps)
-                picks, routing = self._route(h, layer)
-                expert_in = self._norm(h, layer.expert_norm, c.eps)
-                routed = layer.experts.forward(expert_in, picks, routing)
-                routed = self._norm(routed, layer.expert_output_norm, c.eps)
-                h = (residual + self._norm(dense + routed, layer.output_norm, c.eps)) * layer.scalar
-                if output_taps and i in self.tap_layers:
-                    taps[i] = h
-            hidden = self._norm(h, self.weights.norm, c.eps)
-            logits = self.project_logits(hidden) if output_logits else None
-            state.position = start + rows
+            state.pos.fill_(start)
+            chunks = (start + rows - 1) // attention.GLOBAL_CHUNK + 1
+            hidden, logits, taps = self._layers(h, state, rows, chunks, block_starts, block_ends, longest,
+                                                output_logits, output_taps)
+            state.advance(rows)
             return ForwardResult(hidden, logits, taps, start)
         except BaseException:
             state.poisoned = True
             raise
+
+    def forward_staged(self, tokens: torch.Tensor, state: State, *, chunks: int, output_logits: bool = True,
+                       output_taps: bool = True):
+        """Text rows from device token IDs at the device position ``state.pos``, without host syncs.
+
+        For CUDA graph capture/replay: ``tokens`` is a fixed device int32/int64
+        buffer of trusted IDs, the caller writes the first position into
+        ``state.pos`` before each launch and commits rows with
+        ``state.advance``/``state.rollback`` afterwards. ``chunks`` is the fixed
+        full-attention grid (absolute 512-key chunks of the longest admitted
+        position, e.g. a context bucket); programs past a row's keys exit early,
+        so any bucket covering the last row computes identical bits.
+        This call admits the host position it sees; before every replay the
+        caller re-checks ``state.check(rows)`` and that ``chunks`` covers
+        ``state.position + rows`` (a short grid would fold unwritten partials).
+        A failed launch poisons the state. Returns (hidden, logits or None, taps).
+        """
+        if (state.config != self.config or torch.device(state.device) != self.device
+                or not isinstance(tokens, torch.Tensor) or tokens.ndim != 1
+                or tokens.dtype not in (torch.int32, torch.int64) or tokens.device != self.device):
+            raise ValueError("Gemma4 staged forward needs this target's state and a device-local 1-D token buffer")
+        rows = tokens.shape[0]
+        state.check(rows)
+        if (type(chunks) is not int or chunks <= (state.position + rows - 1) // attention.GLOBAL_CHUNK
+                or chunks > -(-state.context // attention.GLOBAL_CHUNK)):
+            raise ValueError("Gemma4 staged full-attention grid must cover the last row within the admitted context")
+        try:
+            return self._layers(self.embed_tokens(tokens), state, rows, chunks, None, None, 0, output_logits,
+                                output_taps)
+        except BaseException:
+            state.poisoned = True
+            raise
+
+    def _layers(self, h, state: State, rows: int, chunks: int, block_starts, block_ends, longest: int,
+                output_logits: bool, output_taps: bool):
+        c = self.config
+        mlx = self.weights.numerics == "mlx"
+        slots = sliding_slots(c.window, rows, c.heads // c.kv_heads, longest)
+        if not longest:
+            # Block bounds are read only when blocks are present; any int32 device pointer stands in.
+            block_starts = block_ends = state.pos
+        taps = {}
+        for i, layer in enumerate(self.weights.layers):
+            sliding, index = state.slot[i]
+            normed = self._norm(h, layer.input_norm, c.eps)
+            q_raw, k_raw = layer.q(normed), layer.k(normed)
+            if sliding:
+                keys, values = state.keys[index], state.values[index]
+                q = attention.prep_sliding(q_raw, k_raw, layer.v(normed), layer.q_norm, layer.k_norm,
+                                           self._inverse[i], state.pos, keys, values, eps=c.eps,
+                                           round_normalized=mlx)
+                out = attention.sliding(q, keys, values, state.pos, block_starts, block_ends,
+                                        window=c.window, slots=slots, blocks=bool(longest))
+            else:
+                raw, inv = state.raw[index], state.inv[index]
+                q = attention.prep_full(q_raw, k_raw, layer.q_norm, self._inverse[i], state.pos, raw, inv,
+                                        eps=c.eps, round_normalized=mlx)
+                out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
+                                     round_normalized=mlx)
+            h = h + self._norm(layer.o(out.reshape(rows, -1)), layer.attention_norm, c.eps)
+            residual = h
+            dense_in = self._norm(h, layer.mlp_norm, c.eps)
+            gate, up = layer.gate(dense_in), layer.up(dense_in)
+            active = self._geglu(gate, up)
+            dense = self._norm(layer.down(active), layer.dense_output_norm, c.eps)
+            picks, routing = self._route(h, layer)
+            expert_in = self._norm(h, layer.expert_norm, c.eps)
+            routed = layer.experts.forward(expert_in, picks, routing)
+            routed = self._norm(routed, layer.expert_output_norm, c.eps)
+            h = (residual + self._norm(dense + routed, layer.output_norm, c.eps)) * layer.scalar
+            if output_taps and i in self.tap_layers:
+                taps[i] = h
+        hidden = self._norm(h, self.weights.norm, c.eps)
+        logits = self.project_logits(hidden) if output_logits else None
+        return hidden, logits, taps
 
     def forward_serial(self, tokens, state: State, *, output_logits: bool = True) -> ForwardResult:
         """Token-at-a-time oracle for row-count/rollback checks, with no visual blocks."""
         if not isinstance(tokens, torch.Tensor):
             tokens = torch.tensor(tokens, dtype=torch.int64, device=self.device)
         tokens = tokens.reshape(-1)
-        state.check(tokens.numel())
+        # Whole-scan admission before the first row; each single-row forward rechecks its own state.
+        if state.poisoned or not 0 < tokens.numel() <= state.context - state.position:
+            raise ValueError("Gemma4 serial scan exceeds the admitted context or uses a poisoned state")
         parts = [self.forward(tokens[i:i + 1], state, output_logits=output_logits) for i in range(tokens.numel())]
         return ForwardResult(torch.cat([p.hidden for p in parts]),
                              torch.cat([p.logits for p in parts]) if output_logits else None,

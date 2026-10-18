@@ -1,7 +1,8 @@
 """Gemma 4 requests with exact target-verified DFlash chains.
 
-Every request owns its target state and immutable companion context. A single
-CUDA stream owns all requests. Prefix entries include the visual input identity.
+The single request lane owns persistent target and companion caches, reset or
+restored per request. A single CUDA stream owns all requests. Prefix entries
+hold detached snapshots and include the visual input identity.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
+
+from .state import PREFILL_ROWS, widest_forward
 
 
 @dataclass(frozen=True)
@@ -109,15 +112,23 @@ class Gemma4Engine:
             self.w = Gemma4Weights.load(model_dir, vision=vision)
         self.target = Gemma4Target(self.w)
         self.head = None
+        self.vision = None
+        longest = 0
+        if vision:
+            from .vision import GemmaCudaVision, GemmaVisionProcessor, processor_geometry
+            self.vision = GemmaCudaVision(self.w.raw_config, self.w.vision, self.w.projector,
+                                          frontend=GemmaVisionProcessor.from_directory(model_dir))
+            media = processor_geometry(model_dir)
+            longest = max(media.image_soft_tokens, media.video_soft_tokens)
+        forward_rows = widest_forward(self.max_rows, longest)
+        # The single request lane's caches are allocated once for the admitted context.
+        self._state = self.target.make_state(self.context_window, rows=forward_rows)
+        self._draft = None
         if draft_dir is not None:
             from .dflash import DFlash
             self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
-                               block=self.max_rows, bits=drafter_bits)
-        self.vision = None
-        if vision:
-            from .vision import GemmaCudaVision, GemmaVisionProcessor
-            self.vision = GemmaCudaVision(self.w.raw_config, self.w.vision, self.w.projector,
-                                          frontend=GemmaVisionProcessor.from_directory(model_dir))
+                               block=self.max_rows, bits=drafter_bits, rows=forward_rows)
+            self._draft = self.head.make_state()
         self._prefix = None
         self._prefix_lock = threading.Lock()
         self._run_lock = threading.Lock()
@@ -132,6 +143,9 @@ class Gemma4Engine:
         self._loaded = torch.cuda.Event()
         self._loaded.record()
         self._stream.wait_event(self._loaded)
+        # Return load-time staging blocks to the device: the persistent caches are allocated, and the
+        # serving snapshots need large blocks that these fragments cannot satisfy (admission counts no cache).
+        torch.cuda.empty_cache()
 
     @contextmanager
     def _lane(self, background: bool):
@@ -171,11 +185,6 @@ class Gemma4Engine:
         import torch
         return torch.cat([result.taps[layer][:count] for layer in self.head.tap_layers], dim=-1)
 
-    def _empty_companion(self):
-        if self.head is None:
-            return None
-        return ([None] * self.head.layers, [None] * self.head.layers, 0, 0)
-
     def _find_prefix(self, prompt, media):
         with self._prefix_lock:
             hit = self._prefix
@@ -184,12 +193,13 @@ class Gemma4Engine:
                 return None
             return hit
 
-    def _keep_prefix(self, prompt, media, state, companion, logits):
+    def _keep_prefix(self, prompt, media, state, logits):
         # Admission reserves one snapshot in addition to every request lane.
         # Evict first so replacing it never temporarily retains two snapshots.
         with self._prefix_lock:
             self._prefix = None
             snapshot = state.snapshot()
+            companion = self._draft.snapshot() if self._draft is not None else None
             copied_logits = logits.clone()
             self._prefix = _Prefix(tuple(prompt), media, snapshot, companion, copied_logits)
 
@@ -197,13 +207,18 @@ class Gemma4Engine:
         import torch
         media = _media_key(vision)
         hit = self._find_prefix(prompt, media)
-        state = self.target.make_state(self.context_window, max_rows=self.max_rows)
+        state = self._state
         cached = len(hit.tokens) if hit is not None else 0
-        companion = self._empty_companion()
         logits = None
         if hit is not None:
             state.restore(hit.state)
-            companion, logits = hit.companion, hit.logits
+            if self._draft is not None:
+                self._draft.restore(hit.companion)
+            logits = hit.logits
+        else:
+            state.reset()
+            if self._draft is not None:
+                self._draft.reset()
         encoded = None
         if vision is not None and cached < len(prompt):
             if self.vision is None:
@@ -213,7 +228,7 @@ class Gemma4Engine:
         start = cached
         while start < len(prompt):
             self._check_open()
-            end = _prefill_end(start, len(prompt), 128, blocks)
+            end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
             ids = prompt[start:end]
             embeddings = None
             if encoded is not None:
@@ -228,7 +243,7 @@ class Gemma4Engine:
                                          output_logits=False, output_taps=self.head is not None,
                                          trusted_tokens=True)
             if self.head is not None:
-                companion = self.head.add_taps_streams([companion], [self._taps(result)])[0]
+                self.head.append(self._draft, self._taps(result))
             if end == len(prompt):
                 logits = self.target.project_logits(result.hidden[-1:])
             start = end
@@ -242,8 +257,8 @@ class Gemma4Engine:
             # All reads of the old entry have been issued on the same stream.
             # Drop its host owner before allocating a replacement snapshot.
             hit = None
-            self._keep_prefix(prompt, media, state, companion, logits)
-        return state, companion, logits, cached
+            self._keep_prefix(prompt, media, state, logits)
+        return state, logits, cached
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True,
@@ -262,7 +277,7 @@ class Gemma4Engine:
         queued = time.perf_counter()
         with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
             started = time.perf_counter()
-            state, companion, logits, cached = self._prefill(prompt, vision, progress, started)
+            state, logits, cached = self._prefill(prompt, vision, progress, started)
             # Grammar masking is in place; immutable prefix logits are never
             # handed to it, including an exact full-prompt cache hit.
             logits = logits.clone() if constraint is not None else logits
@@ -286,10 +301,8 @@ class Gemma4Engine:
                 inputs = [out[-1]]
                 if active_drafts and room > 1:
                     limit = min(self.max_rows - 1, room - 1)
-                    launched = self.head.launch_blocks([companion], inputs, limit)[0]
-                    guesses, parents, _ = self.head.finish_tree(launched, state.position, limit, sampling)
-                    if parents != list(range(-1, len(guesses) - 1)):
-                        raise RuntimeError("Gemma4 DFlash returned a non-chain proposal")
+                    proposal = self.head.propose(self._draft, inputs[0], limit)
+                    guesses = proposal.tokens if proposal is not None else []
                     if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
                                                    for t in guesses):
                         raise RuntimeError("Gemma4 DFlash returned an invalid proposal")
@@ -308,7 +321,7 @@ class Gemma4Engine:
                 chosen = _accepted(sampled, inputs, room, eos)
                 state.rollback(position + len(chosen))
                 if active_drafts:
-                    companion = self.head.add_taps_streams([companion], [self._taps(result, len(chosen))])[0]
+                    self.head.append(self._draft, self._taps(result, len(chosen)))
                 if constraint is not None:
                     constraint.advance(chosen)
                 rounds += 1

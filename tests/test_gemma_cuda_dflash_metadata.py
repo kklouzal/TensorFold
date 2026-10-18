@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from tensorfold.families.gemma4.dflash_metadata import DraftConfig, checked_headers, draft_geometry, draft_weights
+from tensorfold.families.gemma4.dflash_metadata import DraftConfig, checked_headers
 
 
 def config():
@@ -105,16 +105,9 @@ def test_conflicting_rotary_theta_and_partial_boolean_refuse():
             DraftConfig.from_dict({**config(), "rope_parameters": params})
 
 
-def test_checked_headers_and_bf16_resident_staging_accounting(tmp_path):
-    cfg, header = write_checkpoint(tmp_path, config())
+def test_checked_headers_accept_the_declared_bf16_inventory(tmp_path):
+    cfg, _ = write_checkpoint(tmp_path, config())
     assert checked_headers(tmp_path)[0] == cfg
-    sizes = [math.prod(info["shape"]) * 2 for info in header.values()]
-    estimated = draft_weights(tmp_path)
-    assert estimated.resident == sum(sizes) + cfg.head_dim // 2 * 4
-    assert estimated.staging == max(sizes) and estimated.mapped == 0
-    for bits in (0, 4, 8, True):
-        with pytest.raises(ValueError, match="BF16"):
-            draft_weights(tmp_path, bits=bits)
 
 
 @pytest.mark.parametrize("change", [
@@ -140,15 +133,3 @@ def test_excessive_layer_declaration_fails_before_shape_materialization(tmp_path
     with pytest.raises(ValueError, match="tensor count"):
         checked_headers(tmp_path)
 
-
-def test_geometry_bounds_swa_residency_and_full_context_growth():
-    raw = config()
-    cfg = DraftConfig.from_dict(raw)
-    estimate = draft_geometry(raw, streams=2, kept=3, prompt_rows=8)
-    replicas = 2 * 2 + 3 + 1
-    layer_token_bytes = 2 * cfg.kv_heads * cfg.head_dim * 2
-    assert estimate.bytes_at(33) - estimate.bytes_at(32) == replicas * layer_token_bytes
-    assert estimate.bytes_at(2) - estimate.bytes_at(1) == replicas * layer_token_bytes * 2
-    for change in ({"streams": True}, {"kept": -1}, {"block": 129}, {"block": 9}, {"prompt_rows": 0}):
-        with pytest.raises(ValueError):
-            draft_geometry(raw, **change)

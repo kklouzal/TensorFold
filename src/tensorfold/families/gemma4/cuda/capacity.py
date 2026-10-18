@@ -16,7 +16,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
     from tensorfold.cuda.capacity import Geometry, Weights, admit as common, headers
-    from .state import capacity_bytes
+    from .state import (GLOBAL_CHUNK, SEQUENTIAL_ROWS, capacity_bytes, companion_rings, sliding_slots,
+                        widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
     raw = read_config(model_dir)
@@ -78,16 +79,19 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         staging = max(staging, 3 * max(math.prod(info['shape']) * itemsize(info, name)
                                     for name, info in draft_entries.items()))
 
+    longest = max(media_geometry.image_soft_tokens, media_geometry.video_soft_tokens) if vision else 0
+    rows = widest_forward(max_rows, longest)
+
     def workspace(slots):
-        rows = max(128, max_rows, media_geometry.image_soft_tokens if vision else 0,
-                   media_geometry.video_soft_tokens if vision else 0)
         # One layer's simultaneous activation/route tensors and retained taps.
         scratch = rows * (32 * cfg.hidden + 16 * cfg.top_k * cfg.moe_width) * 2
         scratch += max_rows * cfg.vocab * 4
-        # Growth copies preserve the old allocation until its replacement is ready.
-        largest = max(heads * dim for heads, dim in
-                      (cfg.attention_geometry(i) for i in range(cfg.layers)))
-        scratch += (slots + 512) * largest * 4
+        # Attention chunk partials (FP32 o plus m and l): every sliding forward,
+        # and full attention below the sequential row count.
+        group = cfg.heads // cfg.kv_heads
+        scratch += rows * cfg.heads * sliding_slots(cfg.window, rows, group, longest) * (cfg.head_dim + 2) * 4
+        chunks = -(-min(slots, cfg.max_position) // GLOBAL_CHUNK)
+        scratch += (SEQUENTIAL_ROWS - 1) * cfg.heads * chunks * (cfg.global_head_dim + 2) * 4
         if vision:
             v = raw['vision_config']
             patches = max(media_geometry.image_patches, media_geometry.video_patches)
@@ -96,13 +100,12 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         return scratch
 
     def geometry(slots):
-        target = capacity_bytes(cfg, min(slots, cfg.max_position), max_rows)
+        target = capacity_bytes(cfg, min(slots, cfg.max_position), rows)
         companion = 0
         if draft is not None:
-            companion = sum((min(slots, draft.sliding_window - 1) if kind == 'sliding_attention' else slots)
-                            * draft.kv_heads * draft.head_dim * 4 for kind in draft.layer_types)
-            # Context projection/append may retain old and new K/V concurrently.
-            companion *= 2
+            # DraftState K and V (the engine's proposal block is at most max_rows).
+            companion = sum(companion_rings(draft.layer_types, draft.sliding_window, max_rows, rows,
+                                            min(slots, cfg.max_position))) * draft.kv_heads * draft.head_dim * 4
         return (streams + keep) * (target + companion) + streams * workspace(slots)
 
     return common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
