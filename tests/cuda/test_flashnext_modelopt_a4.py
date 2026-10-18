@@ -125,3 +125,49 @@ def test_mixed_cache_a4_then_w4a16_mtp_then_a4_preserves_complete_fields_and_slo
         torch.cuda.synchronize()
     finally:
         cache.close()
+
+
+def test_direct_alpha_uses_original_scale_without_double_reciprocal():
+    import struct
+
+    from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4
+
+    direct = struct.unpack("f", struct.pack("I", 0x3b350913))[0]
+    codes = torch.full((1, 1, 32), 0x22, dtype=torch.uint8, device="cuda")
+    scales = torch.full((1, 1, 4), 0x38, dtype=torch.uint8, device="cuda")
+    blob = pack_projection_a4(torch.full((64, 32), 0x22, dtype=torch.uint8),
+                              torch.ones((64, 4), dtype=torch.float8_e4m3fn)).cuda().view(1, 1, -1)
+    weight = torch.ones((1, 1), dtype=torch.float32, device="cuda")
+    inputs = torch.full((1, 1), direct, dtype=torch.float32, device="cuda")
+    items = torch.tensor([[0, 0, 1]], dtype=torch.int32, device="cuda")
+    plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
+    output = torch.empty((1, 1, 64), dtype=torch.float32, device="cuda")
+    _ext().gemm(codes, scales, blob, weight, inputs, items, plan, output, 64, 64, 1, True, True)
+    # Every product is exactly1, their exact sum64, and multiplication by64
+    # only shifts the exponent. The original direct FP32 bits remain visible.
+    assert torch.equal(output, torch.full_like(output, 64 * direct))
+    rounded = float(1. / (1. / torch.tensor(direct, dtype=torch.float32)))
+    assert not torch.equal(output, torch.full_like(output, 64 * rounded))
+
+
+def test_direct_activation_quantizer_extremes_ties_underflow_and_signed_zero():
+    from tensorfold.cuda.nvfp4.modelopt_experts import ModelOptExpertsA4
+
+    reader = Reader(count=1, width=64, dims=128)
+    bank = load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0")
+    assert isinstance(bank, ModelOptExpertsA4)
+    values = [0., -0., .25, -.25, .75, -.75, 1.25, -1.25, 1.75, -1.75, 2.5, -2.5, 3.5, -3.5, 6., -6.]
+    maximum = torch.finfo(torch.bfloat16).max
+    x = torch.tensor([values * 8, [maximum, -maximum] * 64, [2.**-20] * 128,
+                      [float("nan")] * 128], dtype=torch.bfloat16, device="cuda")
+    plan = torch.tensor([[r, 0, 0] for r in range(4)], dtype=torch.int32, device="cuda")
+    calibration = torch.ones((1, 2), dtype=torch.float32, device="cuda")
+    codes = torch.empty((2, 4, 64), dtype=torch.uint8, device="cuda")
+    scales = torch.empty((2, 4, 8), dtype=torch.uint8, device="cuda")
+    _ext().quantize(x, plan, calibration, codes, scales, False, True)
+    for projection in range(2):
+        expected_codes, expected_scales = quant_reference(x.cpu(), 1.)
+        assert torch.equal(codes[projection].cpu(), expected_codes)
+        assert torch.equal(scales[projection].cpu(), expected_scales)
+    assert torch.count_nonzero(codes[0, 2]) == 0 and torch.count_nonzero(scales[0, 2]) == 0
+    torch.cuda.synchronize()
