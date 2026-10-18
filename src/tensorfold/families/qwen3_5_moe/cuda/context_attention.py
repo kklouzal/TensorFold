@@ -18,6 +18,10 @@ import triton.language as tl
 from ..dflash_metadata import CONTEXT_CHUNK as CHUNK, QUERY_TILE, padded_block
 
 KEY_TILE = 64       # context keys an online-softmax step reads
+# Integer arguments that vary between launches of one block length (layer, rows, chunk count) are not value-
+# specialised: each kernel compiles once per block length instead of once per layer 0 / layer 1 / other, and their
+# address multiples come from the constexpr D and BM factors either way (same PTX loads, stores and mma).
+_RUNTIME_INTS = ("layer", "R", "PARTS")
 
 
 @triton.jit
@@ -72,7 +76,7 @@ def _keys(q, kc, vc, start, stop, s, m_i, l_i, acc, scale, D: tl.constexpr, BN: 
     return m_i, l_i, acc
 
 
-@triton.jit
+@triton.jit(do_not_specialize=_RUNTIME_INTS)
 def _partials(Q, META, PM, PL, PO, scale, layer, R, PARTS,
               G: tl.constexpr, HKV: tl.constexpr, L: tl.constexpr, LP: tl.constexpr, D: tl.constexpr,
               BN: tl.constexpr, CH: tl.constexpr, BM: tl.constexpr, TILES: tl.constexpr):
@@ -95,7 +99,7 @@ def _partials(Q, META, PM, PL, PO, scale, layer, R, PARTS,
     tl.store(PO + slot[:, None] * D + tl.arange(0, D)[None, :], acc)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=_RUNTIME_INTS)
 def _finish(Q, KB, VB, META, PM, PL, PO, O, scale, layer, R, PARTS,
             G: tl.constexpr, HKV: tl.constexpr, L: tl.constexpr, LP: tl.constexpr, D: tl.constexpr,
             BN: tl.constexpr, CH: tl.constexpr, BM: tl.constexpr, TILES: tl.constexpr):
@@ -159,8 +163,8 @@ class Round:
             self.pm = torch.empty(slots, dtype=torch.float32, device=device)
             self.pl = torch.empty_like(self.pm)
             self.po = torch.empty((slots, dim), dtype=torch.float32, device=device)
-        else:                                       # no partials: the kernels never touch these arguments
-            self.pm = self.pl = self.po = self.table
+        else:       # no partials: never read, but FP32 like the scratch so _finish keeps one compiled signature
+            self.pm = self.pl = self.po = torch.empty(0, dtype=torch.float32, device=device)
 
 
 def block_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, launch: Round, layer: int,

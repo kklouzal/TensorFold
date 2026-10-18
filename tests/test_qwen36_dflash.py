@@ -39,7 +39,8 @@ def rotate(x, positions, cfg, inv):
 
 class StoreRound:
     def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device):
-        self.pairs, self.heads, self.kv_heads, self.dim, self.length = list(zip(stores, lengths)), heads, kv_heads, dim, length
+        self.pairs, self.heads, self.kv_heads = list(zip(stores, lengths)), heads, kv_heads
+        self.dim, self.length = dim, length
 
 
 def store_attend(q, k, v, launch, layer, scale):
@@ -317,6 +318,31 @@ def test_streams_resumed_from_one_context_never_write_each_others_rows(fixture):
     alone = [draft.add_taps_streams([cached], [part])[0] for part in (taps[4:6], taps[6:9])]
     for got, want in zip((a, b), alone):
         assert got[2:] == want[2:] and all(torch.equal(x, y) for x, y in zip(committed(got), committed(want)))
+
+
+def test_a_failed_append_keeps_every_context_and_later_appends_exact(fixture):
+    directory, _raw, _cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    taps = torch.randn((9, 128), generator=torch.Generator().manual_seed(7)).bfloat16()
+    draft.add_taps(taps[:4])
+    cached = draft.snapshot()
+    kept = [t.clone() for field in (0, 1) for t in committed(cached, field)]
+
+    def exhausted(*_args):
+        raise MemoryError("drafter store")
+
+    with pytest.MonkeyPatch.context() as patch:              # the first stream claims the tail, the second's copy fails
+        patch.setattr(dflash, "_Store", exhausted)
+        with pytest.raises(MemoryError, match="drafter store"):
+            draft.add_taps_streams([cached, cached], [taps[4:6], taps[6:9]])
+    assert all(torch.equal(x, y) for x, y in zip([t for f in (0, 1) for t in committed(cached, f)], kept))
+    retried = draft.add_taps_streams([cached, cached], [taps[4:6], taps[6:9]])
+    for got, rows in zip(retried, (taps[:6], torch.cat((taps[:4], taps[6:9])))):
+        clean = dflash.DFlash(directory, target, context_limit=64)
+        clean.add_taps(rows)
+        want = clean.snapshot()
+        assert got[2:] == want[2:]
+        assert all(torch.equal(x, y) for f in (0, 1) for x, y in zip(committed(got, f), committed(want, f)))
 
 
 def test_stores_grow_geometrically_within_the_window_and_keep_rows(fixture):

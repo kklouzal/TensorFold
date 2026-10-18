@@ -20,15 +20,22 @@ def _store(kv_heads, capacity, gen):
 
 
 def _reference(q, k, v, stores, lengths, layer, length, scale):
-    """Each stream's block over [its committed rows | its own block rows], noncausal, in float64."""
-    group, outs = q.shape[0] // k.shape[0], []
+    """Each stream's block over [its committed rows | its own block rows], noncausal, in float64, and each output's
+    error bound. The kernel rounds every softmax weight to BF16 (unit roundoff 2**-8) before the value product while
+    normalising by the FP32 sum, so an output moves by at most 2**-8 * (softmax @ |v|); BF16 output rounding adds at
+    most 2**-8 of its magnitude. 2**-12 * (softmax @ |v|) covers the FP32 terms: logits of 128 BF16 products, exp and
+    the online-softmax accumulation (a few hundred steps here), each under 2**-13 relative."""
+    group, outs, bounds = q.shape[0] // k.shape[0], [], []
     for j, (st, s) in enumerate(zip(stores, lengths)):
         rows = slice(j * length, (j + 1) * length)
         kk = torch.cat((st.k[layer, :, :s], k[:, rows]), 1).double().repeat_interleave(group, 0)
         vv = torch.cat((st.v[layer, :, :s], v[:, rows]), 1).double().repeat_interleave(group, 0)
-        att = (q[:, rows].double() @ kk.transpose(1, 2)) * scale
-        outs.append((att.softmax(-1) @ vv).transpose(0, 1).reshape(length, -1))
-    return torch.cat(outs)
+        att = ((q[:, rows].double() @ kk.transpose(1, 2)) * scale).softmax(-1)
+        out = (att @ vv).transpose(0, 1).reshape(length, -1)
+        spread = (att @ vv.abs()).transpose(0, 1).reshape(length, -1)
+        outs.append(out)
+        bounds.append(2**-8 * (spread + out.abs()) + 2**-12 * spread)
+    return torch.cat(outs), torch.cat(bounds)
 
 
 def _inputs(heads, kv_heads, length, streams, gen):
@@ -51,9 +58,8 @@ def test_matches_exact_softmax_across_chunk_boundaries(heads, kv_heads, length):
     q, k, v = _inputs(heads, kv_heads, length, len(lengths), gen)
     for layer in (0, LAYERS - 1):
         out = _run(q, k, v, stores, lengths, layer, length, kv_heads)
-        ref = _reference(q, k, v, stores, lengths, layer, length, D ** -0.5)
-        # BF16 probabilities in the value product and BF16 output rounding: a few BF16 ulps of max|v| ~ 4.5.
-        assert (out.double() - ref).abs().max().item() < 2e-2
+        ref, bound = _reference(q, k, v, stores, lengths, layer, length, D ** -0.5)
+        assert ((out.double() - ref).abs() <= bound).all()
 
 
 def test_a_stream_gets_the_same_bits_alone_among_others_and_at_any_capacity():
