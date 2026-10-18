@@ -8,6 +8,14 @@ profile: resident checkpoint-native W4A4 experts, six native MTP drafts at
 CUDA-graph sizing. The configured context is the checkpoint's native 262,144
 tokens. Quantized KV changes output; this is not a BF16-equivalence claim.
 
+The [2026-10-18 live receipt](deployment-nvfp4-20261018.json) records the healthy
+`qwen38-flash-next-nvfp4` container at `http://192.168.1.50:8888/v1`, on the old
+service's LAN port. Serial/MTP full-token identity, four parallel submitted
+requests, known image/video input and normal/streamed strict tool calls passed.
+Forty other retired TensorFold containers, including `qwen38-flash-next-tf`,
+were removed after preserving their inspect records and logs. Images, model
+files, volumes, caches and unrelated containers were retained.
+
 The [qualification](../../docs/gb10-nvfp4-validation.md) records the selected
 four-stream throughput and the small observed single-request tradeoff. Model
 sampling, EOS, chat template and default reply length come from the checkpoint;

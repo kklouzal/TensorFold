@@ -4,6 +4,10 @@ For the tested GB10 NVFP4 service, use the [dedicated deployment profile](deploy
 six native MTP drafts, four streams, SSD n-grams, vision and automatic graph sizing,
 with an 8 GiB host-memory reserve. Its immutable runtime and measured tradeoffs
 are recorded separately from the historical affine/YaRN deployment.
+The [2026-10-18 deployment receipt](deploy/gb10/deployment-nvfp4-20261018.json)
+verifies the healthy LAN service at `http://192.168.1.50:8888/v1`, full-token
+serial/MTP identity, image/video and strict tool calls. Forty retired TensorFold
+containers were removed with their logs preserved.
 
 This fork of [TensorFold](https://github.com/ashhart/TensorFold) serves language models on Apple Silicon and NVIDIA GPUs through an OpenAI-compatible API. It retains the upstream model families, family-specific kernels, exact speculative decoding, prompt reuse, tools, reasoning and vision support, and adds a reproducible NVIDIA container, Flash Next YaRN context extension, RAM-backed expert caching, optional RotorQuant KV formats, and service admission controls.
 
@@ -48,7 +52,8 @@ or equivalence claim. [Comparison and limits](docs/gb10-nvfp4-validation.md#cont
 retain all observations. Further E/F work was stopped. The 483-node RQ/KV
 selection has composite coverage: 192 earlier named passes plus 290 new passes
 and one optional-extension skip; the interrupted whole run remains incomplete.
-The deployment receipt remains separate.
+The [live deployment receipt](deploy/gb10/deployment-nvfp4-20261018.json) records
+the subsequently launched immutable runtime and its LAN acceptance checks.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
@@ -82,7 +87,7 @@ Installed local checks passed **7,994 CPU cases** and cover **2,049 distinct CUD
 
 **Earlier Python integration qualification (2026-10-11):** source `dfb4669d6b98f26de9ecfd75d3ccf7e90ec747bf` passed the full installed Linux CPU suite on both native ARM64 and AMD64: **7,320 passed, 177 skipped, no failures or errors per host**. Source `2edfaa515d85ca48a57365552f38a97a17123c3c` subsequently passed affected installed-package, CLI, Harness and actual GPU startup checks on both hosts; unchanged runtime/build/test bytes support scoped reuse of the earlier results. Native CUDA component and synthetic model checks passed on GB10 and RTX PRO 2000 Blackwell.
 
-All **256 ordered KV-format pairs passed on both GB10 and RTX PRO 2000 Blackwell**, with completed-run receipt and container-retirement checks. Isolated GDN candidates passed fresh native checks on GB10 and remain unselected pending full-model performance evidence. [Detailed qualification](docs/optimization-validation.md#python-line-integration-2026-10-11) identifies the images, workloads and limits. Full pretrained-model and performance comparisons remain pending; no Apple Silicon host is available. Historical performance results retain their original scope. The GB10 service now runs the qualified Python **0.6.6** image with its existing 1M-context/four-slot profile. [Deployment verification](deploy/gb10/deployment-python-20261012.json) records actual startup, complete generation, tokenization, serial/MTP identity and concurrent-request checks. Source `9acb28c3` then replaced only the Harness launcher so `/v1/tokenize` reports template fingerprint, reasoning-effort and provenance metadata; its [receipt](deploy/gb10/deployment-harness-bridge-20261012.json) records the live checks.
+All **256 ordered KV-format pairs passed on both GB10 and RTX PRO 2000 Blackwell**, with completed-run receipt and container-retirement checks. Isolated GDN candidates passed fresh native checks on GB10 and remain unselected pending full-model performance evidence. [Detailed qualification](docs/optimization-validation.md#python-line-integration-2026-10-11) identifies the images, workloads and limits. Full pretrained-model and performance comparisons remain pending; no Apple Silicon host is available. Historical performance results retain their original scope. The historical 2026-10-12 GB10 deployment ran the qualified Python **0.6.6** image with its 1M-context/four-slot profile. [Deployment verification](deploy/gb10/deployment-python-20261012.json) records actual startup, complete generation, tokenization, serial/MTP identity and concurrent-request checks. Source `9acb28c3` then replaced only the Harness launcher so `/v1/tokenize` reports template fingerprint, reasoning-effort and provenance metadata; its [receipt](deploy/gb10/deployment-harness-bridge-20261012.json) records the live checks.
 
 The GB10 Compose profile uses a separate cache directory for the Python image,
 preserving the previous image's compiled cache for rollback. See the
