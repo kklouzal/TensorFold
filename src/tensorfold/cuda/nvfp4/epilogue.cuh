@@ -21,7 +21,9 @@ __device__ __forceinline__ float one(const Scales& e, int row, int col, float v)
     return e.rs == nullptr ? c : c * e.rs[row];
 }
 
-// Columns col and col + 1 (col even; ``cs`` holds npad entries, so col + 1 is always inside it).
+// Columns col and col + 1, col even and below N (<= npad, even), so col + 1 is inside ``cs``'s npad entries. A block's
+// columns can pass npad (a 256-wide tile over npad % 256 == 128, a 128-wide one over a ``tiles`` view), so callers skip
+// columns from N on, which they never store, before reading their factors.
 __device__ __forceinline__ float2 pair(const Scales& e, int row, int col, float v0, float v1) {
     return make_float2(one(e, row, col, v0), one(e, row, col + 1, v1));
 }

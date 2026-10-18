@@ -428,7 +428,8 @@ def test_token_prompt_rows_are_chunk_invariant_and_the_declared_product(n, k):
     x = _token_rows(300, k, 6)
     full = checkpoint.prompt(checkpoint.A8, x, lin)
     for tile in (0, 11):
-        assert torch.equal(_chunked(lambda c: checkpoint.prompt(checkpoint.A8, c, lin, tile=tile), x), full), tile
+        assert torch.equal(_chunked(lambda c, tile=tile: checkpoint.prompt(checkpoint.A8, c, lin, tile=tile), x),
+                           full), tile
     for tile in TILES:
         assert torch.equal(checkpoint.prompt(checkpoint.A8, x, lin, tile=tile), full), tile
     ref, absum = _token_ref(x, wq, cols)
@@ -470,3 +471,25 @@ def test_full_precision_channel_fp8_is_w8a16_exact(n, k):
     assert torch.equal(_chunked(lin.prefill, x), prompt)
     with pytest.raises(ValueError, match="--prefill-fp8"):
         lin.prefill8(None)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1e-3, float("nan"), float("inf")])
+def test_channel_scales_are_finite_positive_checkpoint_values(bad):
+    w = torch.zeros((8, 64), dtype=torch.uint8, device="cuda").view(torch.float8_e4m3fn)
+    scales = torch.full((8,), 1e-3)
+    scales[5] = bad
+    with pytest.raises(ValueError, match="finite and positive"):
+        Fp8Linear.from_checkpoint(w, scales, token=True)
+
+
+def test_channel_scales_are_one_a_channel_and_never_meet_a_static_input_scale():
+    """Static-scale checkpoint math applies one tensor factor alone, and per-token rows need channel scales."""
+
+    w = torch.zeros((8, 64), dtype=torch.uint8, device="cuda").view(torch.float8_e4m3fn)
+    scales = torch.full((8,), 1e-3)
+    with pytest.raises(ValueError, match="7 channel scales"):
+        Fp8Linear.from_checkpoint(w, scales[:7], token=True)
+    with pytest.raises(ValueError, match="not a static input scale"):
+        Fp8Linear.from_checkpoint(w, scales, act=0.01)
+    with pytest.raises(ValueError, match="pair with per-channel"):
+        Fp8Linear.from_checkpoint(w, 1e-3, token=True)

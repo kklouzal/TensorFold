@@ -224,7 +224,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "
                            "default, runs their own math as their runtimes do (FP4 x FP4 in NVFP4 layers on SM 12.x "
-                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9, under the checkpoint's static input scales; "
+                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9; rows under the checkpoint's static input scales, "
+                           "or each row's own scale for per-channel FP8 with dynamic per-token inputs; "
                            "layers a GPU has no mma for run W4A16, and the startup line says which); full runs bf16 "
                            "activations against the stored weights exactly. The weights never change, only the math; "
                            "MLX checkpoints have one math. Replies equal this server's own serial decoding either way")
