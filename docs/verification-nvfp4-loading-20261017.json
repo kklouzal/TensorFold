@@ -1,0 +1,1255 @@
+{
+  "schema_version": 1,
+  "status": "implemented loader changes and selected foundation CPU/dependency evidence; final production guard/pin promotion, immutable latest images and GPU/model qualification pending",
+  "date": "2026-10-17",
+  "source": {
+    "revision": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+    "tree": "30c0588c62b2640a6d3f209dcf74f4679a3c4462",
+    "source_uid": "a7b31df85b7c03f041a23ec46f41daf71f7debbb6548b3bb4636108a02a15d41",
+    "archive_sha256": "bf0e8b1e228081351f2cfcb0a88b39eb3f49a273ccabb886bc6ed35b530f67e4",
+    "platform": "linux/amd64",
+    "base_image": "nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:f86c199a302a3a7405d5f055adf1311cd660e85d8a66cf452be6eb45d5768639",
+    "capture": "final-capture-abb67d62/attempts/final-03",
+    "build_complete": true,
+    "runtime_image": "sha256:ef32b6bf8c459ae945eb00628a02bae40461e88829a63b7c62b7a920068be3df",
+    "verification_image": "sha256:8a7765e9655fa10f60956c26c21442f64164d45bf431b0490e74cd157b39ca0c",
+    "wheel_sha256": "943ff1a2dc099c31c25a2db692dbebf95b74f65ab9abe1d4bf5e5d4a30288b96",
+    "installed_package_files_matched": 531,
+    "baked_runtime_files_matched": 542,
+    "baked_verification_files_matched": 1261,
+    "audit_result": "both passed; package/wheel/native owner/source hashes verified without GPU initialization",
+    "native_fd_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+    "runtime_packages": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0",
+      "huggingface-hub": "1.24.0",
+      "nvidia-nccl-cu13": "2.30.7",
+      "transformers": "5.17.0"
+    },
+    "installed_nccl": {
+      "native_version": 23007,
+      "loader_name": "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2",
+      "loaded_paths": [
+        "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+      ]
+    },
+    "limits": "Installed audit proves provenance/import/library resolution, not model/GPU qualification.",
+    "qualification_role": "Historical pinnedABB67 artifact; latest route selected and CPU/dependency preparation closed, while finalproductionimage/native/model qualification remains pending."
+  },
+  "affected_contracts": {
+    "modelopt_loading": "Read original packed codes and FP8 block-scale payload on selected CUDA device, use existing exact bit repack, synchronously copy final four fields into owned CPU authority before publication. Per-tensor global scale conversion stays on CPU; F32 raw bits are preserved. MTP BF16/FP8 conversion math and existing serving math are unchanged.",
+    "ct_loading": "Retain original099 CPU byte-permutation loader; remove unselected production GPU helper. Source proof supports scoped numerical-body reuse, not whole-runtime startup equivalence.",
+    "admission": "GPU packing scratch and physical pinned Reader backing are separately charged. On tested pinned allocator, two (64MiB+3pages) Reader allocations round to two128MiB buckets=256MiB; Linux read/publication phases add max(buffered,publication) once. Authority/read-ahead remains separate. EP leader owns backbone and expert Readers independently and charges each live ring; follower accounting follows its owned Reader. No borrowed Reader/payload released before blocking transfers/publication complete. Staged-platform boundary accounting is source-tested, not Windows qualification.",
+    "rotorquant": "Replace the only actual Triton-JIT chained comparison with CODEC>=1 and CODEC<=8. Preserve inclusive1..8 assertion, same arithmetic/codec formats and all other function AST; host Python comparisons unchanged.",
+    "nccl": "TF_NCCL_LIB override is authoritative; then active interpreter NVIDIA namespace wheel, Torch bundle, system discovery. Selected missing/broken environment libraries fail explicitly. POSIX SO_REUSEADDR before bind permits retired sessions while preserving active-listener exclusivity; no SO_REUSEPORT and no promised immediate reuse for older nonreuse sessions. Communicator/collective numerical/lifetime bodies unchanged."
+  },
+  "closed_evidence": {
+    "ct_startup_selection": {
+      "source": "5f9fd9bb46a8c3183f724df68733c0fc3dc2730c",
+      "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+      "analysis_sha256": "cd52045239f5f5e65a8e3b23d17d99ba247d7b8c0fff76b3ba5a1ffc6ee93349",
+      "engine_seconds": {
+        "cpu": [
+          65.71341855102219,
+          65.33761158003472
+        ],
+        "gpu": [
+          67.33492367505096,
+          67.56853549589869
+        ],
+        "cpu_mean": 65.52551506552845,
+        "gpu_mean": 67.45172958547482,
+        "gpu_minus_cpu_mean": 1.9262145199463703,
+        "gpu_over_cpu_mean": 1.0293964041033492,
+        "every_gpu_slower_than_every_cpu": true
+      },
+      "http_ready_seconds": {
+        "cpu": [
+          66.18929981999099,
+          65.82681802206207
+        ],
+        "gpu": [
+          67.81730193505064,
+          68.05451755889226
+        ],
+        "cpu_mean": 66.00805892102653,
+        "gpu_mean": 67.93590974697145,
+        "gpu_minus_cpu_mean": 1.9278508259449154,
+        "every_gpu_slower_than_every_cpu": true
+      },
+      "order": [
+        "cpu",
+        "gpu",
+        "gpu",
+        "cpu"
+      ],
+      "samples_per_arm": 2,
+      "exactness": "25 full32-token arrays across five constructions including separate warmup; greedy/seeded serial/draft identity, same request work/metadata/pool, owners closed.",
+      "warmup_engine_seconds": 91.04871514393017,
+      "warmup_native_build_messages": 2,
+      "timed_native_build_messages": 0,
+      "decision": "CTCPU retained. TorchGPU and private checkpoint.pack4 alternatives unselected for this actual default-thread region.",
+      "uncertainty": "descriptive local ordering only; no unconditional confidence interval/equivalence; configured8-thread sensitivity separate."
+    },
+    "modelopt_initial_components": {
+      "source": "5f9fd9bb46a8c3183f724df68733c0fc3dc2730c",
+      "default_threads": 4,
+      "synthetic_shapes": [
+        [
+          512,
+          2560
+        ],
+        [
+          1024,
+          2560
+        ]
+      ],
+      "ratio_cpu_median_over_gpu_median": [
+        9.606072204673314,
+        16.62965022104891
+      ],
+      "scope": "inclusive transfers/finalCPUpublication; deterministic periodic synthetic component samples, not full export startup. Configured8 results are separate.",
+      "native_initial": "38selected cases at5f9; not a finalabb67 installed gate."
+    },
+    "selected_loader_cpu": {
+      "source": "b9d370166da39a5e5d0df19d7d3921bd7d1631b2",
+      "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+      "mode": "diagnostic source overlay",
+      "passed": 266,
+      "cuda_skips": 12,
+      "seconds": 4.87,
+      "scope": "CPU controls, metadata/admission/ownership and native tests skipped withoutGPU; no final installed claim"
+    },
+    "pinned39_full_affected_native": {
+      "source": "4c0d3279b36948492a51f6a5c87ada9c2533033c",
+      "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+      "passed": 488,
+      "skipped": 1,
+      "seconds": 791.7,
+      "selected_modules": [
+        "tests/cuda/test_nvfp4_loading_pack.py",
+        "tests/cuda/test_flashnext_rotorquant.py",
+        "tests/cuda/test_flashnext_kvquant.py"
+      ],
+      "new_modelopt_cases": 6,
+      "width640_dims2560_synthetic_peak_allocated_bytes": 39937536,
+      "width640_admitted_device_loading_bytes": 231833856,
+      "all_five_modelopt_peak_records_within_admission": true,
+      "all_post_call_device_bytes": 0,
+      "byte_oracle": "nonperiodic independently seeded projections, all256FP8scale encodings, asymmetric shapes and exactCPUauthority/globalF32bits; injectedfailure lifetime/recovery case",
+      "skip_identification": "source-inferred unique optional exllamav3_ext importorskip; raw summary did not name test (no-rs). No coverage claim for that external-extension oracle.",
+      "reuse_to_abb67": {
+        "comparison_scope": "all src/,tests/,deploy/gb10/,pyproject.toml,setup.py paths",
+        "changed_paths": [
+          "src/tensorfold/cuda/comm.py",
+          "src/tensorfold/cuda/local_store.py",
+          "tests/test_cuda_nccl_library.py",
+          "tests/test_local_expert_store.py"
+        ],
+        "meaning": "All selected ModelOpt/RQ/KV tests, numerical sources and build/dependency bytes match final capture. Four changed NCCL/store paths have their separate gates; this remains a source4c0 diagnostic pass, not an abb67 installed pass."
+      },
+      "qualification_role": "Historical oldpinned diagnostic stack; not newNGC/nightlyfoundation verification."
+    },
+    "nccl_store_cpu": {
+      "source": "4755ac0f490b66f680de01492fbf85ef13f1d6b3",
+      "initial_pinned216": {
+        "passed": 139,
+        "seconds": 4.39,
+        "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666"
+      },
+      "compatibility214": {
+        "passed": 139,
+        "seconds": 3.07,
+        "image": "sha256:db68e206cea81db95c1a8f228ca1f30eee5cf9bd97256c1da4db151a513b234a",
+        "native_version": 23007,
+        "library": "/opt/triton38-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2",
+        "cuda_initialized": false
+      },
+      "source_proof": "comm.py/local_store.py hashes exactly matchabb67; arithmetic/communicator/lifetime definitions unchanged by library/setsockopt edits.",
+      "limits": "CPUGetVersion/store/coupled controls do not initialize CUDA communicators or qualify twoGPU ranks. Initial missing-native-FD preparation failures retained; proper139case compatibility gate supersedes that prerequisite gap."
+    },
+    "compatibility38_readiness": {
+      "image": "sha256:db68e206cea81db95c1a8f228ca1f30eee5cf9bd97256c1da4db151a513b234a",
+      "mode": "isolated owned3.12.3venv; diagnostic current-source overlay required",
+      "versions": {
+        "torch": "2.14.1+cu130",
+        "torch_cuda": "13.0",
+        "torch_git": "5c4886908584029761b579af026dcfb627c84070",
+        "triton": "3.8.0",
+        "numpy": "2.5.3",
+        "pytest": "8.4.2"
+      },
+      "package_count": 50,
+      "owned_mapped_backend_dso_count": 23,
+      "pip_check": "No broken requirements found.\n",
+      "system_site_packages": false,
+      "cuda_initialized": false,
+      "cached_native_project_wheel_sha256": "c3dc9449018b7597bdf28baae7c8aa30561427919302135f78b481794a16f15b",
+      "native_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+      "nvcc": "13.4.59",
+      "triton_ptxas": "12.9.86",
+      "preparation": "Audited installed-wheel RECORD relocation of matching reference distributions plus missing ownedproject dependencies; normal offline cached099wheel install. Not fresh officialwheel installation and not exact friendenvironment. Oldprefixcopiedconsole entrypoints unqualified; ownedpython -m used.",
+      "result": "historical CPUreadiness/audit passed; native suite later intentionally stopped/incomplete",
+      "limits": "Do not use installed-only old099Python kernels as proof of fixedabb67; overlay identity/nativeprovider distinction required. Compatibilitynative was intentionally stopped perlatestuserdirection; no completed nativeverdict."
+    },
+    "historical_abb67_installed_cpu": {
+      "source": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "image": "sha256:8a7765e9655fa10f60956c26c21442f64164d45bf431b0490e74cd157b39ca0c",
+      "mode": "installed CPUrole withoutsourceoverlay",
+      "passed": 345,
+      "seconds": 8.24,
+      "scope": "17affected CPUmodules including loading/budget, optionalrange source, NCCL/store/EP/lifetime; not fullproject CPU suite",
+      "newer_foundation_qualification": false,
+      "run": "run-final-cpu-abb67"
+    },
+    "historical_abb67_installed_native_world1": {
+      "source": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "image": "sha256:8a7765e9655fa10f60956c26c21442f64164d45bf431b0490e74cd157b39ca0c",
+      "mode": "installed GPUrole withoutsourceoverlay",
+      "passed": 28,
+      "seconds": 281.42,
+      "scope": "ModelOptloading and hostexpert suites plus two nativeNCCLworld1 tests; synthetic fulltiny models, not fullreportedModelOptexport or twoGPU",
+      "native_world1_tests": [
+        "tests/cuda/test_expert_parallel.py::test_native_one_rank_nccl_broadcast_and_deferred_error_check",
+        "tests/cuda/test_expert_parallel.py::test_native_world1_session_loads_unsharded_banks_runs_and_retires"
+      ],
+      "native_world1_count": 2,
+      "newer_foundation_qualification": false,
+      "diagnostic_stderr": "c10dIPv6 localhostprobes returnedEAFNOSUPPORT before successfulIPv4operation; warningsretained; noIPv6qualification",
+      "run": "run-final-native-abb67"
+    },
+    "selected_foundation_V7_CPU": {
+      "image": "sha256:f09a4185f8ce6c0e35295565e43f7c27b9f74e50b7cf9d78390dc4d105a76adb",
+      "helper_sha256": "ae87f5b8e2409697b8e3ea6de4d58acd96989bdcfeaf3159d87d89e509190ca6",
+      "proof_sha256": "719045b89d075bca4a444c76dd787340f6da6cf73706f59a5e3154c0812942fb",
+      "runner_receipt_sha256": "ad1bf2597ecd53258b6fc894f5a11a2ec8bc14dfa5a5ae618b99196a6e1a6288",
+      "torch": {
+        "cuda": "13.4",
+        "cuda_initialized": false,
+        "git": "9026ad48a8abf94146d4aba0e886503515d48584",
+        "version": "2.16.0.dev20261017+cu134"
+      },
+      "pip_check": {
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "No broken requirements found.\n"
+      },
+      "provider_counts": {
+        "native_sdk": 15,
+        "native_cxx_runtime": 2,
+        "explicit_forward_compat_driver": 1,
+        "official_vision_bundled_runtime": 2,
+        "total_physical_rows": 20
+      },
+      "scope": "actual Torch/core + native TV/schema + Triton imports + CPU integer arithmetic + metadata/maps; no GPU/JPEG/device/driver eligibility claim",
+      "sampled_minimum_host_available_bytes": 53645586432,
+      "required_host_floor_bytes": 8589934592,
+      "producer_contract": "Capture ELF/order/content facts at final seal; activate prepared order in SAME app process before Torch, retain fixed owners, rebase stat identities after fullseal. Separate exact TV bundles post-consumer. This diagnostic evidence does not replace final image capture.",
+      "source_reviews": {
+        "D13": "exact source and actual receipt read clean by cleanup_review; no reviewer execution",
+        "D14": "exact source and actual receipt read clean by policy_review; no reviewer execution"
+      },
+      "limits": "private proof/image establishes this CPU import/schema/provider region; not final productionimage, device eligibility, JPEGdecode, GPU/model or ARM execution qualification"
+    },
+    "official_root_artifacts": {
+      "verified_handoff": "foundation/latest-native-artifacts-verified.json",
+      "descriptor_receipt_sha256": "9ae8a9d2f98f24aa3f1f35bbb41c55a129bcb83737dbfee0538a74e35c128ea2",
+      "count": 6,
+      "whole_wheel_bytes": 1784376542,
+      "whole_SHA_is_separate_from_METADATA_SHA": true,
+      "wheel_or_model_execution": false
+    },
+    "selected_foundation_dependency_generation": {
+      "amd64": {
+        "source_revision": "0a00cb181426aeb50e83c7ee97bd73c08157901e",
+        "generation_receipt": "foundation/lock-generation-0a00/amd64-receipt.json",
+        "exit_code": 0,
+        "counts": {
+          "foundation": 34,
+          "runtime": 31,
+          "verification": 3
+        },
+        "report_sha256": "fa1ab59dc16a57df5bc0fed266b0133b75a5469ab137b2bf1a4048acc37c2ec5",
+        "report_environment": {
+          "implementation_name": "cpython",
+          "implementation_version": "3.12.3",
+          "os_name": "posix",
+          "platform_machine": "x86_64",
+          "platform_python_implementation": "CPython",
+          "platform_release": "7.0.0-31-generic",
+          "platform_system": "Linux",
+          "platform_version": "#31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026",
+          "python_full_version": "3.12.3",
+          "python_version": "3.12",
+          "sys_platform": "linux"
+        },
+        "cross_report": false,
+        "original_wrapper": {
+          "complete": false,
+          "build_exit_code": 0,
+          "status": "failed output read with PermissionError, preserved"
+        },
+        "accepted_output": {
+          "complete": true,
+          "raw_outputs_unchanged": true,
+          "report_bytes": 765681,
+          "provenance_sha256": "e1a4ec26aade61aaaa1dec538c729fd82382030ac0355c3fcf5d1ed05a1b4e57"
+        },
+        "outputs": {
+          "foundation-constraints-amd64.txt": {
+            "sha256": "e5cd65f4ec6d854399ef501d57959fda47e1f99c0a8e3ee1d5d594a997784d5b",
+            "bytes": 906
+          },
+          "foundation-manifest-amd64.json": {
+            "sha256": "31784c82250c632bb0b77d3fc363095c618513ff3ab6230074f4e8b11f2dc06f",
+            "bytes": 85249
+          },
+          "requirements-foundation-amd64.lock": {
+            "sha256": "05930fedc738a145712f149bf8adfef7da4ee6d973025d4ace00622c3a4ad35d",
+            "bytes": 7774
+          },
+          "requirements-runtime-amd64.lock": {
+            "sha256": "a3821d723f9f073b840bceaebb973b7120baa3ab398c5c76fd24607ef28bd9e0",
+            "bytes": 7300
+          },
+          "requirements-test-amd64.lock": {
+            "sha256": "07ef19789d7d7e302da86a1104f72807c6952a7256289f8ac9af50cf0afe00e1",
+            "bytes": 772
+          }
+        },
+        "all_five_outputs_byte_equal_prior_1c32": true,
+        "pins_copied_as_sixth_input": "exact selected schema2 file, not an additional generated lock",
+        "scope": "actual dependency/extras/origin/target validation and generation; no package-install, GPU/model or ARMnative execution qualification"
+      },
+      "arm64": {
+        "source_revision": "0a00cb181426aeb50e83c7ee97bd73c08157901e",
+        "generation_receipt": "foundation/lock-generation-0a00/arm64-receipt.json",
+        "exit_code": 0,
+        "counts": {
+          "foundation": 34,
+          "runtime": 31,
+          "verification": 3
+        },
+        "report_sha256": "967a4b6c67cb690d99185760ed733ffe8ec607b9c60c2cb3903ca1918584708d",
+        "report_environment": {
+          "implementation_name": "cpython",
+          "implementation_version": "3.12.3",
+          "os_name": "posix",
+          "platform_machine": "x86_64",
+          "platform_python_implementation": "CPython",
+          "platform_release": "7.0.0-31-generic",
+          "platform_system": "Linux",
+          "platform_version": "#31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026",
+          "python_full_version": "3.12.3",
+          "python_version": "3.12",
+          "sys_platform": "linux"
+        },
+        "cross_report": true,
+        "original_wrapper": {
+          "complete": false,
+          "build_exit_code": 0,
+          "status": "failed output read with PermissionError, preserved"
+        },
+        "accepted_output": {
+          "complete": true,
+          "raw_outputs_unchanged": true,
+          "report_bytes": 766581,
+          "provenance_sha256": "0c49ca4305a33a264fed7044223d5e4ae184f61827741899f1dcf1fcfa2d4ca4"
+        },
+        "outputs": {
+          "foundation-constraints.txt": {
+            "sha256": "ab45249a5aed8698897bc04668e6189392b0b6d5a2daa2b1bc75ccd78942beef",
+            "bytes": 953
+          },
+          "foundation-manifest.json": {
+            "sha256": "b84e0a9c535a5c6c0b5ee64b19fcf917e9cb20db5e58aa381b9ce8038dd55196",
+            "bytes": 85251
+          },
+          "requirements-foundation.lock": {
+            "sha256": "427b9c959fab465adbec218449ee59d96912bd374b98f22a33df53ddf2c0dcf1",
+            "bytes": 7831
+          },
+          "requirements-runtime.lock": {
+            "sha256": "6562773d14576cb7fb446ff171f1c11f51911d0bd15e98871efdc4a47ded2e6a",
+            "bytes": 7344
+          },
+          "requirements-test.lock": {
+            "sha256": "3a5207ab28907c3efd72fde3055d3dac2e07a57f6ec75b70ecbd8da16adfa0a3",
+            "bytes": 819
+          }
+        },
+        "all_five_outputs_byte_equal_prior_1c32": true,
+        "pins_copied_as_sixth_input": "exact selected schema2 file, not an additional generated lock",
+        "scope": "actual dependency/extras/origin/target validation and generation; no package-install, GPU/model or ARMnative execution qualification"
+      }
+    },
+    "selected_foundation_dependency_generation_resource_scope": "Resolver build receipts record sampled8GiBhostfloor and directclient retirement only; no complete liveBuildKitdaemon/executorancestorquota proof is claimed. Separate auditedowned-container executiongates retain their own livecgroup proof."
+  },
+  "closed_run_ownership_resources": {
+    "run-selected-loader-rotor39-4c0": {
+      "mode": "diagnostic",
+      "execution_role": "gpu",
+      "image": "sha256:907dddcad1b934fc66da2b22114fa701879a699679f888278985aed180deda97",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-s",
+        "--tb=short",
+        "-o",
+        "pythonpath=tests",
+        "-o",
+        "cache_dir=/evidence/pytest-cache",
+        "tests/cuda/test_nvfp4_loading_pack.py",
+        "tests/cuda/test_flashnext_rotorquant.py",
+        "tests/cuda/test_flashnext_kvquant.py"
+      ],
+      "result": "pass",
+      "minimum_sampled_mem_available_bytes": 51597860864,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "container_exit": 0,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "cleanup_errors": [],
+      "resource_environment": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      },
+      "raw_log": "runner/run-selected-loader-rotor39-4c0/raw.log"
+    },
+    "run-nccl-store-initial": {
+      "mode": "diagnostic",
+      "execution_role": "cpu",
+      "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-ra",
+        "-o",
+        "pythonpath=/source/tests",
+        "-o",
+        "cache_dir=/evidence/pytest-cache",
+        "/source/tests/test_cuda_nccl_library.py",
+        "/source/tests/test_local_expert_store.py",
+        "/source/tests/test_cuda_comm.py",
+        "/source/tests/test_cuda_comm_ready.py",
+        "/source/tests/test_nccl_buffer_boundary.py",
+        "/source/tests/test_expert_parallel_control.py",
+        "/source/tests/test_t47_constructor_lifecycle_source.py"
+      ],
+      "result": "pass",
+      "minimum_sampled_mem_available_bytes": 53161820160,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "container_exit": 0,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "cleanup_errors": [],
+      "resource_environment": {
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "void"
+      },
+      "raw_log": "runner/run-nccl-store-initial/raw.log"
+    },
+    "run-nccl-store-compat214": {
+      "mode": "diagnostic",
+      "execution_role": "cpu",
+      "image": "sha256:db68e206cea81db95c1a8f228ca1f30eee5cf9bd97256c1da4db151a513b234a",
+      "argv": [
+        "python3",
+        "-c",
+        "import sys,json,ctypes,pytest,torch; r=pytest.main(['-q', '-ra', '-o', 'pythonpath=/source/tests', '-o', 'cache_dir=/evidence/pytest-cache', '/source/tests/test_cuda_nccl_library.py', '/source/tests/test_local_expert_store.py', '/source/tests/test_cuda_comm.py', '/source/tests/test_cuda_comm_ready.py', '/source/tests/test_nccl_buffer_boundary.py', '/source/tests/test_expert_parallel_control.py', '/source/tests/test_t47_constructor_lifecycle_source.py']); from tensorfold.cuda.comm import _library; lib=_library(); version=ctypes.c_int(); lib.ncclGetVersion.argtypes=[ctypes.POINTER(ctypes.c_int)]; lib.ncclGetVersion.restype=ctypes.c_int; status=lib.ncclGetVersion(ctypes.byref(version)); print('NATIVE_LIBRARY',json.dumps({'python':sys.version,'torch':torch.__version__,'cuda':torch.version.cuda,'path':lib._name,'get_version_status':status,'version':version.value,'cuda_initialized':torch.cuda.is_initialized()}),flush=True); sys.exit(r or status or int(torch.cuda.is_initialized()) or int(version.value!=23007))"
+      ],
+      "result": "pass",
+      "minimum_sampled_mem_available_bytes": 54315458560,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "container_exit": 0,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "cleanup_errors": [],
+      "resource_environment": {
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "void"
+      },
+      "raw_log": "runner/run-nccl-store-compat214/raw.log"
+    },
+    "run-final-cpu-abb67": {
+      "mode": "installed",
+      "execution_role": "cpu",
+      "image": "sha256:8a7765e9655fa10f60956c26c21442f64164d45bf431b0490e74cd157b39ca0c",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-ra",
+        "--tb=short",
+        "-o",
+        "pythonpath=tests",
+        "-o",
+        "cache_dir=/evidence/pytest-cache",
+        "--junitxml=/evidence/pytest.xml",
+        "tests/test_nvfp4_reader_host_budget.py",
+        "tests/test_nvfp4_a4_layout.py",
+        "tests/test_nvfp4_a4_host_control.py",
+        "tests/test_nvfp4_a4_cache_control.py",
+        "tests/test_nvfp4_loading_pack_control.py",
+        "tests/test_nvfp4_memory_admission_source.py",
+        "tests/test_qwen_moe_ram_experts.py",
+        "tests/test_qwen_nvfp4_startup.py",
+        "tests/test_ram_experts.py",
+        "tests/test_expert_parallel_control.py",
+        "tests/test_triton_jit_comparisons.py",
+        "tests/test_cuda_nccl_library.py",
+        "tests/test_local_expert_store.py",
+        "tests/test_cuda_comm.py",
+        "tests/test_cuda_comm_ready.py",
+        "tests/test_nccl_buffer_boundary.py",
+        "tests/test_t47_constructor_lifecycle_source.py"
+      ],
+      "source_overlay": false,
+      "raw_receipt_result": "pass",
+      "container_exit": 0,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "monitor_error": null,
+      "primary_error": null,
+      "cleanup_errors": [],
+      "minimum_sampled_mem_available_bytes": 54115098624,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "resource_environment": {
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "void"
+      },
+      "raw_log": "runner/run-final-cpu-abb67/raw.log"
+    },
+    "run-final-native-abb67": {
+      "mode": "installed",
+      "execution_role": "gpu",
+      "image": "sha256:8a7765e9655fa10f60956c26c21442f64164d45bf431b0490e74cd157b39ca0c",
+      "argv": [
+        "python3",
+        "-m",
+        "pytest",
+        "-q",
+        "-ra",
+        "-s",
+        "--tb=short",
+        "-o",
+        "pythonpath=tests",
+        "-o",
+        "cache_dir=/evidence/pytest-cache",
+        "--junitxml=/evidence/pytest.xml",
+        "tests/cuda/test_nvfp4_loading_pack.py",
+        "tests/cuda/test_nvfp4_host_experts.py",
+        "tests/cuda/test_expert_parallel.py::test_native_one_rank_nccl_broadcast_and_deferred_error_check",
+        "tests/cuda/test_expert_parallel.py::test_native_world1_session_loads_unsharded_banks_runs_and_retires"
+      ],
+      "source_overlay": false,
+      "raw_receipt_result": "pass",
+      "container_exit": 0,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "monitor_error": null,
+      "primary_error": null,
+      "cleanup_errors": [],
+      "minimum_sampled_mem_available_bytes": 41164124160,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "resource_environment": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      },
+      "raw_log": "runner/run-final-native-abb67/raw.log"
+    },
+    "run-compat38-full-abb67": {
+      "mode": "diagnostic",
+      "execution_role": "gpu",
+      "image": "sha256:db68e206cea81db95c1a8f228ca1f30eee5cf9bd97256c1da4db151a513b234a",
+      "argv": [
+        "/opt/triton38-venv/bin/python3",
+        "-B",
+        "-c",
+        "import runpy,sys; runpy.run_path(\"/compat/cpu_audit.py\", run_name=\"__main__\"); import pytest; sys.exit(pytest.main([\"-q\", \"-ra\", \"--tb=short\", \"-o\", \"pythonpath=tests\", \"-o\", \"cache_dir=/evidence/pytest-cache\", \"--junitxml=/evidence/pytest.xml\", \"tests/cuda/test_flashnext_rotorquant.py\", \"tests/cuda/test_flashnext_kvquant.py\", \"tests/cuda/test_nvfp4_loading_pack.py\"]))"
+      ],
+      "source_overlay": true,
+      "raw_receipt_result": "fail",
+      "container_exit": 137,
+      "oom_killed": false,
+      "ownership_unresolved": false,
+      "observer_exit": 0,
+      "monitor_error": null,
+      "primary_error": {
+        "type": "RuntimeError",
+        "message": "Payload failed: {'Status': 'exited', 'Running': False, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 0, 'ExitCode': 137, 'Error': '', 'StartedAt': '2026-10-17T22:53:58.822681555Z', 'FinishedAt': '2026-10-17T23:04:20.39786179Z'}"
+      },
+      "cleanup_errors": [
+        {
+          "type": "RuntimeError",
+          "message": "Owned payload terminal state failed: {'Status': 'exited', 'Running': False, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 0, 'ExitCode': 137, 'Error': '', 'StartedAt': '2026-10-17T22:53:58.822681555Z', 'FinishedAt': '2026-10-17T23:04:20.39786179Z'}"
+        }
+      ],
+      "minimum_sampled_mem_available_bytes": 42788237312,
+      "host_floor_bytes": 8589934592,
+      "live_ancestor_cgroup_limits_unlimited": true,
+      "resource_environment": {
+        "TENSORFOLD_MEMORY_RESERVE_GIB": "8",
+        "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB": "0",
+        "MAX_JOBS": "8",
+        "NVIDIA_VISIBLE_DEVICES": "all"
+      },
+      "raw_log": "runner/run-compat38-full-abb67/raw.log"
+    }
+  },
+  "user_report_not_local_measurement": {
+    "geometry": {
+      "width": 640,
+      "hidden": 2560
+    },
+    "reported_cpu_ms": 48.9,
+    "reported_RTX4080_gpu_ms": 4.9,
+    "reported_GPU_startup_minutes": 6.5,
+    "old_CPU_projected_minutes": 30,
+    "old_CPU_finished": false
+  },
+  "pending_gates": {
+    "production_guard_and_pin_promotion": "pending final build-owner integration/review; selected route and generated dependency closure are already closed",
+    "new_foundation_immutable_capture_and_audits": "pending final sourceUID/runtime/verification image IDs",
+    "new_foundation_installed_CPU": "pending final production image; private V7CPUprovider proof is a separate closed region",
+    "new_foundation_installed_native_and_NCCL_world1": "pending latestfoundation GPU; historicalABB world1 remains separate",
+    "new_foundation_real_Heretic512_and_performance": "pending latestfoundation; no099 performance numbers promoted",
+    "new_foundation_exact640_component_benchmark": "pending selectedfinal image",
+    "ARM_native_and_hardware": "unrun; valid cross-report/generation is not native execution"
+  },
+  "nonqualification": [
+    "No locally available complete reported ModelOpt export or reproduced full ModelOpt loading/serving result.",
+    "User48.9msCPU/4.9msRTX4080 and6.5minuteGPU versus unfinished projected30minuteCPU are reported observations, not thishostbenchmarks. Geometry640\u00d72560 is authoritative input; localnativepayload remains synthetic.",
+    "No twoGPU NCCL/expertparallel/mixedarchitecture execution qualification; oneGPUorCPUstorechecks do not substitute.",
+    "No Windows, ARM64 or Apple execution qualification for this increment.",
+    "No sanitizer execution claim for this increment.",
+    "No sum of counts across overlapping suites/revisions; historical099qualification and metrics remain in their original receipt unchanged.",
+    "External8GiBhostfloor is sampled, not reserved continuously; no unrelated OS/global-limit claim.",
+    "HistoricalABB67 installed345CPU/28nativeworld1 and488oldpinned diagnostic results remain valid only for their exact oldfoundation; no promotiontonewstack.",
+    "Compatibility3.8 native suite was intentionally stopped, exit137/noOOM. Partialprogress isneither coverage nor completepass/failure.",
+    "The selected officialnightly/nativecore route is CPUverified; productionguard/pinpromotion and latestimage/GPU/model gates remain separate and pending.",
+    "AMD64 native and ARM64 cross resolver reports generated real68packageclosures; initial output-read PermissionErrors are preserved and stablebyteacceptance closes preparation only.",
+    "New source/image/runtime dependency changes require fresh qualification; no sum or promotion of historical345/28/488/099 metrics."
+  ],
+  "evidence_files": {
+    "native-a4/load-packing/selection-analysis.json": {
+      "bytes": 89039,
+      "sha256": "cd52045239f5f5e65a8e3b23d17d99ba247d7b8c0fff76b3ba5a1ffc6ee93349"
+    },
+    "native-a4/load-packing/selection-analysis.md": {
+      "bytes": 10889,
+      "sha256": "2db7853dcf9080e55142e4757f688714e243b5be663bf19b30eea3059e6489ea"
+    },
+    "native-a4/load-packing/selected-handoff.json": {
+      "bytes": 6319,
+      "sha256": "52e59b1662a91502126d1ecb13db6959a75c08d8c0cd0cdac0b8d4316ef2aad2"
+    },
+    "native-a4/load-packing/selected-source-proof.json": {
+      "bytes": 675,
+      "sha256": "20424bd627383c0e22c6455acbb793bf6646375de070416311f2060a66d4f3b5"
+    },
+    "local-nccl-store/receipt.json": {
+      "bytes": 6585,
+      "sha256": "c9be53129adecaff744a863c255dc7bc7b0d3ba7c0cf3b42d222b7867cba3a95"
+    },
+    "local-nccl-store/structural-proof.json": {
+      "bytes": 1377,
+      "sha256": "23ba9e591ac7a918d144d6c397737b834d45a57f4414e651af5ea6d0e68790a4"
+    },
+    "compatibility/triton38-rotorquant/manifest.json": {
+      "bytes": 10137,
+      "sha256": "15d8c51029b05d56c654573651fbde9e4eeb66118247fe34e0d85a3546420eff"
+    },
+    "compatibility/triton38-rotorquant/ledger.json": {
+      "bytes": 5143,
+      "sha256": "066ac1f250f21b487920edc32f5fe95e718ca301a515249ac568ea0193d55328"
+    },
+    "compatibility/triton38-rotorquant/audit-proof/compat-cpu-audit.json": {
+      "bytes": 6884,
+      "sha256": "4c8eb22ed2d17f08ff497ce2e46fde6f2f25dba80d5ec41705e2f2675c9a1a65"
+    },
+    "final-capture-abb67d62/source.json": {
+      "bytes": 213807,
+      "sha256": "94950a7ca7b3e32e1ebd88b3e0a9c8deebda2a1eb77914dcfa2970375d2287a4"
+    },
+    "final-capture-abb67d62/attempts/final-03/receipt.json": {
+      "bytes": 6744,
+      "sha256": "86dcf4b2a1e4daae8cd2b56ef170d72b38a059888d73f67eadeda38645b6a9c0"
+    },
+    "final-capture-abb67d62/attempts/final-03/runtime-audit.json": {
+      "bytes": 1562,
+      "sha256": "cdc6af98c5e074c41c163669ad2dd3b4abb7c623c3d72f6722ca57d4a9d35b2e"
+    },
+    "final-capture-abb67d62/attempts/final-03/runtime-audit.exit": {
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "final-capture-abb67d62/attempts/final-03/verification-audit.json": {
+      "bytes": 1568,
+      "sha256": "55840da00f84f1ac0ce226fcbb6caaf1ad867cb3cd3850ee5c2027932cc782c2"
+    },
+    "final-capture-abb67d62/attempts/final-03/verification-audit.exit": {
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    "runner/run-selected-loader-rotor39-4c0/command.json": {
+      "bytes": 151013,
+      "sha256": "4660d746408db93cdb3eb939f70099ca9f0b4bee3db89e6944aa1a8b5ceed795"
+    },
+    "runner/run-selected-loader-rotor39-4c0/receipt.json": {
+      "bytes": 6437,
+      "sha256": "c27605647cf712dc7637af35f31445493eda96ea5e508d2be8f530325ed98d9f"
+    },
+    "runner/run-selected-loader-rotor39-4c0/container.json": {
+      "bytes": 13817,
+      "sha256": "b65b546e1f6fbd066e8aad461fa55e08af04c1f98424063fcac598e1dae6dc38"
+    },
+    "runner/run-selected-loader-rotor39-4c0/payload.json": {
+      "bytes": 460,
+      "sha256": "8a59e4df425944be0059532bdbe7918ef4dad6f6917a7fd1b5a22478a12fcaac"
+    },
+    "runner/run-selected-loader-rotor39-4c0/raw.log": {
+      "bytes": 2427,
+      "sha256": "a75118bd82d387d3dcfdf7d8e1a2a02c03850c89e1b2c41edad4c948202cd185"
+    },
+    "runner/run-selected-loader-rotor39-4c0/actual-resource-proof.json": {
+      "bytes": 5168,
+      "sha256": "2f210ea5502259be59a98f749f1c6791ed35eea526e3ed24c477676ad00f0141"
+    },
+    "runner/run-nccl-store-initial/command.json": {
+      "bytes": 150182,
+      "sha256": "727623728fa36289e46557aebabede3e33c33eddadc32fc7ea14b0fe342eba7f"
+    },
+    "runner/run-nccl-store-initial/receipt.json": {
+      "bytes": 5825,
+      "sha256": "cbd2e61a8bbdeb0b3410203a8a5f134b6149d32c616baa7f3f00e227453c7d16"
+    },
+    "runner/run-nccl-store-initial/container.json": {
+      "bytes": 12529,
+      "sha256": "773c5a400274c6a3b73366a5b93bf488cacfa61314ca240b9fcb17b188653dc4"
+    },
+    "runner/run-nccl-store-initial/payload.json": {
+      "bytes": 658,
+      "sha256": "ee33b14c596c5bc81343072c25b1a91339b7b82eac101092f2529f088eed81b2"
+    },
+    "runner/run-nccl-store-initial/raw.log": {
+      "bytes": 180,
+      "sha256": "5890d97046206f1c5979c3948592203f3dc65c29b6788162a5ade2e81d3744c3"
+    },
+    "runner/run-nccl-store-initial/actual-resource-proof.json": {
+      "bytes": 4602,
+      "sha256": "9a1b94dfcda6a2bd88200e30568005fcbca9275d1657cae31eea9a80990ef376"
+    },
+    "runner/run-nccl-store-compat214/command.json": {
+      "bytes": 150188,
+      "sha256": "d84494624048851c5d27999438958ce807436c9a05229cf01d39eb41833cb9dd"
+    },
+    "runner/run-nccl-store-compat214/receipt.json": {
+      "bytes": 5829,
+      "sha256": "3e8415695feb662234654e19bdc3b2e2a43fe0fb3e1ab3df0ee7c8e696c8046a"
+    },
+    "runner/run-nccl-store-compat214/container.json": {
+      "bytes": 12887,
+      "sha256": "69678de174a059d85247585b94ca4f7ecf8f0fbe468e785d8f06fbc16f9c1452"
+    },
+    "runner/run-nccl-store-compat214/payload.json": {
+      "bytes": 1213,
+      "sha256": "5ea6ef3f3ea84987700655bbd498dd862829a64208ae20041ee26e2fd40c3d1b"
+    },
+    "runner/run-nccl-store-compat214/raw.log": {
+      "bytes": 458,
+      "sha256": "547acb072f436537d923f22f4765fb963ba9b6785729e3f442068b82cbe8107d"
+    },
+    "runner/run-nccl-store-compat214/actual-resource-proof.json": {
+      "bytes": 4606,
+      "sha256": "cc6f857e16651bc704aa5b1bb7a80421d20d40d82386e27c44d8fa409d15851f"
+    },
+    "runner/run-final-cpu-abb67/receipt.json": {
+      "bytes": 5648,
+      "sha256": "9304511e6738550902233956b37571dcb3b1359d306dc2b5765cdcd7bb0c13c3"
+    },
+    "runner/run-final-cpu-abb67/container.json": {
+      "bytes": 12459,
+      "sha256": "41903f67140b78e736a7a5550dfa767876edbd6057398017fedbc6610ec20aa8"
+    },
+    "runner/run-final-cpu-abb67/payload.json": {
+      "bytes": 1079,
+      "sha256": "91e51b8f6a712b451167be3d23f2c0a55ae0d84415b99c6692db13130cc14689"
+    },
+    "runner/run-final-cpu-abb67/actual-resource-proof.json": {
+      "bytes": 4438,
+      "sha256": "6c2e52970d24be5e2b4024da93bf2c8b72c231afcb21ca67e575b29d98f25b46"
+    },
+    "runner/run-final-cpu-abb67/raw.log": {
+      "bytes": 501,
+      "sha256": "15b42d367e13c8b04201da57f6e45caad543b0d9c6130af7c707601ee21285de"
+    },
+    "runner/run-final-cpu-abb67/command.json": {
+      "bytes": 2313,
+      "sha256": "6a2c666a866ef0b07891352e177a677d809a132e3e66c6ccbda66c8d1058fc6b"
+    },
+    "runner/run-final-cpu-abb67/pytest.xml": {
+      "bytes": 51419,
+      "sha256": "228ce0c034b5bb6e36b41b34a3935cdc1d7c7b7795d7e4d72416fad41bb4911f"
+    },
+    "runner/run-final-native-abb67/receipt.json": {
+      "bytes": 6251,
+      "sha256": "3eab2efaef32aef30b769328e39c919cf8668349224f9f995c92d83cedea7cb2"
+    },
+    "runner/run-final-native-abb67/container.json": {
+      "bytes": 13412,
+      "sha256": "0757681bcb7bbcc7a8ac236d2ed10af70a9d952e37b71b10d0d3548354012488"
+    },
+    "runner/run-final-native-abb67/payload.json": {
+      "bytes": 677,
+      "sha256": "b5923d1f696170d1020c38dca2e3c52ae10aac1bead43217b591378f5f23cc8d"
+    },
+    "runner/run-final-native-abb67/actual-resource-proof.json": {
+      "bytes": 4995,
+      "sha256": "5329e369b9c7364958cb692c6a0140ca86b13acaf91c4478514d405dbf04e9ad"
+    },
+    "runner/run-final-native-abb67/raw.log": {
+      "bytes": 5718,
+      "sha256": "e4979f9391804374090258d81750f8b4a8df655e799a7df29106b48acf251da6"
+    },
+    "runner/run-final-native-abb67/command.json": {
+      "bytes": 2604,
+      "sha256": "a64cebb7362406bc6f6a4e9ac437cf4393e0db7d4d073ce3d8a049413673a727"
+    },
+    "runner/run-final-native-abb67/pytest.xml": {
+      "bytes": 4799,
+      "sha256": "dd43a54437a2f2685ba3b7e5c569741fd7b52916ee7e7e73c4b0e804fb17cdf2"
+    },
+    "runner/run-compat38-full-abb67/receipt.json": {
+      "bytes": 7296,
+      "sha256": "d59f423cd21711b25d2ac6418d531547cf4ed59a959b3a3dcb9f36a72e0f36fa"
+    },
+    "runner/run-compat38-full-abb67/container.json": {
+      "bytes": 14408,
+      "sha256": "6486a1b510a7fee5e836901310b880ad4bdbed0c93295dcd4888ec78eb1816ed"
+    },
+    "runner/run-compat38-full-abb67/payload.json": {
+      "bytes": 626,
+      "sha256": "6211d7564d030c609ffad12be8d0eccd4ccad1f89a92bbf500578948e55f0eab"
+    },
+    "runner/run-compat38-full-abb67/actual-resource-proof.json": {
+      "bytes": 5360,
+      "sha256": "ff664b8609b01a57382de1c83d4fefcb03b612ee7223feddc64068e1a761b331"
+    },
+    "runner/run-compat38-full-abb67/raw.log": {
+      "bytes": 1266,
+      "sha256": "930c36207cfff9ebe283f1735ab6aa30707652b64758f833ddd4bbc155376298"
+    },
+    "runner/run-compat38-full-abb67/command.json": {
+      "bytes": 151197,
+      "sha256": "8c23be4bffec60a4fdd436a0b99feb4460e72eeebad08bc446a4187f4ef2046e"
+    },
+    "foundation/ngc-cuda-1343-cudnn-devel-summary.json": {
+      "bytes": 16232,
+      "sha256": "90768f9a164e5b91bf8ea2600682cd5013bdfe013dbea570180506e7b756800c"
+    },
+    "foundation/ngc-cuda-1343-devel-summary.json": {
+      "bytes": 14871,
+      "sha256": "4c38fbe2fdab1836dde9ecd6caf1dea7c03cff8dd6a324d8684ae0cf2c480484"
+    },
+    "foundation/nightly-cu134-torch-x86_64.metadata.json": {
+      "bytes": 2261,
+      "sha256": "918eaa818780340a9581ac8fdc97acea34464f254b92aeff7c5dfdaf52009597"
+    },
+    "foundation/triton-fc8-x86_64.json": {
+      "bytes": 1634,
+      "sha256": "09f0059af7f64e72dedea283e44dc3969aeb3b37b3ecac271a8d04858b31c82c"
+    },
+    "foundation/triton-toolchain-audit/latest/receipt.json": {
+      "bytes": 993,
+      "sha256": "76cdfc714fa857b80ce7102859c1a995814bd1f252406e708a34561b8dfb89f1"
+    },
+    "foundation/triton-toolchain-audit/latest/tool-version-facts.json": {
+      "bytes": 1631,
+      "sha256": "43a34cfdd62e7076de4d777815c36c8459d045f605a0c867949f76cf0f6035c8"
+    },
+    "native-a4/load-packing/optional-sdk-collection/source-proof.json": {
+      "bytes": 949,
+      "sha256": "5703cb5adb3d52f9ce37faa7fdd4925b63d4030e292f1f3ec34e83c848a9e3f0"
+    },
+    "native-a4/load-packing/optional-sdk-collection/historical-negative.log": {
+      "bytes": 1092,
+      "sha256": "c9e84e243bf9ef56902c092e343980eb0084615e814e524f6ac8f63b20f94c09"
+    },
+    "native-a4/load-packing/optional-sdk-collection/pinned.log": {
+      "bytes": 98,
+      "sha256": "94faa027c929f8a75fa6047a981d12eb2d66012e9055eabcce11f2888a62e980"
+    },
+    "foundation/rtld-candidate/actual-v7-selected-provider-evidence.json": {
+      "bytes": 28658,
+      "sha256": "43616c4d34cecba3e746be39bbd73dd8f9bd50336c60a5cf9681e586c844b155"
+    },
+    "foundation/rtld-candidate/review-closure-v7.json": {
+      "bytes": 500,
+      "sha256": "d1c4a18b38747b22d30c4881b9d9fa5ac1cfcfdd736c196a03189e2b282f8365"
+    },
+    "runner/run-rtld-v7-cpu-1343/receipt.json": {
+      "bytes": 5876,
+      "sha256": "ad1bf2597ecd53258b6fc894f5a11a2ec8bc14dfa5a5ae618b99196a6e1a6288"
+    },
+    "foundation/latest-native-artifacts-verified.json": {
+      "bytes": 16303,
+      "sha256": "8047fdaad058db72e5392c92fe40870ee1c727454b0f39d011d056db55a55048"
+    },
+    "foundation/nightly-wheelhouse/descriptor-verification.json": {
+      "bytes": 14698,
+      "sha256": "9ae8a9d2f98f24aa3f1f35bbb41c55a129bcb83737dbfee0538a74e35c128ea2"
+    },
+    "foundation/verify-nightly-completion.json": {
+      "bytes": 685,
+      "sha256": "a59d2b25ecc7517cfb9311213c2b5af10855531fa6917ef8bc5a8a29334bba7c"
+    },
+    "foundation/resolver/amd64-01/receipt.json": {
+      "bytes": 1626,
+      "sha256": "07cc1ee2bc233ac565ec77f89f5d4f8e25d9feaf6e7823d9cabdf2eb5e4d19c8"
+    },
+    "foundation/resolver/amd64-01/output-acceptance.json": {
+      "bytes": 1421,
+      "sha256": "82413449aff8e11720c06e0a9a8987fb219dc58b1373419f803488a7cf59584f"
+    },
+    "foundation/resolver/amd64-01/accepted-output/provenance.json": {
+      "bytes": 916,
+      "sha256": "e1a4ec26aade61aaaa1dec538c729fd82382030ac0355c3fcf5d1ed05a1b4e57"
+    },
+    "foundation/resolver/amd64-01/accepted-output/resolver.json": {
+      "bytes": 765681,
+      "sha256": "fa1ab59dc16a57df5bc0fed266b0133b75a5469ab137b2bf1a4048acc37c2ec5"
+    },
+    "foundation/lock-generation-0a00/amd64-receipt.json": {
+      "bytes": 2274,
+      "sha256": "439652876cfc373a37166c13f88ad05c35e0c07557b8045efae3162948a9dbb6"
+    },
+    "foundation/lock-generation-0a00/amd64/foundation-manifest-amd64.json": {
+      "bytes": 85249,
+      "sha256": "31784c82250c632bb0b77d3fc363095c618513ff3ab6230074f4e8b11f2dc06f"
+    },
+    "foundation/lock-generation-0a00/amd64/nightly-pins-amd64.json": {
+      "bytes": 2299,
+      "sha256": "c1972f2db8cc310e0620eca52cfae1ca6d3359bbd22bb85759a3febe46e0ea53"
+    },
+    "foundation/lock-generation-0a00/amd64/foundation-constraints-amd64.txt": {
+      "bytes": 906,
+      "sha256": "e5cd65f4ec6d854399ef501d57959fda47e1f99c0a8e3ee1d5d594a997784d5b"
+    },
+    "foundation/generated-amd64-1c32/foundation-constraints-amd64.txt": {
+      "bytes": 906,
+      "sha256": "e5cd65f4ec6d854399ef501d57959fda47e1f99c0a8e3ee1d5d594a997784d5b"
+    },
+    "foundation/generated-amd64-1c32/foundation-manifest-amd64.json": {
+      "bytes": 85249,
+      "sha256": "31784c82250c632bb0b77d3fc363095c618513ff3ab6230074f4e8b11f2dc06f"
+    },
+    "foundation/lock-generation-0a00/amd64/requirements-foundation-amd64.lock": {
+      "bytes": 7774,
+      "sha256": "05930fedc738a145712f149bf8adfef7da4ee6d973025d4ace00622c3a4ad35d"
+    },
+    "foundation/generated-amd64-1c32/requirements-foundation-amd64.lock": {
+      "bytes": 7774,
+      "sha256": "05930fedc738a145712f149bf8adfef7da4ee6d973025d4ace00622c3a4ad35d"
+    },
+    "foundation/lock-generation-0a00/amd64/requirements-runtime-amd64.lock": {
+      "bytes": 7300,
+      "sha256": "a3821d723f9f073b840bceaebb973b7120baa3ab398c5c76fd24607ef28bd9e0"
+    },
+    "foundation/generated-amd64-1c32/requirements-runtime-amd64.lock": {
+      "bytes": 7300,
+      "sha256": "a3821d723f9f073b840bceaebb973b7120baa3ab398c5c76fd24607ef28bd9e0"
+    },
+    "foundation/lock-generation-0a00/amd64/requirements-test-amd64.lock": {
+      "bytes": 772,
+      "sha256": "07ef19789d7d7e302da86a1104f72807c6952a7256289f8ac9af50cf0afe00e1"
+    },
+    "foundation/generated-amd64-1c32/requirements-test-amd64.lock": {
+      "bytes": 772,
+      "sha256": "07ef19789d7d7e302da86a1104f72807c6952a7256289f8ac9af50cf0afe00e1"
+    },
+    "foundation/resolver/arm64-01/receipt.json": {
+      "bytes": 1625,
+      "sha256": "1e202844fe94b276b292115953e5d6f2964cfb78af0e8efd58103e2c2527b06f"
+    },
+    "foundation/resolver/arm64-01/output-acceptance.json": {
+      "bytes": 1422,
+      "sha256": "e29a2fca398a117e81bd29d2fe968ee9a4b9b2d1d863aef642d80f375b05bc6d"
+    },
+    "foundation/resolver/arm64-01/accepted-output/provenance.json": {
+      "bytes": 2251,
+      "sha256": "0c49ca4305a33a264fed7044223d5e4ae184f61827741899f1dcf1fcfa2d4ca4"
+    },
+    "foundation/resolver/arm64-01/accepted-output/resolver.json": {
+      "bytes": 766581,
+      "sha256": "967a4b6c67cb690d99185760ed733ffe8ec607b9c60c2cb3903ca1918584708d"
+    },
+    "foundation/lock-generation-0a00/arm64-receipt.json": {
+      "bytes": 2254,
+      "sha256": "bbaa1995c4df4c8f331243427ae4549e42ec012f7b441da25f89e0e65d66ac19"
+    },
+    "foundation/lock-generation-0a00/arm64/foundation-manifest.json": {
+      "bytes": 85251,
+      "sha256": "b84e0a9c535a5c6c0b5ee64b19fcf917e9cb20db5e58aa381b9ce8038dd55196"
+    },
+    "foundation/lock-generation-0a00/arm64/nightly-pins.json": {
+      "bytes": 2267,
+      "sha256": "f7f13e71250148db91490b7bf650605a748039493c91732e04be583f4ef4789a"
+    },
+    "foundation/lock-generation-0a00/arm64/foundation-constraints.txt": {
+      "bytes": 953,
+      "sha256": "ab45249a5aed8698897bc04668e6189392b0b6d5a2daa2b1bc75ccd78942beef"
+    },
+    "foundation/generated-arm64-1c32/foundation-constraints.txt": {
+      "bytes": 953,
+      "sha256": "ab45249a5aed8698897bc04668e6189392b0b6d5a2daa2b1bc75ccd78942beef"
+    },
+    "foundation/generated-arm64-1c32/foundation-manifest.json": {
+      "bytes": 85251,
+      "sha256": "b84e0a9c535a5c6c0b5ee64b19fcf917e9cb20db5e58aa381b9ce8038dd55196"
+    },
+    "foundation/lock-generation-0a00/arm64/requirements-foundation.lock": {
+      "bytes": 7831,
+      "sha256": "427b9c959fab465adbec218449ee59d96912bd374b98f22a33df53ddf2c0dcf1"
+    },
+    "foundation/generated-arm64-1c32/requirements-foundation.lock": {
+      "bytes": 7831,
+      "sha256": "427b9c959fab465adbec218449ee59d96912bd374b98f22a33df53ddf2c0dcf1"
+    },
+    "foundation/lock-generation-0a00/arm64/requirements-runtime.lock": {
+      "bytes": 7344,
+      "sha256": "6562773d14576cb7fb446ff171f1c11f51911d0bd15e98871efdc4a47ded2e6a"
+    },
+    "foundation/generated-arm64-1c32/requirements-runtime.lock": {
+      "bytes": 7344,
+      "sha256": "6562773d14576cb7fb446ff171f1c11f51911d0bd15e98871efdc4a47ded2e6a"
+    },
+    "foundation/lock-generation-0a00/arm64/requirements-test.lock": {
+      "bytes": 819,
+      "sha256": "3a5207ab28907c3efd72fde3055d3dac2e07a57f6ec75b70ecbd8da16adfa0a3"
+    },
+    "foundation/generated-arm64-1c32/requirements-test.lock": {
+      "bytes": 819,
+      "sha256": "3a5207ab28907c3efd72fde3055d3dac2e07a57f6ec75b70ecbd8da16adfa0a3"
+    }
+  },
+  "interrupted_compatibility38_native": {
+    "classification": "intentionally stopped at latest user direction; incomplete, no test pass/fail verdict",
+    "termination_authority": "parent handoff: latest user request stopped compatibility work",
+    "run": "run-compat38-full-abb67",
+    "source": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+    "image": "sha256:db68e206cea81db95c1a8f228ca1f30eee5cf9bd97256c1da4db151a513b234a",
+    "exit_code": 137,
+    "OOMKilled": false,
+    "test_summary_present": false,
+    "partial_progress_not_coverage": true,
+    "raw_runner_result": "fail",
+    "raw_primary_error": {
+      "type": "RuntimeError",
+      "message": "Payload failed: {'Status': 'exited', 'Running': False, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 0, 'ExitCode': 137, 'Error': '', 'StartedAt': '2026-10-17T22:53:58.822681555Z', 'FinishedAt': '2026-10-17T23:04:20.39786179Z'}"
+    },
+    "raw_cleanup_errors": [
+      {
+        "type": "RuntimeError",
+        "message": "Owned payload terminal state failed: {'Status': 'exited', 'Running': False, 'Paused': False, 'Restarting': False, 'OOMKilled': False, 'Dead': False, 'Pid': 0, 'ExitCode': 137, 'Error': '', 'StartedAt': '2026-10-17T22:53:58.822681555Z', 'FinishedAt': '2026-10-17T23:04:20.39786179Z'}"
+      }
+    ],
+    "interpretation": "Raw runner correctly records nonzero payload and terminal-status errors. Preserve those diagnostics; this intentional interruption is neither a completed compatibility pass nor evidence of a product-test failure. CPU readiness remains a separate closed pass."
+  },
+  "foundation_requirements": {
+    "authority": "latest direct user steering selects official nightly roots on latest13.4.3nativecore with exact authorized TorchVision component-bundled exceptions; no vendor patch/source rebuild",
+    "freshness_audit_date": "2026-10-17",
+    "newest_ngc_cuda_audited": {
+      "cuda": "13.4.3",
+      "cudnn_devel_tag": "13.4.3-cudnn-devel-ubuntu24.04",
+      "cudnn_devel_index_digest": "sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
+      "devel_tag": "13.4.3-devel-ubuntu24.04",
+      "devel_index_digest": "sha256:5626a7d0ecafe3e7c115a452f6b05f20f214f8509346196a7835b205dc5b7fd9",
+      "amd64_arm64_manifest_config_sha256_verified": true
+    },
+    "matching_latest_vendor_nightly_audited": {
+      "torch": "2.16.0.dev20261017+cu134",
+      "torch_metadata_sha256": "a22bfb70956f4cdd2aef0be588926edfda9a50dc17618e334a753c657ebd3bf6",
+      "requires_cuda_toolkit": "13.4.1",
+      "triton": "3.9.0+gitfc8d31a5",
+      "triton_metadata_sha256": "59cc760cc2322afbe29033068e03aa7f91ab3b9e13fec125938596b1ffa57125",
+      "triton_wheel_sha256_from_closed_extraction_receipt": "c1ad85df07b3fa3209b8cec00ff24589e656ff13336d1aea1befd99e9bb0acfb",
+      "bundled_tools": {
+        "ptxas": "12.9.86",
+        "ptxas_blackwell": "13.4.59",
+        "cuobjdump": "13.1.80",
+        "nvdisasm": "13.1.80"
+      },
+      "audit_scope": "official registry/index/wheel metadata and complete wheel descriptors verified; complete original RequiresDist remains authoritative. Nativeprovider/tool/headers/libdevice behavior is separately guarded; metadata alone is not runtime qualification."
+    },
+    "state": "route selected; actual AMD64 CPU provider proof and AMDnative/ARMcross dependency generation passed; final production guard/pin promotion, immutable images and fresh native/model gates pending",
+    "prohibitions": "No vendor patch, dependency metadata alteration, source-built Torch, unsupported alias, unverified provider or invented nativeARM report is selected. Older baseMATCH/sourcebuild/alias candidates are unselected history. PriorABB/099 GPU/performance results do not qualify the new foundation.",
+    "future_source_uid": null,
+    "future_runtime_image": null,
+    "future_verification_image": null,
+    "selected_architectures": {
+      "amd64": {
+        "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:b3f64e4fec7d0825e05bf685e628e7e112afd7d63bc5906e2f71fd1f56cce336",
+        "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
+        "cuda": "13.4.3",
+        "wheels": {
+          "torch": {
+            "version": "2.16.0.dev20261017+cu134",
+            "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261017%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+            "sha256": "f60d7413d41de68727d3910c13ef3e3e2a8465275e57413b8c0b69d46103b56d"
+          },
+          "torchvision": {
+            "version": "0.30.0.dev20261007+cu134",
+            "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torchvision-0.30.0.dev20261007%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+            "sha256": "c3deb24ad8926b77bfdadd05aa6ba71a47f35c5847ed8ffee21a2f9e3843a043"
+          },
+          "triton": {
+            "version": "3.9.0+gitfc8d31a5",
+            "url": "https://download-r2.pytorch.org/whl/nightly/triton-3.9.0%2Bgitfc8d31a5-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+            "sha256": "c1ad85df07b3fa3209b8cec00ff24589e656ff13336d1aea1befd99e9bb0acfb"
+          }
+        },
+        "nccl_provider": "native",
+        "native_addons": [
+          {
+            "artifact": "libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb",
+            "sha256": "71959e401720b56ff00652ff69a1fb070c219aa6e8574902e497a5c2fb67476f",
+            "package": "libcusparselt0-cuda-13",
+            "version": "0.8.1.1-1",
+            "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb"
+          },
+          {
+            "artifact": "libnvshmem3-cuda-13_3.7.2-1_amd64.deb",
+            "sha256": "4810db788855de9014bb82f3941ec2866653761e653e1576a8f6ce0ab3e18e74",
+            "package": "libnvshmem3-cuda-13",
+            "version": "3.7.2-1",
+            "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnvshmem3-cuda-13_3.7.2-1_amd64.deb"
+          }
+        ],
+        "sourcebuild_fields": false,
+        "actual_ARM_execution": false
+      },
+      "arm64": {
+        "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:e57a21d3cf1398462f74efe1b57603cb968ee750088c6160ea89458b4f64dcfc",
+        "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
+        "cuda": "13.4.3",
+        "wheels": {
+          "torch": {
+            "version": "2.16.0.dev20261014+cu134",
+            "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261014%2Bcu134-cp312-cp312-manylinux_2_28_aarch64.whl",
+            "sha256": "999872997b382d716ef673feacba46cfb03319c7bd0b4bce15deafa0b60ca250"
+          },
+          "torchvision": {
+            "version": "0.30.0.dev20261006+cu134",
+            "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torchvision-0.30.0.dev20261006%2Bcu134-cp312-cp312-manylinux_2_28_aarch64.whl",
+            "sha256": "35caf9593e4c168b0eb1737ed76c05675149f01e9c59289a048fd106f13f554e"
+          },
+          "triton": {
+            "version": "3.9.0+gitfc8d31a5",
+            "url": "https://download-r2.pytorch.org/whl/nightly/triton-3.9.0%2Bgitfc8d31a5-cp312-abi3-linux_aarch64.whl",
+            "sha256": "c7c4c34ef2eaf6b06d553b90ba5f992b5f92d6de96f4e6922c471b95cc3f7ebf"
+          }
+        },
+        "nccl_provider": "native",
+        "native_addons": [
+          {
+            "artifact": "libcusparselt0-cuda-13_0.8.1.1-1_arm64.deb",
+            "sha256": "ffd98cc3f95f8918300e40637c7c99e1652d16dddc622020352ceb965be83cf0",
+            "package": "libcusparselt0-cuda-13",
+            "version": "0.8.1.1-1",
+            "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcusparselt0-cuda-13_0.8.1.1-1_arm64.deb"
+          },
+          {
+            "artifact": "libnvshmem3-cuda-13_3.7.2-1_arm64.deb",
+            "sha256": "ea0449dca0d08b05b2b2987162cb0ea018613473ec800dcd1942b2d40542f714",
+            "package": "libnvshmem3-cuda-13",
+            "version": "3.7.2-1",
+            "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnvshmem3-cuda-13_3.7.2-1_arm64.deb"
+          }
+        ],
+        "sourcebuild_fields": false,
+        "actual_ARM_execution": false
+      }
+    },
+    "selected_Vision_bundle_policy": {
+      "authority": "User explicitly permits component-bundled runtime when no supported provider knob exists; exact two Vision files only",
+      "tested_architecture": "amd64",
+      "distribution_version": "0.30.0.dev20261007+cu134",
+      "members": [
+        {
+          "member": "torchvision.libs/libcudart.a6a4ec3c.so.13",
+          "sha256": "a77eeb711d350a7791a45a07f37cd3b2ae61c71da4db1bf50cc8bd45d33b5b72",
+          "bytes": 798496,
+          "soname": "libcudart.so.13"
+        },
+        {
+          "member": "torchvision.libs/libnvjpeg.be6456a4.so.13",
+          "sha256": "5092212a36867d5607a489835b95c63e2cf5d0f27a3cebe03c4332549ca43e69",
+          "bytes": 6354544,
+          "soname": "libnvjpeg.so.13"
+        }
+      ],
+      "other_architectures": "derive and validate actual official perarchELF/RECORD providers at seal; no ARM execution equivalence inferred"
+    }
+  },
+  "optional_sdk_collection_increment": {
+    "source": "7621d853cb11594a527830f7e6f4e19130492de1",
+    "source_scope": "tests only",
+    "changed_paths": [
+      "tests/test_nvfp4_loading_pack_control.py",
+      "tests/test_nvfp4_optional_collection.py"
+    ],
+    "production_src_math_and_build_bytes_unchanged_from_abb67": true,
+    "behavior": "CPUloading controls importorskipTriton before transitivebackendimports; subprocessregression forcesabsentTriton and forbidsCUDAinitialization",
+    "reviews": "both distinctcodingreviews clean perparenthandoff",
+    "qualification": "source/review boundary only here; historical345doesnotinclude newtest and isnotrelabeled as7621fullgate",
+    "origin_source": "8c0728c4b544dac87a98fdf424a90e2a18e10b60",
+    "historical_negative": "ControlledTorch-present/Triton-blocked collection raised ModuleNotFoundError through fixture/backend imports; CUDA notinitialized. Originalnegative log preserved.",
+    "source_proof": {
+      "existing_test_function_AST_equal": true,
+      "existing_assertions_before": 9,
+      "existing_assertions_after": 9,
+      "guard_before_fixture_and_backend_imports": true
+    },
+    "diagnostic_gate": {
+      "source": "8c0728c4b544dac87a98fdf424a90e2a18e10b60",
+      "integrated_as": "7621d853cb11594a527830f7e6f4e19130492de1",
+      "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+      "passed": 4,
+      "seconds": 4.7,
+      "scope": "test-only read-only fixture/source-overlay diagnostic; current runtime/build/image/math unchanged; no GPU exposed"
+    }
+  },
+  "last_updated_date": "2026-10-18",
+  "current_implementation": {
+    "revision": "0a00cb181426aeb50e83c7ee97bd73c08157901e",
+    "scope": "managed foundation/origin interfaces integrated; latest production guard/pin promotion still owned by build maintainer",
+    "application_qualification": "099 and ABB67 remain explicit historical code/image regions; no latestGPU/model pass inferred",
+    "commit_scope_of_this_document": "documentation only; current implementation revision excludes this later documentation commit",
+    "origin_contract": "At0a00, officialPyTorchroots retainexactPyTorchURLs; HTTPS pypi.nvidia.com default443 is accepted onlyfor cuda-toolkit/nvidia-* transitivepackages. Actualnative/crossreports passedthisfullorigin/dependency validation; no localfile/fabricatedreport fallback."
+  }
+}
