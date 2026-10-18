@@ -534,10 +534,10 @@ configuration and validation scope.
 
 CPU verification, from the repository root after the same selected input preparation:
 
-The verification image also needs Git for real repository/update fixtures.
-Its provision and full installed CPU rerun are pending after source
-`16ae6dfc` exposed that missing prerequisite; the runtime service image does not
-need this test tool.
+The verification target provisions Git for real repository/update fixtures,
+with full foundation audits before and after installation. The rebuilt image
+and full installed CPU rerun remain pending after source `16ae6dfc` exposed the
+missing prerequisite. The runtime service image does not need this test tool.
 
 ```bash
 docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \

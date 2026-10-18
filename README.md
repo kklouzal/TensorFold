@@ -827,10 +827,9 @@ Source installations print a live throughput line when attached to a terminal. R
 
 The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, Git for the isolated editable-update regression, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers. Git installation is bracketed by full foundation audits in that target:
 
-Its real repository/update fixtures also require Git inside the verification
-image. Git provisioning and the full installed CPU rerun remain pending after
-the source `16ae6dfc` run exposed that missing test prerequisite; this does not
-require Git in the runtime service image.
+Source `16ae6dfc` exposed the missing Git prerequisite in its full installed CPU
+run. The verification target now provisions it; the rebuilt image and full CPU
+rerun remain pending. The runtime service image does not need Git.
 
 ```bash
 # Keep the selected input-preparation variables in this shell.
