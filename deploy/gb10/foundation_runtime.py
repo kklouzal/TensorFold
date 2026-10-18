@@ -29,6 +29,7 @@ CUDA_NAME = re.compile(
     r"(?:[.-][A-Za-z0-9_]+)?\.so(?:\.|$)"
 )
 SYSTEM_NAMES = frozenset({"libstdc++.so.6", "libgcc_s.so.1"})
+CXX_NAME = re.compile("(?:" + "|".join(re.escape(name) for name in sorted(SYSTEM_NAMES)) + r")(?:\.[0-9]+)*")
 DRIVER_NAME = re.compile(r"^lib(?:cuda|nvidia-[^/]+)\.so(?:\.|$)")
 DYNAMIC_TAG = re.compile(r"\((SONAME|NEEDED)\).*?\[([^\]]+)\]")
 VISION_MEMBER = re.compile(r"torchvision\.libs/lib(cudart|nvjpeg)\.[0-9a-f]{8}\.so\.13\Z")
@@ -36,7 +37,7 @@ STAT_FIELDS = ("realpath", "size", "mtime_ns", "mode")
 
 
 def provider_kind(name: str) -> str | None:
-    if any(name == base or name.startswith(base + ".") for base in SYSTEM_NAMES):
+    if CXX_NAME.fullmatch(name):
         return "cxx_runtime"
     if DRIVER_NAME.match(name):
         return "driver"
