@@ -299,6 +299,25 @@ CUDA_AFFINE_GROUPS = (32, 64, 128)
 CUDA_CHECKPOINT_SLOTS = True
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: MLX 4-bit g64 and NVFP4 checkpoints have FP8 prompt kernels
 
+def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
+    """The text RoPE policy without accelerator imports: the checkpoint's default one, or static YaRN (declared, or
+    ``yarn_factor`` over the native positions: the upstream card's 1,000,000-token reach is ``--yarn-factor 4``)."""
+
+    from tensorfold.families import read_config
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    from .config_metadata import declares_yarn, resolve_default_rope
+
+    raw = read_config(Path(model_dir))
+    text = raw.get("text_config") or raw
+    if yarn_factor is None and not declares_yarn(text):
+        head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
+        rope = resolve_default_rope(text, head_dim=head_dim)
+        native = int(text.get("max_position_embeddings", raw.get("max_position_embeddings", 0)))
+        return RopeParameters("default", rope.theta, rope.rotary_dim, native, native, mrope_section=rope.mrope_section)
+    return RopeParameters.from_config(raw, yarn_factor)
+
+
 def gb10() -> bool:
     """Whether GPU 0 is a GB10 (DGX Spark: compute capability 12.1), where the lone stream's wide windows were measured."""
 
@@ -334,5 +353,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         context_explicit=options.get("context_explicit"), vision=bool(options.get("vision", False)),
                         vision_urls=bool(options.get("vision_urls", False)),
                         vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
+                        yarn_factor=options.get("yarn_factor"),
                         **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
                            if options.get(name) is not None})

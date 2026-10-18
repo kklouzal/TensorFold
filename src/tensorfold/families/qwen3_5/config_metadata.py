@@ -1,8 +1,9 @@
-"""Host-only Qwen3.5 architecture and supported default text-RoPE metadata.
+"""Host-only Qwen3.5 architecture and supported text-RoPE metadata (default, or static YaRN).
 
-The CUDA kernels implement the named linear/full attention primitives and the
-unscaled inverse-frequency formula. Metadata is resolved once before payload
-loading; accepting a different RoPE algorithm would change checkpoint math.
+The CUDA kernels implement the named linear/full attention primitives, the
+unscaled inverse-frequency formula and YaRN's frequencies with its rotary
+amplitude. Metadata is resolved once before payload loading; accepting another
+RoPE algorithm would change checkpoint math.
 """
 
 from __future__ import annotations
@@ -78,18 +79,26 @@ def _number(value: Any, name: str, *, zero: bool = False) -> float:
     return number
 
 
-def _require_default_rope(parameters: dict[str, Any]) -> None:
+def _rope_kind(parameters: dict[str, Any]) -> str:
+    """The declared algorithm, refusing per-layer dictionaries and anything but default or static YaRN."""
     if any(kind in parameters for kind in _LAYER_KINDS):
         raise ValueError("Qwen3.5 CUDA does not support per-layer RoPE parameter dictionaries")
     kind = parameters.get("rope_type", parameters.get("type", "default"))
     if "rope_type" in parameters and "type" in parameters and parameters["rope_type"] != parameters["type"]:
         raise ValueError("rope_type and type disagree")
-    if kind != "default":
-        raise ValueError(f"Qwen3.5 CUDA supports default text RoPE only, not {kind!r}")
+    if kind not in ("default", "yarn"):
+        raise ValueError(f"Qwen3.5 CUDA supports default or static YaRN text RoPE, not {kind!r}")
+    return kind
+
+
+def declares_yarn(text: dict[str, Any]) -> bool:
+    """Whether the text config itself declares static YaRN (``--yarn-factor`` can also select it)."""
+    return any(_rope_kind(parameters) == "yarn" for parameters in _rope_parameter_sets(text))
 
 
 def _default_rope(text: dict[str, Any], parameters: dict[str, Any], head_dim: int) -> DefaultRope:
-    _require_default_rope(parameters)
+    if _rope_kind(parameters) != "default":
+        raise ValueError("a YaRN checkpoint's rotary policy is resolved by its RopeParameters")
     theta = _number(parameters.get("rope_theta", text.get("rope_theta", 10000000.0)), "rope_theta")
     partial = _number(parameters.get("partial_rotary_factor", text.get("partial_rotary_factor", 0.25)),
                       "partial_rotary_factor", zero=True)
@@ -181,7 +190,7 @@ def validate_cuda_metadata(raw: dict[str, Any]) -> None:
         raise ValueError("Qwen3.5 CUDA does not support attention_bias=true")
     parameters = _rope_parameter_sets(text)
     for item in parameters:
-        _require_default_rope(item)
+        _rope_kind(item)
     attention = None
     if "num_hidden_layers" in text:
         layers = _count(_config_int(text["num_hidden_layers"], "num_hidden_layers"), "num_hidden_layers")
@@ -196,6 +205,11 @@ def validate_cuda_metadata(raw: dict[str, Any]) -> None:
         raise ValueError("layer_types requires num_hidden_layers")
     elif "full_attention_interval" in text:
         _count(text["full_attention_interval"], "full_attention_interval", minimum=1)
+    if declares_yarn(text):
+        from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+        RopeParameters.from_config(raw)            # validates the declaration; its frequencies are finite by build
+        return
     head_dim = text.get("head_dim")
     if head_dim:
         rope = resolve_default_rope(text, head_dim=_config_int(head_dim, "head_dim"))

@@ -123,8 +123,9 @@ def maths() -> tuple[dict[str, bool], str]:
     return own, f"full ({gpu} has neither the block-scaled FP4 nor the FP8 mma): bf16 activations, the stored weights"
 
 
-def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None):
-    """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored."""
+def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None, rope=None):
+    """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored (``rope``:
+    a static YaRN policy for a default-RoPE checkpoint)."""
 
     from tensorfold.cuda.capacity import headers
     from tensorfold.cuda.nvfp4 import format as fmt
@@ -143,7 +144,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
     )
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir) if eos_token_ids is None else Config.read(model_dir, eos_token_ids=eos_token_ids)
+    cfg = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     block = read_config(model_dir).get("quantization_config") or {}
     metadata = fmt.LinearMetadata(block)
     reciprocal = str(block.get("quant_method", "")).lower() == "compressed-tensors"
