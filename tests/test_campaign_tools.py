@@ -124,43 +124,48 @@ def test_size_prompt_lands_within_tolerance_below_the_target():
 # --- one position over a loopback server ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
-def fake_server(seen=None, ids=True):
-    """A streaming chat server whose reply ids depend only on max_tokens (omitted unless ``ids``); ``seen`` collects
-    the request bodies. /v1/tokenize counts 20 template tokens plus one per 4 characters of the first message."""
+def fake_server(seen=None, ids=True, cache=True):
+    """A streaming chat/completions server whose reply ids depend only on max_tokens (omitted unless ``ids``);
+    ``seen`` collects the request bodies. Like Gemma4's one-entry cache (with ``cache``), a prompt that starts with
+    the previous prompt resumes all of it. /v1/tokenize counts 20 template tokens plus one per 4 characters of the
+    first message and returns fake_ids() as the tokens."""
+
+    last = [None]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
-        def do_GET(self):
-            body = json.dumps({"server": {"source_revision": "test"}}).encode()
+        def _json(self, value):
+            body = json.dumps(value).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body)
 
+        def do_GET(self):
+            self._json({"server": {"source_revision": "test"}})
+
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path.endswith("/v1/tokenize"):
-                body = json.dumps({"count": count_tokens(request["messages"])}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(body)
-                return
+                return self._json({"count": count_tokens(request["messages"]), "tokens": fake_ids(request["messages"])})
             if seen is not None:
                 seen.append(request)
+            prompt = request["prompt"] if "prompt" in request else fake_ids(request["messages"])
+            cached = len(last[0]) if cache and last[0] is not None and prompt[:len(last[0])] == last[0] else 0
+            last[0] = prompt
             n = request["max_tokens"]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             for i in range(n):
-                self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": f"t{i} "}}]}).encode()
-                                 + b"\n\n")
+                piece = {"text": f"t{i} "} if "prompt" in request else {"delta": {"content": f"t{i} "}}
+                self.wfile.write(b"data: " + json.dumps({"choices": [piece]}).encode() + b"\n\n")
             stats = {"stats_version": 2, "prefill_s": 0.5, "decode_s": 1.0, "decode_tps": (n - 1) / 1.0,
-                     "ttft_s": 0.6, "queue_s": 0.0, "cached": 0, "rounds": n // 2, "drafted": n, "accepted": n // 2,
-                     "token_sha": "abc", **({"token_ids": list(range(10, 10 + n))} if ids else {})}
-            usage = {"prompt_tokens": 7, "completion_tokens": n}
+                     "ttft_s": 0.6, "queue_s": 0.0, "cached": cached, "rounds": n // 2, "drafted": n,
+                     "accepted": n // 2, "token_sha": "abc", **({"token_ids": list(range(10, 10 + n))} if ids else {})}
+            usage = {"prompt_tokens": len(prompt), "completion_tokens": n}
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "length"}],
                                                      "tensorfold": stats}).encode() + b"\n\n")
             self.wfile.write(b"data: " + json.dumps({"choices": [], "usage": usage, "tensorfold": stats}).encode()
@@ -175,6 +180,13 @@ def fake_server(seen=None, ids=True):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+def fake_ids(messages):
+    """A chat prompt's fake token ids: one per character of the joined messages plus a generation-prompt token, so a
+    next chat turn is not an extension of the previous prompt (as with Gemma4's template without thinking)."""
+
+    return [100 + ord(c) % 50 for c in "\n".join(m["content"] for m in messages)] + [1]
 
 
 def count_tokens(messages):
@@ -209,7 +221,7 @@ def test_run_records_every_scheduled_request_with_its_metrics(tmp_path):
     first = doc["records"][0]
     assert first["phase"] == "cold" and first["eos_at"] == 2 and first["token_ids"][:3] == [10, 11, 12]
     m = first["metrics"]
-    assert m["decode_tps"] == 7.0 and m["prefill_tps"] == 14.0 and m["accept"] == 0.5 and m["tokens_per_round"] == 1.75
+    assert m["decode_tps"] == 7.0 and m["prefill_tps"] == 4.0 and m["accept"] == 0.5 and m["tokens_per_round"] == 1.75
     assert "token_ids" not in first["stats"] and doc["warmup"]["usage"]["completion_tokens"] == 4
 
 
@@ -231,15 +243,33 @@ def test_determinism_and_identity_gates_over_a_loopback_server(tmp_path, monkeyp
             assert results[gate]["source_revision"] == "test" and len(results[gate]["profile_sha256"]) == 64
     determinism = results["determinism"]["gates"]["determinism"]
     identity = results["identity"]["gates"]["identity"]
-    assert determinism["verdict"] is True and determinism["cases"] == 2 and determinism["identical"] == 2
-    assert determinism["warm_exercised"] == determinism["extended_exercised"] == 0     # the fake server never caches
-    assert identity["verdict"] is True and identity["greedy_cases"] == identity["greedy_identical"] == 1
+    assert determinism["status"] == "pass" and determinism["verdict"] is True and determinism["cases"] == 2
+    assert determinism["exercised"] == {"warm": 2, "recold": 2, "extended": 2} and determinism["identical"] == 2
+    assert determinism["next_turn_exercised"] == 0                 # a next chat turn does not extend the prompt
+    extension = [r for r in seen if "prompt" in r]
+    assert len(extension) == 4 and extension[0]["prompt"][-6:] == list(range(10, 16))   # prompt + its own reply
+    assert identity["status"] == "pass" and identity["greedy_cases"] == identity["greedy_identical"] == 1
     assert identity["greedy_drafted"] == 1
-    measured = [r for r in seen if r["max_tokens"] == 6]
+    measured = [r for r in seen if r["max_tokens"] == 6 and "messages" in r]
     assert all(r["return_token_ids"] and r["ignore_eos"] and r["chat_template_kwargs"] == {"enable_thinking": False}
                for r in measured)
     assert [r.get("draft") for r in measured[-4:]] == [None, False, None, False]
     assert measured[-1]["seed"] == 2024 and measured[-1]["temperature"] == 1.0
+
+
+def test_unexercised_cache_paths_make_determinism_incomplete_not_pass(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    out = tmp_path / "determinism.json"
+    with fake_server(cache=False) as url:
+        monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "determinism", "--url", url, "--out", str(out),
+                                          "--profile", str(tmp_path / "profile.json"),
+                                          "--prompts", str(tmp_path / "prompts.json"),
+                                          "--gate-prompts", "short-code-nothink", "--max-tokens", "6"])
+        assert gates.main() == 3
+    result = json.loads(out.read_text())
+    gate = result["gates"]["determinism"]
+    assert result["status"] == gate["status"] == "incomplete" and gate["verdict"] is None
+    assert gate["identical"] == 2 and gate["exercised"] == {"warm": 0, "recold": 2, "extended": 0}
 
 
 def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):

@@ -110,11 +110,13 @@ def get_json(url: str, *, timeout: float = 30) -> dict:
         return json.loads(resp.read())
 
 
-def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, timeout: float = TIMEOUT_S) -> dict:
-    """One streamed chat completion: client timings, text, reasoning, the final usage and ``tensorfold`` block."""
+def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, timeout: float = TIMEOUT_S,
+                route: str = "/v1/chat/completions") -> dict:
+    """One streamed completion (chat by default; ``route="/v1/completions"`` for a text or token-id ``prompt``):
+    client timings, text, reasoning, the final usage and ``tensorfold`` block."""
 
     body = {**body, "stream": True, "stream_options": {"include_usage": True}}
-    req = urllib.request.Request(base + "/v1/chat/completions", data=json.dumps(body).encode(),
+    req = urllib.request.Request(base + route, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     sent = time.perf_counter()
     first = last = None
@@ -131,8 +133,8 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
             for choice in chunk.get("choices", []):
                 delta = choice.get("delta") or {}
                 finish = choice.get("finish_reason") or finish
-                if delta.get("content"):
-                    content.append(delta["content"])
+                if text := delta.get("content") or choice.get("text"):
+                    content.append(text)
                 if thought := delta.get("reasoning_content") or delta.get("reasoning"):
                     reasoning.append(thought)
                 if delta.get("tool_calls"):

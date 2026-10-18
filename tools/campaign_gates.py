@@ -10,10 +10,10 @@ Every gate needs --url, --profile (the bench profile: model, card sampling per t
 and --out. needle sizes its haystacks from --corpus with the server's /v1/tokenize; determinism and identity reuse
 prompts from a bench prompt set (--prompts). Thresholds are parameters with no built-in values except the contract
 gates (determinism and greedy drafted == serial must be exact unless --allow-* says otherwise); a gate without a
-threshold reports its value and a null verdict. The exit status is 1 when any gate with a threshold fails.
-A determinism or identity verdict covers only the paths a request exercised: determinism counts the cases whose warm
-request actually resumed cached tokens (warm_exercised, extended_exercised) and identity the greedy cases that drafted
-at all (greedy_drafted); token ids are required from every reply.
+threshold has status "report" and a null verdict. Determinism and identity are "incomplete" (verdict null) when a
+required comparison was not exercised: a warm request that resumed no cached prefix, a cold one that did, a greedy
+reply that verified no draft (silence is not coverage). Token ids are required from every reply. The overall status
+is fail > incomplete > pass > report; exit status 1 = fail, 3 = incomplete, 0 otherwise.
 """
 
 from __future__ import annotations
@@ -257,6 +257,10 @@ def _thinking(profile: dict, args) -> list[bool]:
     return modes if args.thinking == "both" else [t for t in modes if t == (args.thinking == "on")]
 
 
+def _threshold_status(verdict: bool | None) -> str:
+    return "report" if verdict is None else ("pass" if verdict else "fail")
+
+
 def gate_tools(url: str, profile: dict, args) -> dict:
     rows = []
     for thinking in _thinking(profile, args):
@@ -275,8 +279,8 @@ def gate_tools(url: str, profile: dict, args) -> dict:
     rates = {k: sum(v) / len(v) for k, v in groups.items()}
     overall = sum(r["pass"] for r in rows) / len(rows)
     verdict = None if args.min_tool_pass is None else all(v >= args.min_tool_pass for v in rates.values())
-    return {"gate": "tools", "pass_rate": overall, "pass_rate_by_group": rates, "threshold": args.min_tool_pass,
-            "verdict": verdict, "rows": rows}
+    return {"gate": "tools", "status": _threshold_status(verdict), "pass_rate": overall,
+            "pass_rate_by_group": rates, "threshold": args.min_tool_pass, "verdict": verdict, "rows": rows}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -336,7 +340,8 @@ def gate_needle(url: str, profile: dict, args) -> dict:
                   flush=True)
     recall = sum(r["recall"] for r in rows) / len(rows)
     verdict = None if args.min_needle_recall is None else all(r["recall"] >= args.min_needle_recall for r in rows)
-    return {"gate": "needle", "recall": recall, "threshold": args.min_needle_recall, "verdict": verdict,
+    return {"gate": "needle", "status": _threshold_status(verdict), "recall": recall,
+            "threshold": args.min_needle_recall, "verdict": verdict,
             "corpus_sha256": digest, "fractions": fractions, "rows": rows}
 
 
@@ -350,53 +355,110 @@ def _items(args) -> list[dict]:
     return [it for it in chosen if args.thinking == "both" or it["thinking"] == (args.thinking == "on")]
 
 
-EVICT = [{"role": "user", "content": "Reply with one word: ok. (cache eviction request)"}]
+def _evictions(count: int) -> list[list[dict]]:
+    """Distinct ~600-token prompts that displace every kept prefix-cache state of an earlier prompt: one-entry caches
+    (Gemma4) need one, multi-state caches (Qwen keeps message-start and prompt-end states) need several prompts long
+    enough to be kept."""
+
+    words = ("amber", "basalt", "cobalt", "dune", "ember", "flint", "garnet", "harbor", "indigo", "jasper")
+    return [[{"role": "user", "content": f"Cache eviction request {n}. " + " ".join(
+        f"{words[(n + i) % len(words)]}-{i}" for i in range(300)) + " Reply with one word: ok."}]
+        for n in range(count)]
+
+
+def _evict(url: str, profile: dict, args) -> None:
+    for messages in _evictions(args.evict_requests):
+        stream_chat(url, {"model": profile["model"], "messages": messages, "max_tokens": 4, "temperature": 0,
+                          "chat_template_kwargs": {"enable_thinking": False}})
+
+
+def _cached(reply: dict) -> int:
+    return int(reply["stats"].get("cached") or 0)
+
+
+def _status(rows: list[dict], allow_failure: bool) -> tuple[str, bool | None]:
+    """A gate's status from its rows: fail when any compared pair differs (unless reporting only), incomplete when
+    any required comparison was not exercised (silence is not coverage), else pass. verdict mirrors it (null for
+    incomplete or report-only)."""
+
+    if any(not r["identical"] for r in rows):
+        return ("report", None) if allow_failure else ("fail", False)
+    if any(not all(r["exercised"].values()) for r in rows):
+        return "incomplete", None
+    return ("report", None) if allow_failure else ("pass", True)
 
 
 def gate_determinism(url: str, profile: dict, args) -> dict:
+    """Per prompt and sampling mode, every pair must be token-identical:
+    - repeat: the prompt cold (after eviction) against the same prompt warm (a full prompt-cache hit) and against it
+      cold again after another eviction;
+    - extension: the prompt's token ids plus its own reply, sent right after the prompt (the cache holds the prompt:
+      a partial hit) against the same ids cold after eviction (/v1/completions with token ids, so the extension is
+      exact for any chat template);
+    - chat next turn (reported, not required): the conversation continued with the reply and "Continue.", warm
+      against cold. A template whose generation prompt is not a prefix of its history rendering (Gemma4 without
+      thinking appends an empty thought block) never resumes it, so it is not a required comparison.
+    A comparison counts as exercised only when its warm request resumed >= 90% of the shared prefix from the cache
+    and its cold twin resumed <= 10%."""
+
     rows = []
-    evict = {"model": profile["model"], "messages": EVICT, "max_tokens": 4, "temperature": 0,
-             "chat_template_kwargs": {"enable_thinking": False}}
     for item in _items(args):
+        prompt_ids = post_json(url + "/v1/tokenize", {"model": profile["model"], "messages": item["messages"],
+                                                      "chat_template_kwargs": {"enable_thinking": item["thinking"]},
+                                                      "return_tokens": True})["tokens"]
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
             request = chat_request(profile, item, sampling, args.max_tokens)
-            stream_chat(url, evict)                                   # this prompt is not cached
+            _evict(url, profile, args)
             cold = stream_chat(url, request)
-            warm = stream_chat(url, request)                          # full-prompt hit
-            stream_chat(url, evict)
+            warm = stream_chat(url, request)
+            _evict(url, profile, args)
             recold = stream_chat(url, request)
-            # a next turn extending this prompt: the kept prefix (warm) against the same prompt after eviction
+            extended_ids = list(prompt_ids) + reply_token_ids(cold)
+            extension = {"model": profile["model"], "prompt": extended_ids, "max_tokens": args.max_tokens,
+                         "return_token_ids": True, "ignore_eos": bool(profile.get("ignore_eos", True)), **sampling}
+            extended = stream_chat(url, extension, route="/v1/completions")
+            _evict(url, profile, args)
+            extended_cold = stream_chat(url, extension, route="/v1/completions")
             turn = {**item, "messages": item["messages"] + [
                 {"role": "assistant", "content": cold["content"] or cold["reasoning"]},
                 {"role": "user", "content": "Continue."}]}
             turn_request = chat_request(profile, turn, sampling, args.max_tokens)
-            extended = stream_chat(url, turn_request)
-            stream_chat(url, evict)
-            extended_cold = stream_chat(url, turn_request)
-            row = {"prompt": item["id"], "sampling": mode,
-                   "cached": {"cold": cold["stats"].get("cached"), "warm": warm["stats"].get("cached"),
-                              "recold": recold["stats"].get("cached"), "extended": extended["stats"].get("cached"),
-                              "extended_cold": extended_cold["stats"].get("cached")},
-                   "warm_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(warm)),
-                   "recold_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(recold)),
-                   "extended_warm_vs_cold": first_difference(reply_token_ids(extended), reply_token_ids(extended_cold)),
+            stream_chat(url, request)                                  # the cache holds this prompt again
+            next_turn = stream_chat(url, turn_request)
+            _evict(url, profile, args)
+            next_turn_cold = stream_chat(url, turn_request)
+            n, m = len(prompt_ids), len(extended_ids)
+            row = {"prompt": item["id"], "sampling": mode, "prompt_tokens": n,
+                   "cached": {"cold": _cached(cold), "warm": _cached(warm), "recold": _cached(recold),
+                              "extended": _cached(extended), "extended_cold": _cached(extended_cold),
+                              "next_turn": _cached(next_turn), "next_turn_cold": _cached(next_turn_cold)},
+                   "differences": {
+                       "warm_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(warm)),
+                       "recold_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(recold)),
+                       "extended_warm_vs_cold": first_difference(reply_token_ids(extended),
+                                                                 reply_token_ids(extended_cold)),
+                       "next_turn_warm_vs_cold": first_difference(reply_token_ids(next_turn),
+                                                                  reply_token_ids(next_turn_cold))},
                    "tokens": len(reply_token_ids(cold)), "sha": cold["stats"].get("token_sha")}
-            row["identical"] = all(row[k] is None for k in ("warm_vs_cold", "recold_vs_cold", "extended_warm_vs_cold"))
-            # whether each warm request resumed more cached tokens than its cold twin: an unexercised comparison is
-            # a cold repeat, so the verdict covers prefix-cache independence only where these hold
-            cached = row["cached"]
-            row["cache_exercised"] = {"warm": (cached["warm"] or 0) > (cached["cold"] or 0),
-                                      "extended": (cached["extended"] or 0) > (cached["extended_cold"] or 0)}
+            c = row["cached"]
+            row["exercised"] = {"warm": c["cold"] <= 0.1 * n and c["warm"] >= 0.9 * n,
+                                "recold": c["recold"] <= 0.1 * n,
+                                "extended": c["extended"] >= 0.9 * n and c["extended_cold"] <= 0.1 * m}
+            row["next_turn_exercised"] = c["next_turn"] > c["next_turn_cold"]
+            row["identical"] = all(v is None for v in row["differences"].values())
             rows.append(row)
             print(json.dumps(row), flush=True)
-    identical = sum(r["identical"] for r in rows)
-    verdict = None if args.allow_nondeterminism else identical == len(rows)
-    return {"gate": "determinism", "identical": identical, "cases": len(rows), "verdict": verdict,
-            "warm_exercised": sum(r["cache_exercised"]["warm"] for r in rows),
-            "extended_exercised": sum(r["cache_exercised"]["extended"] for r in rows), "rows": rows}
+    status, verdict = _status(rows, args.allow_nondeterminism)
+    return {"gate": "determinism", "status": status, "verdict": verdict, "cases": len(rows),
+            "identical": sum(r["identical"] for r in rows),
+            "exercised": {k: sum(r["exercised"][k] for r in rows) for k in ("warm", "recold", "extended")},
+            "next_turn_exercised": sum(r["next_turn_exercised"] for r in rows), "rows": rows}
 
 
 def gate_identity(url: str, profile: dict, args) -> dict:
+    """Drafted (default) against serial ("draft": false) per prompt: greedy must be token-identical and is exercised
+    only when the drafted reply verified at least one draft; seeded sampling is reported."""
+
     rows = []
     for item in _items(args):
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
@@ -409,15 +471,16 @@ def gate_identity(url: str, profile: dict, args) -> dict:
                    "drafted": {k: drafted["stats"].get(k) for k in ("rounds", "drafted", "accepted", "decode_tps")},
                    "serial": {k: serial["stats"].get(k) for k in ("rounds", "decode_tps")}}
             row["identical"] = row["first_difference"] is None
+            row["exercised"] = {"drafts": bool(row["drafted"]["drafted"])}
             rows.append(row)
             print(json.dumps(row), flush=True)
     greedy = [r for r in rows if r["sampling"] == "greedy"]
     sampled = [r for r in rows if r["sampling"] != "greedy"]
-    verdict = None if args.allow_greedy_identity_failure else all(r["identical"] for r in greedy)
-    return {"gate": "identity", "greedy_identical": sum(r["identical"] for r in greedy), "greedy_cases": len(greedy),
-            "greedy_drafted": sum(bool(r["drafted"]["drafted"]) for r in greedy),   # cases that ran a draft at all
-            "sampled_identical": sum(r["identical"] for r in sampled), "sampled_cases": len(sampled),
-            "verdict": verdict, "rows": rows}
+    status, verdict = _status(greedy, args.allow_greedy_identity_failure)
+    return {"gate": "identity", "status": status, "verdict": verdict,
+            "greedy_identical": sum(r["identical"] for r in greedy), "greedy_cases": len(greedy),
+            "greedy_drafted": sum(r["exercised"]["drafts"] for r in greedy),
+            "sampled_identical": sum(r["identical"] for r in sampled), "sampled_cases": len(sampled), "rows": rows}
 
 
 GATES = {"tools": gate_tools, "needle": gate_needle, "determinism": gate_determinism, "identity": gate_identity}
@@ -443,6 +506,8 @@ def main() -> int:
     ap.add_argument("--needle-thinking", choices=("on", "off", "both"), default="off")
     ap.add_argument("--min-tool-pass", type=float, help="minimum pass rate in every tools group (unset: report)")
     ap.add_argument("--min-needle-recall", type=float, help="minimum recall at every depth (unset: report)")
+    ap.add_argument("--evict-requests", type=int, default=6,
+                    help="distinct ~600-token prompts sent to displace kept prefix-cache states before a cold request")
     ap.add_argument("--allow-nondeterminism", action="store_true", help="report determinism without a verdict")
     ap.add_argument("--allow-greedy-identity-failure", action="store_true",
                     help="report drafted-vs-serial identity without a verdict")
@@ -462,9 +527,12 @@ def main() -> int:
     for name in chosen:
         result["gates"][name] = GATES[name](url, profile, args)
         write_json(args.out, result)
-    verdicts = {name: g["verdict"] for name, g in result["gates"].items()}
-    print(json.dumps({"verdicts": verdicts}), flush=True)
-    return 1 if any(v is False for v in verdicts.values()) else 0
+    statuses = {name: g["status"] for name, g in result["gates"].items()}
+    result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()
+                        else "pass" if "pass" in statuses.values() else "report")
+    write_json(args.out, result)
+    print(json.dumps({"status": result["status"], "gates": statuses}), flush=True)
+    return {"fail": 1, "incomplete": 3}.get(result["status"], 0)
 
 
 if __name__ == "__main__":
