@@ -9,8 +9,9 @@ source, images, model metadata, raw evidence hashes and remaining gates.
 
 The later `297e8487` composition also passed two installed AUTO graph model
 protocols and 580 focused CPU checks, recorded [separately below](#source297-auto-graph-protocols).
-Its nine-case native fixture follow-up also passed; controlled performance
-selection remains pending. Each result qualifies its recorded source and workload. This record
+Its nine-case native fixture follow-up also passed. The user subsequently selected
+[profile A for measured four-stream throughput](#controlled-eight-start-comparison-and-user-selection).
+Each result qualifies its recorded source and workload. This record
 does not replace a deployed service or establish a desktop, FreeToken, two-GPU
 or broad quality comparison.
 
@@ -121,7 +122,7 @@ also retained in the receipt.
 
 The later composition's results are recorded separately below rather than
 inferred from these earlier gates. A controlled same-format performance
-comparison remains required. The entire fresh
+comparison is recorded below. The entire fresh
 RotorQuant/KV matrix, long-context quality/capacity, actual two-GPU or
 heterogeneous expert ranks and deployment rollout are not established here.
 Earlier [Python integration](optimization-validation.md#python-line-integration-2026-10-11),
@@ -193,6 +194,65 @@ counts are not added. The original failed run remains failed in the receipt.
 
 The [receipt's `source297_auto` entry](verification-gb10-nvfp4-20261018.json)
 binds these actual source/images, graph accounting, cache usage, raw logs,
-provider/outer receipts and remaining gates. Controlled performance selection,
-the clean full-project CPU rerun, complete fresh RotorQuant/KV matrix,
+provider/outer receipts and remaining scope. The clean full-project CPU rerun,
+complete fresh RotorQuant/KV matrix,
 long-context capacity/quality, two GPUs and rollout remain separate.
+
+## Controlled eight-start comparison and user selection
+
+The user selected **A** for the best measured four-stream throughput among the
+four tested configurations, and stopped further candidate work. This is a scoped
+operating choice, not an all-region SUPERIOR or equivalence claim. E/F were not
+promoted; their partial work supplies no completed model/performance result here.
+Deployment and its live receipt remain separate.
+
+Eight fresh installed-container starts ran in predeclared order **A B C D D C B A**,
+with two starts per configuration. All used the same source297 verification
+image, pinned checkpoint, exact math/KV, MTP6, four slots, AUTO graphs, SSD tables,
+vision and full 512-token protocol. A/B/C prepared common-input banks; D used the
+general-input path. B used four Torch intraop threads during construction;
+all serving restored 20 threads. C changed only the original read-ahead queue
+policy on the current source; early metadata discovery remained common.
+
+| Profile | Loading / constructor threads / reads / input policy | Constructor s, first / second | Warm R1 mean HTTP tok/s, first / second | R4 aggregate HTTP tok/s, first / second |
+| --- | --- | --- | --- | --- |
+| **A, selected** | GPU / 20 / split / common | 188.636 / 187.611 | 43.3203 / 43.2399 | **144.2591 / 144.1688** |
+| B | CPU / 4 / split / common | 284.294 / 280.050 | 43.3377 / 43.5270 | 144.0446 / 143.4509 |
+| C | GPU / 20 / original queue / common | 236.307 / 235.656 | 43.2160 / 43.2185 | 143.3265 / 142.8198 |
+| D | GPU / 20 / split / general | 187.289 / 188.186 | 43.3472 / 43.4327 | 143.4303 / 143.1909 |
+
+Each R1 number is the arithmetic mean of two warm requests in that start;
+those requests are not independent process replicates. Each R4 observation is
+one completed 2048-token quartet. The raw individual values, first-request rates
+and paired differences are retained in the receipt's `controlled_abcd` entry.
+
+A's two R4 observations exceeded every other measured R4 observation. Its
+constructor was shorter than B by 95.659/92.439 s (33.648%/33.008%) and C by
+47.671/48.045 s (20.173%/20.388%) in the respective halves. A/D startup ordering
+reversed between halves. D's warm R1 mean exceeded A by 0.0268/0.1929 tok/s;
+B also exceeded A in both halves. A exceeded D in R4 by 0.8288/0.9779 tok/s.
+The user chose the four-stream result while retaining these single-request
+observations; startup or R4 wins do not erase them.
+
+All 64 complete 512-token arrays matched the unwrapped source297 MTP0 reference,
+including each run's own draft-disabled control. Every warm/quartet response
+reported 45 cached tokens of 46; first and serial-control requests reported 0.
+Persistent native/compiler caches were retained and OS file caches were not
+globally dropped. These are fresh model/container starts, not cold-host or
+cold-storage measurements. Constructor time includes model preparation and graph
+capture, while HTTP rates retain the body-EOF interval and exclude final
+quiet/provider/engine retirement. All separate quality, media, SSD-scale,
+cancellation/recovery, provider, floor and retirement checks passed.
+
+Every start captured 128 verify and 64 MTP keys. All had 20 eligible CPUs and
+unlimited live ancestor CPU/RAM/PID limits; the lowest sampled MemAvailable was
+23,539,601,408 B, above the 8 GiB floor. Whole-run GPU monitoring is retained,
+without phase-specific thermal/clock attribution. Two starts per configuration
+and a mirrored nonrandom order support these repeated observations, not a
+population confidence bound, sustained-capacity guarantee or formal equivalence.
+No new desktop, FreeToken, filled-context, two-GPU or broad-quality result follows.
+
+The release-integration proof at `e82aeae1` matches runtime/build/lock/tool source
+bytes to source297; changes are docs and the recorded test-only EOS fixture.
+It does not claim identical rebuilt wheels or final image IDs. The final
+release/deployment receipts must record those actual artifacts.
