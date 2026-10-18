@@ -16,22 +16,26 @@ change can be verified.
 ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
-byte permutation. Final installed qualification of the ModelOpt loading change
-is pending; no full-ModelOpt startup-speed claim is made here.
+byte permutation. Historical source `abb67d62` passed affected installed CPU and
+native loader checks; the [loader qualification status](docs/nvfp4-loading-validation.md)
+keeps those identities separate from pending refreshed-foundation and full-ModelOpt
+startup/performance gates.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
-once, including when routed experts are offloaded; small-model and installed
-qualification of this accounting correction is pending.
+once, including when routed experts are offloaded. Historical small-model and
+installed accounting checks retain their recorded source/image; new-foundation
+qualification remains separate.
 Host read/publication storage and GPU packing scratch remain separate, including
 the distinct backbone and expert readers owned by a multi-rank leader.
 
 Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 
 RotorQuant's codec-range assertion now uses syntax accepted by Triton 3.8 while
-preserving the same inclusive 1–8 range. The ordinary container retains its pinned
-Torch 2.16/Triton 3.9 stack; verification of the reported Torch 2.14/Triton 3.8
-combination is a separate compatibility check, not a dependency downgrade.
+preserving the same inclusive 1–8 range. The selected container uses the official
+Torch 2.16/Triton 3.9 nightlies below. The reported Torch 2.14/Triton 3.8 combination
+has no completed native qualification here; its interrupted run is preserved in
+the [loader receipt](docs/verification-nvfp4-loading-20261017.json).
 
 CUDA rank startup resolves NCCL from the active Python environment or Torch bundle before system libraries. `TF_NCCL_LIB` is authoritative; an invalid override or broken selected environment library fails explicitly. Same-host rendezvous can reuse retired POSIX sessions while preserving active-listener exclusivity; older non-reuse sessions may still need their kernel timeout to expire. [Setup and recovery](RUNBOOK.md#nvidia-gpus) describe the boundaries; these fixes do not add two-GPU qualification.
 
@@ -83,7 +87,14 @@ The CUDA backend defaults to a compute-capability floor of **8.9** and refuses u
 
 ### Pinned container stack
 
-The [Dockerfile](deploy/gb10/Dockerfile) now requires explicit generated native foundation inputs and protects the CUDA SDK and selected nightly package closure in a separate prefix. See the [managed foundation build and audit contract](deploy/gb10/foundation.md). The selected design uses CUDA13.4.3 cuDNN development, genuine official nightlies, native core providers and explicitly protected TorchVision bundled-runtime exceptions. Fresh installed-image/GPU/model qualification remains separate from the historical results below.
+The [Dockerfile](deploy/gb10/Dockerfile) uses the selected CUDA **13.4.3 cuDNN development** foundation and genuine official nightlies. Native core providers and the exact protected TorchVision bundled-runtime exceptions follow the [managed foundation contract](deploy/gb10/foundation.md); this does not claim every component uses only the base runtime. The tracked per-architecture pin files are authoritative for base digests and whole-wheel hashes.
+
+| Target | Torch | TorchVision | Triton | Selected inputs |
+| --- | --- | --- | --- | --- |
+| AMD64 | `2.16.0.dev20261017+cu134` | `0.30.0.dev20261007+cu134` | `3.9.0+gitfc8d31a5` | [AMD64 pins](deploy/gb10/nightly-pins-amd64.json) |
+| ARM64 | `2.16.0.dev20261014+cu134` | `0.30.0.dev20261006+cu134` | `3.9.0+gitfc8d31a5` | [ARM64 pins](deploy/gb10/nightly-pins.json) |
+
+A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Fresh image/GPU/model qualification remains separate from the historical results below. The [next GB10 checkpoint target](deploy/gb10/README.md#pending-gb10-nvfp4-checkpoint-validation) is still pending; the older deployment profiles and measured rates retain their own identities.
 
 The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference development image:
 
@@ -105,25 +116,33 @@ The following example is for a **native AMD64 Linux host with a separate 16 GB G
 
 ```bash
 git clone --branch python-0.6 https://github.com/kklouzal/TensorFold.git
-cd TensorFold
+cd TensorFold || exit
 git rev-parse HEAD
+```
 
-# Prepare audited native inputs first: deploy/gb10/foundation.md
-TF_BUILD_JOBS=8
-docker buildx build --platform linux/amd64 --load --target runtime \
-  --build-context foundation_pins=./generated-amd64 \
-  --build-context foundation_artifacts=./artifacts-amd64 \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
-  --build-arg MAX_JOBS="$TF_BUILD_JOBS" \
+Run [input preparation](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs)
+with `TF_BUILD_ARCH=amd64` for this example, or `arm64` with a native ARM64 builder.
+It copies the six selected files, derives the base and fetches each declared
+addon from its pin URL into a temporary file. It checks the complete SHA256
+before publishing a canonical `.deb` name. Keep the resulting variables in this
+same shell; no hand-copied hashes or private wheelhouse are needed.
+
+```bash
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:local --file deploy/gb10/Dockerfile .
 docker image inspect tensorfold-fork:local --format '{{.Id}}'
 ```
 
-Use `--platform linux/arm64` on a native ARM64 Docker host. Cross-building or resolving another architecture's dependencies does not verify its GPU execution. `SOURCE_REVISION` is a label: a build from an edited working tree is not proven identical to that commit.
+Cross-building or resolving another architecture's dependencies does not verify its GPU execution. `SOURCE_REVISION` is a label: a build from an edited working tree is not proven identical to that commit.
 
-`MAX_JOBS=8` is the bounded default for compiler jobs. To request all available CPU cores, set `TF_BUILD_JOBS="$(getconf _NPROCESSORS_ONLN)"` before building and use the same runtime environment variable below. Choose a lower value if compiler memory would compete with model loading. This configures the job limit; it does not prove all cores remain busy.
+The preparation block derives `TF_BUILD_JOBS` from the local builder's available CPUs with `nproc`; use the remote builder's count when applicable. The Dockerfile's unset default remains eight. This controls compiler parallelism and does not prove all cores stay busy.
 
-Check GPU visibility through the image's compatibility launcher:
+Check GPU visibility through the image's compatibility launcher. On a mixed-vendor host where `--gpus all` resolves incorrectly, use the existing [explicit UUID/CDI selection](deploy/discrete-gpu/README.md) for the actual NVIDIA device:
 
 ```bash
 docker run --rm --gpus all --entrypoint python3 tensorfold-fork:local \
@@ -808,15 +827,21 @@ Source installations print a live throughput line when attached to a terminal. R
 
 The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, Git for the isolated editable-update regression, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers. Git installation is bracketed by full foundation audits in that target:
 
+Its real repository/update fixtures also require Git inside the verification
+image. Git provisioning and the full installed CPU rerun remain pending after
+the source `16ae6dfc` run exposed that missing test prerequisite; this does not
+require Git in the runtime service image.
+
 ```bash
-docker buildx build --platform linux/amd64 --load --target verification \
-  --build-context foundation_pins=./generated-amd64 \
-  --build-context foundation_artifacts=./artifacts-amd64 \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
-  --build-arg MAX_JOBS="$TF_BUILD_JOBS" \
+# Keep the selected input-preparation variables in this shell.
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:verification --file deploy/gb10/Dockerfile .
-docker run --rm --network none --memory 3g --memory-swap 3g \
-  --pids-limit 512 --cpus 2 --entrypoint python3 \
+docker run --rm --network none -e NVIDIA_VISIBLE_DEVICES=void --entrypoint python3 \
   tensorfold-fork:verification /opt/tensorfold-pins/foundation_guard.py run -- \
   python3 -m pytest -o pythonpath=tests -q tests/test_http_service_limits.py
 ```
@@ -829,7 +854,7 @@ The selected Rotor7 source adds [a maintained native GPU test module](tests/cuda
 
 The verification target copies the maintained changelog into `/opt/TensorFold`. The completed CPU results above used the qualified read-only fixture; they do not certify this packaging change. The frozen verification image passed those baked update/public-permissions checks without a checkout mount, as recorded above.
 
-This ordinary command exercises the configured source tests; it is not an installed-wheel origin/audit proof. GPU, distributed, model-quality, performance and native-origin gates require their declared hardware and controlled receipts. Missing or skipped hardware checks remain unrun. Follow [CONTRIBUTING.md](CONTRIBUTING.md), [the runbook](RUNBOOK.md), [family interfaces](src/tensorfold/families/README.md) and [kernel layout](src/tensorfold/kernels/README.md) before changing numerical or ownership contracts.
+This command uses the baked tests with pytest's development `src` path overridden; it does not replace an installed-wheel origin/audit proof. GPU, distributed, model-quality, performance and native-origin gates require their declared hardware and controlled receipts. Missing or skipped hardware checks remain unrun. Follow [CONTRIBUTING.md](CONTRIBUTING.md), [the runbook](RUNBOOK.md), [family interfaces](src/tensorfold/families/README.md) and [kernel layout](src/tensorfold/kernels/README.md) before changing numerical or ownership contracts.
 
 ### Keep the fork and upstream changes manageable
 

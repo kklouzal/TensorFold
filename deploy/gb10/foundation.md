@@ -18,9 +18,98 @@ Torch nightly's CUDA wheel requirement must not be removed merely to install
 against a newer SDK. Use the genuine official nightly wheel and a verified compatible official base.
 Any required vendor source change needs an explicit decision before patching.
 
-## Prepare native inputs
+## Prepare the tracked selected inputs
 
-Resolve on native Linux CPython3.12 for the selected architecture. Use the actual
+An ordinary build uses the six selected files already tracked for its architecture;
+it does not need a new resolver report or a private wheelhouse. The pin JSON is
+the authority for immutable base references, official wheel identities and the
+two required native runtime addons. The existing `platform_pins.py` mapping
+selects its companion locks, constraints and manifest.
+
+Run the following from the repository root in Bash with Git, Python3.11+, curl,
+GNU coreutils and Docker Buildx available. Choose `amd64` for a native AMD64
+builder or `arm64` for a native ARM64 builder. A client can use a remote native
+builder; the platform flag alone does not establish native hardware execution.
+For a remote builder, set `TF_BUILD_JOBS` from that builder's available CPU count,
+rather than the client's `nproc`. Compiler parallelism does not prove all cores
+stay busy.
+
+This prepares minimal named contexts outside the checkout and prints their
+retained path before any metadata or network step can fail. The addon URLs and
+whole-file hashes are read from the selected pin JSON; do not copy their values
+into another configuration file.
+
+```bash
+set -euo pipefail
+
+TF_BUILD_ARCH=amd64       # Use arm64 with the corresponding native builder.
+TF_BUILD_JOBS="$(nproc)"  # Available CPUs for this local native builder.
+TF_BUILD_INPUTS="$(mktemp -d -t tensorfold-foundation.XXXXXXXX)"
+printf 'Foundation build inputs: %s\n' "$TF_BUILD_INPUTS"
+TF_FOUNDATION_PINS="$TF_BUILD_INPUTS/pins"
+TF_FOUNDATION_ARTIFACTS="$TF_BUILD_INPUTS/artifacts"
+mkdir -p "$TF_FOUNDATION_PINS" "$TF_FOUNDATION_ARTIFACTS"
+
+# Copy the six existing selected files using their maintained filename mapping.
+# The same pin JSON supplies the base reference and both exact addon identities.
+python3 - "$TF_BUILD_ARCH" "$TF_FOUNDATION_PINS" \
+  "$TF_BUILD_INPUTS/base-image.txt" > "$TF_BUILD_INPUTS/native-addons.tsv" <<'PY'
+import json
+from pathlib import Path
+import shutil
+import sys
+
+source = Path("deploy/gb10").resolve()
+sys.path.insert(0, str(source))
+from platform_pins import platform_pins
+
+target = platform_pins(sys.argv[1])
+destination = Path(sys.argv[2])
+for field in ("pins", "foundation", "runtime", "verification", "constraints", "manifest"):
+    filename = getattr(target, field)
+    shutil.copyfile(source / filename, destination / filename)
+pins = json.loads((destination / target.pins).read_text())
+Path(sys.argv[3]).write_text(pins["base"] + "\n")
+for addon in pins["native_addons"]:
+    print(addon["artifact"], addon["url"], addon["sha256"], sep="\t")
+PY
+
+git rev-parse HEAD > "$TF_BUILD_INPUTS/source-revision.txt"
+sha256sum "$TF_FOUNDATION_PINS"/* > "$TF_BUILD_INPUTS/pin-inputs.sha256"
+
+# Download only the two addon records declared by the current selected pins.
+# A canonical .deb name is published only after the complete checksum succeeds.
+while IFS=$'\t' read -r TF_DEB_NAME TF_DEB_URL TF_DEB_SHA; do
+  TF_DEB_TMP="$(mktemp "$TF_FOUNDATION_ARTIFACTS/.${TF_DEB_NAME}.XXXXXXXX")"
+  curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
+    --output "$TF_DEB_TMP" "$TF_DEB_URL"
+  printf '%s  %s\n' "$TF_DEB_SHA" "$TF_DEB_TMP" | \
+    sha256sum --check | tee -a "$TF_BUILD_INPUTS/native-addon-checks.log"
+  mv -- "$TF_DEB_TMP" "$TF_FOUNDATION_ARTIFACTS/$TF_DEB_NAME"
+done < "$TF_BUILD_INPUTS/native-addons.tsv"
+
+TF_BASE_IMAGE="$(cat "$TF_BUILD_INPUTS/base-image.txt")"
+TF_SOURCE_REVISION="$(cat "$TF_BUILD_INPUTS/source-revision.txt")"
+export TF_FOUNDATION_PINS TF_FOUNDATION_ARTIFACTS TF_SOURCE_REVISION TF_BUILD_JOBS
+```
+
+A failed transfer or checksum stops the shell before a canonical `.deb` name is
+published. Keep the printed input directory and its checksum/acquisition records
+for diagnosis. The image independently verifies the addon hashes and Debian
+metadata. Dev/static, MAGMA and gfortran source-build packages are not required
+by the selected official-wheel profile. Its complete original upstream Python
+dependency metadata remains intact and is checked during the image build.
+
+The preparation/acquisition excerpt was exercised on AMD64 at source
+`16ae6dfc`; independent checks matched all six copied inputs and both complete
+DEBs against the selected metadata. That component check excluded Docker build,
+package installation, GPU and model execution. The complete cold-build procedure
+and fresh foundation qualification have their separate gates.
+
+## Refresh selected dependencies
+
+An ordinary checkout uses the tracked selected files above. For an intentional
+refresh, resolve on native Linux CPython3.12 for the selected architecture. Use the actual
 immutable NGC child/index identity and exact official Torch, TorchVision and
 Triton wheel identities. Pin schema2
 records the immutable base, target, distinct cache key, explicit
@@ -45,7 +134,7 @@ execution. A native ARM64 report can instead be generated on that host. The
 outputs are separate foundation/runtime/test locks, exact protected constraints
 and a provenance manifest. Do not hand-edit generated locks. The selector
 validates the base and every relationship between pins, manifest and all locks
-before publishing the native selection. Earlier schema1 data is archived byte-for-byte under `history/20261006`; it is
+before publishing the native selection. Earlier schema1 data is archived byte-for-byte under [history/20261006](history/20261006/README.md); it is
 evidence and a test oracle, not a deployment fallback.
 A cross-architecture resolver report does not qualify native execution.
 
@@ -60,14 +149,18 @@ or invented hash cannot qualify it.
 
 ## Build and audit
 
+After the preparation block, keep the exported variables in the same shell.
 Both input directories are explicit Docker named contexts; they contain no
-model weights or private source checkout:
+model weights or private source checkout. This example builds the verification
+target; use `--target runtime` and your own tag for serving:
 
 ```bash
-docker buildx build --platform linux/amd64 --load --target verification \
-  --build-context foundation_pins=./generated-amd64 \
-  --build-context foundation_artifacts=./artifacts-amd64 \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:verification --file deploy/gb10/Dockerfile .
 ```
 
@@ -136,9 +229,11 @@ foundation activation. Override pytest's development `src` path so the installed
 wheel is the package under test:
 
 ```bash
-docker run --rm --network none --entrypoint python3 tensorfold-fork:verification \
+docker run --rm --network none -e NVIDIA_VISIBLE_DEVICES=void \
+  --entrypoint python3 tensorfold-fork:verification \
   /opt/tensorfold-pins/foundation_guard.py audit
-docker run --rm --network none --entrypoint python3 tensorfold-fork:verification \
+docker run --rm --network none -e NVIDIA_VISIBLE_DEVICES=void \
+  --entrypoint python3 tensorfold-fork:verification \
   /opt/tensorfold-pins/foundation_guard.py run -- \
   python3 -m pytest -o pythonpath=tests
 ```
