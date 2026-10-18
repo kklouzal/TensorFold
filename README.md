@@ -1,5 +1,10 @@
 # TensorFold fork
 
+For the tested GB10 NVFP4 service, use the [dedicated deployment profile](deploy/gb10/nvfp4.md):
+six native MTP drafts, four streams, SSD n-grams, vision and automatic graph sizing,
+with an 8 GiB host-memory reserve. Its immutable runtime and measured tradeoffs
+are recorded separately from the historical affine/YaRN deployment.
+
 This fork of [TensorFold](https://github.com/ashhart/TensorFold) serves language models on Apple Silicon and NVIDIA GPUs through an OpenAI-compatible API. It retains the upstream model families, family-specific kernels, exact speculative decoding, prompt reuse, tools, reasoning and vision support, and adds a reproducible NVIDIA container, Flash Next YaRN context extension, RAM-backed expert caching, optional RotorQuant KV formats, and service admission controls.
 
 The maintained fork is [kklouzal/TensorFold](https://github.com/kklouzal/TensorFold), branch **`python-0.6`**. The Python integration joins fork baseline `2f8089a7b59588875d639a7efa860117168a29d0` with upstream Python `ed78d6fc204d89d90b045bf033d6551e7714f3a1`. Record the commit you actually clone: branch heads move. Upstream Python history remains part of the fork so later changes can be reviewed and merged.
