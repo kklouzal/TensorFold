@@ -134,7 +134,7 @@ def _engine(monkeypatch, *, with_head=True):
     engine._draft = engine.head.make_state() if with_head else None
     engine.context_window, engine.max_rows, engine.eos = 400, 8, (18,)
     engine.vision = None
-    engine._closed, engine._prefix, engine._owner = False, None, None
+    engine._closed, engine._prefix, engine._owner, engine._turn = False, None, None, None
     engine._run_lock, engine._closed_lock, engine._prefix_lock = threading.Lock(), threading.Lock(), threading.Lock()
     engine._stream = SimpleNamespace(synchronize=lambda: None)
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
@@ -176,7 +176,7 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
     seen = []
     engine.generate(prompt, 35, None, lambda tokens: seen.extend(tokens) or True)
     assert len(seen) == 1
-    assert engine._prefix.state == tuple(prompt)
+    assert engine._prefix.checkpoints[-1].state == tuple(prompt)
     with pytest.raises(RuntimeError, match="callback failed"):
         engine.generate(prompt, 35, None, lambda tokens: (_ for _ in ()).throw(RuntimeError("callback failed")))
     assert engine._owner is None
@@ -234,8 +234,34 @@ def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypa
 
     prompt = [1, 3, 5]
     engine.generate(prompt, 1, None, lambda tokens: None)
-    before = engine._prefix.logits.clone()
+    before = engine._prefix.checkpoints[-1].logits.clone()
     output = []
     engine.generate(prompt, 11, None, lambda tokens: output.extend(tokens), constraint=Constraint(), stop_eos=False)
     assert output == [6] * 11
-    assert torch.equal(engine._prefix.logits, before)
+    assert torch.equal(engine._prefix.checkpoints[-1].logits, before)
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(monkeypatch, sampled):
+    """A chat next turn re-renders the previous reply without the generation prompt's suffix: the shared prefix
+    ends at the last turn marker, where a checkpoint resumes; replies equal a cold engine's."""
+    from tensorfold.engine.exact_sampling import Sampling
+    sampling = Sampling(seed=5, temperature=.7, top_k=7, top_p=.9) if sampled else None
+    turn = 11
+    first = [3, 1, 4, turn, 1, 5, 9]            # ... <|turn> model <generation suffix>
+    second = first[:4] + [1, 2, 6, 5, turn, 1, 5, 9]   # history re-rendered differently after the marker
+    engine = _engine(monkeypatch)
+    engine._turn = turn
+    engine.generate(first, 6, sampling, lambda t: None, stop_eos=False)
+    assert [c.position for c in engine._prefix.checkpoints] == [3, 7]
+    warm = []
+    stats = engine.generate(second, 9, sampling, lambda t: warm.extend(t), stop_eos=False)
+    assert stats["cached"] == 3
+    assert [c.position for c in engine._prefix.checkpoints] == [8, 12]
+    cold_engine = _engine(monkeypatch)
+    cold_engine._turn = turn
+    cold = []
+    assert cold_engine.generate(second, 9, sampling, lambda t: cold.extend(t), stop_eos=False)["cached"] == 0
+    assert warm == cold
+    # The whole-prompt checkpoint still serves an exact repeat (with its logits) and extensions.
+    assert engine.generate(second, 9, sampling, lambda t: None, stop_eos=False)["cached"] == 12

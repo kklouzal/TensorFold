@@ -1,8 +1,12 @@
 """Gemma 4 requests with exact target-verified DFlash chains.
 
 The single request lane owns persistent target and companion caches, reset or
-restored per request. A single CUDA stream owns all requests. Prefix entries
-hold detached snapshots and include the visual input identity.
+restored per request. A single CUDA stream owns all requests. The prefix entry
+holds detached snapshots at prefill positions (row-invariant forwards make a
+snapshot at any position equal to a fresh prefill of that prefix) and includes
+the visual input identity: one at the whole prompt (with its next-token
+logits) and one before the prompt's last turn marker, where the next chat turn's
+history rendering departs from this turn's generation prompt.
 """
 
 from __future__ import annotations
@@ -16,14 +20,25 @@ from typing import Any, Callable
 
 from .state import PREFILL_ROWS, widest_forward
 
+PREFIX_SNAPSHOTS = 3     # resident prefix snapshots at most: an entry's two checkpoints + the next prompt's boundary
+
+
+TURN_MARKER = "<|turn>"
+
+
+@dataclass(frozen=True)
+class _Checkpoint:
+    position: int
+    state: Any                  # detached target Snapshot at ``position``
+    companion: Any              # detached DraftState snapshot, or None without a drafter
+    logits: Any                 # next-token logits when ``position`` is the whole prompt, else None
+
 
 @dataclass(frozen=True)
 class _Prefix:
     tokens: tuple[int, ...]
     media: tuple
-    state: Any
-    companion: Any
-    logits: Any
+    checkpoints: tuple[_Checkpoint, ...]   # ascending positions; the last covers the whole prompt
 
 
 def _prompt_ids(prompt, vocab: int) -> list[int]:
@@ -98,7 +113,7 @@ class Gemma4Engine:
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         self.max_rows = 16 if depth is None else depth + 1
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
-                                   vision=vision, max_rows=self.max_rows, streams=streams, keep=1)
+                                   vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS)
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
         raw = read_config(model_dir)
@@ -129,6 +144,9 @@ class Gemma4Engine:
             self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
                                block=self.max_rows, bits=drafter_bits, rows=forward_rows)
             self._draft = self.head.make_state()
+        from tensorfold.token_metadata import load_tokenizer
+        # Absent from a tokenizer: only whole-prompt checkpoints are kept.
+        self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
         self._prefix = None
         self._prefix_lock = threading.Lock()
         self._run_lock = threading.Lock()
@@ -186,29 +204,38 @@ class Gemma4Engine:
         return torch.cat([result.taps[layer][:count] for layer in self.head.tap_layers], dim=-1)
 
     def _find_prefix(self, prompt, media):
+        """The longest checkpoint whose tokens prefix this prompt and leaves a forward or exact logits."""
         with self._prefix_lock:
             hit = self._prefix
-            if hit is None or hit.media != media or len(hit.tokens) > len(prompt) \
-                    or tuple(prompt[:len(hit.tokens)]) != hit.tokens:
+            if hit is None or hit.media != media:
                 return None
-            return hit
+            for checkpoint in reversed(hit.checkpoints):
+                p = checkpoint.position
+                if (p < len(prompt) or (p == len(prompt) and checkpoint.logits is not None)) \
+                        and tuple(prompt[:p]) == hit.tokens[:p]:
+                    return checkpoint
+            return None
 
-    def _keep_prefix(self, prompt, media, state, logits):
-        # Admission reserves one snapshot in addition to every request lane.
-        # Evict first so replacing it never temporarily retains two snapshots.
-        with self._prefix_lock:
-            self._prefix = None
-            snapshot = state.snapshot()
-            companion = self._draft.snapshot() if self._draft is not None else None
-            copied_logits = logits.clone()
-            self._prefix = _Prefix(tuple(prompt), media, snapshot, companion, copied_logits)
+    def _checkpoint(self, state, logits=None):
+        return _Checkpoint(state.position, state.snapshot(),
+                           self._draft.snapshot() if self._draft is not None else None,
+                           None if logits is None else logits.clone())
+
+    def _turn_boundary(self, prompt, cached: int, blocks) -> int:
+        """Position of the prompt's last turn marker when a checkpoint there can serve the next turn, else 0."""
+        if self._turn is None:
+            return 0
+        at = max((i for i, token in enumerate(prompt) if token == self._turn), default=0)
+        if not cached < at < len(prompt) or any(begin < at < stop for begin, stop in blocks):
+            return 0
+        return at
 
     def _prefill(self, prompt, vision, progress, started):
         import torch
         media = _media_key(vision)
         hit = self._find_prefix(prompt, media)
         state = self._state
-        cached = len(hit.tokens) if hit is not None else 0
+        cached = hit.position if hit is not None else 0
         logits = None
         if hit is not None:
             state.restore(hit.state)
@@ -225,10 +252,14 @@ class Gemma4Engine:
                 raise ValueError("Gemma4 image/video input requires --vision")
             encoded = self.vision.encode(vision, prompt)
         blocks = () if encoded is None else encoded.blocks
+        boundary = self._turn_boundary(prompt, cached, blocks)
+        kept = []
         start = cached
         while start < len(prompt):
             self._check_open()
             end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
+            if start < boundary < end:
+                end = boundary
             ids = prompt[start:end]
             embeddings = None
             if encoded is not None:
@@ -246,6 +277,8 @@ class Gemma4Engine:
                 self.head.append(self._draft, self._taps(result))
             if end == len(prompt):
                 logits = self.target.project_logits(result.hidden[-1:])
+            elif end == boundary:
+                kept.append(self._checkpoint(state))
             start = end
             if progress is not None and progress(len(prompt), cached, start - cached,
                                                  (time.perf_counter() - started) * 1000):
@@ -254,10 +287,14 @@ class Gemma4Engine:
         if logits is None:
             raise RuntimeError("Gemma4 prefill produced no next-token logits")
         if cached < len(prompt):
-            # All reads of the old entry have been issued on the same stream.
-            # Drop its host owner before allocating a replacement snapshot.
+            # All reads of the old entry have been issued on the same stream. Admission
+            # reserves PREFIX_SNAPSHOTS: the old entry's two plus this prompt's boundary
+            # checkpoint; evicting first keeps the whole-prompt snapshot within them.
             hit = None
-            self._keep_prefix(prompt, media, state, logits)
+            with self._prefix_lock:
+                self._prefix = None
+                kept.append(self._checkpoint(state, logits))
+                self._prefix = _Prefix(tuple(prompt), media, tuple(kept))
         return state, logits, cached
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
