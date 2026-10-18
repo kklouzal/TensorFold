@@ -15,6 +15,15 @@ from .grouped_a4 import _ext
 from .host_layout import authority_fields_a4
 
 
+def uniform_input_bits(calibrations):
+    """Prove exact prepared gate/up FP32 equality over the complete CPU bank."""
+    if (calibrations.device.type != "cpu" or calibrations.dtype != torch.float32 or calibrations.ndim != 2
+            or calibrations.shape[0] <= 0 or calibrations.shape[1] != 2 or not calibrations.is_contiguous()):
+        raise ValueError("common input proof requires complete contiguous CPU FP32[experts,2] calibrations")
+    bits = calibrations.view(torch.int32)
+    return bool((bits == bits[0, 0]).all())
+
+
 class ModelOptExpertsA4(ExpertsA4):
     """Resident bank with live GPU routing plans; graph replay never reads picks on CPU."""
 
@@ -22,6 +31,8 @@ class ModelOptExpertsA4(ExpertsA4):
     capturable = True
 
     def __init__(self, fields, width, dims, *, shared_input=False):
+        # True is supplied only by the loader's complete CPU bit proof, before
+        # exact CPU->CUDA transfer; immutable bank fields preserve that proof.
         self.shared_input = shared_input
         super().__init__(fields, width, dims, swiglu=swiglu_bf16)
 
@@ -141,6 +152,6 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
         return CachedModelOptExpertsA4(fields, cache, key, full.moe_width, full.hidden)
     # Compare the complete prepared FP32 bit inventory, not sampled experts
     # or floating equality. Cache banks retain their general leased quantizer.
-    shared_input = bool((fields[4].view(torch.int32) == fields[4].view(torch.int32)[0, 0]).all())
+    shared_input = uniform_input_bits(fields[4])
     return ModelOptExpertsA4(tuple(t.to(device=device) for t in fields), full.moe_width, full.hidden,
                             shared_input=shared_input)
