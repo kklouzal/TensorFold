@@ -148,14 +148,20 @@ class History:
             for t, at in zip(drafted.tolist(), np.searchsorted(self._ids, drafted).tolist()):
                 if at < known and self._ids[at] == t:
                     where[t] = at
-            for row in range(1, rows):
-                node = row
-                while node > 0:
-                    table[row, where[int(tokens[node])]] += 1
-                    parent = node - 1 if parents is None else int(parents[node])
-                    if parent >= node:
+            onehot = np.zeros((rows, len(cols)), dtype=np.float32)     # row a's own draft token (row 0: none)
+            onehot[np.arange(1, rows), [where[int(t)] for t in tokens[1:]]] = 1
+            if parents is None:                                        # a chain: each row's path is rows 1..r
+                table[:rows] += np.cumsum(onehot, axis=0)
+            else:                                                      # a tree: each row's ancestors and itself
+                path = np.zeros((rows, rows), dtype=np.float32)
+                for row in range(1, rows):
+                    parent = int(parents[row])
+                    if parent >= row:
                         raise ValueError("tree parents must precede their rows")
-                    node = parent
+                    if parent > 0:
+                        path[row] = path[parent]
+                    path[row, row] = 1
+                table[:rows] += path @ onehot
         device = logits.device
         ids = torch.from_numpy(cols).to(device)
         both = torch.from_numpy(table).to(device)
