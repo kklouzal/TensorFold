@@ -63,6 +63,34 @@ class _Reader:
             self.touched.add(self.where[name])
         self.reads.queue(items, self.device)
 
+    def queue_host_scalars(self, names) -> None:
+        """Coalesce original F32 scalars to CPU, without reading matrix gaps.
+
+        The same owned ReadAhead/future lifetime publishes exact CPU tensors to
+        get(). Matrix callers keep queue() and its selected-device behavior.
+        """
+
+        items = []
+        for name in names:
+            info = self.info(name)
+            if info["dtype"] != "F32" or info["shape"]:
+                raise ValueError("host read-ahead requires F32 scalar tensors")
+            begin, end = info["data_offsets"]
+            items.append((name, info["path"], info["byte_offset"], info["byte_offset"] + end - begin, None))
+            self.touched.add(self.where[name])
+        if not items:
+            self.reads.queue(items, None)  # retain the coalescer's closed/failure-state checks
+            return
+        items.sort(key=lambda item: (str(item[1]), item[2]))
+        group = []
+        for item in items:
+            if group and (item[1] != group[-1][1] or item[2] != group[-1][3]):
+                self.reads.queue(group, None)
+                group = []
+            group.append(item)
+        if group:
+            self.reads.queue(group, None)
+
     def drop(self, names) -> None:
         self.reads.drop(names)
 

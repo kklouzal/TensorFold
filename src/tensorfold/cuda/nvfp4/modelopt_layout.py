@@ -42,6 +42,48 @@ def a4_bank(infos, name, count, block, *, native, checkpoint=None):
     return native and modes == {4}
 
 
+def a4_read_plan(names, banks, count):
+    """Partition only the exact original fields of prepared native-A4 banks.
+
+    Matrix fields are read directly through get_rows on the packing device;
+    queuing them would duplicate I/O/uploads. Original scalar calibrations are
+    consumed through get on CPU. Unknown/non-A4/shared/MTP names keep their
+    default CUDA prefetch. Preserve order and never infer format from a suffix.
+    """
+    if type(count) is not int or count <= 0:
+        raise ValueError("native A4 read plan requires a positive expert count")
+    device, host = [], []
+    digits = len(str(count - 1))
+    for name in names:
+        bank, separator, tail = name.partition(".experts.")
+        expert, dot, projection_field = tail.partition(".")
+        matched = (separator and bank in banks and dot and expert.isascii() and expert.isdecimal()
+                   and len(expert) <= digits and (expert == "0" or not expert.startswith("0"))
+                   and int(expert) < count)
+        if matched and projection_field in ("gate_proj.weight", "gate_proj.weight_scale", "up_proj.weight",
+                                            "up_proj.weight_scale", "down_proj.weight", "down_proj.weight_scale"):
+            continue
+        if matched and projection_field in ("gate_proj.input_scale", "gate_proj.weight_scale_2", "up_proj.input_scale",
+                                            "up_proj.weight_scale_2", "down_proj.input_scale", "down_proj.weight_scale_2"):
+            host.append(name)
+        else:
+            device.append(name)
+    return device, host
+
+
+def scalar_prefetch_host_bytes(count, *, workers, alignment):
+    """Extra logical CPU scalar payload/backing, separate from final arrays.
+
+    At most two layers own6*count F32 scalars each. Their cloned results use
+    48*count bytes; simultaneous contiguous raw spans use at most that payload
+    plus3 alignment pages per active Reader worker. Tensor/Future metadata and
+    allocator backing remain runtime effects requiring integrated peak checks.
+    """
+    if any(type(n) is not int or n <= 0 for n in (count, workers, alignment)):
+        raise ValueError("scalar prefetch count/workers/alignment must be positive integers")
+    return 96 * count + 3 * alignment * workers
+
+
 def plan_workspace_bytes(rows, slots, width, dims):
     """Device peak for one resident-plan buffer, including both SiLU temporaries.
 
