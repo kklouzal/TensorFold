@@ -75,8 +75,9 @@ def a4_read_plan(names, banks, count):
 def scalar_prefetch_host_bytes(count, *, workers, alignment):
     """Extra logical CPU scalar payload/backing, separate from final arrays.
 
-    At most two layers own6*count F32 scalars each. Their cloned results use
-    48*count bytes; simultaneous contiguous raw spans use at most that payload
+    At most two layers own6*count floating singletons each (at most4 bytes).
+    Their cloned results use at most48*count bytes; simultaneous raw spans use
+    at most that payload
     plus3 alignment pages per active Reader worker. Tensor/Future metadata and
     allocator backing remain runtime effects requiring integrated peak checks.
     """
