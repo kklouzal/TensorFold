@@ -1,5 +1,6 @@
 // Lane matmul for NVFP4 and FP8 weights (W4A16 / W8A16), exact weights in bf16 MMAs: per 16 (NVFP4), 32 (MXFP8) or 64
-// inputs (FP8G: fp32 scales) acc = fma(P, block scale, acc), one tensor scale; K slices by shape, no row affects another.
+// inputs (FP8G: fp32 scales) acc = fma(P, block scale, acc), one tensor scale (FP8: or each output channel's); K slices
+// by shape, no row affects another.
 
 #include <ATen/ATen.h>
 #include <algorithm>

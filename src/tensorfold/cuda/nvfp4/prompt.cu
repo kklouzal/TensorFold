@@ -1,5 +1,6 @@
 // bf16 prompt rows times NVFP4 / FP8 / MXFP8 weights read as stored: every weight exact in bf16 (a code times its
-// block scale, an e4m3 byte times its power of two), one fp32 chain over K, the tensor scale last; no row affects another.
+// block scale, an e4m3 byte times its power of two), one fp32 chain over K, the tensor scale (FP8: or each output
+// channel's) last; no row affects another.
 
 #include <ATen/ATen.h>
 #include <algorithm>
@@ -174,6 +175,7 @@ __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
 #pragma unroll
         for (int j = 0; j < T::NT; ++j) {
             const int col = n0 + wn * (BN / WN) + j * 8 + (lane & 3) * 2;
+            if (col >= N) continue;                        // never stored; no factor read past npad (epilogue.cuh)
 #pragma unroll
             for (int h = 0; h < 2; ++h) {
                 const int row = m0 + wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8;

@@ -279,3 +279,68 @@ class MetadataSelection(unittest.TestCase):
                     self.assertEqual(result.own, {"nvfp4": expected is not None, "fp8": False})
                     self.assertEqual(result.precision, "checkpoint" if expected is not None else "full")
                     self.assertEqual(overrides, [{"eos_token_ids": (7, 9)}])
+
+    def test_per_channel_fp8_rows_follow_the_precision_and_refuse_fp8_prompts(self):
+        """ModelOpt FP8_PER_CHANNEL_PER_TOKEN projections (0.46.0's static activation record) through the actual
+        loader: per-token rows only under checkpoint math, the startup line naming them; --prefill-fp8 refused before
+        any payload read."""
+        from tensorfold.checkpoint_quantization import LinearQuantization, effective_config
+        from tensorfold.cuda import precision
+
+        path = SOURCE.parents[3] / "cuda/nvfp4/format.py"
+        nodes = [n for n in ast.parse(path.read_text()).body
+                 if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in {"scheme", "LinearMetadata"}]
+        api = {"LinearQuantization": LinearQuantization}
+        exec(  # noqa: S102 - compile only owned maintained-source AST.
+            compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec",
+                    flags=__future__.annotations.compiler_flag), api)
+        config = effective_config({"quantization_config": {
+            "quant_method": "modelopt", "quant_algo": "FP8_PER_CHANNEL_PER_TOKEN", "config_groups": {"g": {
+                "targets": ["Linear"], "weights": {"dynamic": False, "num_bits": 8, "type": "float",
+                                                   "strategy": "channel"},
+                "input_activations": {"dynamic": False, "num_bits": 8, "type": "float"}}}}}, None, where="fixture")
+        for mode, fp8_prompts in ((precision.CHECKPOINT, False), (precision.FULL, False), (precision.CHECKPOINT, True)):
+            with self.subTest(mode=mode, fp8_prompts=fp8_prompts):
+                load, events, _, modules = fixture()
+                headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
+                for name in list(headers):
+                    if "_proj.weight" in name or name == "lm_head.weight":
+                        headers[name] = {"dtype": "F8_E4M3", "shape": [8, 64]}
+                        headers[name[:-7] + ".weight_scale"] = {"dtype": "F32", "shape": [8]}
+                modules["tensorfold.cuda.capacity"].headers = lambda path, headers=headers: headers
+                modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(LinearMetadata=api["LinearMetadata"])
+                built = []
+                modules["tensorfold.cuda.nvfp4.linear"].Fp8Linear = SimpleNamespace(
+                    from_checkpoint=lambda weight, scale, built=built, **kw: built.append(kw) or SimpleNamespace())
+                own = mode == precision.CHECKPOINT
+                load.__globals__.update(read_config=lambda path, config=config: config,
+                                        SUFFIXES=("weight", "weight_scale", "input_scale"),
+                                        prompt_precision=SimpleNamespace(fp8=lambda fp8=fp8_prompts: fp8),
+                                        maths=lambda own=own: ({"nvfp4": own, "fp8": own}, "fixture"))
+                stdout = io.StringIO()
+                with patch.dict(sys.modules, modules), precision.using(mode), contextlib.redirect_stdout(stdout):
+                    if fp8_prompts:
+                        with self.assertRaisesRegex(ValueError, "--prefill-fp8"):
+                            load(Path("opaque"))
+                        self.assertEqual(built, [])
+                        self.assertFalse([e for e in events if e.endswith("_proj.weight")])
+                        continue
+                    result = load(Path("opaque"))
+                self.assertEqual(len(built), 8)                     # 7 projections and the head
+                self.assertEqual(built, [{"token": own}] * 8)
+                self.assertEqual(result.own, {"nvfp4": False, "fp8": own})
+                self.assertEqual(result.precision, "checkpoint" if own else "full")
+                self.assertEqual("rows quantized a token at a time" in stdout.getvalue(), own)
+
+
+def test_channel_scales_are_admitted_as_the_padded_fp32_columns_they_load_into():
+    node = next(n for n in ast.parse(SOURCE.read_text()).body
+                if isinstance(n, ast.FunctionDef) and n.name == "weight_bytes")
+    scope = {"skipped": lambda name: False, "math": __import__("math"),
+             "prompt_precision": SimpleNamespace(fp8=lambda: False)}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), scope)  # noqa: S102 - owned AST
+    weight_bytes = scope["weight_bytes"]
+    assert weight_bytes("p.weight_scale", {"dtype": "F32", "shape": [200]}) == (256 * 4, 0)
+    assert weight_bytes("p.weight_scale", {"dtype": "BF16", "shape": [256, 1]}) == (256 * 4, 0)
+    assert weight_bytes("p.weight_scale", {"dtype": "F32", "shape": [1]}) == (4, 0)   # one tensor scale
+    assert weight_bytes("p.weight", {"dtype": "F8_E4M3", "shape": [200, 64]}) == (256 * 64, 0)

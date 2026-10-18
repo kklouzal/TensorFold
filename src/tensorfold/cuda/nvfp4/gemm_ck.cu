@@ -176,6 +176,7 @@ __global__ void __launch_bounds__(WM * WN * 32) gemm_kernel(
 #pragma unroll
         for (int j = 0; j < G::NT; ++j) {
             const int col = n0 + wn * (BN / WN) + j * 8 + t * 2;
+            if (col >= N) continue;                        // never stored; no factor read past npad (epilogue.cuh)
 #pragma unroll
             for (int h = 0; h < 2; ++h) {
                 const int row = m0 + wm * (BM / WM) + i * 16 + g + h * 8;
