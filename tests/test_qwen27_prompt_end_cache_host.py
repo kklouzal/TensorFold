@@ -590,7 +590,7 @@ class ContextDraft:
                     cache[layer] = self._made(self.torch.zeros(self.heads, rows, self.dim))
         return [(snap[0], snap[1], min(self.window, snap[2] + n), snap[3] + n) for snap, n in zip(snaps, sizes)]
 
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, samplings=None):
         assert all(t is not None for snap in snaps for t in snap[0] + snap[1])
         return [None] * len(snaps)
 

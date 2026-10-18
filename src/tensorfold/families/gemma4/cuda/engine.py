@@ -286,8 +286,9 @@ class Gemma4Engine:
                 inputs = [out[-1]]
                 if active_drafts and room > 1:
                     limit = min(self.max_rows - 1, room - 1)
-                    launched = self.head.launch_blocks([companion], inputs, limit)[0]
-                    guesses, parents, _ = self.head.finish_tree(launched, state.position, limit, sampling)
+                    launched = self.head.launch_blocks([companion], inputs, limit, samplings=[sampling])[0]
+                    # Proposals start at the anchor's position + 1, where coupled drafts key the target's noise.
+                    guesses, parents, _ = self.head.finish_tree(launched, state.position + 1, limit, sampling)
                     if parents != list(range(-1, len(guesses) - 1)):
                         raise RuntimeError("Gemma4 DFlash returned a non-chain proposal")
                     if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab

@@ -314,7 +314,7 @@ def test_failed_restore_copy_leaves_previous_context_coherent_and_usable(fixture
     assert draft.context_end == 5 and draft.context_len == 5
 
 
-def reference_block(taps, anchor, target, cfg, arrays, inv):
+def reference_logits(taps, anchor, target, cfg, arrays, inv):
     """Direct published v1 equations over complete raw context; no adapter cache/layer helper."""
     context = norm(F.linear(taps, arrays["fc.weight"]), arrays["hidden_norm.weight"], cfg.eps)
     x = F.embedding(torch.tensor([anchor] + [cfg.mask_id] * (cfg.block - 1)), target.embed.weight)
@@ -340,7 +340,11 @@ def reference_block(taps, anchor, target, cfg, arrays, inv):
         activation *= F.linear(h, arrays[base + "mlp.up_proj.weight"])
         x = x + F.linear(activation, arrays[base + "mlp.down_proj.weight"])
     h = norm(x[1:], arrays["norm.weight"], cfg.eps)
-    logits = F.linear(h, target.head.weight).float()
+    return F.linear(h, target.head.weight).float()
+
+
+def reference_block(taps, anchor, target, cfg, arrays, inv):
+    logits = reference_logits(taps, anchor, target, cfg, arrays, inv)
     best, ids = logits.max(-1)
     return ids.tolist(), (torch.logsumexp(logits, -1) - best).cumsum(0).tolist()
 
@@ -359,3 +363,35 @@ def test_complete_proposals_match_direct_published_block_equations(fixture, yarn
     ids, parents, scores = draft.finish_tree(draft.launch_block(2, 3), 3, 3)
     expected_ids, expected_scores = reference_block(taps, 2, target, cfg, arrays, draft.inv_freq)
     assert ids == expected_ids and scores == expected_scores and parents == [-1, 0, 1]
+
+
+@pytest.mark.parametrize("policy", [dict(temperature=1.0, top_k=20, top_p=.95), dict(temperature=.7, top_k=0, top_p=.8),
+                                    dict(temperature=.6, top_k=4, top_p=1.0, min_p=.1)])
+def test_sampled_proposals_are_coupled_to_the_target_noise_per_stream(fixture, policy):
+    """Each sampled stream proposes ``coupled`` picks of the block's logits keyed at its first proposal position;
+    a greedy stream batched with it keeps its argmax proposals; a policy differing from the launch is refused."""
+    import numpy as np
+
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.speculative import coupled
+
+    directory, _raw, cfg, arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    taps = torch.randn((3, 128), generator=torch.Generator().manual_seed(101)).bfloat16()
+    draft.add_taps(taps)
+    sampling = Sampling(seed=77, **policy)
+    logits = reference_logits(taps, 2, target, cfg, arrays, draft.inv_freq)
+    scaled = logits.double() / policy["temperature"]
+    norms = torch.logsumexp(scaled, -1).numpy()
+    ids = np.broadcast_to(np.arange(cfg.vocab, dtype=np.int64), logits.shape).copy()
+    picks, logconf = coupled(logits.numpy(), ids, 10 + np.arange(3), sampling, norms=norms)
+    ids_out, parents, scores = draft.finish_tree(draft.launch_block(2, 3, sampling=sampling), 10, 3, sampling)
+    assert ids_out == picks[:, 0].tolist() and parents == [-1, 0, 1]
+    assert scores == pytest.approx(np.cumsum(-logconf[:, 0]).tolist())
+    before = draft.snapshot()
+    greedy = draft.finish_tree(draft.launch_block(2, 3), 10, 3)
+    batch = draft.launch_blocks([before, before], [2, 2], 3, samplings=[None, sampling])
+    assert draft.finish_tree(batch[0], 10, 3) == greedy
+    assert draft.finish_tree(batch[1], 10, 3, sampling) == (ids_out, parents, scores)
+    with pytest.raises(ValueError):
+        draft.finish_tree(batch[1], 10, 3)

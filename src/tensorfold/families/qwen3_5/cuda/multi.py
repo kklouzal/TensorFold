@@ -593,7 +593,8 @@ class MultiDecoder:
         block = self.block if self.depth else self.max_rows    # one stream too: DFlash2 drafts best near 8 rows
         if tree:                                      # every stream's block in one drafter pass
             launched = self.draft.launch_blocks([self.streams[sid].snap for sid, _ in tree],
-                                                [pending for _, pending in tree], self.max_rows - 1, block)
+                                                [pending for _, pending in tree], self.max_rows - 1, block,
+                                                samplings=[self.streams[sid].sampling for sid, _ in tree])
             blocks = {sid: block for (sid, _), block in zip(tree, launched)}
         grammars = {}
         if self.rank == 0:

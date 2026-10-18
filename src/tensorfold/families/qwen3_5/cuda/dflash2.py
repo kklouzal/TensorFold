@@ -497,8 +497,11 @@ class DFlash2:
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block)[0]
 
     @torch.no_grad()
-    def launch_blocks(self, snaps: list, pendings: list[int], max_nodes: int, block: int | None = None) -> list:
-        """GPU half of ``propose_tree`` for several streams, each weight read once; None where a context is empty."""
+    def launch_blocks(self, snaps: list, pendings: list[int], max_nodes: int, block: int | None = None,
+                      samplings: list | None = None) -> list:
+        """GPU half of ``propose_tree`` for several streams, each weight read once; None where a context is empty.
+
+        The candidates do not depend on ``samplings``: ``finish_tree``'s tree policy applies each stream's."""
 
         out: list = [None] * len(snaps)
         live = [i for i, snap in enumerate(snaps) if snap[2] > 0]

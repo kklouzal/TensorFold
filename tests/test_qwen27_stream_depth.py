@@ -20,7 +20,7 @@ class Drafter:
     def __init__(self, depths):
         self.depths, self.blocks = depths, []
 
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, samplings=None):
         self.blocks.append(block)
         return list(range(len(snaps)))
 

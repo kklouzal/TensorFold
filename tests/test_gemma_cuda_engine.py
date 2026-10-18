@@ -94,7 +94,7 @@ def _engine(monkeypatch, *, with_head=True):
                 result.append(([after], [None], len(after), len(after)))
             return result
 
-        def launch_blocks(self, snaps, pending, limit):
+        def launch_blocks(self, snaps, pending, limit, samplings=None):
             before = snaps[0][0][0]
             total = sum(before) + pending[0]
             proposals = []
@@ -155,6 +155,65 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
     assert engine._prefix.tokens == (3, 1, 4, 1, 5, 9, 2)
+
+
+@pytest.mark.parametrize("policy", [dict(temperature=1.0, top_k=7, top_p=.95), dict(temperature=.6, top_k=0, top_p=.9),
+                                    dict(temperature=1.3, top_k=0, top_p=1.0, min_p=.05)])
+def test_coupled_proposals_of_an_exact_drafter_are_all_accepted(monkeypatch, policy):
+    """A drafter equal to the target proposes under the target's keyed noise at anchor + 1 + j: every proposal is the
+    target's own sampled token, so each round accepts its whole block and output equals serial decoding."""
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda import speculative
+    from tensorfold.engine.exact_sampling import Sampling
+    engine = _engine(monkeypatch)
+    monkeypatch.undo()                      # the real CUDA sampler's host rule, on CPU scores
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
+    monkeypatch.setattr("tensorfold.cuda.sampling.validate_rows", lambda logits, positions, sampling: None)
+    sampling = Sampling(seed=4321, **policy)
+
+    def scores(position):                   # the target's scores for the token at ``position``, whatever came before
+        return torch.randn(19, generator=torch.Generator().manual_seed(position)) * 2
+
+    def forward(tokens, state, *, output_logits=True, **kwargs):
+        rows = []
+        for token in tokens:
+            rows.append([token, len(state.tokens)])
+            state.tokens.append(token)
+        hidden = torch.tensor(rows, dtype=torch.float32)
+        return SimpleNamespace(hidden=hidden, logits=project(hidden) if output_logits else None, taps={1: hidden})
+
+    def project(hidden):
+        return torch.stack([scores(int(row[1]) + 1) for row in hidden])
+
+    engine.target.forward, engine.target.project_logits = forward, project
+    seen = []
+
+    class Exact(type(engine.head)):
+        def launch_blocks(self, snaps, pending, limit, samplings=None):
+            first = snaps[0][3] + 1                 # the committed context ends at the anchor
+            logits = torch.stack([scores(first + j) for j in range(limit)])
+            return [(speculative.launch(logits, samplings, limit), first, logits.argmax(-1).tolist())]
+
+        def finish_tree(self, launched, context_length, limit, sampling):
+            packet, first, greedy = launched
+            seen.append((context_length, first))
+            ids = (speculative.chain(speculative.read(packet), 0, limit, context_length, sampling)[0]
+                   if packet is not None else greedy)
+            return ids, list(range(-1, limit - 1)), []
+
+    engine.head = Exact()
+
+    def run(draft):
+        output = []
+        stats = engine.generate([3, 1, 4, 1, 5], 40, sampling, lambda tokens: output.extend(tokens),
+                                draft=draft, stop_eos=False)
+        return output, stats
+
+    serial, _ = run(False)
+    drafted, stats = run(True)
+    assert drafted == serial and len(drafted) == 40
+    assert stats["drafted"] > 0 and stats["accepted"] == stats["drafted"]
+    assert seen and all(length == first for length, first in seen)
 
 
 def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch):
