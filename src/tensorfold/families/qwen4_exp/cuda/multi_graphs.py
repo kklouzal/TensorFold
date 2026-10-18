@@ -66,6 +66,10 @@ def live_bytes() -> int:
 
 
 def service_live_bytes(pool):
+    if pool.private_spare_bytes is None:
+        # Backends without the native segment proof retain physical-only
+        # admission. Never infer zero private storage from an empty snapshot.
+        return live_bytes
     from tensorfold.cuda.capacity import available_bytes
     from tensorfold.cuda.memory_gate import torch_live
 
@@ -101,6 +105,7 @@ class RoundGraphs:
     def __init__(self, dec, budget: int, *, spare=None) -> None:
         self.dec, self.budget = dec, int(budget)
         self.spare = spare                              # live bytes after required future service, preparation only
+        self.allocator_backend = torch.cuda.memory.get_allocator_backend()
         self.pool = torch.cuda.graph_pool_handle()
         self.side = torch.cuda.Stream()
         self.verify: dict[tuple[bool, int, int, int], Pieces] = {}    # (PDL, streams, rows, DeltaNet parity)
@@ -112,7 +117,7 @@ class RoundGraphs:
         self.measured: list[dict] = []                   # per key: raw bytes (< 0: outside noise), pieces, seconds
         self.stopped: str | None = None                  # why capture stopped before the last key (the budget)
         self.rejected: dict | None = None                # the attempted key, including its raw memory observation
-        self.private_spare_bytes = 0
+        self.private_spare_bytes: int | None = None
         self.allocator_record: dict = {}
         self.admitted = False
         self.failure = self.failure_traceback = self.failure_cause = self.failure_context = None
@@ -271,12 +276,15 @@ class RoundGraphs:
         if self.failure is not None and self.failure_frames is None:
             self.failure_frames = failure_frame_values(self.failure, self.failure_traceback,
                                                         self.failure_cause, self.failure_context)
-        try:
-            segments = torch.cuda.memory_snapshot(mempool_id=self.pool, include_traces=False)
-            self.private_spare_bytes = private_pool_spare(segments, self.pool, self.dec.w.device.index or 0)
-        except (AttributeError, TypeError, ValueError) as error:
-            raise MemoryError("captured-round private allocator storage cannot be accounted for") from error
-        self.allocator_record = {"physical_free_bytes": free_bytes(), "available_after_floor_bytes": live_bytes(),
+        if self.allocator_backend == "native":
+            try:
+                segments = torch.cuda.memory_snapshot(mempool_id=self.pool, include_traces=False)
+                self.private_spare_bytes = private_pool_spare(segments, self.pool, self.dec.w.device.index or 0)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise MemoryError("captured-round private allocator storage cannot be accounted for") from error
+        self.allocator_record = {"backend": self.allocator_backend,
+                                 "accounting": "native-pool-inactive" if self.private_spare_bytes is not None else "physical-only",
+                                 "physical_free_bytes": free_bytes(), "available_after_floor_bytes": live_bytes(),
                                  "reserved_bytes": int(torch.cuda.memory_reserved()),
                                  "allocated_bytes": int(torch.cuda.memory_allocated()),
                                  "private_pool_spare_bytes": self.private_spare_bytes}

@@ -236,7 +236,10 @@ the admitted ceiling. Capture safety uses physical available bytes after its flo
 private-pool cache. A quiescent public `memory_snapshot(mempool_id=..., include_traces=False)` records this pool's
 inactive bytes (`total_size - allocated_size`, with no awaiting-free blocks); the ordinary runtime gate excludes
 those bytes from reusable allocator spare. This constant is valid because replays allocate no tensors into the
-pool and the captured set is immutable until decoder retirement; the live callable retains its pool owner.
+pool and the captured set is immutable until decoder retirement; the native live callable retains its pool owner.
+The native allocator supplies this segment proof. Other allocator backends use explicitly recorded physical-only
+service admission instead of interpreting an empty/unsupported native snapshot as zero private storage; ordinary
+cached bytes are not credited in that capability mode. The memory floor and device cap remain unchanged.
 Concurrent requests, including `draft:false`, stay in the scheduler and use its graph-free slot engines, so they
 cannot lazily create a serial graph pool after this snapshot. A failed capture also retains its accounted pool:
 after successful drain/reset and admissible settlement, eager recovery debits its retained bytes and excludes its
