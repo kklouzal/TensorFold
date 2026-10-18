@@ -141,7 +141,8 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             kbuf, vbuf = _grow(st, i, p0 + W)
             kbuf[p0:p0 + W] = key.view(W, c.kv_heads, c.head_dim)
             vbuf[p0:p0 + W] = value
@@ -310,7 +311,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             q, key = q.view(W, c.heads, c.head_dim), key.view(W, c.kv_heads, c.head_dim)
             outs = []
             for st, p0, (o, n) in zip(sts, p0s, spans):
