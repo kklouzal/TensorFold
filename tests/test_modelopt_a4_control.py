@@ -240,3 +240,21 @@ def test_independent_activation_oracle_saturates_finite_overflow_and_defines_nan
     assert torch.count_nonzero(codes) == torch.count_nonzero(scales) == 0
     codes, scales = quant_reference(torch.full((1, 16), float("nan"), dtype=torch.bfloat16), 1.)
     assert torch.equal(codes, torch.full_like(codes, 0x77)) and torch.count_nonzero(scales) == 0
+
+
+def test_gpu_load_logical_reduction_and_control_peak_is_dominated_by_layer_staging():
+    from tensorfold.cuda.capacity import _estimate_weights_from_headers
+    from tensorfold.cuda.geometry import indexed_weights
+    from tensorfold.cuda.nvfp4.modelopt_layout import loading_device_bytes, resident_loading_host_bytes
+
+    for width, dims, experts in ((64, 64, 1), (640, 2560, 3), (640, 2560, 512)):
+        header = infos(experts, width, dims)
+        text = {"moe_intermediate_size": width, "hidden_size": dims, "num_experts": experts}
+        original = _estimate_weights_from_headers(header, indexed_weights(1, False))
+        block_bytes = width * dims // 16
+        blob = 9 * block_bytes
+        reduction_peak = blob + (block_bytes + 15) // 16 + 6
+        pack_peak = 3 * blob + 2
+        admitted = max(original.staging, loading_device_bytes(text))
+        assert admitted >= max(reduction_peak, pack_peak)
+        assert resident_loading_host_bytes(text) == 24 * experts
