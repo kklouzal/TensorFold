@@ -35,7 +35,7 @@ def _solo(w, prompts, samplings, count, kv_dtype, capacity=4096, prefill_rows=25
     refs = []
     for prompt, sampling in zip(prompts, samplings):
         e = Engine(w, capacity=capacity, max_rows=8, prefill_rows=prefill_rows, kv_dtype=kv_dtype)
-        refs.append(serial_decode(e, prefill(e, prompt, sampling), count, sampling).tokens)
+        refs.append(serial_decode(e, prefill(e, prompt, sampling), count, sampling, stop_eos=False).tokens)
     return refs
 
 
@@ -246,8 +246,7 @@ def _replays(dec) -> list[int]:
 
 def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096, depth=3, confidence=0.3,
             prefill_rows=256, draft=None, later=()):
-    """Decode ``prompts`` together (``later``: (round, prompt index) admitted mid-run); each stream's tokens, the
-    decoder and its replays over the run."""
+    """Fixed-count decoding ignores EOS like ``_solo``; later streams join at their scheduled rounds."""
 
     dec = MultiDecoder(w, slots=len(prompts), capacity=capacity, depth=depth, confidence=confidence,
                        kv_dtype=kv_dtype, prefill_rows=prefill_rows, graphs=graphs)
@@ -255,7 +254,7 @@ def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096,
     if graphs:
         dec.capture_graphs()
         replays = _replays(dec)
-    streams = [Stream(list(p), count, smp, draft=True if draft is None else draft[i])
+    streams = [Stream(list(p), count, smp, draft=True if draft is None else draft[i], stop_eos=False)
                for i, (p, smp) in enumerate(zip(prompts, samplings))]
     pending = {i: r for r, i in later}
     for i, s in enumerate(streams):
@@ -269,6 +268,7 @@ def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096,
                 del pending[i]
         dec.finish(dec.round())
         rounds += 1
+    assert all(s.error is None and len(s.out) == count for s in streams)
     return [s.out for s in streams], dec, replays[0]
 
 
@@ -289,7 +289,8 @@ def test_graph_rounds_emit_each_streams_solo_tokens(depth, confidence):
     dec.capture_graphs()
     assert dec.graph_record["captured"] and dec.graphs.verify and dec.graphs.mtp
     replays = _replays(dec)
-    streams = [Stream(list(p), c, smp, draft=i != 3) for i, (p, smp, c) in enumerate(zip(prompts, samplings, counts))]
+    streams = [Stream(list(p), c, smp, draft=i != 3, stop_eos=False)
+               for i, (p, smp, c) in enumerate(zip(prompts, samplings, counts))]
     for s in streams[:2]:
         dec.admit(s)
     rounds = 0
@@ -300,6 +301,7 @@ def test_graph_rounds_emit_each_streams_solo_tokens(depth, confidence):
         dec.finish(dec.round())
         rounds += 1
     assert [s.out for s in streams] == refs
+    assert [len(s.out) for s in streams] == counts
     assert replays[0] > 0
 
 
@@ -317,6 +319,7 @@ def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
     outs, dec, replays = _decode(w, prompts, samplings, 40, graphs=True, capacity=1024, prefill_rows=64,
                                  later=[(2, 1), (4, 3)])
     assert outs == refs and replays > 0
+    assert all(len(out) == 40 for out in outs)
     slots = dec.free + [k[1] for k in dec.kept]                     # kept prompt ends hold their slots
     assert max(st.version for st in slots) >= 1                     # a slot grew past its first 256 rows
 
@@ -331,8 +334,8 @@ def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
     dec = MultiDecoder(w, slots=2, capacity=4096, depth=3, confidence=0.0, kv_dtype=RQ, prefill_rows=256, graphs=True)
     dec.capture_graphs()
     pieces = sum(len(p.graphs) for p in (*dec.graphs.verify.values(), *dec.graphs.mtp.values()))
-    streams = [Stream(list(PROMPTS[0]), 12, SAMPLINGS[1], emit=lambda new: emitted.extend(new)),
-               Stream(list(PROMPTS[1]), 12, None, emit=lambda new: emitted.extend(new))]
+    streams = [Stream(list(PROMPTS[0]), 12, SAMPLINGS[1], stop_eos=False, emit=lambda new: emitted.extend(new)),
+               Stream(list(PROMPTS[1]), 12, None, stop_eos=False, emit=lambda new: emitted.extend(new))]
     for s in streams:
         dec.admit(s)
     dec.finish(dec.round())
@@ -349,7 +352,7 @@ def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
         scale.copy_(saved)
     assert emitted == before and all(s.st._kv_error is not None for s in streams)
     dec.drop()
-    again = Stream(list(PROMPTS[0]), 8, SAMPLINGS[1])
+    again = Stream(list(PROMPTS[0]), 8, SAMPLINGS[1], stop_eos=False)
     dec.admit(again)
     while dec.live():
         dec.finish(dec.round())
@@ -385,7 +388,7 @@ def test_a_budget_too_small_stops_capture_and_rounds_run_eagerly(monkeypatch):
     assert record["captured"] and record["stopped"] and record["bytes"] <= 1 << 20
     assert len(dec.graphs.verify) + len(dec.graphs.mtp) == len(record["keys"])
     assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
-    streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
+    streams = [Stream(list(p), 12, smp, stop_eos=False) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
     for s in streams:
         dec.admit(s)
     while dec.live():
@@ -450,7 +453,7 @@ def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monk
     assert gc.isenabled() and pdl.ON == launch and dec.gdn.parity == parity
     assert dec.buf.attn_step is None and dec.buf.gdn_tables is None and dec.mbuf.attn_step is None
     assert all(not st._kv_pending and st._kv_error is None and st.pos == 0 for st in dec.free)
-    streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
+    streams = [Stream(list(p), 12, smp, stop_eos=False) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
     for s in streams:
         dec.admit(s)
     while dec.live():
@@ -507,7 +510,7 @@ def test_failed_capture_tensor_locals_survive_real_frame_clear_and_keep_pool_rec
         assert private_pool_spare(snapshot, owner.pool, w.device.index or 0) == owner.private_spare_bytes
     else:
         assert owner.private_spare_bytes is None and dec.memory_gate.live is multi_graphs.live_bytes
-    stream = Stream(list(PROMPTS[0]), 8, SAMPLINGS[0])
+    stream = Stream(list(PROMPTS[0]), 8, SAMPLINGS[0], stop_eos=False)
     dec.admit(stream)
     while dec.live():
         dec.finish(dec.round())
