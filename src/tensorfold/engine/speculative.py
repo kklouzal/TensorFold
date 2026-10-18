@@ -12,8 +12,8 @@ Verification still accepts a draft only when it equals the target's keyed choice
 serial output token for token; coupling changes acceptance only. All math is FP64 on the host over candidate rows
 (values and ids, the complete row's log-sum-exp for a top-k-off nucleus); drafts need not match the target's rounding,
 only its rule. MTP drafters draw with the target's rule itself (``exact_sampling.choose_rows``); GB10 card-sampling
-sweeps (2026-10-18) measured the DFlash block drafters' argmax at least as accepted as these picks at any sharpening,
-so those propose their argmax (``tensorfold.cuda.speculative``) and this rule serves measurements of other drafters.
+sweeps (2026-10-18) found these picks no faster than the DFlash block drafters' argmax at any sharpening measured, so
+those propose their argmax (``tensorfold.cuda.speculative``) and this rule serves measurements of other drafters.
 """
 
 from __future__ import annotations

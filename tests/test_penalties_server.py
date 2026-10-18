@@ -99,3 +99,33 @@ def test_the_mac_server_refuses_penalties_it_cannot_apply():
         status, _, text = exchange(port, "POST", "/v1/chat/completions",
                                    {"messages": HI, "max_tokens": 8, "frequency_penalty": 0.5})
     assert status == 400 and "CUDA engines only" in text
+
+
+def test_defaults_an_engine_cannot_apply_are_named_not_applied(tmp_path, capsys):
+    """A flag or generation_config.json default on an engine without a penalty path (another CUDA family, two-rank
+    Qwen) is named at startup and not applied, as on the Metal backend: requests that send no penalties are served,
+    requests asking for one still get 400; an engine that applies them keeps the default."""
+    pytest.importorskip("tokenizers")
+    from tokenizers import Tokenizer, models, pre_tokenizers
+
+    from tensorfold.cuda.server import App
+    from tests.test_harness_tokenizer import NoGenerationEngine
+
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "w": 1}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{ messages[0].content }}"}))
+    (tmp_path / "config.json").write_text(json.dumps({"max_position_embeddings": 8}))
+    defaults = {"temperature": 0.6, "presence_penalty": 0.0, "repetition_penalty": 1.05}
+    app = App(NoGenerationEngine(), tmp_path, "served", sampling=defaults)
+    assert app.sampling == {"temperature": 0.6, "top_k": 0, "top_p": 1.0}
+    assert "not applying defaults {'repetition_penalty': 1.05}" in capsys.readouterr().err
+    assert app.penalties_for({}) is None
+    with pytest.raises(RequestError, match="does not apply"):
+        app.penalties_for({"repetition_penalty": 1.05})
+    two_rank = Penalized()
+    two_rank.penalties_supported = False
+    assert App(two_rank, tmp_path, "served", sampling={"frequency_penalty": 0.5}).penalties_for({}) is None
+    assert "{'frequency_penalty': 0.5}" in capsys.readouterr().err
+    kept = App(Penalized(), tmp_path, "served", sampling=defaults)
+    assert kept.penalties_for({}) == Penalties(repetition=1.05) and not capsys.readouterr().err

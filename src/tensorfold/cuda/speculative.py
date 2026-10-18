@@ -1,10 +1,12 @@
 """Block-drafter proposals for one launch: the drafter's argmax, penalized as the target's rows are, read back once.
 
-GB10 card-sampling sweeps (agent E, 2026-10-18) measured the DFlash drafters' argmax at least as accepted as proposals
-drawn under the target's keyed noise (``tensorfold.engine.speculative.coupled``) or verified by rejection sampling,
-so block drafters propose their argmax for every request. A request with presence/frequency/repetition penalties
-proposes the argmax of its penalized candidates instead: row ``j`` counts the reply and proposals 0..j-1, exactly as
-the target's verify row ``j`` will, so penalized requests keep their acceptance. ``Chains`` wraps one launch.
+GB10 card-sampling sweeps (agent E, 2026-10-18) found no decode-speed gain over the DFlash drafters' argmax: proposals
+drawn under the target's keyed noise (``tensorfold.engine.speculative.coupled``) ran 4-13% slower exactly coupled and
+within -4..+4% sharpened, and the best sharpened coupled or rejection-sampled variants gained at most 0.4 points of
+per-row acceptance offline, so block drafters propose their argmax for every request. A request with
+presence/frequency/repetition penalties proposes the argmax of its penalized candidates instead: row ``j`` counts the
+reply and proposals 0..j-1, exactly as the target's verify row ``j`` will, so penalized requests keep their
+acceptance. ``Chains`` wraps one launch.
 """
 
 from __future__ import annotations

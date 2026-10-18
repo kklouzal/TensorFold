@@ -5,7 +5,9 @@ the reply generated so far and ``prompt`` = the distinct tokens of the request's
 
   repetition (Hugging Face ``RepetitionPenaltyLogitsProcessor``, vLLM ``apply_repetition_penalties``): for every ``t``
       in the prompt or the reply, ``z[t] = z[t] / r`` if ``z[t] > 0`` else ``z[t] * r`` (computed as vLLM does, in
-      float32 with ``/ r`` a multiply by the float32 reciprocal ``1 / r``);
+      float32 with ``/ r`` a multiply by the float32 reciprocal ``1 / r``; where an extreme ``r`` takes that product
+      out of float32's finite range, which would hand vLLM's sampler +-inf or NaN, a finite score saturates at
+      float32's largest magnitude and a zero stays zero, so penalties never turn a score into a non-score);
   then frequency and presence (OpenAI API; vLLM ``apply_penalties``): ``z[t] -= f * c[t] + p * (c[t] > 0)``.
 
 vLLM applies these to the float32 logits before temperature, min-p, top-k and top-p (``Sampler``), and so does
@@ -24,6 +26,16 @@ import math
 from typing import Sequence
 
 import numpy as np
+
+F32_MAX = float(np.finfo(np.float32).max)
+
+
+def _factors(repetition: float) -> tuple[np.float32, np.float32]:
+    """vLLM's float32 repetition factors ``(1 / r, r)`` (0 or inf where ``r`` passes float32's limits)."""
+
+    with np.errstate(over="ignore", divide="ignore"):
+        r = np.float32(repetition)
+        return np.float32(1) / r, r
 
 
 @dataclass(frozen=True)
@@ -59,8 +71,12 @@ def penalize(values: np.ndarray, counts: np.ndarray, in_prompt: np.ndarray, p: P
     counts = np.asarray(counts, dtype=np.float32)
     seen = counts > 0
     if p.repetition != 1.0:
-        r = np.float32(p.repetition)
-        values = np.where(in_prompt | seen, np.where(values > 0, values * (np.float32(1) / r), values * r), values)
+        inverse, r = _factors(p.repetition)
+        with np.errstate(over="ignore", invalid="ignore"):
+            scaled = np.where(values > 0, values * inverse, values * r)
+        scaled = np.where(np.isfinite(values), np.where(values == 0, values, np.clip(scaled, -F32_MAX, F32_MAX)),
+                          values)         # finite scores saturate, zeros stay, -inf masks stay masks
+        values = np.where(in_prompt | seen, scaled, values)
     return (values - np.float32(p.frequency) * counts - np.float32(p.presence) * seen.astype(np.float32)
             ).astype(np.float32)
 
@@ -148,20 +164,14 @@ class History:
             for t, at in zip(drafted.tolist(), np.searchsorted(self._ids, drafted).tolist()):
                 if at < known and self._ids[at] == t:
                     where[t] = at
-            onehot = np.zeros((rows, len(cols)), dtype=np.float32)     # row a's own draft token (row 0: none)
-            onehot[np.arange(1, rows), [where[int(t)] for t in tokens[1:]]] = 1
-            if parents is None:                                        # a chain: each row's path is rows 1..r
-                table[:rows] += np.cumsum(onehot, axis=0)
-            else:                                                      # a tree: each row's ancestors and itself
-                path = np.zeros((rows, rows), dtype=np.float32)
-                for row in range(1, rows):
-                    parent = int(parents[row])
-                    if parent >= row:
+            for row in range(1, rows):
+                node = row
+                while node > 0:
+                    table[row, where[int(tokens[node])]] += 1
+                    parent = node - 1 if parents is None else int(parents[node])
+                    if parent >= node:
                         raise ValueError("tree parents must precede their rows")
-                    if parent > 0:
-                        path[row] = path[parent]
-                    path[row, row] = 1
-                table[:rows] += path @ onehot
+                    node = parent
         device = logits.device
         ids = torch.from_numpy(cols).to(device)
         both = torch.from_numpy(table).to(device)
@@ -170,9 +180,10 @@ class History:
         seen = c > 0
         p = self.penalties
         if p.repetition != 1.0:                     # float32 scalars: exact casts, one rounding per multiply
-            r = np.float32(p.repetition)
-            z = torch.where(in_prompt[None, :] | seen, torch.where(z > 0, z * float(np.float32(1) / r), z * float(r)),
-                            z)
+            inverse, r = _factors(p.repetition)
+            scaled = torch.where(z > 0, z * float(inverse), z * float(r))
+            scaled = torch.where(torch.isfinite(z), torch.where(z == 0, z, scaled.clamp(-F32_MAX, F32_MAX)), z)
+            z = torch.where(in_prompt[None, :] | seen, scaled, z)
         if p.frequency != 0.0:
             z = z - p.frequency * c
         if p.presence != 0.0:

@@ -139,9 +139,9 @@ def test_complete_proposals_match_independent_equations_across_swa_boundary(tmp_
     draft.add_taps(taps)
     before = draft.snapshot()
     launched = draft.launch_block(2, 3)
-    assert launched[0][3] is not None
+    assert launched[0].owners is not None            # the context the kernels read stays alive until the readback
     ids, parents, scores = draft.finish_tree(launched, rows, 3)
-    assert launched[0][3] is None
+    assert launched[0].owners is None
     expected_ids, expected_scores, expected_hidden = reference_block(taps, 2, target, cfg, arrays)
     assert ids == expected_ids and scores == expected_scores and parents == [-1, 0, 1]
     assert torch.equal(target.projected[-1], expected_hidden)

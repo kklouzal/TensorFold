@@ -99,3 +99,37 @@ def test_penalty_ranges_and_inactive_history_are_refused():
         History(Penalties(), [1])
     np.testing.assert_array_equal(penalize(np.array([2.0, -2.0]), np.array([0, 0]), np.array([True, True]),
                                            Penalties(repetition=2.0)), np.array([1.0, -4.0], np.float32))
+
+
+@pytest.mark.parametrize("r", [1e-38, 1e-50, 1e39])
+def test_extreme_repetition_never_makes_a_non_score(r):
+    """Accepted values whose vLLM float32 product overflows (or is 0 * inf): finite scores saturate, zeros and -inf
+    masks stay, so no request hands the sampler +inf or NaN (which would fail every stream sharing its round)."""
+    p = Penalties(repetition=r)
+    history = History(p, [1, 2, 3, 4])
+    row = torch.tensor([[5.0, 6.0, 0.0, -4.0, float("-inf"), 2.0]])
+    got = history.apply(row.clone())
+    host = penalize(row.numpy(), np.zeros(6), np.isin(np.arange(6), [1, 2, 3, 4]), p)
+    np.testing.assert_array_equal(got.numpy(), host)
+    assert torch.isfinite(got[0, :4]).all() and got[0, 4] == float("-inf")
+    assert (got[0, 0], got[0, 2], got[0, 5]) == (5.0, 0.0, 2.0)
+
+
+def test_the_dflash2_tree_policy_penalizes_each_node_by_its_path():
+    """A node's children are ranked by penalized candidate scores counting the reply and the node's own path."""
+    from tensorfold.families.qwen3_5.cuda.draft_tree import best_first
+
+    cands = np.array([[5, 6, 7, 8], [5, 6, 7, 8]])
+    unary = np.array([[4.0, 3.0, 0.0, -1.0], [4.0, 3.5, 0.0, -1.0]])
+    pred, succ, projected = np.zeros((16, 3)), np.zeros((16, 3)), np.zeros((2, 3))
+
+    def first_child(tokens, parents):
+        return tokens[parents.index(0)]
+
+    plain = best_first(cands, unary, projected, pred, succ, 1, 8, None, 10)
+    assert plain[0][0] == 5 and first_child(*plain[:2]) == 5
+    history = History(Penalties(presence=2.0), [1])
+    penalized = best_first(cands, unary, projected, pred, succ, 1, 8, None, 10, history)
+    assert penalized[0][0] == 5 and first_child(*penalized[:2]) == 6      # 5 is on the child's path
+    history.extend([5])                                                   # now in the reply: the root ranks 6 first
+    assert best_first(cands, unary, projected, pred, succ, 1, 8, None, 10, history)[0][0] == 6

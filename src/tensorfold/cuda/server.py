@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import sys
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -62,6 +63,24 @@ class PreparedRequest:
     think_budget: int = 0   # reply tokens before the server closes a think block the reply leaves open (0: no limit)
     calls: Any = None       # strict tools' call grammar and reader (server.strict_tools.Plan), or None
     penalties: Any = None   # active presence/frequency/repetition penalties (engine.penalties.Penalties), or None
+
+
+def applies_penalties(engine: Any) -> bool:
+    """Whether ``engine`` applies presence/frequency/repetition penalties: a ``penalties`` keyword, not refused."""
+
+    return ("penalties" in inspect.signature(engine.generate).parameters
+            and bool(getattr(engine, "penalties_supported", True)))
+
+
+def unapplied_penalties(engine: Any, sampling: dict[str, Any]) -> dict[str, Any]:
+    """Remove the penalty defaults (flags, generation_config.json) of ``sampling`` that ``engine`` cannot apply and
+    return the active ones, which the server names at startup as the Metal backend does: requests sending no
+    penalties are then served, and those asking for an active penalty still get HTTP 400."""
+
+    if not any(k in sampling for k in PENALTY_FIELDS) or applies_penalties(engine):
+        return {}
+    dropped = {k: sampling.pop(k) for k in PENALTY_FIELDS if k in sampling}
+    return {k: v for k, v in dropped.items() if v != (1.0 if k == "repetition_penalty" else 0.0)}
 
 
 def _native_context(model_dir: Path) -> int:
@@ -134,6 +153,10 @@ class App:
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
         # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
         self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
+        unapplied = unapplied_penalties(engine, self.sampling)
+        if unapplied:
+            print(f"[tensorfold] this engine does not apply penalties; not applying defaults {unapplied}",
+                  file=sys.stderr, flush=True)
         self.max_tokens = int(max_tokens)
         self.native_context_window = _native_context(model_dir)
         self.context_window = self.native_context_window if context_window is None else int(context_window)
@@ -570,8 +593,7 @@ class App:
         penalties = Penalties(value["presence_penalty"], value["frequency_penalty"], value["repetition_penalty"])
         if not penalties.active:
             return None
-        if ("penalties" not in inspect.signature(self.engine.generate).parameters
-                or not getattr(self.engine, "penalties_supported", True)):
+        if not applies_penalties(self.engine):
             raise RequestError("this model's engine does not apply presence, frequency or repetition penalties: "
                                "send them as 0, 0 and 1 (or omit them)")
         return penalties
