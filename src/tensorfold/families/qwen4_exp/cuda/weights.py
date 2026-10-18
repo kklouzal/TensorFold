@@ -54,7 +54,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         from ..ram_experts import check, layout
 
         check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
-        ram_layout = layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4)
+        ram_layout = layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4,
+                            checkpoint=precision.mode() == precision.CHECKPOINT)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope,
                          **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
@@ -293,7 +294,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
         bank_prefix = prefix + name
         bank_info = {key: rd.info(key) for key in rd.where if key.startswith(bank_prefix + ".experts.")}
-        a4 = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4)
+        a4 = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4,
+                     checkpoint=precision.mode() == precision.CHECKPOINT)
         if expert_cache is not None:
             bank = nvfp4_moe.load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
                                  layer_id=next_expert_layer, native_a4=a4)
@@ -453,7 +455,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
                 pin_options["pin_policy"] = pin_policy(config(model_dir), ram_layout, vram_experts_pin,
                                                         future_bytes=_pin_future_bytes)
-            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
+            if ram_layout.native_a4_banks:
+                from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+
+                expert_cache = ModelOptExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device,
+                                                   width=full.moe_width, dims=full.hidden, **pin_options)
+            else:
+                expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
             if ram_layout.format == "affine4":
                 from tensorfold.cuda.packed_experts import PackedExpertCache
                 packed_cache = PackedExpertCache.from_environment()
