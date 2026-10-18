@@ -167,7 +167,7 @@ def test_actual_metadata_and_geometry_are_checked_before_custom_payload_reads(ch
 
 def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_conversion():
     bank, router, shared, operator = object(), object(), object(), object()
-    original_head, prepared_head = object(), object()
+    original_head = object()
     context, cfg = object(), SimpleNamespace(top_k=8)
     calls = []
 
@@ -176,13 +176,9 @@ def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_co
         return SimpleNamespace(head=original_head,
                                fields=options["mlp"]("model.language_model.layers.0.mlp.", context, cfg))
 
-    def prepare(head):
-        assert head is original_head
-        return prepared_head
-
     api = qwen_api(read_config=lambda path: {"text_config": {"moe_intermediate_size": 512,
                                                            "shared_expert_intermediate_size": 1024}},
-                   load_backbone=backbone, Routed=lambda *args, **kwargs: (args, kwargs), prepare_head=prepare,
+                   load_backbone=backbone, Routed=lambda *args, **kwargs: (args, kwargs),
                    SimpleNamespace=SimpleNamespace)
     api.update(_router=lambda *args: router, _shared=lambda *args: shared,
                NativeMoE=lambda actual_bank, actual_shared: operator)
@@ -194,7 +190,7 @@ def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_co
     result = api["load_nvfp4"](Path("opaque"), "cuda:0", expert_factory=factory, eos_token_ids=(7, 9))
     assert calls == [(Path("opaque"), "cuda:0", (7, 9))]
     assert result.fields == {"moe": ((router, bank, 8), {"run": operator})}
-    assert result.head is prepared_head
+    assert result.head is original_head
 
 
 def test_missing_bank_factory_is_refused_before_reading_checkpoint_metadata():

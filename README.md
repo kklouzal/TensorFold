@@ -67,7 +67,7 @@ qualification remains separate.
 Host read/publication storage and GPU packing scratch remain separate, including
 the distinct backbone and expert readers owned by a multi-rank leader.
 
-Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
+Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 
 RotorQuant's codec-range assertion now uses syntax accepted by Triton 3.8 while
 preserving the same inclusive 1–8 range. The selected container uses the official
