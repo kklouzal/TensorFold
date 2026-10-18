@@ -15,14 +15,24 @@ from tensorfold.cuda.nvfp4.modelopt_experts import ModelOptExpertsA4, load_model
 
 
 @pytest.mark.parametrize("prefill,rows", [(False, 2), (True, 2), (True, 17)])
-def test_large_bank_short_live_plan_matches_independent_linears_and_changing_graph(monkeypatch, prefill, rows):
+@pytest.mark.parametrize("common", [False, True])
+def test_large_bank_short_live_plan_matches_independent_linears_and_changing_graph(monkeypatch, prefill, rows, common):
     # Three independently calibrated source experts are repeated into a real
     # E512 bank, keeping this plan regression small. Picks exercise distant
     # bank indices; the separate three-expert oracle maps each original row.
     reader = Reader(width=64, dims=128)
+    if common:
+        direct = reader.payload[f"{PREFIX}.experts.0.gate_proj.input_scale"].item()
+        for name, value in reader.payload.items():
+            if name.endswith(("gate_proj.input_scale", "up_proj.input_scale")):
+                value.fill_(direct)
     original = load_modelopt_a4(reader, PREFIX, reader.cfg, device="cuda:0")
+    assert original.shared_input is common
     index = torch.arange(512, dtype=torch.int64, device="cuda") % 3
-    bank = ModelOptExpertsA4(tuple(field.index_select(0, index) for field in original.fields), 64, 128)
+    # Index-selection repeats the fully proved immutable calibrations; common
+    # equality is preserved without a new device readback or weaker comparison.
+    bank = ModelOptExpertsA4(tuple(field.index_select(0, index) for field in original.fields),
+                            64, 128, shared_input=common)
     cfg = SimpleNamespace(num_experts=512, num_experts_per_tok=10, moe_intermediate_size=64, hidden_size=128)
     buf = MoEBuffers(rows + 1, cfg, "cuda", prefill=prefill)
     x = (torch.randn(rows, 128, generator=torch.Generator().manual_seed(981)) * .25).to("cuda", torch.bfloat16)
