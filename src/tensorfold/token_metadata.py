@@ -34,7 +34,7 @@ class TokenizerOverride:
 _override: TokenizerOverride | None = None     # set once at startup (``use_tokenizer``); one process serves one model
 
 
-def _meaning(model: dict | None) -> dict | None:
+def _meaning(model: dict | None, where: str) -> dict | None:
     """The vocabulary model with BPE merges in one spelling: tokenizers writes a merge as "a b" (legacy) or [a, b]."""
 
     if not isinstance(model, dict) or not isinstance(model.get("merges"), list):
@@ -43,7 +43,7 @@ def _meaning(model: dict | None) -> dict | None:
     for merge in model["merges"]:
         pair = merge.split(" ") if isinstance(merge, str) else merge
         if not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(t, str) for t in pair):
-            raise ValueError("tokenizer.json BPE merges must be token pairs")
+            raise ValueError(f"{where}: BPE merges must be token pairs")
         merges.append(tuple(pair))
     return dict(model, merges=merges)
 
@@ -66,7 +66,8 @@ def use_tokenizer(path, model_dir) -> TokenizerOverride:
     raw = text.encode("utf-8")
     value = _metadata_object(raw, path)
     own = read_json(model_dir, "tokenizer.json", required=True)
-    for key, same in (("model", _meaning(value.get("model")) == _meaning(own.get("model"))),
+    model = _meaning(value.get("model"), f"--tokenizer {path}")
+    for key, same in (("model", model == _meaning(own.get("model"), str(Path(model_dir) / "tokenizer.json"))),
                       ("added_tokens", value.get("added_tokens") == own.get("added_tokens"))):
         if not same:
             raise ValueError(f"--tokenizer {path}: its {key} differs from the checkpoint's tokenizer.json, so token "
