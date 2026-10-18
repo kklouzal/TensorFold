@@ -806,7 +806,7 @@ Source installations print a live throughput line when attached to a terminal. R
 
 ### Verification and development
 
-The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers:
+The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, Git for the isolated editable-update regression, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers. Git installation is bracketed by full foundation audits in that target:
 
 ```bash
 docker buildx build --platform linux/amd64 --load --target verification \
