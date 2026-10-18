@@ -106,15 +106,15 @@ def float32_layers(torch, model) -> dict:
     """Cast each text decoder layer to float32 around its forward (restoring every parameter and buffer to its own
     dtype afterwards) and keep the remaining text-path tensors float32; returns call counters for the record."""
 
-    counts = {"layers": 0, "calls": 0}
     tower = ("vision", "audio", "visual", "multi_modal_projector", "embed_vision", "embed_audio")
     layers = [m for name, m in model.named_modules()
               if type(m).__name__.endswith("DecoderLayer") and not any(t in name for t in tower)]
     if not layers:
         raise ValueError(f"no text decoder layers found in {type(model).__name__}")
+    counts = {"layers": len(layers), "calls": 0}
     inside = {id(t) for layer in layers for t in (*layer.parameters(), *layer.buffers())}
 
-    def before(module, args, kwargs=None):
+    def before(module, args):
         module._golden_dtypes = {}
         for tensor_name, tensor in [*module.named_parameters(), *module.named_buffers()]:
             if tensor.is_floating_point() and tensor.dtype != torch.float32:
@@ -132,7 +132,6 @@ def float32_layers(torch, model) -> dict:
     for layer in layers:
         layer.register_forward_pre_hook(before)
         layer.register_forward_hook(after)
-    counts["layers"] = len(layers)
     for name, tensor in [*model.named_parameters(), *model.named_buffers()]:
         if id(tensor) not in inside and tensor.is_floating_point() and not any(t in name for t in tower):
             tensor.data = tensor.data.float()
@@ -186,11 +185,11 @@ def main() -> int:
     counts = float32_layers(torch, model) if args.compute == "fp32" else None
     data = json.loads(Path(args.eval).read_text())
     rows, offsets, dtype = [], [], None
+    cuda = torch.cuda.is_available() and args.device.startswith("cuda")
     for item in data["items"]:
         offsets.append(len(rows))
         item_rows, dtype = score(torch, model, item["prompt"], item["answer"], args.chunk, args.top_k)
         rows.extend(item_rows)
-        cuda = torch.cuda.is_available() and str(args.device).startswith("cuda")
         if cuda:
             torch.cuda.empty_cache()
         print(json.dumps({"item": item["name"], "prompt": len(item["prompt"]), "positions": len(item_rows),

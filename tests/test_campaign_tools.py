@@ -331,7 +331,7 @@ def test_needle_prompt_places_every_code_once_in_order():
 # --- KL ------------------------------------------------------------------------------------------------------------
 
 def _outside(np, lp_full, ids):
-    """float32 log-sum-exp of each row outside ``ids``, as ``Capture._tail``; -inf for an empty complement."""
+    """float32 log-sum-exp of each row outside ``ids``, as ``campaign_kl._tail``; -inf for an empty complement."""
 
     rest = lp_full.astype(np.float32).copy()
     np.put_along_axis(rest, ids, -np.inf, -1)
