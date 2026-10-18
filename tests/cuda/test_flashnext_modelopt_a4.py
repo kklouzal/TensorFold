@@ -57,6 +57,7 @@ def test_captured_device_plan_replays_different_picks_and_values_without_cpu_rou
     buf = MoEBuffers(3, Shape(reader.cfg), "cuda", prefill=True)
     picks = torch.tensor([[0, 1, 3], [1, 2, 3], [2, 0, 3]], dtype=torch.int32, device="cuda")
     buf.pick.copy_(picks)
+    buf.y.zero_()
 
     def run():
         grouped.route(buf.pick, buf.plan, 16)
@@ -76,7 +77,7 @@ def test_captured_device_plan_replays_different_picks_and_values_without_cpu_rou
         x.fill_(.125 * (step + 1))
         graph.replay()
         expected = individual_reference(Reader(), x, changed, prefill=True)
-        assert torch.equal(buf.y[:, :2], expected[:, :2])
+        assert torch.equal(buf.y, expected)
     torch.cuda.synchronize()
 
 
@@ -136,7 +137,7 @@ def test_direct_alpha_uses_original_scale_without_double_reciprocal():
     codes = torch.full((1, 1, 32), 0x22, dtype=torch.uint8, device="cuda")
     scales = torch.full((1, 1, 4), 0x38, dtype=torch.uint8, device="cuda")
     blob = pack_projection_a4(torch.full((64, 32), 0x22, dtype=torch.uint8),
-                              torch.ones((64, 4), dtype=torch.float8_e4m3fn)).cuda().view(1, 1, -1)
+                              torch.full((64, 4), 0x38, dtype=torch.uint8).view(torch.float8_e4m3fn)).cuda().view(1, 1, -1)
     weight = torch.ones((1, 1), dtype=torch.float32, device="cuda")
     inputs = torch.full((1, 1), direct, dtype=torch.float32, device="cuda")
     items = torch.tensor([[0, 0, 1]], dtype=torch.int32, device="cuda")
@@ -170,4 +171,10 @@ def test_direct_activation_quantizer_extremes_ties_underflow_and_signed_zero():
         assert torch.equal(codes[projection].cpu(), expected_codes)
         assert torch.equal(scales[projection].cpu(), expected_scales)
     assert torch.count_nonzero(codes[0, 2]) == 0 and torch.count_nonzero(scales[0, 2]) == 0
+    calibration.fill_(.001964750699698925)
+    _ext().quantize(x, plan, calibration, codes, scales, False, True)
+    expected_codes, expected_scales = quant_reference(x.cpu(), float(calibration[0, 0]))
+    assert torch.equal(codes[0].cpu(), expected_codes)
+    assert torch.equal(scales[0].cpu(), expected_scales)
+    assert torch.equal(codes[0, 1], torch.full_like(codes[0, 1], 0xf7))
     torch.cuda.synchronize()
