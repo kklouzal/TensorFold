@@ -224,7 +224,7 @@ __global__ void __launch_bounds__(C::THREADS) lane_kernel(
                 v0 = v0 + theirs[2 * pr * THREADS + tid];
                 v1 = v1 + theirs[(2 * pr + 1) * THREADS + tid];
             }
-            if (row < M) {
+            if (row < M && col < N) {                 // columns past N: never stored, no factor read (epilogue.cuh)
                 const float2 v = epilogue::pair(sc, row, col, v0, v1);
                 put(row, col, v.x, v.y);
             }
@@ -237,6 +237,7 @@ __global__ void __launch_bounds__(C::THREADS) lane_kernel(
 #pragma unroll
             for (int j = 0; j < T::NT; ++j) {
                 const int col = n0 + c0 + j * 8 + t * 2;
+                if (col >= N) continue;                    // never stored; no factor read past npad (epilogue.cuh)
 #pragma unroll
                 for (int h = 0; h < 2; ++h) {
                     const int row = m0 + r0 + i * 16 + g + h * 8;

@@ -247,8 +247,10 @@ class Fp8Linear:
             cols = torch.zeros((npad,), dtype=torch.float32, device=weight.device)
             cols[:n] = s
             scale = 1.0
-        if token and (cols is None or act is not None):
-            raise ValueError("per-token FP8 rows pair with per-channel weight scales and no static input scale")
+        if token and cols is None:
+            raise ValueError("per-token FP8 rows pair with per-channel weight scales")
+        if cols is not None and act is not None:     # static-scale checkpoint math applies one tensor factor alone
+            raise ValueError("per-channel FP8 weight scales take per-token or bf16 rows, not a static input scale")
         return cls(_fragment_order(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
                    act=None if act is None else float(act), cols=cols, token=token)
 
