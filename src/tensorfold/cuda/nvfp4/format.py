@@ -52,9 +52,6 @@ def is_quantized(model_dir: str | Path) -> bool:
     return config_block(read_config(model_dir)) is not None
 
 
-FLOATS = ("F32", "F16", "BF16")
-
-
 def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
     """One linear's scheme from its tensors' (dtype, shape) by suffix: nvfp4, fp8, fp8channel, mxfp8 or bf16."""
 
@@ -69,7 +66,7 @@ def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
     si = tensors.get("weight_scale_inv")
     if w[0] == "F8_E4M3" and si is not None and si[0] == "F32" and len(si[1]) == 2:
         return "fp8block"                      # ModelOpt FP8_PB_WO / DeepSeek: an fp32 scale per 128x128 block
-    if (w[0] == "F8_E4M3" and s is not None and s[0] in FLOATS and len(w[1]) == 2 and w[1][0] > 1
+    if (w[0] == "F8_E4M3" and s is not None and s[0] in ("F32", "F16", "BF16") and len(w[1]) == 2 and w[1][0] > 1
             and list(s[1]) in ([w[1][0]], [w[1][0], 1])):
         return "fp8channel"                    # a scale per output channel (ModelOpt FP8_PER_CHANNEL_PER_TOKEN)
     if w[0] == "F8_E4M3":

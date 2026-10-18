@@ -261,7 +261,9 @@ __global__ void reduce_kernel(const float* __restrict__ part, void* __restrict__
     if (i >= total) return;
     float acc = part[i];
     for (int s = 1; s < SK; ++s) acc = acc + part[s * total + i];
-    acc = epilogue::one(sc, static_cast<int>(i / N), static_cast<int>(i % N), acc);
+    // a tensor factor needs no (row, column): the per-tensor reduce keeps its single multiply
+    acc = sc.cs == nullptr ? acc * sc.alpha
+                           : epilogue::one(sc, static_cast<int>(i / N), static_cast<int>(i % N), acc);
     if (F32) reinterpret_cast<float*>(out)[i] = acc;
     else reinterpret_cast<__nv_bfloat16*>(out)[i] = __float2bfloat16_rn(acc);
 }

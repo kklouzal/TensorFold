@@ -242,8 +242,8 @@ def test_per_channel_per_token_algorithm_declares_dynamic_token_activations():
 
 
 def test_mixed_0460_records_take_the_algorithms_per_token_activations_only_where_declared():
-    layers = {"a.qkv": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"}, "a.out": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"},
-              "b.mlp": {"quant_algo": "NVFP4", "group_size": 16}}
+    layers = {"a.qkv": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"},
+              "a.out": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"}, "b.mlp": {"quant_algo": "NVFP4", "group_size": 16}}
     groups = {"g0": {"targets": ["a.qkv", "a.out"], "weights": CHANNEL, "input_activations": STATIC_046},
               "g1": {"targets": ["b.mlp"], "weights": {"dynamic": False, "num_bits": 4, "type": "float",
                                                        "group_size": 16},

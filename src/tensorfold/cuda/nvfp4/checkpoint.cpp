@@ -57,27 +57,28 @@ void quant4(const at::Tensor& x, double g, at::Tensor codes, at::Tensor scales, 
     quant4_cuda(x, g, codes, scales, mpad, tb);
 }
 
-// FP8 rows under the static scale (``inv`` = 1 / input_scale), e4m3 bytes in the weights' fragment order; with
-// ``tb`` > 0 the prompt GEMM's tiles [mpad / tb][K/64][tb][64] for out (mpad, K), rows past M zero.
-void quant8(const at::Tensor& x, double inv, at::Tensor out, int64_t tb) {
+// The FP8 quantizers' rows and bytes: out (M, K) uint8, or (mpad, K) with ``tb`` > 0; returns mpad.
+static int64_t rows8_in(const at::Tensor& x, const at::Tensor& out, int64_t tb) {
     rows_in(x);
     const int64_t mpad = tb ? out.size(0) : x.size(0);
     TORCH_CHECK(tb == 0 || (tb % 16 == 0 && mpad % tb == 0 && mpad >= x.size(0)), "tb: 0 or a multiple of 16 "
                 "dividing the padded rows");
     TORCH_CHECK(out.is_contiguous() && out.scalar_type() == at::kByte && out.size(0) == mpad &&
                 out.size(1) == x.size(1), "out: (M, K) uint8, (mpad, K) when tiled");
+    return mpad;
+}
+
+// FP8 rows under the static scale (``inv`` = 1 / input_scale), e4m3 bytes in the weights' fragment order; with
+// ``tb`` > 0 the prompt GEMM's tiles [mpad / tb][K/64][tb][64] for out (mpad, K), rows past M zero.
+void quant8(const at::Tensor& x, double inv, at::Tensor out, int64_t tb) {
+    const int64_t mpad = rows8_in(x, out, tb);
     c10::cuda::CUDAGuard guard(x.device());
     quant8_cuda(x, inv, out, mpad, tb);
 }
 
 // FP8 rows each under its own scale (dynamic per token): e4m3 bytes as ``quant8`` lays them out, scales (M,) fp32.
 void quant8_token(const at::Tensor& x, at::Tensor out, at::Tensor scales, int64_t tb) {
-    rows_in(x);
-    const int64_t mpad = tb ? out.size(0) : x.size(0);
-    TORCH_CHECK(tb == 0 || (tb % 16 == 0 && mpad % tb == 0 && mpad >= x.size(0)), "tb: 0 or a multiple of 16 "
-                "dividing the padded rows");
-    TORCH_CHECK(out.is_contiguous() && out.scalar_type() == at::kByte && out.size(0) == mpad &&
-                out.size(1) == x.size(1), "out: (M, K) uint8, (mpad, K) when tiled");
+    const int64_t mpad = rows8_in(x, out, tb);
     TORCH_CHECK(scales.device() == x.device() && scales.is_contiguous() && scales.scalar_type() == at::kFloat &&
                 scales.numel() == x.size(0), "scales: (M,) fp32");
     c10::cuda::CUDAGuard guard(x.device());

@@ -2,8 +2,8 @@
 
 The synthetic part runs anywhere CUDA is: a one-layer model with NVFP4 MLP and head, FP8 GDN projections and bf16
 gates, as a ModelOpt export stores them (per-tensor FP8 at full precision; per-channel FP8 with per-token rows and
-NVFP4 under their static input scales, the AEON MIXED export's checkpoint math, on SM 12.x). The checkpoint part needs ``TENSORFOLD_QWEN27_NVFP4=<dir>`` and
-``TENSORFOLD_QWEN27_DRAFTER=<DFlash2 dir>``; skipped otherwise.
+NVFP4 under their static input scales, the AEON MIXED export's checkpoint math, on SM 12.x). The checkpoint part
+needs ``TENSORFOLD_QWEN27_NVFP4=<dir>`` and ``TENSORFOLD_QWEN27_DRAFTER=<DFlash2 dir>``; skipped otherwise.
 """
 
 from __future__ import annotations

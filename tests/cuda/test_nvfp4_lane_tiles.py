@@ -45,8 +45,8 @@ def _lane(mode: int, lin, rows, m: int, tile: int, part: bool) -> torch.Tensor:
     p = torch.empty((sk, m, lin.n), dtype=torch.float32, device="cuda") if part and sk > 1 else None
     w, ws = (lin.words, lin.bs) if mode == A4 else (lin.w8, None)
     codes, scales = rows
-    checkpoint._ext().lane(mode, codes[:m], scales, w, ws, checkpoint.alpha(lin.act, lin.scale), None, None, y, p, lin.n,
-                           lin.k, sk, lin.npad, tile, False)
+    checkpoint._ext().lane(mode, codes[:m], scales, w, ws, checkpoint.alpha(lin.act, lin.scale), None, None, y, p,
+                           lin.n, lin.k, sk, lin.npad, tile, False)
     return y
 
 
