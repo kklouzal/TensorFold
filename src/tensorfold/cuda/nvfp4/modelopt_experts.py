@@ -60,7 +60,9 @@ class ModelOptExpertsA4(ExpertsA4):
         gu.zero_()
         ext = _ext()
         fields = self.fields
-        items = plan.items[:min(pairs, self.count + 1) + pairs // 16]
+        # Plan backing has conservative spare rows, but every live item owns
+        # at least one pair. Never expose more item rows than actual pairs.
+        items = plan.items[:min(pairs, self.count + 1 + pairs // 16)]
         members = plan.members[:pairs]
         ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False)
         ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
