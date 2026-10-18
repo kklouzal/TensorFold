@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import venv
 import zipfile
 from pathlib import Path
@@ -80,6 +81,71 @@ def test_full_audit_detects_same_size_mutation_with_restored_mtime(guard, sealed
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ValueError, match="file changed"):
         guard.verify(sealed, full=True)
+
+
+def test_owned_timestamp_preparation_preserves_payload_and_system_alias(guard, tmp_path):
+    owned, system = tmp_path / "owned", tmp_path / "system"
+    owned.write_bytes(b"owned copied payload")
+    system.write_bytes(b"pristine system provider")
+    for path in (owned, system):
+        path.chmod(0o444)
+        os.utime(path, ns=(1700000000123456789, 1700000000987654321))
+    alias = tmp_path / "venv-python-alias"
+    alias.symlink_to(system)
+    before = guard.identity(owned, full=True)
+    guard.normalize_image_mtime(owned)
+    guard.normalize_image_mtime(alias)
+    after = guard.identity(owned, full=True)
+    assert after == {**before, "mtime_ns": 1700000000000000000}
+    assert system.stat().st_mtime_ns == 1700000000987654321
+    assert system.read_bytes() == b"pristine system provider"
+    with pytest.raises(ValueError, match="not a regular file"):
+        guard.normalize_image_mtime(tmp_path)
+
+
+@pytest.mark.parametrize("normalize", [False, True])
+def test_owned_timestamp_preparation_survives_whole_second_archive_export(guard, tmp_path, normalize):
+    path = tmp_path / "protected-file"
+    path.write_bytes(b"unchanged protected content")
+    path.chmod(0o444)
+    os.utime(path, ns=(1700000000123456789, 1700000000987654321))
+    if normalize:
+        guard.normalize_image_mtime(path)
+    expected = guard.identity(path, full=True)
+    image = tmp_path / "layer.tar"
+    # The observed BuildKit export drops fractional timestamp precision. This
+    # controlled integer-second tar boundary preserves bytes/mode/path exactly.
+    with tarfile.open(image, "w", format=tarfile.USTAR_FORMAT) as archive:
+        archive.add(path, arcname=path.name)
+    path.unlink()
+    with tarfile.open(image) as archive:
+        member = archive.getmember(path.name)
+        with archive.extractfile(member) as stream:
+            path.write_bytes(stream.read())
+        path.chmod(member.mode)
+        os.utime(path, ns=(0, member.mtime * 10**9))
+    actual = guard.identity(path, full=True)
+    assert (actual == expected) is normalize
+    assert actual["sha256"] == expected["sha256"]
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_post_seal_fractional_timestamp_mutation_still_refuses(guard, sealed, full):
+    path = guard.site_directory(Path(sealed["foundation"])) / "torch.py"
+    guard.normalize_image_mtime(path)
+    sealed["files"][str(path)] = guard.identity(path, full=True)
+    sealed["state_digest"] = guard.state_digest(sealed)
+    before = path.stat()
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    with pytest.raises(ValueError, match="protected foundation file changed"):
+        guard.verify(sealed, full=full)
+
+
+def test_owned_json_publication_has_image_stable_timestamp(guard, tmp_path):
+    path = tmp_path / "owned-state.json"
+    guard.write_json(path, {"sealed": True})
+    assert path.stat().st_mtime_ns % 10**9 == 0
+    assert json.loads(path.read_text()) == {"sealed": True}
 
 
 @pytest.mark.parametrize("name,version,message", [("torch", "1.0", "shadows"),
@@ -228,9 +294,13 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     venv.EnvBuilder(with_pip=False).create(foundation)
     venv.EnvBuilder(with_pip=False).create(application)
     distribution(guard.site_directory(foundation), "torch", "1.0")
+    addon = tmp_path / "approved-runtime.deb"
+    addon.write_bytes(b"owned copied native artifact")
     manifest = tmp_path / "foundation-manifest.json"
     manifest.write_text(json.dumps({"roles": {"foundation": {"torch": {"version": "1.0"}},
-                                             "runtime": {}, "verification": {}}}))
+                                             "runtime": {}, "verification": {}},
+                                    "native_addons": [{"artifact": addon.name, "sha256": guard.digest(addon),
+                                                       "package": "runtime-addon", "version": "1.0"}]}))
     (tmp_path / "foundation-constraints.txt").write_text("torch===1.0\n")
     baseline, pattern = tmp_path / "base-sdk.tsv", tmp_path / "pattern"
     baseline.write_text("cuda-sdk\t13.4.3\n")
@@ -252,12 +322,17 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     tools = {name: {} for name in ("tools", "compilers", "wrappers", "helpers")}
     marker = tmp_path / "tool"
     marker.write_text("selected tool")
+    native_timestamps = {path: path.stat().st_mtime_ns for path in (marker, cpu_driver)}
     monkeypatch.setattr(guard, "select_nccl", lambda *args: (str(marker), None))
     tools.update(headers=[], libdevice={"path": str(marker)}, cupti={"path": str(marker)},
                  cuda_home=str(cuda_home), cupti_dir=str(marker.parent))
     state = guard.seal(manifest_path=manifest, foundation=foundation, application=application,
                        sdk_baseline=baseline, pattern_path=pattern, state_path=state_path,
                        artifacts=tmp_path, toolchain=tools)
+    for path in (addon, manifest, baseline, pattern, state_path, Path(state["runtime_profile_path"]),
+                 guard.site_directory(application) / "tensorfold-foundation-environment.json"):
+        assert path.stat().st_mtime_ns % 10**9 == 0
+    assert {path: path.stat().st_mtime_ns for path in native_timestamps} == native_timestamps
     result = subprocess.run([str(application / "bin/python"), "-c", "import os; print(os.environ['CC']); print(os.environ['TRITON_CACHE_DIR'])"],
                             capture_output=True, text=True, check=True, env=dict(os.environ, TF_NCCL_LIB="", TF_FOUNDATION_RUNTIME_PHASE=""))
     assert result.stdout.splitlines() == ["/sealed/tensorfold-cc", "/cache/" + state["cache_key"]]

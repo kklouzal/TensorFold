@@ -123,6 +123,12 @@ runtime, package, native-provider, compiler and tool/header identities plus the
 actual installed TensorFold wheel SHA256. A changed
 foundation requires a fresh namespace and requalification.
 
+Before sealing, the build normalizes owned/copied regular-file timestamps to
+whole seconds, the precision retained by the verified image-layer export.
+Owned JSON publications use the same preparation. Original SDK files and alias
+targets are left unchanged. Startup still compares exact nanosecond timestamps;
+it does not round a changed file's timestamp or relax content-hash audits.
+
 CPU installed validation deliberately bypasses device admission while retaining
 foundation activation. Override pytest's development `src` path so the installed
 wheel is the package under test:
