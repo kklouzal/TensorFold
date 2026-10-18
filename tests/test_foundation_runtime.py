@@ -38,7 +38,7 @@ def prepared(runtime, tmp_path, monkeypatch):
     foundation = tmp_path / "foundation"
     site = foundation / "lib/python3.12/site-packages"
     (site / "torchvision").mkdir(parents=True)
-    seals, dynamics, native = {}, {}, set()
+    seals, dynamics, native, compiler = {}, {}, set(), set()
 
     def seal(path):
         real, info = path.resolve(strict=True), path.stat()
@@ -58,6 +58,7 @@ def prepared(runtime, tmp_path, monkeypatch):
     for name in ("libstdc++.so.6", "libgcc_s.so.1", "libcudart.so.13", "libnvrtc.so.13",
                  "libnvrtc-builtins.so.13.4", "libnvJitLink.so.13", "libnccl.so.2"):
         add(root / name, owned=True)
+    compiler.update(root / name for name in ("libstdc++.so.6", "libgcc_s.so.1"))
     dynamics[str(root / "libstdc++.so.6")]["needed"] = ["libgcc_s.so.1"]
     dynamics[str(root / "libnvrtc.so.13")]["needed"] = ["libstdc++.so.6"]
     cupti = add(root / "cupti/libcupti.so.13", owned=True)
@@ -99,12 +100,12 @@ def prepared(runtime, tmp_path, monkeypatch):
     manifest = {"python": "3.12", "roles": {"foundation": {"torchvision": {
         "version": dist.version, "sha256": "a" * 64,
         "url": "https://download.pytorch.org/torchvision-0.30.0.dev20261007%2Bcu134-cp312-cp312-linux_x86_64.whl"}}}}
-    value = SimpleNamespace(foundation=foundation, site=site, native=native, seals=seals, dynamics=dynamics,
+    value = SimpleNamespace(foundation=foundation, site=site, native=native, compiler=compiler, seals=seals, dynamics=dynamics,
                             root=root, cupti=cupti, nccl=root / "libnccl.so.2", members=members,
                             record=record, dist=dist, manifest=manifest, add=add, seal=seal,
                             rows=rows, write_record=write_record)
     value.capture = lambda: runtime.capture_runtime(foundation=foundation, manifest=manifest, native_files=native,
-                                                    sealed_files=seals, nccl_library=value.nccl,
+                                                    compiler_files=compiler, sealed_files=seals, nccl_library=value.nccl,
                                                     cupti_library=value.cupti)
     return value
 
@@ -137,8 +138,9 @@ def test_capture_uses_sealed_provider_set_and_actual_dependency_order(prepared):
 def test_capture_refuses_incomplete_or_ambiguous_native_dependencies(prepared, failure):
     if failure == "missing":
         prepared.native.remove(prepared.root / "libgcc_s.so.1")
+        prepared.compiler.remove(prepared.root / "libgcc_s.so.1")
     elif failure == "ambiguous":
-        prepared.add(prepared.root / "other/libstdc++.so.6", owned=True)
+        prepared.compiler.add(prepared.add(prepared.root / "other/libstdc++.so.6", owned=True))
     elif failure == "builtins_missing":
         prepared.native.remove(prepared.root / "libnvrtc-builtins.so.13.4")
     elif failure == "builtins_ambiguous":
@@ -146,6 +148,18 @@ def test_capture_refuses_incomplete_or_ambiguous_native_dependencies(prepared, f
     else:
         prepared.dynamics[str(prepared.root / "libgcc_s.so.1")]["needed"] = ["libstdc++.so.6"]
     with pytest.raises(RuntimeError):
+        prepared.capture()
+
+
+def test_cxx_provider_comes_from_compiler_packages_not_sdk_private_bundles(prepared, runtime):
+    private = prepared.add(prepared.root / "profiler-private/libstdc++.so.6", owned=True)
+    contract = prepared.capture()
+    selected = prepared.root / "libstdc++.so.6"
+    assert contract["index"]["libstdc++.so.6"]["realpath"] == str(selected)
+    with pytest.raises(RuntimeError, match="non-foundation"):
+        runtime.mapped_runtime(contract, map_line(private))
+    prepared.compiler.remove(selected)
+    with pytest.raises(RuntimeError, match="missing base C\\+\\+ runtime provider"):
         prepared.capture()
 
 

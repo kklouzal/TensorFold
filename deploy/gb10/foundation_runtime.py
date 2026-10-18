@@ -90,15 +90,18 @@ def _excluded(path: Path) -> bool:
     return any(part in {"stubs", "compat"} for part in path.parts)
 
 
-def _native_index(native_files: set[Path], sealed_files: dict, nccl_library: Path,
+def _native_index(native_files: set[Path], compiler_files: set[Path], sealed_files: dict, nccl_library: Path,
                   cupti_library: Path | None) -> dict:
+    compiler_providers = {path.resolve(strict=True) for path in compiler_files}
     selected_nccl = nccl_library.resolve(strict=True)
     selected_cupti = None if cupti_library is None else cupti_library.resolve(strict=True)
     cupti_dir = None if selected_cupti is None else selected_cupti.parent
     index, processed = {}, set()
-    for path in sorted(native_files | {nccl_library}):
+    for path in sorted(native_files | compiler_files | {nccl_library}):
         kind = provider_kind(path.name)
         if kind in {None, "driver"} or _excluded(path):
+            continue
+        if kind == "cxx_runtime" and path.resolve(strict=True) not in compiler_providers:
             continue
         entry = _sealed(path, sealed_files)
         real = Path(entry["realpath"])
@@ -119,6 +122,8 @@ def _native_index(native_files: set[Path], sealed_files: dict, nccl_library: Pat
         kind = provider_kind(name or "")
         if kind not in {"cuda", "cxx_runtime"}:
             raise RuntimeError(f"unexpected native provider SONAME: {real}: {name}")
+        if kind == "cxx_runtime" and real not in compiler_providers:
+            continue
         if name.startswith("libnccl.so") and real != selected_nccl:
             continue
         if name.startswith(("libnvperf_host.so", "libnvperf_target.so")) and real.parent != cupti_dir:
@@ -241,13 +246,17 @@ def _vision_bundle(site: Path, manifest: dict, sealed_files: dict) -> dict:
     return {**official, "module_directory": str(site / "torchvision"), "record": record, "providers": providers}
 
 
-def capture_runtime(*, foundation: Path, manifest: dict, native_files: set[Path], sealed_files: dict,
+def capture_runtime(*, foundation: Path, manifest: dict, native_files: set[Path], compiler_files: set[Path], sealed_files: dict,
                     nccl_library: Path | str, cupti_library: Path | str | None = None) -> dict:
-    """Consume the guard's sealed native/compiler set and selected physical NCCL."""
+    """Select C++ runtime files from compiler packages, CUDA from the native SDK.
+
+    SDK tools' private C++ bundles remain sealed files but cannot become the
+    application/compiler runtime merely by sharing a SONAME.
+    """
     foundation = foundation.resolve(strict=True)
     site = foundation / "lib" / ("python" + manifest["python"]) / "site-packages"
     cupti = None if cupti_library is None else Path(cupti_library)
-    index = _native_index(native_files, sealed_files, Path(nccl_library), cupti)
+    index = _native_index(native_files, compiler_files, sealed_files, Path(nccl_library), cupti)
     torch = _torch_requirements(site / "torch", index, sealed_files, cupti)
     vision = _vision_bundle(site, manifest, sealed_files)
     return {"schema_version": 1, "foundation": str(foundation), "index": index, "torch": torch, "vision": vision,

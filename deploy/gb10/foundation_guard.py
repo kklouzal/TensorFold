@@ -27,7 +27,7 @@ from foundation_policy import canonical_name, is_accelerator_package
 STATE_ENV = "TF_FOUNDATION_STATE"
 CACHE_ROOT = "/cache"
 MAX_JSON = 64 * 2**20
-COMPILER_PACKAGES = r"^(gcc|g\+\+|cpp|binutils|libgcc|libstdc\+\+|libc6|libc-bin|libc-dev|linux-libc-dev|libgomp|libasan|libtsan|libubsan|libquadmath|libatomic|libcc1|libitm)(-|:|$)"
+COMPILER_PACKAGES = r"^(gcc|g\+\+|cpp|binutils|libgcc|libstdc\+\+|libc6|libc-bin|libc-dev|linux-libc-dev|libgomp|libasan|libtsan|libubsan|libquadmath|libatomic|libcc1|libitm)([0-9]|-|:|$)"
 
 
 def read_json(path: Path, limit: int = MAX_JSON) -> dict:
@@ -277,7 +277,8 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
     if any(state["files"][str(path)]["sha256"] != expected for path, expected in addon_artifacts.items()):
         raise ValueError("native addon artifact changed before sealing")
     from foundation_runtime import capture_runtime
-    state["runtime"] = capture_runtime(foundation=foundation, manifest=manifest, native_files=native | compiler_files,
+    state["runtime"] = capture_runtime(foundation=foundation, manifest=manifest, native_files=native,
+        compiler_files=compiler_files,
         sealed_files=state["files"], nccl_library=nccl_library, cupti_library=toolchain["cupti"]["path"])
     profile_path = state_path.with_name("runtime-profile.json")
     state["runtime_profile_path"] = str(profile_path)

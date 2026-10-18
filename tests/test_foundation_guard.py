@@ -16,6 +16,9 @@ import pytest
 
 @pytest.fixture
 def guard(monkeypatch):
+    # Synthetic sealed states select their own provider. The actual managed
+    # interpreter can legitimately arrive with its production NCCL published.
+    monkeypatch.delenv("TF_NCCL_LIB", raising=False)
     directory = Path(__file__).resolve().parents[1] / "deploy/gb10"
     monkeypatch.syspath_prepend(str(directory))
     spec = importlib.util.spec_from_file_location("tested_foundation_guard", directory / "foundation_guard.py")
@@ -267,6 +270,15 @@ def test_sdk_selector_preserves_sdk_without_catching_os_libraries(guard):
     raw = "cuda-nvcc-13-4\t13.4.92\nlibnccl2\t2.32.3\nlibcudnn9-cuda-13\t9.27\nlibcurl4t64\t1\nlibnvme1\t1\n"
     assert guard.sdk_versions(raw, pattern) == {"cuda-nvcc-13-4": "13.4.92", "libnccl2": "2.32.3",
                                                "libcudnn9-cuda-13": "9.27"}
+
+
+def test_compiler_inventory_includes_versioned_runtime_packages_only(guard):
+    expected = {"gcc-13:amd64": "13.3", "libstdc++6:amd64": "14.2", "libgcc-s1:amd64": "14.2",
+                "libgomp1": "14.2", "libasan8": "14.2", "libtsan2": "14.2", "libubsan1": "14.2",
+                "libquadmath0": "14.2", "libatomic1": "14.2", "libcc1-0": "14.2", "libitm1": "14.2"}
+    raw = "".join(f"{name}\t{version}\n" for name, version in expected.items())
+    raw += "libstdc++unrelated\t1\nlibcublas-13-4\t13.4\nnsight-compute-2026.3.1\t2026.3.1\n"
+    assert guard.sdk_versions(raw, guard.COMPILER_PACKAGES) == expected
 
 
 def test_cache_namespace_includes_complete_sealed_state(guard, sealed, monkeypatch):
@@ -548,7 +560,9 @@ def test_checked_run_keeps_proof_stdout_private_and_failure_stderr_visible(
             code = ("import sys\nprint('private provider JSON')\n"
                     f"if {proof_status}: print('native proof failure', file=sys.stderr)\n"
                     f"raise SystemExit({proof_status})\n")
-            return real_run([sys.executable, "-c", code], **options)
+            # This child is only an I/O/status stand-in, using a synthetic
+            # driver path. Managed .pth activation is tested independently.
+            return real_run([sys.executable, "-S", "-c", code], **options)
         return subprocess.CompletedProcess(arguments, 0, json.dumps({**proof, "driver_api": 13040, "devices": 1}))
 
     class Executed(BaseException):
