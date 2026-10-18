@@ -42,13 +42,18 @@ def _ref_quant4(x: torch.Tensor, act: float):
     return packed, sf8.view(torch.uint8), sf
 
 
-def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
-    inv = (torch.tensor(1.0, dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)).to(x.device)
-    q = (x.float() * inv).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8)
-    m, k = x.shape
-    m16 = torch.arange(16, device=x.device)
+def _ref_fragment_order(q: torch.Tensor) -> torch.Tensor:
+    """Row-major e4m3 bytes (M, K) in the FP8 weights' fragment order."""
+
+    m, k = q.shape
+    m16 = torch.arange(16, device=q.device)
     src = (m16 // 4) * 2 + (m16 % 4 % 2) + (m16 % 4 // 2) * 8          # byte 4q + j holds input 2q + j%2 + 8(j/2)
     return q.view(m, k // 16, 16)[:, :, src].reshape(m, k)
+
+
+def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
+    inv = (torch.tensor(1.0, dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)).to(x.device)
+    return _ref_fragment_order((x.float() * inv).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8))
 
 
 def _rows(m, k, seed, spread=1.0):
@@ -307,17 +312,13 @@ TOKEN_FLOOR = torch.tensor(1.0 / (448.0 * 512.0), dtype=torch.float32)
 
 
 def _ref_token(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Independent per-token quantizer in torch: (fragment-order e4m3 bytes, fp32 row scales)."""
+    """Independent per-token quantizer in torch: (row-major e4m3 bytes, fp32 row scales)."""
 
     xf = x.float()
     amax = xf.abs().amax(-1)
     # tensor / tensor divides correctly rounded on CUDA (torch turns a CPU-scalar divisor into a reciprocal multiply)
     s = torch.maximum(amax / torch.full_like(amax, 448.0), TOKEN_FLOOR.to(x.device))
-    q = (xf / s[:, None]).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8)
-    m, k = x.shape
-    m16 = torch.arange(16, device=x.device)
-    src = (m16 // 4) * 2 + (m16 % 4 % 2) + (m16 % 4 // 2) * 8
-    return q.view(m, k // 16, 16)[:, :, src].reshape(m, k), s
+    return (xf / s[:, None]).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8), s
 
 
 def _token_rows(m, k, seed):
@@ -335,7 +336,7 @@ def test_token_rows_are_e4m3_under_each_rows_own_scale(m, k):
     codes, scales = checkpoint.quant8_token(x)
     want, s = _ref_token(x)
     assert torch.equal(scales, s)
-    assert torch.equal(codes, want)
+    assert torch.equal(codes, _ref_fragment_order(want))
     t8, ts = checkpoint.quant8_token(x, checkpoint.TB)
     assert torch.equal(ts, s)
     assert torch.equal(t8.view(-1), _tiled(codes, 64, lambda r, c: c ^ ((r >> 1) & 3)))
@@ -357,13 +358,8 @@ def _token_ref(x, wq, cols):
     """fp64 of the declared math: (e4m3 rows x their scales) @ (e4m3 weights x their channel scales)^T, and the sums of
     the products' magnitudes (fp32 accumulation's error scale)."""
 
-    codes, s = _ref_token(x)
-    m, k = x.shape
-    m16 = torch.arange(16, device=x.device)
-    src = (m16 // 4) * 2 + (m16 % 4 % 2) + (m16 % 4 // 2) * 8
-    back = torch.empty_like(codes).view(m, k // 16, 16)
-    back[:, :, src] = codes.view(m, k // 16, 16)
-    xq = back.view(m, k).view(torch.float8_e4m3fn).double() * s.double()[:, None]
+    q, s = _ref_token(x)
+    xq = q.view(torch.float8_e4m3fn).double() * s.double()[:, None]
     wd = wq * cols[:, None]
     return xq @ wd.t(), xq.abs() @ wd.abs().t()
 
