@@ -79,6 +79,11 @@ CMD ["serve", "--help"]
 # Verification changes only the app prefix, preserving the same foundation.
 FROM application AS verification
 ARG TARGETARCH
+RUN python3 /opt/tensorfold-pins/foundation_guard.py audit \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 /opt/tensorfold-pins/foundation_guard.py audit
 RUN --mount=type=cache,id=tensorfold-foundation-pip-${TARGETARCH},target=/root/.cache/pip \
     python3 /opt/tensorfold-pins/foundation_guard.py install --role verification --lock /opt/tensorfold-pins/requirements-test.lock \
     && python3 -m pip check
