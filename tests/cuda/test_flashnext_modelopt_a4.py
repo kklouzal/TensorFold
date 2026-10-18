@@ -220,3 +220,56 @@ def test_proven_row_shared_input_matches_general_plan_and_individual_reference(p
     assert torch.equal(codes.cpu(), c)
     assert torch.equal(scales.cpu(), s)
     torch.cuda.synchronize()
+
+
+def test_direct_rn_subnormal_scale_intermediate_is_not_flushed_or_reassociated():
+    from tensorfold.cuda.nvfp4.format import native_calibration
+
+    # Both input scales and the ordinary BF16tiny input are exactly2^-126;
+    # the second row is BF16's smallest subnormal2^-133. The FP32 first
+    # product A*float32(1/6) must survive before multiplication by2^126.
+    direct = 2.**-126
+    assert native_calibration(direct, 1., name="independent subnormal boundary") == direct
+    x = torch.tensor([[0x0080] * 128, [0x0001] * 128], dtype=torch.uint16, device="cuda").view(torch.bfloat16)
+    plan = torch.tensor([[0, 0, 0], [1, 0, 0]], dtype=torch.int32, device="cuda")
+    calibration = torch.full((1, 2), direct, dtype=torch.float32, device="cuda")
+    codes = torch.empty((2, 2, 64), dtype=torch.uint8, device="cuda")
+    scales = torch.empty((2, 2, 8), dtype=torch.uint8, device="cuda")
+    _ext().quantize(x, plan, calibration, codes, scales, False, True)
+    # Independent integer derivation: float32(1/6)=11184811*2^-26.
+    # First products in units2^-149 round to1398101 and10923. Multiplying
+    # by2^126 gives1398101/2^23 and10923/2^23; nearest E4M3 encodings are
+    # 0x23(.171875) and0x01(2^-9). G/SF overflowsFP32 in both rows, so
+    # positive values saturate to E2M1+6/code7. FTZ would instead yieldSF0.
+    assert torch.equal(scales[:, 0], torch.full_like(scales[:, 0], 0x23))
+    assert torch.equal(scales[:, 1], torch.full_like(scales[:, 1], 0x01))
+    assert torch.equal(codes, torch.full_like(codes, 0x77))
+    torch.cuda.synchronize()
+
+
+def test_legacy_native_tensor_arguments_keep_omitted_boolean_defaults():
+    from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4
+
+    ext = _ext()
+    x = torch.ones((1, 64), dtype=torch.bfloat16, device="cuda")
+    plan = torch.tensor([[0, 0, 0]], dtype=torch.int32, device="cuda")
+    calibration = torch.ones((1, 2), dtype=torch.float32, device="cuda")
+    codes = torch.empty((2, 1, 32), dtype=torch.uint8, device="cuda")
+    scales = torch.empty((2, 1, 4), dtype=torch.uint8, device="cuda")
+    # Exact public legacy5-tensor call: both Boolean arguments are omitted.
+    ext.quantize(x, plan, calibration, codes, scales)
+    assert torch.equal(codes, torch.full_like(codes, 0x77))
+    assert torch.equal(scales, torch.full_like(scales, 0x23))
+    blob = pack_projection_a4(torch.full((64, 32), 0x22, dtype=torch.uint8),
+        torch.full((64, 4), 0x38, dtype=torch.uint8).view(torch.float8_e4m3fn)).cuda()
+    up = torch.stack((blob, blob)).view(1, 2, -1)
+    items = torch.tensor([[0, 0, 1]], dtype=torch.int32, device="cuda")
+    output = torch.empty((2, 1, 64), dtype=torch.bfloat16, device="cuda")
+    # 64 exactly represented products6*.171875 sum to66. Internal optional
+    # plan ownership is absent, without exposing PythonNone to a Tensor caster.
+    ext.gemm(codes, scales, up, calibration, calibration, items, plan, output, 64, 64, 1, False)
+    assert torch.equal(output, torch.full_like(output, 66.))
+    direct_codes, direct_scales = torch.empty_like(codes), torch.empty_like(scales)
+    ext.quantize(x, plan, calibration, direct_codes, direct_scales, False, True)
+    assert torch.equal(direct_codes, codes) and torch.equal(direct_scales, scales)
+    torch.cuda.synchronize()
