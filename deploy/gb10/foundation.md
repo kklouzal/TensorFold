@@ -95,7 +95,9 @@ The app venv publishes selected tools and cache identity from a compact owned
 startup mapping before native imports, including direct Python/test commands.
 The managed launcher additionally checks package origins/versions, file
 mode/size/mtime/realpath, original SDK aliases and actual loaded CUDA providers.
-It validates the effective Driver API in fresh children and uses the base's
+It loads the required TorchVision native/image extensions and verifies their
+registered CUDA image schemas before checking provider maps; this does not
+execute GPU JPEG decoding. It validates the effective Driver API in fresh children and uses the base's
 forward-compatibility libraries only after a successful actual-device probe.
 NVIDIA's entrypoint still executes; final native-provider proof runs after its
 environment transformations. A stale compatibility marker grants no admission.
