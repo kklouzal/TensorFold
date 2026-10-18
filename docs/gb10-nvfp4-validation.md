@@ -150,9 +150,10 @@ slots, RotorQuant-iso4, SSD tables, vision, short LRU prompt and 512-token proto
 as above. `TENSORFOLD_MULTI_GRAPH_MIB` was unset: actual records report
 `automatic=true`, using native-pool inactive-memory accounting. The MTP0 run
 captured eight verify keys; MTP6 captured all 128 verify plus 64 MTP keys.
-The MTP6 record reports a 17,988,594,142 B resolved allowance and 3,109,662,720 B
-capture charge after preserving its future serving plan; these are measured
-run-specific values, not a fixed default or a reservation against other processes.
+The MTP6 record reports a 17,988,594,142 B allowance derived by runtime admission
+and an observed 3,109,662,720 B capture charge, after preserving its future
+serving plan. These run-specific values are neither a fixed default nor a
+reservation against other processes.
 
 | Native MTP proposals | Warm single-request HTTP tok/s | Four-request aggregate HTTP tok/s | Lowest sampled host MemAvailable |
 | --- | --- | --- | --- |
