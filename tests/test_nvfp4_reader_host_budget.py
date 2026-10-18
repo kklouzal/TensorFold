@@ -1,6 +1,7 @@
 """Independent physical Reader backing and nonduplicated NVFP4 host admission."""
 
 import ast
+import json
 import math
 import os
 from pathlib import Path
@@ -56,8 +57,14 @@ def test_invalid_host_byte_bounds_are_refused(raw, published):
         reader_host_bytes(raw, published)
 
 
-def modelopt_headers(width=32, dims=32):
+def modelopt_headers(path, width=32, dims=32):
     text = {"num_hidden_layers": 1, "num_experts": 1, "moe_intermediate_size": width, "hidden_size": dims}
+    (path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": text,
+        "quantization_config": {"quant_method": "modelopt", "quant_algo": "W4A16_NVFP4",
+            "config_groups": {"experts": {"targets": ["Linear"],
+                "weights": {"num_bits": 4, "type": "float", "group_size": 16},
+                "input_activations": None}}}}))
+    text = capacity.config(path)  # actual canonical resolver supplies _quantization
     entries = {}
     for projection, n, k in (("gate_proj", width, dims), ("up_proj", width, dims), ("down_proj", dims, width)):
         base = "model.layers.0.mlp.experts.0." + projection
@@ -67,8 +74,8 @@ def modelopt_headers(width=32, dims=32):
     return text, entries
 
 
-def test_small_modelopt_ring_and_publication_are_host_only(monkeypatch):
-    text, entries = modelopt_headers()
+def test_small_modelopt_ring_and_publication_are_host_only(monkeypatch, tmp_path):
+    text, entries = modelopt_headers(tmp_path)
     monkeypatch.setattr(ram_experts, "headers", lambda _: entries)
     layout = ram_experts._nvfp4_layout("opaque", "auto", text, mtp=False)
     field_bytes = 2 * 144 * 4
@@ -78,8 +85,8 @@ def test_small_modelopt_ring_and_publication_are_host_only(monkeypatch):
     assert layout.host_bytes == 3 * 144 * 4 + 12
 
 
-def test_large_modelopt_gpu_scratch_does_not_become_a_host_reserve(monkeypatch):
-    text, entries = modelopt_headers(width=4096, dims=4096)
+def test_large_modelopt_gpu_scratch_does_not_become_a_host_reserve(monkeypatch, tmp_path):
+    text, entries = modelopt_headers(tmp_path, width=4096, dims=4096)
     monkeypatch.setattr(ram_experts, "headers", lambda _: entries)
     layout = ram_experts._nvfp4_layout("opaque", "auto", text, mtp=False)
     packed_field = 2 * (4096 // 32) * (4096 // 32) * 144 * 4
@@ -91,8 +98,8 @@ def test_large_modelopt_gpu_scratch_does_not_become_a_host_reserve(monkeypatch):
     assert layout.staging_bytes == 1 << (2 * layout.entry_bytes - 1).bit_length()
 
 
-def test_stacked_mtp_host_bound_counts_one_original_f32_expert_row(monkeypatch):
-    text, entries = modelopt_headers(width=32, dims=32)
+def test_stacked_mtp_host_bound_counts_one_original_f32_expert_row(monkeypatch, tmp_path):
+    text, entries = modelopt_headers(tmp_path, width=32, dims=32)
     entries["mtp.layers.0.mlp.experts.gate_up_proj"] = {"dtype": "F32", "shape": [1, 64, 32]}
     entries["mtp.layers.0.mlp.experts.down_proj"] = {"dtype": "F32", "shape": [1, 32, 32]}
     monkeypatch.setattr(ram_experts, "headers", lambda _: entries)
