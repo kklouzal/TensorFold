@@ -10,6 +10,7 @@ reference dump, the log-probabilities at the reference's top-K ids.
 
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
+  gate     GOLDEN.npz OLD.npz NEW.npz [--out RESULT.json]    (exit 1 on fail)
 
 ``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
 prompts plus corpus-backed long ones) and each prompt's continuation sampled by this configuration (model-card
@@ -59,6 +60,51 @@ LONG_ASK = "Summarize the document above file by file, noting anything unusual."
 # in-process capture
 
 
+def file_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def row_stats(torch, logits, top_k: int, forced: int, reference_ids=None) -> dict:
+    """One position's record from its logits row: float32 log-softmax top-K ids and log-probabilities, the log of
+    the mass outside them, the forced token's log-probability, the entropy and, given the reference's top-K ids, the
+    log-probabilities there and the log of the mass outside them (shared by the engine capture and campaign_golden)."""
+
+    lp = torch.log_softmax(logits.float(), dim=-1)
+    values, ids = torch.topk(lp, top_k)
+    entry = {"ids": ids.to(torch.int32).cpu(), "lp": values.cpu(), "tail_lp": _tail(torch, lp, ids),
+             "forced": float(lp[forced]), "entropy": float(-(lp.exp() * lp).sum())}
+    if reference_ids is not None:
+        at = torch.as_tensor(reference_ids, device=lp.device, dtype=torch.int64)
+        entry["at_ref"] = lp.index_select(0, at).cpu()
+        entry["at_ref_tail_lp"] = _tail(torch, lp, at)
+    return entry
+
+
+def _tail(torch, lp, ids) -> float:
+    """log of the probability mass outside ``ids`` (log-sum-exp, no cancellation; -inf when ``ids`` is the whole
+    vocabulary)."""
+
+    outside = torch.ones(lp.shape[0], dtype=torch.bool, device=lp.device)
+    outside[ids.to(torch.int64)] = False
+    return float(torch.logsumexp(lp.masked_fill(~outside, float("-inf")), 0))
+
+
+def save_dump(path: str, rows: list[dict], offsets: list[int], meta: dict) -> None:
+    """The dump format every comparison reads (engine dumps and campaign_golden references)."""
+
+    import numpy as np
+
+    arrays = {"ids": np.stack([r["ids"].numpy() for r in rows]), "lp": np.stack([r["lp"].numpy() for r in rows]),
+              "tail_lp": np.array([r["tail_lp"] for r in rows], dtype=np.float64),
+              "forced": np.array([r["forced"] for r in rows], dtype=np.float64),
+              "entropy": np.array([r["entropy"] for r in rows], dtype=np.float64),
+              "offsets": np.array(offsets, dtype=np.int64)}
+    if "at_ref" in rows[0]:
+        arrays["at_ref"] = np.stack([r["at_ref"].numpy() for r in rows])
+        arrays["at_ref_tail_lp"] = np.array([r["at_ref_tail_lp"] for r in rows], dtype=np.float64)
+    np.savez(path, meta=json.dumps(meta), **arrays)
+
+
 class Capture:
     """The CUDA sampler stand-in: records each forced position's distribution and returns the forced tokens."""
 
@@ -82,27 +128,11 @@ class Capture:
             if index != self.next or not 0 <= index < len(self.forced):
                 raise RuntimeError(f"sampler position {position} is not the next forced position "
                                    f"{self.prompt_len + self.next} (rows {len(positions)}): uncovered engine path")
-            lp = torch.log_softmax(logits[row].float(), dim=-1)
-            values, ids = torch.topk(lp, self.top_k)
-            entry = {"ids": ids.to(torch.int32).cpu(), "lp": values.cpu(), "tail_lp": self._tail(lp, ids),
-                     "forced": float(lp[self.forced[index]]),
-                     "entropy": float(-(lp.exp() * lp).sum())}
-            if self.reference_ids is not None:
-                at = torch.as_tensor(self.reference_ids[index], device=lp.device, dtype=torch.int64)
-                entry["at_ref"] = lp.index_select(0, at).cpu()
-                entry["at_ref_tail_lp"] = self._tail(lp, at)
-            self.rows.append(entry)
+            self.rows.append(row_stats(torch, logits[row], self.top_k, self.forced[index],
+                                       None if self.reference_ids is None else self.reference_ids[index]))
             out.append(int(self.forced[index]))
             self.next += 1
         return out
-
-    def _tail(self, lp, ids) -> float:
-        """log of the probability mass outside ``ids`` (log-sum-exp, no cancellation; -inf when ``ids`` is the
-        whole vocabulary)."""
-
-        outside = self.torch.ones(lp.shape[0], dtype=self.torch.bool, device=lp.device)
-        outside[ids.to(self.torch.int64)] = False
-        return float(self.torch.logsumexp(lp.masked_fill(~outside, float("-inf")), 0))
 
     def end(self) -> list[dict]:
         self.active = False
@@ -186,19 +216,13 @@ def dump(app, args) -> None:
             position += n
             print(json.dumps({"item": item["name"], "positions": n,
                               "elapsed_s": round(time.perf_counter() - started, 1)}), flush=True)
-    arrays = {"ids": np.stack([r["ids"].numpy() for r in rows]), "lp": np.stack([r["lp"].numpy() for r in rows]),
-              "tail_lp": np.array([r["tail_lp"] for r in rows], dtype=np.float64),
-              "forced": np.array([r["forced"] for r in rows], dtype=np.float64),
-              "entropy": np.array([r["entropy"] for r in rows], dtype=np.float64),
-              "offsets": np.array(offsets, dtype=np.int64)}
-    if reference is not None:
-        arrays["at_ref"] = np.stack([r["at_ref"].numpy() for r in rows])
-        arrays["at_ref_tail_lp"] = np.array([r["at_ref_tail_lp"] for r in rows], dtype=np.float64)
-    meta = {"eval_sha256": hashlib.sha256(eval_path.read_bytes()).hexdigest(), "serve_args": args.serve,
+    meta = {"eval_sha256": file_sha256(str(eval_path)), "serve_args": args.serve,
             "top_k": args.top_k, "logits_dtype": capture.dtype, "names": [it["name"] for it in data["items"]],
-            "reference": args.reference, "source_revision": os.environ.get("TENSORFOLD_SOURCE_REVISION"),
-            "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    np.savez(args.out, meta=json.dumps(meta), **arrays)
+            "reference": args.reference,
+            "reference_sha256": file_sha256(args.reference) if args.reference else None,
+            "source_revision": os.environ.get("TENSORFOLD_SOURCE_REVISION"),
+            "tool_sha256": file_sha256(__file__)}
+    save_dump(args.out, rows, offsets, meta)
     print(json.dumps({"out": args.out, "positions": len(rows), **{k: meta[k] for k in ("logits_dtype", "top_k")}}))
 
 
@@ -232,7 +256,7 @@ def with_app(serve_args: list[str], port: int, work) -> None:
 # comparison (numpy only)
 
 
-def compare(ref_path: str, cand_path: str) -> dict:
+def _load_pair(ref_path: str, cand_path: str):
     import numpy as np
 
     ref, cand = np.load(ref_path), np.load(cand_path)
@@ -243,16 +267,34 @@ def compare(ref_path: str, cand_path: str) -> dict:
         raise ValueError("the candidate dump needs --reference (log-probabilities at the reference's top-K ids)")
     if "tail_lp" not in ref.files or "at_ref_tail_lp" not in cand.files:
         raise ValueError("a dump without log-sum-exp tail masses (made before they were recorded): dump it again")
+    if ref["lp"].shape != cand["at_ref"].shape:
+        raise ValueError("reference and candidate positions differ")
+    if cand_meta.get("reference_sha256") not in (None, file_sha256(ref_path)):
+        raise ValueError(f"{cand_path} was dumped against another reference than {ref_path}")
+    return ref, cand, ref_meta, cand_meta
+
+
+def position_kl(ref, cand):
+    """Per position KL(ref || cand) on the reference's top-K ids plus the merged tail bucket, and the reference's
+    tail mass."""
+
+    import numpy as np
+
     lp_p = ref["lp"].astype(np.float64)
     lp_q = cand["at_ref"].astype(np.float64)
-    if lp_p.shape != lp_q.shape:
-        raise ValueError("reference and candidate positions differ")
     p = np.exp(lp_p)
     kl_top = (p * (lp_p - lp_q)).sum(-1)
     tail_p, tail_q = ref["tail_lp"].astype(np.float64), cand["at_ref_tail_lp"].astype(np.float64)
     p_tail = np.exp(tail_p)
     # an empty tail (top-K = vocabulary) contributes nothing; log masses never subtract -inf from -inf
-    kl = kl_top + p_tail * np.subtract(tail_p, tail_q, out=np.zeros_like(tail_p), where=p_tail > 0)
+    return kl_top + p_tail * np.subtract(tail_p, tail_q, out=np.zeros_like(tail_p), where=p_tail > 0), p_tail
+
+
+def compare(ref_path: str, cand_path: str) -> dict:
+    import numpy as np
+
+    ref, cand, ref_meta, cand_meta = _load_pair(ref_path, cand_path)
+    kl, p_tail = position_kl(ref, cand)
     agree = ref["ids"][:, 0] == cand["ids"][:, 0]
     in_top5 = (cand["ids"][:, :5] == ref["ids"][:, :1]).any(-1)
     names, offsets = ref_meta["names"], list(ref["offsets"]) + [len(kl)]
@@ -277,6 +319,63 @@ def compare(ref_path: str, cand_path: str) -> dict:
                       "path; teacher-forced on the reference continuation"}
 
 
+def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
+    """Means of ``values`` (columns resampled together, rows = positions) over moving blocks of ``block`` positions
+    drawn with replacement within the eval items (no block spans two items, so the serial correlation of positions
+    inside a reply is kept); returns the resampled means [resamples, columns]."""
+
+    import numpy as np
+
+    bounds = list(offsets) + [len(values)]
+    spans = []
+    for first, end in zip(bounds, bounds[1:]):
+        if end - first <= block:                     # a short item is one block
+            spans.append((first, end))
+        else:
+            spans += [(a, a + block) for a in range(first, end - block + 1)]
+    sizes = np.array([b - a for a, b in spans], dtype=np.float64)
+    sums = np.array([values[a:b].sum(0) for a, b in spans])
+    rng = np.random.default_rng(seed)
+    count = max(1, round(len(values) / sizes.mean()))
+    picks = rng.integers(0, len(spans), size=(resamples, count))
+    return sums[picks].sum(1) / sizes[picks].sum(1)[:, None]
+
+
+def gate(golden_path: str, old_path: str, new_path: str, *, block: int = 64, resamples: int = 4000,
+         seed: int = 0) -> dict:
+    """Golden-reference gate: KL(golden || new) against KL(golden || old) and golden top-1 agreement, paired per
+    position, with 95% moving-block bootstrap intervals. fail when the KL increase's interval lies above 0 or the
+    agreement change's interval lies below 0; otherwise pass (the intervals are the margins)."""
+
+    import numpy as np
+
+    golden, old, golden_meta, old_meta = _load_pair(golden_path, old_path)
+    _, new, _, new_meta = _load_pair(golden_path, new_path)
+    kl_old, p_tail = position_kl(golden, old)
+    kl_new, _ = position_kl(golden, new)
+    top = golden["ids"][:, 0]
+    agree_old = (old["ids"][:, 0] == top).astype(np.float64)
+    agree_new = (new["ids"][:, 0] == top).astype(np.float64)
+    columns = np.stack([kl_old, kl_new, kl_new - kl_old, agree_old, agree_new, agree_new - agree_old], 1)
+    boot = block_bootstrap(columns, golden["offsets"], block, resamples, seed)
+    low, high = np.quantile(boot, [0.025, 0.975], axis=0)
+    names = ("kl_old", "kl_new", "kl_delta", "agreement_old", "agreement_new", "agreement_delta")
+    stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
+             for i, name in enumerate(names)}
+    kl_worse = stats["kl_delta"]["ci95"][0] > 0
+    agreement_worse = stats["agreement_delta"]["ci95"][1] < 0
+    return {"golden": golden_path, "old": old_path, "new": new_path, "positions": int(len(columns)),
+            "golden_source": golden_meta.get("source"), "old_source": old_meta.get("source_revision"),
+            "new_source": new_meta.get("source_revision"), **stats,
+            "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
+            "bootstrap": {"block": block, "resamples": resamples, "seed": seed, "kind": "moving blocks within items"},
+            "status": "fail" if kl_worse or agreement_worse else "pass",
+            "failed": [n for n, bad in (("kl", kl_worse), ("agreement", agreement_worse)) if bad],
+            "method": "KL(golden||x) on the golden top-K ids plus a merged tail bucket (lower bound to float32 "
+                      "rounding); paired per position; fail when the 95% interval of KL(golden||new) - "
+                      "KL(golden||old) lies above 0 or that of the top-1 agreement change lies below 0"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -297,6 +396,14 @@ def main() -> int:
     c.add_argument("reference")
     c.add_argument("candidate")
     c.add_argument("--out")
+    g = sub.add_parser("gate", help="golden-reference gate: GOLDEN OLD NEW (OLD, NEW dumped with --reference GOLDEN)")
+    g.add_argument("golden")
+    g.add_argument("old")
+    g.add_argument("new")
+    g.add_argument("--block", type=int, default=64, help="bootstrap block length in positions")
+    g.add_argument("--resamples", type=int, default=4000)
+    g.add_argument("--seed", type=int, default=0)
+    g.add_argument("--out")
     args = ap.parse_args()
     if args.command == "dump":
         if args.serve and args.serve[0] == "--":
@@ -308,11 +415,14 @@ def main() -> int:
                          else {})
         with_app(args.serve, args.port, lambda app: dump(app, args))
     else:
-        result = compare(args.reference, args.candidate)
+        result = (compare(args.reference, args.candidate) if args.command == "compare" else
+                  gate(args.golden, args.old, args.new, block=args.block, resamples=args.resamples, seed=args.seed))
         text = json.dumps(result, indent=1)
         if args.out:
             Path(args.out).write_text(text + "\n")
         print(text)
+        if args.command == "gate":
+            return 1 if result["status"] == "fail" else 0
     return 0
 
 

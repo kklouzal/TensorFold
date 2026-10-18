@@ -466,3 +466,69 @@ def test_trace_summary_counts_kernel_union_launches_and_syncs_per_round():
     assert first == {"wall_us": 30, "gpu_busy_us": 20, "launches": 2, "syncs": 1, "d2h_copies": 1}
     assert second == {"wall_us": 30, "gpu_busy_us": 5, "launches": 1, "syncs": 0, "d2h_copies": 0}
     assert s["top_kernels"][0]["name"] == "k1" and s["top_kernels"][0]["calls"] == 2
+
+
+def test_block_bootstrap_keeps_constant_means_and_never_spans_items():
+    np = pytest.importorskip("numpy")
+    values = np.stack([np.full(300, 2.5), np.r_[np.zeros(100), np.ones(200)]], 1)
+    boot = kl.block_bootstrap(values, [0, 100], block=64, resamples=200, seed=1)
+    assert boot.shape == (200, 2) and np.allclose(boot[:, 0], 2.5)
+    assert 0.4 < boot[:, 1].mean() < 0.9                       # mixes both items around the 2/3 position mean
+
+
+def test_golden_gate_passes_an_equal_error_change_and_fails_a_worse_one(tmp_path):
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(3)
+    golden = _log_softmax(np, rng.normal(0, 3, (600, 64)))
+    old = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
+    same = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
+    worse = _log_softmax(np, golden + rng.normal(0, 0.6, golden.shape))
+    ref = _dump(tmp_path / "golden.npz", golden, 16)
+    for name, lp in (("old", old), ("same", same), ("worse", worse)):
+        _dump(tmp_path / f"{name}.npz", lp, 16, reference=ref)
+    passed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "same.npz"),
+                     resamples=500)
+    failed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "worse.npz"),
+                     resamples=500)
+    assert passed["status"] == "pass" and passed["kl_delta"]["ci95"][0] <= 0 <= passed["kl_delta"]["ci95"][1]
+    assert failed["status"] == "fail" and "kl" in failed["failed"] and failed["kl_delta"]["ci95"][0] > 0
+    assert failed["kl_new"]["mean"] > failed["kl_old"]["mean"] > 0
+
+
+def test_golden_float32_layers_compute_in_float32_and_restore_weight_dtypes():
+    torch = pytest.importorskip("torch")
+    golden = load("campaign_golden")
+    seen = []
+
+    class TinyDecoderLayer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(4, 4, dtype=torch.bfloat16)
+            self.register_buffer("scale", torch.ones(1, dtype=torch.bfloat16))
+
+        def forward(self, x):
+            seen.append((self.proj.weight.dtype, self.scale.dtype, x.dtype))
+            return self.proj(x) * self.scale
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(10, 4, dtype=torch.bfloat16)
+            self.layers = torch.nn.ModuleList([TinyDecoderLayer(), TinyDecoderLayer()])
+            self.vision_tower = torch.nn.Linear(4, 4, dtype=torch.bfloat16)
+
+        def forward(self, ids):
+            x = self.embed(ids)
+            for layer in self.layers:
+                x = layer(x)
+            return x
+
+    model = Tiny()
+    bf16_weight = model.layers[0].proj.weight.detach().clone()
+    counts = golden.float32_layers(torch, model)
+    out = model(torch.tensor([[1, 2, 3]]))
+    assert counts == {"layers": 2, "calls": 2} and out.dtype == torch.float32
+    assert seen == [(torch.float32, torch.float32, torch.float32)] * 2
+    assert model.layers[0].proj.weight.dtype == torch.bfloat16 and torch.equal(model.layers[0].proj.weight, bf16_weight)
+    assert model.layers[1].scale.dtype == torch.bfloat16 and model.embed.weight.dtype == torch.float32
+    assert model.vision_tower.weight.dtype == torch.bfloat16
