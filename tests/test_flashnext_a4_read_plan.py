@@ -19,6 +19,18 @@ def test_plan_omits_only_native_matrix_reads_and_keeps_original_scalars_on_cpu()
     assert not set(host) & set(matrices)
 
 
+@pytest.mark.parametrize("dtype", ["F32", "F16", "BF16"])
+@pytest.mark.parametrize("shape", [[], [1], [1, 1]])
+def test_read_plan_preserves_every_authoritatively_accepted_global_geometry(dtype, shape):
+    header = infos()
+    for name, info in header.items():
+        if name.endswith((".input_scale", ".weight_scale_2")):
+            info["dtype"], info["shape"] = dtype, shape
+    assert a4_bank(header, PREFIX, 3, block(), native=True)
+    device, host = a4_read_plan(list(header), {PREFIX}, 3)
+    assert not device and len(host) == 18
+
+
 @pytest.mark.parametrize("native,activation,checkpoint", [(False, True, True), (True, False, True),
                                                          (True, True, False)])
 def test_capability_weight_only_and_full_regions_preserve_original_prefetch(native, activation, checkpoint):
