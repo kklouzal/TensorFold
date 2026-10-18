@@ -803,8 +803,7 @@
     }
   ],
   "pending": [
-    "Clean full-project CPU rerun and complete fresh native matrix beyond the recorded composite gates",
-    "Entire fresh RotorQuant/KV matrix",
+    "Clean full-project CPU rerun and native coverage beyond the recorded composite selections",
     "Two-GPU or heterogeneous expert ranks",
     "Long-context/full simultaneous windows and broader model quality",
     "Deployment/rollout"
@@ -1510,7 +1509,7 @@
       "Observed sequential starts/HTTP rates are descriptive, not controlled startup gains or performance SELECT",
       "MTP6 warm/quartet cached45 of46 prompt tokens; MTP0 cached0; prior bd1 fixed-budget records remain separate",
       "Same model revision, precision, KV, four slots and512-token output scope; no full-context capacity or broader quality proof",
-      "Fresh complete CPU suite, entire RotorQuant/KV matrix, two GPUs and deployment remain outside this receipt"
+      "Initial model-gate scope excluded fresh complete CPU/native matrices, two GPUs and deployment; the later rotorquant_kv_composite entry records the483-node selection separately"
     ]
   },
   "controlled_abcd": {
@@ -2750,5 +2749,97 @@
       "One GB10, exact checkpoint/format/short512token workload, no full-context/twoGPU/desktop/FreeToken claim"
     ]
   },
-  "candidate_disposition": "User stopped additional E/F candidate work; neither is promoted or claimed qualified"
+  "candidate_disposition": "User stopped additional E/F candidate work; neither is promoted or claimed qualified",
+  "rotorquant_kv_composite": {
+    "status": "composite selection coverage; original interrupted whole remains failed/incomplete",
+    "selection_cases": 483,
+    "prior_named_passes": 192,
+    "prior_source": "28c74e008599236da86a1897f321ada5eb9d2cf5",
+    "new_passes": 290,
+    "new_skips": 1,
+    "new_failures": 0,
+    "new_errors": 0,
+    "new_seconds": 524.909,
+    "new_source": "297e8487bc44e941d0fffeac753ac465c72165ce",
+    "skip": {
+      "tests/cuda/test_flashnext_kvquant.py::test_scales_and_dequant_match_exllamav3s_own_quantizer": "skipped"
+    },
+    "skip_reason": "optional exllamav3_ext oracle is not installed",
+    "partition_disjoint_complete": true,
+    "declared_test_format_reference_sampler_fixture_sources_match_297": {
+      "src/tensorfold/families/qwen4_exp/kv_formats.py": true,
+      "src/tensorfold/families/qwen4_exp/cuda/rotorquant_ref.py": true,
+      "src/tensorfold/engine/exact_sampling.py": true,
+      "tests/conftest.py": true,
+      "tests/cuda/conftest.py": true,
+      "tests/cuda/test_flashnext_rotorquant.py": true,
+      "tests/cuda/test_flashnext_kvquant.py": true
+    },
+    "original_whole_run_status": "fail",
+    "new_outer_provider_retirement": "pass",
+    "minimum_sampled_mem_available_bytes": 121700069376,
+    "scope": "192 earlier individually named passes plus disjoint290new passes/1skip; no fresh single-run483-case pass or broader all-format matrix claim",
+    "evidence": [
+      {
+        "path": "rotorquant-remainder-28c74e00/handoff.json",
+        "sha256": "da2425f8258a74fbc3aab45c778566ce26a69429ed887fde3ce9725a483978bf",
+        "bytes": 1639
+      },
+      {
+        "path": "rotorquant-remainder-28c74e00/derivation.json",
+        "sha256": "981861bc58781a732d822c24d4e8d346c0ff92218943878df1491c66fed29b20",
+        "bytes": 37117
+      },
+      {
+        "path": "rotorquant-remainder-28c74e00/all-nodeids.json",
+        "sha256": "fb1d1b8c629950867bb483389129bd2c29eccb64ed0a63f88c1cadee1a5ff787",
+        "bytes": 66251
+      },
+      {
+        "path": "rotorquant-remainder-28c74e00/completed-passed-nodeids.json",
+        "sha256": "07cf73ccaa650bc7cedee51606c3df1febf16c10943c84f0efdc21d89a66bb31",
+        "bytes": 25675
+      },
+      {
+        "path": "rotorquant-remainder-28c74e00/remaining-nodeids.json",
+        "sha256": "409f8e115076a4d8e9e8baf3a29ce0fc33e502307e0fea25cead4c3075cd6ae5",
+        "bytes": 40579
+      },
+      {
+        "path": "rq-cached-results-01/run-gb10-rotorquant-kv-native-28c74e00/pytest.xml",
+        "sha256": "29d756336c424c78c7432c577e5536c434897261ee08965c5977b43626f1dff8",
+        "bytes": 32685
+      },
+      {
+        "path": "rq-cached-results-01/run-gb10-rotorquant-kv-native-28c74e00/receipt.json",
+        "sha256": "f8222d60c876bd5a4f939559b20f13103ccfa4d07bf2fa506ab69a17d1f73b6f",
+        "bytes": 22187
+      },
+      {
+        "path": "rq-remainder-297e-results-01/run-gb10-rq-remainder-297e-01/pytest.xml",
+        "sha256": "daef7d62328b8c4517742b41b41e4d459236cadaeaaa88881fab2078eaf05f0c",
+        "bytes": 51269
+      },
+      {
+        "path": "rq-remainder-297e-results-01/run-gb10-rq-remainder-297e-01/raw.log",
+        "sha256": "c3812f26bdcba5141fd197a27dab39c83842295f9a52873b11e1a04a43a79a4c",
+        "bytes": 1248
+      },
+      {
+        "path": "rq-remainder-297e-results-01/run-gb10-rq-remainder-297e-01/receipt.json",
+        "sha256": "48aa794a797b225fa16e485169a06b4302ec434ad3be8ffa9547549ee36a4254",
+        "bytes": 63159
+      },
+      {
+        "path": "rq-remainder-297e-results-01/run-gb10-rq-remainder-297e-01/rotorquant-kv-post-provider.json",
+        "sha256": "ad04690698104694661a7948bc285cea86c779d190132da8f02df0f919ed57a3",
+        "bytes": 927956
+      },
+      {
+        "path": "rq-remainder-297e-results-01/run-gb10-rq-remainder-297e-01/user-stop-reason.json",
+        "sha256": "9cd0625791dfada9da9ac3d4a1df3ba5a398913fe830d1d492a372c03e1df973",
+        "bytes": 618
+      }
+    ]
+  }
 }

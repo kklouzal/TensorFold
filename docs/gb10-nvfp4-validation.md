@@ -122,8 +122,8 @@ also retained in the receipt.
 
 The later composition's results are recorded separately below rather than
 inferred from these earlier gates. A controlled same-format performance
-comparison is recorded below. The entire fresh
-RotorQuant/KV matrix, long-context quality/capacity, actual two-GPU or
+comparison is recorded below, followed by the separate RQ/KV composite.
+Long-context quality/capacity, actual two-GPU or
 heterogeneous expert ranks and deployment rollout are not established here.
 Earlier [Python integration](optimization-validation.md#python-line-integration-2026-10-11),
 [desktop/NCCL](desktop-report-remediation.md) and
@@ -195,7 +195,7 @@ counts are not added. The original failed run remains failed in the receipt.
 The [receipt's `source297_auto` entry](verification-gb10-nvfp4-20261018.json)
 binds these actual source/images, graph accounting, cache usage, raw logs,
 provider/outer receipts and remaining scope. The clean full-project CPU rerun,
-complete fresh RotorQuant/KV matrix,
+native coverage beyond the recorded composite selections,
 long-context capacity/quality, two GPUs and rollout remain separate.
 
 ## Controlled eight-start comparison and user selection
@@ -256,3 +256,20 @@ The release-integration proof at `e82aeae1` matches runtime/build/lock/tool sour
 bytes to source297; changes are docs and the recorded test-only EOS fixture.
 It does not claim identical rebuilt wheels or final image IDs. The final
 release/deployment receipts must record those actual artifacts.
+
+## RQ/KV selection — completed composite
+
+The remaining 291 selected RQ/KV nodes finished naturally on source297:
+**290 passed, one skipped, no failures or errors in 524.909 s**. The skip is the
+optional `exllamav3_ext` reference oracle, which is not installed. No warnings
+were reported; the outer/provider/retirement checks passed and minimum sampled
+MemAvailable was 121,700,069,376 B. The container had already exited0 when the
+user-stop request was inspected; no stop signal was sent.
+
+The reviewed selection partitions exactly into **192 earlier individually named
+passes** at source `28c74e00` and these **291 disjoint source297 results**, covering
+483 selected nodes. The two test modules and five declared format/reference/
+sampler/fixture source inputs match source297. The original interrupted whole
+run remains failed/incomplete; this is composite coverage, not a fresh single-run
+483-case pass or a broader all-format matrix claim. The receipt retains both
+XML files, the named-node partition and source-specific outcomes.

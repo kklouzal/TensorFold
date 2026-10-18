@@ -141,8 +141,8 @@ accepted lookups before closing its descriptors. The pinned
 `dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 checkpoint passed actual
 installed resident-expert, SSD, native-MTP, vision and four-request protocols at
 bd1 and AUTO source297. [Exact sources, images and limits](../gb10-nvfp4-validation.md)
-record the user-selected four-stream comparison and retain separate SM89 execution,
-full-context capacity and broader model quality.
+record the user-selected four-stream comparison. SM89 execution, full-context
+capacity and broader model quality remain unqualified by these GB10 checks.
 
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
 
