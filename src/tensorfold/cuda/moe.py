@@ -206,6 +206,9 @@ def swiglu_bf16(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     return torch.nn.functional.silu(gate) * up
 
 
+swiglu_bf16.activation = 0              # the fused native-A4 epilogue's SiLU (experts_a4.cu activate<0>)
+
+
 @dataclass
 class Routed:
     """A layer's router rows [E + 1, D] bf16 (the shared expert's gate row last) and its E + 1 experts."""

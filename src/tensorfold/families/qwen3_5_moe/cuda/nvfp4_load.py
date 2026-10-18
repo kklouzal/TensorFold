@@ -60,13 +60,14 @@ class NativeMoE:
         rows = x.shape[0]
         prefill = buf.plan.prefill
         if self.capturable:
-            from tensorfold.cuda.experts import TILE
+            from tensorfold.cuda.nvfp4.experts_a4 import plan_tile
 
             # Row-invariant split-K router GEMV, then the routed and shared
-            # picks grouped on the device. The bank computes the shared cell
-            # (id ``experts``) when it carries it, else skips it.
+            # picks grouped on the device (wide prompt plans in 64-pair items).
+            # The bank computes the shared cell (id ``experts``) when it carries
+            # it, else skips it.
             moe.route_logits(x, router_rows, buf.logits[:rows])
-            moe.select(buf.logits[:rows], buf, top_k, experts, TILE)
+            moe.select(buf.logits[:rows], buf, top_k, experts, plan_tile(rows * buf.slots, buf.plan.experts))
             bank.run_plan(x, buf, prefill=prefill)
             if self.shared is None:
                 return buf

@@ -22,6 +22,9 @@ def geglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     return F.gelu(gate, approximate="tanh") * up
 
 
+geglu.activation = 1                    # the fused native-A4 epilogue's tanh GELU (experts_a4.cu activate<1>)
+
+
 @triton.jit
 def _combine(Y, IDS, WEIGHTS, OUT, N: tl.constexpr, R: tl.constexpr, RS: tl.constexpr, BLOCK: tl.constexpr):
     row = tl.program_id(0)

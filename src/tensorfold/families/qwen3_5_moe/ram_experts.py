@@ -168,7 +168,7 @@ def _moe_buffers(rows, experts, slots, width, dims, prefill, *, planned=False):
     without importing Torch or a native extension during header admission.
     ``planned``: a resident native A4 bank consumes the grouped plan and
     retains ExpertsA4.run_plan's per-buffer scratch (pair codes/scales for two
-    projections, BF16 gate/up, down codes/scales) and its shared-input row plan.
+    projections, down codes/scales) and its shared-input row plan.
     Decode and prompt modes have separate retained keys, even when their row
     buckets coincide.
     """
@@ -183,7 +183,7 @@ def _moe_buffers(rows, experts, slots, width, dims, prefill, *, planned=False):
         total += 4 * (pairs if wide else 1)
         total += 4 * (((pairs + 1023) // 1024) * experts if wide else 1)
         if planned:
-            total += pairs * (dims + dims // 8 + 4 * width + width // 2 + width // 16) + 12 * bucket
+            total += pairs * (dims + dims // 8 + width // 2 + width // 16) + 12 * bucket
         bucket *= 2
     return total
 

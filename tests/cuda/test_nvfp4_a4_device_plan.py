@@ -205,3 +205,37 @@ def test_shared_expert_cell_matches_the_separate_shared_projections(prefill, row
         shared = torch.empty((rows, dims), dtype=torch.float32, device="cuda")
         partial(checkpoint.matmul, checkpoint.A4, lin=down, f32=True)(swiglu(gate(x), up(x)), out=shared)
     assert torch.equal(outputs[0][:, top_k], shared)
+
+
+def _route(buf, rows, tile):
+    from tensorfold.cuda import pdl
+    from tensorfold.cuda.experts import _ext as plan_ext
+
+    plan = buf.plan
+    plan.tile = tile
+    plan_ext().plan(buf.pick[:rows], rows * buf.slots, plan.experts, tile, plan.members, plan.items, plan.counts,
+                    plan.rank, plan.hist, pdl.ON)
+
+
+@pytest.mark.parametrize("activation", ["silu", "geglu"])
+@pytest.mark.parametrize("uniform", [False, True])
+@pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 7), (True, 3), (True, 40), (True, 300)])
+def test_16_and_64_pair_items_equal_the_host_window_path(activation, uniform, prefill, rows):
+    from tensorfold.families.gemma4.cuda.nvfp4_experts import geglu
+
+    count, width, dims, slots = 12, 192, 1024, 8          # decode gate/up: two K slices (split_k)
+    ctx = _context(count, width, dims, uniform=uniform)
+    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu if activation == "silu" else geglu)
+    x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(31 + rows)) * .4).to("cuda", torch.bfloat16)
+    picks = _picks(rows, slots, count, 41 + rows)
+    # Independent arithmetic route: host windows, per-warp GEMM, eager PyTorch activation, separate quantizer.
+    expected = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
+    for lo in range(0, rows, 16):
+        bank.run(x[lo:lo + 16], picks[lo:lo + 16], expected[lo:lo + 16], prefill=prefill)
+    for tile in (16, 64):
+        buf = PlanBuffers(rows + 5, slots, count, dims, "cuda", prefill=prefill)
+        buf.y.fill_(3.)
+        buf.pick[:rows].copy_(picks)
+        _route(buf, rows, tile)
+        bank.run_plan(x, buf, prefill=prefill)
+        assert torch.equal(buf.y[:rows], expected), tile

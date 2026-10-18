@@ -14,6 +14,9 @@ def swiglu(gate, up):
     return torch.nn.functional.silu(gate) * up
 
 
+swiglu.activation = 0       # the declared BF16 SiLU/product that native A4 device plans fuse
+
+
 class Context:
     def __init__(self, *, count=3, width=64, dims=128):
         self.cfg = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=2)

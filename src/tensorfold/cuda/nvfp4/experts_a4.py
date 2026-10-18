@@ -47,6 +47,12 @@ def _overlap(a, b):
     return a.device == b.device and left[0] < right[1] and right[0] < left[1]
 
 
+def plan_tile(pairs, experts):
+    """Device-plan items for ``pairs`` routed pairs over ``experts`` cells: 64 pairs once experts average 32 or more
+    (each expert's weights then stream once per 64 pairs), else 16. A pair's bits never depend on it."""
+    return 64 if pairs >= 32 * experts else 16
+
+
 def uniform_input_bits(calibrations):
     """Prove exact prepared gate/up FP32 equality over the complete CPU bank."""
     if (calibrations.device.type != "cpu" or calibrations.dtype != torch.float32 or calibrations.ndim != 2
@@ -107,22 +113,27 @@ class ExpertsA4:
         """Fill routed slots of ``buf.y[:rows]`` from the device plan ``buf.plan``.
 
         ``buf`` holds ``rows`` (capacity), ``slots``, ``pick`` [rows, slots]
-        INT32, a ``grouped.Plan`` routed over ``pick[:rows]`` with items of at
-        most16 pairs, and ``y`` [rows, slots, dims] (BF16 when ``prefill``,
-        else FP32). Plan items whose cell equals ``count`` (a resident shared
-        expert) are skipped; their slots are the caller's. Shape-only K slices:
-        SK1 for ``prefill``, else ``qmm.split_k``; a pair's bits never depend on
-        the other pairs, the plan's items or the row count. The first call per
-        buffer allocates and initializes retained scratch, so it must run eagerly
-        before any CUDA graph capture over ``buf``.
+        INT32, a ``grouped.Plan`` routed over ``pick[:rows]`` with items of 16
+        or 64 pairs (``plan_tile``), and ``y`` [rows, slots, dims] (BF16 when
+        ``prefill``, else FP32). Plan items whose cell equals ``count`` (a
+        resident shared expert) are skipped; their slots are the caller's.
+        Three launches: activation codes (one per row for a proven shared input
+        global), gate/up GEMMs + activation + down quantization (fused_up), and
+        the down GEMM; each streams an expert's weights once per item. Shape-only
+        K slices: SK1 for ``prefill``, else ``qmm.split_k``; a pair's bits never
+        depend on the other pairs, the plan's items or the row count. The first
+        call per buffer allocates and initializes retained scratch, so it must
+        run eagerly before any CUDA graph capture over ``buf``.
         """
-        from tensorfold.cuda.experts import TILE
         from tensorfold.cuda.kernels import qmm
 
         rows, slots = x.shape[0], buf.slots
         plan = buf.plan
-        if plan.tile != TILE:
-            raise ValueError("native A4 requires device-plan items of at most16 pairs")
+        if plan.tile not in (16, 64):
+            raise ValueError("native A4 requires device-plan items of 16 or 64 pairs")
+        activation = getattr(self.swiglu, "activation", None)
+        if activation not in (0, 1):
+            raise ValueError("native A4 device plans fuse a declared SiLU or tanh GELU activation")
         self._check(x, buf.pick[:rows], buf.y[:rows], prefill=prefill)
         # The buffer, not every expert bank, owns reusable shape-specific
         # storage. Allocate all retained tensors before publishing the tuple.
@@ -141,19 +152,11 @@ class ExpertsA4:
             with torch.inference_mode(False):
                 scratch = (torch.empty((2, pairs, self.dims // 2), dtype=torch.uint8, device=x.device),
                            torch.empty((2, pairs, self.dims // 16), dtype=torch.uint8, device=x.device),
-                           torch.empty((2, pairs, self.width), dtype=torch.bfloat16, device=x.device),
                            torch.empty((1, pairs, self.width // 2), dtype=torch.uint8, device=x.device),
                            torch.empty((1, pairs, self.width // 16), dtype=torch.uint8, device=x.device))
             held[key] = scratch
         pairs = rows * slots
-        dc, ds = (t[:, :pairs] for t in scratch[3:])
-        # Projection-major narrowing leaves non-contiguous outer strides when
-        # the live row count is smaller than the admitted buffer. Use a flat
-        # prefix reshaped to the actual plan; all backing remains buffer-owned.
-        gu = scratch[2].view(-1)[:2 * pairs * self.width].view(2, pairs, self.width)
-        # Shared/unused plan positions have no routed GEMM. Initialize before
-        # the eager activation consumes the complete tensor; routed rows overwrite it.
-        gu.zero_()
+        dc, ds = (t[:, :pairs] for t in scratch[2:])
         ext = _ext()
         fields, direct = self.fields, self.direct_input
         # Plan backing has conservative spare rows, but every live item owns
@@ -173,23 +176,21 @@ class ExpertsA4:
                 buf.a4_row_plan = row_plan
                 del indices, zero
             # Reuse the existing input backing; the shared representation is a
-            # smaller prefix. Mixed common/nonuniform layers remain bounded by
-            # the same one pair of admitted code/scale allocations.
+            # smaller prefix. Projection-major narrowing would leave non-contiguous
+            # outer strides, so both forms are flat prefixes reshaped to the plan.
             codes = scratch[0].view(-1)[:rows * (self.dims // 2)].view(1, rows, self.dims // 2)
             scales = scratch[1].view(-1)[:rows * (self.dims // 16)].view(1, rows, self.dims // 16)
             ext.quantize(x, row_plan[:rows], fields[4][:1, :1], codes, scales, False, direct)
         else:
             codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
             scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
-            ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False, direct)
-        ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
-                      gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False,
-                      common, direct)
-        hidden = self.swiglu(gu[0], gu[1])
-        ext.quantize_plan(hidden, items, plan.counts, members, fields[5], dc, ds, slots, True, direct)
-        ext.gemm_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members,
-                      buf.y[:rows], self.dims, self.width,
-                      1 if prefill else qmm.split_k(self.dims, self.width), slots, True, False, direct)
+            ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, direct, plan.tile)
+        ext.fused_up(codes, scales, fields[0], fields[2], fields[4], fields[5], items, plan.counts, members, dc, ds,
+                     self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, common, direct,
+                     plan.tile, activation)
+        ext.down_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members, buf.y[:rows],
+                      self.dims, self.width, 1 if prefill else qmm.split_k(self.dims, self.width), slots, direct,
+                      plan.tile)
 
     @contextmanager
     def lease(self, ids):
@@ -229,9 +230,14 @@ class PlanBuffers:
         self.y = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device=device)
 
     def route(self, rows):
-        from tensorfold.cuda.experts import TILE, route
+        """Group ``pick[:rows]`` into items of ``plan_tile`` pairs; a pair's bits never depend on the item size."""
+        from tensorfold.cuda import pdl
+        from tensorfold.cuda.experts import _ext
 
-        route(self.pick[:rows], self.plan, TILE)
+        plan = self.plan
+        plan.tile = plan_tile(rows * self.slots, plan.experts)
+        _ext().plan(self.pick[:rows], rows * self.slots, plan.experts, plan.tile, plan.members, plan.items,
+                    plan.counts, plan.rank, plan.hist, pdl.ON)
 
 
 class CachedExpertsA4(ExpertsA4):
