@@ -148,6 +148,7 @@ class FlashNextEngine:
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
+        a4_scalar_host = 0
         if modelopt:
             from tensorfold.cuda import precision
             from tensorfold.cuda.nvfp4.modelopt_layout import (
@@ -166,6 +167,16 @@ class FlashNextEngine:
                             prompt_rows=rows0 + (streams * each if streams > 1 else 0),
                             mtp_a4=any(bank.startswith("mtp.") for bank in a4_banks), cached=vram_experts is not None)
                             if a4_banks and expert_session is None else 0)
+            if a4_banks and expert_session is None:
+                from inspect import signature
+
+                from tensorfold.cuda.direct_read import ALIGN, ReadAhead
+                from tensorfold.cuda.nvfp4.modelopt_layout import scalar_prefetch_host_bytes
+
+                # _Reader constructs ReadAhead with its actual default. Resolve
+                # that same worker limit here without duplicating a literal.
+                a4_scalar_host = scalar_prefetch_host_bytes(text["num_experts"],
+                    workers=signature(ReadAhead).parameters["threads"].default, alignment=ALIGN)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
         graph_bytes = multi_graph_bytes() if streams > 1 and graphs and vram_experts is None else 0
@@ -274,6 +285,8 @@ class FlashNextEngine:
                 # staging. weights.load has a separate backbone Reader whose
                 # physical ring remains live beside those Session readers.
                 host_capacity["host_extra_staging"] = READER_HOST_RING_BYTES
+        if a4_scalar_host:
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + a4_scalar_host
         self._pin_future_bytes = 0
         if ram_layout is not None and vram_experts_pin != "off":
             from tensorfold.cuda.capacity import estimate_weights
@@ -284,7 +297,7 @@ class FlashNextEngine:
                     host_staging = weights.staging
                 else:
                     weights, host_staging = original_estimator(directory)
-                self._pin_future_bytes = host_staging
+                self._pin_future_bytes = host_staging + a4_scalar_host
                 return weights, host_staging
             numeric_capacity["weight_estimator"] = pin_forecast
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
@@ -311,6 +324,7 @@ class FlashNextEngine:
         if a4_banks:
             self.capacity_plan["modelopt_a4"] = {"banks": list(a4_banks), "workspace_bytes": a4_workspace,
                                                "input_scale": "direct-dequantization",
+                                               "prefetched_scalar_host_bytes": a4_scalar_host,
                                                "resident_loading_host_bytes": host_capacity.get("host_extra_staging", 0)}
         if expert_session is not None:
             self.capacity_plan["expert_math"] = expert_session.math_policy

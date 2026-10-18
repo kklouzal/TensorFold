@@ -81,6 +81,18 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     # NVFP4 names the language model ``model.language_model.*``; its lm_head and mtp sit at the top level
     mbase = "model.language_model." if rd.has("model.language_model.embed_tokens.weight") else "model."
     chosen = list(range(cfg.layers))
+    a4_modes = {}
+
+    def native_a4_bank(bank_prefix):
+        # Resolve the same complete declaration once, before queueing and again
+        # by lookup at bank construction. Only this load owns the reader/cache.
+        if bank_prefix not in a4_modes:
+            from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
+
+            bank_info = {key: rd.info(key) for key in rd.where if key.startswith(bank_prefix + ".experts.")}
+            a4_modes[bank_prefix] = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4,
+                                           checkpoint=precision.mode() == precision.CHECKPOINT)
+        return a4_modes[bank_prefix]
 
     def raw(name: str) -> torch.Tensor:
         return rd.get(prefix + name)
@@ -290,12 +302,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         router = torch.cat([router, sgate[None]]).contiguous()
         if expert_loader is not None:
             return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
-        from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
-
         bank_prefix = prefix + name
-        bank_info = {key: rd.info(key) for key in rd.where if key.startswith(bank_prefix + ".experts.")}
-        a4 = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4,
-                     checkpoint=precision.mode() == precision.CHECKPOINT)
+        a4 = native_a4_bank(bank_prefix)
         if expert_cache is not None:
             bank = nvfp4_moe.load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
                                  layer_id=next_expert_layer, native_a4=a4)
@@ -469,23 +477,43 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                  else triple("model.embed_tokens"))
         loaded = []
         ahead = rd.layer_names(prefix, mbase, chosen, mtp)   # read ahead of the layer that takes them
+        host_ahead = None
+        if native_a4 and expert_loader is None:
+            from tensorfold.cuda.nvfp4.modelopt_layout import a4_read_plan
+
+            # None marks an unprepared group. Resolve only the two groups
+            # entering lookahead, retaining metadata/I/O overlap across layers.
+            host_ahead = [None] * len(ahead)
         if expert_loader is not None:
             from tensorfold.cuda.expert_parallel import expert_tensor
             ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
         if expert_cache is not None:
             from ..ram_experts import expert_tensor
 
-            ahead = [[name for name in names if not expert_tensor(name)
-                      and not (cfg.quant == "modelopt" and ".mlp.experts." in name)] for names in ahead]
+            if host_ahead is None:
+                ahead = [[name for name in names if not expert_tensor(name)
+                          and not (cfg.quant == "modelopt" and ".mlp.experts." in name)] for names in ahead]
         layer_events: list = []                           # each layer's event, recorded once its work is queued
         for k, i in enumerate(chosen):
             if len(layer_events) >= 2:                    # at most two layers queued ahead of the GPU
                 layer_events.pop(0).synchronize()
-            for names in ahead[k:k + 2]:                  # two layers in flight: reads overlap this one's packing
-                rd.queue(names)
+            for j in range(k, min(k + 2, len(ahead))):     # two layers in flight: reads overlap this one's packing
+                if host_ahead is not None and host_ahead[j] is None:
+                    bank = (prefix + f"{mbase}layers.{chosen[j]}.mlp" if j < len(chosen)
+                            else prefix + "mtp.layers.0.mlp")
+                    banks = {bank} if native_a4_bank(bank) else set()
+                    ahead[j], host_ahead[j] = a4_read_plan(ahead[j], banks, full.experts)
+                    if expert_cache is not None:
+                        ahead[j] = [name for name in ahead[j] if not expert_tensor(name)
+                                    and not (cfg.quant == "modelopt" and ".mlp.experts." in name)]
+                rd.queue(ahead[j])
+                if host_ahead is not None and host_ahead[j]:
+                    rd.queue_host_scalars(host_ahead[j])
             loaded.append(layer(i, f"{mbase}layers.{i}", cfg.layer_types[i], True))
             layer_events.append(torch.cuda.current_stream().record_event())
             rd.drop(ahead[k])                             # what the layer never took
+            if host_ahead is not None and host_ahead[k]:
+                rd.drop(host_ahead[k])
             rd.release()
             if i % 8 == 7:                        # each release waits for the device; a layer leaves few temporaries
                 torch.cuda.empty_cache()
