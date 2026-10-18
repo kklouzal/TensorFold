@@ -502,7 +502,10 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                     bank = (prefix + f"{mbase}layers.{chosen[j]}.mlp" if j < len(chosen)
                             else prefix + "mtp.layers.0.mlp")
                     banks = {bank} if native_a4_bank(bank) else set()
-                    ahead[j], host_ahead[j] = a4_read_plan(ahead[j], banks, full.experts)
+                    if banks:
+                        ahead[j], host_ahead[j] = a4_read_plan(ahead[j], banks, full.experts)
+                    else:
+                        host_ahead[j] = []
                     if expert_cache is not None:
                         ahead[j] = [name for name in ahead[j] if not expert_tensor(name)
                                     and not (cfg.quant == "modelopt" and ".mlp.experts." in name)]
