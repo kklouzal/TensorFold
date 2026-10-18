@@ -515,27 +515,40 @@ def test_block_bootstrap_intervals_centre_on_the_mean_wherever_the_change_sits()
         kl.block_bootstrap(front[:, None], [0], block=0, resamples=10, seed=0)
 
 
-def test_golden_gate_passes_an_equal_error_change_and_fails_a_worse_one(tmp_path):
+def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_variants(tmp_path):
     np = pytest.importorskip("numpy")
     rng = np.random.default_rng(3)
-    golden = _log_softmax(np, rng.normal(0, 3, (600, 64)))
-    old = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
-    same = _log_softmax(np, golden + rng.normal(0, 0.3, golden.shape))
-    worse = _log_softmax(np, golden + rng.normal(0, 0.6, golden.shape))
+    golden = _log_softmax(np, rng.normal(0, 3, (3000, 64)))
+    old = golden + rng.normal(0, 0.3, golden.shape)
+
+    def near(base, scale):                       # a reorder-like perturbation of a build's log-probabilities
+        return _log_softmax(np, base + rng.normal(0, scale, base.shape))
+
     _dump(tmp_path / "golden.npz", golden, 16, golden=True)
-    for name, lp in (("old", old), ("same", same), ("worse", worse)):
+    rows = {"old": _log_softmax(np, old), "same": near(old, 0.02), "worse": near(old, 0.5),
+            **{f"reorder{i}": near(old, 0.05) for i in range(3)}}
+    for name, lp in rows.items():
         _dump(tmp_path / f"{name}.npz", lp, 16, reference=tmp_path / "golden.npz")
     _dump(tmp_path / "engine.npz", golden, 16)                      # an engine dump is no golden reference
-    _dump(tmp_path / "old-vs-engine.npz", old, 16, reference=tmp_path / "engine.npz")
+    _dump(tmp_path / "old-vs-engine.npz", rows["old"], 16, reference=tmp_path / "engine.npz")
     with pytest.raises(ValueError, match="not a campaign_golden reference"):
         kl.gate(str(tmp_path / "engine.npz"), str(tmp_path / "old-vs-engine.npz"), str(tmp_path / "old-vs-engine.npz"))
-    passed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "same.npz"),
-                     resamples=500)
-    failed = kl.gate(str(tmp_path / "golden.npz"), str(tmp_path / "old.npz"), str(tmp_path / "worse.npz"),
-                     resamples=500)
-    assert passed["status"] == "pass" and passed["kl_delta"]["ci95"][0] <= 0 <= passed["kl_delta"]["ci95"][1]
-    assert failed["status"] == "fail" and "kl" in failed["failed"] and failed["kl_delta"]["ci95"][0] > 0
-    assert failed["kl_new"]["mean"] > failed["kl_old"]["mean"] > 0
+    path = lambda name: str(tmp_path / f"{name}.npz")                          # noqa: E731
+    record = kl.calibrate(path("golden"), path("old"), {f"r{i}": path(f"reorder{i}") for i in range(3)},
+                          resamples=300)
+    deltas = [abs(v["kl_delta"]["mean"]) for v in record["variants"].values()]
+    assert record["delta_kl"] == max(deltas) > 0 and len(record["variants"]) == 3
+    assert kl.gate(path("golden"), path("old"), path("same"), resamples=300)["status"] == "uncalibrated"
+    passed = kl.gate(path("golden"), path("old"), path("same"), calibration=record, resamples=300)
+    failed = kl.gate(path("golden"), path("old"), path("worse"), calibration=record, resamples=300)
+    assert passed["status"] == "pass" and passed["kl_delta"]["ci95"][1] <= record["delta_kl"]
+    assert failed["status"] == "fail" and "kl" in failed["failed"]        # wholly beyond the margin at any width
+    assert failed["kl_delta"]["ci95"][0] > record["delta_kl"]
+    tight = dict(record, delta_kl=passed["ci_width"]["kl_delta"] / 2)         # margin narrower than the interval
+    narrow = kl.gate(path("golden"), path("old"), path("same"), calibration=tight, resamples=300)
+    assert narrow["status"] == "incomplete" and narrow["too_wide"] == ["kl"]
+    with pytest.raises(ValueError, match="does not match"):
+        kl.gate(path("golden"), path("old"), path("same"), calibration=dict(record, eval_sha256="x"), resamples=300)
 
 
 def test_golden_float32_layers_compute_in_float32_and_restore_weight_dtypes():

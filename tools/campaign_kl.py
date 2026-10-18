@@ -10,7 +10,8 @@ reference dump, the log-probabilities at the reference's top-K ids.
 
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
-  gate     GOLDEN.npz OLD.npz NEW.npz [--out RESULT.json]    (exit 1 on fail)
+  calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
+  gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]  (exit 1 fail, 3 incomplete)
 
 ``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
 prompts plus corpus-backed long ones) and each prompt's continuation sampled by this configuration (model-card
@@ -354,11 +355,9 @@ def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
     return sums[picks].sum(1) / sizes[picks].sum(1)[:, None]
 
 
-def gate(golden_path: str, old_path: str, new_path: str, *, block: int = 64, resamples: int = 4000,
-         seed: int = 0) -> dict:
-    """Golden-reference gate: KL(golden || new) against KL(golden || old) and golden top-1 agreement, paired per
-    position, with 95% circular-block bootstrap intervals. fail when the KL increase's interval lies above 0 or the
-    agreement change's interval lies below 0; otherwise pass (the intervals are the margins)."""
+def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamples: int, seed: int) -> dict:
+    """KL(golden || x) and golden top-1 agreement of OLD and NEW, their paired per-position differences and 95%
+    circular-block bootstrap intervals (dumps checked against the golden reference)."""
 
     import numpy as np
 
@@ -377,19 +376,73 @@ def gate(golden_path: str, old_path: str, new_path: str, *, block: int = 64, res
     names = ("kl_old", "kl_new", "kl_delta", "agreement_old", "agreement_new", "agreement_delta")
     stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
              for i, name in enumerate(names)}
-    kl_worse = stats["kl_delta"]["ci95"][0] > 0
-    agreement_worse = stats["agreement_delta"]["ci95"][1] < 0
-    return {"golden": golden_path, "old": old_path, "new": new_path, "positions": int(len(columns)),
-            "golden_source": golden_meta.get("source"), "old_source": old_meta.get("source_revision"),
+    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path), "old": old_path, "new": new_path,
+            "positions": int(len(columns)), "golden_source": golden_meta.get("source"),
+            "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
             "new_source": new_meta.get("source_revision"), **stats,
             "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
             "bootstrap": {"block": block, "resamples": resamples, "seed": seed, "numpy": np.__version__,
-                          "kind": "circular blocks within items, equal expected weight per position"},
-            "status": "fail" if kl_worse or agreement_worse else "pass",
-            "failed": [n for n, bad in (("kl", kl_worse), ("agreement", agreement_worse)) if bad],
-            "method": "KL(golden||x) on the golden top-K ids plus a merged tail bucket (lower bound to float32 "
-                      "rounding); paired per position; fail when the 95% interval of KL(golden||new) - "
-                      "KL(golden||old) lies above 0 or that of the top-1 agreement change lies below 0"}
+                          "kind": "circular blocks within items, equal expected weight per position"}}
+
+
+def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, block: int = 64,
+              resamples: int = 4000, seed: int = 0) -> dict:
+    """Non-inferiority margins from reorder-only variants (the same declared math, another summation order) of the
+    base build, each dumped against the golden reference: delta_kl / delta_agreement = the largest absolute mean
+    paired difference from the base among the variants. Every variant's differences and intervals are recorded."""
+
+    rows = {name: paired(golden_path, base_path, path, block=block, resamples=resamples, seed=seed)
+            for name, path in variants.items()}
+    if not rows:
+        raise ValueError("calibration needs at least one reorder-only variant")
+    first = next(iter(rows.values()))
+    return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
+            "golden_source": first["golden_source"], "base": base_path, "base_sha256": file_sha256(base_path),
+            "positions": first["positions"], "bootstrap": first["bootstrap"],
+            "delta_kl": max(abs(r["kl_delta"]["mean"]) for r in rows.values()),
+            "delta_agreement": max(abs(r["agreement_delta"]["mean"]) for r in rows.values()),
+            "variants": {name: {k: r[k] for k in ("new", "new_source", "kl_new", "kl_delta", "agreement_new",
+                                                   "agreement_delta")} for name, r in rows.items()},
+            "base_values": {k: first[k] for k in ("kl_old", "agreement_old")},
+            "method": "delta = max over reorder-only variants of |mean paired difference vs base| (KL(golden||x) "
+                      "and golden top-1 agreement); a change indistinguishable from pure reordering passes"}
+
+
+def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | None = None, block: int = 64,
+         resamples: int = 4000, seed: int = 0) -> dict:
+    """Golden-reference non-inferiority gate. With the model's calibration record (margins delta_kl and
+    delta_agreement from reorder-only variants): fail when an interval lies wholly beyond its margin; otherwise
+    incomplete when an interval is wider than its margin (insufficient sensitivity: add positions); otherwise pass iff
+    the upper 95% bound of KL(golden||new) - KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement
+    change >= -delta_agreement, fail if not. Without a calibration the status is "uncalibrated" (intervals reported,
+    no verdict)."""
+
+    result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
+    kl_low, kl_high = result["kl_delta"]["ci95"]
+    agree_low, agree_high = result["agreement_delta"]["ci95"]
+    result["ci_width"] = {"kl_delta": kl_high - kl_low, "agreement_delta": agree_high - agree_low}
+    if calibration is None:
+        result.update(status="uncalibrated", margins=None)
+        return result
+    for key in ("golden_sha256", "eval_sha256"):
+        if calibration[key] != result[key]:
+            raise ValueError(f"calibration {key} does not match this gate's golden reference")
+    delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
+    result["margins"] = {"delta_kl": delta_kl, "delta_agreement": delta_agree,
+                         "calibration_base": calibration["base"], "variants": sorted(calibration["variants"])}
+    wide = [n for n, width, margin in (("kl", result["ci_width"]["kl_delta"], delta_kl),
+                                       ("agreement", result["ci_width"]["agreement_delta"], delta_agree))
+            if width > margin]
+    # worse beyond the margin with the whole interval: a failure at any width
+    clear = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agree)) if bad]
+    failed = clear or [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agree)) if bad]
+    status = "fail" if clear else "incomplete" if wide else "fail" if failed else "pass"
+    result.update(status=status, too_wide=wide, failed=failed if status == "fail" else [],
+                  method="non-inferiority against the golden reference: fail when an interval lies wholly beyond "
+                         "its margin; otherwise incomplete when an interval is wider than its margin; otherwise pass "
+                         "iff upper 95% bound of KL(golden||new) - KL(golden||old) <= delta_kl and lower bound of the "
+                         "top-1 agreement change >= -delta_agreement (margins from reorder-only variants)")
+    return result
 
 
 def main() -> int:
@@ -416,10 +469,16 @@ def main() -> int:
     g.add_argument("golden")
     g.add_argument("old")
     g.add_argument("new")
-    g.add_argument("--block", type=int, default=64, help="bootstrap block length in positions")
-    g.add_argument("--resamples", type=int, default=4000)
-    g.add_argument("--seed", type=int, default=0)
-    g.add_argument("--out")
+    g.add_argument("--calibration", help="the model's calibration record (margins); without it: uncalibrated")
+    k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
+    k.add_argument("golden")
+    k.add_argument("base")
+    k.add_argument("variants", nargs="+", help="NAME=DUMP of reorder-only variants (dumped with --reference GOLDEN)")
+    for parser in (g, k):
+        parser.add_argument("--block", type=int, default=64, help="bootstrap block length in positions")
+        parser.add_argument("--resamples", type=int, default=4000)
+        parser.add_argument("--seed", type=int, default=0)
+        parser.add_argument("--out")
     args = ap.parse_args()
     if args.command == "dump":
         if args.serve and args.serve[0] == "--":
@@ -431,14 +490,21 @@ def main() -> int:
                          else {})
         with_app(args.serve, args.port, lambda app: dump(app, args))
     else:
-        result = (compare(args.reference, args.candidate) if args.command == "compare" else
-                  gate(args.golden, args.old, args.new, block=args.block, resamples=args.resamples, seed=args.seed))
+        boot = {} if args.command == "compare" else {"block": args.block, "resamples": args.resamples,
+                                                       "seed": args.seed}
+        if args.command == "compare":
+            result = compare(args.reference, args.candidate)
+        elif args.command == "calibrate":
+            result = calibrate(args.golden, args.base, dict(v.split("=", 1) for v in args.variants), **boot)
+        else:
+            record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
+            result = gate(args.golden, args.old, args.new, calibration=record, **boot)
         text = json.dumps(result, indent=1)
         if args.out:
             Path(args.out).write_text(text + "\n")
         print(text)
         if args.command == "gate":
-            return 1 if result["status"] == "fail" else 0
+            return {"fail": 1, "incomplete": 3}.get(result["status"], 0)
     return 0
 
 
