@@ -89,10 +89,17 @@ class MoEA4:
     def run_picks(self, x, picks, out, *, prefill):
         # EP's owner already maps global picks to local IDs or -1. Native A4
         # writes complete unweighted slots and preserves every original slot.
+        if self.slots is not None and (picks.ndim != 2 or picks.shape[1] != self.slots):
+            raise ValueError("NVFP4 local picks must use the configured routed/shared slot count")
         if self.routed_experts is None:
+            snapshot = picks.cpu()
+            if bool(((snapshot < -1) | (snapshot >= self.count)).any()):
+                raise ValueError("native A4 local picks contain an out-of-range expert")
             out.zero_()
         else:
-            self.routed_experts.run(x, picks, out, prefill=prefill)
+            # Reuse the grouped operator's one existing CPU snapshot; no second
+            # GPU readback is needed to preserve the local wire refusal policy.
+            self.routed_experts.run(x, picks, out, prefill=prefill, maximum_id=self.count - 1)
         if self.shared is not None:
             pairs = torch.nonzero(picks == self.routed, as_tuple=False)
             if pairs.numel():
