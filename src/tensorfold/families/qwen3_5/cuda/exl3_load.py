@@ -103,7 +103,7 @@ PLANS: dict[tuple[float, int, int], tuple[int, int]] = {
 }
 
 
-def load_exl3(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None):
+def load_exl3(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, rope=None):
     """An EXL3 pack: the model's groups as ``Exl3``, its unquantized tensors as stored; vision tower and MTP skipped."""
 
     from tensorfold.cuda.exl3 import format as fmt
@@ -112,7 +112,7 @@ def load_exl3(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None
     from .weights import GDN, Attention, Config, Layer, Plain, Weights, _close_failed_checkpoint, _rotary_frequencies
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+    cfg = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     ckpt = fmt.scan(model_dir, read_markers=False)
     prefix = "model.language_model."
 
@@ -249,9 +249,14 @@ def _storage_estimate(header, text, parse_group, itemsize, original_host_staging
     norm_temp = max((max(8, itemsize(info, name) + 4) * math.prod(info["shape"])
                      for name, info in plain.items() if name.endswith("norm.weight")), default=0)
     head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
-    from ..config_metadata import resolve_default_rope
+    from ..config_metadata import declares_yarn, resolve_default_rope
 
-    rope_dims = resolve_default_rope(text, head_dim=head_dim).rotary_dim
+    if declares_yarn(text):
+        from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+        rope_dims = RopeParameters.from_config(text).rotary_dim
+    else:
+        rope_dims = resolve_default_rope(text, head_dim=head_dim).rotary_dim
     inv_freq = rope_dims // 2 * 4
     subset = head_ids = head_columns = subset_counters = subset_temporary = 0
     if with_drafter:

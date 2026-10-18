@@ -30,8 +30,10 @@ class Qwen27Engine:
                  tp_draft: bool = False, allow_copy: bool = True, streams: int = 1,
                  context: int | None = None, context_explicit: bool | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, tree_rows: int | None = None,
-                 keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
+                 keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 yarn_factor: float | None = None):
         from tensorfold.cuda.chat_template import prepare_chat_template
+        from tensorfold.families.qwen3_5 import rope_parameters
 
         self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
         keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
@@ -51,6 +53,8 @@ class Qwen27Engine:
         if nvfp4 and vision:
             raise ValueError("image input on CUDA is tested on the MLX checkpoint only: drop --vision for an NVFP4 "
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
+        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = self.rope if self.rope.rope_type == "yarn" else None
         from .weights import load
         from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
@@ -73,14 +77,16 @@ class Qwen27Engine:
             # both ranks must run the same calls: refuse to start when they were given different settings
             flags = torch.tensor([int(draft_dir is not None and tp_draft), max_rows, int(split_head), int(allow_copy),
                                   streams, -1 if context is None else int(context), int(bool(context_explicit)),
-                                  int(vision), keep, int(prompt_precision.fp8())],      # precision last (same_on_ranks)
+                                  int(vision), keep, round(1e6 * (yarn.factor if yarn else 0)),
+                                  int(prompt_precision.fp8())],      # precision last (same_on_ranks)
                                  dtype=torch.int64, device="cuda")
             both = torch.empty((2, flags.numel()), dtype=torch.int64, device="cuda")
             dist.all_gather_into_tensor(both, flags)
             prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
             if not torch.equal(both[0], both[1]):
                 raise RuntimeError("the two ranks were started with different settings (two-rank drafter, rows, "
-                                   f"head split, copies, --parallel, --context, --checkpoint-slots): rank 0 "
+                                   f"head split, copies, --parallel, --context, --checkpoint-slots, --yarn-factor): "
+                                   "rank 0 "
                                    f"{both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on both "
                                    "machines, and pass the same --no-drafts, --parallel, --context and "
                                    "--checkpoint-slots to both")
@@ -119,16 +125,21 @@ class Qwen27Engine:
                                    draft_geometry=lambda text: draft_geometry(text, tp if tp_draft else 1, max_rows,
                                                                               bounded=True, streams=streams,
                                                                               kept=keep + 1 if many else 0),
-                                   startup_copies=int(tp == 2))
+                                   startup_copies=int(tp == 2),
+                                   **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
+                                      if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
+        bindings = {**({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
+                    **({"rope": yarn} if yarn is not None else {})}
         if tp == 2:
-            full = load(model_dir, prefill_world=tp,
-                        **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+            full = load(model_dir, prefill_world=tp, **bindings)
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)
         else:
-            full = load(model_dir, tiled=True,
-                        **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+            full = load(model_dir, tiled=True, **bindings)
             self.w = full
+        if yarn is not None and rank == 0:
+            print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
+                  f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)
         if tp == 2:
             from tensorfold.cuda.comm import agree_eos
 

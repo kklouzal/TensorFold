@@ -117,14 +117,27 @@ def test_redundant_modern_legacy_policies_must_have_identical_effective_math():
         resolve_default_rope(text, head_dim=256)
 
 
-@pytest.mark.parametrize("kind", ["linear", "dynamic", "yarn", "longrope", "llama3", None, False])
+@pytest.mark.parametrize("kind", ["linear", "dynamic", "longrope", "llama3", None, False])
 @pytest.mark.parametrize("field", ["rope_parameters", "rope_scaling"])
-def test_nondefault_algorithms_are_refused_before_any_model_execution(kind, field):
+def test_unsupported_algorithms_are_refused_before_any_model_execution(kind, field):
     text = {field: {"rope_type": kind}}
-    with pytest.raises(ValueError, match="default text RoPE only"):
+    with pytest.raises(ValueError, match="default or static YaRN text RoPE"):
         resolve_default_rope(text, head_dim=256)
     # Format probes without dimensions must still reject unsupported math.
-    with pytest.raises(ValueError, match="default text RoPE only"):
+    with pytest.raises(ValueError, match="default or static YaRN text RoPE"):
+        validate_cuda_metadata({"text_config": text})
+
+
+def test_declared_static_yarn_is_validated_as_yarn():
+    text = {"hidden_size": 5120, "num_attention_heads": 24, "head_dim": 256, "max_position_embeddings": 1048576,
+            "rope_parameters": {"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 262144,
+                                "rope_theta": 10000000, "partial_rotary_factor": 0.25, "mrope_section": [11, 11, 10],
+                                "mrope_interleaved": True}}
+    validate_cuda_metadata({"text_config": text})
+    with pytest.raises(ValueError, match="RopeParameters"):
+        resolve_default_rope(text, head_dim=256)
+    text["rope_parameters"]["factor"] = 0.5
+    with pytest.raises(ValueError, match="factor"):
         validate_cuda_metadata({"text_config": text})
 
 

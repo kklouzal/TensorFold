@@ -215,7 +215,7 @@ def test_cli_refuses_yarn_on_unsupported_backend_or_family_before_load(backend, 
     args = cli.build_parser().parse_args(["serve", "placeholder", "--yarn-factor", "2"])
     family = SimpleNamespace(package=SimpleNamespace(rope_parameters=lambda *a: pytest.fail("unsupported load"))
                              if package else SimpleNamespace())
-    with pytest.raises(ValueError, match="Flash Next on CUDA only"):
+    with pytest.raises(ValueError, match="Flash Next and Qwen3.8 dense on CUDA only"):
         check(args, family, backend)
 
 

@@ -131,7 +131,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         check_ram(config_dir, ram, tp=getattr(args, "tp", 1))
     if getattr(args, "yarn_factor", None) is not None:
         if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
-            raise ValueError("--yarn-factor is supported by Flash Next on CUDA only")
+            raise ValueError("--yarn-factor is supported by Flash Next and Qwen3.8 dense on CUDA only")
         family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")
