@@ -463,8 +463,38 @@ def test_fp8_expert_refusals(tmp_path: Path, monkeypatch, case: str) -> None:
     match = {"main_gate": "FP8 routed experts", "main_up": "FP8 is read only in MTP",
              "scale_shape": "one float per tensor or output row", "scale_bytes": "one float per tensor or output row",
              "mixed_dtype": "expected FP8 e4m3 MTP expert weights", "missing_scale": "need a tensor, row"}
-    with pytest.raises(ValueError, match=match[case]):
+    # These messages belong to the weight-only reader/packing contract. Native
+    # checkpoint A4 reads routed payloads through get_rows instead of get.
+    with precision.using(precision.FULL, asked=True), pytest.raises(ValueError, match=match[case]):
         load(path, mtp=True, draft_vocab=128)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12,
+                    reason="native checkpoint A4 requires an SM12 CUDA GPU")
+@pytest.mark.parametrize("expert, projection", [(0, "gate_proj"), (1, "up_proj")])
+def test_native_a4_refuses_fp8_routed_payload(tmp_path: Path, monkeypatch, expert: int, projection: str) -> None:
+    """Inject the actual native reader boundary; a valid U8 header cannot authorize FP8 payload."""
+
+    from tensorfold.families.qwen4_exp.cuda.reader import _Reader
+    from tensorfold.families.qwen4_exp.cuda.weights import load
+
+    path = write(tmp_path / projection, hidden=512, mtp_experts="fp8")
+    target = f"model.layers.0.mlp.experts.{expert}.{projection}.weight"
+    get_rows = _Reader.get_rows
+    injected = []
+
+    def altered(self, name, lo, hi, device="cpu"):
+        value = get_rows(self, name, lo, hi, device=device)
+        if name == target:
+            injected.append(name)
+            return value.to(torch.float8_e4m3fn)
+        return value
+
+    monkeypatch.setattr(_Reader, "get_rows", altered)
+    with (precision.using(precision.CHECKPOINT, asked=True),
+          pytest.raises(ValueError, match="device A4 packing requires CUDA U8 codes and E4M3 scales")):
+        load(path, mtp=True, draft_vocab=128)
+    assert injected == [target]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the loader builds CUDA tensors")
