@@ -171,7 +171,8 @@ def test_real_cache_registration_admits_only_the_two_exact_complete_layouts():
 @pytest.mark.parametrize("policies,native,reason", [
     ([["checkpoint", True], ["checkpoint", True]], True, "all-native"),
     ([["checkpoint", True], ["checkpoint", False]], False, "mixed-capability-full"),
-    ([["full", True], ["full", False]], False, "explicit-full")])
+    ([["full", True], ["full", False]], False, "explicit-full"),
+    ([["checkpoint", False]], False, "non-native-full")])
 def test_expert_group_resolves_one_uniform_math_before_layout(policies, native, reason):
     from tensorfold.cuda.nvfp4.modelopt_layout import expert_group_policy
     assert expert_group_policy(policies) == (native, reason)

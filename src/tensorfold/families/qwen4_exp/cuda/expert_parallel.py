@@ -98,6 +98,8 @@ class Session:
             raise ValueError("expert parallelism supports affine4 and NVFP4 Flash Next checkpoints")
         if budget is None:
             raise ValueError("expert parallelism requires --vram-experts GIB|auto on each rank")
+        if pin_mode not in ("off", "auto", "on"):
+            raise ValueError("expert pin mode must be off, auto or on")
         torch.cuda.set_device(0)
         self.torch = torch
         self.slots, self.dims = self.cfg.top_k + 1, self.cfg.hidden
@@ -123,8 +125,6 @@ class Session:
             # their disjoint authorities. Per-rank admission alone races this bound.
             self.group_host_bytes = base.host_bytes + ranks * (base.staging_bytes + base.loading_bytes
                 + base.metadata_host_bytes + base.control_host_bytes + (4 << 20))
-            if pin_mode not in ("off", "auto", "on"):
-                raise ValueError("expert pin mode must be off, auto or on")
             from tensorfold.cuda.expert_pin import backing_bytes
 
             from ..expert_authority import allocations
