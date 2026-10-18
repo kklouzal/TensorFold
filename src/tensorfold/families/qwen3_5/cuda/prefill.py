@@ -38,7 +38,7 @@ def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
 
 
 def _mm_group(x, ws: list) -> list[torch.Tensor]:
-    """Projections of one input: checkpoint-math ones under one input scale quantize the rows once (same bits)."""
+    """Projections of one input: checkpoint-math ones quantized alike quantize the rows once (same bits)."""
 
     shared = [i for i, w in enumerate(ws) if checkpoint_native(w)] if torch.is_tensor(x) else []
     got = {}

@@ -139,7 +139,6 @@ def _block(value, where):
     if method == "modelopt" and algo is not None:
         if not isinstance(algo, str) or not algo:
             raise ValueError(f"{where}: quant_algo must be a nonempty string")
-        layers = None
         if algo == "MIXED_PRECISION":
             layers = _object(result.get("quantized_layers"), f"{where}.quantized_layers")
             generated = {}
@@ -151,9 +150,6 @@ def _block(value, where):
                                                          f"{where}.{name}"), targets=[name])
         else:
             generated = {"group_0": dict(_algorithm(algo, result.get("group_size"), where), targets=["Linear"])}
-        if groups:
-            result["config_groups"] = {name: _per_token(group, algo, layers)
-                                       for name, group in result["config_groups"].items()}
         if not groups:
             result["config_groups"] = generated
         elif algo != "MIXED_PRECISION":
@@ -161,10 +157,13 @@ def _block(value, where):
             # can complement it. An explicit null is retained and conflicts
             # with an algorithm that declares activation quantization.
             expected = _algorithm(algo, result.get("group_size"), where)
-            result["config_groups"] = {name: _merge(expected, group, f"{where}.{name}")
+            result["config_groups"] = {name: _merge(expected, _per_token(group, algo, None), f"{where}.{name}")
                                        for name, group in result["config_groups"].items()}
-        # Mixed groups retain their own declarations. The prepared resolver
-        # cross-checks their per-layer algorithm records.
+        else:
+            # Mixed groups retain their own declarations. The prepared resolver
+            # cross-checks their per-layer algorithm records.
+            result["config_groups"] = {name: _per_token(group, algo, layers)
+                                       for name, group in result["config_groups"].items()}
     return result
 
 
