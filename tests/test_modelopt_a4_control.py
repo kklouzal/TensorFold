@@ -72,6 +72,8 @@ def test_actual_projection_workspace_counts_every_live_payload_and_temporary():
 
 def test_host_authority_preserves_all_original_direct_scalars_and_payloads():
     torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("GPU-assisted loader byte packing requires CUDA; metadata/rollback controls remain CPU")
     from modelopt_a4_inputs import Reader
 
     from tensorfold.cuda.nvfp4.experts_a4 import pack_projection_a4
