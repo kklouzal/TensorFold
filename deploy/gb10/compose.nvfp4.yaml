@@ -60,7 +60,7 @@ services:
     restart: unless-stopped
     ulimits:
       memlock: -1
-      stack: 67108864
+      stack: -1
       nofile: 1048576
     logging:
       driver: local
