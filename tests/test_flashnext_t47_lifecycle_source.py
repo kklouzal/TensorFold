@@ -148,7 +148,7 @@ class Controls(unittest.TestCase):
                     'tensorfold.cuda.capacity': NS(admit=admitted, config=lambda *args: text, gather_ints=lambda *args: None),
                     'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda: 16,
                         gdn_geometry=lambda *args, **kwargs: None, indexed_stream_geometry=lambda *args, **kwargs: None,
-                        indexed_weights=lambda *args, **kwargs: None, multi_graph_bytes=lambda: 0),
+                        indexed_weights=lambda *args, **kwargs: None, multi_graph_request=lambda: 0),
                     'tensorfold.cuda.comm': NS(open_comm=open_comm),
                     'tensorfold.vision.qwen_cuda': NS(capacity_geometry=lambda value, *args: value,
                         weight_transform=lambda value, *args: value),

@@ -123,7 +123,7 @@ class FlashNextEngine:
         from .weights import draft_token_ids, load
         from tensorfold.cuda.capacity import admit, config, gather_ints
         from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
-                                              indexed_stream_geometry, indexed_weights, multi_graph_bytes)
+                                              indexed_stream_geometry, indexed_weights, multi_graph_request)
         chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
         text = config(model_dir)
         ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if int(depth) > 0 else None
@@ -168,7 +168,8 @@ class FlashNextEngine:
                             if a4_banks and expert_session is None else 0)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
-        graph_bytes = multi_graph_bytes() if streams > 1 and graphs and vram_experts is None else 0
+        graph_request = multi_graph_request() if streams > 1 and graphs else 0
+        graph_bytes = (graph_request or 0) if vram_experts is None else 0
         geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, points=POINTS,
                                                           kv_pair=kv_geometry, graph_bytes=graph_bytes,
                                                           prefill_rows=rows0, kv_status=kv_status))
@@ -412,7 +413,10 @@ class FlashNextEngine:
                                       confidence=self.confidence, keep=KEEP, points=self.points,
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
-                                      graphs=graphs)
+                                      graphs=graphs, graph_budget=graph_request,
+                                      graph_header_room=max(0, self.capacity_plan["budget_bytes"]
+                                                            - self.capacity_plan["serving_peak_bytes_estimate"]),
+                                      vision_workspace_bytes=workspace)
             if self.multi.graph_budget != graph_bytes:   # admission planned exactly what the decoder may capture
                 raise RuntimeError(f"the startup plan reserved {graph_bytes} bytes for captured rounds, but the "
                                    f"decoder's budget is {self.multi.graph_budget} "
@@ -478,6 +482,13 @@ class FlashNextEngine:
         started = time.perf_counter()
         if self.concurrent:
             self.multi.warm()                            # and captures its rounds' graphs
+            if graph_request is None:
+                from .service_memory import reserve_graph_plan
+
+                graph_bytes = self.multi.graph_budget
+                reserve_graph_plan(self.capacity_plan, graph_bytes)
+            if self.multi.graph_budget != graph_bytes or self.capacity_plan["total_bytes_estimate"] > self.capacity_plan["budget_bytes"]:
+                raise RuntimeError("resolved captured-round budget differs from its admitted service plan")
             self.capacity_plan["multi_graphs"] = {"planned_bytes": graph_bytes, **self.multi.graph_record}
         else:
             from .decode import warm
@@ -501,6 +512,8 @@ class FlashNextEngine:
             graphs_note = (f"{record['verify_keys']} verify and {record['mtp_keys']} MTP step graphs captured "
                            f"({record['bytes'] / 2**20:.0f} MiB of {record['budget_bytes'] / 2**20:.0f}, "
                            f"{record['capture_s']:.1f}s)" if record["captured"] else f"eager ({record['reason']})")
+            if record.get("stopped"):
+                graphs_note += f"; capture stopped: {record['stopped']}"
         where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
                  f"lasts ({self.multi.memory_gate.room / 2**30:.1f} GiB free for their caches, "
                  f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), {graphs_note}"
@@ -599,20 +612,18 @@ class FlashNextEngine:
         headroom = self.expert_headroom_bytes
         decoder = self.multi if streams > 1 else self.e
         states = self.multi.free if streams > 1 else [self.e.st, self.serial.st]
-        state = states[0]
         each = [st.cache_bytes(st.limit) - st.cache_bytes() for st in states]
         full_growth = sum(each)
         growth, windows = reserved_growth(each, self.kv_full_windows)
-        overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth else 0
-        wide = self.w.cfg.streams * self.w.cfg.hidden
-        snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
-        snapshot += state.ple_tail.numel() * state.ple_tail.element_size()
-        snapshot += wide * 2 if self.w.mtp is not None else 0
         # kept states, plus the POINTS (CUTS inside a piece, one at its end) a filling stream's pass copies out first
         retained = (self.multi.keep + streams * POINTS) if streams > 1 else KEEP_SERIAL + 1
-        snapshots = retained * snapshot
-        # Heads (fp32 logits) and final hidden rows (bf16) are cloned once for each filling stream.
-        transient = streams * (self.w.head.n * 4 + wide * 2) + vision_workspace_bytes
+        from .service_memory import future_service
+
+        service = future_service(self.w, states, streams=streams, retained=retained, growth_bytes=growth,
+                                 vision_workspace_bytes=vision_workspace_bytes)
+        overlap = service["copy_overlap_bytes"]
+        snapshot, snapshots = service["snapshot_bytes_each"], service["snapshot_bytes"]
+        transient = service["transient_bytes"]
         if self.w.x3 is not None:
             from .exl3_mm import X3
 

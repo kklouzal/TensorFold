@@ -11,7 +11,8 @@ path for the same key, so their bits are its bits.
 Pieces of every key share one private memory pool (``torch.cuda.graph_pool_handle``): a round replays one key's
 pieces in order and no piece's pool memory outlives it as an output (outputs are the static buffers). Keys are
 captured in order of expected use (fewer streams first) while their measured memory stays within the budget
-(``TENSORFOLD_MULTI_GRAPH_MIB``, counted in the startup memory plan); the rest run eagerly. A key's memory is the
+(``TENSORFOLD_MULTI_GRAPH_MIB`` or the remaining automatic service allowance, recorded in startup admission);
+the rest run eagerly with a recorded reason. A key's memory is the
 drop of free memory across its capture alone (its pool blocks and driver graph memory), measured after its eager
 warm-up's own allocator blocks are in place; the stream caches' room loses the larger of the kept keys' sum and the
 whole capture's settled drop. Rounds with a prompt pass, image rows or the lookup decoder, and steps whose key was
@@ -29,11 +30,12 @@ import torch
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda import pdl
 # re-exported for the decoder (multi.py): the captured rounds' budget, geometry's variable and parser (one source)
-from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_bytes as budget_bytes  # noqa: F401
+from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_request as budget_bytes  # noqa: F401
 
 from . import attn_multi, gdn_multi
 from .forward import _kv_begin, _kv_check, compute, ple_conv_streams, stage, stage_late
 from .mtp import mtp_compute, mtp_stage
+from .service_memory import private_pool_spare
 
 MIB = 1 << 20
 
@@ -46,6 +48,28 @@ def free_bytes() -> int:
 
     room = page_room(torch)
     return int(room) if room is not None else int(torch.cuda.mem_get_info()[0])
+
+
+def prepare_capture() -> None:
+    """Return ordinary warmup cache before choosing physical room; private graph cache is never credited."""
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def live_bytes() -> int:
+    from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
+
+    room = int(available_bytes(torch))
+    limit = cuda_limit_bytes()
+    return max(0, min(room, limit - int(torch.cuda.memory_allocated()))) if limit is not None else room
+
+
+def service_live_bytes(pool):
+    from tensorfold.cuda.capacity import available_bytes
+    from tensorfold.cuda.memory_gate import torch_live
+
+    return torch_live(torch, available_bytes, unavailable_spare_bytes=pool.private_spare_bytes, owner=pool)
 
 
 def capturable(w) -> str | None:
@@ -74,8 +98,9 @@ class Pieces:
 class RoundGraphs:
     """A ``MultiDecoder``'s captured verify forwards and MTP steps (``capture`` at its warm-up, before any request)."""
 
-    def __init__(self, dec, budget: int) -> None:
+    def __init__(self, dec, budget: int, *, spare=None) -> None:
         self.dec, self.budget = dec, int(budget)
+        self.spare = spare                              # live bytes after required future service, preparation only
         self.pool = torch.cuda.graph_pool_handle()
         self.side = torch.cuda.Stream()
         self.verify: dict[tuple[bool, int, int, int], Pieces] = {}    # (PDL, streams, rows, DeltaNet parity)
@@ -86,6 +111,10 @@ class RoundGraphs:
         self.capture_s = 0.0
         self.measured: list[dict] = []                   # per key: raw bytes (< 0: outside noise), pieces, seconds
         self.stopped: str | None = None                  # why capture stopped before the last key (the budget)
+        self.rejected: dict | None = None                # the attempted key, including its raw memory observation
+        self.private_spare_bytes = 0
+        self.allocator_record: dict = {}
+        self.admitted = False
 
     # -- replay ------------------------------------------------------------------------------------------------
     def verify_forward(self, segs) -> torch.Tensor | None:
@@ -166,7 +195,7 @@ class RoundGraphs:
             b.split = None
         return pieces
 
-    def capture(self) -> None:
+    def capture(self, *, prepared: bool = False) -> None:
         """Capture every key in order (streams 1, 2, ...: verify at both parities, then the MTP step) on the free
         slots while the kept keys' measured memory stays within the budget; a key past it is dropped and capture
         stops. A key is measured across its capture alone (``free_bytes`` after its eager warm-up's allocator blocks,
@@ -180,11 +209,11 @@ class RoundGraphs:
 
         dec = self.dec
         states = list(dec.free)
+        cleanup_errors = [None]
         parity, launch = dec.gdn.parity, pdl.ON
         started = time.perf_counter()
-        torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
+        if not prepared:
+            prepare_capture()
         before = free_bytes()
         enabled = gc.isenabled()
         gc.disable()                                     # collecting a graph's exec invalidates an active capture
@@ -209,14 +238,40 @@ class RoundGraphs:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()                     # a dropped key's exec and the warm-ups' blocks back
             self.settled_bytes = before - free_bytes()
+            self.room_bytes = max(self.bytes, self.settled_bytes)
+            self.capture_s = time.perf_counter() - started
+            self._account_pool()
+            if self.room_bytes > self.budget:
+                raise MemoryError(f"captured rounds retain {self.room_bytes} bytes beyond their {self.budget}-byte "
+                                  "admitted budget after settlement")
+            if self.spare is not None and self.spare() < 0:
+                raise MemoryError("captured rounds cannot retain the required native window and service workspace; "
+                                  "live memory changed during capture")
+            self.admitted = True
         except BaseException as error:
             if primary is None:
                 raise
-            raise_failures(primary, [error])
+            cleanup_errors[0] = error
+            raise_failures(primary, cleanup_errors)
         if primary is not None:
             raise_failures(primary, [])
-        self.room_bytes = max(self.bytes, self.settled_bytes)
-        self.capture_s = time.perf_counter() - started
+
+    def _account_pool(self) -> None:
+        try:
+            segments = torch.cuda.memory_snapshot(mempool_id=self.pool, include_traces=False)
+            self.private_spare_bytes = private_pool_spare(segments, self.pool, self.dec.w.device.index or 0)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise MemoryError("captured-round private allocator storage cannot be accounted for") from error
+        self.allocator_record = {"physical_free_bytes": free_bytes(), "available_after_floor_bytes": live_bytes(),
+                                 "reserved_bytes": int(torch.cuda.memory_reserved()),
+                                 "allocated_bytes": int(torch.cuda.memory_allocated()),
+                                 "private_pool_spare_bytes": self.private_spare_bytes}
+
+    def _has_room(self) -> bool:
+        if self.spare is not None and self.spare() <= 0:
+            self.stopped = "live memory has no room after the required native window and service workspace"
+            return False
+        return True
 
     def _keys(self, states) -> None:
         dec = self.dec
@@ -226,8 +281,12 @@ class RoundGraphs:
             for rows in range(n, n * width + 1):
                 keys = [("verify", rows, p) for p in (0, 1)] + ([("mtp", rows, 0)] if dec.mbuf is not None else [])
                 for kind, R, p in keys:
+                    if not self._has_room():
+                        return
                     t0 = time.perf_counter()
                     run, b = self._warm(kind, states[:n], R, p)
+                    if not self._has_room():
+                        return
                     # the warm-up's allocator blocks and module loads are taken as it is enqueued: no wait
                     free = free_bytes()
                     pieces = self._pieces(run, b)
@@ -235,10 +294,14 @@ class RoundGraphs:
                     took = free - free_bytes()
                     if pieces.out is None:
                         raise RuntimeError(f"a captured {kind} step returned no logits")
-                    if self.bytes + max(0, took) > self.budget:
+                    remaining = self.spare() if self.spare is not None else None
+                    if self.bytes + max(0, took) > self.budget or (remaining is not None and remaining < 0):
                         del pieces                       # this key's graphs go; the earlier keys stay
+                        self.rejected = {"key": [kind, launch, n, R, p], "bytes": took,
+                                         "live_spare_bytes": remaining}
                         self.stopped = (f"{(self.bytes + took) / MIB:.0f} MiB with the next key exceeds the "
-                                        f"{self.budget // MIB} MiB budget")
+                                        f"{self.budget // MIB} MiB budget" if remaining is None or remaining >= 0 else
+                                        "the next key would consume required native-window or service memory")
                         return
                     if kind == "verify":
                         self.verify[(launch, n, R, p)] = pieces
@@ -282,5 +345,7 @@ class RoundGraphs:
         return {"verify_keys": len(self.verify), "mtp_keys": len(self.mtp), "bytes": self.bytes,
                 "settled_bytes": self.settled_bytes, "room_bytes": self.room_bytes,
                 "budget_bytes": self.budget, "capture_s": round(self.capture_s, 3), "stopped": self.stopped,
+                "rejected": self.rejected,
+                "allocator": self.allocator_record,
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
                 "keys": self.measured}

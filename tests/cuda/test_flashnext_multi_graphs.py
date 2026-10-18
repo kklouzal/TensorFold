@@ -406,6 +406,13 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
     assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
     assert record["room_bytes"] == max(record["bytes"], record["settled_bytes"])
     assert dec.memory_gate.room == room - record["room_bytes"]
+    from tensorfold.families.qwen4_exp.cuda.service_memory import private_pool_spare
+
+    snapshot = torch.cuda.memory_snapshot(mempool_id=dec.graphs.pool, include_traces=False)
+    unavailable = private_pool_spare(snapshot, dec.graphs.pool, w.device.index or 0)
+    assert record["allocator"]["private_pool_spare_bytes"] == unavailable
+    assert dec.graphs.private_spare_bytes == unavailable
+    assert dec.memory_gate.live.__defaults__ == (dec.graphs,)
     print(json.dumps({k: v for k, v in record.items() if k != "keys"}))
     per = [k["bytes"] for k in record["keys"]]
     print("per-key bytes: min", min(per), "max", max(per), "pieces", record["pieces"])
@@ -413,8 +420,8 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
 
 def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monkeypatch):
     """C9: a key's capture failing midway raises that error itself; the launch policy, garbage collection, DeltaNet
-    parity and step tables are restored, the slots are reset, nothing comes off the room, and rounds decode the
-    solo tokens eagerly."""
+    parity and step tables are restored and the slots reset. The admitted failed pool remains owned/accounted;
+    rounds still decode the solo tokens eagerly."""
 
     w = _model()
     refs = _solo(w, PROMPTS[:2], SAMPLINGS[:2], 12, RQ, capacity=1024, prefill_rows=16)
@@ -432,7 +439,9 @@ def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monk
     with pytest.raises(RuntimeError) as caught:
         dec.capture_graphs()
     assert caught.value is boom and caught.value.__cause__ is None
-    assert dec.graphs is None and not dec.graph_record["captured"] and dec.memory_gate.room == room
+    assert dec.graphs is None and not dec.graph_record["captured"]
+    assert dec._failed_graphs is not None and dec._memory_error is None
+    assert dec.memory_gate.room == room - dec.graph_record["room_bytes"]
     assert gc.isenabled() and pdl.ON == launch and dec.gdn.parity == parity
     assert dec.buf.attn_step is None and dec.buf.gdn_tables is None and dec.mbuf.attn_step is None
     assert all(not st._kv_pending and st._kv_error is None and st.pos == 0 for st in dec.free)
@@ -535,6 +544,7 @@ def test_the_engine_refuses_a_decoder_whose_graph_budget_differs_from_its_plan(t
     from test_flashnext_tp import _checkpoint
 
     _checkpoint(tmp_path)
+    monkeypatch.setenv(multi_graphs.ENV, "512")  # an explicit reservation must still agree if capture declines
     monkeypatch.setattr(multi_graphs, "capturable", lambda w: "declined by this test")
     with pytest.raises(RuntimeError, match=r"startup plan reserved .* \(declined by this test\)"):
         FlashNextEngine(tmp_path, depth=3, draft_vocab=None, max_len=512, prefetch=False, streams=2)
