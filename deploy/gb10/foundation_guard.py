@@ -46,6 +46,22 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def normalize_image_mtime(path: Path) -> None:
+    """Prepare owned regular files for whole-second image-layer timestamps.
+
+    Run before sealing only. Do not follow venv aliases into system/SDK files;
+    exact nanosecond comparisons remain active after the immutable seal.
+    """
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"owned image payload is not a regular file: {path}")
+    seconds_ns = info.st_mtime_ns // 10**9 * 10**9
+    if info.st_mtime_ns != seconds_ns:
+        os.utime(path, ns=(info.st_atime_ns, seconds_ns), follow_symlinks=False)
+
+
 def identity(path: Path, *, full: bool) -> dict:
     real = path.resolve(strict=True)
     info = real.stat()
@@ -134,6 +150,7 @@ def write_json(path: Path, value: dict) -> None:
         json.dump(value, stream, sort_keys=True, allow_nan=False)
         stream.write("\n")
     temporary.chmod(0o644)
+    normalize_image_mtime(temporary)
     temporary.replace(path)
 
 
@@ -240,7 +257,12 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
     native = native_files(before | addons)
     nccl_library, nccl_version = select_nccl(manifest, foundation, native)
     addon_artifacts = {artifacts / item["artifact"]: item["sha256"] for item in manifest.get("native_addons", [])}
-    files = set(addon_artifacts) | tree_files(foundation) | native | compiler_files | {manifest_path, constraint, activation, config, bootstrap, runtime_helper, policy_helper, sdk_baseline, sdk_baseline.with_name("base-sdk.sha256"), sdk_baseline.with_name("base-sdk-links.tsv"), pattern_path}
+    owned_files = set(addon_artifacts) | tree_files(foundation) | {manifest_path, constraint, activation, config, bootstrap, runtime_helper, policy_helper, sdk_baseline, sdk_baseline.with_name("base-sdk.sha256"), sdk_baseline.with_name("base-sdk-links.tsv"), pattern_path}
+    for key in ("wrappers", "helpers"):
+        owned_files.update(Path(row["path"]) for row in toolchain[key].values())
+    for path in sorted(owned_files):
+        normalize_image_mtime(path)
+    files = owned_files | native | compiler_files
     for key in ("tools", "compilers", "wrappers", "helpers"):
         files.update(Path(row["path"]) for row in toolchain[key].values())
     files.update(Path(row["path"]) for row in toolchain["headers"])
