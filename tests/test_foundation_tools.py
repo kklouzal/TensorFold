@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import venv
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +24,21 @@ def executable(path, source):
     path.write_text(source)
     path.chmod(0o755)
     return str(path)
+
+
+def compiler_environment(**values):
+    # Synthetic compiler contracts deliberately run outside the real image's
+    # managed Python .pth activation. Never pass its publication into fixtures.
+    inherited = {key: value for key, value in os.environ.items()
+                 if not key.startswith(("TF_FOUNDATION_", "PYTHON"))
+                 and key not in ("TF_NCCL_LIB", "TF_CUDA_DRIVER_PROOF", "COMPILER_STATUS", "COMPILER_SIGNAL")}
+    return {**inherited, **values}
+
+
+def wrapper_command(path, *arguments):
+    # Keep the production wrapper bytes/argv0, but omit site.py for this child.
+    # Actual managed entrypoint/provider behavior has separate integration gates.
+    return [sys.executable, "-S", path, *arguments]
 
 
 @pytest.fixture
@@ -43,7 +59,7 @@ def foundation(tmp_path):
     cc_alias = executable(wrappers / "tensorfold-cc", script)
     cxx_alias = executable(wrappers / "tensorfold-cxx", script)
     shutil.copyfile(tools.__file__, wrappers / "foundation_tools.py")
-    compiler = executable(tmp_path / "compiler", "#!" + sys.executable + "\n"
+    compiler = executable(tmp_path / "compiler", "#!" + sys.executable + " -S\n"
                           "import json,os,sys\n"
                           "if sys.argv[1:] == ['--version']:\n"
                           " print('owned compiler 1');sys.exit(0)\n"
@@ -73,6 +89,44 @@ def test_complete_environment_and_cache_identity(foundation, tmp_path):
     (foundation.include / "secondary.h").write_text("#define SECONDARY_HEADER 2\n")
     changed = tools.capture_toolchain(**foundation.kwargs)
     assert changed["cache_key"] != foundation.contract["cache_key"]
+
+
+def test_compiler_children_receive_only_their_synthetic_publication(foundation, monkeypatch):
+    ambient = {"TF_FOUNDATION_STATE": "/actual/state.json", "TF_FOUNDATION_RUNTIME_PHASE": "cpu",
+               tools.CONTRACT_ENV: "/actual/toolchain.json", "TF_NCCL_LIB": "/actual/libnccl.so",
+               "TF_CUDA_DRIVER_PROOF": "/actual/driver-proof", "PYTHONPATH": "/actual/python",
+               "PYTHONHOME": "/actual/home", "COMPILER_STATUS": "78", "COMPILER_SIGNAL": "15"}
+    for key, value in ambient.items():
+        monkeypatch.setenv(key, value)
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_STATUS": "29"})
+    assert env[tools.CONTRACT_ENV] == str(foundation.manifest)
+    assert env["COMPILER_STATUS"] == "29"
+    assert all(key not in env for key in ambient if key not in (tools.CONTRACT_ENV, "COMPILER_STATUS"))
+    assert all(os.environ[key] == value for key, value in ambient.items())
+
+
+def test_synthetic_wrapper_does_not_run_a_managed_site_publication(foundation, tmp_path):
+    application = tmp_path / "managed-python"
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(application)
+    python = str(application / "bin/python")
+    foreign = executable(tmp_path / "foreign-compiler", "#!/bin/sh\nprintf 'foreign compiler\\n'\n")
+    foreign_manifest = tmp_path / "foreign.json"
+    contract = tools.capture_toolchain(**{**foundation.kwargs, "cc": foreign, "cxx": foreign,
+                                          "contract_path": str(foreign_manifest)})
+    foreign_manifest.write_text(json.dumps({"toolchain": contract}))
+    site = application / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    (site / "00_foreign_publication.pth").write_text(
+        f"import os; os.environ[{tools.CONTRACT_ENV!r}] = {str(foreign_manifest)!r}\n")
+    alias = foundation.kwargs["wrapper_cc"]
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_STATUS": "29"})
+    ordinary = subprocess.run([python, alias, "input.c"], env=env, capture_output=True, text=True, check=False)
+    assert ordinary.returncode == 0 and ordinary.stdout == "foreign compiler\n"
+    command = wrapper_command(alias, "input.c")
+    command[0] = python
+    isolated = subprocess.run(command, env=env, capture_output=True, text=True, check=False)
+    assert isolated.returncode == 29
+    assert json.loads(isolated.stdout) == ["-I" + str(foundation.include), "input.c"]
+    assert isolated.stderr == "compiler stderr\n"
 
 
 @pytest.mark.parametrize("changed", ["tool", "compiler", "wrapper", "helper", "header", "new_header", "libdevice", "cupti"])
@@ -157,8 +211,8 @@ def test_capture_refuses_foreign_provider_alias(foundation, tmp_path, provider):
 @pytest.mark.parametrize("status", [0, 29])
 def test_wrapper_exec_preserves_arguments_streams_and_status(foundation, role, status):
     arguments = ["", "with spaces", 'quote"', "$literal", "é", "--version", "-ccbin=/literal"]
-    env = {**os.environ, tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_STATUS": str(status)}
-    result = subprocess.run([foundation.kwargs["wrapper_" + role], *arguments],
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_STATUS": str(status)})
+    result = subprocess.run(wrapper_command(foundation.kwargs["wrapper_" + role], *arguments),
                             env=env, capture_output=True, text=True, check=False)
     assert result.returncode == status
     assert json.loads(result.stdout) == ["-I" + str(foundation.include), *arguments]
@@ -167,18 +221,18 @@ def test_wrapper_exec_preserves_arguments_streams_and_status(foundation, role, s
 
 def test_wrapper_requires_exact_manifest_and_refuses_changed_compiler(foundation):
     alias = foundation.kwargs["wrapper_cc"]
-    env = {key: value for key, value in os.environ.items() if key != tools.CONTRACT_ENV}
-    result = subprocess.run([alias, "--version"], env=env, capture_output=True, text=True, check=False)
+    env = compiler_environment()
+    result = subprocess.run(wrapper_command(alias, "--version"), env=env, capture_output=True, text=True, check=False)
     assert result.returncode != 0 and "sealed manifest" in result.stderr
     env[tools.CONTRACT_ENV] = str(foundation.manifest)
     Path(foundation.kwargs["cc"]).write_text("changed")
-    result = subprocess.run([alias, "--version"], env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run(wrapper_command(alias, "--version"), env=env, capture_output=True, text=True, check=False)
     assert result.returncode != 0 and "provider changed" in result.stderr
 
 
 def test_wrapper_exec_preserves_compiler_termination_signal(foundation):
-    env = {**os.environ, tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_SIGNAL": str(signal.SIGTERM)}
-    result = subprocess.run([foundation.kwargs["wrapper_cc"], "input.c"], env=env,
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest), "COMPILER_SIGNAL": str(signal.SIGTERM)})
+    result = subprocess.run(wrapper_command(foundation.kwargs["wrapper_cc"], "input.c"), env=env,
                             capture_output=True, text=True, check=False)
     assert result.returncode == -signal.SIGTERM
 
@@ -196,9 +250,9 @@ def test_native_compiler_inherits_subprocess_restored_signals(foundation, tmp_pa
     subprocess.run([cc, str(source), "-o", str(native)], check=True, capture_output=True)
     contract = tools.capture_toolchain(**{**foundation.kwargs, "cc": str(native), "cxx": str(native)})
     foundation.manifest.write_text(json.dumps({"toolchain": contract}))
-    env = {**os.environ, tools.CONTRACT_ENV: str(foundation.manifest)}
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest)})
     direct = subprocess.run([str(native), "input.c"], env=env, capture_output=True, check=False)
-    wrapped = subprocess.run([foundation.kwargs["wrapper_cc"], "input.c"], env=env,
+    wrapped = subprocess.run(wrapper_command(foundation.kwargs["wrapper_cc"], "input.c"), env=env,
                              capture_output=True, check=False)
     assert direct.returncode == wrapped.returncode == -getattr(signal, signal_name)
 
@@ -255,17 +309,17 @@ def test_real_compiler_header_precedence_and_query_modes(foundation, tmp_path, r
     kwargs = {**foundation.kwargs, role: selected}
     contract = tools.capture_toolchain(**kwargs)
     foundation.manifest.write_text(json.dumps({"toolchain": contract}))
-    env = {**os.environ, tools.CONTRACT_ENV: str(foundation.manifest)}
+    env = compiler_environment(**{tools.CONTRACT_ENV: str(foundation.manifest)})
     alias = kwargs["wrapper_" + role]
     old = tmp_path / "bundled"
     old.mkdir()
     (old / "cuda.h").write_text("#define SELECTED_HEADER 31\n")
     src = tmp_path / ("probe.c" if role == "cc" else "probe.cpp")
     src.write_text("#include <cuda.h>\n" + source + "\n")
-    result = subprocess.run([alias, str(src), "-I" + str(old), "-fsyntax-only"], env=env,
+    result = subprocess.run(wrapper_command(alias, str(src), "-I" + str(old), "-fsyntax-only"), env=env,
                             capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     for query in ("--version", "-dumpversion", "-dumpmachine"):
         plain = subprocess.run([selected, query], capture_output=True, check=False)
-        wrapped = subprocess.run([alias, query], env=env, capture_output=True, check=False)
+        wrapped = subprocess.run(wrapper_command(alias, query), env=env, capture_output=True, check=False)
         assert (wrapped.returncode, wrapped.stdout, wrapped.stderr) == (plain.returncode, plain.stdout, plain.stderr)
