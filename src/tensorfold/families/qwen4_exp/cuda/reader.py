@@ -64,17 +64,20 @@ class _Reader:
         self.reads.queue(items, self.device)
 
     def queue_host_scalars(self, names) -> None:
-        """Coalesce original F32 scalars to CPU, without reading matrix gaps.
+        """Coalesce original floating rank0 values to CPU without matrix gaps.
 
         The same owned ReadAhead/future lifetime publishes exact CPU tensors to
-        get(). Matrix callers keep queue() and its selected-device behavior.
+        get(). Positive-rank singletons retain their existing direct get_rows
+        path, so this method does not queue an unused duplicate for them.
         """
 
         items = []
         for name in names:
             info = self.info(name)
-            if info["dtype"] != "F32" or info["shape"]:
-                raise ValueError("host read-ahead requires F32 scalar tensors")
+            if info["dtype"] not in ("F32", "F16", "BF16") or any(n != 1 for n in info["shape"]):
+                raise ValueError("host read-ahead requires floating singleton tensors")
+            if info["shape"]:
+                continue
             begin, end = info["data_offsets"]
             items.append((name, info["path"], info["byte_offset"], info["byte_offset"] + end - begin, None))
             self.touched.add(self.where[name])
