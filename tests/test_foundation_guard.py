@@ -41,6 +41,8 @@ def sealed(guard, tmp_path, monkeypatch):
     module.write_text("VERSION = '1.0'\n")
     nccl = tmp_path / "libnccl.so.2.32.3"
     nccl.write_bytes(b"native NCCL fixture")
+    profile = tmp_path / "runtime-profile.json"
+    profile.write_text("{}")
     manifest = {"roles": {"foundation": {"torch": {"version": "1.0"}},
                           "runtime": {"demo": {"version": "1.0", "url": "https://example.invalid/demo.whl", "sha256": "a" * 64}},
                           "verification": {}}}
@@ -48,9 +50,12 @@ def sealed(guard, tmp_path, monkeypatch):
              "manifest": manifest, "sdk_pattern": "^cuda-", "sdk_packages": {"cuda-sdk": "13.4.3"},
              "compiler_packages": {"gcc": "13"}, "native_files": [], "sdk_links": {},
              "nccl_library": str(nccl), "nccl_version": None,
+             "runtime_profile_path": str(profile), "cpu_driver": str(nccl),
+             "toolchain": {"cuda_home": "/selected", "cupti": {"path": str(nccl)}, "cupti_dir": str(tmp_path)},
              "files": {str(path): guard.identity(path, full=True) for path in guard.tree_files(foundation)}}
     monkeypatch.setattr(guard, "native_packages", lambda pattern: state["compiler_packages"]
                         if pattern == guard.COMPILER_PACKAGES else {"cuda-sdk": "13.4.3"})
+    state["files"][str(profile)] = guard.identity(profile, full=True)
     state["state_digest"] = guard.state_digest(state)
     return state
 
@@ -203,7 +208,8 @@ def test_cache_namespace_includes_complete_sealed_state(guard, sealed, monkeypat
     seen = []
     monkeypatch.setitem(sys.modules, "foundation_tools", types.SimpleNamespace(
         toolchain_environment=lambda contract, *, cache_root, verify_content: seen.append((cache_root, verify_content)) or {}))
-    sealed.update(cache_key="a" * 64, toolchain={"cuda_home": "/usr/local/cuda"})
+    sealed["cache_key"] = "a" * 64
+    sealed["toolchain"]["cuda_home"] = "/usr/local/cuda"
     sealed["state_digest"] = guard.state_digest(sealed)
     assert guard.environment(sealed)["PYTHONNOUSERSITE"] == "1"
     assert seen == [("/cache/" + "a" * 64, False)]
@@ -234,7 +240,12 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     monkeypatch.setattr(guard, "check_base_sdk", lambda *args: {"cuda-sdk": "13.4.3"})
     monkeypatch.setattr(guard, "native_packages", lambda pattern: {"gcc": "13"}
                         if pattern == guard.COMPILER_PACKAGES else {"cuda-sdk": "13.4.3"})
-    monkeypatch.setattr(guard, "native_files", lambda *args: set())
+    cuda_home = tmp_path / "cuda"
+    cpu_driver = cuda_home / "compat/libcuda.so.1"
+    cpu_driver.parent.mkdir(parents=True)
+    cpu_driver.write_bytes(b"controlled compatibility driver; no loading in this publication control")
+    monkeypatch.setattr(guard, "native_files", lambda *args: {cpu_driver})
+    monkeypatch.setitem(sys.modules, "foundation_runtime", types.SimpleNamespace(capture_runtime=lambda **kwargs: {"schema_version": 1}))
     monkeypatch.setitem(sys.modules, "foundation_tools", types.SimpleNamespace(
         toolchain_environment=lambda contract, *, cache_root, verify_content: {"CC": "/sealed/tensorfold-cc", "TRITON_CACHE_DIR": cache_root}))
     state_path = tmp_path / "state.json"
@@ -242,17 +253,18 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     marker = tmp_path / "tool"
     marker.write_text("selected tool")
     monkeypatch.setattr(guard, "select_nccl", lambda *args: (str(marker), None))
-    tools.update(headers=[], libdevice={"path": str(marker)}, cupti={"path": str(marker)})
+    tools.update(headers=[], libdevice={"path": str(marker)}, cupti={"path": str(marker)},
+                 cuda_home=str(cuda_home), cupti_dir=str(marker.parent))
     state = guard.seal(manifest_path=manifest, foundation=foundation, application=application,
                        sdk_baseline=baseline, pattern_path=pattern, state_path=state_path,
                        artifacts=tmp_path, toolchain=tools)
     result = subprocess.run([str(application / "bin/python"), "-c", "import os; print(os.environ['CC']); print(os.environ['TRITON_CACHE_DIR'])"],
-                            capture_output=True, text=True, check=True, env=dict(os.environ, TF_NCCL_LIB=""))
+                            capture_output=True, text=True, check=True, env=dict(os.environ, TF_NCCL_LIB="", TF_FOUNDATION_RUNTIME_PHASE=""))
     assert result.stdout.splitlines() == ["/sealed/tensorfold-cc", "/cache/" + state["cache_key"]]
     wrong_nccl = tmp_path / "wrong-libnccl.so"
     wrong_nccl.write_text("unselected provider")
     refusal = subprocess.run([str(application / "bin/python"), "-c", "print('must not run')"],
-                             env=dict(os.environ, TF_NCCL_LIB=str(wrong_nccl)), capture_output=True, text=True, check=False)
+                             env=dict(os.environ, TF_NCCL_LIB=str(wrong_nccl), TF_FOUNDATION_RUNTIME_PHASE=""), capture_output=True, text=True, check=False)
     assert refusal.returncode == 78 and "TF_NCCL_LIB conflicts" in refusal.stderr
     prior_key = state["cache_key"]
     application_wheel = tmp_path / "tensorfold-1.0-py3-none-any.whl"
@@ -263,7 +275,7 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     assert state["foundation_cache_key"] == prior_key
     assert state["application_wheel_sha256"] == guard.digest(application_wheel)
     result = subprocess.run([str(application / "bin/python"), "-c", "import os; print(os.environ['TRITON_CACHE_DIR'])"],
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True, check=True, env=dict(os.environ, TF_FOUNDATION_RUNTIME_PHASE=""))
     assert result.stdout.strip() == "/cache/" + state["cache_key"]
     (guard.site_directory(application) / "tensorfold-foundation-environment.json").unlink()
     result = subprocess.run([str(application / "bin/python"), "-c", "print('must not run')"], capture_output=True, text=True, check=False)
@@ -476,8 +488,14 @@ def test_loaded_cuda_provider_must_be_native_sdk_even_if_wheel_is_sealed(guard, 
     selected = wheel if wheel_provider else native
     original = guard.Path.read_text
     monkeypatch.setattr(guard.Path, "read_text", lambda path, *args, **kwargs:
-                        "0000-1000 r-xp 0 00:00 0 " + str(selected)
+                        f"0000-1000 r-xp 0 {os.major(selected.stat().st_dev):x}:{os.minor(selected.stat().st_dev):x} {selected.stat().st_ino} " + str(selected)
                         if path == Path("/proc/self/maps") else original(path, *args, **kwargs))
+    row = {**guard.identity(native, full=True), "path": str(native), "soname": "libcublas.so.13",
+           "needed": [], "provider_role": "native_foundation"}
+    sealed["runtime"] = {"schema_version": 1, "index": {"libcublas.so.13": row}, "vision": {"providers": []}}
+    monkeypatch.setitem(sys.modules, "tensorfold_foundation_bootstrap", types.SimpleNamespace(
+        RUNTIME_OWNERS=("controlled same-process owner",), DRIVER_ROLE="controlled driver",
+        ACTIVE_PROFILE_SHA256=sealed["files"][sealed["runtime_profile_path"]]["sha256"]))
     sealed["toolchain"] = {}
     sealed["nccl_version"] = 23203
 
@@ -492,7 +510,7 @@ def test_loaded_cuda_provider_must_be_native_sdk_even_if_wheel_is_sealed(guard, 
         with pytest.raises(ValueError, match="NCCL native API version differs"):
             guard.native_proof(sealed)
     elif wheel_provider:
-        with pytest.raises(ValueError, match="outside sealed providers"):
+        with pytest.raises(RuntimeError, match="non-foundation runtime provider"):
             guard.native_proof(sealed)
     else:
         assert guard.native_proof(sealed)["loaded_sdk"] == [str(native)]
@@ -520,7 +538,7 @@ def test_conflicting_nccl_override_is_not_silently_replaced(guard, sealed, monke
     import types
     monkeypatch.setitem(sys.modules, "foundation_tools", types.SimpleNamespace(
         toolchain_environment=lambda *args, **kwargs: {}))
-    sealed.update(toolchain={"cuda_home": "/selected"}, cache_key="a" * 64)
+    sealed["cache_key"] = "a" * 64
     sealed["state_digest"] = guard.state_digest(sealed)
     monkeypatch.setenv("TF_NCCL_LIB", "/wrong/libnccl.so.2")
     with pytest.raises((ValueError, FileNotFoundError)):
@@ -531,7 +549,7 @@ def test_empty_nccl_override_selects_default_like_unmanaged_loader(guard, sealed
     import types
     monkeypatch.setitem(sys.modules, "foundation_tools", types.SimpleNamespace(
         toolchain_environment=lambda *args, **kwargs: {}))
-    sealed.update(toolchain={"cuda_home": "/selected"}, cache_key="a" * 64)
+    sealed["cache_key"] = "a" * 64
     sealed["state_digest"] = guard.state_digest(sealed)
     monkeypatch.setenv("TF_NCCL_LIB", "")
     assert guard.environment(sealed)["TF_NCCL_LIB"] == sealed["nccl_library"]
@@ -550,3 +568,75 @@ def test_vision_consumer_requires_actual_native_image_load_and_schemas(guard, tm
     vision = SimpleNamespace(__file__=str(directory / "__init__.py"))
     with pytest.raises((ValueError, AttributeError)):
         guard.vision_proof(torch, vision)
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_native_addon_path_is_validated_before_exact_install(guard, tmp_path, monkeypatch, mismatch):
+    path = tmp_path / "approved.deb"
+    path.write_bytes(b"exact approved Debian artifact")
+    manifest = {"native_addons": [{"artifact": path.name, "sha256": guard.digest(path),
+                                  "package": "libapproved", "version": "1.0"}]}
+    baseline = tmp_path / "base-sdk.tsv"
+    baseline.write_text("cuda-sdk\t13.4.3\n")
+    monkeypatch.setattr(guard, "native_packages", lambda _: {"cuda-sdk": "13.4.3"})
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "dpkg-deb":
+            version = "0.9" if mismatch else "1.0"
+            return subprocess.CompletedProcess(command, 0, f"Package: libapproved\nVersion: {version}\n", "")
+        if command[0] == "dpkg-query":
+            return subprocess.CompletedProcess(command, 1, "", "not installed")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(guard.subprocess, "run", run)
+    verified = []
+    monkeypatch.setattr(guard, "check_base_sdk", lambda *args: verified.append(True))
+    if mismatch:
+        with pytest.raises(ValueError, match="package metadata differs"):
+            guard.install_native_addons(manifest, artifacts=tmp_path, sdk_baseline=baseline, pattern="^cuda-")
+        assert not any(command[0] == "dpkg" for command in commands)
+    else:
+        guard.install_native_addons(manifest, artifacts=tmp_path, sdk_baseline=baseline, pattern="^cuda-")
+        assert [command for command in commands if command[0] == "dpkg"] == [["dpkg", "--install", str(path)]]
+        assert verified == [True]
+
+
+@pytest.mark.parametrize("script,arguments,activated", [
+    ("cuda_entrypoint.py", [], False), ("cuda_driver_probe.py", [], False),
+    ("tensorfold-cc", [], False), ("tensorfold-cxx", [], False),
+    ("foundation_guard.py", ["environment"], False),
+    ("foundation_guard.py", ["--state", "unused", "native-proof"], True),
+    ("consumer.py", [], True),
+])
+def test_bootstrap_preloads_only_final_consumer_interpreter(tmp_path, script, arguments, activated):
+    import shutil
+    # Driver acquisition stands in for a real admitted CUDA driver with the
+    # already-loaded host libc. This control makes no CUDA call/device claim.
+    maps = Path("/proc/self/maps").read_text().splitlines()
+    driver = next(Path(line.split(maxsplit=5)[5]) for line in maps
+                  if len(line.split(maxsplit=5)) == 6 and Path(line.split(maxsplit=5)[5]).name == "libc.so.6")
+    application = tmp_path / "application"
+    venv.EnvBuilder(with_pip=False).create(application)
+    site = application / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    source = Path(__file__).resolve().parents[1] / "deploy/gb10/foundation_bootstrap.py"
+    shutil.copyfile(source, site / "tensorfold_foundation_bootstrap.py")
+    (site / "00_foundation.pth").write_text("import tensorfold_foundation_bootstrap\n")
+    (site / "tensorfold_foundation_runtime.py").write_text(
+        "import os,sys\ndef activate_runtime(contract):\n assert 'torch' not in sys.modules\n "
+        "os.environ['CONTROL_CORE_READY']='1'\n return ('controlled core owner',)\n")
+    profile = tmp_path / "runtime.json"
+    profile.write_text('{"schema_version":1}')
+    values = {"TF_FOUNDATION_RUNTIME_PROFILE": str(profile), "TF_FOUNDATION_CPU_DRIVER": str(driver),
+              "TORCH_USE_RTLD_GLOBAL": "1"}
+    (site / "tensorfold-foundation-environment.json").write_text(json.dumps(values))
+    target = tmp_path / script
+    target.write_text("import os,sys\nprint(os.environ.get('CONTROL_CORE_READY', 'no'))\n"
+                      "import tensorfold_foundation_bootstrap as b\nprint(len(b.RUNTIME_OWNERS) if b.RUNTIME_OWNERS else 0)\n")
+    proof = json.dumps({"library": str(driver), "mode": "native", "driver_api": 13040, "devices": 1})
+    env = dict(os.environ, TF_FOUNDATION_RUNTIME_PHASE="cuda", TF_CUDA_DRIVER_PROOF=proof)
+    env.pop("TORCH_USE_RTLD_GLOBAL", None)
+    result = subprocess.run([str(application / "bin/python"), str(target), *arguments], env=env,
+                            check=True, capture_output=True, text=True)
+    assert result.stdout.splitlines() == (["1", "2"] if activated else ["no", "0"])

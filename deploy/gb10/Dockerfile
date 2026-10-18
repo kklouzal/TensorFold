@@ -23,7 +23,7 @@ ARG BASE_IMAGE
 COPY --from=foundation_pins / /opt/tensorfold-pin-inputs/
 COPY --from=foundation_artifacts / /opt/tensorfold-foundation-artifacts/
 COPY deploy/gb10/platform_pins.py deploy/gb10/select_pins.py deploy/gb10/foundation_policy.py \
-     deploy/gb10/foundation_guard.py deploy/gb10/foundation_bootstrap.py /opt/tensorfold-pins/
+     deploy/gb10/foundation_guard.py deploy/gb10/foundation_bootstrap.py deploy/gb10/foundation_runtime.py /opt/tensorfold-pins/
 COPY src/tensorfold/cuda/foundation_tools.py /opt/tensorfold-pins/foundation_tools.py
 COPY src/tensorfold/cuda/foundation_tools.py /opt/tensorfold-foundation-tools/foundation_tools.py
 COPY --chmod=755 deploy/gb10/foundation_compiler.py /opt/tensorfold-foundation-tools/tensorfold-cc
@@ -71,7 +71,7 @@ RUN python3 /opt/tensorfold-pins/foundation_guard.py audit \
     && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -c "from pathlib import Path; import tensorfold, xgrammar; import tensorfold.families.qwen4_exp.native_ssd as reader; assert Path(reader.__file__).with_name('ssd_read.cpp').is_file()"
 COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py
 COPY deploy/gb10/cuda_entrypoint.py deploy/gb10/cuda_driver_probe.py /opt/harness/
-COPY deploy/gb10/foundation_guard.py deploy/gb10/foundation_policy.py /opt/harness/
+COPY deploy/gb10/foundation_guard.py deploy/gb10/foundation_policy.py deploy/gb10/foundation_runtime.py /opt/harness/
 COPY src/tensorfold/cuda/foundation_tools.py /opt/harness/foundation_tools.py
 ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "/opt/harness/tensorfold_harness.py"]
 CMD ["serve", "--help"]

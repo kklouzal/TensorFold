@@ -568,23 +568,20 @@ shutdown after the CUDA suite, which exited successfully. Small isolated compile
 and GPU probes did not reproduce them. Sustained full-model memory behavior still
 needs validation; the warnings are retained rather than suppressed.
 
-For current foundation refreshes, follow [the schema2 native generation, build and audit procedure](foundation.md). The following commands document the historical schema1 refresh and must not be used to promote old pins as new foundation inputs.
+For current foundation refreshes, follow [the schema2 generation, build and audit procedure](foundation.md).
+The original schema1 inputs are archived under `history/20261006` with their
+source commit and byte hashes. They retain historical evidence; reproducing
+them requires their original tooling revision.
 
-To reproduce those earlier dependency locks, resolve the recorded pins in the matching Linux
-CPython 3.12 environment with `pip install --dry-run --ignore-installed --report
-REPORT.json`, including the three exact wheel pins and verification packages.
-Run the generator in an environment with `packaging` installed:
+Current controlled reports regenerate the selected locks as follows:
 
 ```bash
-# Existing ARM64 inputs and generated lock names stay unchanged.
-python3 deploy/gb10/lock_dependencies.py --report REPORT.json
+python3 deploy/gb10/lock_dependencies.py --architecture amd64 \
+  --pins deploy/gb10/nightly-pins-amd64.json --report deploy/gb10/resolver-amd64.json
 
-# AMD64 native report.
-python3 deploy/gb10/lock_dependencies.py --architecture amd64 --report REPORT.json
-
-# Reproduce the current audited AMD64 cross-report locks.
-python3 deploy/gb10/lock_dependencies.py --architecture amd64 --cross-report \
-  --report deploy/gb10/resolver-amd64.json
+# Recorded AMD64-to-ARM64 metadata resolution; this does not qualify ARM execution.
+python3 deploy/gb10/lock_dependencies.py --architecture arm64 --cross-report \
+  --pins deploy/gb10/nightly-pins.json --report deploy/gb10/resolver-arm64.json
 ```
 
 The generator checks wheel architecture/ABI, Python versions, approved origins,

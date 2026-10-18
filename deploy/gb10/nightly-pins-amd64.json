@@ -1,26 +1,49 @@
 {
-  "schema_version": 1,
-  "as_of": "2026-10-06",
+  "schema_version": 2,
+  "as_of": "2026-10-17",
   "platform": "linux/amd64",
   "python": "3.12",
-  "base": "nvcr.io/nvidia/cuda-dl-base:26.09-cuda13.4-inference-devel-ubuntu24.04@sha256:a3733239a1669d4b920fac639576fa254c913defa63d2b9ad1e861aba891cedc",
-  "cuda": "13.4.1",
-  "cache_key": "cu1341-torch216-dev20261006-triton39-aad2a60d",
+  "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:b3f64e4fec7d0825e05bf685e628e7e112afd7d63bc5906e2f71fd1f56cce336",
+  "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
+  "cuda": "13.4.3",
+  "cache_key": "cu1343-torch216-dev20261017-tv030-dev20261007-triton39-fc8d31a5-native",
+  "foundation_roots": [
+    "torch==2.16.0.dev20261017+cu134",
+    "torchvision==0.30.0.dev20261007+cu134",
+    "triton==3.9.0+gitfc8d31a5"
+  ],
   "wheels": {
     "torch": {
-      "version": "2.16.0.dev20261006+cu134",
-      "url": "https://download.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261006%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
-      "sha256": "ed3d1b2a9e7a315ff92ed9b457d712414bb5a6b4964e15cea846caf1110f2145"
+      "version": "2.16.0.dev20261017+cu134",
+      "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261017%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "f60d7413d41de68727d3910c13ef3e3e2a8465275e57413b8c0b69d46103b56d"
     },
     "torchvision": {
-      "version": "0.30.0.dev20261006+cu134",
-      "url": "https://download.pytorch.org/whl/nightly/cu134/torchvision-0.30.0.dev20261006%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
-      "sha256": "208d5cd56fe9772fa6524385d6f348548a42eff82b81be530f9c299a86104dfe"
+      "version": "0.30.0.dev20261007+cu134",
+      "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torchvision-0.30.0.dev20261007%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "c3deb24ad8926b77bfdadd05aa6ba71a47f35c5847ed8ffee21a2f9e3843a043"
     },
     "triton": {
-      "version": "3.9.0+gitaad2a60d",
-      "url": "https://download.pytorch.org/whl/nightly/triton-3.9.0%2Bgitaad2a60d-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
-      "sha256": "b66dd92d21794f72c66c8185ce28fd09c10a7c43538aff5ff4fd4e0ceea943ec"
+      "version": "3.9.0+gitfc8d31a5",
+      "url": "https://download-r2.pytorch.org/whl/nightly/triton-3.9.0%2Bgitfc8d31a5-cp312-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "c1ad85df07b3fa3209b8cec00ff24589e656ff13336d1aea1befd99e9bb0acfb"
     }
-  }
+  },
+  "nccl_provider": "native",
+  "native_addons": [
+    {
+      "artifact": "libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb",
+      "sha256": "71959e401720b56ff00652ff69a1fb070c219aa6e8574902e497a5c2fb67476f",
+      "package": "libcusparselt0-cuda-13",
+      "version": "0.8.1.1-1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb"
+    },
+    {
+      "artifact": "libnvshmem3-cuda-13_3.7.2-1_amd64.deb",
+      "sha256": "4810db788855de9014bb82f3941ec2866653761e653e1576a8f6ce0ab3e18e74",
+      "package": "libnvshmem3-cuda-13",
+      "version": "3.7.2-1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnvshmem3-cuda-13_3.7.2-1_amd64.deb"
+    }
+  ]
 }
