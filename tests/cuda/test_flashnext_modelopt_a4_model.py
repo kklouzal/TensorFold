@@ -101,6 +101,7 @@ def _serial(weights, prompt, sampling):
 def _concurrent(weights, prompts):
     decoder = MultiDecoder(weights, slots=2, capacity=128, depth=2, confidence=0., prefill_rows=5,
                            share=.5, stop_eos=False)
+    assert decoder.copy is False
     streams = [Stream(prompt, 8, Sampling(seed=7 + index, top_k=20, top_p=.95), draft=True, stop_eos=False)
                for index, prompt in enumerate(prompts)]
     for stream in streams:
@@ -115,8 +116,9 @@ def _concurrent(weights, prompts):
 
 
 @pytest.mark.usefixtures("checkpoint_math")
-def test_complete_cached_a4_serial_mtp_and_concurrent_equal_resident(tmp_path):
+def test_complete_cached_a4_serial_mtp_and_concurrent_equal_resident(tmp_path, monkeypatch):
     """BF16 backbone/MTP/SSD-table case; other storage formats have component oracles."""
+    monkeypatch.setenv("TENSORFOLD_MTP_COPY", "0")
     model = _calibrated_model(tmp_path)
     layout = ram_experts.layout(model, "auto", native_a4=True, checkpoint=True)
     assert layout.native_a4_banks == ("model.layers.0.mlp", "model.layers.1.mlp")
