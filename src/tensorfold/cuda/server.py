@@ -19,7 +19,7 @@ from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.request_options import (
-    PENALTY_FIELDS, fixed_thinking, heard_effort, parse_numbers, thinking_fields,
+    PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields,
 )
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
@@ -79,8 +79,7 @@ def unapplied_penalties(engine: Any, sampling: dict[str, Any]) -> dict[str, Any]
 
     if not any(k in sampling for k in PENALTY_FIELDS) or applies_penalties(engine):
         return {}
-    dropped = {k: sampling.pop(k) for k in PENALTY_FIELDS if k in sampling}
-    return {k: v for k, v in dropped.items() if v != (1.0 if k == "repetition_penalty" else 0.0)}
+    return drop_penalties(sampling)
 
 
 def _native_context(model_dir: Path) -> int:
@@ -588,8 +587,7 @@ class App:
         from tensorfold.engine.penalties import Penalties
 
         fields = parse_numbers({k: body[k] for k in PENALTY_FIELDS if body.get(k) is not None})
-        defaults = {"presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
-        value = {k: float(fields.get(k, self.sampling.get(k, d))) for k, d in defaults.items()}
+        value = {k: float(fields.get(k, self.sampling.get(k, off))) for k, off in PENALTY_FIELDS.items()}
         penalties = Penalties(value["presence_penalty"], value["frequency_penalty"], value["repetition_penalty"])
         if not penalties.active:
             return None

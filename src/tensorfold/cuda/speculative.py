@@ -1,6 +1,6 @@
 """Block-drafter proposals for one launch: the drafter's argmax, penalized as the target's rows are, read back once.
 
-GB10 card-sampling sweeps (agent E, 2026-10-18) found no decode-speed gain over the DFlash drafters' argmax: proposals
+GB10 card-sampling sweeps (2026-10-18) found no decode-speed gain over the DFlash drafters' argmax: proposals
 drawn under the target's keyed noise (``tensorfold.engine.speculative.coupled``) ran 4-13% slower exactly coupled and
 within -4..+4% sharpened, and the best sharpened coupled or rejection-sampled variants gained at most 0.4 points of
 per-row acceptance offline, so block drafters propose their argmax for every request. A request with

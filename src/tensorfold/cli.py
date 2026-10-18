@@ -206,9 +206,10 @@ def _generation_config(model_dir: Path, *, overrides: dict[str, Any] | None = No
 
 
 def _sampling_defaults(args: argparse.Namespace, model_dir: Path) -> dict[str, Any]:
+    from tensorfold.server.request_options import PENALTY_FIELDS
+
     return _generation_config(model_dir, overrides={
-        name: getattr(args, name, None) for name in ("temperature", "top_k", "top_p", "min_p", "presence_penalty",
-                                                     "frequency_penalty", "repetition_penalty")
+        name: getattr(args, name, None) for name in ("temperature", "top_k", "top_p", "min_p", *PENALTY_FIELDS)
     })
 
 
@@ -683,12 +684,12 @@ def _serve_mlx_start(
     from tensorfold import families, hub
     from tensorfold.engine.lane_engine import LaneEngine
     from tensorfold.engine.prefill_plan import PrefillPlan, message_markers
+    from tensorfold.server.request_options import drop_penalties
 
     sampling = _sampling_defaults(args, model_dir)  # before model loading or background workers
     # the Metal engines have no penalty path: requests asking for one are refused, defaults are named and not applied
-    unapplied = {k: sampling.pop(k) for k in ("presence_penalty", "frequency_penalty", "repetition_penalty")
-                 if k in sampling}
-    if any(value != (1.0 if name == "repetition_penalty" else 0.0) for name, value in unapplied.items()):
+    unapplied = drop_penalties(sampling)
+    if unapplied:
         print(f"[tensorfold] the Metal backend does not apply penalties; not applying defaults {unapplied}",
               file=sys.stderr, flush=True)
     reply_tokens = _reply_tokens(args, model_dir)

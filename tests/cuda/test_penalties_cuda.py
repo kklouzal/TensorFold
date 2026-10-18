@@ -23,7 +23,6 @@ def test_cuda_tree_rows_match_the_host_rule(p):
     tokens = [reply[-1], 7, 123, 7, prompt[0], 99999, reply[3]]
     parents = [-1, 0, 1, 0, 3, 3, 2]
     logits = torch.tensor(rng.normal(size=(len(tokens), vocab)) * 6, dtype=torch.float32, device="cuda")
-    host = logits.cpu().numpy()
     got = history.apply(logits.bfloat16(), tokens, parents).cpu().numpy()
     widened = logits.bfloat16().float().cpu().numpy()
     for row in range(len(tokens)):
@@ -32,4 +31,4 @@ def test_cuda_tree_rows_match_the_host_rule(p):
             path.append(tokens[node])
             node = parents[node]
         np.testing.assert_array_equal(got[row], _reference_row(widened[row], reply + path, prompt, p))
-    assert host.shape == got.shape
+    assert got.shape == widened.shape

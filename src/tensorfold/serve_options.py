@@ -19,6 +19,7 @@ def check_numbers(args: argparse.Namespace) -> None:
     """
 
     from tensorfold.server.request_limits import optional_limit
+    from tensorfold.server.request_options import PENALTY_FIELDS
 
     eos = getattr(args, "eos_token_ids", None)
     if eos is not None and (not eos or any(type(token) is not int or token < 0 for token in eos)):
@@ -27,8 +28,7 @@ def check_numbers(args: argparse.Namespace) -> None:
     for name in ("max_http_connections", "max_pending_requests", "max_engine_calls"):
         optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
-    penalties = ("presence_penalty", "frequency_penalty", "repetition_penalty")
-    for name in (*budgets, "temperature", "top_p", "min_p", *penalties, "decode_share", "mtp_confidence",
+    for name in (*budgets, "temperature", "top_p", "min_p", *PENALTY_FIELDS, "decode_share", "mtp_confidence",
                  "yarn_factor"):
         value = getattr(args, name, None)
         if value is None:

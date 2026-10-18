@@ -16,7 +16,8 @@ TensorFold, ahead of its keyed draw; greedy requests take the argmax of the pena
 
 A speculative verify row is penalized with the tokens before it: the committed reply plus the drafts on its path
 (vLLM's rejection sampler likewise appends draft tokens to the output tokens it penalizes), so drafted output stays
-the serial output. ``History`` keeps one request's counts on the host; ``apply`` updates CUDA score rows in place.
+the serial output. ``History`` keeps one request's counts on the host; ``apply`` penalizes CUDA score rows (in place
+when they are float32), ``candidates`` a drafter's host candidate rows.
 """
 
 from __future__ import annotations
@@ -102,13 +103,19 @@ class History:
         self.extend(prompt[cut:])
 
     def extend(self, tokens: Sequence[int]) -> None:
+        fresh: dict[int, list[int]] = {}            # ids new to the history -> [insert position, count]
         for token in tokens:
             at = int(np.searchsorted(self._ids, token))
-            if at == len(self._ids) or self._ids[at] != token:
-                self._ids = np.insert(self._ids, at, np.int64(token))
-                self._counts = np.insert(self._counts, at, np.float32(0))
-                self._in_prompt = np.insert(self._in_prompt, at, False)
-            self._counts[at] += 1
+            if at < len(self._ids) and self._ids[at] == token:
+                self._counts[at] += 1
+            else:
+                fresh.setdefault(int(token), [at, 0])[1] += 1
+        if fresh:                                   # inserted together, once per call (positions in the old arrays)
+            new = sorted(fresh)
+            at = [fresh[t][0] for t in new]
+            self._ids = np.insert(self._ids, at, new)
+            self._counts = np.insert(self._counts, at, [fresh[t][1] for t in new])
+            self._in_prompt = np.insert(self._in_prompt, at, False)
 
     def count(self, token: int) -> int:
         at = int(np.searchsorted(self._ids, token))
@@ -135,7 +142,7 @@ class History:
               copy: bool = False):
         """Penalize CUDA score rows; returns the float32 rows to sample (``logits`` itself unless a copy is needed).
 
-        Row ``r`` is followed by the reply plus ``tokens[a]`` for every ``a`` on row ``r``'s path from the root
+        Row ``r`` follows the reply plus ``tokens[a]`` for every ``a`` on row ``r``'s path from the root
         (``a`` >= 1, ``r`` included): ``tokens[0]`` is the committed anchor the rows extend; without ``tokens``
         every row follows the reply alone. ``parents`` gives each row's parent (-1 for the root) for a tree; None
         is a chain. ``copy`` keeps an immutable source unchanged. The host builds each row's counts over the
@@ -149,29 +156,33 @@ class History:
             raise ValueError("penalties need one input token and parent per score row")
         if logits.dtype != torch.float32 or copy:
             logits = logits.float().clone() if logits.dtype == torch.float32 else logits.float()
-        drafted = np.unique(np.asarray(tokens[1:], dtype=np.int64)) if len(tokens) > 1 else np.empty(0, np.int64)
-        extra = np.setdiff1d(drafted, self._ids, assume_unique=True)
+        known = len(self._ids)
+        # the distinct drafts, each draft row's index among them (``slot``) and each draft's column (``at``): its
+        # column among the penalized ids, else a new one after them
+        drafted, slot = np.unique(np.asarray(tokens[1:], dtype=np.int64), return_inverse=True)
+        at = np.searchsorted(self._ids, drafted)
+        old = at < known
+        old[old] = self._ids[at[old]] == drafted[old]
+        extra = drafted[~old]
+        at[~old] = known + np.arange(len(extra))
         cols = np.concatenate([self._ids, extra]) if len(extra) else self._ids
         if not len(cols):
             return logits
-        known = len(self._ids)
         # rows [0, rows): each row's counts; row ``rows``: the prompt flags (repetition)
         table = np.zeros((rows + 1, len(cols)), dtype=np.float32)
         table[:rows, :known] = self._counts
         table[rows, :known] = self._in_prompt
         if len(drafted):
-            where = {int(t): known + i for i, t in enumerate(extra)}
-            for t, at in zip(drafted.tolist(), np.searchsorted(self._ids, drafted).tolist()):
-                if at < known and self._ids[at] == t:
-                    where[t] = at
+            # each row's drafts are its parent's plus its own: one pass in row order (parents precede their rows)
+            path = np.zeros((rows, len(drafted)), dtype=np.float32)
             for row in range(1, rows):
-                node = row
-                while node > 0:
-                    table[row, where[int(tokens[node])]] += 1
-                    parent = node - 1 if parents is None else int(parents[node])
-                    if parent >= node:
-                        raise ValueError("tree parents must precede their rows")
-                    node = parent
+                parent = row - 1 if parents is None else int(parents[row])
+                if parent >= row:
+                    raise ValueError("tree parents must precede their rows")
+                if parent > 0:
+                    path[row] = path[parent]
+                path[row, slot[row - 1]] += 1
+            table[:rows, at] += path
         device = logits.device
         ids = torch.from_numpy(cols).to(device)
         both = torch.from_numpy(table).to(device)

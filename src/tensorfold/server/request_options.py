@@ -11,8 +11,16 @@ from tensorfold.server.stopping import stop_options
 
 
 _INTEGER_FIELDS = {"seed", "top_k", "thinking_budget", "max_tokens", "max_completion_tokens"}
-# OpenAI presence/frequency and vLLM repetition penalties (tensorfold.engine.penalties); vLLM SamplingParams' ranges
-PENALTY_FIELDS = ("presence_penalty", "frequency_penalty", "repetition_penalty")
+# OpenAI presence/frequency and vLLM repetition penalties (tensorfold.engine.penalties), each with its off value;
+# vLLM SamplingParams' ranges
+PENALTY_FIELDS = {"presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
+
+
+def drop_penalties(sampling: dict[str, Any]) -> dict[str, Any]:
+    """Remove the penalty defaults from ``sampling`` (for a backend that cannot apply them); return the active ones."""
+
+    dropped = {k: sampling.pop(k) for k in PENALTY_FIELDS if k in sampling}
+    return {k: v for k, v in dropped.items() if v != PENALTY_FIELDS[k]}
 
 
 def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:

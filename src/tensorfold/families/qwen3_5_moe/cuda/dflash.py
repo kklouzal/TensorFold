@@ -224,7 +224,8 @@ class DFlash:
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
     def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
-        """A launched chain; ``context_length`` is the absolute position of its first proposal (the anchor's + 1)."""
+        """A launched chain. ``context_length`` (its first proposal's absolute position, the anchor's + 1) and
+        ``sampling`` complete the drafter interface; argmax proposals use neither."""
         if launched is None:
             return [], [], []
         chains, row = launched
