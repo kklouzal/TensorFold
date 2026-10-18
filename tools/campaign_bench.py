@@ -463,7 +463,7 @@ def load_runs(runs: str, prefix: str) -> list[dict]:
 def cell_values(doc: dict) -> dict:
     """Per position: the mean of each metric per cell. Decode cells are (depth, thinking, sampling) over every
     request (workload cells split them by task); prefill cells are (depth, thinking) over cold requests (see
-    COLD_CACHED_SHARE). A cell value is the mean over its requests."""
+    COLD_CACHED_SHARE). A cell value is the mean over its requests (memory cells: the minimum)."""
 
     cells: dict[tuple, dict[str, list[float]]] = {}
     for r in doc["records"]:
@@ -480,7 +480,9 @@ def cell_values(doc: dict) -> dict:
                 value = r["metrics"].get(metric) if metric != "mem_min_available_mib" else r[metric]
                 if value is not None:
                     bucket.setdefault(metric, []).append(float(value))
-    return {key: {m: statistics.fmean(v) for m, v in metrics.items()} for key, metrics in cells.items()}
+    # memory cells keep the position's lowest reading (the safety margin), every other metric its mean
+    return {key: {m: min(v) if m == "mem_min_available_mib" else statistics.fmean(v) for m, v in metrics.items()}
+            for key, metrics in cells.items()}
 
 
 def first_difference(a: list[int], b: list[int]) -> int | None:
@@ -595,20 +597,22 @@ def _fmt(summary: dict, digits: int = 2) -> str:
 
 def markdown(result: dict) -> str:
     lines = [f"# {result['prefix']} (base {result['base']}; variants {', '.join(result['variants'])})", "",
-             "| cell | variant | decode tok/s (engine) | wall | accept | tok/round | prefill tok/s | TTFT s |",
-             "|---|---|---|---|---|---|---|---|"]
+             "| cell | variant | decode tok/s (engine) | wall | accept | tok/round | prefill tok/s | TTFT s | "
+             "min MemAvailable GiB |", "|---|---|---|---|---|---|---|---|---|"]
     for name, by_variant in result["absolute"].items():
         if not name.startswith("decode/"):
             continue
         _, depth, think, sampling = name.split("/")
         prefill = result["absolute"].get(f"prefill/{depth}/{think}", {})
+        memory = result["absolute"].get(f"memory/{depth}/{think}", {})
         for variant, m in by_variant.items():
-            p = prefill.get(variant, {})
+            p, low = prefill.get(variant, {}), memory.get(variant, {}).get("mem_min_available_mib")
             cols = [_fmt(m[k]) if k in m else "-" for k in ("decode_tps", "decode_tps_wall")]
             cols.append(_fmt(m["accept"], 3) if "accept" in m else "-")
             cols.append(_fmt(m["tokens_per_round"]) if "tokens_per_round" in m else "-")
             cols.append(_fmt(p["prefill_tps"], 0) if "prefill_tps" in p else "-")
             cols.append(_fmt(p["ttft_s"]) if "ttft_s" in p else "-")
+            cols.append(f"{low['min'] / 1024:.1f}" if low else "-")      # lowest over positions
             lines.append(f"| {depth} {think} {sampling} | {variant} | " + " | ".join(cols) + " |")
     if result["ratios"]:
         lines += ["", "| cell | variant | metric | ratio vs base (95% t) | geomean | below 1 | per cycle |",
