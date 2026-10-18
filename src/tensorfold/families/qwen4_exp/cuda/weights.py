@@ -7,7 +7,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from tensorfold.checkpoint_metadata import read_config
 from tensorfold.cuda import experts as grouped
+from tensorfold.cuda import precision
 
 from ..host_table import open_table, shard_keys
 from ..ple_lifetime import PLETables, _note, _retain_failure
@@ -43,12 +45,16 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     from . import exl3
 
     model_dir = Path(model_dir)
+    quant_block = read_config(model_dir).get("quantization_config") or {}
+    native_a4 = (quant_block.get("quant_method") == "modelopt" and torch.device(device).type == "cuda"
+                 and precision.mode() == precision.CHECKPOINT
+                 and precision.own_math(torch.cuda.get_device_capability(device))["nvfp4"])
     ram_layout = None
     if vram_experts is not None:
         from ..ram_experts import check, layout
 
         check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
-        ram_layout = layout(model_dir, vram_experts, mtp=mtp)
+        ram_layout = layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope,
                          **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
@@ -283,9 +289,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         router = torch.cat([router, sgate[None]]).contiguous()
         if expert_loader is not None:
             return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
+        from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
+
+        bank_prefix = prefix + name
+        bank_info = {key: rd.info(key) for key in rd.where if key.startswith(bank_prefix + ".experts.")}
+        a4 = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4)
         if expert_cache is not None:
             bank = nvfp4_moe.load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
-                                 layer_id=next_expert_layer)
+                                 layer_id=next_expert_layer, native_a4=a4)
             next_expert_layer += 1
             return MoEW(router, bank)
         e = full.experts
@@ -301,6 +312,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             shared = (raw(se + "gate_proj.weight").to(torch.bfloat16)[lo:hi].contiguous(),
                       raw(se + "up_proj.weight").to(torch.bfloat16)[lo:hi].contiguous(),
                       raw(se + "down_proj.weight").to(torch.bfloat16)[:, dlo * gs:dhi * gs].contiguous())
+        if a4:
+            from tensorfold.cuda.nvfp4.modelopt_experts import load_modelopt_a4
+
+            if world != 1:
+                raise ValueError("Flash Next native ModelOpt A4 requires one CUDA GPU")
+            routed = load_modelopt_a4(rd, bank_prefix, full, device=device)
+            shared = shared if isinstance(shared, nvfp4_moe.Expert4) else nvfp4_moe.expert4_from_bf16(*shared)
+            return MoEW(router, nvfp4_moe.MoEA4(routed, shared))
         fp8_drafter = (rd.has(prefix + f"{name}.experts.0.gate_proj.weight")
                        and raw(f"{name}.experts.0.gate_proj.weight").dtype == torch.float8_e4m3fn)
         if fp8_drafter and not name.startswith("mtp."):

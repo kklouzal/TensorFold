@@ -103,6 +103,7 @@ class Layout:
     automatic: bool = False
     loading_device_bytes: int = 0
     authority_allocations: tuple[int, ...] = ()
+    native_a4_banks: tuple[str, ...] = ()
 
     def transform(self, resident):
         """Exclude expert projections; the fixed GPU pool is admitted as resident_extra."""
@@ -130,7 +131,7 @@ class Layout:
         return weights
 
 
-def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layout:
+def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_a4: bool = False) -> Layout:
     """Size exact packed affine4 buffers, including shared and optional MTP experts."""
 
     check(model_dir, gib)
@@ -151,7 +152,7 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
     if is_exl3(Path(model_dir)):
         return _exl3_layout(model_dir, gib, text, mtp)
     if str(text["_quantization"].get("quant_method", "")).lower() == "modelopt":
-        return _nvfp4_layout(model_dir, gib, text, mtp)
+        return _nvfp4_layout(model_dir, gib, text, mtp, native_a4=native_a4)
     if int(text["shared_expert_intermediate_size"]) != width:
         raise ValueError("--vram-experts requires matching routed and shared expert widths")
     # 160 int32 words per 32x32 tile: 4-bit weights plus BF16 affine scales/biases.
@@ -199,17 +200,23 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
                                    (int(text["num_experts"]) + 1) * (entry // 3))))
 
 
-def _nvfp4_layout(model_dir, gib, text, mtp):
+def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False):
     from tensorfold.cuda.capacity import SIZES
     from tensorfold.cuda.nvfp4.host_layout import bank_bases
     from tensorfold.cuda.read_budget import pinned_backing_bytes, reader_host_bytes
 
     entries = headers(model_dir)
-    banks = bank_bases(entries, text, mtp)
+    banks = sorted(bank_bases(entries, text, mtp), key=lambda bank:
+                   (bank.startswith("mtp."), int(re.search(r"layers\.(\d+)", bank).group(1))))
     width, dims = text["moe_intermediate_size"], text["hidden_size"]
-    # 144 int32 words per tile; global FP32 gate/up and down scales have
-    # separate 16-byte-aligned fields in HostExpertCache.
-    entry = 3 * (width // 32) * (dims // 32) * 144 * 4 + 32
+    from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
+
+    a4_banks = tuple(bank for bank in banks if a4_bank(entries, bank, text["num_experts"], text["_quantization"],
+                                                     native=native_a4))
+    # Both native layouts retain the original payload byte count. Static-A4
+    # adds two separately aligned input calibration fields; W4A16 MTP banks
+    # share the larger pool but allocate/read only their original four fields.
+    entry = 3 * (width // 32) * (dims // 32) * 144 * 4 + (64 if a4_banks else 32)
     count = len(banks) * text["num_experts"]
     requested = entry if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
     slots = min(count, requested // entry)
@@ -221,7 +228,9 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
     loading = max(64 * 2**20, 128 * width * dims + 8 * entry)
     e = text["num_experts"]
     tiles = (width // 32) * (dims // 32) * 144 * 4
-    allocations = (e * 2 * tiles, e * tiles, e * 8, e * 4) * len(banks)
+    allocations = tuple(size for bank in banks for size in
+                        ((e * 2 * tiles, e * tiles, e * 8, e * 4, e * 8, e * 4) if bank in a4_banks else
+                         (e * 2 * tiles, e * tiles, e * 8, e * 4)))
     # Existing generic host staging has no separately charged Reader rings.
     # Only one expert row of a stacked MTP field is read, never its full bank.
     # Nonstacked main codes use M/2 bytes; FP8 MTP codes use M. Scalar/row/block
@@ -242,7 +251,7 @@ def _nvfp4_layout(model_dir, gib, text, mtp):
     return Layout(entry, slots, slots * entry, sum(allocations), pinned_backing_bytes(2 * entry), host_loading,
                   "nvfp4", automatic=gib == "auto",
                   loading_device_bytes=loading,
-                  authority_allocations=allocations)
+                  authority_allocations=allocations, native_a4_banks=a4_banks)
 
 
 def exl3_expert_tensor(name: str) -> bool:
