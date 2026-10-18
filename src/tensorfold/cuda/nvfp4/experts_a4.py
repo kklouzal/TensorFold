@@ -14,19 +14,24 @@ from .host_layout import authority_fields_a4
 
 
 def pack_projection_a4(weight, scale):
-    """CPU-only bit permutation into code words followed by E4M3 block scales.
+    """Exact CPU/CUDA bit permutation into words followed by E4M3 block scales.
 
     No floating conversion is performed. Both output dimensions are multiples
     of64, so native tiles contain no absent/padded output rows.
     """
-    if (weight.device.type != "cpu" or scale.device.type != "cpu" or weight.dtype != torch.uint8
+    if (weight.device.type not in ("cpu", "cuda") or scale.device != weight.device or weight.dtype != torch.uint8
             or weight.ndim != 2 or scale.dtype != torch.float8_e4m3fn):
-        raise ValueError("native A4 packing requires CPU U8 codes and E4M3 scales")
+        raise ValueError("native A4 packing requires CPU/CUDA U8 codes and E4M3 scales on one device")
     n, k = weight.shape[0], weight.shape[1] * 2
     if n <= 0 or k <= 0 or n % 64 or k % 64 or tuple(scale.shape) != (n, k // 16):
         raise ValueError("native A4 projection dimensions/scales must form complete64-wide tiles")
-    words = (weight.contiguous().view(torch.int32).view(n // 64, 8, 8, k // 64, 2, 4)
-             .permute(0, 3, 1, 2, 5, 4).contiguous())
+    if weight.device.type == "cuda":
+        from .checkpoint import pack4
+
+        words = pack4(weight, n)
+    else:
+        words = (weight.contiguous().view(torch.int32).view(n // 64, 8, 8, k // 64, 2, 4)
+                 .permute(0, 3, 1, 2, 5, 4).contiguous())
     bs = scale.contiguous().view(torch.uint8).view(n // 64, 64, k // 64, 4).permute(0, 2, 1, 3).contiguous()
     return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
 

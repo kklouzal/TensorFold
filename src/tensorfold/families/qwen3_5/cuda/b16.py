@@ -26,6 +26,18 @@ def matmul(x: torch.Tensor, w: torch.Tensor, bias: torch.Tensor | None = None) -
     return _ext().b16_linear(x.contiguous(), w.contiguous(), b)
 
 
+def matmul_rows(x: torch.Tensor, w: torch.Tensor, rows: int) -> torch.Tensor:
+    """Bias-free BF16/FP16 projection sharing weight loads across2/4/8/16 rows.
+
+    Each row retains matmul's ordered FP32 FMA chain, XOR reduction and output
+    rounding. The native boundary validates shape/device/alignment and rows.
+    The caller selects rows at preparation; it never selects another arithmetic.
+    """
+    if x.dtype != w.dtype:
+        x = x.to(w.dtype)
+    return _ext().b16_linear_rows(x.contiguous(), w.contiguous(), rows)
+
+
 def prompt(x: torch.Tensor, w: torch.Tensor, bm: int = 0) -> torch.Tensor:
     """Prompt rows x [M, K] @ w [N, K]^T on the bf16 mma, one K chain a row: chunk-invariant; ``bm`` keeps bits."""
 

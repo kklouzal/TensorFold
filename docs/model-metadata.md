@@ -17,6 +17,13 @@ errors, rather than permission to reinterpret weights.
 | Reply limit | `generation_config.json` `max_new_tokens`, otherwise 4096 | `--max-tokens`, then the request's reply limit |
 | Context/RoPE | Model's supported native window and RoPE metadata, fitted to available memory | `--context` and supported family-specific RoPE flags |
 
+CUDA uses the checkpoint tokenizer's vocabulary, normalizer, special tokens and
+postprocessor. Saved padding/truncation settings describe batch preparation;
+TensorFold disables them on its private inference tokenizer so short prompts are
+not padded and longer prompts are never silently shortened. Token counting sees
+the complete sequence. Generation retains the server's explicit context
+admission, including after image/video expansion.
+
 Hugging Face metadata is fetched before compatibility checks and large weight
 downloads. Online preflight verifies the published file inventory and exact commit;
 network, authorization and I/O errors are reported explicitly. A cached snapshot

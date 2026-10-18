@@ -43,6 +43,8 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
+Harness uses the container's `tensorfold_harness.py` compatibility entrypoint with `--thinking-budget 0`. Its `/v1/tokenize` accepts chat requests and returns integer `count`, the requested served `model`, positive `context_length`, and `harness_tokenizer_version: 1`, with optional bounded prompt/token inspection. It prepares the same prompt as generation without running the engine; oversized histories can be counted while generation context admission and independent image/video safety limits remain intact. The native CLI's vLLM response above has a different metadata contract.
+
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
 take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given. Both servers serve
 one prompt a request: a batch of several prompts receives HTTP 400.

@@ -1,4 +1,8 @@
-# GB10 NVFP4 service
+# GB10 Flash Next NVFP4 profile
+
+This guide records the qualified Flash Next profile. The later
+[Gemma4 NVFP4 deployment](../../docs/gemma4-cuda-validation.md) now uses the GB10's
+LAN port 8888; stop that service before launching this alternative profile.
 
 [compose.nvfp4.yaml](compose.nvfp4.yaml) serves
 `dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4`, revision
@@ -8,7 +12,7 @@ profile: resident checkpoint-native W4A4 experts, six native MTP drafts at
 CUDA-graph sizing. The configured context is the checkpoint's native 262,144
 tokens. Quantized KV changes output; this is not a BF16-equivalence claim.
 
-The [2026-10-18 live receipt](deployment-nvfp4-20261018.json) records the healthy
+The earlier [2026-10-18 receipt](deployment-nvfp4-20261018.json) records the then-healthy
 `qwen38-flash-next-nvfp4` container at `http://192.168.1.50:8888/v1`, on the old
 service's LAN port. Serial/MTP full-token identity, four parallel submitted
 requests, known image/video input and normal/streamed strict tool calls passed.

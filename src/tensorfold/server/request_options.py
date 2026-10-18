@@ -119,6 +119,24 @@ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset()) 
     return fields
 
 
+def fixed_thinking(template: str) -> bool | None:
+    """A sole unconditional constant assignment overrides the caller's switch.
+
+    Conditional/default assignments remain controlled by the existing template
+    behavior. Inspect the captured Jinja AST, never comments or substring names.
+    """
+    from jinja2 import Environment, nodes
+
+    parsed = Environment(extensions=["jinja2.ext.loopcontrols"]).parse(template)
+    assignments = [node for node in parsed.find_all(nodes.Assign)
+                   if isinstance(node.target, nodes.Name) and node.target.name == "enable_thinking"]
+    if len(assignments) == 1 and assignments[0] in parsed.body:
+        value = assignments[0].node
+        if isinstance(value, nodes.Const) and type(value.value) is bool:
+            return value.value
+    return None
+
+
 class RequestOptions:
     """Resolve sampling and thinking controls before a request reaches the engine."""
 

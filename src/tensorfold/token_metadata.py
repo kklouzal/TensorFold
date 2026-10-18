@@ -9,10 +9,19 @@ from tensorfold.checkpoint_metadata import read_json, read_text
 
 
 def load_tokenizer(model_dir):
-    """Load captured regular-file tokenizer JSON through the shared metadata boundary."""
+    """Prepare exact CUDA sequences, leaving length admission to the server.
+
+    Exported padding/truncation are batch preparation settings, not the model's
+    tokenization. Keep its vocabulary, added tokens and postprocessor unchanged;
+    neither counting nor generation may pad or silently discard prompt tokens.
+    This private instance is configured once before concurrent encoding starts.
+    """
     from tokenizers import Tokenizer
 
-    return Tokenizer.from_str(read_text(model_dir, "tokenizer.json", required=True))
+    tokenizer = Tokenizer.from_str(read_text(model_dir, "tokenizer.json", required=True))
+    tokenizer.no_padding()
+    tokenizer.no_truncation()
+    return tokenizer
 
 
 def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):

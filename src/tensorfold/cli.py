@@ -447,7 +447,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             flush=True,
         )
         app.auth = getattr(args, "auth", None)
-        note = thinking_notes.startup(model_dir, bool(args.thinking))
+        note = thinking_notes.startup(model_dir, app.default_thinking,
+                                      template_source=app.template.selected().source.source)
         if note:
             print(note, flush=True)
         server = Server((args.host, int(args.port)), make_handler(app),

@@ -1,5 +1,45 @@
 # Gemma 4 26B-A4B (`gemma4`)
 
+## Native CUDA trial
+
+The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights; proposals are verified by the target before publication. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
+
+For a local complete mixed4/6 snapshot and matching companion:
+
+```sh
+tensorfold serve /models/gemma4 --backend cuda --drafter /models/gemma4-dflash \
+  --drafter-bits 16 --draft-rows 16 --parallel 1 --context 0 --vision \
+  --host 0.0.0.0 --port 8888 --name gemma4-26b
+```
+
+For Harness, keep the standard container entrypoint (`cuda_entrypoint.py` → `tensorfold_harness.py`) and add `--thinking-budget 0`; this delegates budgets to individual requests. The CLI otherwise enables thinking by default, subject to a checkpoint-fixed template. Overriding the entrypoint with `python -m tensorfold` omits Harness's required `harness_tokenizer_version`, `model` and `context_length` response fields. Count-only image requests may exceed the context window; normal generation retains its context check and all media limits remain active.
+
+The checkpoint's chat template and generation metadata remain authoritative. The zecanard mixed4/6 template fixes thinking on; an explicit conflicting request is refused. Use a template override to select different behavior. Image/video inputs use the local standard Gemma processor, without executing checkpoint Python. Multiple clips in one request currently require equal sampled frame counts; unequal counts are refused before preprocessing. On GB10, configure `TENSORFOLD_MEMORY_RESERVE_GIB=8`; system `MemAvailable` governs unified-memory admission. Native CUDA startup, full-model output and throughput checks are pending for this new path; the measurements below describe the earlier Apple implementation only.
+
+## Original AEON NVFP4 on CUDA
+
+`AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` stores individually calibrated compressed-tensors NVFP4 projections. TensorFold preserves the original FP4 code/block-scale bytes and input/weight global calibrations. It executes the declared FP4 activation math on SM12.x, with bounded GPU packing during load. The original BF16 tied embedding/head, custom BF16 router weights, vision tower and projector remain unquantized. `--precision full` is refused for this path rather than silently changing the declared activation math.
+
+Use a complete local NVFP4 snapshot and the same BF16 DFlash companion:
+
+```sh
+tensorfold serve /models/gemma4-nvfp4 --backend cuda --precision checkpoint \
+  --drafter /models/gemma4-dflash --drafter-bits 16 --draft-rows 5 \
+  --parallel 1 --context 0 --vision --host 0.0.0.0 --port 8888 \
+  --name gemma4-26b --no-thinking --thinking-budget 0
+```
+
+For Harness, retain the standard compatibility container entrypoint described above. This checkpoint's template accepts the thinking switch. This profile explicitly disables thinking for latency; requests can enable it with `chat_template_kwargs.enable_thinking=true`. EOS and sampling defaults come from its generation metadata. Gemma has no Flash Next n-gram tables to offload. The initial native path uses fixed row-independent FP4 K reductions, the publisher's BF16 router input order with FP32 logits/softmax, single-cast learned RMS norms, BF16 GeGLU activation/product boundaries, and ascending-expert BF16 weighted accumulation. Serial/DFlash equality is scoped to this TensorFold arithmetic; cross-engine bit identity is not claimed.
+
+The GB10 [Compose profile](../../deploy/gb10/compose.gemma4.yaml) preserves the Harness entrypoint, LAN port 8888, model ID `gemma4-26b`, resident vision, BF16 KV and the 8 GiB host reserve without Docker RAM/CPU quotas. Copy [gemma4.env.example](../../deploy/gb10/gemma4.env.example) to a host-owned file and set the immutable image, complete model/drafter directories, cache and GPU UUID:
+
+```sh
+docker compose --env-file /path/to/gemma4.env -f deploy/gb10/compose.gemma4.yaml config --quiet
+docker compose --env-file /path/to/gemma4.env -f deploy/gb10/compose.gemma4.yaml up -d
+```
+
+The example's five rows permit four DFlash proposals. A bounded GB10 comparison of 3/5/11/16 rows selected five for the tested short code/chat workloads; longer prompts and other workloads require their own measurements. The final installed image passed 461 CPU and 50 CUDA cases, full-token serial/DFlash identity, Harness counting, streaming, image/video and enforced strict tools. Four 512-token coding requests observed 64.49–74.41 decode tok/s with DFlash versus 41.16–41.37 serially. A separate 200-request source comparison retained every reference token and observed about 76 code and 55 chat tokens/s through the warmed engine at context 4096. R16 head reuse clearly improved both source workloads over the original head; its ranking against R8 remains inconclusive, rather than equivalent. [Validation and immutable receipt](../gemma4-cuda-validation.md) record the exact checkpoint, image, workload and limits. On hosts with a Docker affinity enforcer, restore and verify all 20 GB10 CPUs before TensorFold initializes, as described in the [deployment guide](../../deploy/gb10/nvfp4.md). Earlier affine smoke results and Apple measurements do not qualify this NVFP4 path.
+
 Measured on an M4 Pro with 64 GB (273 GB/s) and MLX 0.31.2, with `mlx-community/gemma-4-26b-a4b-it-4bit`.
 Packages: `src/tensorfold/families/gemma4/` and `src/tensorfold/kernels/gemma/v1/`.
 

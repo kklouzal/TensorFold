@@ -956,7 +956,7 @@ def test_engines_or_templates_that_cannot_hold_calls_refuse_strict(tmp_path, gra
     hermes = QWEN_CALLS.replace("'<tool_call>\\n<function='", "'<tool_call><function='")
     with http_server(_app(tmp_path, ScriptEngine("x"), grammars, hermes)) as port:
         status, text = post(port, _body(False), True)
-    assert status == 400 and "Qwen XML tool calls" in text and "writes calls otherwise" in text
+    assert status == 400 and "Qwen XML or Gemma call markup" in text and "writes calls otherwise" in text
     python_values = QWEN_CALLS.replace("v|tojson", "v|string")
     with http_server(_app(tmp_path, ScriptEngine("x"), grammars, python_values)) as port:
         status, text = post(port, _body(False), True)

@@ -4,9 +4,9 @@ import subprocess
 import sys
 
 import pytest
-from tokenizers import Tokenizer, models
+from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, processors
 
-from tensorfold.token_metadata import resolve_eos
+from tensorfold.token_metadata import load_tokenizer, resolve_eos
 
 
 def write(directory, name, value):
@@ -21,6 +21,55 @@ def tokenizer(directory, *, eos="turn_stop"):
     write(directory, "tokenizer_config.json", {"eos_token": {"content": eos, "special": True},
                                                "added_tokens_decoder": {"2": {"content": "turn_stop"}}})
     return tok
+
+
+@pytest.mark.parametrize("padding", [None, "fixed_left", "batch_right"])
+@pytest.mark.parametrize("truncation", [False, True])
+def test_inference_tokenizer_disables_saved_batch_length_policies_only(tmp_path, padding, truncation):
+    """Our prepared instance preserves full IDs, postprocessing and checkpoint bytes."""
+    vocab = {"[UNK]": 0, "<bos>": 1, "<pad>": 2, "<turn>": 3, "hello": 4, "world": 5}
+    tok = Tokenizer(models.WordLevel(vocab, unk_token="[UNK]"))
+    tok.normalizer = normalizers.Lowercase()
+    tok.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tok.add_special_tokens(["<bos>", "<pad>", "<turn>"])
+    tok.post_processor = processors.TemplateProcessing(single="<bos> $A", special_tokens=[("<bos>", 1)])
+    if padding == "fixed_left":
+        tok.enable_padding(direction="left", length=8, pad_id=2, pad_token="<pad>")
+    elif padding == "batch_right":
+        tok.enable_padding(direction="right", pad_to_multiple_of=8, pad_id=2, pad_token="<pad>")
+    if truncation:
+        tok.enable_truncation(max_length=8)
+    path = tmp_path / "tokenizer.json"
+    tok.save(str(path))
+    original = path.read_bytes()
+
+    prepared = load_tokenizer(tmp_path)
+    assert prepared.padding is None and prepared.truncation is None
+    short, long = "HELLO world", " ".join(["HELLO world"] * 20)
+    assert prepared.encode(short).ids == [1, 4, 5]
+    assert prepared.encode(long).ids == [1] + [4, 5] * 20
+    assert prepared.encode(short, add_special_tokens=False).ids == [4, 5]
+    assert [entry.ids for entry in prepared.encode_batch([short, long])] == [[1, 4, 5], [1] + [4, 5] * 20]
+    assert path.read_bytes() == original
+    expected = json.loads(original)
+    expected.update(padding=None, truncation=None)
+    assert json.loads(prepared.to_str()) == expected
+
+
+def test_saved_batch_length_policies_do_not_disable_exact_segment_encoding(tmp_path):
+    from tensorfold.server.segments import SegmentEncoder
+
+    tok = Tokenizer(models.WordLevel({"[UNK]": 0, "<turn>": 1, "word": 2}, unk_token="[UNK]"))
+    tok.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    tok.add_special_tokens(["<turn>"])
+    tok.enable_padding(length=8)
+    tok.enable_truncation(max_length=8)
+    tok.save(str(tmp_path / "tokenizer.json"))
+    prepared = load_tokenizer(tmp_path)
+    assert SegmentEncoder.qualifies(prepared, "<turn>")
+    segments = SegmentEncoder(prepared, "<turn>")
+    text = "<turn>word word<turn>word"
+    assert segments.encode(text) == prepared.encode(text, add_special_tokens=False).ids == [1, 2, 2, 1, 2]
 
 
 def test_model_generation_and_tokenizer_named_eos_are_stable_and_do_not_stop_on_other_specials(tmp_path):

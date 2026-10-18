@@ -101,6 +101,30 @@ def test_oversized_history_count_preserves_generation_admission(bridge, app):
         app.prepare(body, True)
 
 
+def test_exported_fixed_padding_and_truncation_cannot_change_counting_or_generation(bridge, tmp_path):
+    served_app(tmp_path)
+    path = tmp_path / "tokenizer.json"
+    exported = Tokenizer.from_file(str(path))
+    exported.enable_padding(direction="left", length=4096)
+    exported.enable_truncation(max_length=8)
+    exported.save(str(path))
+    original = path.read_bytes()
+    app = App(NoGenerationEngine(), tmp_path, "served", context_window=8, max_tokens=2,
+              thinking_budget=0, sampling={"temperature": 0})
+
+    short = request(3, max_tokens=2, return_tokens=True)
+    counted = bridge.count_request(app, short, RequestError)
+    assert counted["count"] == 4 and counted["tokens"] == [4, 4, 4, 1]
+    assert app.prepare(short, True).prompt == counted["tokens"]
+    assert app.tokenize({"prompt": "w w w"})["tokens"] == [4, 4, 4]
+    long = request(20, max_tokens=2, return_tokens=True)
+    counted = bridge.count_request(app, long, RequestError)
+    assert counted["count"] == 21 and counted["tokens"] == [4] * 20 + [1]
+    with pytest.raises(RequestError, match="context"):
+        app.prepare(long, True)
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("body, problem", [
     ([], "JSON object"),
     ({}, "model"),

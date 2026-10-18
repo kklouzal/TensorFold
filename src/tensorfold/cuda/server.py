@@ -17,7 +17,7 @@ from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
 from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_ids import new_request_id
-from tensorfold.server.request_options import heard_effort, parse_numbers, thinking_fields
+from tensorfold.server.request_options import fixed_thinking, heard_effort, parse_numbers, thinking_fields
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
 from tensorfold.server.stopping import matched_stop, stop_options
@@ -27,13 +27,15 @@ from tensorfold.server.token_routes import flag, token_ids
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
 from tensorfold.engine.tool_draft import ToolCallStreamer
-from tensorfold.server.tools import active_tool_specs, normalize_qwen_tool_markup, tool_choice_requires_call
+from tensorfold.server.tools import (
+    active_tool_specs, normalize_qwen_tool_markup, parse_tool_calls_from_content, tool_choice_requires_call,
+)
 
 from tensorfold.cuda import health
 from tensorfold.cuda.chat_template import ChatTemplate
 from tensorfold.cuda.reply_text import StopStrings, StreamDecoder, hide_tool_calls, parse_tool_calls
 from tensorfold.cuda.turns import Turns, Yield
-from tensorfold.server.text import is_title_request, reasoning_count, split_thinking
+from tensorfold.server.text import CHANNEL_MARKERS, THINK_MARKERS, is_title_request, reasoning_count, split_thinking
 from tensorfold.vision.images import DEFAULT_LIMITS, ImageLimits
 
 
@@ -123,6 +125,9 @@ class App:
             raise ValueError("engine and server must use the same captured chat template selection")
         self.segments = _segment_encoder(self.tok, self.template)
         self.default_thinking = default_thinking
+        fixed = self._fixed_thinking(False)
+        if fixed is not None:
+            self.default_thinking = fixed
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
         # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
         self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
@@ -132,6 +137,29 @@ class App:
         if self.context_window < 0:
             raise ValueError("context_window must be 0 or a positive token count")
         self.turns = Turns()                # one request at a time where the engine decodes one
+
+    @property
+    def thinking_markers(self):
+        """Checkpoint channel tokens select Gemma's reasoning boundary once."""
+        if not hasattr(self, "_thinking_markers"):
+            self._thinking_markers = CHANNEL_MARKERS if self.tok.token_to_id(CHANNEL_MARKERS[1]) is not None else THINK_MARKERS
+        return self._thinking_markers
+
+    def _fixed_thinking(self, tools):
+        """The selected immutable template's unconditional switch, cached by route."""
+        if self.thinking_markers != CHANNEL_MARKERS:
+            return None
+        cache = self.__dict__.setdefault("_thinking_fixed", {})
+        route = bool(tools)
+        if route not in cache:
+            source = self.template.selected(tools=tools).source.source
+            if (getattr(self.template, "options", (None, None)) != (None, None)
+                    and ("<think>" in source or "</think>" in source)
+                    and CHANNEL_MARKERS[0] not in source and CHANNEL_MARKERS[1] not in source):
+                raise RequestError("the selected chat template uses Qwen thinking markers with a Gemma tokenizer; "
+                                   "select a template with Gemma's native thought channels")
+            cache[route] = fixed_thinking(source)
+        return cache[route]
 
     @property
     def pending_requests(self) -> int | None:
@@ -283,6 +311,12 @@ class App:
         # reasoning_effort and enable_thinking as the Mac server reads them: the template hears an effort when thinking
         levels = self.template.selected(tools=tools).efforts
         fields = thinking_fields(body, levels)
+        fixed = self._fixed_thinking(tools)
+        if fixed is not None:
+            if "enable_thinking" in fields and fields["enable_thinking"] is not fixed:
+                raise RequestError(f"the selected chat template fixes enable_thinking={str(fixed).lower()}; "
+                                   "select a chat template that supports the requested thinking switch")
+            fields["enable_thinking"] = fixed
         kwargs.pop("enable_thinking", None)
         kwargs.pop("reasoning_effort", None)
         thinking = bool(fields.get("enable_thinking", self.default_thinking))
@@ -374,9 +408,23 @@ class App:
                     else:
                         if strict_scalar_tools.template_supported(rendered, rendered_false):
                             plan = strict_scalar_tools.Plan
+                        else:
+                            from tensorfold.server import strict_gemma_tools
+
+                            try:
+                                rendered = self.template.render(strict_gemma_tools.PROBE,
+                                                                tools=strict_gemma_tools.PROBE_TOOLS, enable_thinking=False)
+                                rendered_false = self.template.render(strict_gemma_tools.false_probe(),
+                                                                      tools=strict_gemma_tools.PROBE_TOOLS,
+                                                                      enable_thinking=False)
+                            except Exception as exc:  # noqa: BLE001 - discovery failure is an explicit refusal
+                                why = f"could not render a call ({exc})"
+                            else:
+                                if strict_gemma_tools.template_supported(rendered, rendered_false):
+                                    plan = strict_gemma_tools.Plan
                 self._strict_markup = (plan, why)
         if not self._strict_markup[0]:
-            raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
+            raise RequestError("strict function tools require exact supported Qwen XML or Gemma call markup, "
                                f"and this model's chat template {self._strict_markup[1]}: send strict false")
         return self._strict_markup[0](tools, required=tool_choice_requires_call(body.get("tool_choice")),
                                       parallel=not policy.single, offered=body.get("tools"))
@@ -385,8 +433,20 @@ class App:
         """A strict reply's (reasoning, answer): a call written in a think block that never closed is the answer only
         when the reply's grammar accepts it (as if the grammar had held it)."""
 
-        reasoning, answer = split_thinking(text, finished=finished)
-        if finished and answer and "</think>" not in text and not self._grammars().accepts(prepared.grammar[1], answer):
+        if self.thinking_markers == CHANNEL_MARKERS:
+            from tensorfold.server.gemma_values import split_gemma_thinking
+
+            reasoning, answer = split_gemma_thinking(text, finished=finished)
+            # Generation may precede its first channel close. Validate every
+            # visible answer prefix before publishing tool deltas, including a
+            # direct call and any content before a structural thought block.
+            grammars = self._grammars()
+            matcher = grammars.xgr.GrammarMatcher(prepared.grammar[1])
+            if not matcher.accept_string(answer):
+                raise strict_tools.CallMarkupError("the Gemma answer left its strict tool grammar")
+            return reasoning, answer
+        reasoning, answer = split_thinking(text, finished=finished, markers=self.thinking_markers)
+        if finished and answer and self.thinking_markers[1] not in text and not self._grammars().accepts(prepared.grammar[1], answer):
             return text, ""
         return reasoning, answer
 
@@ -513,6 +573,9 @@ class App:
             prepare_s, admitted_s = entered - arrived, 0.0
         prompt, max_tokens = prepared.prompt, prepared.max_tokens
         tools, thinking = prepared.tools, prepared.thinking
+        markers = self.thinking_markers
+        split_reasoning = chat and (thinking or markers == CHANNEL_MARKERS)
+        gemma = markers == CHANNEL_MARKERS
         policy = ToolCallPolicy(body)
         sampling = prepared.sampling
         # end tokens end the reply and stay out of its text, unless it asks ignore_eos of an engine that reads it
@@ -527,21 +590,26 @@ class App:
         # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
         strict = prepared.calls
         calls_stream = ((strict.reader() if strict is not None else ToolCallStreamer(tools))
-                        if tools and not policy.single and body.get("stream") else None)
+                        if tools and not policy.single and body.get("stream") and (strict is not None or not gemma) else None)
         answer_raw = [""]
 
         def visible(finished: bool) -> tuple[str, str]:
             raw = stream.final() if finished else stream.text
             # stop strings match the generated text, reasoning included, before it is split (as on the Mac)
             raw = stops.visible(raw, partial=not finished) if stops.strings else raw
-            if chat and thinking and strict is not None:
+            if split_reasoning and strict is not None:
                 reasoning, answer = self._thought(prepared, raw, finished)
-            elif chat and thinking:
-                reasoning, answer = split_thinking(raw, finished=finished)
-                if finished and tools and not answer:
+            elif split_reasoning:
+                if gemma:
+                    from tensorfold.server.gemma_values import split_gemma_thinking
+
+                    reasoning, answer = split_gemma_thinking(raw, finished=finished)
+                else:
+                    reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
+                if finished and tools and not gemma and not answer:
                     # the end parser's split (below): a call missing only its closer, in a block that never closed,
                     # ends the reasoning where it starts, so its markup is the call and never reasoning_content
-                    fixed = split_thinking(normalize_qwen_tool_markup(raw), finished=True)
+                    fixed = split_thinking(normalize_qwen_tool_markup(raw), finished=True, markers=markers)
                     if fixed[1]:
                         reasoning, answer = fixed
             else:
@@ -549,6 +617,10 @@ class App:
             answer_raw[0] = answer
             if strict is not None:
                 answer = strict.content(answer, finished=finished)
+            elif tools and gemma:
+                from tensorfold.server.gemma_values import hide_gemma_calls
+
+                answer = hide_gemma_calls(answer, finished=finished)
             elif tools:
                 answer = (policy.content(answer, finished=finished) if policy.single
                           else hide_tool_calls(answer, finished=finished))
@@ -615,7 +687,7 @@ class App:
         if takes_stop_eos:
             options["stop_eos"] = not prepared.ignore_eos
         shaped = prepared.grammar is not None or prepared.think_budget > 0
-        think_end = self.tok.token_to_id("</think>") if chat and thinking and shaped else None
+        think_end = self.tok.token_to_id(markers[1]) if chat and thinking and shaped else None
         budget = self._think_budget(prepared, think_end)
         # background: the request's own priority (OpenAI's service_tier "flex" when it sends none), else
         # --name-priority's default for its id; title requests always
@@ -664,11 +736,15 @@ class App:
                 end = None if think_end is None or think_end in ids[len(prompt):] else think_end
                 extra["constraint"] = self._grammars().constraint(compiled, think_end=end, spec=spec)
             if prepared.vision is not None:          # a gate's continuation keeps the images, positions extended
-                from tensorfold.vision.qwen_processing import continued
-
                 same = list(ids) == list(prepared.vision.token_ids)
-                extra["vision"] = prepared.vision if same else continued(prepared.vision, ids,
-                                                                       self.vision.frontend.config)
+                if same:
+                    extra["vision"] = prepared.vision
+                elif hasattr(self.vision.frontend, "continued"):
+                    extra["vision"] = self.vision.frontend.continued(prepared.vision, ids)
+                else:
+                    from tensorfold.vision.qwen_processing import continued
+
+                    extra["vision"] = continued(prepared.vision, ids, self.vision.frontend.config)
             if reports and not cached:              # the first run's prompt only: a later run's prompt is the reply's
                 extra["progress"] = filled
             stats = self.engine.generate(ids, count, sampling, feed, **extra)
@@ -722,12 +798,19 @@ class App:
                 raw_text = self.tok.decode([t for t in out if t not in ends], skip_special_tokens=False)
                 text = stops.visible(raw_text)
                 if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
-                    raw_answer = self._thought(prepared, text, True)[1] if chat and thinking else text
+                    raw_answer = self._thought(prepared, text, True)[1] if split_reasoning else text
                     content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
                 elif tools:
-                    text = normalize_qwen_tool_markup(text)    # a call missing only its closer is a call before the think split
-                    raw_answer = split_thinking(text, finished=True)[1] if chat and thinking else text
-                    content, calls = parse_tool_calls(raw_answer, tools, max_calls=policy.max_calls)
+                    if not gemma:
+                        text = normalize_qwen_tool_markup(text)    # Qwen's historical envelope repair
+                    if split_reasoning and gemma:
+                        from tensorfold.server.gemma_values import split_gemma_thinking
+
+                        raw_answer = split_gemma_thinking(text, finished=True)[1]
+                    else:
+                        raw_answer = split_thinking(text, finished=True, markers=markers)[1] if split_reasoning else text
+                    parse = parse_tool_calls_from_content if gemma else parse_tool_calls
+                    content, calls = parse(raw_answer, tools, max_calls=policy.max_calls)
                     shown = policy.content(content)
                     # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
                     content = shown if calls or shown.strip() else content
@@ -752,7 +835,8 @@ class App:
             release()
         stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(request.stats or {}),
                  "token_sha": token_sha(out)}
-        warning = unanswered(finish, chat and thinking, content, calls)
+        warning = unanswered(finish, chat and thinking, content, calls,
+                             can_disable=self._fixed_thinking(tools) is not True)
         if warning:
             print(warning, flush=True)
         self._ended_thinking(request_id, body, prompt, out, finish, chat and thinking, content, calls, reasoning,
@@ -766,7 +850,7 @@ class App:
                 "stop_sequence": matched_stop(raw_text, stops.strings),
                 **({"logprobs": logprobs} if logprobs is not None else {}),
                 "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
-                "reasoning_tokens": reasoning_count(out, self.tok.token_to_id("</think>") if chat and thinking else None),
+                "reasoning_tokens": reasoning_count(out, self.tok.token_to_id(markers[1]) if chat and thinking else None),
                 "stats": stats, "calls_streamed": streamed}
 
     def _ended_thinking(self, request_id: str, body: dict[str, Any], prompt: list[int], out: list[int], finish: str,
@@ -779,8 +863,9 @@ class App:
         end = out[-1] if out and out[-1] in ends and not stop_string else None
         if not thinking or end is None or finish != "stop":         # the common replies: nothing to look up
             return
-        close = self.tok.token_to_id("</think>")
-        closed = close in out if close is not None else "</think>" in raw_text
+        marker = self.thinking_markers[1]
+        close = self.tok.token_to_id(marker)
+        closed = close in out if close is not None else marker in raw_text
         if not ended_thinking(finish, thinking, content, calls, reasoning, True, closed):
             return
         text = self.tok.id_to_token(end)
@@ -833,7 +918,10 @@ class App:
         def blank(token: int) -> bool:
             return token not in eos and not text(token).strip()
 
-        think = [-1 if self.tok.token_to_id(t) is None else self.tok.token_to_id(t) for t in ("<think>", "</think>")]
+        opens, closes = self.thinking_markers
+        opening = self.tok.encode(opens, add_special_tokens=False).ids if opens else ()
+        think = [opening[0] if opening else self.tok.token_to_id("<think>"), self.tok.token_to_id(closes)]
+        think = [-1 if token is None else token for token in think]
         names = [str((t.get("function") or t).get("name") or "") for t in tools] if lead is not None else []
         return CallGate.after_prompt(prompt, self.tok.token_to_id(opener), blank, think_open=think[0],
                                      think_end=think[1], text=text, lead=lead or "", names=names, tail=tail or "",

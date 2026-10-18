@@ -43,15 +43,22 @@ def _router(X, W, OUT, M, x_stride, D: tl.constexpr, NE: tl.constexpr, BM: tl.co
     tl.store(OUT + rm[:, None] * NE + re[None, :], acc, mask=m_ok[:, None] & e_ok[None, :])
 
 
-def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
-    """x [R, D] bf16, rows [E + 1, D] bf16 (router rows, then the shared expert's gate row) -> [R, E + 1] fp32."""
+def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None, *,
+           fixed_schedule: bool = False) -> torch.Tensor:
+    """BF16 rows/router weights to FP32 logits.
+
+    fixed_schedule binds one K reduction schedule across all row counts; the
+    default retains the existing family-specific small/prompt dispatch.
+    """
 
     m, d = x.shape
     ne = rows.shape[0]
     if out is None:
         out = torch.empty((m, ne), dtype=torch.float32, device=x.device)
-    bm = _tile(m)
-    if bm == 16:
+    bm = 16 if fixed_schedule else _tile(m)
+    if fixed_schedule:
+        be, bk, stages = 32, 64, 2
+    elif bm == 16:
         be, bk, stages = 32, 256, 4
     else:
         be, bk, stages = 64, 64, 3               # Smaller K tiles keep prefill within shared-memory limits.
