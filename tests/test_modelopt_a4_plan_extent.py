@@ -12,7 +12,8 @@ def consumer_extent(pairs, experts):
     assignment = next(node for node in method.body if isinstance(node, ast.Assign)
                       and any(isinstance(target, ast.Name) and target.id == "items" for target in node.targets))
     expression = ast.Expression(body=assignment.value.slice.upper)
-    return eval(compile(expression, str(path), "eval"),  # noqa: S307 - evaluate the actual owned pure extent expression
+    # Evaluate the actual owned pure extent expression without importing Torch.
+    return eval(compile(expression, str(path), "eval"),
                 {"pairs": pairs, "self": type("Bank", (), {"count": experts})()})
 
 
