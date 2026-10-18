@@ -8,6 +8,15 @@ from tensorfold.checkpoint_metadata import read_json
 from tensorfold.families.qwen4_exp.rope import RopeParameters
 
 
+CONTEXT_CHUNK = 4096    # context keys one attention partial reduces (cuda/context_attention.py)
+QUERY_TILE = 128        # query rows (group heads x padded block rows) one attention program holds
+
+
+def padded_block(rows):
+    """Block rows as the context attention holds them: the next power of two, at least 16 (``tl.dot``'s minimum)."""
+    return max(16, 1 << (rows - 1).bit_length())
+
+
 def positive(value, name):
     if type(value) is not int or not 1 <= value <= 2**31 - 1:
         raise ValueError(f"DFlash {name} must be a positive signed32 integer")
@@ -155,4 +164,12 @@ def draft_geometry(raw, *, streams=1, kept=0, block=None, prompt_rows=4096):
                       (cfg.heads + 2 * cfg.kv_heads) * cfg.head_dim * 8 + cfg.width * 16)
     scratch += streams * block * cfg.vocab * 8
     per_token = 2 * cfg.layers * cfg.kv_heads * cfg.head_dim * 2
-    return Geometry(lambda slots: scratch + (2 * streams + kept + 1) * (slots + block) * per_token, block)
+    # Context attention partials (one layer live at a time): per stream, KV head, query tile row and complete
+    # context chunk but the last, an FP32 row max, row sum and head_dim outputs.
+    tiled = -(-(cfg.heads // cfg.kv_heads * padded_block(block)) // QUERY_TILE) * QUERY_TILE
+
+    def partials(slots):
+        return streams * cfg.kv_heads * max(1, -(-slots // CONTEXT_CHUNK) - 1) * tiled * (cfg.head_dim + 2) * 4
+
+    return Geometry(lambda slots: scratch + partials(slots) + (2 * streams + kept + 1) * (slots + block) * per_token,
+                    block)

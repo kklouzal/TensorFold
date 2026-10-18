@@ -130,7 +130,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         if draft_dir is not None:
             from .dflash import DFlash
 
-            self.draft = DFlash(draft_dir, self.w, context_limit=self.context_window, block=rows, bits=bits)
+            self.draft = DFlash(draft_dir, self.w, context_limit=self.context_window, block=rows, bits=bits,
+                                exclusive=streams == 1)
         if plan is not None:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()

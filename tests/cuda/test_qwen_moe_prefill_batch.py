@@ -80,12 +80,15 @@ def state_at(w, prompt, start):
 
 
 def same_snapshot(actual, expected):
+    """Equal committed drafter rows: each layer entry is its context's store, rows [0, length) committed."""
     assert actual[2:] == expected[2:]
-    for left, right in zip(actual[:2], expected[:2], strict=True):
-        for a, b in zip(left, right, strict=True):
+    n = actual[2]
+    for field, (left, right) in enumerate(zip(actual[:2], expected[:2], strict=True)):
+        for layer, (a, b) in enumerate(zip(left, right, strict=True)):
             assert (a is None) == (b is None)
             if a is not None:
-                assert torch.equal(a, b)
+                rows_a, rows_b = (a.k, b.k) if field == 0 else (a.v, b.v)
+                assert torch.equal(rows_a[layer, :, :n], rows_b[layer, :, :n])
 
 
 @pytest.mark.parametrize("reverse", [False, True])

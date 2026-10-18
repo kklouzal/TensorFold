@@ -37,19 +37,33 @@ def rotate(x, positions, cfg, inv):
     return x * cos + torch.cat([-right, left], dim=-1) * sin
 
 
-def attend(q, k, v, keys, values, length, window, scale, causal):
-    if causal:
-        raise ValueError("v1 block must be noncausal")
+class StoreRound:
+    def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device):
+        self.pairs, self.heads, self.kv_heads, self.dim, self.length = list(zip(stores, lengths)), heads, kv_heads, dim, length
+
+
+def store_attend(q, k, v, launch, layer, scale):
+    """Each stream's noncausal block over [its committed store rows | its own block rows]."""
+    length = launch.length
+    assert q.shape[0] == launch.heads and k.shape[0] == launch.kv_heads and q.shape[1] == len(launch.pairs) * length
     result = []
-    for i, (kc, vc) in enumerate(zip(keys, values)):
+    for i, (st, n) in enumerate(launch.pairs):
         low, high = i * length, (i + 1) * length
-        key, value = torch.cat([kc, k[:, low:high]], 1), torch.cat([vc, v[:, low:high]], 1)
+        key = torch.cat([st.k[layer, :, :n], k[:, low:high]], 1)
+        value = torch.cat([st.v[layer, :, :n], v[:, low:high]], 1)
         group = q.shape[0] // k.shape[0]
         key, value = key.repeat_interleave(group, 0), value.repeat_interleave(group, 0)
         probability = (q[:, low:high].float() @ key.float().transpose(-1, -2) * scale).softmax(-1)
         out = (probability @ value.float()).to(q.dtype).transpose(0, 1).reshape(length, -1)
         result.append(out)
     return torch.cat(result)
+
+
+def committed(snap, field=0):
+    """A context's committed per-layer key (field 0) or value (1) rows."""
+    store = snap[field][0]
+    return [None if store is None else (store.k if field == 0 else store.v)[layer, :, :snap[2]]
+            for layer in range(len(snap[field]))]
 
 
 class CpuLinear:
@@ -84,7 +98,7 @@ def fixture(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dflash, "Plain", CpuLinear)
     monkeypatch.setattr(dflash, "embedding", lambda ids, table: F.embedding(ids.long(), table.weight))
-    monkeypatch.setattr(dflash, "block_attention", attend)
+    monkeypatch.setattr(dflash, "context_attention", NS(Round=StoreRound, block_attention=store_attend))
     target = Target()
     return tmp_path, raw, cfg, arrays, target
 
@@ -153,6 +167,20 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
 
 
+def test_admission_charges_context_attention_partials_per_complete_chunk(fixture):
+    from tensorfold.families.qwen3_5_moe.dflash_metadata import CONTEXT_CHUNK, QUERY_TILE, padded_block
+
+    _directory, raw, cfg, _arrays, _target = fixture
+    geometry = draft_geometry(raw, streams=2, kept=3, prompt_rows=8)
+    per_token = 2 * cfg.layers * cfg.kv_heads * cfg.head_dim * 2
+    tiled = -(-(cfg.heads // cfg.kv_heads * padded_block(cfg.block)) // QUERY_TILE) * QUERY_TILE
+    partial = 2 * cfg.kv_heads * tiled * (cfg.head_dim + 2) * 4            # one more chunk's partials, two streams
+    contexts = (2 * 2 + 3 + 1) * per_token
+    for slots in (2 * CONTEXT_CHUNK, 3 * CONTEXT_CHUNK):                    # crossing into one more complete chunk
+        assert geometry.bytes_at(slots + 1) - geometry.bytes_at(slots) == contexts + partial
+    assert geometry.bytes_at(2 * CONTEXT_CHUNK) - geometry.bytes_at(2 * CONTEXT_CHUNK - 1) == contexts
+
+
 @pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])
 def test_shared_affine_packer_publishes_canonical_single_group_strides(rows, columns):
     from tensorfold.cuda.kernels import qmm
@@ -197,7 +225,7 @@ def test_checkpoint_auto_map_python_is_inert(fixture):
 
 def test_native_tile_capacity_refuses_before_payload_allocation(fixture, monkeypatch):
     directory, raw, _cfg, _arrays, target = fixture
-    raw.update(num_attention_heads=8192)
+    raw.update(head_dim=16384)
     cfg = DraftConfig.from_dict(raw)
     monkeypatch.setattr(dflash, "checked_headers", lambda path: (cfg, {}))
 
@@ -246,28 +274,80 @@ def test_reader_failure_preserves_primary_and_retirement_outcome(fixture, monkey
         assert primary.__cause__ is prior
 
 
-def test_context_projection_snapshot_rewind_and_stream_partition(fixture):
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_context_projection_snapshot_rewind_and_stream_partition(fixture, exclusive):
     directory, _raw, cfg, arrays, target = fixture
-    draft = dflash.DFlash(directory, target, context_limit=64)
+    draft = dflash.DFlash(directory, target, context_limit=64, exclusive=exclusive)
     taps = torch.linspace(-1, 1, 5 * 128).reshape(5, 128).bfloat16()
     draft.add_taps(taps[:3])
     saved = draft.snapshot()
-    original = [t.clone() for t in saved[0]]
+    original = [t.clone() for t in committed(saved)]
     draft.add_taps(taps[3:])
     whole = draft.snapshot()
+    assert whole[0][0] is saved[0][0]                       # appending the lineage's latest rows writes in place
     draft.restore(saved)
-    assert draft.context_end == 3 and all(torch.equal(a, b) for a, b in zip(draft.kc, original))
+    assert draft.context_end == 3 and all(torch.equal(a, b) for a, b in zip(committed(draft.snapshot()), original))
     draft.add_taps(taps[3:])
-    assert all(torch.equal(a, b) for a, b in zip(draft.kc, whole[0]))
+    assert all(torch.equal(a, b) for a, b in zip(committed(draft.snapshot()), committed(whole)))
+    assert (draft.snapshot()[0][0] is saved[0][0]) is exclusive  # a rewound append overwrites only if exclusive
     first = ([None] * cfg.layers, [None] * cfg.layers, 0, 0)
     contexts = draft.add_taps_streams([first, first], [taps, taps[:2]])
-    assert all(torch.equal(a, b) for a, b in zip(contexts[0][0], whole[0]))
+    assert all(torch.equal(a, b) for a, b in zip(committed(contexts[0]), committed(whole)))
+    assert all(torch.equal(a, b) for a, b in zip(committed(contexts[0], 1), committed(whole, 1)))
     for layer in range(cfg.layers):
         projected = norm(F.linear(taps, arrays["fc.weight"]), arrays["hidden_norm.weight"], cfg.eps)
         key = F.linear(projected, arrays[f"layers.{layer}.self_attn.k_proj.weight"])
         key = norm(key.view(5, cfg.kv_heads, cfg.head_dim), arrays[f"layers.{layer}.self_attn.k_norm.weight"], cfg.eps)
         expected = rotate(key.transpose(0, 1), torch.arange(5), cfg, draft.inv_freq)
-        assert torch.equal(expected, draft.kc[layer])
+        assert torch.equal(expected, committed(draft.snapshot())[layer])
+
+
+def test_streams_resumed_from_one_context_never_write_each_others_rows(fixture):
+    directory, _raw, _cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    taps = torch.randn((9, 128), generator=torch.Generator().manual_seed(5)).bfloat16()
+    draft.add_taps(taps[:4])
+    cached = draft.snapshot()
+    kept = [t.clone() for t in committed(cached)]
+    a, b = draft.add_taps_streams([cached, cached], [taps[4:6], taps[6:9]])
+    assert a[0][0] is cached[0][0] and b[0][0] is not cached[0][0]      # first claims the tail, second copies
+    later = draft.add_taps_streams([cached], [taps[4:5]])[0]
+    assert later[0][0] is not cached[0][0]
+    assert all(torch.equal(x, y) for x, y in zip(committed(cached), kept))
+    alone = [draft.add_taps_streams([cached], [part])[0] for part in (taps[4:6], taps[6:9])]
+    for got, want in zip((a, b), alone):
+        assert got[2:] == want[2:] and all(torch.equal(x, y) for x, y in zip(committed(got), committed(want)))
+
+
+def test_stores_grow_geometrically_within_the_window_and_keep_rows(fixture):
+    directory, _raw, _cfg, _arrays, target = fixture
+    raw = json.loads((directory / "config.json").read_text())
+    raw["max_position_embeddings"] = 8192
+    (directory / "config.json").write_text(json.dumps(raw))
+    draft = dflash.DFlash(directory, target, context_limit=3000, exclusive=True)
+    taps = torch.randn((3000, 128), generator=torch.Generator().manual_seed(9)).bfloat16()
+    draft.add_taps(taps[:5])
+    early = draft.snapshot()
+    store = early[0][0]
+    assert store.capacity == dflash.MIN_ROWS and store.tail == 5
+    k_ptr = store.k.data_ptr()
+    draft.add_taps(taps[5:1000])
+    assert store.k.data_ptr() == k_ptr and store.capacity == dflash.MIN_ROWS   # in place while it fits
+    head = [t.clone() for t in committed(early)]
+    draft.add_taps(taps[1000:1500])
+    assert draft.snapshot()[0][0] is store and store.capacity == 2 * dflash.MIN_ROWS
+    assert all(torch.equal(x, y) for x, y in zip(committed(early), head))      # earlier snapshots see moved rows
+    draft.add_taps(taps[1500:])
+    assert store.capacity == 3000 and store.tail == 3000                     # capped at the admitted window
+    whole = committed(draft.snapshot())
+    fresh = dflash.DFlash(directory, target, context_limit=3000)
+    fresh.add_taps(taps)
+    assert all(torch.equal(x, y) for x, y in zip(committed(fresh.snapshot()), whole))
+    series = dflash.DFlash(directory, target, context_limit=8192)
+    series.add_taps(taps[:1500])                                              # one size series for every lineage
+    assert series.snapshot()[0][0].capacity == 2 * dflash.MIN_ROWS
+    series.add_taps(taps[1500:2500])
+    assert series.snapshot()[0][0].capacity == 4 * dflash.MIN_ROWS
 
 
 def test_noncausal_block_proposals_do_not_mutate_committed_context(fixture):
@@ -280,7 +360,8 @@ def test_noncausal_block_proposals_do_not_mutate_committed_context(fixture):
     ids, parents, scores = draft.finish_tree(launched, 3, 3)
     assert len(ids) == 3 and parents == [-1, 0, 1]
     assert all(0 <= value < cfg.vocab for value in ids) and all(a <= b for a, b in zip([0, *scores], scores))
-    assert draft.context_end == 3 and all(a is b for a, b in zip(draft.kc, before[0]))
+    assert draft.context_end == 3 and draft.snapshot()[0][0] is before[0][0]
+    assert all(torch.equal(a, b) for a, b in zip(committed(draft.snapshot()), committed(before)))
     assert draft.finish_tree(launched, 3, 3) == (ids, parents, scores)
     batch = draft.launch_blocks([before, before], [2, 2], 3)
     assert draft.finish_tree(batch[0], 3, 3) == draft.finish_tree(batch[1], 3, 3) == (ids, parents, scores)

@@ -10,7 +10,7 @@ from tensorfold.cuda.kernels import qmm
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 from tensorfold.families.qwen3_5_moe.cuda.dflash import DFlash
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, draft_weights
-from tests.test_qwen36_dflash import config
+from tests.test_qwen36_dflash import committed, config
 
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
@@ -55,7 +55,7 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
     taps = torch.randn((7, len(cfg.tap_layers) * cfg.hidden), generator=generator).bfloat16().cuda()
     draft.add_taps(taps[:3])
     short = draft.snapshot()
-    short_copy = [t.clone() for t in short[0]]
+    short_copy = [t.clone() for t in committed(short)]
     draft.add_taps(taps[3:])
     long = draft.snapshot()
     batch = draft.launch_blocks([short, long], [2, 4], 3)
@@ -64,13 +64,13 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
         draft.restore(snap)
         actual = draft.finish_tree(draft.launch_block(pending, 3), snap[3], 3)
         assert actual == expected
-    assert all(torch.equal(a, b) for a, b in zip(short[0], short_copy))
+    assert all(torch.equal(a, b) for a, b in zip(committed(short), short_copy))
     together = draft.add_taps_streams([empty, empty], [taps[:3], taps])
     for actual, expected in zip(together, [short, long]):
         assert actual[2:] == expected[2:]
         assert all(torch.equal(a.view(torch.uint8), b.view(torch.uint8))
-                   for left, right in zip(actual[:2], expected[:2]) for a, b in zip(left, right))
+                   for field in (0, 1) for a, b in zip(committed(actual, field), committed(expected, field)))
     draft.restore(short)
     draft.add_taps(taps[3:])
-    assert all(torch.equal(a, b) for a, b in zip(draft.kc, long[0]))
+    assert all(torch.equal(a, b) for a, b in zip(committed(draft.snapshot()), committed(long)))
     torch.cuda.synchronize()
