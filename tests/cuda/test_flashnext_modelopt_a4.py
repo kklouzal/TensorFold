@@ -178,3 +178,28 @@ def test_direct_activation_quantizer_extremes_ties_underflow_and_signed_zero():
     assert torch.equal(scales[0].cpu(), expected_scales)
     assert torch.equal(codes[0, 1], torch.full_like(codes[0, 1], 0xf7))
     torch.cuda.synchronize()
+
+
+def test_direct_rn_subnormal_scale_intermediate_is_not_flushed_or_reassociated():
+    from tensorfold.cuda.nvfp4.format import native_calibration
+
+    # Both input scales and the ordinary BF16tiny input are exactly2^-126;
+    # the second row is BF16's smallest subnormal2^-133. The FP32 first
+    # product A*float32(1/6) must survive before multiplication by2^126.
+    direct = 2.**-126
+    assert native_calibration(direct, 1., name="independent subnormal boundary") == direct
+    x = torch.tensor([[2.**-126] * 128, [2.**-133] * 128], dtype=torch.bfloat16, device="cuda")
+    plan = torch.tensor([[0, 0, 0], [1, 0, 0]], dtype=torch.int32, device="cuda")
+    calibration = torch.full((1, 2), direct, dtype=torch.float32, device="cuda")
+    codes = torch.empty((2, 2, 64), dtype=torch.uint8, device="cuda")
+    scales = torch.empty((2, 2, 8), dtype=torch.uint8, device="cuda")
+    _ext().quantize(x, plan, calibration, codes, scales, False, True)
+    # Independent integer derivation: float32(1/6)=11184811*2^-26.
+    # First products in units2^-149 round to1398101 and10923. Multiplying
+    # by2^126 gives1398101/2^23 and10923/2^23; nearest E4M3 encodings are
+    # 0x23(.171875) and0x01(2^-9). G/SF overflowsFP32 in both rows, so
+    # positive values saturate to E2M1+6/code7. FTZ would instead yieldSF0.
+    assert torch.equal(scales[:, 0], torch.full_like(scales[:, 0], 0x23))
+    assert torch.equal(scales[:, 1], torch.full_like(scales[:, 1], 0x01))
+    assert torch.equal(codes, torch.full_like(codes, 0x77))
+    torch.cuda.synchronize()
