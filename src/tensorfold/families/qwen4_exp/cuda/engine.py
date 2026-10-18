@@ -150,13 +150,14 @@ class FlashNextEngine:
         from tensorfold.cuda.nvfp4.modelopt_layout import (
             activation_banks, resident_loading_host_bytes, runtime_workspace_bytes)
 
-        native_a4 = (not exl3 and quant_method(read_config(model_dir)) == "modelopt"
+        modelopt = not exl3 and quant_method(read_config(model_dir)) == "modelopt"
+        native_a4 = (modelopt
                      and precision.mode() == precision.CHECKPOINT
                      and precision.own_math(torch.cuda.get_device_capability())["nvfp4"])
         if expert_session is not None:
             native_a4 = expert_session.native_a4
         a4_banks = ()
-        if not exl3 and quant_method(read_config(model_dir)) == "modelopt":
+        if modelopt:
             from tensorfold.cuda.capacity import headers
 
             infos = headers(model_dir)

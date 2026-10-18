@@ -61,12 +61,16 @@ def quant_reference(x, direct_scale):
     """
     blocks = x.cpu().float().reshape(x.shape[0], -1, 16)
     inverse = torch.tensor(1., dtype=torch.float32) / torch.tensor(direct_scale, dtype=torch.float32)
-    scale = (inverse * (blocks.abs().amax(-1) * torch.tensor(1. / 6., dtype=torch.float32))).clamp(max=448.)
+    # CUDA fmax starts from0 and ignores a NaN operand. The quantizer's
+    # saturating E2M1 conversion maps a later NaN product to positive MAX_NORM.
+    amax = torch.nan_to_num(blocks.abs(), nan=0., posinf=float("inf")).amax(-1)
+    scale = (inverse * (amax * torch.tensor(1. / 6., dtype=torch.float32))).clamp(max=448.)
     encoded = scale.to(torch.float8_e4m3fn)
     multiplier = torch.where(encoded.float() != 0, inverse / encoded.float(), torch.zeros_like(scale))
     values = blocks * multiplier[..., None]
     levels = torch.tensor([0., .5, 1., 1.5, 2., 3., 4., 6.])
-    distances = (values.abs()[..., None] - levels).abs()
+    magnitude = torch.nan_to_num(values.abs(), nan=6., posinf=6.).clamp(max=6.)
+    distances = (magnitude[..., None] - levels).abs()
     # Even indices are considered first, making tie policy explicit rather
     # than inheriting argmin's lower-index rule (incorrect at .75/1.75/3.5).
     order = torch.tensor([0, 2, 4, 6, 1, 3, 5, 7])

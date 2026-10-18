@@ -222,3 +222,19 @@ def test_mixed_bank_layout_uses_exact_allocation_order_and_native_host_transform
     full = ram_experts._nvfp4_layout("unused", 1, text, True, native_a4=False, checkpoint=False)
     assert full.entry_bytes == 3 * blob + 32 and not full.native_a4_banks
     assert full.authority_allocations == native_fields[:4] * (layers + 1)
+
+
+def test_independent_activation_oracle_saturates_finite_overflow_and_defines_nan_zero():
+    torch = pytest.importorskip("torch")
+    from modelopt_a4_inputs import quant_reference
+
+    maximum = torch.finfo(torch.bfloat16).max
+    x = torch.tensor([maximum, -maximum] * 8, dtype=torch.bfloat16).view(1, 16)
+    codes, scales = quant_reference(x, .001964750699698925)
+    assert torch.equal(codes, torch.full_like(codes, 0xf7))
+    assert torch.equal(scales, torch.full_like(scales, 0x7e))
+    zero = torch.tensor([0., -0.] * 8, dtype=torch.bfloat16).view(1, 16)
+    codes, scales = quant_reference(zero, 1.)
+    assert torch.count_nonzero(codes) == torch.count_nonzero(scales) == 0
+    codes, scales = quant_reference(torch.full((1, 16), float("nan"), dtype=torch.bfloat16), 1.)
+    assert torch.equal(codes, torch.full_like(codes, 0x77)) and torch.count_nonzero(scales) == 0
