@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from tensorfold.cuda.nvfp4.experts_a4 import ExpertsA4, pack_projection_a4
+from tensorfold.cuda.nvfp4.experts_a4 import ExpertsA4, PlanBuffers, pack_projection_a4, uniform_input_bits
 from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4
 
 
@@ -42,14 +42,36 @@ def _combine(Y, IDS, WEIGHTS, OUT, N: tl.constexpr, R: tl.constexpr, RS: tl.cons
     tl.store(OUT + row * N + n, total.to(tl.bfloat16), mask=n < N)
 
 
-class Experts:
-    """Immutable native bank; every forward owns all output and scratch storage."""
+class Workspace:
+    """One model's device routing plans and slot outputs, one buffer per row bucket.
 
-    def __init__(self, bank: ExpertsA4):
+    Every layer's bank shares it: layers run in order on one CUDA stream, so a
+    bucket's buffer is never live twice. Buffers are never replaced, so CUDA
+    graphs captured over a bucket keep valid addresses for the model's lifetime.
+    """
+
+    def __init__(self):
+        self._buffers = {}
+
+    def buffers(self, rows: int, slots: int, experts: int, dims: int, device) -> PlanBuffers:
+        bucket = 1 << max(4, (rows - 1).bit_length())
+        key = (bucket, slots, experts, dims, torch.device(device))
+        buf = self._buffers.get(key)
+        if buf is None:
+            with torch.inference_mode(False):
+                buf = self._buffers[key] = PlanBuffers(bucket, slots, experts, dims, device, prefill=True)
+        return buf
+
+
+class Experts:
+    """Immutable native bank; slot outputs and plans live in the model's shared workspace."""
+
+    def __init__(self, bank: ExpertsA4, workspace: Workspace | None = None):
         if (not isinstance(bank, ExpertsA4) or getattr(bank, "direct_input", False)
-                or bank.swiglu is not geglu):
-            raise ValueError("Gemma NVFP4 requires an original CT-calibrated native A4 bank")
+                or bank.swiglu is not geglu or not bank.capturable):
+            raise ValueError("Gemma NVFP4 requires an original CT-calibrated resident native A4 bank")
         self.bank = bank
+        self.workspace = Workspace() if workspace is None else workspace
         self.count, self.width, self.dims, self.device = bank.count, bank.width, bank.dims, bank.device
 
     def nbytes(self) -> int:
@@ -58,8 +80,9 @@ class Experts:
     def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """INT32 picks are constructed by the router; FP32 weights stay FP32.
 
-        The shared CT bank validates indirect routes and supports its explicit
-        inactive -1 slot. Target routing constructs only IDs in0..count-1.
+        Target routing constructs only IDs in0..count-1 (argsort over the
+        router's ``count`` logits); the device plan groups them without a host
+        read, and the native kernels still guard every indirect cell access.
         Fixed prefill=True selects SK1 and BF16 output for serial and verify.
         """
 
@@ -73,17 +96,20 @@ class Experts:
                 or tuple(weights.shape) != tuple(picks.shape)):
             raise ValueError("Gemma NVFP4 routing weights require matching FP32 [rows,slots] on the bank device")
         rows, slots = picks.shape
-        picks, weights = picks.contiguous(), weights.contiguous()
-        projected = torch.empty((rows, slots, self.dims), dtype=torch.bfloat16, device=self.device)
-        self.bank.run(x.contiguous(), picks, projected, prefill=True, maximum_id=self.count - 1)
+        weights = weights.contiguous()
+        buf = self.workspace.buffers(rows, slots, self.count, self.dims, self.device)
+        buf.pick[:rows].copy_(picks)
+        buf.route(rows)
+        self.bank.run_plan(x.contiguous(), buf, prefill=True)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)
         _combine[(rows, triton.cdiv(self.dims, 256))](
-            projected, picks, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,
+            buf.y, buf.pick, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,
             num_warps=4, enable_fp_fusion=False)
         return out
 
 
-def load_experts(read, name: str, *, count: int, width: int, dims: int, device, calibrated) -> Experts:
+def load_experts(read, name: str, *, count: int, width: int, dims: int, device, calibrated,
+                 workspace: Workspace | None = None) -> Experts:
     """Load one resident bank, staging one original projection at a time on CUDA.
 
     The checkpoint owner validates all headers and CPU scalar calibrations
@@ -126,5 +152,8 @@ def load_experts(read, name: str, *, count: int, width: int, dims: int, device, 
             del codes, scales, packed
     if int(scale_top) > 0x7e:
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in0x00..0x7e")
+    # Compare the complete prepared FP32 gate/up multiplier bits on CPU before
+    # transfer: equal bits let every row quantize once for all its experts.
+    shared_input = uniform_input_bits(globals_[2])
     fields = (*blobs, *(value.to(device=device) for value in globals_))
-    return Experts(ExpertsA4(fields, width, dims, swiglu=geglu))
+    return Experts(ExpertsA4(fields, width, dims, swiglu=geglu, shared_input=shared_input), workspace)

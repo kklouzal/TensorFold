@@ -163,7 +163,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4
+    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4, uniform_input_bits
     from .host_layout import authority_fields_a4, entry_layout_a4
 
     device = torch.device(device)
@@ -227,6 +227,8 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
         bank = CachedExpertsA4(len(ids), width, dims, cache=cache, layer_id=key, swiglu=swiglu)
         cache.register(key, (source,))
     else:
-        bank = ExpertsA4(tuple(t.to(device) for t in fields), width, dims, swiglu=swiglu)
+        # The complete CPU gate/up multiplier bit proof precedes exact transfer.
+        bank = ExpertsA4(tuple(t.to(device) for t in fields), width, dims, swiglu=swiglu,
+                         shared_input=uniform_input_bits(fields[4]))
     ctx.used["nvfp4"] = True
     return bank

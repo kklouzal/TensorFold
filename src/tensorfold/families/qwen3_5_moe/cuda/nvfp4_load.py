@@ -53,9 +53,17 @@ class NativeMoE:
 
         rows = x.shape[0]
         moe.router(x, router_rows, buf.logits[:rows])
-        moe.select_rows(buf.logits[:rows], buf, top_k, experts)
         prefill = buf.plan.prefill
-        bank.run(x, buf.pick[:rows, :top_k], buf.y[:rows, :top_k], prefill=prefill)
+        if self.capturable:
+            from tensorfold.cuda.experts import TILE
+
+            # Resident banks group the routed and shared picks on the device;
+            # the plan's shared cell (id ``experts``) is skipped by the bank.
+            moe.select(buf.logits[:rows], buf, top_k, experts, TILE)
+            bank.run_plan(x, buf, prefill=prefill)
+        else:
+            moe.select_rows(buf.logits[:rows], buf, top_k, experts)
+            bank.run(x, buf.pick[:rows, :top_k], buf.y[:rows, :top_k], prefill=prefill)
         if prefill:
             gate, up = self.shared.gate.prefill(x), self.shared.up.prefill(x)
             activation = self.swiglu(gate, up)

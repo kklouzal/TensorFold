@@ -224,6 +224,7 @@ __global__ void __launch_bounds__(PLAN_THREADS)
   __syncthreads();
   for (int p = tid; p < P; p += PLAN_THREADS) {
     const int e = picks[p];
+    if (e < 0 || e >= E) __trap();                   // routing constructs ids in [0, E); never index past them
     pk[p] = e;
     atomicAdd(&cnt[e], 1);
   }
@@ -250,6 +251,7 @@ __global__ void __launch_bounds__(PLAN_THREADS)
   const int p = blockIdx.x * PLAN_THREADS + tid;
   const bool ok = p < P;
   const int e = ok ? picks[p] : -1 - lane;
+  if (ok && (e < 0 || e >= E)) __trap();             // routing constructs ids in [0, E); never index past them
   const unsigned same = __match_any_sync(0xffffffffu, e);
   const int below = __popc(same & ((1u << lane) - 1u));
   for (int w = 0; w < PLAN_THREADS / 32; ++w) {

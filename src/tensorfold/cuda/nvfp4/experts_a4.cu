@@ -215,22 +215,28 @@ void expert_a4_gemm_cuda(const at::Tensor& codes, const at::Tensor& scales, cons
 
 // Device-only Flash plan: members contain original flat (row,slot) IDs and
 // items/counts remain live GPU routing data during graph capture/replay.
+// ``direct`` selects ModelOpt direct scales or CT reciprocal multipliers, the
+// same per-mode arithmetic as the host-window kernels above.
 void expert_a4_quant_plan_cuda(const at::Tensor& x, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, const at::Tensor& input, at::Tensor& codes, at::Tensor& scales,
-    int64_t slots, bool paired) {
-    quant_kernel<true, true><<<dim3((x.size(1) / 16 + 127) / 128, items.size(0), input.size(1) * 16),
-        128, 0, at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+    int64_t slots, bool paired, bool direct) {
+    const auto launch = [&](auto mode) {
+    quant_kernel<true, decltype(mode)::value><<<dim3((x.size(1) / 16 + 127) / 128, items.size(0),
+        input.size(1) * 16), 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
         x.stride(0), x.size(0), x.size(1), nullptr, codes.size(1), input.data_ptr<float>(), input.size(0),
         input.stride(0), codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), paired,
         items.data_ptr<int>(), counts.data_ptr<int>(), members.data_ptr<int>(), slots);
+    };
+    if (direct) launch(std::true_type{}); else launch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <bool DOWN, bool F32, bool COMMON = false>
+template <bool DOWN, bool F32, bool DIRECT, bool COMMON = false>
 void launch_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots) {
-    gemm_kernel<DOWN, F32, true, true, COMMON><<<dim3((items.size(0) * (n / 8) + 3) / 4, blob.size(1)),
+    gemm_kernel<DOWN, F32, true, DIRECT, COMMON><<<dim3((items.size(0) * (n / 8) + 3) / 4, blob.size(1)),
         128, 0, at::cuda::getCurrentCUDAStream()>>>(codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
         blob.data_ptr<uint8_t>(), blob.size(2), weight.data_ptr<float>(), input.data_ptr<float>(),
         blob.stride(0), weight.stride(0), input.stride(0), blob.size(0), items.data_ptr<int>(), items.size(0),
@@ -240,11 +246,23 @@ void launch_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Te
 
 void expert_a4_gemm_plan_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
-    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down, bool common) {
-    if (common) launch_plan<false, false, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
-    else if (!down) launch_plan<false, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down, bool common,
+    bool direct) {
+    const auto launch = [&](auto mode) {
+    constexpr bool DIRECT = decltype(mode)::value;
+    if (common)
+        launch_plan<false, false, DIRECT, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k,
+                                                sk, slots);
+    else if (!down)
+        launch_plan<false, false, DIRECT>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk,
+                                          slots);
     else if (out.scalar_type() == at::kFloat)
-        launch_plan<true, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
-    else launch_plan<true, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+        launch_plan<true, true, DIRECT>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk,
+                                        slots);
+    else
+        launch_plan<true, false, DIRECT>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk,
+                                         slots);
+    };
+    if (direct) launch(std::true_type{}); else launch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

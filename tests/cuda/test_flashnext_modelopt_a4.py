@@ -245,8 +245,8 @@ def test_proven_row_shared_input_matches_general_plan_and_individual_reference(p
     for bank in (selected, general, selected, general):
         bank.run_plan(x, buf, prefill=prefill)
         assert torch.equal(buf.y[:rows], expected)
-    codes = buf.modelopt_a4[0].view(-1)[:rows * 1280].view(rows, 1280)
-    scales = buf.modelopt_a4[1].view(-1)[:rows * 160].view(rows, 160)
+    codes = buf.a4_scratch[(2560, 640)][0].view(-1)[:rows * 1280].view(rows, 1280)
+    scales = buf.a4_scratch[(2560, 640)][1].view(-1)[:rows * 160].view(rows, 160)
     selected.run_plan(x, buf, prefill=prefill)
     c, s = quant_reference(x.cpu(), direct)
     assert torch.equal(codes.cpu(), c)

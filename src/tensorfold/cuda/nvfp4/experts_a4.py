@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 import torch
 
-from .grouped_a4 import run
+from .grouped_a4 import _ext, run
 from .host_layout import authority_fields_a4
 
 
@@ -47,18 +47,36 @@ def _overlap(a, b):
     return a.device == b.device and left[0] < right[1] and right[0] < left[1]
 
 
+def uniform_input_bits(calibrations):
+    """Prove exact prepared gate/up FP32 equality over the complete CPU bank."""
+    if (calibrations.device.type != "cpu" or calibrations.dtype != torch.float32 or calibrations.ndim != 2
+            or calibrations.shape[0] <= 0 or calibrations.shape[1] != 2 or not calibrations.is_contiguous()):
+        raise ValueError("common input proof requires complete contiguous CPU FP32[experts,2] calibrations")
+    bits = calibrations.view(torch.int32)
+    return bool((bits == bits[0, 0]).all())
+
+
 class ExpertsA4:
     """Prepared resident bank, with a fixed grouped execution/lease contract.
 
     Inputs and outputs must be disjoint from each other and expert storage.
     Out-of-local-range picks are inactive zero slots. Per-projection raw input
     multipliers, weight reciprocals and native mode-specific K sums stay exact.
+    ``direct_input`` selects ModelOpt direct scales; CT banks keep reciprocal
+    multipliers. Both execute the same device-planned kernels in ``run_plan``
+    (graph replay never reads picks on the CPU); ``run`` remains the host-window
+    path for leased (cached) banks and expert-parallel local picks with -1.
     """
 
-    capturable = False
+    direct_input = False
+    capturable = True
     run = run
 
-    def __init__(self, fields, width, dims, *, swiglu):
+    def __init__(self, fields, width, dims, *, swiglu, shared_input=False):
+        # True is supplied only by the loader's complete CPU bit proof
+        # (uniform_input_bits), before exact CPU->CUDA transfer; immutable bank
+        # fields preserve that proof.
+        self.shared_input = bool(shared_input)
         if len(fields) != 6 or fields[0].ndim != 3:
             raise ValueError("native A4 expert bank requires six fields")
         self.width, self.dims, self.count = width, dims, fields[0].shape[0]
@@ -79,6 +97,88 @@ class ExpertsA4:
 
     def device_tensors(self):
         return self.fields
+
+    def nbytes(self):
+        return sum(t.numel() * t.element_size() for t in self.fields)
+
+    def run_plan(self, x, buf, *, prefill):
+        """Fill routed slots of ``buf.y[:rows]`` from the device plan ``buf.plan``.
+
+        ``buf`` holds ``rows`` (capacity), ``slots``, ``pick`` [rows, slots]
+        INT32, a ``grouped.Plan`` routed over ``pick[:rows]`` with items of at
+        most16 pairs, and ``y`` [rows, slots, dims] (BF16 when ``prefill``,
+        else FP32). Plan items whose cell equals ``count`` (a resident shared
+        expert) are skipped; their slots are the caller's. Shape-only K slices:
+        SK1 for ``prefill``, else ``qmm.split_k``; a pair's bits never depend on
+        the other pairs, the plan's items or the row count.
+        """
+        from tensorfold.cuda.experts import TILE
+        from tensorfold.cuda.kernels import qmm
+
+        rows, slots = x.shape[0], buf.slots
+        plan = buf.plan
+        if plan.tile != TILE:
+            raise ValueError("native A4 requires device-plan items of at most16 pairs")
+        self._check(x, buf.pick[:rows], buf.y[:rows], prefill=prefill)
+        # The buffer, not every expert bank, owns reusable shape-specific
+        # storage. Allocate all retained tensors before publishing the tuple.
+        key = (self.dims, self.width)
+        held = getattr(buf, "a4_scratch", None)
+        if held is None:
+            held = buf.a4_scratch = {}
+        scratch = held.get(key)
+        if scratch is None:
+            pairs = buf.rows * slots
+            with torch.inference_mode(False):
+                scratch = (torch.empty((2, pairs, self.dims // 2), dtype=torch.uint8, device=x.device),
+                           torch.empty((2, pairs, self.dims // 16), dtype=torch.uint8, device=x.device),
+                           torch.empty((2, pairs, self.width), dtype=torch.bfloat16, device=x.device),
+                           torch.empty((1, pairs, self.width // 2), dtype=torch.uint8, device=x.device),
+                           torch.empty((1, pairs, self.width // 16), dtype=torch.uint8, device=x.device))
+            held[key] = scratch
+        pairs = rows * slots
+        dc, ds = (t[:, :pairs] for t in scratch[3:])
+        # Projection-major narrowing leaves non-contiguous outer strides when
+        # the live row count is smaller than the admitted buffer. Use a flat
+        # prefix reshaped to the actual plan; all backing remains buffer-owned.
+        codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
+        scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
+        gu = scratch[2].view(-1)[:2 * pairs * self.width].view(2, pairs, self.width)
+        # Shared/unused plan positions have no routed GEMM. Initialize before
+        # the eager activation consumes the complete tensor; routed rows overwrite it.
+        gu.zero_()
+        ext = _ext()
+        fields, direct = self.fields, self.direct_input
+        # Plan backing has conservative spare rows, but every live item owns
+        # at least one pair. Never expose more item rows than actual pairs.
+        items = plan.items[:min(pairs, self.count + 1 + pairs // 16)]
+        members = plan.members[:pairs]
+        common = self.shared_input and rows <= 65535
+        if common:
+            row_plan = getattr(buf, "a4_row_plan", None)
+            if row_plan is None:
+                with torch.inference_mode(False):
+                    indices = torch.arange(buf.rows, dtype=torch.int32, device=x.device)
+                    zero = torch.zeros_like(indices)
+                    row_plan = torch.stack((indices, zero, zero), dim=1)
+                buf.a4_row_plan = row_plan
+                del indices, zero
+            # Reuse the existing input backing; the shared representation is a
+            # smaller prefix. Mixed common/nonuniform layers remain bounded by
+            # the same one pair of admitted code/scale allocations.
+            codes = scratch[0].view(-1)[:rows * (self.dims // 2)].view(1, rows, self.dims // 2)
+            scales = scratch[1].view(-1)[:rows * (self.dims // 16)].view(1, rows, self.dims // 16)
+            ext.quantize(x, row_plan[:rows], fields[4][:1, :1], codes, scales, False, direct)
+        else:
+            ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False, direct)
+        ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
+                      gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False,
+                      common, direct)
+        hidden = self.swiglu(gu[0], gu[1])
+        ext.quantize_plan(hidden, items, plan.counts, members, fields[5], dc, ds, slots, True, direct)
+        ext.gemm_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members,
+                      buf.y[:rows], self.dims, self.width,
+                      1 if prefill else qmm.split_k(self.dims, self.width), slots, True, False, direct)
 
     @contextmanager
     def lease(self, ids):
@@ -101,8 +201,32 @@ class ExpertsA4:
             raise ValueError("native A4 rows, picks and outputs must not overlap expert storage or each other")
 
 
+class PlanBuffers:
+    """Graph-static device routing plan and slot outputs for up to ``rows`` rows.
+
+    Routing writes ``pick[:rows]``; ``route`` groups it; ``ExpertsA4.run_plan``
+    fills ``y[:rows]``. All storage is allocated here or retained by the bank's
+    first use, so CUDA graph replay reuses fixed addresses.
+    """
+
+    def __init__(self, rows, slots, experts, dims, device, *, prefill):
+        from tensorfold.cuda.experts import Plan
+
+        self.rows, self.slots, self.prefill = rows, slots, prefill
+        self.pick = torch.empty((rows, slots), dtype=torch.int32, device=device)
+        self.plan = Plan(rows, slots, experts, device)
+        self.y = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device=device)
+
+    def route(self, rows):
+        from tensorfold.cuda.experts import TILE, route
+
+        route(self.pick[:rows], self.plan, TILE)
+
+
 class CachedExpertsA4(ExpertsA4):
     """Geometry and cache identity only; no retained CPU authority aliases."""
+
+    capturable = False      # leases plan host windows from CPU picks
 
     def __init__(self, count, width, dims, *, cache, layer_id, swiglu):
         authority_fields_a4(count, width, dims)

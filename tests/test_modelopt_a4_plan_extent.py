@@ -5,9 +5,9 @@ from pathlib import Path
 
 
 def consumer_extent(pairs, experts):
-    path = Path(__file__).parents[1] / "src/tensorfold/cuda/nvfp4/modelopt_experts.py"
+    path = Path(__file__).parents[1] / "src/tensorfold/cuda/nvfp4/experts_a4.py"
     tree = ast.parse(path.read_text())
-    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ModelOptExpertsA4")
+    cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ExpertsA4")
     method = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "run_plan")
     assignment = next(node for node in method.body if isinstance(node, ast.Assign)
                       and any(isinstance(target, ast.Name) and target.id == "items" for target in node.targets))

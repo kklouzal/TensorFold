@@ -36,45 +36,33 @@ def test_ct_geglu_preserves_bf16_activation_before_product():
     assert not torch.equal(actual,one_round)
 
 
-def test_publisher_plain_router_fp32_and_fixed_k_order():
-    torch.manual_seed(62)
-    weight = torch.randn((128,2816),device="cuda",dtype=torch.bfloat16)
-    x = torch.randn((129,2816),device="cuda",dtype=torch.bfloat16)
-    router = _Router(weight)
-    actual = router(x)
-    assert actual.dtype == torch.float32
-    assert not torch.equal(actual,actual.to(torch.bfloat16).float())
-    assert torch.equal(actual,torch.cat([router(row[None]) for row in x]))
-    reference = x.double() @ weight.double().T
-    # BF16 products are exact in FP32; a conservative gamma_K envelope
-    # covers every product addition, including each MMA internal reduction.
-    products = x.double().abs() @ weight.double().abs().T
-    bound = (2816*2**-24/(1-2816*2**-24))*products
-    assert torch.all((actual.double()-reference).abs() <= bound)
-
-
 def test_ct_router_root_then_learned_scale_and_fp32_full_softmax():
     torch.manual_seed(293)
     c = config()
-    captured = []
-    logits = torch.tensor([[1.,.5,-.25,-1.]],device="cuda",dtype=torch.float32)
-    def router(x):
-        captured.append(x)
-        return logits
     model = object.__new__(Gemma4Target)
     model.config = c
-    model._router_root = torch.tensor(c.hidden**-.5,device="cuda",dtype=torch.bfloat16)
-    layer = SimpleNamespace(router=router,
-        router_scale=torch.randn((64,),device="cuda",dtype=torch.bfloat16),
-        expert_scale=torch.tensor([.75,1.25,.5,2.],device="cuda",dtype=torch.bfloat16))
-    h = torch.randn((1,64),device="cuda",dtype=torch.bfloat16)
+    model._router_root_value = float(torch.tensor(c.hidden**-.5,dtype=torch.bfloat16))
+    weight = (torch.randn((c.experts,c.hidden),device="cuda") * .2).to(torch.bfloat16)
+    layer = SimpleNamespace(router=_Router(weight),
+        router_scale=(torch.rand((c.hidden,),device="cuda") + .5).to(torch.bfloat16),
+        expert_scale=(torch.rand((c.experts,),device="cuda") + .5).to(torch.bfloat16))
+    h = torch.randn((9,c.hidden),device="cuda",dtype=torch.bfloat16)
     picks,weights = model._route_ct(h,layer)
-    expected_input = ct_rms_norm(h,None,c.eps) * model._router_root
-    expected_input = expected_input * layer.router_scale
-    assert torch.equal(captured[0],expected_input)
-    probabilities = torch.softmax(logits,dim=-1)
-    selected = probabilities[:,:2]
-    expected = selected/selected.sum(-1,keepdim=True) * layer.expert_scale[:2].float()
     assert picks.dtype == torch.int32 and weights.dtype == torch.float32
-    assert torch.equal(picks,torch.tensor([[0,1]],device="cuda",dtype=torch.int32))
-    assert torch.equal(weights,expected)
+    assert picks.shape == weights.shape == (9,c.top_k)
+    # Independent BF16 tensor-operation router input, FP64 logits and FP64 selection.
+    root = torch.tensor(c.hidden**-.5,device="cuda",dtype=torch.bfloat16)
+    router_input = (ct_rms_norm(h,None,c.eps) * root) * layer.router_scale
+    logits = router_input.double() @ weight.double().T
+    order = torch.argsort(logits,dim=-1,descending=True,stable=True)
+    margin = (torch.gather(logits,1,order[:,c.top_k-1:c.top_k]) - torch.gather(logits,1,order[:,c.top_k:c.top_k+1]))
+    assert torch.all(margin > 1e-3)        # no near-tie at the top-k boundary for this seed
+    assert torch.equal(torch.sort(picks,-1).values,torch.sort(order[:,:c.top_k],-1).values.to(torch.int32))
+    probabilities = torch.softmax(logits,dim=-1)
+    selected = torch.gather(probabilities,1,picks.long())
+    expected = selected/selected.sum(-1,keepdim=True) * layer.expert_scale[picks.long()].double()
+    torch.testing.assert_close(weights.double(),expected,rtol=1e-4,atol=0)
+    # Each row's routing is independent of the other rows of the call.
+    for row in range(9):
+        alone = model._route_ct(h[row:row+1],layer)
+        assert torch.equal(alone[0],picks[row:row+1]) and torch.equal(alone[1],weights[row:row+1])

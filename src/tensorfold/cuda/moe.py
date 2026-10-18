@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 import torch
 import triton
@@ -43,22 +45,46 @@ def _router(X, W, OUT, M, x_stride, D: tl.constexpr, NE: tl.constexpr, BM: tl.co
     tl.store(OUT + rm[:, None] * NE + re[None, :], acc, mask=m_ok[:, None] & e_ok[None, :])
 
 
-def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None, *,
-           fixed_schedule: bool = False) -> torch.Tensor:
-    """BF16 rows/router weights to FP32 logits.
+@lru_cache(maxsize=1)
+def _route_ext():
+    from .build import load
 
-    fixed_schedule binds one K reduction schedule across all row counts; the
-    default retains the existing family-specific small/prompt dispatch.
+    return load(name="tensorfold_route_v1", sources=[str(Path(__file__).parent / "route.cu")],
+                extra_cuda_cflags=["-O3", "--ftz=false", "--prec-div=true"], verbose=False)
+
+
+def route_logits(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor, *,
+                 prenorm: tuple[float, float, torch.Tensor] | None = None) -> torch.Tensor:
+    """FP32 router logits of BF16 rows x [R, K] and router rows [E, K] (K a multiple of 32) into ``out`` [R, E].
+
+    A row-invariant split-K tensor-core GEMV: eight K slices fixed by K, each one sequential m16n8k16 chain, added in
+    slice order, so a row's bits never depend on R. ``prenorm`` = (eps, root, scale [K] bf16) first forms the compressed-tensors
+    Gemma router input bf16(bf16(bf16(x * rsqrt(mean(x^2) + eps)) * root) * scale) in FP32 with BF16 roundings.
     """
+
+    eps, root, scale = prenorm if prenorm is not None else (0.0, 0.0, None)
+    _route_ext().logits(x, rows, out, float(eps), float(root), scale)
+    return out
+
+
+def route_select(logits: torch.Tensor, expert_scale: torch.Tensor, picks: torch.Tensor,
+                 weights: torch.Tensor) -> None:
+    """Gemma routing per row: FP32 softmax over all experts, the top ``picks.shape[1]`` (stable descending order,
+    lower id among equal logits), weights renormalized over the selected probabilities then times the BF16 per-expert
+    scale; INT32 picks and FP32 weights."""
+
+    _route_ext().select(logits, expert_scale, picks, weights)
+
+
+def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
+    """BF16 rows/router weights to FP32 logits."""
 
     m, d = x.shape
     ne = rows.shape[0]
     if out is None:
         out = torch.empty((m, ne), dtype=torch.float32, device=x.device)
-    bm = 16 if fixed_schedule else _tile(m)
-    if fixed_schedule:
-        be, bk, stages = 32, 64, 2
-    elif bm == 16:
+    bm = _tile(m)
+    if bm == 16:
         be, bk, stages = 32, 256, 4
     else:
         be, bk, stages = 64, 64, 3               # Smaller K tiles keep prefill within shared-memory limits.

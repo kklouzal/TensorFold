@@ -10,98 +10,17 @@ import torch
 from tensorfold.cuda.moe import swiglu_bf16
 
 from . import format as fmt
-from .experts_a4 import CachedExpertsA4, ExpertsA4
-from .grouped_a4 import _ext
+from .experts_a4 import CachedExpertsA4, ExpertsA4, uniform_input_bits
 from .host_layout import authority_fields_a4
 
 
-def uniform_input_bits(calibrations):
-    """Prove exact prepared gate/up FP32 equality over the complete CPU bank."""
-    if (calibrations.device.type != "cpu" or calibrations.dtype != torch.float32 or calibrations.ndim != 2
-            or calibrations.shape[0] <= 0 or calibrations.shape[1] != 2 or not calibrations.is_contiguous()):
-        raise ValueError("common input proof requires complete contiguous CPU FP32[experts,2] calibrations")
-    bits = calibrations.view(torch.int32)
-    return bool((bits == bits[0, 0]).all())
-
-
 class ModelOptExpertsA4(ExpertsA4):
-    """Resident bank with live GPU routing plans; graph replay never reads picks on CPU."""
+    """Resident bank with original direct calibrations; device plans via ``ExpertsA4.run_plan``."""
 
     direct_input = True
-    capturable = True
 
     def __init__(self, fields, width, dims, *, shared_input=False):
-        # True is supplied only by the loader's complete CPU bit proof, before
-        # exact CPU->CUDA transfer; immutable bank fields preserve that proof.
-        self.shared_input = shared_input
-        super().__init__(fields, width, dims, swiglu=swiglu_bf16)
-
-    def nbytes(self):
-        return sum(t.numel() * t.element_size() for t in self.fields)
-
-    def run_plan(self, x, buf, *, prefill):
-        from tensorfold.cuda.kernels import qmm
-
-        rows, slots = x.shape[0], buf.slots
-        plan = buf.plan
-        if plan.tile != 16:
-            raise ValueError("native ModelOpt A4 requires device-plan items of at most16 pairs")
-        self._check(x, buf.pick[:rows], buf.y[:rows], prefill=prefill)
-        # The buffer, not every expert bank, owns reusable shape-specific
-        # storage. Allocate all retained tensors before publishing the tuple.
-        scratch = getattr(buf, "modelopt_a4", None)
-        if scratch is None:
-            pairs = buf.rows * slots
-            with torch.inference_mode(False):
-                scratch = (torch.empty((2, pairs, self.dims // 2), dtype=torch.uint8, device=x.device),
-                           torch.empty((2, pairs, self.dims // 16), dtype=torch.uint8, device=x.device),
-                           torch.empty((2, pairs, self.width), dtype=torch.bfloat16, device=x.device),
-                           torch.empty((1, pairs, self.width // 2), dtype=torch.uint8, device=x.device),
-                           torch.empty((1, pairs, self.width // 16), dtype=torch.uint8, device=x.device))
-            buf.modelopt_a4 = scratch
-        pairs = rows * slots
-        dc, ds = (t[:, :pairs] for t in scratch[3:])
-        # Projection-major narrowing leaves non-contiguous outer strides when
-        # the live row count is smaller than the admitted buffer. Use a flat
-        # prefix reshaped to the actual plan; all backing remains buffer-owned.
-        codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
-        scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
-        gu = scratch[2].view(-1)[:2 * pairs * self.width].view(2, pairs, self.width)
-        # Shared/unused plan positions have no routed GEMM. Initialize before
-        # the eager SiLU consumes the complete tensor; routed rows overwrite it.
-        gu.zero_()
-        ext = _ext()
-        fields = self.fields
-        # Plan backing has conservative spare rows, but every live item owns
-        # at least one pair. Never expose more item rows than actual pairs.
-        items = plan.items[:min(pairs, self.count + 1 + pairs // 16)]
-        members = plan.members[:pairs]
-        common = self.shared_input and rows <= 65535
-        if common:
-            row_plan = getattr(buf, "modelopt_a4_row_plan", None)
-            if row_plan is None:
-                with torch.inference_mode(False):
-                    indices = torch.arange(buf.rows, dtype=torch.int32, device=x.device)
-                    zero = torch.zeros_like(indices)
-                    row_plan = torch.stack((indices, zero, zero), dim=1)
-                buf.modelopt_a4_row_plan = row_plan
-                del indices, zero
-            # Reuse the existing input backing; the shared representation is a
-            # smaller prefix. Mixed common/nonuniform layers remain bounded by
-            # the same one pair of admitted code/scale allocations.
-            codes = scratch[0].view(-1)[:rows * (self.dims // 2)].view(1, rows, self.dims // 2)
-            scales = scratch[1].view(-1)[:rows * (self.dims // 16)].view(1, rows, self.dims // 16)
-            ext.quantize(x, row_plan[:rows], fields[4][:1, :1], codes, scales, False, True)
-        else:
-            ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False)
-        ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
-                      gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False,
-                      common)
-        hidden = swiglu_bf16(gu[0], gu[1])
-        ext.quantize_plan(hidden, items, plan.counts, members, fields[5], dc, ds, slots, True)
-        ext.gemm_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members,
-                      buf.y[:rows], self.dims, self.width,
-                      1 if prefill else qmm.split_k(self.dims, self.width), slots, True)
+        super().__init__(fields, width, dims, swiglu=swiglu_bf16, shared_input=shared_input)
 
 
 class CachedModelOptExpertsA4(CachedExpertsA4):
