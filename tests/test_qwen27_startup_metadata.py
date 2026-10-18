@@ -345,7 +345,7 @@ def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup,
                 raise ProposalReached
 
         engine.multi.draft, engine.multi.drafts = Draft(), True
-        engine.multi.streams[0] = NS(snap="snapshot", draft=True, sampling=None)
+        engine.multi.streams[0] = NS(snap="snapshot", draft=True, sampling=None, history=None)
         # Stop at the cold drafter provider: the real verifier must select its
         # admitted proposal width before any target arithmetic is attempted.
         with pytest.raises(ProposalReached):

@@ -429,7 +429,7 @@ def _stand_in_prefills(m, monkeypatch):
         return "normed", (kept, _snap(keep_at))
 
     monkeypatch.setattr(m.multi, "prefill_state", prefill_state)
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # these fixtures retain a complete, unsplit head on both ranks
         return _reply(recs[w.rank].last)[0]
 
@@ -617,7 +617,7 @@ def _tapped_prefills(m, monkeypatch):
 
     monkeypatch.setattr(m.prefill, "prefill_chunk", chunk)
     monkeypatch.setattr(m.multi, "State", lambda w: _ids_state(m, []))
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # the drafter-context fixture also holds an unsplit head
         return _reply([n])[0]
 
