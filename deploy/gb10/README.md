@@ -1,27 +1,48 @@
 # GB10 Flash Next deployment
 
-This integration reproduces the GB10 Flash Next deployment from repository
-source. It includes the native SSD reader, multi-image/video and copy-draft
-changes, xgrammar 0.2.8, and the Harness `/v1/tokenize` endpoint. The native
-baseline is 262,144 prompt-plus-output tokens with four request slots.
-`provenance.json` records the upstream commits, integrated patch hashes, model
-revision, and the original container stack. The Dockerfile supports Linux ARM64
-and AMD64 with NGC CUDA 13.4.1 and upstream PyTorch nightly 2.16.0.dev20261006,
-matching TorchVision 0.30.0.dev20261006 and Triton 3.9.0+gitaad2a60d.
-`nightly-pins.json` retains the validated ARM64 inputs;
-`nightly-pins-amd64.json` records the corresponding official AMD64 inputs.
-Both include immutable base digests and wheel SHA256 hashes. These are the
-recorded 2026-10-06 inputs, rather than floating latest tags. The AMD64 dependency
-closure began with an explicit cross-platform pip report; subsequent native
-AMD64 image installation, installed-wheel audits, CUDA checks and actual
-generations ran on the 16 GB Blackwell test host. Those results belong to their
-recorded image/source identities. The current ARM64 deployment is recorded below;
-the separate AMD64 shipping checks retain their own scope in
-[optimization validation](../../docs/optimization-validation.md).
-The current Compose profile enables YaRN factor 4 with 1,048,576
-prompt-plus-reply tokens, `rotorquant8-norm` K/V and four request slots. Caches grow on demand within
-the global memory gate; four simultaneously full-size contexts are not assumed
-to fit the GB10.
+This guide separates the current selected image inputs and the next checkpoint
+validation target from the dated deployment records below. The build uses NGC
+CUDA **13.4.3 cuDNN development**, CPython 3.12 and genuine official nightlies:
+ARM64 Torch `2.16.0.dev20261014+cu134` / TorchVision
+`0.30.0.dev20261006+cu134`, or AMD64 Torch `2.16.0.dev20261017+cu134` /
+TorchVision `0.30.0.dev20261007+cu134`; both use Triton
+`3.9.0+gitfc8d31a5`. [ARM64 pins](nightly-pins.json) and
+[AMD64 pins](nightly-pins-amd64.json) contain the authoritative child/index
+references and whole-wheel hashes.
+
+Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
+to stage the six tracked files and fetch the two native runtime addons from
+those pins. Ordinary builds do not require a new resolver report or private
+experiment directories. The managed loader selects native core providers and
+only the exact protected TorchVision bundled-runtime exceptions permitted by
+the [foundation contract](foundation.md).
+
+The earlier CUDA13.4.1 / 2026-10-06 pin and lock inputs are archived under
+[history/20261006](history/20261006/README.md). The dated GB10 deployment and AMD64
+measurements below keep their original source, image, checkpoint and cache
+identities. They do not qualify the refreshed foundation. The recorded Compose
+profile uses YaRN factor 4, a 1,048,576-token prompt-plus-reply window,
+`rotorquant8-norm` K/V and four slots. Do not carry its capacity assumptions into
+a different checkpoint; four simultaneous full windows are not assumed to fit.
+
+## Pending GB10 NVFP4 checkpoint validation
+
+The next exact target is
+[`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4`](https://huggingface.co/dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4)
+revision `be794b990578ef3031eccf9f28e675a289a09ee9`, on the GB10's SM 12.1 GPU.
+The ModelOpt export declares static-input NVFP4 W4A4 for routed experts and
+retains its native MTP head and vision tensors in BF16. Its requested validation
+profile keeps routed weights resident, reads n-gram
+tables with `--ple-on-ssd`, enables `--vision`, uses `--parallel 2` or more on
+one GPU, and uses the checkpoint's native MTP head. Context and memory admission
+must be measured for this checkpoint rather than inherited from the older MLX
+profile.
+
+Native ModelOpt A4 implementation and this exact checkpoint's latest-runtime
+startup, serial/MTP identity, vision, concurrent-request and performance gates
+are **pending**. This is a validation target, not a qualified launch recipe or a
+replacement of the recorded deployed service. No new GB10 performance result is
+claimed here.
 
 New builds from the maintained `python-0.6` integration use TensorFold **0.6.6**.
 The Harness checks both the installed package version and module version,
@@ -305,17 +326,22 @@ cgroup, so host memory must also be observed; this one observation is not a
 guaranteed free-memory floor. This record does not relabel the earlier exhaustive
 AMD64 or historical GB10 checks as new runs.
 
-Current builds require the [managed foundation inputs](foundation.md): separately sealed nightly dependencies and native CUDA providers, plus explicit generated-pin and artifact contexts. The recorded earlier CUDA13.4.1 images below retain their original qualification. Latest-base refresh qualification must be recorded separately.
+## Build the current selected image
 
-Build from the repository root:
+First run [input preparation](foundation.md#prepare-the-tracked-selected-inputs)
+from the repository root with `TF_BUILD_ARCH=arm64` for a native GB10 builder.
+Keep its exported variables in the same shell; no `generated-arm64` or
+`artifacts-arm64` directory is assumed to exist. Use a separate candidate tag
+while the new checkpoint and foundation qualification are pending:
 
 ```bash
-docker buildx build --platform linux/arm64 --load --target runtime \
-  --build-context foundation_pins=./generated-arm64 \
-  --build-context foundation_artifacts=./artifacts-arm64 \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
-  --build-arg MAX_JOBS=20 \
-  --tag tensorfold-gb10-fork:local --file deploy/gb10/Dockerfile .
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
+  --tag tensorfold-gb10-fork:candidate --file deploy/gb10/Dockerfile .
 docker compose -f deploy/gb10/compose.yaml config --quiet
 ```
 
@@ -337,13 +363,16 @@ The opt-in, general CUDA host-RAM expert mode is documented in
 and its AMD64 counterpart use the model family's existing CUDA target. Hardware
 architecture is selected from the actual GPU when owned CUDA extensions build.
 
-Build AMD64 on the target's native Docker host with the same file:
+For AMD64, repeat input preparation with `TF_BUILD_ARCH=amd64` on its native
+builder, then use the same Dockerfile:
 
 ```bash
-docker buildx build --platform linux/amd64 --load --target runtime \
-  --build-context foundation_pins=./generated-amd64 \
-  --build-context foundation_artifacts=./artifacts-amd64 \
-  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:amd64 --file deploy/gb10/Dockerfile .
 ```
 
@@ -363,7 +392,7 @@ reduced cuDNN library set, so ordinary wheel-directory precedence can mix
 providers and omit the precompiled Conv3d engine needed by the vision tower.
 Neither dependency tree is modified.
 
-Generic image defaults put compiled artifacts under
+The historical CUDA 13.4.1 image defaults put compiled artifacts under
 `/cache/cu1341-torch216-dev20261006-triton39-aad2a60d/arm64/` or the sibling
 `/amd64/`, separate from each other and older Torch/CUDA caches. This GB10's
 Compose profile retains **ARM64-only, unsuffixed**
@@ -372,8 +401,10 @@ extensions, Triton, CUDA, Inductor and XDG caches. Its default host bind is now
 `/home/kklouzal/services/qwen3.8-flash-next/cache-python-0.6-perf-20261013`,
 separate from the earlier images' `cache-python-0.6-audit-20261013`,
 `cache-python-0.6-2edfaa51` and `cache` binds.
-Retain those old directories for rollback. Use a new `KERNEL_CACHE` directory for
-each subsequent image replacement; matching ABI or module names alone do not
+Retain those old directories for their recorded rollback images. Refreshed
+managed images derive cache identity from the sealed foundation and installed
+TensorFold wheel; do not force them into these old override paths. Use a new
+`KERNEL_CACHE` directory for each subsequent image replacement; matching ABI or module names alone do not
 establish native artifact compatibility. These deployment overrides do not
 change the generic image defaults or authorize sharing native caches with AMD64.
 The Dockerfile defaults `MAX_JOBS` to eight. Set `--build-arg MAX_JOBS=N` when
@@ -501,15 +532,23 @@ inventory at an exact revision; offline operation requires the complete local
 ancillary files. Historical deployment/image receipts retain their original
 configuration and validation scope.
 
-CPU verification, from the repository root:
+CPU verification, from the repository root after the same selected input preparation:
+
+The verification image also needs Git for real repository/update fixtures.
+Its provision and full installed CPU rerun are pending after source
+`16ae6dfc` exposed that missing prerequisite; the runtime service image does not
+need this test tool.
 
 ```bash
-docker buildx build --load --target verification \
-  --build-context foundation_pins=./generated-arm64 \
-  --build-context foundation_artifacts=./artifacts-arm64 \
+docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-gb10-fork:verification --file deploy/gb10/Dockerfile .
 docker run --rm --network none --entrypoint python3 \
-  -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
+  -e NVIDIA_VISIBLE_DEVICES=void -e OMP_NUM_THREADS=1 -e OPENBLAS_NUM_THREADS=1 \
   tensorfold-gb10-fork:verification /opt/tensorfold-pins/foundation_guard.py run -- \
   python3 -m pytest -o pythonpath=tests \
   tests/test_native_ssd.py tests/test_harness_tokenizer.py \
@@ -531,7 +570,7 @@ compatibility setup as the runtime image. It allocates no full model weights:
 
 ```bash
 docker run --rm --network none --gpus all \
-  -e MAX_JOBS=8 -e OMP_NUM_THREADS=1 \
+  -e MAX_JOBS="$TF_BUILD_JOBS" -e OMP_NUM_THREADS=1 \
   -e OPENBLAS_NUM_THREADS=1 \
   --entrypoint python3 \
   tensorfold-gb10-fork:verification /opt/harness/cuda_entrypoint.py python3 -m pytest \
@@ -573,33 +612,40 @@ The original schema1 inputs are archived under `history/20261006` with their
 source commit and byte hashes. They retain historical evidence; reproducing
 them requires their original tooling revision.
 
-Current controlled reports regenerate the selected locks as follows:
+For an intentional refresh, use actual reports produced for that selection and
+the maintained [external-output generation workflow](foundation.md#refresh-selected-dependencies).
+The archived 2026-10-06 report can reproduce only its original profile/tooling;
+it is not an input to current schema2 generation. The following command shape
+uses explicit new report/output paths:
 
 ```bash
 python3 deploy/gb10/lock_dependencies.py --architecture amd64 \
-  --pins deploy/gb10/nightly-pins-amd64.json --report deploy/gb10/resolver-amd64.json
+  --pins deploy/gb10/nightly-pins-amd64.json \
+  --report new-reports/resolver-amd64.json --output-directory new-generated/amd64
 
 # Recorded AMD64-to-ARM64 metadata resolution; this does not qualify ARM execution.
 python3 deploy/gb10/lock_dependencies.py --architecture arm64 --cross-report \
-  --pins deploy/gb10/nightly-pins.json --report deploy/gb10/resolver-arm64.json
+  --pins deploy/gb10/nightly-pins.json \
+  --report new-reports/resolver-arm64.json --output-directory new-generated/arm64
 ```
 
 The generator checks wheel architecture/ABI, Python versions, approved origins,
 nightly hashes and the full target dependency closure, including transitive
 extras. A cross report requires explicit declaration and retains its actual
 resolver architecture; kernel-dependent markers require native resolution.
-`resolver-amd64.json` preserves the relevant metadata from the genuine pip report
-and its original hash. Dependency selection/provenance does not replace native
+The new report must preserve the relevant genuine pip metadata and its original
+byte hash. Dependency selection/provenance does not replace native
 image installation, payload hash verification or CUDA/model checks.
 Update the image/cache identifiers with the pins and rerun CPU, GPU and model
 gates. Do not hand-edit generated requirement locks.
 
 ## Deployment upkeep
 
-This Compose file is the captured **GB10 deployment profile**. Its 114 GiB memory
-limit, CPU set, local model path, 524,288-token context, and four-slot configuration
-are specific to that host. Start a different machine with its own model, resource
-budget, and context using the standalone command in the [fork README](../../README.md).
+This Compose file is the captured **GB10 deployment profile**. Its memory limit,
+CPU set, local model path, context and slot configuration are specific to that
+recorded deployment. It does not substitute the pending NVFP4 target above.
+Start a different machine with its own model, resource budget and context using
+the standalone command in the [fork README](../../README.md).
 The runtime image's default entrypoint already invokes the CUDA compatibility
 launcher and Harness; pass `serve` and its model/options after the image name.
 
