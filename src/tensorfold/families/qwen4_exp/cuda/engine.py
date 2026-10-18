@@ -146,6 +146,23 @@ class FlashNextEngine:
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
+        from tensorfold.cuda import precision
+        from tensorfold.cuda.nvfp4.modelopt_layout import activation_banks, runtime_workspace_bytes
+
+        native_a4 = (not exl3 and quant_method(read_config(model_dir)) == "modelopt"
+                     and precision.mode() == precision.CHECKPOINT
+                     and precision.own_math(torch.cuda.get_device_capability())["nvfp4"])
+        a4_banks = ()
+        if native_a4:
+            from tensorfold.cuda.capacity import headers
+
+            infos = headers(model_dir)
+            a4_banks = activation_banks(infos, text, native=True, mtp=mtp)
+            del infos
+        a4_workspace = (runtime_workspace_bytes(text, rows=streams * each if streams > 1 else max(8, each),
+                        prompt_rows=rows0 + (streams * each if streams > 1 else 0),
+                        mtp_a4=any(bank.startswith("mtp.") for bank in a4_banks), cached=vram_experts is not None)
+                        if a4_banks else 0)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
         graph_bytes = multi_graph_bytes() if streams > 1 and graphs and vram_experts is None else 0
@@ -155,6 +172,13 @@ class FlashNextEngine:
                     if streams > 1 else
                     (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
                                                kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status)))
+        if a4_workspace:
+            from tensorfold.cuda.capacity import Geometry
+
+            original_geometry = geometry
+            def geometry(text):
+                base = original_geometry(text)
+                return Geometry(lambda slots: base.bytes_at(slots) + a4_workspace, base.reserve, base.minimum_slots)
         if exl3:
             geometry = admission(geometry)
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
@@ -179,7 +203,7 @@ class FlashNextEngine:
             from ..ram_experts import AUTO_HEADROOM_BYTES, layout, plan_scratch
             from .prompt_plan import IDLE_ROWS
 
-            ram_layout = expert_session.layout if expert_session is not None else layout(model_dir, vram_experts, mtp=mtp)
+            ram_layout = expert_session.layout if expert_session is not None else layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4)
             if automatic_experts:
                 self.expert_headroom_bytes = cuda_reserve_bytes(int(torch.cuda.mem_get_info()[1]),
                                                                default=AUTO_HEADROOM_BYTES)
@@ -271,6 +295,9 @@ class FlashNextEngine:
                 "metadata_host_bytes": ram_layout.metadata_host_bytes,
                 "control_device_bytes": ram_layout.control_device_bytes,
                 "control_host_bytes": ram_layout.control_host_bytes}
+        if a4_banks:
+            self.capacity_plan["modelopt_a4"] = {"banks": list(a4_banks), "workspace_bytes": a4_workspace,
+                                               "input_scale": "direct-dequantization"}
         self.capacity_plan["rope"] = self.rope.metadata()
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "

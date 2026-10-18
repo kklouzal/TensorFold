@@ -14,7 +14,7 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_experts_a4_v2", sources=[str(here / "experts_a4.cpp"),
+    return load(name="tensorfold_nvfp4_experts_a4_v3", sources=[str(here / "experts_a4.cpp"),
                 str(here / "experts_a4.cu")], need=MIN_CAPABILITY,
                 arch_specific=precision.own_math(torch.cuda.get_device_capability())["nvfp4"],
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
@@ -43,6 +43,7 @@ def run(bank, x, picks, out, *, prefill):
     out.zero_()
     capacity = bank.capacity
     ext = _ext()
+    direct = getattr(bank, "direct_input", False)
     up_sk = 1 if prefill else qmm.split_k(bank.width, bank.dims)
     down_sk = 1 if prefill else qmm.split_k(bank.dims, bank.width)
     for lo in range(0, x.shape[0], PAIRS):
@@ -68,14 +69,15 @@ def run(bank, x, picks, out, *, prefill):
                 codes = torch.empty((2, count, bank.dims // 2), dtype=torch.uint8, device=x.device)
                 scales = torch.empty((2, count, bank.dims // 16), dtype=torch.uint8, device=x.device)
                 gu = torch.empty((2, count, bank.width), dtype=torch.bfloat16, device=x.device)
-                ext.quantize(x, plan, fields[4], codes, scales)
+                ext.quantize(x, plan, fields[4], codes, scales, False, direct)
                 ext.gemm(codes, scales, fields[0], fields[2], fields[4], item, plan,
-                         gu, bank.width, bank.dims, up_sk, False)
+                         gu, bank.width, bank.dims, up_sk, False, direct)
                 hidden = bank.swiglu(gu[0], gu[1])
                 down_codes = torch.empty((1, count, bank.width // 2), dtype=torch.uint8, device=x.device)
                 down_scales = torch.empty((1, count, bank.width // 16), dtype=torch.uint8, device=x.device)
                 # Hidden rows are pair-indexed; destination row/slot/cell
                 # remain in the original plan for down scatter.
-                ext.quantize(hidden, plan, fields[5], down_codes, down_scales, True)
-                ext.gemm(down_codes, down_scales, bank.native_down, fields[3], fields[5], item, plan,
-                         out, bank.dims, bank.width, down_sk, True)
+                ext.quantize(hidden, plan, fields[5], down_codes, down_scales, True, direct)
+                native_down = fields[1].unsqueeze(1) if direct else bank.native_down
+                ext.gemm(down_codes, down_scales, native_down, fields[3], fields[5], item, plan,
+                         out, bank.dims, bank.width, down_sk, True, direct)

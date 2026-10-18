@@ -38,6 +38,12 @@ def decode_frame(raw, *, sequence, banks):
     return bank, rows, bool(prefill)
 
 
+def precision_identity(native_a4, banks):
+    from tensorfold.cuda import precision
+
+    return [precision.mode(), native_a4, list(banks)]
+
+
 class DistributedExperts:
     kernel = "expert_parallel"
     capturable = False
@@ -101,7 +107,11 @@ class Session:
         torch.cuda.set_device(0)
         self.torch = torch
         self.slots, self.dims = self.cfg.top_k + 1, self.cfg.hidden
-        base = layout(model_dir, budget, mtp=mtp)
+        from tensorfold.cuda import precision
+
+        self.native_a4 = (self.cfg.quant == "modelopt" and precision.mode() == precision.CHECKPOINT
+                          and precision.own_math(torch.cuda.get_device_capability())["nvfp4"])
+        base = layout(model_dir, budget, mtp=mtp, native_a4=self.native_a4)
         total = self.cfg.experts + (base.format == "affine4")
         local = len(self.owner.ids) + (rank == 0 and base.format == "affine4")
         if base.host_bytes % total:
@@ -174,7 +184,8 @@ class Session:
         if len(json.dumps(files).encode()) > 1 << 19:
             raise ValueError("expert checkpoint source identity exceeds 512KiB")
         return [device_uuid, host_epoch, digest.hexdigest(), list(self.owner.counts), self.slots, self.dims,
-                self.cfg.moe_width, bool(self.mtp), self.cfg.quant, self.pin_mode, files]
+                self.cfg.moe_width, bool(self.mtp), self.cfg.quant, self.pin_mode, files,
+                precision_identity(self.native_a4, self.layout.native_a4_banks)]
 
     def _read_json(self, key, maximum):
         raw = self.store.get(key)
@@ -255,7 +266,7 @@ class Session:
             from .nvfp4_moe import load_moe_host
             local = load_moe_host(self.reader, key, cfg, "cuda", cache=self.cache,
                                   owned_ids=self.owner.ids, include_shared=self.rank == 0,
-                                  workspace=self.nv_workspace)
+                                  workspace=self.nv_workspace, native_a4=key in self.layout.native_a4_banks)
         self.banks[key] = local
         return DistributedExperts(self, key, local)
 

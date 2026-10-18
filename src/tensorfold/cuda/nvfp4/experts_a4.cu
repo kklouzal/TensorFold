@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_bf16.h>
 #include <stdint.h>
+#include <type_traits>
 #include <torch/extension.h>
 
 #include "mma4.cuh"
@@ -11,14 +12,35 @@
 
 namespace {
 
+template <bool GROUPED, bool DIRECT>
 __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int k,
                               const int* plan, int pairs, const float* input, int cells, int64_t input_stride,
-                              uint8_t* codes, uint8_t* scales, bool paired) {
-    const int blk = blockIdx.x * blockDim.x + threadIdx.x, pair = blockIdx.y, projection = blockIdx.z;
+                              uint8_t* codes, uint8_t* scales, bool paired, const int* items = nullptr,
+                              const int* counts = nullptr, const int* members = nullptr, int slots = 0) {
+    const int blk = blockIdx.x * blockDim.x + threadIdx.x;
+    const int projection = GROUPED ? blockIdx.z / 16 : blockIdx.z;
     if (blk >= k / 16) return;
-    const int row = paired ? pair : plan[3 * pair], cell = plan[3 * pair + 2];
+    int pair = GROUPED ? blockIdx.y * 16 + blockIdx.z % 16 : blockIdx.y, row, cell;
+    if constexpr (GROUPED) {
+        const int item = pair / 16, local = pair % 16;
+        if (counts[0] < 0 || counts[0] > static_cast<int>(gridDim.y)) { __trap(); return; }
+        if (item >= counts[0]) return;
+        cell = items[3 * item];
+        if (cell == cells) return;  // the resident shared expert has its own higher-precision operator
+        const int first = items[3 * item + 1], count = items[3 * item + 2];
+        if (first < 0 || count < 1 || count > 16 || first > pairs - count) { __trap(); return; }
+        if (local >= count) return;
+        pair = first + local;
+        const int member = members[pair];
+        if (member < 0 || member >= pairs) { __trap(); return; }
+        row = paired ? pair : member / slots;
+    } else {
+        row = paired ? pair : plan[3 * pair];
+        cell = plan[3 * pair + 2];
+    }
     if (row < 0 || row >= rows || cell < 0 || cell >= cells) { __trap(); return; }
-    const float inverse = input[static_cast<int64_t>(cell) * input_stride + projection];
+    const float calibration = input[static_cast<int64_t>(cell) * input_stride + projection];
+    const float inverse = DIRECT ? __fdiv_rn(1.f, calibration) : calibration;
     float values[16], amax = 0.f;
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
@@ -38,18 +60,22 @@ __global__ void quant_kernel(const __nv_bfloat16* x, int64_t ldx, int rows, int 
 // (row g, row g+8) x (inputs8t..8t+7,32+8t..39+8t), matching lane4's ldmatrix.
 // Each pair has independent activation scale words, even when the expert's
 // input globals differ from the other projection or the next expert.
-template <bool DOWN, bool F32>
+template <bool DOWN, bool F32, bool GROUPED = false, bool DIRECT = false>
 __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const uint8_t* scales,
     const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input,
     int64_t blob_stride, int64_t weight_stride, int64_t input_stride, int cells,
     const int* items, int item_count, const int* plan, int pairs, void* out, int64_t out_row, int64_t out_slot,
-    int output_rows, int output_slots, int n, int k, int slices) {
+    int output_rows, int output_slots, int n, int k, int slices,
+    const int* counts = nullptr, const int* members = nullptr, int slots = 0) {
     const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
     const int64_t unit = static_cast<int64_t>(blockIdx.x) * 4 + (threadIdx.x >> 5);
     const int nb = n / 8;
-    if (unit >= static_cast<int64_t>(item_count) * nb) return;
+    const int active_items = GROUPED ? counts[0] : item_count;
+    if (active_items < 0 || active_items > item_count) { __trap(); return; }
+    if (unit >= static_cast<int64_t>(active_items) * nb) return;
     const int item = unit / nb, cb = unit % nb, projection = blockIdx.y;
     const int cell = items[3 * item], first = items[3 * item + 1], count = items[3 * item + 2];
+    if constexpr (GROUPED) { if (cell == cells) return; }
     if (cell < 0 || cell >= cells || first < 0 || count < 1 || count > 16 || first > pairs - count) {
         __trap(); return;
     }
@@ -81,15 +107,19 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
     }
     const int64_t input_at = static_cast<int64_t>(cell) * input_stride + projection;
     const int64_t weight_at = static_cast<int64_t>(cell) * weight_stride + projection;
-    const float alpha = __fmul_rn(__fdiv_rn(1.f, input[input_at]), weight[weight_at]);
+    const float act = DIRECT ? input[input_at] : __fdiv_rn(1.f, input[input_at]);
+    const float alpha = __fmul_rn(act, weight[weight_at]);
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
         const int r = first + g + h * 8;
         if (r >= first + count) continue;
         int64_t at;
         if constexpr (DOWN) {
-            const int row = plan[3 * r], slot = plan[3 * r + 1];
-            if (row < 0 || row >= output_rows || slot < 0 || slot >= output_slots || plan[3 * r + 2] != cell) {
+            const int member = GROUPED ? members[r] : 0;
+            const int row = GROUPED ? member / slots : plan[3 * r];
+            const int slot = GROUPED ? member % slots : plan[3 * r + 1];
+            if (row < 0 || row >= output_rows || slot < 0 || slot >= output_slots ||
+                    (!GROUPED && plan[3 * r + 2] != cell)) {
                 __trap(); return;
             }
             at = static_cast<int64_t>(row) * out_row + static_cast<int64_t>(slot) * out_slot + cb * 8 + t * 2;
@@ -110,20 +140,23 @@ __global__ void __launch_bounds__(128) gemm_kernel(const uint8_t* codes, const u
 }  // namespace
 
 void expert_a4_quant_cuda(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
-                           at::Tensor& codes, at::Tensor& scales, bool paired) {
-    quant_kernel<<<dim3((x.size(1) / 16 + 127) / 128, plan.size(0), input.size(1)), 128, 0,
+                           at::Tensor& codes, at::Tensor& scales, bool paired, bool direct) {
+    const auto launch = [&](auto mode) {
+    quant_kernel<false, decltype(mode)::value><<<dim3((x.size(1) / 16 + 127) / 128, plan.size(0), input.size(1)), 128, 0,
                     at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
         x.stride(0), x.size(0), x.size(1), plan.data_ptr<int>(), plan.size(0), input.data_ptr<float>(), input.size(0),
         input.stride(0), codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), paired);
+    };
+    if (direct) launch(std::true_type{}); else launch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <bool DOWN, bool F32>
+template <bool DOWN, bool F32, bool DIRECT = false>
 void launch_gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& plan,
     at::Tensor& out, int64_t n, int64_t k, int64_t sk) {
     const dim3 grid((items.size(0) * (n / 8) + 3) / 4, blob.size(1));
-    gemm_kernel<DOWN, F32><<<grid, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+    gemm_kernel<DOWN, F32, false, DIRECT><<<grid, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
         codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), blob.data_ptr<uint8_t>(), blob.size(2),
         weight.data_ptr<float>(), input.data_ptr<float>(), blob.stride(0), weight.stride(0), input.stride(0),
         blob.size(0), items.data_ptr<int>(),
@@ -133,10 +166,49 @@ void launch_gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Te
 
 void expert_a4_gemm_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& plan,
-    at::Tensor& out, int64_t n, int64_t k, int64_t sk, bool down) {
-    if (!down) launch_gemm<false, false>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
+    at::Tensor& out, int64_t n, int64_t k, int64_t sk, bool down, bool direct) {
+    const auto launch = [&](auto mode) {
+    constexpr bool DIRECT = decltype(mode)::value;
+    if (!down) launch_gemm<false, false, DIRECT>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
     else if (out.scalar_type() == at::kFloat)
-        launch_gemm<true, true>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
-    else launch_gemm<true, false>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
+        launch_gemm<true, true, DIRECT>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
+    else launch_gemm<true, false, DIRECT>(codes, scales, blob, weight, input, items, plan, out, n, k, sk);
+    };
+    if (direct) launch(std::true_type{}); else launch(std::false_type{});
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Device-only Flash plan: members contain original flat (row,slot) IDs and
+// items/counts remain live GPU routing data during graph capture/replay.
+void expert_a4_quant_plan_cuda(const at::Tensor& x, const at::Tensor& items, const at::Tensor& counts,
+    const at::Tensor& members, const at::Tensor& input, at::Tensor& codes, at::Tensor& scales,
+    int64_t slots, bool paired) {
+    quant_kernel<true, true><<<dim3((x.size(1) / 16 + 127) / 128, items.size(0), input.size(1) * 16),
+        128, 0, at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()),
+        x.stride(0), x.size(0), x.size(1), nullptr, codes.size(1), input.data_ptr<float>(), input.size(0),
+        input.stride(0), codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), paired,
+        items.data_ptr<int>(), counts.data_ptr<int>(), members.data_ptr<int>(), slots);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <bool DOWN, bool F32>
+void launch_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+    const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
+    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots) {
+    gemm_kernel<DOWN, F32, true, true><<<dim3((items.size(0) * (n / 8) + 3) / 4, blob.size(1)),
+        128, 0, at::cuda::getCurrentCUDAStream()>>>(codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
+        blob.data_ptr<uint8_t>(), blob.size(2), weight.data_ptr<float>(), input.data_ptr<float>(),
+        blob.stride(0), weight.stride(0), input.stride(0), blob.size(0), items.data_ptr<int>(), items.size(0),
+        nullptr, codes.size(1), out.data_ptr(), out.stride(0), out.stride(1), out.size(0), out.size(1), n, k, sk,
+        counts.data_ptr<int>(), members.data_ptr<int>(), slots);
+}
+
+void expert_a4_gemm_plan_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+    const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts,
+    const at::Tensor& members, at::Tensor& out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool down) {
+    if (!down) launch_plan<false, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+    else if (out.scalar_type() == at::kFloat)
+        launch_plan<true, true>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
+    else launch_plan<true, false>(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

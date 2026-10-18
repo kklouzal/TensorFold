@@ -59,6 +59,47 @@ class MoE4:
         return ((gate / (1.0 + torch.exp(-gate))).to(torch.bfloat16).to(torch.float32) * up).to(torch.bfloat16)
 
 
+class MoEA4:
+    """Declared native-A4 routed bank and unchanged higher-precision shared expert."""
+
+    kernel = "nvfp4"
+    shared_act = MoE4.shared_act
+
+    def __init__(self, routed, shared, *, width=None, dims=None, slots=None):
+        self.routed_experts, self.shared = routed, shared
+        self.routed = routed.count if routed is not None else 0
+        self.width = routed.width if routed is not None else width
+        self.dims = routed.dims if routed is not None else dims
+        self.slots = slots
+
+    @property
+    def count(self):
+        return self.routed + int(self.shared is not None)
+
+    @property
+    def capturable(self):
+        return self.routed_experts is not None and self.routed_experts.capturable
+
+    def device_tensors(self):
+        return (() if self.routed_experts is None else self.routed_experts.device_tensors()), self.shared
+
+    def nbytes(self):
+        return self.routed_experts.nbytes() + self.shared.gu.nbytes() + self.shared.down.nbytes()
+
+    def run_picks(self, x, picks, out, *, prefill):
+        # EP's owner already maps global picks to local IDs or -1. Native A4
+        # writes complete unweighted slots and preserves every original slot.
+        if self.routed_experts is None:
+            out.zero_()
+        else:
+            self.routed_experts.run(x, picks, out, prefill=prefill)
+        if self.shared is not None:
+            pairs = torch.nonzero(picks == self.routed, as_tuple=False)
+            if pairs.numel():
+                value = self.shared_act(x.index_select(0, pairs[:, 0]), prefill)
+                out[pairs[:, 0], pairs[:, 1]] = _shared(self.shared.down, value, prefill, not prefill)
+
+
 class CachedMoE4:
     """Host-backed routed banks plus the leader's unchanged resident shared expert.
 
@@ -227,6 +268,14 @@ def moe(x: torch.Tensor, xs: torch.Tensor, router_rows: torch.Tensor, ex: MoE4, 
     moe_mod.router(x, router_rows, buf.logits[:rows])
     moe_mod.select(buf.logits[:rows], buf, top_k, ex.routed, nvx.PREFILL_TILE)
     prompt = buf.y.dtype != torch.float32                  # a prompt's buffers keep bf16 slots
+    if isinstance(ex, MoEA4):
+        if ex.capturable:
+            ex.routed_experts.run_plan(x, buf, prefill=prompt)
+        else:
+            ex.routed_experts.run(x, buf.pick[:rows], buf.y[:rows], prefill=prompt)
+        buf.act[:rows, top_k] = ex.shared_act(x, prompt)
+        buf.y[:rows, top_k] = _shared(ex.shared.down, buf.act[:rows, top_k], prompt, not prompt)
+        return buf
     if isinstance(ex, CachedMoE4):
         scratch = getattr(buf, "expert_window", None)
         if scratch is None:
@@ -248,7 +297,7 @@ def moe(x: torch.Tensor, xs: torch.Tensor, router_rows: torch.Tensor, ex: MoE4, 
 
 
 def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, include_shared=True, layer_id=None,
-                  workspace=None):
+                  workspace=None, native_a4=False):
     """Complete local expert bank for leader or EP follower, without backbone reads."""
     from tensorfold.cuda.nvfp4.host_experts import CachedExperts4, _ids, _read, load_nvfp4_host_experts
 
@@ -259,11 +308,16 @@ def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, i
     if device != cache.device:
         raise ValueError("NVFP4 bank and expert cache must use the same CUDA device")
     ids = _ids(full.experts, owned_ids)
-    authority = load_nvfp4_host_experts(reader, name, full, device, cache=cache, owned_ids=ids,
-                                      include_shared=include_shared)
     if layer_id is None:
         layer_id = len(cache._layers)
-    routed = CachedExperts4(authority, cache, layer_id) if authority is not None else None
+    if native_a4:
+        from tensorfold.cuda.nvfp4.modelopt_experts import load_modelopt_a4
+
+        routed = load_modelopt_a4(reader, name, full, device=device, cache=cache, owned_ids=ids, layer_id=layer_id)
+    else:
+        authority = load_nvfp4_host_experts(reader, name, full, device, cache=cache, owned_ids=ids,
+                                          include_shared=include_shared)
+        routed = CachedExperts4(authority, cache, layer_id) if authority is not None else None
     shared = None
     if include_shared:
         base = name + ".shared_expert."
@@ -282,5 +336,7 @@ def load_moe_host(reader, name, full, device="cuda", *, cache, owned_ids=None, i
             shared = expert4_from_bf16(*[
                 _read(reader, base + p + ".weight", device=device).to(torch.bfloat16)
                 for p in ("gate_proj", "up_proj", "down_proj")])
+    if native_a4:
+        return MoEA4(routed, shared, width=full.moe_width, dims=full.hidden, slots=full.top_k + 1)
     return CachedMoE4(routed, shared, full.moe_width, full.hidden, len(ids), full.top_k + 1,
                               workspace=workspace)
