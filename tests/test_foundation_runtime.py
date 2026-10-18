@@ -153,6 +153,9 @@ def test_capture_refuses_incomplete_or_ambiguous_native_dependencies(prepared, f
 
 def test_cxx_provider_comes_from_compiler_packages_not_sdk_private_bundles(prepared, runtime):
     private = prepared.add(prepared.root / "profiler-private/libstdc++.so.6", owned=True)
+    helper = prepared.add(prepared.root / "gdb/libstdc++.so.6.0.33-gdb.py")
+    prepared.compiler.add(helper)
+    assert runtime.provider_kind(helper.name) is None
     contract = prepared.capture()
     selected = prepared.root / "libstdc++.so.6"
     assert contract["index"]["libstdc++.so.6"]["realpath"] == str(selected)
