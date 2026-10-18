@@ -88,3 +88,21 @@ def loading_device_bytes(text):
 def cached_control_host_bytes(text):
     """Bounded CPU readback/grouping/lease plan for128 rows of routed picks."""
     return 192 * 128 * (text["num_experts_per_tok"] + 1) + 64 * 1024
+
+
+def expert_group_policy(policies):
+    """One preparation-time arithmetic policy for all expert ranks.
+
+    A heterogeneous group retains the supported W4A16 region uniformly; its
+    expert assignment must not select activation precision incidentally.
+    """
+    if (not isinstance(policies, list) or not policies or any(not isinstance(p, list) or len(p) != 2
+            or p[0] not in ("checkpoint", "full") or type(p[1]) is not bool for p in policies)):
+        raise ValueError("expert rank math capabilities require a mode and native-FP4 boolean")
+    modes = {p[0] for p in policies}
+    if len(modes) != 1:
+        raise ValueError("expert ranks require matching explicit precision modes")
+    native = policies[0][0] == "checkpoint" and all(p[1] for p in policies)
+    reason = ("all-native" if native else "explicit-full" if policies[0][0] == "full" else
+              "mixed-capability-full" if any(p[1] for p in policies) else "non-native-full")
+    return native, reason
