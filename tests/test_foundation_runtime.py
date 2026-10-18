@@ -26,6 +26,10 @@ def runtime(monkeypatch):
     spec = importlib.util.spec_from_file_location("test_foundation_runtime_module", DEPLOY / "foundation_runtime.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Synthetic activation controls model the pre-Torch startup boundary even
+    # when unrelated tests already imported Torch in the shared pytest process.
+    # The real ELF control below exercises actual sys.modules in a fresh child.
+    monkeypatch.setattr(module, "sys", SimpleNamespace(modules={}))
     return module
 
 
@@ -372,7 +376,12 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[2])
 import foundation_runtime as runtime
 entries = json.loads(sys.argv[1])
-owners = tuple(ctypes.CDLL(entry['realpath'], mode=os.RTLD_LOCAL | os.RTLD_NOW) for entry in entries.values())
+assert 'torch' not in sys.modules
+order = runtime._dependency_order(set(entries), entries)
+contract = {'schema_version': 1, 'index': entries,
+            'torch': {'order': order, 'objects': []},
+            'vision': {'record': next(iter(entries.values())), 'providers': []}}
+owners = runtime.activate_runtime(contract)
 assert owners[0].runtime_control() == owners[1].consumer_control() == 7
 paths = {entry['realpath'] for entry in entries.values()}
 text = '\\n'.join(row for row in Path('/proc/self/maps').read_text().splitlines()
