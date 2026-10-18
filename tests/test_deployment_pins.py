@@ -665,6 +665,7 @@ def test_exact_official_binary_hosts_generate_and_select(scripts, tmp_path, monk
                                    "ftp://download.pytorch.org/", "http://download.pytorch.org/",
                                    "https://download-r2.pytorch.org.unapproved.invalid/",
                                    "https://nightly.pytorch.org/", "https://files.pythonhosted.org/",
+                                   "https://pypi.nvidia.com/",
                                    "https://user:secret@download-r2.pytorch.org/"])
 def test_binary_report_origin_cannot_be_promoted_to_an_official_pin(scripts, origin):
     report, pins = report_and_pins()
@@ -792,3 +793,118 @@ def test_selector_checks_nccl_binding_before_publication(selection_bundle, tmp_p
     with pytest.raises(ValueError, match=r"nccl_provider|NCCL wheel provider"):
         selector.select("amd64", tmp_path, base_image=pins["base"])
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize("architecture,machine", [("arm64", "aarch64"), ("amd64", "x86_64")])
+@pytest.mark.parametrize("name", ["cuda-toolkit", "nvidia-cudnn-cu13", "NVIDIA_CUDA_RUNTIME"])
+def test_nvidia_index_accepts_only_canonical_vendor_namespaces(scripts, tmp_path, monkeypatch,
+                                                              architecture, machine, name):
+    report, pins = report_and_pins(architecture, machine)
+    report["install"][0]["metadata"]["requires_dist"] = [name + "==1.0"]
+    add(report, name)
+    item = report["install"][-1]
+    item["download_info"]["url"] = item["download_info"]["url"].replace("files.pythonhosted.org", "pypi.nvidia.com")
+    before = copy.deepcopy(report)
+    contents = scripts[0].render(report, pins, architecture)
+    selected = manifest(contents, scripts, architecture)
+    canonical = name.lower().replace("_", "-")
+    assert selected["roles"]["foundation"][canonical]["url"] == item["download_info"]["url"]
+    assert report == before
+    selector = scripts[1]
+    target = selector.platform_pins(architecture)
+    for filename, content in contents.items():
+        (tmp_path / filename).write_text(content)
+    (tmp_path / target.pins).write_text(json.dumps(pins))
+    monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(selector.platform, "machine", lambda: machine)
+    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    selector.select(architecture, tmp_path, base_image=pins["base"])
+    assert (tmp_path / "requirements-foundation.lock").read_text() == contents[target.foundation]
+
+
+@pytest.mark.parametrize("name", ["ordinary", "cudahelper", "nvidiahelper", "nvidia"])
+def test_nvidia_index_rejects_nonnamespace_packages_in_generator_and_selector(scripts, tmp_path, monkeypatch, name):
+    report, pins = report_and_pins()
+    add(report, name)
+    contents = scripts[0].render(report, pins, "amd64")
+    item = report["install"][-1]
+    item["download_info"]["url"] = item["download_info"]["url"].replace("files.pythonhosted.org", "pypi.nvidia.com")
+    with pytest.raises(ValueError, match="unapproved dependency origin"):
+        scripts[0].render(report, pins, "amd64")
+    selector = scripts[1]
+    target = selector.platform_pins("amd64")
+    selected = json.loads(contents[target.manifest])
+    selected["roles"]["runtime"][name]["url"] = item["download_info"]["url"]
+    contents[target.manifest] = json.dumps(selected)
+    contents[target.runtime] = contents[target.runtime].replace("files.pythonhosted.org", "pypi.nvidia.com")
+    for filename, content in contents.items():
+        (tmp_path / filename).write_text(content)
+    (tmp_path / target.pins).write_text(json.dumps(pins))
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    with pytest.raises(ValueError, match="invalid selected distribution origin"):
+        selector.select("amd64", tmp_path, base_image=pins["base"])
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize("origin,suffix", [
+    ("http://pypi.nvidia.com/", ""), ("https://pypi.nvidia.com.unapproved.invalid/", ""),
+    ("https://other.nvidia.com/", ""), ("https://user:secret@pypi.nvidia.com/", ""),
+    ("https://pypi.nvidia.com:444/", ""), ("https://pypi.nvidia.com:80/", ""),
+    ("https://pypi.nvidia.com/encoded%20space/", ""), ("https://pypi.nvidia.com/", "#fragment"),
+])
+def test_nvidia_namespace_does_not_authorize_unsafe_urls(scripts, tmp_path, monkeypatch, origin, suffix):
+    report, pins = report_and_pins()
+    report["install"][0]["metadata"]["requires_dist"] = ["nvidia-cuda-runtime"]
+    add(report, "nvidia-cuda-runtime")
+    contents = scripts[0].render(report, pins, "amd64")
+    item = report["install"][-1]
+    original = item["download_info"]["url"]
+    item["download_info"]["url"] = origin + original.rsplit("/", 1)[-1] + suffix
+    with pytest.raises(ValueError):
+        scripts[0].render(report, pins, "amd64")
+    selector = scripts[1]
+    target = selector.platform_pins("amd64")
+    selected = json.loads(contents[target.manifest])
+    selected["roles"]["foundation"]["nvidia-cuda-runtime"]["url"] = item["download_info"]["url"]
+    contents[target.manifest] = json.dumps(selected)
+    contents[target.foundation] = contents[target.foundation].replace(original, item["download_info"]["url"])
+    for filename, content in contents.items():
+        (tmp_path / filename).write_text(content)
+    (tmp_path / target.pins).write_text(json.dumps(pins))
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    with pytest.raises(ValueError):
+        selector.select("amd64", tmp_path, base_image=pins["base"])
+    assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
+
+
+@pytest.mark.parametrize("name", ["cuda-bindings", "cuda-runtime", "cuda-other"])
+def test_nvidia_index_cuda_exception_is_exact_toolkit_only(scripts, tmp_path, monkeypatch, name):
+    report, pins = report_and_pins()
+    report["install"][0]["metadata"]["requires_dist"] = [name]
+    add(report, name)
+    contents = scripts[0].render(report, pins, "amd64")
+    original = report["install"][-1]["download_info"]["url"]
+    rejected = original.replace("files.pythonhosted.org", "pypi.nvidia.com")
+    report["install"][-1]["download_info"]["url"] = rejected
+    with pytest.raises(ValueError, match="unapproved dependency origin"):
+        scripts[0].render(report, pins, "amd64")
+    selector = scripts[1]
+    target = selector.platform_pins("amd64")
+    selected = json.loads(contents[target.manifest])
+    selected["roles"]["foundation"][name]["url"] = rejected
+    contents[target.manifest] = json.dumps(selected)
+    contents[target.foundation] = contents[target.foundation].replace(original, rejected)
+    for filename, content in contents.items():
+        (tmp_path / filename).write_text(content)
+    (tmp_path / target.pins).write_text(json.dumps(pins))
+    monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    with pytest.raises(ValueError, match="distribution origin"):
+        selector.select("amd64", tmp_path, base_image=pins["base"])

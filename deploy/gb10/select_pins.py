@@ -61,10 +61,12 @@ def _validate_artifacts(pins: dict, manifest: dict, contents: dict[str, bytes], 
                     raise ValueError(f"selected foundation wheel differs from pins: {name}")
             else:
                 parsed = urlsplit(url)
+                nvidia_origin = (parsed.hostname == "pypi.nvidia.com" and parsed.port in (None, 443)
+                         and (name == "cuda-toolkit" or name.startswith("nvidia-")))
                 if (parsed.scheme != "https"
-                        or parsed.hostname not in {"download.pytorch.org", "download-r2.pytorch.org",
-                                                   "files.pythonhosted.org"}
-                        or parsed.username or parsed.password or not parsed.path.endswith(".whl")):
+                        or not (parsed.hostname in {"download.pytorch.org", "download-r2.pytorch.org",
+                                                    "files.pythonhosted.org"} or nvidia_origin)
+                        or parsed.username or parsed.password or parsed.fragment or not parsed.path.endswith(".whl")):
                     raise ValueError(f"invalid selected distribution origin: {name}")
             if role != "foundation" and is_accelerator_package(name):
                 raise ValueError(f"accelerator package outside selected foundation: {name}")

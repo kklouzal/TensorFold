@@ -171,7 +171,11 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
         if wheel_name != name or wheel_version != Version(version) or not tags & accepted:
             raise ValueError(f"wheel metadata/tags do not match linux/{architecture} CPython 3.12: {name}")
         allowed = BINARY_NIGHTLY_HOSTS if name in pins["wheels"] else ALLOWED_HOSTS
-        if (parsed.scheme != "https" or parsed.hostname not in allowed or parsed.username or parsed.password):
+        nvidia_origin = (parsed.hostname == "pypi.nvidia.com" and parsed.port in (None, 443)
+                         and (name == "cuda-toolkit" or name.startswith("nvidia-")))
+        if (parsed.scheme != "https" or not (parsed.hostname in allowed or nvidia_origin)
+                or parsed.username or parsed.password or parsed.fragment
+                or any(character.isspace() for character in unquote(url))):
             raise ValueError(f"unapproved dependency origin for {name}")
         if name in pins["wheels"]:
             pin = pins["wheels"][name]
