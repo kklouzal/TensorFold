@@ -21,7 +21,8 @@ class ModelOptExpertsA4(ExpertsA4):
     direct_input = True
     capturable = True
 
-    def __init__(self, fields, width, dims):
+    def __init__(self, fields, width, dims, *, shared_input=False):
+        self.shared_input = shared_input
         super().__init__(fields, width, dims, swiglu=swiglu_bf16)
 
     def nbytes(self):
@@ -62,9 +63,27 @@ class ModelOptExpertsA4(ExpertsA4):
         fields = self.fields
         items = plan.items[:min(pairs, self.count + 1) + pairs // 16]
         members = plan.members[:pairs]
-        ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False)
+        common = self.shared_input and rows <= 65535
+        if common:
+            row_plan = getattr(buf, "modelopt_a4_row_plan", None)
+            if row_plan is None:
+                with torch.inference_mode(False):
+                    indices = torch.arange(buf.rows, dtype=torch.int32, device=x.device)
+                    zero = torch.zeros_like(indices)
+                    row_plan = torch.stack((indices, zero, zero), dim=1)
+                buf.modelopt_a4_row_plan = row_plan
+                del indices, zero
+            # Reuse the existing input backing; the shared representation is a
+            # smaller prefix. Mixed common/nonuniform layers remain bounded by
+            # the same one pair of admitted code/scale allocations.
+            codes = scratch[0].view(-1)[:rows * (self.dims // 2)].view(1, rows, self.dims // 2)
+            scales = scratch[1].view(-1)[:rows * (self.dims // 16)].view(1, rows, self.dims // 16)
+            ext.quantize(x, row_plan[:rows], fields[4][:1, :1], codes, scales, False, True)
+        else:
+            ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False)
         ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
-                      gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False)
+                      gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False,
+                      common)
         hidden = swiglu_bf16(gu[0], gu[1])
         ext.quantize_plan(hidden, items, plan.counts, members, fields[5], dc, ds, slots, True)
         ext.gemm_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members,
@@ -120,4 +139,8 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
         return CachedModelOptExpertsA4(fields, cache, key, full.moe_width, full.hidden)
-    return ModelOptExpertsA4(tuple(t.to(device=device) for t in fields), full.moe_width, full.hidden)
+    # Compare the complete prepared FP32 bit inventory, not sampled experts
+    # or floating equality. Cache banks retain their general leased quantizer.
+    shared_input = bool((fields[4].view(torch.int32) == fields[4].view(torch.int32)[0, 0]).all())
+    return ModelOptExpertsA4(tuple(t.to(device=device) for t in fields), full.moe_width, full.hidden,
+                            shared_input=shared_input)
