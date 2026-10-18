@@ -102,7 +102,8 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
                 sk > 0 && sk <= 8 && (k / 64) % sk == 0, "nativeA4 dimensions/slices must form complete tiles");
     TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : (p <= 128 && plan.size(0) == p && plan.size(1) == 3)) && cells > 0 && cells <= INT32_MAX &&
                 items.size(0) > 0 && items.size(0) <= p && items.size(1) == 3 &&
-                projections == (down ? 1 : 2), "nativeA4 bounded plan/projection geometry");
+                projections == (down ? 1 : 2), "nativeA4 bounded plan/projection geometry: pairs=", p,
+                " items=", items.size(0), " cells=", cells, " projections=", projections, " down=", down);
     TORCH_CHECK(items.size(0) * (n / 8) <= static_cast<int64_t>(INT32_MAX) * 4,
                 "nativeA4 launch exceeds CUDA grid index range");
     TORCH_CHECK(blob.size(2) == (n / 16) * k * 9 && weight.size(0) == cells && weight.size(1) == projections &&
