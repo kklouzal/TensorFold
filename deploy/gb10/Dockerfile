@@ -76,7 +76,7 @@ COPY src/tensorfold/cuda/foundation_tools.py /opt/harness/foundation_tools.py
 ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "/opt/harness/tensorfold_harness.py"]
 CMD ["serve", "--help"]
 
-# Verification changes only the app prefix, preserving the same foundation.
+# Verification adds app/test dependencies and Git while preserving the sealed foundation.
 FROM application AS verification
 ARG TARGETARCH
 RUN python3 /opt/tensorfold-pins/foundation_guard.py audit \
