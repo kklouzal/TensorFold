@@ -532,3 +532,35 @@ def test_golden_float32_layers_compute_in_float32_and_restore_weight_dtypes():
     assert model.layers[0].proj.weight.dtype == torch.bfloat16 and torch.equal(model.layers[0].proj.weight, bf16_weight)
     assert model.layers[1].scale.dtype == torch.bfloat16 and model.embed.weight.dtype == torch.float32
     assert model.vision_tower.weight.dtype == torch.bfloat16
+
+
+def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_path):
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    if not hasattr(transformers, "Gemma4ForConditionalGeneration"):
+        pytest.skip("transformers without Gemma4")
+    golden = load("campaign_golden")
+    text = dict(num_hidden_layers=2, hidden_size=72, intermediate_size=96, moe_intermediate_size=32, num_experts=4,
+                top_k_experts=2, num_attention_heads=4, num_key_value_heads=2, num_global_key_value_heads=1,
+                head_dim=16, global_head_dim=32, vocab_size=128, sliding_window=8, enable_moe_block=True,
+                layer_types=["sliding_attention", "full_attention"])
+    vision = dict(num_hidden_layers=1, hidden_size=32, intermediate_size=32, num_attention_heads=2)
+    torch.manual_seed(0)
+    model = transformers.Gemma4ForConditionalGeneration(
+        transformers.Gemma4Config(text_config=text, vision_config=vision)).to(torch.bfloat16)
+    model.save_pretrained(tmp_path)
+    loaded, report = golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, tmp_path,
+                                      "cpu")
+    assert report["parameter_dtypes"] == ["torch.bfloat16"]
+    scale = loaded.model.language_model.embed_tokens.embed_scale
+    assert scale.dtype == torch.float32 and abs(float(scale) - 72 ** 0.5) < 1e-6      # bf16 would give 8.5
+    golden.float32_layers(torch, loaded)
+    reference = transformers.Gemma4ForConditionalGeneration.from_pretrained(tmp_path, dtype=torch.float32).eval()
+    ids = torch.tensor([[3, 17, 5, 99, 42, 7, 8, 64, 1, 2, 3]])
+    with torch.no_grad():
+        assert torch.equal(loaded(input_ids=ids).logits.float(), reference(input_ids=ids).logits.float())
+    rows, dtype = golden.score(torch, loaded, [3, 17, 5, 99], [42, 7, 8, 64, 1, 2, 3], chunk=2, top_k=8)
+    with torch.no_grad():
+        full = torch.log_softmax(reference(input_ids=ids).logits[0, 3:-1].float(), -1)
+    forced = torch.tensor([r["forced"] for r in rows])
+    assert dtype == "torch.float32" and torch.allclose(forced, full[torch.arange(7), ids[0, 4:]], atol=1e-5)
