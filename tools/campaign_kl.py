@@ -391,10 +391,18 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
     base build, each dumped against the golden reference: delta_kl / delta_agreement = the largest absolute mean
     paired difference from the base among the variants. Every variant's differences and intervals are recorded."""
 
+    import numpy as np
+
+    if not variants:
+        raise ValueError("calibration needs at least one reorder-only variant")
+    base = np.load(base_path)
+    for name, path in variants.items():
+        # positive control: the engine is deterministic, so a bit-identical dump means the patch did not load or
+        # changed no bits; it carries no reorder information
+        if np.array_equal(np.load(path)["at_ref"], base["at_ref"]):
+            raise ValueError(f"variant {name} ({path}) is bit-identical to the base: not a reorder sample")
     rows = {name: paired(golden_path, base_path, path, block=block, resamples=resamples, seed=seed)
             for name, path in variants.items()}
-    if not rows:
-        raise ValueError("calibration needs at least one reorder-only variant")
     first = next(iter(rows.values()))
     return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
             "golden_source": first["golden_source"], "base": base_path, "base_sha256": file_sha256(base_path),
@@ -420,19 +428,22 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
     kl_low, kl_high = result["kl_delta"]["ci95"]
     agree_low, agree_high = result["agreement_delta"]["ci95"]
-    result["ci_width"] = {"kl_delta": kl_high - kl_low, "agreement_delta": agree_high - agree_low}
+    kl_width, agree_width = kl_high - kl_low, agree_high - agree_low
+    result["ci_width"] = {"kl_delta": kl_width, "agreement_delta": agree_width}
     if calibration is None:
         result.update(status="uncalibrated", margins=None)
         return result
-    for key in ("golden_sha256", "eval_sha256"):
+    for key in ("golden_sha256", "eval_sha256", "positions"):
         if calibration[key] != result[key]:
             raise ValueError(f"calibration {key} does not match this gate's golden reference")
+    for key in ("block", "resamples", "seed"):
+        if calibration["bootstrap"][key] != result["bootstrap"][key]:
+            raise ValueError(f"bootstrap {key} {result['bootstrap'][key]} differs from the calibration's "
+                             f"{calibration['bootstrap'][key]}")
     delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
     result["margins"] = {"delta_kl": delta_kl, "delta_agreement": delta_agree,
                          "calibration_base": calibration["base"], "variants": sorted(calibration["variants"])}
-    wide = [n for n, width, margin in (("kl", result["ci_width"]["kl_delta"], delta_kl),
-                                       ("agreement", result["ci_width"]["agreement_delta"], delta_agree))
-            if width > margin]
+    wide = [n for n, bad in (("kl", kl_width > delta_kl), ("agreement", agree_width > delta_agree)) if bad]
     # worse beyond the margin with the whole interval: a failure at any width
     clear = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agree)) if bad]
     failed = clear or [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agree)) if bad]
@@ -490,15 +501,18 @@ def main() -> int:
                          else {})
         with_app(args.serve, args.port, lambda app: dump(app, args))
     else:
-        boot = {} if args.command == "compare" else {"block": args.block, "resamples": args.resamples,
-                                                       "seed": args.seed}
         if args.command == "compare":
             result = compare(args.reference, args.candidate)
-        elif args.command == "calibrate":
-            result = calibrate(args.golden, args.base, dict(v.split("=", 1) for v in args.variants), **boot)
         else:
-            record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
-            result = gate(args.golden, args.old, args.new, calibration=record, **boot)
+            boot = {"block": args.block, "resamples": args.resamples, "seed": args.seed}
+            if args.command == "calibrate":
+                pairs = [v.split("=", 1) for v in args.variants]
+                if any(len(p) != 2 or not all(p) for p in pairs) or len({p[0] for p in pairs}) != len(pairs):
+                    ap.error("calibrate variants must be distinct NAME=DUMP arguments")
+                result = calibrate(args.golden, args.base, dict(pairs), **boot)
+            else:
+                record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
+                result = gate(args.golden, args.old, args.new, calibration=record, **boot)
         text = json.dumps(result, indent=1)
         if args.out:
             Path(args.out).write_text(text + "\n")

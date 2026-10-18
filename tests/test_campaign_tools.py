@@ -549,6 +549,11 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     assert narrow["status"] == "incomplete" and narrow["too_wide"] == ["kl"]
     with pytest.raises(ValueError, match="does not match"):
         kl.gate(path("golden"), path("old"), path("same"), calibration=dict(record, eval_sha256="x"), resamples=300)
+    with pytest.raises(ValueError, match="bootstrap resamples"):
+        kl.gate(path("golden"), path("old"), path("same"), calibration=record, resamples=200)
+    _dump(tmp_path / "copy.npz", rows["old"], 16, reference=tmp_path / "golden.npz")    # a patch that did not load
+    with pytest.raises(ValueError, match="bit-identical to the base"):
+        kl.calibrate(path("golden"), path("old"), {"r0": path("reorder0"), "copy": path("copy")}, resamples=300)
 
 
 def test_golden_float32_layers_compute_in_float32_and_restore_weight_dtypes():
