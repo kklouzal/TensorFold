@@ -5,6 +5,7 @@ import json
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("triton")  # host_experts imports its CUDA kernel modules
 from safetensors.torch import save_file
 
 from tensorfold.cuda.nvfp4.host_experts import _read

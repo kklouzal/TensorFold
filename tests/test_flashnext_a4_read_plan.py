@@ -1,5 +1,9 @@
 """Metadata-selected native reads retain every other format's queue contract."""
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from test_modelopt_a4_control import PREFIX, block, infos
 
@@ -70,3 +74,40 @@ def test_scalar_prefetch_payload_bound_counts_both_future_layers_and_raw_alignme
     for count, workers, alignment in ((0, 8, 4096), (1, 0, 4096), (True, 8, 4096), (1, 8, -1)):
         with pytest.raises(ValueError, match="positive integers"):
             scalar_prefetch_host_bytes(count, workers=workers, alignment=alignment)
+
+
+def test_reader_collection_without_triton_skips_before_cuda_or_payload_imports():
+    # A real Torch package need not initialize CUDA for collection. Supply only
+    # that first capability and forbid every downstream SDK/payload import.
+    script = r'''
+import importlib.abc
+import runpy
+import sys
+import types
+
+import pytest
+
+sys.modules["torch"] = types.ModuleType("torch")
+attempted = []
+
+class Blocked(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "triton" or fullname.startswith("triton."):
+            attempted.append(fullname)
+            raise ModuleNotFoundError("controlled absent Triton", name=fullname)
+        if fullname.startswith(("tensorfold.", "safetensors")):
+            raise AssertionError("collection reached CUDA/payload code before the SDK guard")
+
+sys.meta_path.insert(0, Blocked())
+try:
+    runpy.run_path(sys.argv[1])
+except pytest.skip.Exception as skipped:
+    assert "triton" in str(skipped)
+else:
+    raise AssertionError("missing Triton did not skip the actual test module")
+assert attempted == ["triton"]
+'''
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", script,
+                             str(Path(__file__).with_name("test_flashnext_a4_read_plan_reader.py"))],
+                            capture_output=True, text=True, timeout=15, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
