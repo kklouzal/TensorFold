@@ -45,6 +45,18 @@ def _prepared(ctx):
     return result
 
 
+def _context(count, width, dims, *, uniform):
+    """Real CT checkpoints share one gate/up input global per layer (Gemma4 and Qwen3.6 verified); the default
+    context keeps every projection's multiplier distinct."""
+    ctx = Context(count=count, width=width, dims=dims)
+    if uniform:
+        value = ctx.payload[f'{PREFIX}.experts.0.gate_proj.input_global_scale'].clone()
+        for name, tensor in ctx.payload.items():
+            if name.endswith(('gate_proj.input_global_scale', 'up_proj.input_global_scale')):
+                tensor.copy_(value)
+    return ctx
+
+
 def _reference(ctx, x, picks, weights):
     banks = [linears(ctx, expert) for expert in range(ctx.cfg.experts)]
     out = torch.zeros_like(x)
@@ -63,11 +75,14 @@ def _reference(ctx, x, picks, weights):
     return out
 
 
+@pytest.mark.parametrize('uniform', [False, True])
 @pytest.mark.parametrize('count,width,dims,slots', [(3, 64, 128, 3), (3, 704, 2816, 3), (128, 64, 128, 8)])
-def test_original_ct_calibrations_geglu_and_hf_combine_are_exact_and_row_invariant(count, width, dims, slots):
-    source = Context(count=count, width=width, dims=dims)
+def test_original_ct_calibrations_geglu_and_hf_combine_are_exact_and_row_invariant(count, width, dims, slots, uniform):
+    source = _context(count, width, dims, uniform=uniform)
     bank = load_experts(source.read, PREFIX + '.experts', count=count, width=width, dims=dims,
                         device='cuda:0', calibrated=_prepared(source))
+    # The loader's CPU bit proof selects one activation quantization per row exactly for a shared gate/up global.
+    assert bank.bank.shared_input == uniform
     assert len(source.reads) == count * 6
     assert not any(name.endswith("global_scale") for name in source.reads)
     fields = bank.bank.fields
@@ -82,7 +97,7 @@ def test_original_ct_calibrations_geglu_and_hf_combine_are_exact_and_row_invaria
     picks = torch.tensor([list(range(count - 1, count - 1 - slots, -1))], device='cuda', dtype=torch.int32)
     picks = picks.expand(len(x), -1).contiguous()
     weights = torch.linspace(.03125, .812345, slots, dtype=torch.float32, device='cuda')[None].expand(len(x), -1)
-    want = _reference(Context(count=count, width=width, dims=dims), x, picks, weights)
+    want = _reference(_context(count, width, dims, uniform=uniform), x, picks, weights)
     got = bank.forward(x, picks, weights)
     assert torch.equal(got, want)
     serial = torch.cat([bank.forward(x[r:r + 1], picks[r:r + 1], weights[r:r + 1]) for r in range(len(x))])
@@ -159,3 +174,41 @@ def test_routing_weight_is_not_narrowed_to_bf16_before_multiplication():
     wrong = (y[:, 0].float() * weights.to(torch.bfloat16).float()).to(torch.bfloat16)
     assert torch.equal(got, expected)
     assert not torch.equal(got, wrong)
+
+
+def test_retained_workspace_never_exceeds_the_admitted_expert_workspace():
+    from types import SimpleNamespace
+
+    from tensorfold.families.gemma4.cuda.capacity import expert_workspace
+
+    count, width, dims, slots = 128, 64, 128, 8
+    source = Context(count=count, width=width, dims=dims)
+    # The real checkpoint shares one gate/up input global per layer: the shared-input row plan is retained too.
+    common = source.payload[PREFIX + '.experts.0.gate_proj.input_global_scale'].clone()
+    for name, value in source.payload.items():
+        if name.endswith(('gate_proj.input_global_scale', 'up_proj.input_global_scale')):
+            value.copy_(common)
+    bank = load_experts(source.read, PREFIX + '.experts', count=count, width=width, dims=dims,
+                        device='cuda:0', calibrated=_prepared(source))
+    assert bank.bank.shared_input
+    generator = torch.Generator().manual_seed(17)
+    for rows in (1, 5, 17, 129):
+        x = (torch.randn((rows, dims), generator=generator) * .3).cuda().to(torch.bfloat16)
+        picks = torch.stack([torch.randperm(count, generator=generator)[:slots] for _ in range(rows)]).cuda().int()
+        weights = torch.full((rows, slots), .125, device='cuda')
+        bank.forward(x, picks, weights)
+    retained = 0
+    for buf in bank.workspace._buffers.values():
+        tensors = [buf.pick, buf.y, buf.plan.members, buf.plan.items, buf.plan.counts, buf.plan.rank, buf.plan.hist,
+                   *(t for scratch in buf.a4_scratch.values() for t in scratch)]
+        tensors += [buf.a4_row_plan] if getattr(buf, 'a4_row_plan', None) is not None else []
+        retained += sum(t.numel() * t.element_size() for t in tensors)
+    cfg = SimpleNamespace(hidden=dims, moe_width=width, experts=count, top_k=slots)
+
+    def bucket(size):
+        return expert_workspace(cfg, size) - (expert_workspace(cfg, size // 2) if size > 16 else 0)
+
+    # Rows 1 and 5 share bucket 16, 17 takes 32 and 129 takes 256: the admitted formula mirrors each exactly.
+    assert sorted(key[0] for key in bank.workspace._buffers) == [16, 32, 256]
+    assert retained == bucket(16) + bucket(32) + bucket(256)
+    assert retained <= expert_workspace(cfg, 129)

@@ -43,7 +43,7 @@ def run(bank, x, picks, out, *, prefill, maximum_id=None):
     out.zero_()
     capacity = bank.capacity
     ext = _ext()
-    direct = getattr(bank, "direct_input", False)
+    direct = bank.direct_input
     up_sk = 1 if prefill else qmm.split_k(bank.width, bank.dims)
     down_sk = 1 if prefill else qmm.split_k(bank.dims, bank.width)
     for lo in range(0, x.shape[0], PAIRS):

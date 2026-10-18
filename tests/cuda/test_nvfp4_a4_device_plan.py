@@ -34,8 +34,8 @@ def _picks(rows, slots, count, seed):
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 5), (True, 1), (True, 17), (True, 129)])
 def test_device_plan_matches_host_windows_and_independent_reference(uniform, prefill, rows):
     count, width, dims, slots = 9, 128, 256, 8
-    bank = load_host_experts_a4(_context(count, width, dims, uniform=uniform), PREFIX,
-                                _context(count, width, dims, uniform=uniform).cfg, "cuda:0", swiglu=swiglu)
+    ctx = _context(count, width, dims, uniform=uniform)
+    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
     assert bank.capturable and bank.shared_input == uniform and not bank.direct_input
     x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(77 + rows)) * .4).to("cuda", torch.bfloat16)
     picks = _picks(rows, slots, count, 5 + rows)
@@ -103,20 +103,105 @@ def test_captured_device_plan_replays_new_routes_without_host_reads(prefill):
     torch.cuda.synchronize()
 
 
-def test_plan_refuses_out_of_range_expert_ids_on_the_device():
+@pytest.mark.parametrize("rows,bad", [(1, 4), (129, -1)])
+def test_plan_refuses_out_of_range_expert_ids_on_the_device(rows, bad):
     import subprocess
     import sys
     import textwrap
 
-    # A trap poisons the CUDA context, so prove it in a child process.
-    code = textwrap.dedent("""
+    # A trap poisons the CUDA context, so prove it in a child process: the one-block plan (8 pairs) and the wide
+    # ranking pass (1032 pairs, over the 1024-pair one-block limit) each refuse an id outside [0, 4).
+    code = textwrap.dedent(f"""
         import torch
         from tensorfold.cuda.experts import Plan, route
-        plan = Plan(1, 2, 4, "cuda")
-        route(torch.tensor([[0, 4]], dtype=torch.int32, device="cuda"), plan, 16)
+        plan = Plan({rows}, 8, 4, "cuda")
+        picks = torch.zeros(({rows}, 8), dtype=torch.int32, device="cuda")
+        picks[-1, -1] = {bad}
+        route(picks, plan, 16)
         torch.cuda.synchronize()
     """)
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
     assert result.returncode != 0
     assert "unspecified launch failure" in result.stderr or "device-side" in result.stderr or "trap" in result.stderr \
         or "illegal instruction" in result.stderr
+
+
+@pytest.mark.parametrize("prefill,rows", [(False, 5), (True, 129)])
+def test_retained_moe_buffer_and_plan_scratch_match_qwen_admission(prefill, rows):
+    from types import SimpleNamespace
+
+    from tensorfold.cuda.experts import TILE
+    from tensorfold.cuda.moe import MoEBuffers
+    from tensorfold.families.qwen3_5_moe.ram_experts import _moe_buffers
+
+    count, width, dims, top_k = 9, 128, 256, 3
+    ctx = _context(count, width, dims, uniform=True)
+    bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
+    size = 1 << max(4, (rows - 1).bit_length())
+    shape = SimpleNamespace(num_experts_per_tok=top_k, num_experts=count, moe_intermediate_size=width,
+                            hidden_size=dims)
+    buf = MoEBuffers(size, shape, "cuda", prefill=prefill)
+    x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(9)) * .4).to("cuda", torch.bfloat16)
+    picks = _picks(rows, top_k, count, 4)
+    buf.pick[:rows, :top_k].copy_(picks)
+    buf.pick[:rows, top_k] = count
+    from tensorfold.cuda.experts import route
+    route(buf.pick[:rows], buf.plan, TILE)
+    bank.run_plan(x, buf, prefill=prefill)
+    tensors = [buf.logits, buf.pick, buf.wts, buf.act, buf.y, buf.plan.members, buf.plan.items, buf.plan.counts,
+               buf.plan.rank, buf.plan.hist, *(t for s in buf.a4_scratch.values() for t in s), buf.a4_row_plan]
+    retained = sum(t.numel() * t.element_size() for t in tensors)
+    smaller = _moe_buffers(size // 2, count + 1, top_k + 1, width, dims, prefill, planned=True) if size > 16 else 0
+    assert retained == _moe_buffers(size, count + 1, top_k + 1, width, dims, prefill, planned=True) - smaller
+
+
+@pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 6), (True, 33)])
+def test_shared_expert_cell_matches_the_separate_shared_projections(prefill, rows):
+    from functools import partial
+    from types import SimpleNamespace
+
+    from nvfp4_a4_inputs import linears
+
+    from tensorfold.cuda.experts import TILE, route
+    from tensorfold.cuda.moe import MoEBuffers
+    from tensorfold.cuda.nvfp4 import checkpoint
+
+    count, width, dims, top_k = 6, 128, 256, 3
+
+    def context():
+        # Expert ``count`` doubles as the layer's shared_expert (its own globals, same geometry).
+        ctx = _context(count + 1, width, dims, uniform=True)
+        for name in list(ctx.payload):
+            if f".experts.{count}." in name:
+                alias = name.replace(f".experts.{count}.", ".shared_expert.")
+                ctx.payload[alias], ctx.info[alias] = ctx.payload[name], ctx.info[name]
+        return ctx
+
+    full = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=top_k)
+    source = context()
+    fused = load_host_experts_a4(source, PREFIX, full, "cuda:0", swiglu=swiglu, shared=True)
+    assert fused.count == count + 1 and fused.shared_input
+    assert not any(".experts." + str(count) + "." in name for name in source.reads)
+    separate = load_host_experts_a4(context(), PREFIX, full, "cuda:0", swiglu=swiglu)
+    gate, up, down = linears(context(), count)
+    shape = SimpleNamespace(num_experts_per_tok=top_k, num_experts=count, moe_intermediate_size=width,
+                            hidden_size=dims)
+    x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(21)) * .4).to("cuda", torch.bfloat16)
+    picks = _picks(rows, top_k, count, 8)
+    outputs = []
+    for bank in (fused, separate):
+        buf = MoEBuffers(rows + 2, shape, "cuda", prefill=prefill)
+        buf.y.fill_(5.)
+        buf.pick[:rows, :top_k].copy_(picks)
+        buf.pick[:rows, top_k] = count
+        route(buf.pick[:rows], buf.plan, TILE)
+        bank.run_plan(x, buf, prefill=prefill)
+        outputs.append(buf.y[:rows].clone())
+    assert torch.equal(outputs[0][:, :top_k], outputs[1][:, :top_k])
+    assert torch.equal(outputs[1][:, top_k], torch.full_like(outputs[1][:, top_k], 5.))
+    if prefill:
+        shared = down.prefill(swiglu(gate.prefill(x), up.prefill(x)))
+    else:
+        shared = torch.empty((rows, dims), dtype=torch.float32, device="cuda")
+        partial(checkpoint.matmul, checkpoint.A4, lin=down, f32=True)(swiglu(gate(x), up(x)), out=shared)
+    assert torch.equal(outputs[0][:, top_k], shared)

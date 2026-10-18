@@ -10,6 +10,26 @@ import math
 from pathlib import Path
 
 
+def expert_workspace(cfg, rows: int) -> int:
+    """Retained bytes of nvfp4_experts.Workspace for forwards of at most ``rows`` rows.
+
+    One PlanBuffers (picks, grouped plan, BF16 slot outputs) and the bank's
+    ExpertsA4.run_plan scratch (pair codes/scales for two projections, BF16
+    gate/up, down codes/scales, shared-input row plan) per power-of-two bucket.
+    """
+    total, bucket = 0, 16
+    maximum = 1 << max(4, (rows - 1).bit_length())
+    d, width, experts = cfg.hidden, cfg.moe_width, cfg.experts
+    while bucket <= maximum:
+        pairs = bucket * cfg.top_k
+        wide = pairs > 1024
+        total += 8 * pairs + 12 * (min(pairs, experts) + pairs // 16) + 8 + 2 * pairs * d
+        total += 4 * (pairs if wide else 1) + 4 * (((pairs + 1023) // 1024) * experts if wide else 1)
+        total += pairs * (d + d // 8 + 4 * width + width // 2 + width // 16) + 12 * bucket
+        bucket *= 2
+    return total
+
+
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
           max_rows=16, streams=1, keep=1):
     import torch
@@ -84,6 +104,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # One layer's simultaneous activation/route tensors and retained taps.
         scratch = rows * (32 * cfg.hidden + 16 * cfg.top_k * cfg.moe_width) * 2
         scratch += max_rows * cfg.vocab * 4
+        if native:
+            scratch += expert_workspace(cfg, rows)
         # Growth copies preserve the old allocation until its replacement is ready.
         largest = max(heads * dim for heads, dim in
                       (cfg.attention_geometry(i) for i in range(cfg.layers)))

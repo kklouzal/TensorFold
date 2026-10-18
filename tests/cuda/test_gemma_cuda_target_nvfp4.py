@@ -50,18 +50,25 @@ def test_ct_router_root_then_learned_scale_and_fp32_full_softmax():
     picks,weights = model._route_ct(h,layer)
     assert picks.dtype == torch.int32 and weights.dtype == torch.float32
     assert picks.shape == weights.shape == (9,c.top_k)
-    # Independent BF16 tensor-operation router input, FP64 logits and FP64 selection.
-    root = torch.tensor(c.hidden**-.5,device="cuda",dtype=torch.bfloat16)
-    router_input = (ct_rms_norm(h,None,c.eps) * root) * layer.router_scale
-    logits = router_input.double() @ weight.double().T
+    # Independent float64 RMS with the BF16 root/scale roundings, FP64 logits and FP64 selection; the logit bound and
+    # the selection error model are derived in test_moe_route.
+    from test_moe_route import U, _ct_input_candidates, _gamma, _mma_gamma
+    router_input,delta,magnitude = _ct_input_candidates(h,c.eps,model._router_root_value,layer.router_scale)
+    logits = router_input @ weight.double().T
+    bound = (_mma_gamma(c.hidden) * (magnitude @ weight.double().abs().T)
+             + delta @ weight.double().abs().T).amax(-1,keepdim=True)
     order = torch.argsort(logits,dim=-1,descending=True,stable=True)
     margin = (torch.gather(logits,1,order[:,c.top_k-1:c.top_k]) - torch.gather(logits,1,order[:,c.top_k:c.top_k+1]))
-    assert torch.all(margin > 1e-3)        # no near-tie at the top-k boundary for this seed
+    assert torch.all(margin > 2 * bound)   # the seed's top-k set is decided beyond the kernel's logit error
     assert torch.equal(torch.sort(picks,-1).values,torch.sort(order[:,:c.top_k],-1).values.to(torch.int32))
     probabilities = torch.softmax(logits,dim=-1)
     selected = torch.gather(probabilities,1,picks.long())
     expected = selected/selected.sum(-1,keepdim=True) * layer.expert_scale[picks.long()].double()
-    torch.testing.assert_close(weights.double(),expected,rtol=1e-4,atol=0)
+    # A renormalized weight is exp(l_j) / sum_S exp(l_i): logit errors under ``bound`` move it by at most
+    # expm1(2 * bound); the selection kernel's FP32 error (gap measured on its own logits) applies on top.
+    gap = (logits.amax(-1,keepdim=True) - torch.gather(logits,1,picks.long())).amax(-1,keepdim=True) + 2 * bound
+    rtol = torch.expm1(2 * bound) + 2 * (U * gap + 2.0 ** -22 + U) + _gamma(c.top_k + 1)
+    assert torch.all((weights.double() - expected).abs() <= 1.01 * rtol * expected.abs())
     # Each row's routing is independent of the other rows of the call.
     for row in range(9):
         alone = model._route_ct(h[row:row+1],layer)

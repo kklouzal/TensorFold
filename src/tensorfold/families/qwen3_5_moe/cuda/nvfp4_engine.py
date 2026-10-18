@@ -91,6 +91,13 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         if plan is not None and unified(torch):
             raise ValueError("Qwen CT NVFP4 host expert pools currently require discrete CUDA memory; "
                              "on unified-memory GPUs use resident experts without --vram-experts")
+        # Resident native A4 banks plan routes on the device and retain that
+        # scratch; one resident stream also verifies its chain rounds in CUDA
+        # graphs over a fixed state. Admit both.
+        graphs = streams == 1 and plan is None
+        if plan is None:
+            runtime = runtime_geometry(text, streams=streams, keep=KEEP if streams > 1 else KEEP_ONE, max_rows=rows,
+                                       prompt_rows=chunk, graphs=graphs, planned=True)
         transform = plan.transform(weight_bytes) if plan is not None else weight_bytes
         host_extra = (plan.loading_bytes + plan.staging_bytes + plan.metadata_host_bytes + plan.control_host_bytes
                       + plan.source_filesystem_bytes
@@ -123,7 +130,9 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
             raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context")
-        factory = partial(load_host_experts_a4, cache=self.expert_cache, device="cuda", swiglu=moe.swiglu_bf16)
+        # Resident banks carry the shared expert as their last cell (one device plan per layer).
+        factory = partial(load_host_experts_a4, cache=self.expert_cache, device="cuda", swiglu=moe.swiglu_bf16,
+                          shared=self.expert_cache is None)
         self.w = load(model_dir, expert_factory=factory,
                       **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
         self.w.prompt_rows = chunk
@@ -151,6 +160,12 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                   f"{plan.host_bytes / 2**30:.2f} GiB host authority; {vram_experts_pin} pin policy; "
                   f"{self.context_window}-token context", flush=True)
         self._prepare_serving(model_dir, streams=streams, keep=KEEP, max_rows=self.max_rows)
+        if graphs:
+            if not all(layer.moe is None or getattr(layer.moe.run, "capturable", False) for layer in self.w.layers):
+                raise RuntimeError("resident Qwen CT expert banks must plan routes on the device")
+            from .chain_graphs import ChainGraphs
+
+            self.runner = ChainGraphs(self.w, self.capacity_plan["cache_slots"])
         if plan is not None and self.multi is None:
             from tensorfold.cuda.streams import KVRoom
 

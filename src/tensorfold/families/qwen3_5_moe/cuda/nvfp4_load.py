@@ -28,17 +28,23 @@ class SharedExpert:
 class NativeMoE:
     """Prepared router/bank/shared execution with the family's ordered combine.
 
-    The bank writes only routed slots; shared output occupies the final slot.
-    Decode retains FP32 down sums, while prompt slots retain BF16. No weight
-    conversion or format discovery occurs during execution. The factory owns
-    bank/authority lifetime; this operator owns the resident shared projections.
+    The shared output occupies the final slot. A resident bank that carries the
+    shared expert as its last cell (``shared`` None) computes it in the same
+    device plan; otherwise the bank writes only routed slots and this operator
+    runs its resident shared projections. Decode retains FP32 down sums, while
+    prompt slots retain BF16. No weight conversion or format discovery occurs
+    during execution. The factory owns bank/authority lifetime.
     """
 
-    def __init__(self, bank, shared: SharedExpert) -> None:
+    def __init__(self, bank, shared: SharedExpert | None) -> None:
         from tensorfold.cuda.moe import swiglu_bf16
 
         self.shared, self.swiglu = shared, swiglu_bf16
         self.capturable = getattr(bank, "capturable", False)
+        if shared is None:
+            if not self.capturable:
+                raise ValueError("a bank without separate shared projections must plan its shared cell on the device")
+            return
         # Fp4Linear.__call__ defaults to BF16 even with an FP32 destination in
         # checkpoint mode. Select the explicit FP32 epilogue before execution.
         if shared.down.act is not None:
@@ -52,16 +58,20 @@ class NativeMoE:
         from tensorfold.cuda import moe
 
         rows = x.shape[0]
-        moe.router(x, router_rows, buf.logits[:rows])
         prefill = buf.plan.prefill
         if self.capturable:
             from tensorfold.cuda.experts import TILE
 
-            # Resident banks group the routed and shared picks on the device;
-            # the plan's shared cell (id ``experts``) is skipped by the bank.
+            # Row-invariant split-K router GEMV, then the routed and shared
+            # picks grouped on the device. The bank computes the shared cell
+            # (id ``experts``) when it carries it, else skips it.
+            moe.route_logits(x, router_rows, buf.logits[:rows])
             moe.select(buf.logits[:rows], buf, top_k, experts, TILE)
             bank.run_plan(x, buf, prefill=prefill)
+            if self.shared is None:
+                return buf
         else:
+            moe.router(x, router_rows, buf.logits[:rows])
             moe.select_rows(buf.logits[:rows], buf, top_k, experts)
             bank.run(x, buf.pick[:rows, :top_k], buf.y[:rows, :top_k], prefill=prefill)
         if prefill:
@@ -114,9 +124,14 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
 
     ``expert_factory(context, absolute_mlp_prefix, config)`` returns a bank with
     ``run(x, picks, out, prefill=...)``. Picks/out are strided routed-slot views:
-    their row stride includes the final shared slot. The factory must preserve
-    original packed codes and reciprocal CT scales, consume every routed field
-    exactly once through ``context.read``, and own its authority until close.
+    their row stride includes the final shared slot. A bank declaring
+    ``capturable`` instead receives ``run_plan(x, buf, prefill=...)`` over the
+    MoE buffer's 16-pair device plan; a bank of ``experts + 1`` cells consumed
+    the shared expert as its last cell and computes it there (ID ``experts``),
+    otherwise it skips that cell and the shared projections load separately.
+    The factory must preserve original packed codes and reciprocal CT scales,
+    consume every routed field exactly once through ``context.read``, and own
+    its authority until close.
     """
     if not callable(expert_factory):
         raise TypeError("NVFP4 MoE loading requires an expert-bank factory")
@@ -128,8 +143,9 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
 
     def mlp(prefix, context, cfg):
         router = _router(context, prefix, cfg)
-        shared = _shared(context, prefix, cfg, width)
         bank = expert_factory(context, prefix.removesuffix("."), cfg)
+        # A bank of experts + 1 cells already consumed the shared expert as its last cell.
+        shared = None if getattr(bank, "count", None) == cfg.experts + 1 else _shared(context, prefix, cfg, width)
         return {"moe": Routed(router, bank, cfg.top_k, run=NativeMoE(bank, shared))}
 
     return load_backbone(model_dir, device, mlp=mlp,

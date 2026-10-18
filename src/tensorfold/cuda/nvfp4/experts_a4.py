@@ -60,7 +60,9 @@ class ExpertsA4:
     """Prepared resident bank, with a fixed grouped execution/lease contract.
 
     Inputs and outputs must be disjoint from each other and expert storage.
-    Out-of-local-range picks are inactive zero slots. Per-projection raw input
+    In ``run``, out-of-local-range picks are inactive zero slots; the device
+    plan that ``run_plan`` consumes traps on IDs outside [0, plan experts), and
+    the bank skips only the shared cell ``count``. Per-projection raw input
     multipliers, weight reciprocals and native mode-specific K sums stay exact.
     ``direct_input`` selects ModelOpt direct scales; CT banks keep reciprocal
     multipliers. Both execute the same device-planned kernels in ``run_plan``
@@ -110,7 +112,9 @@ class ExpertsA4:
         else FP32). Plan items whose cell equals ``count`` (a resident shared
         expert) are skipped; their slots are the caller's. Shape-only K slices:
         SK1 for ``prefill``, else ``qmm.split_k``; a pair's bits never depend on
-        the other pairs, the plan's items or the row count.
+        the other pairs, the plan's items or the row count. The first call per
+        buffer allocates and initializes retained scratch, so it must run eagerly
+        before any CUDA graph capture over ``buf``.
         """
         from tensorfold.cuda.experts import TILE
         from tensorfold.cuda.kernels import qmm
@@ -128,6 +132,11 @@ class ExpertsA4:
             held = buf.a4_scratch = {}
         scratch = held.get(key)
         if scratch is None:
+            # Queried only on a first use; steady-state calls make no capture query.
+            if torch.cuda.is_current_stream_capturing():
+                # A captured allocation/initialization would leave eager users
+                # of this buffer reading unwritten scratch until the first replay.
+                raise RuntimeError("native A4 run_plan scratch must be retained by an eager call before capture")
             pairs = buf.rows * slots
             with torch.inference_mode(False):
                 scratch = (torch.empty((2, pairs, self.dims // 2), dtype=torch.uint8, device=x.device),
@@ -141,8 +150,6 @@ class ExpertsA4:
         # Projection-major narrowing leaves non-contiguous outer strides when
         # the live row count is smaller than the admitted buffer. Use a flat
         # prefix reshaped to the actual plan; all backing remains buffer-owned.
-        codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
-        scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
         gu = scratch[2].view(-1)[:2 * pairs * self.width].view(2, pairs, self.width)
         # Shared/unused plan positions have no routed GEMM. Initialize before
         # the eager activation consumes the complete tensor; routed rows overwrite it.
@@ -157,6 +164,8 @@ class ExpertsA4:
         if common:
             row_plan = getattr(buf, "a4_row_plan", None)
             if row_plan is None:
+                if torch.cuda.is_current_stream_capturing():
+                    raise RuntimeError("native A4 shared-input row plan must be built by an eager call before capture")
                 with torch.inference_mode(False):
                     indices = torch.arange(buf.rows, dtype=torch.int32, device=x.device)
                     zero = torch.zeros_like(indices)
@@ -170,6 +179,8 @@ class ExpertsA4:
             scales = scratch[1].view(-1)[:rows * (self.dims // 16)].view(1, rows, self.dims // 16)
             ext.quantize(x, row_plan[:rows], fields[4][:1, :1], codes, scales, False, direct)
         else:
+            codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
+            scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
             ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, False, direct)
         ext.gemm_plan(codes, scales, fields[0], fields[2], fields[4], items, plan.counts, members,
                       gu, self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, False,
@@ -212,7 +223,7 @@ class PlanBuffers:
     def __init__(self, rows, slots, experts, dims, device, *, prefill):
         from tensorfold.cuda.experts import Plan
 
-        self.rows, self.slots, self.prefill = rows, slots, prefill
+        self.rows, self.slots = rows, slots
         self.pick = torch.empty((rows, slots), dtype=torch.int32, device=device)
         self.plan = Plan(rows, slots, experts, device)
         self.y = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device=device)

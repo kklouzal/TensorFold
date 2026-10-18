@@ -67,7 +67,7 @@ class Experts:
     """Immutable native bank; slot outputs and plans live in the model's shared workspace."""
 
     def __init__(self, bank: ExpertsA4, workspace: Workspace | None = None):
-        if (not isinstance(bank, ExpertsA4) or getattr(bank, "direct_input", False)
+        if (not isinstance(bank, ExpertsA4) or bank.direct_input
                 or bank.swiglu is not geglu or not bank.capturable):
             raise ValueError("Gemma NVFP4 requires an original CT-calibrated resident native A4 bank")
         self.bank = bank
@@ -80,9 +80,10 @@ class Experts:
     def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """INT32 picks are constructed by the router; FP32 weights stay FP32.
 
-        Target routing constructs only IDs in0..count-1 (argsort over the
-        router's ``count`` logits); the device plan groups them without a host
-        read, and the native kernels still guard every indirect cell access.
+        Target routing constructs only IDs in0..count-1 (the fused top-k over
+        the router's ``count`` logits); the device plan groups them without a
+        host read and traps on any other ID, and the native kernels still guard
+        every indirect cell access.
         Fixed prefill=True selects SK1 and BF16 output for serial and verify.
         """
 

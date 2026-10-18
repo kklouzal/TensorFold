@@ -152,8 +152,12 @@ class CachedExperts4:
 
 
 def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_ids=None, layer_id=None,
-                         swiglu):
-    """Load CT routed native-A4 experts in owned local order, without shared reads.
+                         swiglu, shared=False):
+    """Load CT routed native-A4 experts in owned local order.
+
+    ``shared`` (resident banks only) appends the layer's ``shared_expert`` as the
+    last cell, so its ID ``len(ids)`` runs in the same grouped device plan; it
+    must have the routed geometry. Without it no shared field is read.
 
     Header/declaration validation precedes authority allocation; each projection
     reads its two scalar calibrations before code/scale payload. Packing one
@@ -176,13 +180,16 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
         raise ValueError("native A4 routed experts require checkpoint precision and native FP4 MMA")
     if not ctx.metadata.reciprocal or not callable(swiglu):
         raise ValueError("native A4 experts require CT reciprocal calibrations and a prepared BF16 SwiGLU")
+    if shared and cache is not None:
+        raise ValueError("a shared-expert cell requires a resident native A4 bank")
     ids = _ids(full.experts, owned_ids)
     width, dims = full.moe_width, full.hidden
-    geometry = authority_fields_a4(len(ids), width, dims)
+    owners = [f"{name}.experts.{expert}" for expert in ids] + ([f"{name}.shared_expert"] if shared else [])
+    geometry = authority_fields_a4(len(owners), width, dims)
     projections = (("gate_proj", width, dims), ("up_proj", width, dims), ("down_proj", dims, width))
-    for expert in ids:
+    for owner in owners:
         for projection, n, k in projections:
-            base = f"{name}.experts.{expert}.{projection}"
+            base = f"{owner}.{projection}"
             parts = {suffix: ctx.info.get(f"{base}.{suffix}") for suffix in
                      ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale")}
             expected = {"weight_packed": ("U8", [n, k // 2]), "weight_scale": ("F8_E4M3", [n, k // 16]),
@@ -202,9 +209,9 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
         source = cache.allocate_authority((len(ids), cache.entry_bytes), dtype=torch.uint8, tag=name)
         fields = cache.source_views(source)
         cache.zero_padding(source)
-    for local, expert in enumerate(ids):
+    for local, owner in enumerate(owners):
         for p, (projection, _, _) in enumerate(projections):
-            base = f"{name}.experts.{expert}.{projection}"
+            base = f"{owner}.{projection}"
             weight_global = ctx.read(base + ".weight_global_scale", device="cpu")
             input_global = ctx.read(base + ".input_global_scale", device="cpu")
             scale = fmt.calibration(float(weight_global.reshape(-1)[0]), name=base + ".weight_global_scale",

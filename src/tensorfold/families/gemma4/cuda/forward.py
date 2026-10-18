@@ -179,7 +179,6 @@ class Gemma4Target:
             self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
-        self._router_root = torch.tensor(self.config.hidden**-0.5, dtype=torch.bfloat16, device=self.device)
         # The BF16 root's exact value, for the fused CT router (read once at construction).
         self._router_root_value = float(torch.tensor(self.config.hidden**-0.5, dtype=torch.bfloat16))
         self.tap_layers = tuple(i for i in TAP_LAYERS if i < self.config.layers)

@@ -46,7 +46,9 @@ static void expert_field(const at::Tensor& value, const at::Tensor& on, at::Scal
 }
 
 // Plan rows are (source-row, destination-slot, cache-cell). They are constructed
-// from admitted CPU picks by the owner; kernels also guard every indirect access.
+// from admitted CPU picks by the owner (or, for a proven shared-input bank, as
+// the device identity row plan (row, 0, 0)); kernels also guard every indirect
+// access. At most 65535 planned rows: the non-grouped quantizer's grid y.
 static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
                at::Tensor codes, at::Tensor scales, bool paired, bool direct = false,
                const at::Tensor& items = {}, const at::Tensor& counts = {}, int64_t slots = 0) {

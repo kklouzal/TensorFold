@@ -262,7 +262,7 @@ def test_gpu_load_logical_reduction_and_control_peak_is_dominated_by_layer_stagi
 
 def test_common_input_proof_checks_every_expert_and_projection_by_exact_bits():
     torch = pytest.importorskip("torch")
-    from tensorfold.cuda.nvfp4.modelopt_experts import uniform_input_bits
+    from tensorfold.cuda.nvfp4.experts_a4 import uniform_input_bits
 
     values = torch.full((512, 2), .001964750699698925, dtype=torch.float32)
     assert uniform_input_bits(values)

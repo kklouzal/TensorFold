@@ -161,14 +161,16 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
                   authority_padding_bytes=logical * (entry - raw_entry))
 
 
-def _moe_buffers(rows, experts, slots, width, dims, prefill):
-    """All retained power-of-two MoEBuffers through rows, including unused plan arrays.
+def _moe_buffers(rows, experts, slots, width, dims, prefill, *, planned=False):
+    """All retained power-of-two MoEBuffers through rows, including their plan arrays.
 
     This mirrors owned cuda.moe.MoEBuffers/grouped.Plan allocation geometry,
     without importing Torch or a native extension during header admission.
-    The native A4 bank does not consume the grouped plan, but the current
-    common buffer constructor still allocates it. Decode and prompt modes
-    have separate retained keys, even when their row buckets coincide.
+    ``planned``: a resident native A4 bank consumes the grouped plan and
+    retains ExpertsA4.run_plan's per-buffer scratch (pair codes/scales for two
+    projections, BF16 gate/up, down codes/scales) and its shared-input row plan.
+    Decode and prompt modes have separate retained keys, even when their row
+    buckets coincide.
     """
     total, bucket = 0, 16
     maximum = 1 << max(4, (rows - 1).bit_length())
@@ -180,6 +182,8 @@ def _moe_buffers(rows, experts, slots, width, dims, prefill):
         total += 4 * pairs + 12 * (min(pairs, experts) + pairs // 16) + 8
         total += 4 * (pairs if wide else 1)
         total += 4 * (((pairs + 1023) // 1024) * experts if wide else 1)
+        if planned:
+            total += pairs * (dims + dims // 8 + 4 * width + width // 2 + width // 16) + 12 * bucket
         bucket *= 2
     return total
 
@@ -199,7 +203,8 @@ class RuntimeGeometry:
         return self._components(_integer(cache_slots, "cache_slots"))
 
 
-def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGeometry:
+def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows, graphs=False,
+                     planned=False) -> RuntimeGeometry:
     """Bound eager target state, full future KV and retained activation shapes.
 
     Single-stream clones share their attention list. Concurrent private and
@@ -209,8 +214,14 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     shared dense geometry supplies record and operator workspace bounds;
     explicit MoE buffers and native W4A4 temporary arrays are additional.
     Secondary-model weights/KV/workspace belong to its separate geometry.
+    ``planned`` (resident native A4 banks) adds their retained device-plan
+    scratch per MoE buffer. ``graphs`` (one stream) adds the chain-graph runner's fixed state (full KV and
+    one recurrent copy), each (rows, context span) graph's retained outputs and
+    one shared activation bound for the graphs' private pool.
     """
     _integer(streams, "streams", 1)
+    if graphs and streams != 1:
+        raise ValueError("chain graphs serve one stream")
     _integer(keep, "keep")
     _integer(max_rows, "max_rows", 1)
     _integer(prompt_rows, "prompt_rows", 512)
@@ -258,9 +269,18 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
         copies = 2 * streams + keep + 2
         base = stream_geometry(t, 1, streams, keep, first=256)
         workspace = max(workspace, base.bytes_at(0) - copies * state)
-    workspace += _moe_buffers(rows, t["num_experts"] + 1, slots, width, d, False)
-    workspace += _moe_buffers(prompt_rows, t["num_experts"] + 1, slots, width, d, True)
+    workspace += _moe_buffers(rows, t["num_experts"] + 1, slots, width, d, False, planned=planned)
+    workspace += _moe_buffers(prompt_rows, t["num_experts"] + 1, slots, width, d, True, planned=planned)
     workspace += 16 * _PAIR_WINDOW * (d + max(width, shared)) + 65536
+
+    # A chain graph's retained outputs per verified row: FP32-bounded logits, each
+    # layer's commit record and every draft tap; plus the eager activation bound
+    # once for the graphs' shared private pool.
+    record = linear * (2 * (2 * nk * dk + nv * dv) * 2 + nk * dk * 4 + nv * dv * 4 + nv * 8) + attention * kv_row
+    graph_row = t["vocab_size"] * 4 + record + t["num_hidden_layers"] * d * 2
+    extent = d + t["vocab_size"] + slots * (max(width, shared) + d) + 2 * nk * dk + 2 * nv * dv + 2 * nv + \
+        t["num_attention_heads"] * t["head_dim"]
+    graph_pool = 16 * max_rows * extent * 4
 
     def components(capacity):
         # grow() may start at 1024 rows. reserve/private() then cap future
@@ -271,6 +291,13 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
         if streams > 1:
             snapshots += (keep + 1) * attention * active * kv_row
         scratch = rows * t["num_attention_heads"] * (t["head_dim"] + 2) * ((capacity + 511) // 512) * 4
+        if graphs:
+            from .cuda import CHAIN_BUCKET as BUCKET
+
+            live += attention * active * kv_row
+            snapshots += state
+            spans = len({min(active, max(BUCKET, 1 << k)) for k in range(max(1, active.bit_length()) + 1)})
+            scratch += spans * max_rows * (max_rows + 1) // 2 * graph_row + graph_pool
         return {"future_kv_bytes": live, "future_snapshot_bytes": snapshots,
                 "future_target_workspace_bytes": workspace + scratch}
 

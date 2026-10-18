@@ -8,16 +8,17 @@
 #include <stdint.h>
 #include <torch/extension.h>
 
+#include <type_traits>
+
 namespace {
 
 constexpr int ROWS = 16;        // a CTA's row tile (the mma's M)
 constexpr int EXPERTS = 8;      // a CTA's experts (the mma's N)
 constexpr int SLICES = 8;       // warps; each owns one contiguous K slice
 constexpr int THREADS = SLICES * 32;
-
-__device__ __forceinline__ uint32_t pack(__nv_bfloat16 lo, __nv_bfloat16 hi) {
-    return static_cast<uint32_t>(__bfloat16_as_ushort(lo)) | (static_cast<uint32_t>(__bfloat16_as_ushort(hi)) << 16);
-}
+// The fragment mapping below is m16n8k16's (rows g and g + 8, expert g), the pre-norm lets warp w reduce rows w and
+// w + 8, and the slice sum takes one thread per output.
+static_assert(ROWS == 16 && EXPERTS == 8 && ROWS == 2 * SLICES && ROWS * EXPERTS <= THREADS, "route tile geometry");
 
 __device__ __forceinline__ void mma_bf16(float (&d)[4], uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3,
                                          uint32_t b0, uint32_t b1) {
@@ -199,7 +200,8 @@ void route_logits(const at::Tensor& x, const at::Tensor& w, at::Tensor& out, dou
                 x.size(0) > 0 && x.size(0) <= INT32_MAX && x.stride(0) % 8 == 0 &&
                 reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0, "route: BF16 rows, 16-byte aligned");
     const int64_t rows = x.size(0), k = x.size(1), experts = w.size(0);
-    TORCH_CHECK(k > 0 && k % 32 == 0, "route: input width must be a multiple of 32");
+    // The kernel takes K as int and forms (warp + 1) * per <= K + 8 * 31 in int.
+    TORCH_CHECK(k > 0 && k % 32 == 0 && k <= (int64_t{1} << 30), "route: input width must be a multiple of 32, <= 2^30");
     TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.scalar_type() == at::kBFloat16 && w.dim() == 2 &&
                 w.size(1) == k && w.is_contiguous() && experts > 0 && experts <= INT32_MAX &&
                 reinterpret_cast<uintptr_t>(w.data_ptr()) % 16 == 0, "route: contiguous BF16 [experts, K] rows");
