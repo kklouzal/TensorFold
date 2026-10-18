@@ -307,16 +307,31 @@ def environment(state: dict) -> dict[str, str]:
     return values
 
 
+def vision_proof(torch, torchvision) -> dict:
+    """Exact official0.30 wheel load/schema contract; no GPU image execution."""
+    directory = Path(torchvision.__file__).resolve().parent
+    required = {directory / "_C_stable.so", directory / "image_stable.so"}
+    loaded = {Path(path).resolve() for path in torch.ops.loaded_libraries}
+    if not required <= loaded:
+        raise ValueError("TorchVision native/image extensions did not actually load")
+    schemas = {name: str(getattr(torch.ops.image, name).default._schema)
+               for name in ("decode_jpegs_cuda", "encode_jpegs_cuda")}
+    return {"loaded_native_paths": sorted(str(path) for path in required),
+            "registered_cuda_image_schemas": schemas, "gpu_image_execution": "unrun"}
+
+
 def native_proof(state: dict) -> dict:
     """Run only in a fresh child after FC/loader environment publication."""
     import torch
+    import torchvision
     import triton
     from foundation_tools import verify_triton_selection
     root = Path(state["foundation"])
-    for module in (torch, triton):
+    for module in (torch, triton, torchvision):
         if not Path(module.__file__).resolve().is_relative_to(root):
             raise ValueError(f"native module does not come from foundation: {module.__name__}")
     tools = verify_triton_selection(state["toolchain"], triton)
+    vision = vision_proof(torch, torchvision)
     if Path(os.environ.get("TF_NCCL_LIB", "")).resolve(strict=True) != Path(state["nccl_library"]):
         raise ValueError("TF_NCCL_LIB conflicts with selected foundation provider")
     import ctypes
@@ -345,7 +360,7 @@ def native_proof(state: dict) -> dict:
     if torch.cuda.is_initialized():
         raise ValueError("foundation startup proof unexpectedly initialized CUDA")
     return {"torch": torch.__version__, "triton": triton.__version__, "loaded_sdk": sorted(set(loaded)),
-            "tools": tools, "nccl_library": state["nccl_library"], "nccl_version": version.value, "cuda_initialized": False}
+            "tools": tools, "torchvision": torchvision.__version__, "vision": vision, "nccl_library": state["nccl_library"], "nccl_version": version.value, "cuda_initialized": False}
 
 
 def role_lines(manifest: dict, role: str) -> list[str]:

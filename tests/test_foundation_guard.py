@@ -463,8 +463,15 @@ def test_loaded_cuda_provider_must_be_native_sdk_even_if_wheel_is_sealed(guard, 
     torch.cuda = types.SimpleNamespace(is_initialized=lambda: False)
     triton = types.ModuleType("triton")
     triton.__file__, triton.__version__ = str(root / "triton.py"), "1.0"
+    torchvision = types.ModuleType("torchvision")
+    torchvision.__file__, torchvision.__version__ = str(root / "torchvision/__init__.py"), "0.30"
+    loaded = [str(root / "torchvision" / name) for name in ("_C_stable.so", "image_stable.so")]
+    operator = types.SimpleNamespace(default=types.SimpleNamespace(_schema="controlled image schema"))
+    torch.ops = types.SimpleNamespace(loaded_libraries=loaded,
+        image=types.SimpleNamespace(decode_jpegs_cuda=operator, encode_jpegs_cuda=operator))
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "triton", triton)
+    monkeypatch.setitem(sys.modules, "torchvision", torchvision)
     monkeypatch.setitem(sys.modules, "foundation_tools", types.SimpleNamespace(verify_triton_selection=lambda *args: {}))
     selected = wheel if wheel_provider else native
     original = guard.Path.read_text
@@ -528,3 +535,18 @@ def test_empty_nccl_override_selects_default_like_unmanaged_loader(guard, sealed
     sealed["state_digest"] = guard.state_digest(sealed)
     monkeypatch.setenv("TF_NCCL_LIB", "")
     assert guard.environment(sealed)["TF_NCCL_LIB"] == sealed["nccl_library"]
+
+
+@pytest.mark.parametrize("missing", ["image_stable.so", "_C_stable.so", "schema"])
+def test_vision_consumer_requires_actual_native_image_load_and_schemas(guard, tmp_path, missing):
+    from types import SimpleNamespace
+    directory = tmp_path / "torchvision"
+    libraries = [str(directory / name) for name in ("_C_stable.so", "image_stable.so") if name != missing]
+    operator = SimpleNamespace(default=SimpleNamespace(_schema="registered native CUDA image schema"))
+    image = SimpleNamespace(decode_jpegs_cuda=operator)
+    if missing != "schema":
+        image.encode_jpegs_cuda = operator
+    torch = SimpleNamespace(ops=SimpleNamespace(loaded_libraries=libraries, image=image))
+    vision = SimpleNamespace(__file__=str(directory / "__init__.py"))
+    with pytest.raises((ValueError, AttributeError)):
+        guard.vision_proof(torch, vision)
