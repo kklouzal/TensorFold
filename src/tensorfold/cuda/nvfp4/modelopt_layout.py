@@ -67,8 +67,10 @@ def runtime_workspace_bytes(text, *, rows, prompt_rows, mtp_a4=False, cached=Fal
     if cached:
         return 2 * plan_workspace_bytes(128, 1, width, dims)
     slots = text["num_experts_per_tok"] + 1
-    return plan_workspace_bytes(rows + prompt_rows, slots, width, dims) + (
-        plan_workspace_bytes(rows, slots, width, dims) if mtp_a4 else 0)
+    # A reusable [rows,3] row plan has12bytes/row retained; its one-time
+    # arange/zero construction overlaps another8bytes/row before publication.
+    total_rows = rows + prompt_rows + (rows if mtp_a4 else 0)
+    return plan_workspace_bytes(total_rows, slots, width, dims) + 20 * total_rows
 
 
 def resident_loading_host_bytes(text):
