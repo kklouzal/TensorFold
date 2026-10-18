@@ -1,0 +1,887 @@
+{
+  "schema": 1,
+  "recorded_utc_date": "2026-10-18",
+  "status": "bd1 installed ARM foundation, four model protocols and public CLI passed; final composed-source qualification and performance selection pending",
+  "evidence_packet": "tensorfold-heretic-implementation-20261017/gb10",
+  "identity": {
+    "revision": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
+    "tree": "eac9813652fca9e8762fd9aabb521650964f6527",
+    "source_uid": "c56ce6b8860af67d8f37d02e85328f52400457d3bd6a6e9c7a0e726b43c4b645",
+    "archive_sha256": "bc38d0c919b2c8231f462eb0d92e48936c532b2a5f040187fb12b911c94e0e7a",
+    "build_input_uid": "a5a6aa47e3a0e7c2b56f25c0d602e8e3ac49c572a34cbbb3de731d4381fd19d6",
+    "platform": "linux/arm64",
+    "native_machine": "aarch64",
+    "base_image": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9"
+  },
+  "images": {
+    "runtime": "sha256:0ee2b4628e9b2eba7f1458fff80105a7b658d3f3ee7752f91f5592a55f1472d6",
+    "verification": "sha256:82f58da8dadf265a6a753537b78c9d6504613dfabfd616fd835c3e88b6d4b7d5"
+  },
+  "source_metadata": {
+    "path": "capture-arm64-combined-bd1f0e9d/source.json",
+    "sha256": "92981a6ea1eeaa113ac00c13c29999deb378db64908da78ecbef107b77c39fcd",
+    "bytes": 223031
+  },
+  "binding": {
+    "checkpoint": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
+    "checkpoint_revision": "be794b990578ef3031eccf9f28e675a289a09ee9",
+    "source_revision": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
+    "image": "sha256:82f58da8dadf265a6a753537b78c9d6504613dfabfd616fd835c3e88b6d4b7d5",
+    "kv_dtype": "rotorquant-iso4",
+    "precision": "checkpoint",
+    "context": 0,
+    "parallel": 4,
+    "metadata_sha256": {
+      "config.json": "e765305daba0951974308f4d32c075b52a6a45974730d273f2216718a994d624",
+      "hf_quant_config.json": "7e69ef4b94302ae5b6f453b913621f698d5631a1d023d8b3e9e3b829721b98e8",
+      "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "tokenizer_config.json": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "model.safetensors.index.json": "da5ca9c3b65e48e151329e64e141c2fa700bf2f99aec53cc014e4b52a6ff7a84",
+      "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+    },
+    "foundation_profile_sha256": "b89513b23c48a0d6e583635ad619ae7d642cace0ad0599be7b0f4ff55625405e",
+    "protocol_sha256": "b1c1aec9e4e257e69860c1a93dee76ef19891de0ed6964c8923d38be9bc55146",
+    "workload": {
+      "prompt_sha256": "30a78b53c38a75ca0fc80558897626c30307b72129ef87b2981b6b348f347575",
+      "maximum": 512,
+      "temperature": 0,
+      "seed": 7,
+      "enable_thinking": false
+    },
+    "full_payload_integrity_scope": "Root verifies the pinned full snapshot once; model mount must stay immutable/read-only",
+    "effective_context": 262144,
+    "gpu_uuid": "51db75b3-8be0-5cfd-f46c-19e1f2e1c2d0",
+    "compute_capability": [
+      12,
+      1
+    ]
+  },
+  "runtime": {
+    "torch": "2.16.0.dev20261014+cu134",
+    "cuda": "13.4",
+    "gpu": "NVIDIA GB10",
+    "gpu_uuid": "51db75b3-8be0-5cfd-f46c-19e1f2e1c2d0",
+    "compute_capability": [
+      12,
+      1
+    ],
+    "is_integrated": true,
+    "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "cpu_count": 20,
+    "torch_threads": 20,
+    "memory_reserve": "8"
+  },
+  "protected_stack": {
+    "torch": "2.16.0.dev20261014+cu134",
+    "torch_git": "ef46daf1aa35294a3cb297ef3f59b5a6463063f8",
+    "torchvision": "0.30.0.dev20261006+cu134",
+    "triton_distribution": "3.9.0+gitfc8d31a5",
+    "nccl_native_api": 23203,
+    "nvcc": "13.4.92",
+    "provider_rows": {
+      "native_foundation": 22,
+      "official_vision_bundle": 2
+    },
+    "driver_mode": "forward-compatible",
+    "driver_library": "/usr/local/cuda-13.4/compat/libcuda.so.615.71.09",
+    "driver_api": 13040,
+    "exceptions": [
+      "Exact protected official TorchVision CUDART and NVJPEG members",
+      "Official cuda-bindings static CUDART where no supported override exists"
+    ],
+    "mechanism": "Supported same-process Torch RTLD/preload policy and Triton tool/header/libdevice selection; upstream metadata intact; no vendor patch, runtime alias or source-built Torch"
+  },
+  "common_configuration": {
+    "precision": "checkpoint",
+    "kv_dtype": "rotorquant-iso4",
+    "parallel": 4,
+    "context_argument": 0,
+    "effective_context": 262144,
+    "resident_routed_banks": 48,
+    "ple_on_ssd": true,
+    "vision": true,
+    "memory_reserve": "8",
+    "production_defaults": {
+      "sampling": {
+        "temperature": 1.0,
+        "top_k": 20,
+        "top_p": 0.95
+      },
+      "max_tokens": 4096,
+      "thinking": true,
+      "reasoning_effort": "checkpoint template default",
+      "eos": [
+        248044,
+        248046
+      ],
+      "template": {
+        "name": "default",
+        "source": "chat_template.jinja",
+        "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      },
+      "effective_context": 262144
+    }
+  },
+  "objective": {
+    "name": "completed HTTP body tokens per second",
+    "interval": "Client request preparation/open through HTTP body EOF; cohort includes barrier/executor joins",
+    "excluded": "Final quiet, provider proof and engine retirement",
+    "analysis": "Sequential descriptive observations, not balanced repeated A/B evidence or sustained capacity"
+  },
+  "profiles": [
+    {
+      "mtp_drafts": 0,
+      "graphs": {
+        "planned_bytes": 536870912,
+        "captured": true,
+        "verify_keys": 8,
+        "mtp_keys": 0,
+        "bytes": 155275264,
+        "settled_bytes": -21831680,
+        "room_bytes": 155275264,
+        "budget_bytes": 536870912,
+        "capture_s": 9.522,
+        "stopped": null,
+        "pieces": 120
+      },
+      "constructor_s": 278.03560191899305,
+      "cold_http_tokens_per_s": 17.314749782402625,
+      "warm_http_tokens_per_s": [
+        17.916291260704764,
+        17.91208027061308
+      ],
+      "aggregate_http_tokens_per_s": 55.755118875201184,
+      "aggregate_tokens": 2048,
+      "complete_cohort_s": 36.73205333099759,
+      "token_hash_prefix": "144dec81bb0f",
+      "cold_warm_equal": true,
+      "independent_reference_equal": false,
+      "four_concurrent_equal": true,
+      "drafted_deltas": {
+        "cold_warm": 0,
+        "same_engine_serial": 0,
+        "same_engine_serial_executed": false,
+        "quartet": 0
+      },
+      "media": {
+        "image": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "color": "red"
+          }
+        },
+        "video": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "first": "red",
+            "last": "blue"
+          }
+        }
+      },
+      "cancellation": {
+        "observed_cancelled_delta": 1,
+        "recovery_complete": true,
+        "pre_cancel_reference_equal": true
+      },
+      "ssd_oracle": {
+        "kind": "fp8",
+        "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+        "scale": 0.00019931793212890625,
+        "all_256_codes_equal": true,
+        "actual_rows_equal": true,
+        "ids": [
+          0,
+          1,
+          0,
+          2500011,
+          2500012,
+          320001535
+        ],
+        "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+        "read_plans": [
+          {
+            "fd": 35,
+            "offset": 2239,
+            "bytes": 320
+          },
+          {
+            "fd": 35,
+            "offset": 400003999,
+            "bytes": 320
+          },
+          {
+            "fd": 44,
+            "offset": 2800015518,
+            "bytes": 160
+          }
+        ],
+        "largest_planned_read": 320,
+        "max_read": 1048576,
+        "no_values_array_or_direct_memmap": true,
+        "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+      },
+      "minimum_sampled_mem_available_bytes": 38290984960,
+      "cleanup": {
+        "error": null,
+        "handlers_drained": true,
+        "loop_alive": false,
+        "engine_closed": true
+      },
+      "ownership_unresolved": false,
+      "evidence": [
+        {
+          "path": "model-rq4-p4-mtp0-bd1-results-01/run-gb10-model-rq4-p4-mtp0-bd1-01/gb10-protocol.json",
+          "sha256": "2624920aa1fec554bee78edc50133fbaee4a48031dcc31c48d1bb0c278d2ae84",
+          "bytes": 217048
+        },
+        {
+          "path": "model-rq4-p4-mtp0-bd1-results-01/run-gb10-model-rq4-p4-mtp0-bd1-01/receipt.json",
+          "sha256": "2fb4417699501f1eb5a439e81b2e0f58cad765cf6ecc8bafc8cf743c6a4a2ba0",
+          "bytes": 23208
+        },
+        {
+          "path": "model-rq4-p4-mtp0-bd1-results-01/run-gb10-model-rq4-p4-mtp0-bd1-01/post-consumer-providers.json",
+          "sha256": "553abc7d69fe7c7dd38fa65af6e7df6ceea8599136d08f1f11f6ab71c80b61ee",
+          "bytes": 893625
+        }
+      ]
+    },
+    {
+      "mtp_drafts": 3,
+      "graphs": {
+        "planned_bytes": 536870912,
+        "captured": true,
+        "verify_keys": 39,
+        "mtp_keys": 19,
+        "bytes": 531058688,
+        "settled_bytes": 123797504,
+        "room_bytes": 531058688,
+        "budget_bytes": 536870912,
+        "capture_s": 5.332,
+        "stopped": "534 MiB with the next key exceeds the 512 MiB budget",
+        "pieces": 623
+      },
+      "constructor_s": 253.49221954500536,
+      "cold_http_tokens_per_s": 39.99237156761555,
+      "warm_http_tokens_per_s": [
+        41.21908308755097,
+        41.31364121247191
+      ],
+      "aggregate_http_tokens_per_s": 124.19634109982583,
+      "aggregate_tokens": 2048,
+      "complete_cohort_s": 16.490018803000567,
+      "token_hash_prefix": "144dec81bb0f",
+      "cold_warm_equal": true,
+      "independent_reference_equal": true,
+      "four_concurrent_equal": true,
+      "drafted_deltas": {
+        "cold_warm": 1230,
+        "same_engine_serial": 0,
+        "same_engine_serial_executed": true,
+        "quartet": 1640
+      },
+      "media": {
+        "image": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "color": "red"
+          }
+        },
+        "video": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "first": "red",
+            "last": "blue"
+          }
+        }
+      },
+      "cancellation": {
+        "observed_cancelled_delta": 1,
+        "recovery_complete": true,
+        "pre_cancel_reference_equal": true
+      },
+      "ssd_oracle": {
+        "kind": "fp8",
+        "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+        "scale": 0.00019931793212890625,
+        "all_256_codes_equal": true,
+        "actual_rows_equal": true,
+        "ids": [
+          0,
+          1,
+          0,
+          2500011,
+          2500012,
+          320001535
+        ],
+        "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+        "read_plans": [
+          {
+            "fd": 35,
+            "offset": 2239,
+            "bytes": 320
+          },
+          {
+            "fd": 35,
+            "offset": 400003999,
+            "bytes": 320
+          },
+          {
+            "fd": 44,
+            "offset": 2800015518,
+            "bytes": 160
+          }
+        ],
+        "largest_planned_read": 320,
+        "max_read": 1048576,
+        "no_values_array_or_direct_memmap": true,
+        "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+      },
+      "minimum_sampled_mem_available_bytes": 24129982464,
+      "cleanup": {
+        "error": null,
+        "handlers_drained": true,
+        "loop_alive": false,
+        "engine_closed": true
+      },
+      "ownership_unresolved": false,
+      "evidence": [
+        {
+          "path": "model-rq4-p4-mtp3-bd1-results-01/run-gb10-model-rq4-p4-mtp3-bd1-01/gb10-protocol.json",
+          "sha256": "39cf4800400b536a13b0b3d5f4b09bb87133d23e464b5bc01d3db22a0c6e8d7e",
+          "bytes": 242594
+        },
+        {
+          "path": "model-rq4-p4-mtp3-bd1-results-01/run-gb10-model-rq4-p4-mtp3-bd1-01/receipt.json",
+          "sha256": "6bc56a2223283963c5c7bf135085fbd39349154fd206c0ef3aa44ca35474447c",
+          "bytes": 23674
+        },
+        {
+          "path": "model-rq4-p4-mtp3-bd1-results-01/run-gb10-model-rq4-p4-mtp3-bd1-01/post-consumer-providers.json",
+          "sha256": "56a23511e228f1c8352024253f22f62cbe28af88abb80de13295c41cfd8666d1",
+          "bytes": 893759
+        }
+      ]
+    },
+    {
+      "mtp_drafts": 3,
+      "graphs": {
+        "planned_bytes": 2147483648,
+        "captured": true,
+        "verify_keys": 68,
+        "mtp_keys": 34,
+        "bytes": 1696972800,
+        "settled_bytes": 1562951680,
+        "room_bytes": 1696972800,
+        "budget_bytes": 2147483648,
+        "capture_s": 6.927,
+        "stopped": null,
+        "pieces": 1088
+      },
+      "constructor_s": 234.90947704399878,
+      "cold_http_tokens_per_s": 40.780471227805826,
+      "warm_http_tokens_per_s": [
+        41.30948361149364,
+        41.29998461214343
+      ],
+      "aggregate_http_tokens_per_s": 141.50005402705767,
+      "aggregate_tokens": 2048,
+      "complete_cohort_s": 14.473492706994875,
+      "token_hash_prefix": "144dec81bb0f",
+      "cold_warm_equal": true,
+      "independent_reference_equal": true,
+      "four_concurrent_equal": true,
+      "drafted_deltas": {
+        "cold_warm": 1230,
+        "same_engine_serial": 0,
+        "same_engine_serial_executed": true,
+        "quartet": 1640
+      },
+      "media": {
+        "image": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "color": "red"
+          }
+        },
+        "video": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "first": "red",
+            "last": "blue"
+          }
+        }
+      },
+      "cancellation": {
+        "observed_cancelled_delta": 1,
+        "recovery_complete": true,
+        "pre_cancel_reference_equal": true
+      },
+      "ssd_oracle": {
+        "kind": "fp8",
+        "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+        "scale": 0.00019931793212890625,
+        "all_256_codes_equal": true,
+        "actual_rows_equal": true,
+        "ids": [
+          0,
+          1,
+          0,
+          2500011,
+          2500012,
+          320001535
+        ],
+        "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+        "read_plans": [
+          {
+            "fd": 35,
+            "offset": 2239,
+            "bytes": 320
+          },
+          {
+            "fd": 35,
+            "offset": 400003999,
+            "bytes": 320
+          },
+          {
+            "fd": 44,
+            "offset": 2800015518,
+            "bytes": 160
+          }
+        ],
+        "largest_planned_read": 320,
+        "max_read": 1048576,
+        "no_values_array_or_direct_memmap": true,
+        "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+      },
+      "minimum_sampled_mem_available_bytes": 23475499008,
+      "cleanup": {
+        "error": null,
+        "handlers_drained": true,
+        "loop_alive": false,
+        "engine_closed": true
+      },
+      "ownership_unresolved": false,
+      "evidence": [
+        {
+          "path": "model-rq4-p4-mtp3-bd1-graphs2048-results-01/run-gb10-model-rq4-p4-mtp3-bd1-graphs2048-01/gb10-protocol.json",
+          "sha256": "24644b6c76f8fe36d8464fbe4b11d81d204aa6001084db3620eb0b51ff9efa5d",
+          "bytes": 248980
+        },
+        {
+          "path": "model-rq4-p4-mtp3-bd1-graphs2048-results-01/run-gb10-model-rq4-p4-mtp3-bd1-graphs2048-01/receipt.json",
+          "sha256": "6649988cb37fbf57b97b9e7d9ccbb1d909c7547844b30a436a197cc3c420c533",
+          "bytes": 23688
+        },
+        {
+          "path": "model-rq4-p4-mtp3-bd1-graphs2048-results-01/run-gb10-model-rq4-p4-mtp3-bd1-graphs2048-01/post-consumer-providers.json",
+          "sha256": "96b3a430d7a8fc13f9159fc48f8cec8c93b2d770666c4e0b8e8876fe373ab410",
+          "bytes": 893751
+        }
+      ]
+    },
+    {
+      "mtp_drafts": 6,
+      "graphs": {
+        "planned_bytes": 4294967296,
+        "captured": true,
+        "verify_keys": 128,
+        "mtp_keys": 64,
+        "bytes": 3182149632,
+        "settled_bytes": 2888200192,
+        "room_bytes": 3182149632,
+        "budget_bytes": 4294967296,
+        "capture_s": 13.755,
+        "stopped": null,
+        "pieces": 2048
+      },
+      "constructor_s": 240.23689546399692,
+      "cold_http_tokens_per_s": 42.572558238659276,
+      "warm_http_tokens_per_s": [
+        43.498262823218624,
+        43.26556503350894
+      ],
+      "aggregate_http_tokens_per_s": 143.80314966024645,
+      "aggregate_tokens": 2048,
+      "complete_cohort_s": 14.241690845010453,
+      "token_hash_prefix": "144dec81bb0f",
+      "cold_warm_equal": true,
+      "independent_reference_equal": true,
+      "four_concurrent_equal": true,
+      "drafted_deltas": {
+        "cold_warm": 1563,
+        "same_engine_serial": 0,
+        "same_engine_serial_executed": true,
+        "quartet": 2084
+      },
+      "media": {
+        "image": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "color": "red"
+          }
+        },
+        "video": {
+          "semantic_equal": true,
+          "mtp_serial_equal": true,
+          "expected": {
+            "first": "red",
+            "last": "blue"
+          }
+        }
+      },
+      "cancellation": {
+        "observed_cancelled_delta": 1,
+        "recovery_complete": true,
+        "pre_cancel_reference_equal": true
+      },
+      "ssd_oracle": {
+        "kind": "fp8",
+        "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+        "scale": 0.00019931793212890625,
+        "all_256_codes_equal": true,
+        "actual_rows_equal": true,
+        "ids": [
+          0,
+          1,
+          0,
+          2500011,
+          2500012,
+          320001535
+        ],
+        "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+        "read_plans": [
+          {
+            "fd": 35,
+            "offset": 2239,
+            "bytes": 320
+          },
+          {
+            "fd": 35,
+            "offset": 400003999,
+            "bytes": 320
+          },
+          {
+            "fd": 44,
+            "offset": 2800015518,
+            "bytes": 160
+          }
+        ],
+        "largest_planned_read": 320,
+        "max_read": 1048576,
+        "no_values_array_or_direct_memmap": true,
+        "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+      },
+      "minimum_sampled_mem_available_bytes": 23300030464,
+      "cleanup": {
+        "error": null,
+        "handlers_drained": true,
+        "loop_alive": false,
+        "engine_closed": true
+      },
+      "ownership_unresolved": false,
+      "evidence": [
+        {
+          "path": "model-rq4-p4-mtp6-bd1-graphs4096-results-01/run-gb10-model-rq4-p4-mtp6-bd1-graphs4096-01/gb10-protocol.json",
+          "sha256": "298098747a0876d9ab07922a69efc394d8718e21b216a8529a7edcec176d12de",
+          "bytes": 264454
+        },
+        {
+          "path": "model-rq4-p4-mtp6-bd1-graphs4096-results-01/run-gb10-model-rq4-p4-mtp6-bd1-graphs4096-01/receipt.json",
+          "sha256": "5bf5bd879fd70c666b13163cf83ad543b0b2b9f3b85735dcecafb12aaae1bae3",
+          "bytes": 23687
+        },
+        {
+          "path": "model-rq4-p4-mtp6-bd1-graphs4096-results-01/run-gb10-model-rq4-p4-mtp6-bd1-graphs4096-01/post-consumer-providers.json",
+          "sha256": "4e900718be9a7c162b6f271d770ef33a8e44a7ba89469b2cd676add3d3e408e8",
+          "bytes": 893751
+        }
+      ]
+    }
+  ],
+  "public_cli": {
+    "status": "pass",
+    "arguments": [
+      "serve",
+      "/model",
+      "--backend",
+      "cuda",
+      "--precision",
+      "checkpoint",
+      "--ple-on-ssd",
+      "--vision",
+      "--parallel",
+      "4",
+      "--context",
+      "0",
+      "--kv-dtype",
+      "rotorquant-iso4",
+      "--mtp-drafts",
+      "6",
+      "--mtp-confidence",
+      "0.70",
+      "--drafter",
+      "none",
+      "--thinking-budget",
+      "0",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "8080",
+      "--name",
+      "flash-next-gb10",
+      "--alias",
+      "qualification-d0995503-34b5-4cb4-9fdc-c9ffd1d07820:cli-rq4-p4-mtp6-strict"
+    ],
+    "probe_sha256": "7d2dda03c3d6659b2eccf0aa60bd395e869fb9dcfd1dfda89cbd244ab8e1ef57",
+    "child_returncode": 0,
+    "generated_tokens": 512,
+    "protocol_serial_equal": true,
+    "media": {
+      "image": "red",
+      "video": {
+        "first": "red",
+        "last": "blue"
+      },
+      "protocol_tokens_equal": true
+    },
+    "strict_tools": {
+      "function": "gb10_strict_types",
+      "expected_arguments": {
+        "enabled": true,
+        "disabled": false,
+        "empty": null
+      },
+      "normal_finish": "tool_calls",
+      "stream_finish": "tool_calls",
+      "stream_complete_body_drained": true,
+      "scope": "forced strict bool/false/null positive contract; no tool execution or invented unsupported-constraint status"
+    },
+    "minimum_sampled_mem_available_bytes": 23752450048,
+    "evidence": [
+      {
+        "path": "cli-strict-bd1-results-02/run-gb10-cli-rq4-p4-mtp6-bd1-strict-01/cli-report.json",
+        "sha256": "e31eaa939bb182510c1fe5163327a11240630bc1a3dc9cae4103bdb54f820f6f",
+        "bytes": 89163
+      },
+      {
+        "path": "cli-strict-bd1-results-02/run-gb10-cli-rq4-p4-mtp6-bd1-strict-01/receipt.json",
+        "sha256": "c7f4800aea4bdfaf359e38c24f63a1e2b4815ef20402af034527584de9dcb0e6",
+        "bytes": 24345
+      },
+      {
+        "path": "cli-strict-bd1-results-02/run-gb10-cli-rq4-p4-mtp6-bd1-strict-01/cli-parent-providers.json",
+        "sha256": "39de94d1b30b359cde0e6fcd8bd6e811932ddbf779abcdeceeacd5caf1cc2dbf",
+        "bytes": 887842
+      },
+      {
+        "path": "cli-strict-bd1-results-02/run-gb10-cli-rq4-p4-mtp6-bd1-strict-01/cli-child-providers.json",
+        "sha256": "a20c561fb5e685f1e41fb85c63f7842170bf39079a3a87d37a04d0ca377361d9",
+        "bytes": 893331
+      }
+    ]
+  },
+  "resource_contract": {
+    "sampled_mem_available_floor_bytes": 8589934592,
+    "eligible_logical_cpus": 20,
+    "docker_ram_swap_cpu_pid_quotas": false,
+    "scope": "Owned native ARM containers, full eligible CPU mask and actual live ancestor limits; sampling is not continuous reservation"
+  },
+  "composite_checks": [
+    {
+      "scope": "Predecessor A4 memcheck; zero sanitizer errors",
+      "source": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "image": "sha256:d0cc22f12c9ad2a13491ed100ee7f6be545ba014df976ca98cd757f19c154ecb",
+      "passed": 29,
+      "skipped": 0,
+      "seconds": 27.02,
+      "evidence": [
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-memcheck-1e04aa92/raw.log",
+          "sha256": "6d1c73ecdfb702865c4557c2596b5768f3756b9507af6560475106d161c335b8",
+          "bytes": 704
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-memcheck-1e04aa92/receipt.json",
+          "sha256": "a71cd0ffe101d9bdcb1400aac4e43c9454d7e69632ca32e745f6f6bb2791bb0b",
+          "bytes": 21716
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-memcheck-1e04aa92/memcheck-post-provider.json",
+          "sha256": "a7a2a0d55939c0fd6b31c92666f157259c2fe1c64dfe560cd92c8fdb022d8edc",
+          "bytes": 886971
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-memcheck-1e04aa92/memcheck.log",
+          "sha256": "a9d061cee538182f762e132abeea7bac7bddb844338f25751bbbb043f242c425",
+          "bytes": 62
+        }
+      ],
+      "sanitizer_errors": 0
+    },
+    {
+      "scope": "bd1 A4 and large-bank extent controls",
+      "source": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
+      "image": "sha256:82f58da8dadf265a6a753537b78c9d6504613dfabfd616fd835c3e88b6d4b7d5",
+      "passed": 38,
+      "skipped": 0,
+      "seconds": 115.37,
+      "evidence": [
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-native-bd1f0e9d/raw.log",
+          "sha256": "41cc48ea5968cd7414f6623d7305496cf5f2d1d8733ac06a8b012e0b49e0508b",
+          "bytes": 715
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-native-bd1f0e9d/receipt.json",
+          "sha256": "b6ecfd3e7ad446e6c40632e83665199af28176bf7f16f2ad1a086d758d28c605",
+          "bytes": 21621
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-native-bd1f0e9d/native-post-provider.json",
+          "sha256": "f4fcd0d89f0bfcc0e079609158aa4156c3f069a76db59f11e862abac083cb8ee",
+          "bytes": 886988
+        }
+      ]
+    },
+    {
+      "scope": "Focused CPU regression set including five earlier failed fixtures",
+      "source": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "image": "sha256:d0cc22f12c9ad2a13491ed100ee7f6be545ba014df976ca98cd757f19c154ecb",
+      "passed": 219,
+      "skipped": 1,
+      "seconds": 3.4,
+      "evidence": [
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-cpu-1e04aa92/raw.log",
+          "sha256": "d01412011298ed72dc2aafa34d24681da884aa1cb566ea3ec7645b04f0e8cdee",
+          "bytes": 649
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-cpu-1e04aa92/receipt.json",
+          "sha256": "2850d110255446a52821f52ee6dcb739cc1c3e0c7f6c22b7184dbddea48985ad",
+          "bytes": 21400
+        },
+        {
+          "path": "memcheck-and-bd-native-results-01/run-gb10-combined-cpu-1e04aa92/cpu-post-provider.json",
+          "sha256": "6eac86decdd6ddb7ded4446e12a3a8d9d423bbb5ebb5075a676a2290b271a8af",
+          "bytes": 886754
+        }
+      ]
+    }
+  ],
+  "retained_failures": [
+    {
+      "path": "cpu-general-results-root-01/run-gb10-cpu-full-general-97018237/raw.log",
+      "source": "97018237",
+      "passed": 9398,
+      "skipped": 183,
+      "failed": 5,
+      "disposition": "Five fixture prerequisites corrected; focused 219-case pass, not a fresh clean full-suite rerun"
+    },
+    {
+      "path": "combined-native-results-01/run-gb10-combined-native-1e04aa92/raw.log",
+      "source": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "passed": 37,
+      "failed": 12,
+      "disposition": "Preserved mixed legacy-fixture failure, distinct from focused A4 pass"
+    },
+    {
+      "path": "model-rq4-p4-mtp0-results-01",
+      "source": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "disposition": "Preserved calibration plan-extent failure; bd1 bound and native extent regression then passed"
+    }
+  ],
+  "pending": [
+    "Final composed-source installed gates, including read-plan and AUTO graph changes",
+    "Balanced same-format performance comparison and final selection",
+    "Entire fresh RotorQuant/KV matrix",
+    "Two-GPU or heterogeneous expert ranks",
+    "Long-context/full simultaneous windows and broader model quality",
+    "Deployment/rollout"
+  ],
+  "build_audits": [
+    {
+      "target": "runtime",
+      "wheel_sha256": "3a128b6a993127e3cace56784c1cb42c7b9a2c2ddb66743cc77bd3a807d91bdf",
+      "installed_package_files_matched": 535,
+      "baked_files_matched": 551,
+      "cuda_initialized": false,
+      "evidence": {
+        "path": "build-combined-fixed-results-01/gb10-combined-fixed-01/runtime-audit.json",
+        "sha256": "10db71c81ac59216bf930df9976d51fb74b0fea8ac6e0afe663f266023a6583f",
+        "bytes": 49274
+      }
+    },
+    {
+      "target": "verification",
+      "wheel_sha256": "3a128b6a993127e3cace56784c1cb42c7b9a2c2ddb66743cc77bd3a807d91bdf",
+      "installed_package_files_matched": 535,
+      "baked_files_matched": 1312,
+      "cuda_initialized": false,
+      "evidence": {
+        "path": "build-combined-fixed-results-01/gb10-combined-fixed-01/verification-audit.json",
+        "sha256": "9e2eb78d731d32560186b132dce6cee17b40a4c3e45e035b5a8b4b630b5d7a1e",
+        "bytes": 49352
+      }
+    }
+  ],
+  "build_receipt": {
+    "path": "build-combined-fixed-results-01/gb10-combined-fixed-01/receipt.json",
+    "sha256": "1a504bec0884c56e1aff0b874334c80b4a8a55e68d793fd02364e510b7f95408",
+    "bytes": 9125
+  },
+  "native_arm_dependency_acceptance": {
+    "native_environment": {
+      "implementation_name": "cpython",
+      "implementation_version": "3.12.3",
+      "os_name": "posix",
+      "platform_machine": "aarch64",
+      "platform_release": "7.0.0-1019-nvidia",
+      "platform_system": "Linux",
+      "platform_version": "#19~24.04.2-Ubuntu SMP PREEMPT_DYNAMIC Sun Sep  6 18:35:11 UTC 2",
+      "python_full_version": "3.12.3",
+      "platform_python_implementation": "CPython",
+      "python_version": "3.12",
+      "sys_platform": "linux"
+    },
+    "role_counts": {
+      "foundation": 34,
+      "runtime": 31,
+      "verification": 3
+    },
+    "scope": "Native dependency report only; original outer wrapper failure preserved; no runtime qualification inferred",
+    "evidence": [
+      {
+        "path": "resolver-native-independent-acceptance-01/acceptance.json",
+        "sha256": "4c79496504e79a564675100dcce9df68d23c4ddefc3cb399401d8bd29a3dcff0",
+        "bytes": 12235
+      },
+      {
+        "path": "resolver-native-independent-acceptance-01/acceptance.log",
+        "sha256": "9ba3bcbe2593bed4e38f1db8d4ce8af875af7c6f64442d220e2ae12b79dbfe98",
+        "bytes": 2664
+      },
+      {
+        "path": "resolver-native-independent-acceptance-01/validator-run-v2.json",
+        "sha256": "f602598eeb687e319c211b3ef488cd2a6bd4f06eeb1d85eed97db58e1b1a4f8d",
+        "bytes": 761
+      },
+      {
+        "path": "resolver-native-independent-acceptance-01/review-closure-v2.json",
+        "sha256": "970f296db66b38c6bad4f1c02f115fbf581fa6ce63d38040df7f4f01718c2a1c",
+        "bytes": 1008
+      }
+    ]
+  }
+}

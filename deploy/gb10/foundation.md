@@ -4,8 +4,9 @@ The Docker build requires an immutable official NGC CUDA development base and
 the selected genuine official nightly wheels. The selected base is CUDA13.4.3 cuDNN development. Official AMD64 roots use
 Torch20261017, TorchVision20261007 and Tritonfc8; ARM64 uses its distinct official
 Torch20261014/TorchVision20261006 artifacts. The selected pin manifest names
-actual whole-wheel hashes. CPU provider selection passed separately; fresh
-installed-image/GPU/model qualification and ARM64 execution remain separate gates. The base supplies the CUDA
+actual whole-wheel hashes. Native ARM image audits, device/provider checks and
+the [GB10 bd1 model protocols](../../docs/gb10-nvfp4-validation.md) passed with
+those recorded inputs; final composed-source gates remain separate. The base supplies the CUDA
 headers, compiler, tools, cuDNN and NCCL. The selected nightly Torch/Triton and
 all their Python dependency versions belong to a separate protected prefix,
 `/opt/tensorfold-foundation`; TensorFold, application dependencies and test

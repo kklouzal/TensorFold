@@ -1,7 +1,7 @@
 # GB10 Flash Next deployment
 
-This guide separates the current selected image inputs and the next checkpoint
-validation target from the dated deployment records below. The build uses NGC
+This guide separates the current selected image inputs and source-specific
+checkpoint validation from the dated deployment records below. The build uses NGC
 CUDA **13.4.3 cuDNN development**, CPython 3.12 and genuine official nightlies:
 ARM64 Torch `2.16.0.dev20261014+cu134` / TorchVision
 `0.30.0.dev20261006+cu134`, or AMD64 Torch `2.16.0.dev20261017+cu134` /
@@ -25,24 +25,27 @@ profile uses YaRN factor 4, a 1,048,576-token prompt-plus-reply window,
 `rotorquant8-norm` K/V and four slots. Do not carry its capacity assumptions into
 a different checkpoint; four simultaneous full windows are not assumed to fit.
 
-## Pending GB10 NVFP4 checkpoint validation
+## GB10 NVFP4 checkpoint validation
 
-The next exact target is
+Installed ARM source `bd1f0e9d` passed four protocols for
 [`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4`](https://huggingface.co/dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4)
 revision `be794b990578ef3031eccf9f28e675a289a09ee9`, on the GB10's SM 12.1 GPU.
 The ModelOpt export declares static-input NVFP4 W4A4 for routed experts and
-retains its native MTP head and vision tensors in BF16. Its requested validation
-profile keeps routed weights resident, reads n-gram
-tables with `--ple-on-ssd`, enables `--vision`, uses `--parallel 2` or more on
-one GPU, and uses the checkpoint's native MTP head. Context and memory admission
-must be measured for this checkpoint rather than inherited from the older MLX
-profile.
+retains its native MTP head and vision tensors in BF16. The tested profile kept
+routed weights resident, used `--ple-on-ssd`, `--vision`, `--parallel 4` and
+`--kv-dtype rotorquant-iso4`, and compared native MTP0/3/6. All cold/warm/quartet
+512-token outputs matched exactly. SSD-scale, image/video, cancellation/recovery
+and a separate public CLI strict-tool run also passed.
 
-Native ModelOpt A4 implementation and this exact checkpoint's latest-runtime
-startup, serial/MTP identity, vision, concurrent-request and performance gates
-are **pending**. This is a validation target, not a qualified launch recipe or a
-replacement of the recorded deployed service. No new GB10 performance result is
-claimed here.
+With an explicit 4096 MiB graph budget, MTP6 observed 43.27–43.50 warm single-request
+and 143.80 aggregate completed-HTTP-body tok/s. The [validation note](../../docs/gb10-nvfp4-validation.md)
+and [receipt](../../docs/verification-gb10-nvfp4-20261018.json) bind exact images,
+math, provider proof, timings and the sampled 8 GiB host-free floor. These are the
+highest observations among those tested profiles, not a balanced performance
+selection or qualification of the later read-plan/AUTO graph composition.
+Final-source gates, the entire fresh RotorQuant suite, long-context capacity and
+two-GPU execution remain separate. This does not replace the recorded deployed
+service or inherit the older profile's capacity assumptions.
 
 New builds from the maintained `python-0.6` integration use TensorFold **0.6.6**.
 The Harness checks both the installed package version and module version,
@@ -332,7 +335,7 @@ First run [input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 from the repository root with `TF_BUILD_ARCH=arm64` for a native GB10 builder.
 Keep its exported variables in the same shell; no `generated-arm64` or
 `artifacts-arm64` directory is assumed to exist. Use a separate candidate tag
-while the new checkpoint and foundation qualification are pending:
+until the final composed-source qualification closes:
 
 ```bash
 docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
@@ -643,7 +646,7 @@ gates. Do not hand-edit generated requirement locks.
 
 This Compose file is the captured **GB10 deployment profile**. Its memory limit,
 CPU set, local model path, context and slot configuration are specific to that
-recorded deployment. It does not substitute the pending NVFP4 target above.
+recorded deployment. It does not substitute the source-specific NVFP4 validation above.
 Start a different machine with its own model, resource budget and context using
 the standalone command in the [fork README](../../README.md).
 The runtime image's default entrypoint already invokes the CUDA compatibility

@@ -18,16 +18,21 @@ completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
 byte permutation. Historical source `abb67d62` passed affected installed CPU and
 native loader checks; the [loader qualification status](docs/nvfp4-loading-validation.md)
-keeps those identities separate from pending refreshed-foundation and full-ModelOpt
-startup/performance gates.
+keeps those identities separate from the new [GB10 ModelOpt validation](docs/gb10-nvfp4-validation.md)
+and remaining final-source/performance gates.
 
 Flash Next now selects ModelOpt routed-expert activation math from each
 projection's declaration. Checkpoint precision uses declared static group-16 A4
 on native SM12 GPUs, preserving the original direct input and weight scales.
 Explicit full precision and nonnative devices retain W4A16. An expert group
 selects one policy before loading; mixed native/nonnative ranks use W4A16.
-Resident A4 banks retain live GPU routing and graph capture. Native numerical,
-full-checkpoint MTP/vision and GB10 performance qualification remain pending.
+Resident A4 banks retain live GPU routing and graph capture. Installed ARM source
+`bd1f0e9d` passed native A4/extent checks, full-checkpoint serial/MTP identity,
+four concurrent 512-token replies, SSD n-grams, image/video and public CLI strict
+tools on GB10. Its MTP6/4096 MiB graph profile observed 43.27–43.50 single-request
+and 143.80 aggregate completed-HTTP-body tok/s. [Conditions and receipt](docs/gb10-nvfp4-validation.md)
+keep those observations separate from pending final composed-source gates,
+balanced performance selection and the entire fresh RotorQuant suite.
 
 NVFP4 host admission also reserves the physical pinned Reader backing separately
 from GPU scratch and temporary payloads. The shared estimate charges its ring
@@ -102,7 +107,7 @@ The [Dockerfile](deploy/gb10/Dockerfile) uses the selected CUDA **13.4.3 cuDNN d
 | AMD64 | `2.16.0.dev20261017+cu134` | `0.30.0.dev20261007+cu134` | `3.9.0+gitfc8d31a5` | [AMD64 pins](deploy/gb10/nightly-pins-amd64.json) |
 | ARM64 | `2.16.0.dev20261014+cu134` | `0.30.0.dev20261006+cu134` | `3.9.0+gitfc8d31a5` | [ARM64 pins](deploy/gb10/nightly-pins.json) |
 
-A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Fresh image/GPU/model qualification remains separate from the historical results below. The [next GB10 checkpoint target](deploy/gb10/README.md#pending-gb10-nvfp4-checkpoint-validation) is still pending; the older deployment profiles and measured rates retain their own identities.
+A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 
 The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference development image:
 

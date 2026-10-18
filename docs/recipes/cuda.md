@@ -170,6 +170,13 @@ backbone and MTP retain their own declared representations and draft exclusions.
 An expert group negotiates one math policy before expert payload allocation: all-native ranks
 can use A4; a group containing a nonnative rank uses W4A16 throughout.
 
+Installed ARM source `bd1f0e9d` ran the full Flash Next ModelOpt export
+`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` on GB10 with resident routed
+experts, SSD n-grams, native MTP, vision and four concurrent slots. The
+[source-specific validation](../gb10-nvfp4-validation.md) records exact 512-token
+serial/MTP/concurrent identity, image/video and strict-tool checks, observed HTTP
+rates and remaining final-composition/performance gates.
+
 The normal public constructor was exercised on `RishabhSinha/Qwen3.5-9B-NVFP4` revision
 `d51f8fa57a09df7d91a2d84017b7f7cb310887da`, a compressed-tensors `nvfp4-pack-quantized` export,
 on the RTX PRO 2000 Blackwell with 16 GB VRAM and 64 GB RAM. The Source06 image identified in the
