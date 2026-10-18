@@ -342,6 +342,8 @@ def round_graphs():
     graphs.budget, graphs.bytes, graphs.verify, graphs.mtp = 1 << 40, 0, {}, {}
     graphs.measured, graphs.stopped, graphs.rejected = [], None, None
     graphs.pool, graphs.admitted = (0, 7), False
+    graphs.allocator_backend = "native"
+    graphs.private_spare_bytes = None
     graphs.failure = graphs.failure_traceback = graphs.failure_cause = graphs.failure_context = None
     graphs.failure_frames = None
     graphs.spare = lambda: free[0] - 1000
@@ -351,6 +353,24 @@ def round_graphs():
         return NS(out=object(), graphs=[object()])
     graphs._pieces = pieces
     return graphs, free
+
+
+def test_other_allocator_backend_uses_physical_room_without_interpreting_empty_native_stats():
+    graphs, _ = round_graphs()
+    graphs.allocator_backend = "cudaMallocAsync"
+    graphs._account_pool.__func__.__globals__["torch"].cuda.memory_snapshot = (
+        lambda **kwargs: pytest.fail("non-native snapshot has no proved segment semantics"))
+    graphs._account_pool()
+    assert graphs.private_spare_bytes is None
+    assert graphs.allocator_record["accounting"] == "physical-only"
+    assert graphs.allocator_record["backend"] == "cudaMallocAsync"
+    path = ROOT / "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py"
+    function = next(node for node in ast.parse(path.read_text()).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "service_live_bytes")
+    namespace = {"live_bytes": lambda: 123}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+    live = namespace["service_live_bytes"](graphs)
+    assert live is namespace["live_bytes"] and live() == 123
 
 
 def test_failed_pool_keeps_tensor_bearing_frames_after_caller_clears_exception_traceback():

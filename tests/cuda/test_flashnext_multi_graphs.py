@@ -410,11 +410,14 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
     assert dec.memory_gate.room == room - record["room_bytes"]
     from tensorfold.families.qwen4_exp.cuda.service_memory import private_pool_spare
 
-    snapshot = torch.cuda.memory_snapshot(mempool_id=dec.graphs.pool, include_traces=False)
-    unavailable = private_pool_spare(snapshot, dec.graphs.pool, w.device.index or 0)
-    assert record["allocator"]["private_pool_spare_bytes"] == unavailable
-    assert dec.graphs.private_spare_bytes == unavailable
-    assert dec.memory_gate.live.__defaults__ == (dec.graphs,)
+    if record["allocator"]["accounting"] == "native-pool-inactive":
+        snapshot = torch.cuda.memory_snapshot(mempool_id=dec.graphs.pool, include_traces=False)
+        unavailable = private_pool_spare(snapshot, dec.graphs.pool, w.device.index or 0)
+        assert record["allocator"]["private_pool_spare_bytes"] == unavailable
+        assert dec.graphs.private_spare_bytes == unavailable
+        assert dec.memory_gate.live.__defaults__ == (dec.graphs,)
+    else:
+        assert dec.graphs.private_spare_bytes is None and dec.memory_gate.live is multi_graphs.live_bytes
     print(json.dumps({k: v for k, v in record.items() if k != "keys"}))
     per = [k["bytes"] for k in record["keys"]]
     print("per-key bytes: min", min(per), "max", max(per), "pieces", record["pieces"])
@@ -499,8 +502,11 @@ def test_failed_capture_tensor_locals_survive_real_frame_clear_and_keep_pool_rec
     gc.collect()
     torch.cuda.synchronize()
     assert probes[0]() is not None
-    snapshot = torch.cuda.memory_snapshot(mempool_id=owner.pool, include_traces=False)
-    assert private_pool_spare(snapshot, owner.pool, w.device.index or 0) == owner.private_spare_bytes
+    if owner.allocator_backend == "native":
+        snapshot = torch.cuda.memory_snapshot(mempool_id=owner.pool, include_traces=False)
+        assert private_pool_spare(snapshot, owner.pool, w.device.index or 0) == owner.private_spare_bytes
+    else:
+        assert owner.private_spare_bytes is None and dec.memory_gate.live is multi_graphs.live_bytes
     stream = Stream(list(PROMPTS[0]), 8, SAMPLINGS[0])
     dec.admit(stream)
     while dec.live():
