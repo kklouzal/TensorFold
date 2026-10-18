@@ -847,6 +847,25 @@ python3 tools/bench_concurrent.py http://127.0.0.1:8080 local \
 
 These report client-observed streamed arrival/first-token timing; they do not measure exact GPU emission timestamps. The strict concurrent comparison checks its declared output/hash reference, while a serial throughput run alone is not an equality proof. Network/proxy buffering affects measurements. Inspect output and process exit status; do not treat a nonempty log as success. See [public benchmark fixtures](docs/recipes/README.md#measurements) and [validation methodology](docs/optimization-validation.md).
 
+For comparing two server configurations at prompt depths up to the full context there are four further tools. The
+bench and gate tools share one JSON profile per model (served name, context, reply budget, end ids, model-card
+sampling per thinking mode, depths and the per-prompt request schedule); the KL tool reads its card sampling:
+
+- `tools/campaign_bench.py` (standard library) sizes prompts from a fixed text corpus with the server's
+  `/v1/tokenize`, runs each prompt cold and then warm with greedy and seeded model-card sampling, and records the
+  `tensorfold` stats block per request (engine decode tok/s, prefill tok/s, TTFT, queue time, draft acceptance), host
+  MemAvailable and token ids. `analyze` reports per-cell means with 95% t intervals over server starts and, for
+  interleaved runs (ABBA), per-cycle ratios against a base configuration plus token identity of repeated requests;
+  it lists runs that stopped mid-schedule, replies shorter than the reply budget and mixed tool versions.
+- `tools/campaign_gates.py` (standard library) runs a strict and non-strict tool-call suite, multi-key
+  needle-in-a-haystack recall to the full context, determinism (repeat, prefix-cache warm against cold) and
+  drafted-against-serial (`"draft": false`) identity; thresholds are arguments.
+- `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
+  set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
+  plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
+- `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
+  busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
+
 ### Logs, metrics, shutdown and restart
 
 ```bash
