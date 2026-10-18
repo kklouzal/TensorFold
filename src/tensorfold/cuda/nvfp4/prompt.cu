@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 
 #include "../kernels/qmm_frag.cuh"
+#include "epilogue.cuh"
 
 namespace {
 
@@ -60,7 +61,7 @@ struct Tile {
 template <int MODE, int BM, int BN, int WM, int WN, int STAGES>
 __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
         const __nv_bfloat16* __restrict__ x, const unsigned char* __restrict__ w, const uint8_t* __restrict__ bs,
-        float scale, void* __restrict__ out, int M, int N, int K, int npad, int ldx, int group) {
+        epilogue::Scales sc, void* __restrict__ out, int M, int N, int K, int npad, int ldx, int group) {
     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
     extern __shared__ __align__(128) unsigned char buf[];
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
@@ -177,7 +178,8 @@ __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
             for (int h = 0; h < 2; ++h) {
                 const int row = m0 + wm * (BM / WM) + i * 16 + (lane >> 2) + h * 8;
                 if (row >= M) continue;
-                const float v0 = acc[i][j][2 * h] * scale, v1 = acc[i][j][2 * h + 1] * scale;
+                const float2 v = epilogue::pair(sc, row, col, acc[i][j][2 * h], acc[i][j][2 * h + 1]);
+                const float v0 = v.x, v1 = v.y;
                 __nv_bfloat16* dst = reinterpret_cast<__nv_bfloat16*>(out) + static_cast<size_t>(row) * N + col;
                 if (col + 1 < N && (N & 1) == 0)
                     *reinterpret_cast<__nv_bfloat162*>(dst) = __floats2bfloat162_rn(v0, v1);
@@ -190,8 +192,8 @@ __global__ void __launch_bounds__(WM * WN * 32) prompt_kernel(
 }
 
 template <int MODE, int BM, int BN, int WM, int WN, int STAGES>
-void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out, int N,
-            int npad) {
+void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, const epilogue::Scales& sc, at::Tensor& out,
+            int N, int npad) {
     using T = Tile<MODE, BM, BN, WM, WN, STAGES>;
     const int M = x.size(0), K = x.size(1);
     auto kernel = prompt_kernel<MODE, BM, BN, WM, WN, STAGES>;
@@ -204,21 +206,21 @@ void launch(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, doub
     const int group = std::max(1, std::min(rows_t, static_cast<int>((12LL << 20) / (static_cast<long long>(BM) * K * 2))));
     kernel<<<rows_t * ((N + BN - 1) / BN), T::THREADS, T::SMEM, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), reinterpret_cast<const unsigned char*>(w.data_ptr()),
-        bs.defined() ? reinterpret_cast<const uint8_t*>(bs.data_ptr()) : nullptr, static_cast<float>(scale),
+        bs.defined() ? reinterpret_cast<const uint8_t*>(bs.data_ptr()) : nullptr, sc,
         out.data_ptr(), M, N, K, npad, M == 1 ? K : static_cast<int>(x.stride(0)), group);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 template <int MODE>
-void by_tile(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
-             int N, int npad) {
+void by_tile(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, const epilogue::Scales& sc,
+             at::Tensor& out, int N, int npad) {
     switch (tile) {
-        case 1: launch<MODE, 128, 256, 2, 4, 3>(x, w, bs, scale, out, N, npad); break;
-        case 2: launch<MODE, 128, 128, 2, 2, 4>(x, w, bs, scale, out, N, npad); break;
-        case 3: launch<MODE, 64, 128, 1, 4, 4>(x, w, bs, scale, out, N, npad); break;
-        case 4: launch<MODE, 128, 128, 2, 2, 2>(x, w, bs, scale, out, N, npad); break;
-        case 5: launch<MODE, 64, 128, 1, 2, 2>(x, w, bs, scale, out, N, npad); break;
-        default: launch<MODE, 128, 128, 2, 4, 3>(x, w, bs, scale, out, N, npad); break;
+        case 1: launch<MODE, 128, 256, 2, 4, 3>(x, w, bs, sc, out, N, npad); break;
+        case 2: launch<MODE, 128, 128, 2, 2, 4>(x, w, bs, sc, out, N, npad); break;
+        case 3: launch<MODE, 64, 128, 1, 4, 4>(x, w, bs, sc, out, N, npad); break;
+        case 4: launch<MODE, 128, 128, 2, 2, 2>(x, w, bs, sc, out, N, npad); break;
+        case 5: launch<MODE, 64, 128, 1, 2, 2>(x, w, bs, sc, out, N, npad); break;
+        default: launch<MODE, 128, 128, 2, 4, 3>(x, w, bs, sc, out, N, npad); break;
     }
 }
 
@@ -226,10 +228,11 @@ void by_tile(int tile, const at::Tensor& x, const at::Tensor& w, const at::Tenso
 
 // ``tile`` (0: 128x128 on 8 warps; 1: 128x256 on 8; 2: 128x128 on 4; 3: 64x128 on 4; 4: 128x128 on 4, two stages;
 // 5: 64x128 on 2, two stages) never changes a row's bits.
-void prompt16_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, at::Tensor& out,
-                   int64_t mode, int64_t N, int64_t npad, int64_t tile) {
+void prompt16_cuda(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bs, double scale, const at::Tensor& cs,
+                   at::Tensor& out, int64_t mode, int64_t N, int64_t npad, int64_t tile) {
     const int n = static_cast<int>(N), np = static_cast<int>(npad), t = static_cast<int>(tile);
-    if (mode == FP4) by_tile<FP4>(t, x, w, bs, scale, out, n, np);
-    else if (mode == FP8) by_tile<FP8>(t, x, w, bs, scale, out, n, np);
-    else by_tile<MXFP8>(t, x, w, bs, scale, out, n, np);
+    const epilogue::Scales sc{static_cast<float>(scale), nullptr, cs.defined() ? cs.data_ptr<float>() : nullptr};
+    if (mode == FP4) by_tile<FP4>(t, x, w, bs, sc, out, n, np);
+    else if (mode == FP8) by_tile<FP8>(t, x, w, bs, sc, out, n, np);
+    else by_tile<MXFP8>(t, x, w, bs, sc, out, n, np);
 }

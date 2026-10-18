@@ -53,7 +53,7 @@ def test_slices_meet_in_part_with_the_clusters_bits(kind):
     clusters = lin(x)
     y = torch.empty_like(clusters)
     part = torch.empty((sk, m, n), dtype=torch.float32, device="cuda")
-    linear._ext().qmmf(x, w, bs, lin.scale, y, part, mode, n, sk, lin.npad, qmm.bucket(m), False)
+    linear._ext().qmmf(x, w, bs, lin.scale, None, y, part, mode, n, sk, lin.npad, qmm.bucket(m), False)
     assert torch.equal(y, clusters)
 
 
