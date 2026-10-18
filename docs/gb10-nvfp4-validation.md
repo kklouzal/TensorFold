@@ -7,10 +7,12 @@ at revision `be794b990578ef3031eccf9f28e675a289a09ee9`. The
 [machine-readable receipt](verification-gb10-nvfp4-20261018.json) binds the exact
 source, images, model metadata, raw evidence hashes and remaining gates.
 
-These results qualify that installed source and workload. The later composition
-adds loading read plans and AUTO graph budgeting; its fresh installed/model gates
-and performance selection remain pending. This record does not replace a deployed
-service or establish a desktop, FreeToken, two-GPU or broad quality comparison.
+The later `297e8487` composition also passed two installed AUTO graph model
+protocols and 580 focused CPU checks, recorded [separately below](#source297-auto-graph-protocols).
+Its nine-case native fixture follow-up also passed; controlled performance
+selection remains pending. Each result qualifies its recorded source and workload. This record
+does not replace a deployed service or establish a desktop, FreeToken, two-GPU
+or broad quality comparison.
 
 ## Source and protected foundation
 
@@ -117,11 +119,79 @@ focused repair is not a fresh clean full-suite run. The mixed predecessor
 native fixture failures and initial full-model calibration extent failure are
 also retained in the receipt.
 
-Final composed-source installed CPU/native/model gates and a controlled
-same-format performance comparison remain required. The entire fresh
+The later composition's results are recorded separately below rather than
+inferred from these earlier gates. A controlled same-format performance
+comparison remains required. The entire fresh
 RotorQuant/KV matrix, long-context quality/capacity, actual two-GPU or
 heterogeneous expert ranks and deployment rollout are not established here.
 Earlier [Python integration](optimization-validation.md#python-line-integration-2026-10-11),
 [desktop/NCCL](desktop-report-remediation.md) and
 [NVFP4 loader](nvfp4-loading-validation.md) records retain their own sources,
 hardware and limitations.
+
+## Source297 AUTO graph protocols
+
+Source `297e8487bc44e941d0fffeac753ac465c72165ce` includes the loading read plan
+and automatic graph sizing. Its native ARM runtime/verification builds and
+installed audits passed; both audits matched 536 package files and the project
+wheel SHA256 `7277e7ef3dbd0b53b021dae6f4efd6e0ad9de5c0fa933c4a92c695a70ce4d3d4`.
+The distinct source UID is
+`7f2fd04f3576e75595d2fa0f745e77b6a3eea0074fc233725dab83c957460f16`;
+build input UID is
+`6a91d772d7d87fe5ae0d038ab6cb0a57613361a5070a6a1ac3ea5350fbdadf90`.
+
+| Artifact | Image |
+| --- | --- |
+| Runtime | `sha256:3645d51c532ed42606facc09d86e3b808eec9e0b400f615f9ed23329cb6bc366` |
+| Verification used for model protocols | `sha256:310abf1b44f4589b22b985e86eaf41f47c8b2ec4249a1745961da321a3ae0377` |
+
+Two fresh installed model starts used the same checkpoint, precision, four
+slots, RotorQuant-iso4, SSD tables, vision, short LRU prompt and 512-token protocol
+as above. `TENSORFOLD_MULTI_GRAPH_MIB` was unset: actual records report
+`automatic=true`, using native-pool inactive-memory accounting. The MTP0 run
+captured eight verify keys; MTP6 captured all 128 verify plus 64 MTP keys.
+The MTP6 record reports a 17,988,594,142 B resolved allowance and 3,109,662,720 B
+capture charge after preserving its future serving plan; these are measured
+run-specific values, not a fixed default or a reservation against other processes.
+
+| Native MTP proposals | Warm single-request HTTP tok/s | Four-request aggregate HTTP tok/s | Lowest sampled host MemAvailable |
+| --- | --- | --- | --- |
+| 0, AUTO | 18.0356–18.0614 | 59.2309 | 40,239,493,120 B |
+| 6, AUTO | 43.2464–43.3762 | 143.4139 | 27,453,063,168 B |
+
+The HTTP interval has the same body-EOF and final-retirement exclusions as the
+bd1 table. Cache state is explicit: the MTP6 warm requests and quartet report
+45 cached tokens of a 46-token prompt; MTP0 reports zero. The earlier bd1
+fixed-budget observations retain their own cache conditions. These are not
+uniform-prefix comparisons or a performance selection. Constructor observations
+were 197.374 s (MTP0) and 191.381 s (MTP6); the separate starts/cache conditions
+do not establish a controlled loading improvement over bd1 or each other.
+
+All complete 512-token arrays matched within and between these serial/MTP runs
+(hash prefix `144dec81bb0f`). Image/video semantic and serial-token checks,
+nonunit-scale SSD decoding, cancellation/recovery, same-process post-consumer
+provider checks and complete handler/loop/engine retirement passed. Both runs
+remained above the sampled 8 GiB host-free floor. These are actual model and
+AUTO/default correctness checks for this source, not inference from CPU mocks.
+
+The installed 20-module focused CPU gate passed 580 cases with one CUDA-only
+skip in 5.28 s. The original eight-module native gate remains **failed**:
+151 passed and one failed in 292.57 s. Its copy-draft test compared a fixed-count
+serial path with EOS disabled against a concurrent path using the EOS default;
+their prefix agreed through EOS. A separate read-only test overlay at
+`9a4b0e49a4f003599106810ddd141a56e67b3557`, running the installed 297 application,
+then passed nine cases in 28.390 s with no failures, errors, skips or warnings.
+It covers the repaired node, three graph parameter cases, four unchanged
+ignore-EOS controls and the scalar-authority case skipped by the CPU gate.
+Only the fixed-count graph test module changed: all 55 existing assertions
+remain, with three length/error checks added. The other two overlay files are
+unchanged, and no application/build bytes changed. Provider/retirement checks
+passed, with minimum sampled MemAvailable of 122,127,585,280 B. This is a
+composite follow-up, not a clean rerun of all 152 native cases; overlapping
+counts are not added. The original failed run remains failed in the receipt.
+
+The [receipt's `source297_auto` entry](verification-gb10-nvfp4-20261018.json)
+binds these actual source/images, graph accounting, cache usage, raw logs,
+provider/outer receipts and remaining gates. Controlled performance selection,
+the clean full-project CPU rerun, complete fresh RotorQuant/KV matrix,
+long-context capacity/quality, two GPUs and rollout remain separate.

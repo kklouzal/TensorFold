@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "recorded_utc_date": "2026-10-18",
-  "status": "bd1 installed ARM foundation, four model protocols and public CLI passed; final composed-source qualification and performance selection pending",
+  "status": "bd1 fixed-budget and source297 AUTO model protocols passed; source297 focused CPU580 and nine-case native fixture follow-up passed; controlled performance selection pending",
   "evidence_packet": "tensorfold-heretic-implementation-20261017/gb10",
   "identity": {
     "revision": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
@@ -803,7 +803,7 @@
     }
   ],
   "pending": [
-    "Final composed-source installed gates, including read-plan and AUTO graph changes",
+    "Clean full-project CPU rerun and complete fresh native matrix beyond the recorded composite gates",
     "Balanced same-format performance comparison and final selection",
     "Entire fresh RotorQuant/KV matrix",
     "Two-GPU or heterogeneous expert ranks",
@@ -882,6 +882,636 @@
         "sha256": "970f296db66b38c6bad4f1c02f115fbf581fa6ce63d38040df7f4f01718c2a1c",
         "bytes": 1008
       }
+    ]
+  },
+  "source297_auto": {
+    "source_revision": "297e8487bc44e941d0fffeac753ac465c72165ce",
+    "source_uid": "7f2fd04f3576e75595d2fa0f745e77b6a3eea0074fc233725dab83c957460f16",
+    "build_input_uid": "6a91d772d7d87fe5ae0d038ab6cb0a57613361a5070a6a1ac3ea5350fbdadf90",
+    "images": {
+      "runtime": "sha256:3645d51c532ed42606facc09d86e3b808eec9e0b400f615f9ed23329cb6bc366",
+      "verification": "sha256:310abf1b44f4589b22b985e86eaf41f47c8b2ec4249a1745961da321a3ae0377"
+    },
+    "source_metadata_sha256": "5b2ef1df787d8b78361ac7188a28538822909918f3edc0c19d2b36e6afca5f86",
+    "status": "Installed build/audits, focused CPU, two AUTO model protocols and nine-case native fixture follow-up passed; original native failure retained; controlled performance selection pending",
+    "evidence": [
+      {
+        "path": "final-build-refusal-cpu-results-01/preparation/capture-arm64-final-297e8487/attempts/gb10-final-297e-01/receipt.json",
+        "sha256": "595bbb2c2be9b5a70acb0f02812e9bf4ee6364204874bedf85b66b716d345653",
+        "bytes": 9051
+      }
+    ],
+    "build_audits": [
+      {
+        "target": "runtime",
+        "installed_package_files_matched": 536,
+        "baked_files_matched": 552,
+        "wheel_sha256": "7277e7ef3dbd0b53b021dae6f4efd6e0ad9de5c0fa933c4a92c695a70ce4d3d4",
+        "evidence": {
+          "path": "final-build-refusal-cpu-results-01/preparation/capture-arm64-final-297e8487/attempts/gb10-final-297e-01/runtime-audit.json",
+          "sha256": "181af5b7415fd107628f8238a1dc5e9252d535866f14b37ceee55c53470ead05",
+          "bytes": 49274
+        }
+      },
+      {
+        "target": "verification",
+        "installed_package_files_matched": 536,
+        "baked_files_matched": 1318,
+        "wheel_sha256": "7277e7ef3dbd0b53b021dae6f4efd6e0ad9de5c0fa933c4a92c695a70ce4d3d4",
+        "evidence": {
+          "path": "final-build-refusal-cpu-results-01/preparation/capture-arm64-final-297e8487/attempts/gb10-final-297e-01/verification-audit.json",
+          "sha256": "384cb2eaf7b6cc4f5a8fd5357f2b6f531e9e0ff61aacf836a87223acc0bda88b",
+          "bytes": 49352
+        }
+      }
+    ],
+    "profiles": [
+      {
+        "mtp_drafts": 0,
+        "configuration": {
+          "model": "/model",
+          "checkpoint_revision": "be794b990578ef3031eccf9f28e675a289a09ee9",
+          "model_api": "/metadata/model-api.json",
+          "model_api_sha256": "4f992beaa59210542dde5830212cf25de433abaeb17a1de76a0f0582d85a5ce0",
+          "source_revision": "297e8487bc44e941d0fffeac753ac465c72165ce",
+          "source_metadata": "/source-metadata/source.json",
+          "image": "sha256:310abf1b44f4589b22b985e86eaf41f47c8b2ec4249a1745961da321a3ae0377",
+          "run_id": "fa580b35-a4a1-4a52-9b60-ed3e108f94f8:model-rq4-p4-mtp0-final297e-01",
+          "launch_proof": "/evidence/command.json",
+          "fixtures": "/fixtures",
+          "context": 0,
+          "parallel": 4,
+          "mtp_drafts": 0,
+          "kv_dtype": "rotorquant-iso4",
+          "reference": null,
+          "reference_providers": null,
+          "stage": "all",
+          "timeout": 1800.0,
+          "output": "/evidence/gb10-protocol.json",
+          "lifetime_helper": "/protocol/deps/model_probe.py",
+          "status_helper": "/protocol/deps/model_perf_probe.py",
+          "api_helper": "/protocol/deps/extended_api_probe.py",
+          "tools": "/protocol/tools"
+        },
+        "graphs": {
+          "planned_bytes": 23161150048,
+          "captured": true,
+          "reason": null,
+          "automatic": true,
+          "initial_live_bytes": 33177350144,
+          "header_room_bytes": 24888906158,
+          "future_service": {
+            "growth_bytes": 2715267456,
+            "copy_overlap_bytes": 226493472,
+            "snapshot_bytes_each": 115642368,
+            "snapshot_bytes": 2775416832,
+            "transient_bytes": 4299022336,
+            "workspace_bytes": 4299022336,
+            "future_bytes": 10016200096
+          },
+          "verify_keys": 8,
+          "mtp_keys": 0,
+          "bytes": 190054400,
+          "settled_bytes": 240234496,
+          "room_bytes": 240234496,
+          "budget_bytes": 23161150048,
+          "capture_s": 9.194,
+          "stopped": null,
+          "rejected": null,
+          "allocator": {
+            "backend": "native",
+            "accounting": "native-pool-inactive",
+            "physical_free_bytes": 41527050240,
+            "available_after_floor_bytes": 32937115648,
+            "reserved_bytes": 81468063744,
+            "allocated_bytes": 80930375168,
+            "private_pool_spare_bytes": 2097152
+          },
+          "pieces": 120
+        },
+        "constructor_s": 197.37405179199413,
+        "graph_override_in_container_argv": false,
+        "cold_http_tokens_per_s": 17.62913290546608,
+        "warm_http_tokens_per_s": [
+          18.061425211695838,
+          18.03563782573698
+        ],
+        "prompt_cache_tokens": {
+          "cold": 0,
+          "warm-1": 0,
+          "warm-2": 0,
+          "concurrent-0": 0,
+          "concurrent-1": 0,
+          "concurrent-2": 0,
+          "concurrent-3": 0
+        },
+        "prompt_tokens": 46,
+        "benchmark": {
+          "serial_token_sha": "144dec81bb0f",
+          "cold_warm_equal": true,
+          "independent_reference_equal": false,
+          "four_concurrent_equal": true,
+          "aggregate_tokens": 2048,
+          "complete_cohort_s": 34.57654572899628,
+          "aggregate_tokens_per_complete_drain_s": 59.230902243728885,
+          "observed_mtp_drafted_delta": 0,
+          "regional_drafted_deltas": {
+            "cold_warm": 0,
+            "same_engine_serial": 0,
+            "same_engine_serial_executed": false,
+            "quartet": 0
+          },
+          "timing": "client request preparation/open through complete HTTP body EOF; cohort includes barrier/executor joins, excludes final quiet/provider checks"
+        },
+        "semantic_checks": {
+          "image": {
+            "semantic_equal": true,
+            "mtp_serial_equal": true,
+            "expected": {
+              "color": "red"
+            }
+          },
+          "video": {
+            "semantic_equal": true,
+            "mtp_serial_equal": true,
+            "expected": {
+              "first": "red",
+              "last": "blue"
+            }
+          }
+        },
+        "cancellation": {
+          "observed_cancelled_delta": 1,
+          "recovery_complete": true,
+          "pre_cancel_reference_equal": true
+        },
+        "ssd_oracle": {
+          "kind": "fp8",
+          "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+          "scale": 0.00019931793212890625,
+          "all_256_codes_equal": true,
+          "actual_rows_equal": true,
+          "ids": [
+            0,
+            1,
+            0,
+            2500011,
+            2500012,
+            320001535
+          ],
+          "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+          "read_plans": [
+            {
+              "fd": 35,
+              "offset": 2239,
+              "bytes": 320
+            },
+            {
+              "fd": 35,
+              "offset": 400003999,
+              "bytes": 320
+            },
+            {
+              "fd": 44,
+              "offset": 2800015518,
+              "bytes": 160
+            }
+          ],
+          "largest_planned_read": 320,
+          "max_read": 1048576,
+          "no_values_array_or_direct_memmap": true,
+          "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+        },
+        "minimum_sampled_mem_available_bytes": 40239493120,
+        "cleanup": {
+          "error": null,
+          "handlers_drained": true,
+          "loop_alive": false,
+          "engine_closed": true
+        },
+        "ownership_unresolved": false,
+        "runtime": {
+          "torch": "2.16.0.dev20261014+cu134",
+          "cuda": "13.4",
+          "gpu": "NVIDIA GB10",
+          "gpu_uuid": "51db75b3-8be0-5cfd-f46c-19e1f2e1c2d0",
+          "compute_capability": [
+            12,
+            1
+          ],
+          "is_integrated": true,
+          "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+          "cpu_count": 20,
+          "torch_threads": 20,
+          "memory_reserve": "8"
+        },
+        "provider_profile_sha256": "b89513b23c48a0d6e583635ad619ae7d642cace0ad0599be7b0f4ff55625405e",
+        "evidence": [
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp0-final297e-01/gb10-protocol.json",
+            "sha256": "33c91d54653f612d11129b927e264cdeb9cf3b2749b6b984c859668748e95633",
+            "bytes": 221544
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp0-final297e-01/receipt.json",
+            "sha256": "3aa191397c6d0c0fe57c5a54d51386bfe0f103a12ac2a9a74fc38ee2ea92de76",
+            "bytes": 23312
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp0-final297e-01/post-consumer-providers.json",
+            "sha256": "612d952ba8132a85ccd003814d1d00ecf89949d590e83af40b7f7b3e6b3cb6bb",
+            "bytes": 893625
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp0-final297e-01/command.json",
+            "sha256": "e6e801d4d8764a40cb7eece03ee6353282f1ab1b20afb7c871d509a6f4cf69b3",
+            "bytes": 16758
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp0-final297e-01/raw.log",
+            "sha256": "610087a86c55978de250f5339fa25b53ae75f40f4e37b5d72490b27284d95f2c",
+            "bytes": 4462
+          }
+        ]
+      },
+      {
+        "mtp_drafts": 6,
+        "configuration": {
+          "model": "/model",
+          "checkpoint_revision": "be794b990578ef3031eccf9f28e675a289a09ee9",
+          "model_api": "/metadata/model-api.json",
+          "model_api_sha256": "4f992beaa59210542dde5830212cf25de433abaeb17a1de76a0f0582d85a5ce0",
+          "source_revision": "297e8487bc44e941d0fffeac753ac465c72165ce",
+          "source_metadata": "/source-metadata/source.json",
+          "image": "sha256:310abf1b44f4589b22b985e86eaf41f47c8b2ec4249a1745961da321a3ae0377",
+          "run_id": "6b9a330a-665c-45d9-9dc5-d31815db018d:model-rq4-p4-mtp6-final297e-01",
+          "launch_proof": "/evidence/command.json",
+          "fixtures": "/fixtures",
+          "context": 0,
+          "parallel": 4,
+          "mtp_drafts": 6,
+          "kv_dtype": "rotorquant-iso4",
+          "reference": "/references/gb10-protocol.json",
+          "reference_providers": "/references/post-consumer-providers.json",
+          "stage": "all",
+          "timeout": 1800.0,
+          "output": "/evidence/gb10-protocol.json",
+          "lifetime_helper": "/protocol/deps/model_probe.py",
+          "status_helper": "/protocol/deps/model_perf_probe.py",
+          "api_helper": "/protocol/deps/extended_api_probe.py",
+          "tools": "/protocol/tools"
+        },
+        "graphs": {
+          "planned_bytes": 17988594142,
+          "captured": true,
+          "reason": null,
+          "automatic": true,
+          "initial_live_bytes": 30486806528,
+          "header_room_bytes": 17988594142,
+          "future_service": {
+            "growth_bytes": 2941605472,
+            "copy_overlap_bytes": 226498528,
+            "snapshot_bytes_each": 115662848,
+            "snapshot_bytes": 2775908352,
+            "transient_bytes": 4299022336,
+            "workspace_bytes": 4299022336,
+            "future_bytes": 10243034688
+          },
+          "verify_keys": 128,
+          "mtp_keys": 64,
+          "bytes": 3109662720,
+          "settled_bytes": 2823254016,
+          "room_bytes": 3109662720,
+          "budget_bytes": 17988594142,
+          "capture_s": 16.525,
+          "stopped": null,
+          "rejected": null,
+          "allocator": {
+            "backend": "native",
+            "accounting": "native-pool-inactive",
+            "physical_free_bytes": 36253487104,
+            "available_after_floor_bytes": 27663552512,
+            "reserved_bytes": 83389054976,
+            "allocated_bytes": 82878862848,
+            "private_pool_spare_bytes": 23068672
+          },
+          "pieces": 2048
+        },
+        "constructor_s": 191.38134904499748,
+        "graph_override_in_container_argv": false,
+        "cold_http_tokens_per_s": 41.89718760807789,
+        "warm_http_tokens_per_s": [
+          43.37615997493536,
+          43.24642200497911
+        ],
+        "prompt_cache_tokens": {
+          "cold": 0,
+          "warm-1": 45,
+          "warm-2": 45,
+          "concurrent-0": 45,
+          "concurrent-1": 45,
+          "concurrent-2": 45,
+          "concurrent-3": 45
+        },
+        "prompt_tokens": 46,
+        "benchmark": {
+          "serial_token_sha": "144dec81bb0f",
+          "cold_warm_equal": true,
+          "independent_reference_equal": true,
+          "four_concurrent_equal": true,
+          "aggregate_tokens": 2048,
+          "complete_cohort_s": 14.280341480000061,
+          "aggregate_tokens_per_complete_drain_s": 143.41393746559,
+          "observed_mtp_drafted_delta": 3647,
+          "regional_drafted_deltas": {
+            "cold_warm": 1563,
+            "same_engine_serial": 0,
+            "same_engine_serial_executed": true,
+            "quartet": 2084
+          },
+          "timing": "client request preparation/open through complete HTTP body EOF; cohort includes barrier/executor joins, excludes final quiet/provider checks"
+        },
+        "semantic_checks": {
+          "image": {
+            "semantic_equal": true,
+            "mtp_serial_equal": true,
+            "expected": {
+              "color": "red"
+            }
+          },
+          "video": {
+            "semantic_equal": true,
+            "mtp_serial_equal": true,
+            "expected": {
+              "first": "red",
+              "last": "blue"
+            }
+          }
+        },
+        "cancellation": {
+          "observed_cancelled_delta": 1,
+          "recovery_complete": true,
+          "pre_cancel_reference_equal": true
+        },
+        "ssd_oracle": {
+          "kind": "fp8",
+          "class": "tensorfold.families.qwen4_exp.ssd_table.EncodedSSDTable",
+          "scale": 0.00019931793212890625,
+          "all_256_codes_equal": true,
+          "actual_rows_equal": true,
+          "ids": [
+            0,
+            1,
+            0,
+            2500011,
+            2500012,
+            320001535
+          ],
+          "row_bits_sha256": "0aaf66679ab4f89c6ec1fc5951c243c3cc8483eda91e8526b9adb7da2a026e77",
+          "read_plans": [
+            {
+              "fd": 35,
+              "offset": 2239,
+              "bytes": 320
+            },
+            {
+              "fd": 35,
+              "offset": 400003999,
+              "bytes": 320
+            },
+            {
+              "fd": 44,
+              "offset": 2800015518,
+              "bytes": 160
+            }
+          ],
+          "largest_planned_read": 320,
+          "max_read": 1048576,
+          "no_values_array_or_direct_memmap": true,
+          "scope": "post-timing quiescent diagnostic; buffered positional I/O may hit OS page cache; no O_DIRECT claim"
+        },
+        "minimum_sampled_mem_available_bytes": 27453063168,
+        "cleanup": {
+          "error": null,
+          "handlers_drained": true,
+          "loop_alive": false,
+          "engine_closed": true
+        },
+        "ownership_unresolved": false,
+        "runtime": {
+          "torch": "2.16.0.dev20261014+cu134",
+          "cuda": "13.4",
+          "gpu": "NVIDIA GB10",
+          "gpu_uuid": "51db75b3-8be0-5cfd-f46c-19e1f2e1c2d0",
+          "compute_capability": [
+            12,
+            1
+          ],
+          "is_integrated": true,
+          "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+          "cpu_count": 20,
+          "torch_threads": 20,
+          "memory_reserve": "8"
+        },
+        "provider_profile_sha256": "b89513b23c48a0d6e583635ad619ae7d642cace0ad0599be7b0f4ff55625405e",
+        "evidence": [
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp6-final297e-01/gb10-protocol.json",
+            "sha256": "8e19ec3c1d561cef55e041574fee4e9f6b00d2d91bea770bedd4c8de58f30bb9",
+            "bytes": 268988
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp6-final297e-01/receipt.json",
+            "sha256": "21e958d10647ad1b620951666ca7afd024e161a28755b6a0a1b8691776b31170",
+            "bytes": 23689
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp6-final297e-01/post-consumer-providers.json",
+            "sha256": "75a327039a11a0a807fdcd79fe11772a584c671fdca20c4b258605c925b32d3c",
+            "bytes": 893759
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp6-final297e-01/command.json",
+            "sha256": "8219a1e8c77af0bdebe882111c7bf2b664ad3450f64eb1866f76a3a948f5b899",
+            "bytes": 16922
+          },
+          {
+            "path": "model-final297e-results-01/run-gb10-model-rq4-p4-mtp6-final297e-01/raw.log",
+            "sha256": "a0e9948ff0f2098202fb50c8741e3e0ced09932a4018a00aff5e71babec93fbb",
+            "bytes": 4773
+          }
+        ]
+      }
+    ],
+    "native_followup": {
+      "status": "pass",
+      "application_source": "297e8487bc44e941d0fffeac753ac465c72165ce",
+      "test_overlay_commit": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+      "passed": 9,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": 28.39,
+      "warnings": 0,
+      "matrix": {
+        "/extra-tests/test_flashnext_multi_graphs.py::test_copy_drafts_and_prompt_passes_through_graph_rounds": 1,
+        "/extra-tests/test_flashnext_multi_graphs.py::test_graph_rounds_emit_each_streams_solo_tokens": 3,
+        "/extra-tests/test_flashnext_forward.py::test_the_engine_decodes_past_end_tokens_with_ignore_eos": 4,
+        "/extra-tests/test_modelopt_a4_control.py::test_host_authority_preserves_all_original_direct_scalars_and_payloads": 1
+      },
+      "overlay_files": [
+        {
+          "member": "test_flashnext_multi_graphs.py",
+          "sha256": "c1dc5d747963c77082563579a89c31ca6f51eb2d69666b191a402dbb114ee66e",
+          "bytes": 29544,
+          "source": "tests/cuda/test_flashnext_multi_graphs.py",
+          "commit": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+          "unchanged_from_base": false
+        },
+        {
+          "member": "test_flashnext_forward.py",
+          "sha256": "ecdbc4a8d0bc6152e95d9405c602b6bcf4e0d0b595ce898e45ea1cb27f65b2f0",
+          "bytes": 27535,
+          "source": "tests/cuda/test_flashnext_forward.py",
+          "commit": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+          "unchanged_from_base": true
+        },
+        {
+          "member": "test_modelopt_a4_control.py",
+          "sha256": "7586e527e1b59ce73eb7df630718526e5e701c2d448f07034477638a07d764b5",
+          "bytes": 14980,
+          "source": "tests/test_modelopt_a4_control.py",
+          "commit": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+          "unchanged_from_base": true
+        }
+      ],
+      "source_proof": "Only graph fixed-count test module differs from297; all55 prior assertions retained,3 added; forward/EOS and scalar-authority files unchanged; no application/build file changes",
+      "installed_application": true,
+      "test_only_readonly_overlay": true,
+      "counts_not_added": true,
+      "minimum_sampled_mem_available_bytes": 122127585280,
+      "evidence": [
+        {
+          "path": "fixedcount9a-native297e-01.tar",
+          "sha256": "96373367d4f3e40903e949cf5942f929734a1455fe0c96604e366b904cfddb3a",
+          "bytes": 102400
+        },
+        {
+          "path": "fixedcount9a-native297e-results-01/run-gb10-fixedcount9a-native297e-01/raw.log",
+          "sha256": "2298dcc714d05a322e760b1df464f533b85d220738a3d46022ab0c943c5ea5e2",
+          "bytes": 703
+        },
+        {
+          "path": "fixedcount9a-native297e-results-01/run-gb10-fixedcount9a-native297e-01/pytest.xml",
+          "sha256": "1a367021b2109945f727957392faddc12149158d522008f6b9e5466e159a1104",
+          "bytes": 1213
+        },
+        {
+          "path": "fixedcount9a-native297e-results-01/run-gb10-fixedcount9a-native297e-01/receipt.json",
+          "sha256": "8bbbe4f6b6880367123c98768262fe6b9212afe60a42bb4a70e45f34f92f5a2b",
+          "bytes": 22291
+        },
+        {
+          "path": "fixedcount9a-native297e-results-01/run-gb10-fixedcount9a-native297e-01/post-consumer-providers.json",
+          "sha256": "21692e3b918911de6a8659af17d9012992d97f436e49152f4dfdcf8a312f2b49",
+          "bytes": 887420
+        },
+        {
+          "path": "fixedcount9a-native297e-results-01/run-gb10-fixedcount9a-native297e-01/command.json",
+          "sha256": "6e05a69e9834b41845601b97bb2621b4cfaddefb3e2b6d3b223ac5fa5301bc05",
+          "bytes": 16284
+        }
+      ],
+      "overlay_manifest_sha256": "f8e0db5d67e78391bf1ae2f72266a5874615da728e6c55e765438ec345f20a1a",
+      "scope": "Repaired fixed-count node,3 graph parameter cases,4 unchanged EOS cases and1 CUDA-only scalar-authority case; overlaps earlier gates, not a new full native-suite run"
+    },
+    "performance_selection": "pending separate controlled comparison",
+    "focused_cpu": {
+      "passed": 580,
+      "skipped": 1,
+      "seconds": 5.28,
+      "modules": 20,
+      "skip_scope": "CUDA-only test in CPU gate",
+      "installed_pythonpath": "tests",
+      "source_revision": "297e8487bc44e941d0fffeac753ac465c72165ce",
+      "arguments": [
+        "-q",
+        "-ra",
+        "--tb=short",
+        "-o",
+        "pythonpath=tests",
+        "-o",
+        "cache_dir=/evidence/pytest-cache",
+        "--junitxml=/evidence/pytest.xml",
+        "tests/test_flashnext_graph_budget_host.py",
+        "tests/test_cuda_geometry.py",
+        "tests/test_flashnext_t47_lifecycle_source.py",
+        "tests/test_cuda_live_budget_host.py",
+        "tests/test_flashnext_absolute_grow_host.py",
+        "tests/test_cuda_unified_memory.py",
+        "tests/test_memory_reserve.py",
+        "tests/test_shared_kv_windows.py",
+        "tests/test_cuda_parallel_admission.py",
+        "tests/test_flashnext_a4_read_plan.py",
+        "tests/test_flashnext_a4_read_plan_reader.py",
+        "tests/test_modelopt_a4_control.py",
+        "tests/test_modelopt_a4_plan_extent.py",
+        "tests/test_nvfp4_reader_host_budget.py",
+        "tests/test_flashnext_modelopt_check.py",
+        "tests/test_nvfp4_a4_layout.py",
+        "tests/test_nvfp4_a4_cache_control.py",
+        "tests/test_nvfp4_a4_host_control.py",
+        "tests/test_qwen27_startup_metadata.py",
+        "tests/test_expert_parallel_control.py"
+      ],
+      "evidence": [
+        {
+          "path": "final-build-refusal-cpu-results-01/evidence/run-gb10-final-cpu-297e-01/raw.log",
+          "sha256": "d9d4df2d896c2de85ce9314f827c2f3c7eb58ff71b1803f950ff9309d13565b9",
+          "bytes": 1049
+        },
+        {
+          "path": "final-build-refusal-cpu-results-01/evidence/run-gb10-final-cpu-297e-01/receipt.json",
+          "sha256": "971be373fcfe78e4e5c1029c91920f38369324dcb3b78607ae7cae32fa99e7ef",
+          "bytes": 22054
+        },
+        {
+          "path": "final-build-refusal-cpu-results-01/evidence/run-gb10-final-cpu-297e-01/post-consumer-providers.json",
+          "sha256": "e62a678e9d9a240d1253773571a43224a65b29be183b271ddd9258ae5bbf7a57",
+          "bytes": 887232
+        }
+      ]
+    },
+    "original_native": {
+      "status": "failed",
+      "passed": 151,
+      "failed": 1,
+      "seconds": 292.57,
+      "failed_test": "tests/cuda/test_flashnext_multi_graphs.py::test_copy_drafts_and_prompt_passes_through_graph_rounds",
+      "disposition": "Fixed-count serial reference disabled EOS while concurrent fixture used EOS default; exact prefix through EOS; separate nine-case test-only alignment rerun passed",
+      "evidence": [
+        {
+          "path": "final-native-297e-results-01/run-gb10-final-native-297e-01/raw.log",
+          "sha256": "f976544f8fe663679821746d568daa3e49c40f3d0f65803c7a566eb1985aebdb",
+          "bytes": 2842
+        },
+        {
+          "path": "final-native-297e-results-01/run-gb10-final-native-297e-01/receipt.json",
+          "sha256": "6dcc7158b059a5a2ebd183029a433d9b40e9240bf9734c067d04f472d03a25d8",
+          "bytes": 22480
+        },
+        {
+          "path": "final-native-297e-results-01/run-gb10-final-native-297e-01/post-consumer-providers.json",
+          "sha256": "262e3293e17992567ab4a1a5c67d72826acf44c8b1bacc89b899779a8effc719",
+          "bytes": 887194
+        }
+      ]
+    },
+    "limits": [
+      "Observed sequential starts/HTTP rates are descriptive, not controlled startup gains or performance SELECT",
+      "MTP6 warm/quartet cached45 of46 prompt tokens; MTP0 cached0; prior bd1 fixed-budget records remain separate",
+      "Same model revision, precision, KV, four slots and512-token output scope; no full-context capacity or broader quality proof",
+      "Fresh complete CPU suite, entire RotorQuant/KV matrix, two GPUs and deployment remain outside this receipt"
     ]
   }
 }

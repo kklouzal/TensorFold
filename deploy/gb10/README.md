@@ -41,11 +41,16 @@ With an explicit 4096 MiB graph budget, MTP6 observed 43.27–43.50 warm single-
 and 143.80 aggregate completed-HTTP-body tok/s. The [validation note](../../docs/gb10-nvfp4-validation.md)
 and [receipt](../../docs/verification-gb10-nvfp4-20261018.json) bind exact images,
 math, provider proof, timings and the sampled 8 GiB host-free floor. These are the
-highest observations among those tested profiles, not a balanced performance
-selection or qualification of the later read-plan/AUTO graph composition.
-Final-source gates, the entire fresh RotorQuant suite, long-context capacity and
-two-GPU execution remain separate. This does not replace the recorded deployed
-service or inherit the older profile's capacity assumptions.
+highest observations among those fixed-budget profiles, not a balanced performance
+selection. The later `297e8487` composition also passed installed MTP0/6 model
+protocols with AUTO graph sizing and 580 focused CPU cases. MTP6 captured all
+192 graph keys; its warm/quartet requests reused 45 of 46 prompt tokens.
+[Separate AUTO results and cache conditions](../../docs/gb10-nvfp4-validation.md#source297-auto-graph-protocols)
+keep correctness qualification distinct from pending controlled performance
+selection. The nine-case native fixture follow-up also passed; its original
+151-pass/1-fail run remains preserved. The entire fresh RotorQuant
+suite, long-context capacity and two-GPU execution remain separate. This does not
+replace the recorded deployed service or inherit the older profile's capacity assumptions.
 
 New builds from the maintained `python-0.6` integration use TensorFold **0.6.6**.
 The Harness checks both the installed package version and module version,

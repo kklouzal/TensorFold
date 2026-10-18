@@ -137,12 +137,12 @@ With `--ple-on-ssd`, affine, BF16, FP8 and NVFP4 n-gram shards use their own
 validated row layouts and bounded positional reads. The decoded BF16 bits and
 table-scale behavior match the mapped readers; Linux disables read-ahead but
 does not promise that the OS will retain no file pages. The reader drains
-accepted lookups before closing its descriptors. Full pretrained ModelOpt
-checkpoint and SM89 execution qualification remain pending. The requested pinned
-`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 run is being qualified with
-resident experts, SSD n-grams, native MTP and vision; no result is inferred from
-generated complete-model or component checks, which are recorded
-with their executed source and image in the remediation evidence.
+accepted lookups before closing its descriptors. The pinned
+`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 checkpoint passed actual
+installed resident-expert, SSD, native-MTP, vision and four-request protocols at
+bd1 and AUTO source297. [Exact sources, images and limits](../gb10-nvfp4-validation.md)
+keep those results separate from controlled performance selection, SM89 execution,
+full-context capacity and broader model quality.
 
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
 
@@ -347,8 +347,9 @@ workspace and the configured memory floor; additional streams' context growth
 still shares memory through the gate. `TENSORFOLD_MULTI_GRAPH_MIB=N` sets an
 explicit MiB ceiling (`0` disables capture). Live checks can stop capture with
 a recorded reason; they do not reserve memory against other processes.
-Other rounds run eagerly with the same bits. Automatic sizing's installed GPU
-and performance gates remain pending. `--parallel auto` selects one
+Other rounds run eagerly with the same bits. Automatic sizing passed the
+[source297 installed GB10 model protocols](../gb10-nvfp4-validation.md#source297-auto-graph-protocols);
+controlled performance selection remains separate. `--parallel auto` selects one
 request. Tensor-parallel two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
 requests and supported media stay on rank zero in the separate
