@@ -267,6 +267,9 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   its grammar may also spell `None`, since the template cannot distinguish that string from null; an unambiguous
   enum or a pattern proved to exclude it can be enforced. Recognition checks booleans, null and nested values as
   well as strings and numbers; other encodings remain unsupported. The standard JSON-scalar XML path is unchanged.
+  CUDA also enforces Gemma 4's native `<|tool_call>call:NAME{key:value,…}<tool_call|>` markup, with sorted bare keys
+  and `<|"|>`-delimited strings. Null is spelled as the selected template renders it: `None` in Google's launch
+  template, `null` in its current one. Only that spelling is allowed and read.
 - **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
   `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
   `parallel_tool_calls: false` ends the reply after its first call.
@@ -363,6 +366,10 @@ default (`clear_thinking` false), also on checkpoints whose template still clear
 a new user message leaves the earlier turns' tokens, and their kept prompt states, as they were. A request's
 `chat_template_kwargs.clear_thinking: true` drops it, as the model card advises for plain chat (on CUDA; on a Mac,
 `TF_GLM_CLEAR_THINKING=1` sets it for the server).
+
+On CUDA, when the rendered Gemma 4 prompt ends inside the thought channel it opens, the reply begins inside it.
+Google's current template does this after tool results with thinking on. The reply's text before `<channel|>` is
+`reasoning_content`.
 
 A tool call written before the think block closes is the reply's tool call when the reply ends inside the block,
 on both backends; the reasoning stops where the call starts, and streamed reasoning never carries the call's markup.

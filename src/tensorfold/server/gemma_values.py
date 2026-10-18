@@ -12,25 +12,29 @@ GEMMA_STRING = '<|"|>'
 GEMMA_OPEN, GEMMA_CLOSE = "<|tool_call>", "<tool_call|>"
 GEMMA_KEY = re.compile(r"[A-Za-z_][\w.-]*")
 THOUGHT_OPEN, THOUGHT_CLOSE = "<|channel>thought", "<channel|>"
+# A template's spelling of null in call values: Google's launch template (47b6801b, as AEON ships it) falls through
+# to Jinja's Python ``None``; its current template (35b4173c and later) writes JSON ``null``. Discovery selects one.
+GEMMA_NULLS = ("None", "null")
 
 
-def gemma_value(value: Any) -> str:
-    """The pinned template's recursive spelling; refuse values its delimiters cannot represent."""
+def gemma_value(value: Any, *, null: str) -> str:
+    """The template's recursive spelling with its ``null`` word; refuse values its delimiters cannot represent."""
 
     if isinstance(value, str):
         if GEMMA_STRING in value:
             raise ValueError("a Gemma string cannot contain its <|\"|> delimiter")
         return GEMMA_STRING + value + GEMMA_STRING
     if value is None:
-        return "None"
+        return null
     if type(value) is bool:
         return "true" if value else "false"
     if isinstance(value, dict):
         if any(not isinstance(key, str) or not GEMMA_KEY.fullmatch(key) for key in value):
             raise ValueError("a Gemma object key cannot be written in bare-key call markup")
-        return "{" + ",".join(key + ":" + gemma_value(value[key]) for key in sorted(value, key=str.lower)) + "}"
+        return "{" + ",".join(key + ":" + gemma_value(value[key], null=null)
+                              for key in sorted(value, key=str.lower)) + "}"
     if isinstance(value, list):
-        return "[" + ",".join(gemma_value(item) for item in value) + "]"
+        return "[" + ",".join(gemma_value(item, null=null) for item in value) + "]"
     if type(value) not in (int, float) or isinstance(value, float) and not math.isfinite(value):
         raise ValueError("a Gemma value must be finite JSON data")
     return str(value)
@@ -39,8 +43,9 @@ def gemma_value(value: Any) -> str:
 def gemma_json(text: str) -> str:
     """Transcode native Gemma values to JSON, leaving strings uninterpreted.
 
-    The publisher template spells Python None recursively and writes object keys
-    bare. A lexical pass avoids placeholder collisions and replacing None, keys
+    Publisher templates spell null as Python None (launch) or JSON null (current,
+    passed through) and write object keys bare; this lenient reader accepts either.
+    A lexical pass avoids placeholder collisions and replacing None, keys
     or apparent call delimiters within a quoted value. The JSON decoder remains
     responsible for value syntax, nesting and complete-document validation.
     """
@@ -120,8 +125,24 @@ def hide_gemma_calls(text: str, *, finished: bool) -> str:
     return "".join(parts)
 
 
-def split_gemma_thinking(text: str, *, finished: bool) -> tuple[str, str]:
-    """Structural thought channels; native tool values may contain marker text literally."""
+def prompt_opens_thought(prompt: str) -> bool:
+    """Whether a rendered prompt ends inside the thought channel it opens.
+
+    Google's current template ends a thinking generation prompt after tool
+    results with ``<|channel>thought\\n``. Only the prompt's own suffix decides:
+    content earlier in the prompt cannot open the reply's channel.
+    """
+    return prompt.rstrip().endswith(THOUGHT_OPEN)
+
+
+def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False) -> tuple[str, str]:
+    """Structural thought channels; native tool values may contain marker text literally.
+
+    ``opened``: the prompt opened the channel (``prompt_opens_thought``), so the
+    reply begins inside it and its first close ends the reasoning.
+    """
+    if opened:
+        text = THOUGHT_OPEN + text
     opens, closes, calls = [], [], []
     at, quoted, call = 0, False, None
     while (at := text.find("<", at)) >= 0:
@@ -174,9 +195,14 @@ def split_gemma_thinking(text: str, *, finished: bool) -> tuple[str, str]:
 
 
 class GemmaJSONStream:
-    """An incremental lexical transcoder; buffers only an incomplete token/string delimiter."""
-    def __init__(self):
-        self.pending, self.quoted = "", False
+    """An incremental lexical transcoder; buffers only an incomplete token/string delimiter.
+
+    ``null`` is the captured template's null word (one of ``GEMMA_NULLS``); the other word is refused.
+    """
+    def __init__(self, *, null: str):
+        if null not in GEMMA_NULLS:
+            raise ValueError(f"a Gemma null word is one of {GEMMA_NULLS}")
+        self.pending, self.quoted, self.null = "", False, null
 
     def feed(self, text: str, *, finished=False) -> str:
         self.pending += text
@@ -213,10 +239,10 @@ class GemmaJSONStream:
                 word = self.pending[at:end]
                 if after < len(self.pending) and self.pending[after] == ":" and GEMMA_KEY.fullmatch(word):
                     word = json.dumps(word, ensure_ascii=False)
-                elif word == "None":
+                elif word == self.null:
                     word = "null"
-                elif word == "null":
-                    raise ValueError("Gemma's captured template spells null as None")
+                elif word in GEMMA_NULLS:
+                    raise ValueError(f"Gemma's captured template spells null as {self.null}")
                 out.append(word)
                 at = end
         self.pending = self.pending[at:]

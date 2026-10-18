@@ -54,16 +54,16 @@ def values(flag=True):
 
 
 def plan(parameters=None, **kwargs):
-    return gemma.Plan([tool("f", parameters or schema())], required=True, parallel=True, **kwargs)
+    return gemma.Plan([tool("f", parameters or schema())], required=True, parallel=True, null="None", **kwargs)
 
 
 def test_exact_render_discovery_checks_false_nested_null_and_order():
     env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
     template = env.from_string(GEMMA_CALLS)
     yes, no = [template.render(messages=probe) for probe in (gemma.PROBE, gemma.false_probe())]
-    assert gemma.template_supported(yes, no)
+    assert gemma.template_null(yes, no) == "None"
     for changed in (no.replace("false", "False"), no.replace("None", "null"), no.replace("call:", ":")):
-        assert not gemma.template_supported(yes, changed)
+        assert gemma.template_null(yes, changed) is None
 
 
 @pytest.mark.parametrize("flag", [True, False])
@@ -71,7 +71,7 @@ def test_exact_render_discovery_checks_false_nested_null_and_order():
 def test_native_reader_and_lenient_parser_preserve_typed_nested_values(flag, step):
     expected = values(flag)
     call = render(expected)
-    assert call == GEMMA_OPEN + "call:f" + gemma_value(expected) + GEMMA_CLOSE
+    assert call == GEMMA_OPEN + "call:f" + gemma_value(expected, null="None") + GEMMA_CLOSE
     reader = plan().reader()
     for end in range(0, len(call) + step, step):
         reader.feed(call[:end])
@@ -236,7 +236,7 @@ def test_strict_whole_answer_prefix_cannot_be_bypassed_with_stray_or_literal_cha
     declared = {"type": "object", "properties": {"x": {"type": "string"}},
                 "required": ["x"], "additionalProperties": False}
     native = plan(declared)
-    prepared = SimpleNamespace(grammar=(native.spec, grammars.compile(native.spec)), thinking=True)
+    prepared = SimpleNamespace(grammar=(native.spec, grammars.compile(native.spec)), thinking=True, thought_open=False)
     result = App.__new__(App)
     result.tok, result.grammars, result.engine = GemmaTokenizer(), grammars, SimpleNamespace(eos=(STOP,))
     good = render({"x": "valid"})

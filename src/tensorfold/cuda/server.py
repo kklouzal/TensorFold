@@ -1,6 +1,7 @@
 """OpenAI server for the CUDA engines: a family's ``cuda_engine`` gives ``eos``, ``generate`` and ``follow``."""
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 import json
@@ -59,6 +60,7 @@ class PreparedRequest:
     grammar: Any = None     # (spec, compiled grammar) of the request's response_format or strict tools, or None
     think_budget: int = 0   # reply tokens before the server closes a think block the reply leaves open (0: no limit)
     calls: Any = None       # strict tools' call grammar and reader (server.strict_tools.Plan), or None
+    thought_open: bool = False   # the Gemma prompt ends inside the thought channel it opened: the reply begins in it
 
 
 def _native_context(model_dir: Path) -> int:
@@ -337,17 +339,24 @@ class App:
             if not hasattr(self, "_probability_decoder"):
                 self._probability_decoder = TokenBytes(self.tok)
         compiled = (spec, self._grammars().compile(spec)) if spec is not None else None
+        thought_open = False
         if chat:
             if not isinstance(body.get("messages"), list):
                 raise RequestError("messages must be a list")
             from tensorfold.server.prompts import has_images, prepare_images
 
             def render(messages: list[dict[str, Any]], **images: bool) -> str:   # text renders as it always has
+                nonlocal thought_open
                 try:
-                    return self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
+                    text = self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
                                                 **images)
                 except TemplateError as exc:     # the checkpoint's template refuses the request (``raise_exception``)
                     raise RequestError(f"the chat template rejected the request: {exc}") from exc
+                if self.thinking_markers == CHANNEL_MARKERS:
+                    from tensorfold.server.gemma_values import prompt_opens_thought
+
+                    thought_open = prompt_opens_thought(text)
+                return text
 
             if has_images(body["messages"]):
                 rendered = prepare_images(self.vision, body["messages"],
@@ -357,7 +366,8 @@ class App:
                                           max_visual_tokens=getattr(self, "vision_image_tokens", None))
                 return PreparedRequest(rendered.tokens, max_tokens, tools, thinking,
                                        self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
-                                       vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls)
+                                       vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls,
+                                       thought_open=thought_open)
             text = render(body["messages"])
             prompt = (self.segments.encode(text) if self.segments is not None
                       else self.tok.encode(text, add_special_tokens=False).ids)
@@ -372,7 +382,8 @@ class App:
             raise RequestError("rendered prompt is empty")
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
-                               ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls)
+                               ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls,
+                               thought_open=thought_open)
 
     def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
                       policy: ToolCallPolicy) -> "strict_tools.Plan | None":
@@ -420,8 +431,9 @@ class App:
                             except Exception as exc:  # noqa: BLE001 - discovery failure is an explicit refusal
                                 why = f"could not render a call ({exc})"
                             else:
-                                if strict_gemma_tools.template_supported(rendered, rendered_false):
-                                    plan = strict_gemma_tools.Plan
+                                null = strict_gemma_tools.template_null(rendered, rendered_false)
+                                if null is not None:
+                                    plan = functools.partial(strict_gemma_tools.Plan, null=null)
                 self._strict_markup = (plan, why)
         if not self._strict_markup[0]:
             raise RequestError("strict function tools require exact supported Qwen XML or Gemma call markup, "
@@ -436,7 +448,7 @@ class App:
         if self.thinking_markers == CHANNEL_MARKERS:
             from tensorfold.server.gemma_values import split_gemma_thinking
 
-            reasoning, answer = split_gemma_thinking(text, finished=finished)
+            reasoning, answer = split_gemma_thinking(text, finished=finished, opened=prepared.thought_open)
             # Generation may precede its first channel close. Validate every
             # visible answer prefix before publishing tool deltas, including a
             # direct call and any content before a structural thought block.
@@ -603,7 +615,7 @@ class App:
                 if gemma:
                     from tensorfold.server.gemma_values import split_gemma_thinking
 
-                    reasoning, answer = split_gemma_thinking(raw, finished=finished)
+                    reasoning, answer = split_gemma_thinking(raw, finished=finished, opened=prepared.thought_open)
                 else:
                     reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                 if finished and tools and not gemma and not answer:
@@ -806,7 +818,7 @@ class App:
                     if split_reasoning and gemma:
                         from tensorfold.server.gemma_values import split_gemma_thinking
 
-                        raw_answer = split_gemma_thinking(text, finished=True)[1]
+                        raw_answer = split_gemma_thinking(text, finished=True, opened=prepared.thought_open)[1]
                     else:
                         raw_answer = split_thinking(text, finished=True, markers=markers)[1] if split_reasoning else text
                     parse = parse_tool_calls_from_content if gemma else parse_tool_calls
