@@ -1,4 +1,9 @@
-"""RAM-backed NVFP4 retains stored bytes, native slots and complete-model output."""
+"""W4A16 RAM-backed NVFP4 retains stored bytes, slots and complete-model output.
+
+These four-field authority/plan oracles explicitly select supported full
+precision. Declared checkpoint-A4 dispatch, six-field storage, live device
+plans and mixed W4A16 MTP leases are covered by test_flashnext_modelopt_a4.
+"""
 
 import json
 from copy import deepcopy
@@ -8,6 +13,7 @@ import torch
 from nvfp4_tiny import write
 
 from tensorfold.cuda import moe as moe_mod
+from tensorfold.cuda import precision
 from tensorfold.cuda.expert_cache import HostExpertCache, entry_bytes_for
 from tensorfold.cuda.nvfp4.host_experts import load_nvfp4_host_experts
 from tensorfold.cuda.read_budget import reader_host_bytes
@@ -16,6 +22,13 @@ from tensorfold.families.qwen4_exp.cuda import nvfp4_moe
 from tensorfold.families.qwen4_exp.cuda.nvfp4_moe import load_moe_host
 from tensorfold.families.qwen4_exp.cuda.reader import _Reader
 from tensorfold.families.qwen4_exp.cuda.weights import load
+
+
+@pytest.fixture
+def weight_only_math():
+    """Match resident and cached four-field oracles, restoring caller policy."""
+    with precision.using(precision.FULL, asked=True):
+        yield
 
 
 def _close(w):
@@ -81,6 +94,7 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="native CUDA NVF
 
 
 @cuda
+@pytest.mark.usefixtures("weight_only_math")
 @pytest.mark.parametrize("mtp_format,scale", [("bf16", "tensor"), ("fp8", "tensor"),
                                              ("fp8", "row"), ("fp8", "block")])
 def test_compact_owned_authority_is_resident_bytes_including_draft_scales(tmp_path, mtp_format, scale):
@@ -96,6 +110,7 @@ def test_compact_owned_authority_is_resident_bytes_including_draft_scales(tmp_pa
 
     reader.get_rows = recorded
     try:
+        assert isinstance(resident.layers[0].moe.experts, nvfp4_moe.MoE4)
         for name, expected in (("model.layers.0.mlp", resident.layers[0].moe.experts.routed_experts),
                                ("mtp.layers.0.mlp", resident.mtp.layer.moe.experts.routed_experts)):
             reads.clear()
@@ -111,6 +126,7 @@ def test_compact_owned_authority_is_resident_bytes_including_draft_scales(tmp_pa
 
 
 @cuda
+@pytest.mark.usefixtures("weight_only_math")
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 17), (True, 133)])
 def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_path, prefill, rows):
     model = write(tmp_path, hidden=512, experts=8)
@@ -119,8 +135,10 @@ def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_pa
     layout = ram_experts.layout(model, "auto")
     cache = HostExpertCache(layout.entry_bytes, layout.entry_bytes, "cuda")
     try:
+        assert isinstance(w.layers[0].moe.experts, nvfp4_moe.MoE4)
         workspace = {}
         bank = load_moe_host(reader, "model.layers.0.mlp", w.cfg, cache=cache, workspace=workspace)
+        assert isinstance(bank, nvfp4_moe.CachedMoE4)
         draft = load_moe_host(reader, "mtp.layers.0.mlp", w.cfg, cache=cache, workspace=workspace)
         cfg = type("MoECfg", (), {"num_experts": 8, "num_experts_per_tok": 2,
                                  "hidden_size": 512, "moe_intermediate_size": 128})
@@ -174,6 +192,7 @@ def test_cached_item_eviction_preserves_all_native_slots_and_logical_plan(tmp_pa
 
 
 @cuda
+@pytest.mark.usefixtures("weight_only_math")
 @pytest.mark.parametrize("table_format", ["affine", "bf16", "nvfp4", "mxfp8"])
 def test_full_cached_model_serial_draft_and_concurrent_match_resident(tmp_path, table_format):
     from tensorfold.cuda.streams import Stream
@@ -191,6 +210,7 @@ def test_full_cached_model_serial_draft_and_concurrent_match_resident(tmp_path, 
     assert b.meta["expert_cache"].entry_bytes == entry_bytes_for(b.meta["expert_cache"]._layers[0].source)
     prompt = [5, 17, 99, 250, 7, 64, 30, 11, 12, 13]
     try:
+        assert isinstance(a.layers[0].moe.experts, nvfp4_moe.MoE4)
         for sampling in (None, Sampling(seed=7, top_k=20, top_p=.95)):
             native = Engine(a, capacity=128, max_rows=8, prefill_rows=5, graphs=False)
             first = prefill(native, prompt, sampling)
@@ -224,6 +244,7 @@ def test_full_cached_model_serial_draft_and_concurrent_match_resident(tmp_path, 
 
 
 @cuda
+@pytest.mark.usefixtures("weight_only_math")
 def test_public_engine_admits_and_closes_nvfp4_host_authority_with_ssd(tmp_path, monkeypatch):
     from tensorfold.engine.exact_sampling import Sampling
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
@@ -231,11 +252,12 @@ def test_public_engine_admits_and_closes_nvfp4_host_authority_with_ssd(tmp_path,
     model = write(tmp_path, hidden=512, ple_nvfp4=True)
     monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", "256")
     entry = ram_experts.layout(model, "auto").entry_bytes
-    options = dict(depth=2, draft_vocab=128, max_len=128, context_explicit=True, prefetch=False, graphs=True,
-                   ple_on_ssd=True)
+    options = {"depth": 2, "draft_vocab": 128, "max_len": 128, "context_explicit": True,
+               "prefetch": False, "graphs": True, "ple_on_ssd": True}
     native = FlashNextEngine(model, **options)
     cached = None
     try:
+        assert isinstance(native.w.layers[0].moe.experts, nvfp4_moe.MoE4)
         cached = FlashNextEngine(model, vram_experts=entry / 2**30, **options)
         assert cached.capacity_plan["vram_experts"]["format"] == "nvfp4"
         assert cached.capacity_plan["vram_experts"]["gpu_bytes"] == entry
