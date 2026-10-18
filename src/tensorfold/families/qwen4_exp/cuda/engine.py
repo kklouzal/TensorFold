@@ -110,7 +110,8 @@ class FlashNextEngine:
         from .exl3_pack import admission, extra_files, is_exl3
         from tensorfold.families import quant_method, read_config
         exl3 = is_exl3(model_dir)
-        if (exl3 or quant_method(read_config(model_dir)) == "modelopt") and tp != 1:
+        modelopt = not exl3 and quant_method(read_config(model_dir)) == "modelopt"
+        if (exl3 or modelopt) and tp != 1:
             raise ValueError(f"{'EXL3 packs' if exl3 else 'NVFP4 checkpoints'} of Flash Next run on one GPU: drop --tp "
                              "2, or serve the MLX checkpoint (TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP) on two")
         if exl3 and ple_on_ssd:
@@ -146,28 +147,26 @@ class FlashNextEngine:
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
         rows0 = chunk or PREFILL_ROWS
-        from tensorfold.cuda import precision
-        from tensorfold.cuda.nvfp4.modelopt_layout import (
-            activation_banks, resident_loading_host_bytes, runtime_workspace_bytes)
-
-        modelopt = not exl3 and quant_method(read_config(model_dir)) == "modelopt"
-        native_a4 = (modelopt
-                     and precision.mode() == precision.CHECKPOINT
-                     and precision.own_math(torch.cuda.get_device_capability())["nvfp4"])
-        if expert_session is not None:
-            native_a4 = expert_session.native_a4
-        a4_banks = ()
+        native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         if modelopt:
+            from tensorfold.cuda import precision
+            from tensorfold.cuda.nvfp4.modelopt_layout import (
+                activation_banks, resident_loading_host_bytes, runtime_workspace_bytes)
+
+            checkpoint_math = precision.mode() == precision.CHECKPOINT
+            native_a4 = checkpoint_math and precision.own_math(torch.cuda.get_device_capability())["nvfp4"]
+            if expert_session is not None:
+                native_a4 = expert_session.native_a4
+            a4_banks = ()
             from tensorfold.cuda.capacity import headers
 
             infos = headers(model_dir)
-            a4_banks = activation_banks(infos, text, native=native_a4, mtp=mtp,
-                                        checkpoint=precision.mode() == precision.CHECKPOINT)
+            a4_banks = activation_banks(infos, text, native=native_a4, mtp=mtp, checkpoint=checkpoint_math)
             del infos
-        a4_workspace = (runtime_workspace_bytes(text, rows=streams * each if streams > 1 else max(8, each),
-                        prompt_rows=rows0 + (streams * each if streams > 1 else 0),
-                        mtp_a4=any(bank.startswith("mtp.") for bank in a4_banks), cached=vram_experts is not None)
-                        if a4_banks and expert_session is None else 0)
+            a4_workspace = (runtime_workspace_bytes(text, rows=streams * each if streams > 1 else max(8, each),
+                            prompt_rows=rows0 + (streams * each if streams > 1 else 0),
+                            mtp_a4=any(bank.startswith("mtp.") for bank in a4_banks), cached=vram_experts is not None)
+                            if a4_banks and expert_session is None else 0)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
         graph_bytes = multi_graph_bytes() if streams > 1 and graphs and vram_experts is None else 0
@@ -210,7 +209,7 @@ class FlashNextEngine:
             from .prompt_plan import IDLE_ROWS
 
             ram_layout = expert_session.layout if expert_session is not None else layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4,
-                                                                                           checkpoint=precision.mode() == precision.CHECKPOINT)
+                                                                                           checkpoint=checkpoint_math)
             if automatic_experts:
                 self.expert_headroom_bytes = cuda_reserve_bytes(int(torch.cuda.mem_get_info()[1]),
                                                                default=AUTO_HEADROOM_BYTES)
