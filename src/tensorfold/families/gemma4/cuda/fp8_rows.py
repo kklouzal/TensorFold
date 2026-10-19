@@ -15,6 +15,7 @@ from triton.language.extra.cuda import libdevice
 
 BN = 64          # output rows a program carries
 BK = 128         # K tile
+CONVERT_ROWS = 16384   # weight rows quantized per FP32 staging slice at load
 
 
 @triton.jit
@@ -41,7 +42,7 @@ def _rows(X, W8, S, OUT, M, N, K: tl.constexpr, BKC: tl.constexpr, BNC: tl.const
 class Fp8Rows:
     """A private FP8 copy of a BF16 [N, K] weight (K a multiple of 128); call with BF16 rows [M, K]."""
 
-    def __init__(self, weight: torch.Tensor, *, softcap: float | None = None, chunk: int = 16384):
+    def __init__(self, weight: torch.Tensor, *, softcap: float | None = None):
         if (not isinstance(weight, torch.Tensor) or weight.dtype != torch.bfloat16 or weight.ndim != 2
                 or not weight.is_cuda or weight.shape[1] % BK):
             raise ValueError("FP8 proposal rows need a CUDA BF16 [N, K] weight with K a multiple of 128")
@@ -49,12 +50,12 @@ class Fp8Rows:
         self.n, self.k, self.softcap = n, k, softcap
         self.codes = torch.empty((n, k), dtype=torch.float8_e4m3fn, device=weight.device)
         self.scale = torch.empty((n,), dtype=torch.float32, device=weight.device)
-        for i in range(0, n, chunk):
-            w = weight[i:i + chunk].float()
+        for i in range(0, n, CONVERT_ROWS):
+            w = weight[i:i + CONVERT_ROWS].float()
             top = w.abs().amax(1)
             scale = torch.where(top > 0, top / 448.0, torch.ones_like(top))
-            self.codes[i:i + chunk] = (w / scale[:, None]).to(torch.float8_e4m3fn)
-            self.scale[i:i + chunk] = scale
+            self.codes[i:i + CONVERT_ROWS] = (w / scale[:, None]).to(torch.float8_e4m3fn)
+            self.scale[i:i + CONVERT_ROWS] = scale
 
     def prefix(self, count: int) -> "Fp8Rows":
         """The first ``count`` output rows, sharing storage."""
@@ -62,9 +63,6 @@ class Fp8Rows:
         view.n, view.k, view.softcap = count, self.k, self.softcap
         view.codes, view.scale = self.codes[:count], self.scale[:count]
         return view
-
-    def nbytes(self) -> int:
-        return self.codes.numel() + self.scale.numel() * 4
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """[M, N] BF16 rows (or FP32 softcapped logits for a head)."""

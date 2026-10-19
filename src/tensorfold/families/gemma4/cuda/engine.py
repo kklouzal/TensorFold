@@ -78,7 +78,8 @@ def _accepted(sampled, inputs, room: int, eos) -> list[int]:
 
 
 class Gemma4Engine:
-    """Native CUDA target and BF16 DFlash on one exclusive CUDA stream."""
+    """Native CUDA target and DFlash (BF16, or private FP8 copies at --drafter-bits 8) on one exclusive CUDA
+    stream."""
 
     tp = 1
 

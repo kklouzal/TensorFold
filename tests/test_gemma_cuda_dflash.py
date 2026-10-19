@@ -19,6 +19,7 @@ import torch.nn.functional as F  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
 
 from tensorfold.families.gemma4.cuda import dflash  # noqa: E402
+from tensorfold.families.gemma4.cuda.fp8_rows import Fp8Rows  # noqa: E402
 from tensorfold.families.gemma4.dflash_metadata import DraftConfig  # noqa: E402
 from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
@@ -269,6 +270,11 @@ def test_precision_and_attention_geometry_fail_before_payload_allocation(tmp_pat
     monkeypatch.setattr(dflash, "SafeTensors", unexpected)
     with pytest.raises(ValueError, match="query group"):
         dflash.DFlash(tmp_path, target, context_limit=8192)
+    # 2**24 positions x 2 KV heads x 64 columns reaches the int32 offset range of the full layer's cache.
+    wide = DraftConfig.from_dict(raw(max_position_embeddings=1 << 24))
+    monkeypatch.setattr(dflash, "checked_headers", lambda path: (wide, {}))
+    with pytest.raises(ValueError, match="int32"):
+        dflash.DFlash(tmp_path, target, context_limit=1 << 24)
 
 
 def test_target_mismatch_and_checkpoint_python_are_checked_without_execution(tmp_path):
@@ -321,9 +327,9 @@ def test_invalid_taps_anchors_and_limits_preserve_context(tmp_path):
 
 
 @cuda
-def test_fp8_proposals_track_bf16_and_keep_the_lifecycle(tmp_path):
-    """Private FP8 projections and head (bits 8): logits within FP8 error of the BF16 companion, same token ids
-    wherever the BF16 margin is clear, and the same append/propose/snapshot lifecycle."""
+def test_fp8_proposals_track_bf16(tmp_path):
+    """Private FP8 projections and head (bits 8), context appended through the FP8 [k | v] prefix: logits within
+    FP8 error of the BF16 companion and the same token ids wherever the BF16 margin is clear."""
     cfg, arrays, target = make_fixture(tmp_path, window=8)
     target.weights = NS(embed=NS(weight=target.head.to(DEV)))
     target.config.softcap = 30.0
@@ -338,7 +344,7 @@ def test_fp8_proposals_track_bf16_and_keep_the_lifecycle(tmp_path):
     top = left.topk(2, -1).values
     clear = (top[:, 0] - top[:, 1]) > 2.0
     assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
-    assert all(not hasattr(fn, "keywords") for fn in fp8.linears.values())
+    assert all(isinstance(fn, Fp8Rows) for fn in (*fp8.linears.values(), fp8.project_logits))
 
 
 @cuda

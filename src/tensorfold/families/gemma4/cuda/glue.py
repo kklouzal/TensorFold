@@ -76,16 +76,12 @@ def _geglu(G, U, OUT, N, BLOCK: tl.constexpr):
     tl.store(OUT + i, (gelu * up).to(tl.bfloat16), mask=mask)
 
 
-def _rows(x: torch.Tensor) -> torch.Tensor:
-    return x if x.is_contiguous() else x.contiguous()
-
-
 def attention_tail(h, o, w_attn, w_mlp, w_expert, eps: float, round_normalized: bool):
     """(new residual h, dense MLP input, expert input), each BF16 [R, D]."""
     rows, d = h.shape
     out = torch.empty((3, rows, d), dtype=torch.bfloat16, device=h.device)
-    _attention_tail[(rows,)](_rows(h), _rows(o), w_attn, w_mlp, w_expert, out[0], out[1], out[2], D=d,
-                             B=triton.next_power_of_2(d), EPS=eps, ROUND=round_normalized, num_warps=8,
+    _attention_tail[(rows,)](h.contiguous(), o.contiguous(), w_attn, w_mlp, w_expert, out[0], out[1], out[2],
+                             D=d, B=triton.next_power_of_2(d), EPS=eps, ROUND=round_normalized, num_warps=8,
                              enable_fp_fusion=False)
     return out[0], out[1], out[2]
 
@@ -94,15 +90,15 @@ def moe_tail(residual, dense, routed, w_dense, w_routed, w_out, scalar, w_next, 
     """(layer output h, its next norm with ``w_next``), each BF16 [R, D]."""
     rows, d = residual.shape
     out = torch.empty((2, rows, d), dtype=torch.bfloat16, device=residual.device)
-    _moe_tail[(rows,)](_rows(residual), _rows(dense), _rows(routed), w_dense, w_routed, w_out, scalar, w_next,
-                       out[0], out[1], D=d, B=triton.next_power_of_2(d), EPS=eps, ROUND=round_normalized,
-                       num_warps=8, enable_fp_fusion=False)
+    _moe_tail[(rows,)](residual.contiguous(), dense.contiguous(), routed.contiguous(), w_dense, w_routed, w_out,
+                       scalar, w_next, out[0], out[1], D=d, B=triton.next_power_of_2(d), EPS=eps,
+                       ROUND=round_normalized, num_warps=8, enable_fp_fusion=False)
     return out[0], out[1]
 
 
 def geglu(gate, up):
     """HF/CT GeGLU: BF16 tanh-GELU storage, then a separate BF16 product."""
-    gate, up = _rows(gate), _rows(up)
+    gate, up = gate.contiguous(), up.contiguous()
     out = torch.empty_like(gate)
     n = gate.numel()
     _geglu[(triton.cdiv(n, 1024),)](gate, up, out, n, BLOCK=1024, num_warps=4, enable_fp_fusion=False)

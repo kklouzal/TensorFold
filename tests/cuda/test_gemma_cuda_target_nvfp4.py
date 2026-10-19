@@ -4,7 +4,8 @@ from types import SimpleNamespace
 
 import torch
 
-from tensorfold.families.gemma4.cuda.forward import Gemma4Target, _geglu_ct, ct_rms_norm, rms_norm
+from tensorfold.families.gemma4.cuda import glue
+from tensorfold.families.gemma4.cuda.forward import Gemma4Target, ct_rms_norm, rms_norm
 from tensorfold.families.gemma4.cuda.nvfp4_weights import _Router
 from test_gemma_cuda_target import config
 
@@ -25,13 +26,14 @@ def test_ct_rms_single_cast_and_partition_identity():
 
 def test_ct_geglu_preserves_bf16_activation_before_product():
     # Reuse the native expert adapter's boundary-discriminating input range.
-    # PyTorch owns GELU; this checks the target's two BF16 storage boundaries.
+    # The CT policy's fused GeGLU (glue.geglu) must equal PyTorch's BF16 GELU
+    # then BF16 product: two storage boundaries, not one.
     gate = torch.linspace(-4.,4.,2048,device="cuda").to(torch.bfloat16)
     up = torch.linspace(.125,3.,2048,device="cuda").to(torch.bfloat16)
     activated = torch.nn.functional.gelu(gate,approximate="tanh")
     reference = activated * up
     one_round = (torch.nn.functional.gelu(gate.float(),approximate="tanh") * up.float()).to(torch.bfloat16)
-    actual = _geglu_ct(gate,up)
+    actual = glue.geglu(gate,up)
     assert torch.equal(actual,reference)
     assert not torch.equal(actual,one_round)
 

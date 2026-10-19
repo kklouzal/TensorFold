@@ -1,4 +1,4 @@
-"""Header-only admission for original Gemma affine/NVFP4 weights and BF16 DFlash.
+"""Header-only admission for original Gemma affine/NVFP4 weights and DFlash (BF16 or private FP8 copies).
 
 The serving grant uses the shared CUDA allocator policy: on a unified GPU,
 system MemAvailable and its configured host floor govern the single pool.
@@ -73,16 +73,14 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         draft, draft_entries = checked_headers(Path(drafter_dir))
         if (draft.hidden, draft.target_layers, draft.vocab) != (cfg.hidden, cfg.layers, cfg.vocab):
             raise ValueError('Gemma DFlash companion dimensions disagree with the target')
-        draft_size = sum(math.prod(info['shape']) * itemsize(info, name)
-                         for name, info in draft_entries.items())
-        if drafter_bits == 8:
-            # Private FP8 copies: one byte per projection weight plus an FP32 scale per output row (norms stay
-            # BF16), and an FP8 copy of the target's tied head for proposals.
-            draft_size = sum(math.prod(info['shape']) + 4 * info['shape'][0] if len(info['shape']) == 2
-                             else math.prod(info['shape']) * itemsize(info, name)
-                             for name, info in draft_entries.items())
-            draft_size += cfg.vocab * (cfg.hidden + 4)
-        resident += draft_size
+        # Bits 8: private FP8 copies, one byte per projection weight plus an FP32 scale per output row (norms stay
+        # BF16), and an FP8 copy of the target's tied head for proposals.
+        fp8 = drafter_bits == 8
+        resident += sum(math.prod(info['shape']) + 4 * info['shape'][0] if fp8 and len(info['shape']) == 2
+                        else math.prod(info['shape']) * itemsize(info, name)
+                        for name, info in draft_entries.items())
+        if fp8:
+            resident += cfg.vocab * (cfg.hidden + 4)
         staging = max(staging, 3 * max(math.prod(info['shape']) * itemsize(info, name)
                                     for name, info in draft_entries.items()))
 

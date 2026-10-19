@@ -1,4 +1,4 @@
-"""Owned BF16 Gemma DFlash proposals over persistent, target-accepted context.
+"""Owned Gemma DFlash proposals over persistent, target-accepted context.
 
 The companion has causal sliding layers and a noncausal full layer by default.
 Its noise block never enters committed context: a proposal writes the block's
@@ -7,9 +7,10 @@ accepted context overwrites. The official Torch generator uses raw target
 embedding rows; the borrowed target head owns softcap30 once.
 
 Proposals never change output: the target verifies every proposed token, so
-the companion's arithmetic (row-reuse projections, kernel geometry) only has
-to be deterministic. One DraftState belongs to one request lane; its storage
-is allocated once for the admitted context.
+the companion's arithmetic (BF16 row-reuse projections, or at bits 8 private
+FP8 row-scaled copies of the projections and the borrowed head; kernel
+geometry) only has to be deterministic. One DraftState belongs to one request
+lane; its storage is allocated once for the admitted context.
 """
 
 from __future__ import annotations

@@ -83,7 +83,8 @@ def check_quantization(config: dict, backend: str) -> None:
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
-    """Original mixed4/6 affine target, BF16 DFlash and native image/video input."""
+    """Original mixed4/6 affine or CT NVFP4 target, DFlash (BF16, or private FP8 copies at --drafter-bits 8) and
+    native image/video input."""
     if tp != 1 or rank != 0:
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
