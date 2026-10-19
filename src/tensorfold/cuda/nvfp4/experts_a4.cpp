@@ -66,8 +66,8 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
     tensor(scales, x, at::kByte, 3, "scales");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 8 == 0, "codes require8-byte alignment");
     const auto p = codes.size(1), k = x.size(1), projections = input.size(1);
-    TORCH_CHECK(p > 0 && p <= INT32_MAX && (grouped ? plan.size(0) == p : (p <= 65535 && plan.size(0) == p && plan.size(1) == 3)) && input.size(0) > 0 && input.size(0) <= INT32_MAX &&
-                (projections == 1 || projections == 2),
+    TORCH_CHECK(p > 0 && p <= INT32_MAX && plan.size(0) == p && (grouped || (p <= 65535 && plan.size(1) == 3)) &&
+                input.size(0) > 0 && input.size(0) <= INT32_MAX && (projections == 1 || projections == 2),
                 "plan/calibrations require at most65535 planned rows (grid y), one/two projections");
     TORCH_CHECK(codes.size(0) == projections && codes.size(1) == p && codes.size(2) == k / 2 &&
                 scales.size(0) == projections && scales.size(1) == p && scales.size(2) == k / 16,

@@ -183,6 +183,7 @@ def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_co
                                                            "shared_expert_intermediate_size": 1024}},
                    load_backbone=backbone, Routed=lambda *args, **kwargs: (args, kwargs),
                    SimpleNamespace=SimpleNamespace)
+
     def shared_load(*args):
         calls.append("shared")
         return shared

@@ -57,8 +57,7 @@ def _decode(w, draft, prompt, sampling, count, runner, rows):
     st, pending = decode.prefill(w, prompt, sampling, draft)[:2]
     result = decode.draft_decode(w, st, prompt, pending, count, sampling, draft, max_rows=rows, allow_copy=True,
                                  stop_eos=False, inplace=True, runner=runner)
-    widths = result.widths
-    return result.tokens, widths
+    return result.tokens, result.widths
 
 
 def test_chain_graph_rounds_equal_eager_rounds_across_requests_and_buckets(model, tmp_path):

@@ -21,7 +21,7 @@ from tensorfold.cuda import allocation_bound, capacity, expert_pin, geometry, pr
 from tensorfold.cuda.nvfp4 import cache_a4
 from tensorfold.families.qwen3_5.cuda import multi, nvfp4_load, nvfp4_memory
 from tensorfold.families.qwen3_5_moe import dflash_metadata, ram_experts
-from tensorfold.families.qwen3_5_moe.cuda import dflash, weights
+from tensorfold.families.qwen3_5_moe.cuda import chain_graphs, dflash, weights
 from tensorfold.families.qwen3_5_moe.cuda.nvfp4_engine import QwenNvfp4MoeEngine
 
 GIB = 1 << 30
@@ -83,7 +83,8 @@ def startup(tmp_path, monkeypatch):
     events = []
     state = NS(target=target, draft_dir=draft_dir, text=text, draft_text=draft_text, events=events,
                available=16 * GIB, raw_free=16 * GIB, admission_error=None, pin_close_error=None,
-               pins=[], caches=[], admissions=[], loads=[], drafts=[], runtimes=[], draft_runtimes=[], calibrations=[])
+               pins=[], caches=[], admissions=[], loads=[], drafts=[], runtimes=[], draft_runtimes=[], calibrations=[],
+               prepared=[])
 
     class Pins:
         def __init__(self, planned, **options):
@@ -187,7 +188,12 @@ def startup(tmp_path, monkeypatch):
         def close(self):
             events.append("scheduler-close")
 
+    def prepare(runner, widths, *, taps):
+        state.prepared.append((list(widths), taps))    # the fake weights hold no layers to capture
+        return 0
+
     snapshot = object()
+    monkeypatch.setattr(chain_graphs.ChainGraphs, "prepare", prepare)
     monkeypatch.setattr(precision, "mode", lambda: precision.CHECKPOINT)
     monkeypatch.setattr(prompt_precision, "fp8", lambda: False)
     monkeypatch.setattr(torch.cuda, "set_device", lambda device: events.append("device"))
@@ -256,6 +262,7 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         else:
             assert engine.multi is engine.scheduler is None and not state.calibrations
         assert (engine.runner is not None) == (streams == 1 and not offload)
+        assert state.prepared == ([(list(range(1, 9)), True)] if engine.runner is not None else [])
         if offload:
             plan = ram_experts.layout(state.target, "auto" if automatic else budget)
             cache, pins = state.caches[0], state.pins[0]
@@ -310,6 +317,7 @@ def test_one_row_without_secondary_model_keeps_the_supported_serial_path(startup
         assert engine.max_rows == 1 and engine.draft is None
         assert engine.multi is engine.scheduler is engine.expert_cache is None
         assert engine.runner is not None and engine.runner.capacity == engine.capacity_plan["cache_slots"]
+        assert startup.prepared == [([1], False)]      # every chain width captured at startup, no taps (no draft)
         assert not startup.drafts and startup.events.index("admit") < startup.events.index("model-load")
     finally:
         engine.close()

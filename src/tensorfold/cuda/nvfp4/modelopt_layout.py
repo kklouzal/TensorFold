@@ -1,6 +1,7 @@
 """Preparation-only ModelOpt expert activation selection; no accelerator imports."""
 
 from .format import LinearMetadata
+from .host_layout import plan_scratch_bytes_a4
 
 
 def activation_banks(infos, text, *, native, mtp=True, checkpoint=None):
@@ -100,7 +101,7 @@ def plan_workspace_bytes(rows, slots, width, dims):
     kernel keeps its BF16 gate/up values and activation in registers.
     """
     _dimensions(rows, slots, width, dims)
-    return rows * slots * (9 * dims // 8 + 9 * width // 16)
+    return plan_scratch_bytes_a4(rows * slots, width, dims)
 
 
 def window_workspace_bytes(rows, slots, width, dims):
