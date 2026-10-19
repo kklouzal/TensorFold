@@ -864,6 +864,11 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   thresholds are arguments. A determinism or identity comparison whose path the server did not exercise (by the
   `cached` count of the stats block, or a greedy reply that verified no draft) makes the gate `incomplete`, never a
   pass; exit status 1 = fail, 3 = incomplete.
+- `campaign_bench.py run` and `campaign_gates.py` take `--progress FILE`: a heartbeat for an external watchdog,
+  replaced atomically at each phase change and otherwise at most once a second, naming the phase (`prefill` until a
+  stream's first generated text, reasoning or tool-call delta, then `decode`; `wait` for a non-streamed reply; `idle`
+  between requests), the request in flight with its prompt size (and reply budget for `wait`) and the chunk count.
+  The tools report facts only; the stall policy belongs to the supervisor.
 - `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
   set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
   plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
