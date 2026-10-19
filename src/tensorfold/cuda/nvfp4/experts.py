@@ -101,8 +101,8 @@ def down(act: torch.Tensor, ex: Experts4, plan: grouped.Plan, out: torch.Tensor,
 
 
 def quantize(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """bf16 [E, N, K] -> NVFP4 (words, e4m3 scales, per-expert scales) by ModelOpt's recipe, for draft-only weights:
-    ``tensorfold.cuda.requant.nvfp4_rows`` (the one NVFP4 weight quantizer) on each expert."""
+    """bf16 [E, N, K] -> NVFP4 (words, e4m3 scales, per-expert scales) in ModelOpt's layout, for draft-only weights:
+    ``tensorfold.cuda.requant.nvfp4_rows`` (the one NVFP4 weight quantizer; its recipe) on each expert."""
 
     from tensorfold.cuda.requant import nvfp4_rows
 
@@ -113,6 +113,8 @@ def quantize(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 def dense(ex: Experts4, e: int, which: str) -> torch.Tensor:
     """Expert ``e``'s gate, up or down weight [N, K] fp32 from its blocks: code x e4m3 x scale (a reference)."""
 
+    from .format import E2M1
+
     m = {"gate": 0, "up": 1, "down": 0}[which]
     blocks = (ex.down if which == "down" else ex.up)[e, :, :, m]                         # [nb, kg, 144]
     scale = float((ex.down_scale if which == "down" else ex.up_scale)[e, m])
@@ -122,9 +124,7 @@ def dense(ex: Experts4, e: int, which: str) -> torch.Tensor:
     slot = 2 * h[:, None] + q[None, :] // 2 + 4 * (q[None, :] % 2)
     codes = (words[..., None, None] >> (4 * slot)) & 0xF                                 # [cb, g, gq, t, j, h, q]
     codes = codes.permute(0, 4, 2, 1, 5, 3, 6).reshape(nb * COLS, kg * 32)
-    from tensorfold.cuda.requant import E2M1
-
-    mags = torch.tensor(E2M1 + tuple(-v for v in E2M1), device=blocks.device)
+    mags = torch.from_numpy(E2M1).to(blocks.device)
     sc = blocks[..., 128:].contiguous().view(torch.uint8).view(nb, kg, 4, 2, 4, 2)      # [cb, g, t, h, j, c]
     sc = sc.permute(0, 4, 2, 5, 1, 3).reshape(nb * COLS, kg * 2).contiguous()
     return mags[codes] * sc.view(torch.float8_e4m3fn).float().repeat_interleave(16, dim=1) * scale
