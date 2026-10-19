@@ -86,14 +86,19 @@ def cuda_cli_engine(**members):
 
 
 def cuda_cli_app(*, effective_context_window, **members):
-    """Publish a concrete prepared template identity, without reading a model."""
+    """Publish a concrete prepared template identity, without reading a model: the members the CLI reads from a
+    built App (its effective context, the template's provenance and selected source, and the effective default
+    thinking it reports at startup; the CLI's --thinking default is on)."""
     source = "{{ fixture }}"
 
     def provenance():
         return {"name": "default", "source": "cli_server_fixture", "sha256": sha256(source.encode()).hexdigest()}
 
-    return SimpleNamespace(**{"effective_context_window": effective_context_window,
-                             "template": SimpleNamespace(provenance=provenance), **members})
+    def selected(*, tools=False):
+        return SimpleNamespace(source=SimpleNamespace(source=source))
+
+    return SimpleNamespace(**{"effective_context_window": effective_context_window, "default_thinking": True,
+                             "template": SimpleNamespace(provenance=provenance, selected=selected), **members})
 
 
 def install_cli_server(monkeypatch, request, module, *, on_serve=None):

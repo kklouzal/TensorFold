@@ -196,8 +196,14 @@ above are descriptive summaries, not the paired estimator.
 
 R8 exceeded R4, and both exceeded Plain, in every recorded block on both
 objectives. Round/work signatures stayed fixed at 119 rounds, 392 accepted and
-833 drafted tokens per timed drafted request. The source retains R8 as the best
+833 drafted tokens per timed drafted request. The source retained R8 as the best
 observed repeated local ordering in this width-eight region.
+
+Superseded (2026-10-18, NVFP4 campaign): the head-only, SM 12.0-only prepared
+reuse is removed. The shared `b16.cu` row-block policy now gives every BF16
+projection on `b16.matmul` (GDN projections, vocabulary head, DFlash drafter
+linears; every family) row reuse at 2 through 511 rows on any GPU. Row reuse
+never changes a row's bits, so replies are unchanged.
 
 The exact order-statistic median intervals allocate nominal family error across
 three pairs and two metrics. Their interpretation assumes independent,

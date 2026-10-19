@@ -99,12 +99,36 @@ void launch(const at::Tensor& x, const at::Tensor& w, const void* bp, at::Tensor
         N1);
 }
 
+// Rows a warp (R) and warps a block for M rows of an (N, K) weight. R never changes a row's bits (its k chain and
+// butterfly are the same for every R); it sets how often the weight streams from memory: ceil(M / R) times. Below
+// 512 rows R is M's next power of two up to 8; past 8 rows a weight under kWideReuse elements keeps R = 8 (twice the
+// blocks), a larger one takes 16: the faster of the two at the 16-row verify width for every weight measured on SM
+// 12.0, though not at every other row count.
+constexpr int64_t kWideReuse = int64_t(20) << 20;
+
+struct RowBlock {
+    int rows, warps;
+};
+
+RowBlock row_block(int64_t M, int64_t N, int64_t K) {
+    if (M >= 512) return {16, 16};
+    if (M == 1) return {1, 4};
+    if (M == 2) return {2, 4};
+    if (M <= 4) return {4, 4};
+    if (M <= 8 || N * K < kWideReuse) return {8, 4};
+    return {16, 4};
+}
+
+// Launches the geometry its caller validated: row_block's, or b16_linear_rows' explicit R at 4 warps.
 template <typename T>
-void by_rows(const at::Tensor& x, const at::Tensor& w, const void* bp, at::Tensor& y, int M, int K, int N,
+void by_rows(RowBlock b, const at::Tensor& x, const at::Tensor& w, const void* bp, at::Tensor& y, int M, int K, int N,
              const at::Tensor* w1 = nullptr, at::Tensor* y1 = nullptr) {
-    if (M >= 512) launch<T, 16, 16>(x, w, bp, y, M, K, N, w1, y1);    // rows a warp, warps a block: never a row's bits
-    else if (M >= 64) launch<T, 4, 8>(x, w, bp, y, M, K, N, w1, y1);
-    else launch<T, 1, 4>(x, w, bp, y, M, K, N, w1, y1);
+    if (b.warps == 16) launch<T, 16, 16>(x, w, bp, y, M, K, N, w1, y1);
+    else if (b.rows == 1) launch<T, 1, 4>(x, w, bp, y, M, K, N, w1, y1);
+    else if (b.rows == 2) launch<T, 2, 4>(x, w, bp, y, M, K, N, w1, y1);
+    else if (b.rows == 4) launch<T, 4, 4>(x, w, bp, y, M, K, N, w1, y1);
+    else if (b.rows == 8) launch<T, 8, 4>(x, w, bp, y, M, K, N, w1, y1);
+    else launch<T, 16, 4>(x, w, bp, y, M, K, N, w1, y1);
 }
 
 
@@ -237,10 +261,11 @@ static void grid_dimensions(const at::Tensor& x, int64_t columns, int rows_per_b
                     (paired ? 2 : 1) <= properties->maxGridSize[2], "B16 launch grid exceeds device dimensions");
 }
 
-static void linear_grid(const at::Tensor& x, int64_t columns, bool paired) {
-    const int rows = x.size(0) >= 512 ? 16 : x.size(0) >= 64 ? 4 : 1;
-    const int warps = x.size(0) >= 512 ? 16 : x.size(0) >= 64 ? 8 : 4;
-    grid_dimensions(x, columns, rows, warps, paired);
+// The policy reads w0's N; a pair's grid spans the wider weight.
+static RowBlock linear_grid(const at::Tensor& x, int64_t columns, int64_t policy_columns, bool paired) {
+    const RowBlock b = row_block(x.size(0), policy_columns, x.size(1));
+    grid_dimensions(x, columns, b.rows, b.warps, paired);
+    return b;
 }
 
 static void pair_in(const at::Tensor& x, const at::Tensor& w) {
@@ -268,17 +293,16 @@ at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor
                     bias.is_contiguous() && bias.numel() == N, "bias must hold N elements of x's dtype on its CUDA device");
         bp = bias.data_ptr();
     }
-    linear_grid(x, N, false);
+    const RowBlock b = linear_grid(x, N, N, false);
     at::cuda::CUDAGuard guard(x.device());
     auto y = at::empty({M, N}, x.options());
-    if (is_half) by_rows<half>(x, w, bp, y, M, K, N);
-    else by_rows<__nv_bfloat16>(x, w, bp, y, M, K, N);
+    if (is_half) by_rows<half>(b, x, w, bp, y, M, K, N);
+    else by_rows<__nv_bfloat16>(b, x, w, bp, y, M, K, N);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return y;
 }
 
-// A separately prepared bias-free projection. Keep the incumbent b16_linear
-// and by_rows dispatch unchanged: only explicitly selected weights call here.
+// A bias-free projection at an R its caller selected at preparation (4 warps a block): b16_linear's bits every R.
 at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t rows) {
     TORCH_CHECK(rows == 2 || rows == 4 || rows == 8 || rows == 16, "B16 reused rows must be2,4,8 or16");
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
@@ -288,21 +312,13 @@ at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t row
     dimensions(x, w, false);
     TORCH_CHECK(x.size(1) % 8 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
                 "K must be a multiple of8 and x16-byte aligned");
-    grid_dimensions(x, w.size(0), (int)rows, 4, false);
+    const RowBlock b{(int)rows, 4};
+    grid_dimensions(x, w.size(0), b.rows, b.warps, false);
     at::cuda::CUDAGuard guard(x.device());
     const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
     auto y = at::empty({M, N}, x.options());
-    if (is_half) {
-        if (rows == 2) launch<half, 2, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else if (rows == 4) launch<half, 4, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else if (rows == 8) launch<half, 8, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else launch<half, 16, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-    } else {
-        if (rows == 2) launch<__nv_bfloat16, 2, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else if (rows == 4) launch<__nv_bfloat16, 4, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else if (rows == 8) launch<__nv_bfloat16, 8, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-        else launch<__nv_bfloat16, 16, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
-    }
+    if (is_half) by_rows<half>(b, x, w, nullptr, y, M, K, N);
+    else by_rows<__nv_bfloat16>(b, x, w, nullptr, y, M, K, N);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return y;
 }
@@ -316,12 +332,12 @@ std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w
     pair_in(x, w1);
     dimensions(x, w0, false);
     dimensions(x, w1, false);
-    linear_grid(x, std::max(w0.size(0), w1.size(0)), true);
+    const RowBlock b = linear_grid(x, std::max(w0.size(0), w1.size(0)), w0.size(0), true);
     const int M = (int)x.size(0), K = (int)x.size(1);
     at::cuda::CUDAGuard guard(x.device());
     auto y0 = at::empty({M, w0.size(0)}, x.options()), y1 = at::empty({M, w1.size(0)}, x.options());
-    if (x.scalar_type() == at::kHalf) by_rows<half>(x, w0, nullptr, y0, M, K, (int)w0.size(0), &w1, &y1);
-    else by_rows<__nv_bfloat16>(x, w0, nullptr, y0, M, K, (int)w0.size(0), &w1, &y1);
+    if (x.scalar_type() == at::kHalf) by_rows<half>(b, x, w0, nullptr, y0, M, K, (int)w0.size(0), &w1, &y1);
+    else by_rows<__nv_bfloat16>(b, x, w0, nullptr, y0, M, K, (int)w0.size(0), &w1, &y1);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return {y0, y1};
 }

@@ -91,6 +91,13 @@ class Replay(unittest.TestCase):
         self.assertEqual(continued.count, stream.count)
         self.assertEqual(continued.owed, [97, 98, 99])
 
+    def test_preemption_keeps_penalties_and_leaves_their_history_to_the_next_admission(self):
+        stream, _ = self.stream([])
+        stream.penalties, stream.history = object(), object()
+        continued = stream.continued()
+        self.assertIs(continued.penalties, stream.penalties)
+        self.assertIsNone(continued.history)            # the decoder's admit rebuilds it from the prompt
+
 
 if __name__ == "__main__":
     unittest.main()

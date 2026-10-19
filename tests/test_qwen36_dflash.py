@@ -10,6 +10,7 @@ pytest.importorskip("triton")
 import torch.nn.functional as F
 from safetensors.torch import save_file
 
+from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen3_5_moe.cuda import dflash
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, checked_headers, draft_geometry, draft_weights
 
@@ -314,7 +315,7 @@ def test_failed_restore_copy_leaves_previous_context_coherent_and_usable(fixture
     assert draft.context_end == 5 and draft.context_len == 5
 
 
-def reference_block(taps, anchor, target, cfg, arrays, inv):
+def reference_logits(taps, anchor, target, cfg, arrays, inv):
     """Direct published v1 equations over complete raw context; no adapter cache/layer helper."""
     context = norm(F.linear(taps, arrays["fc.weight"]), arrays["hidden_norm.weight"], cfg.eps)
     x = F.embedding(torch.tensor([anchor] + [cfg.mask_id] * (cfg.block - 1)), target.embed.weight)
@@ -340,7 +341,11 @@ def reference_block(taps, anchor, target, cfg, arrays, inv):
         activation *= F.linear(h, arrays[base + "mlp.up_proj.weight"])
         x = x + F.linear(activation, arrays[base + "mlp.down_proj.weight"])
     h = norm(x[1:], arrays["norm.weight"], cfg.eps)
-    logits = F.linear(h, target.head.weight).float()
+    return F.linear(h, target.head.weight).float()
+
+
+def reference_block(taps, anchor, target, cfg, arrays, inv):
+    logits = reference_logits(taps, anchor, target, cfg, arrays, inv)
     best, ids = logits.max(-1)
     return ids.tolist(), (torch.logsumexp(logits, -1) - best).cumsum(0).tolist()
 
@@ -359,3 +364,34 @@ def test_complete_proposals_match_direct_published_block_equations(fixture, yarn
     ids, parents, scores = draft.finish_tree(draft.launch_block(2, 3), 3, 3)
     expected_ids, expected_scores = reference_block(taps, 2, target, cfg, arrays, draft.inv_freq)
     assert ids == expected_ids and scores == expected_scores and parents == [-1, 0, 1]
+
+
+def test_proposals_are_the_argmax_and_penalized_streams_count_their_path(fixture):
+    """Every stream proposes the drafter's argmax (sampled ones too); a penalized stream batched with a plain one
+    proposes the argmax of its penalized rows, row j counting the proposals before it; a history differing from the
+    launch is refused."""
+    import numpy as np
+
+    from tensorfold.engine.penalties import History, Penalties
+
+    directory, _raw, cfg, arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    taps = torch.randn((3, 128), generator=torch.Generator().manual_seed(101)).bfloat16()
+    draft.add_taps(taps)
+    expected_ids, expected_scores = reference_block(taps, 2, target, cfg, arrays, draft.inv_freq)
+    sampling = Sampling(seed=77, temperature=1.0, top_k=20, top_p=.95)
+    assert draft.finish_tree(draft.launch_block(2, 3), 10, 3, sampling) == (
+        expected_ids, [-1, 0, 1], pytest.approx(expected_scores))
+    logits = reference_logits(taps, 2, target, cfg, arrays, draft.inv_freq).numpy()
+    history = History(Penalties(presence=2.0, repetition=1.5), [expected_ids[0], 7])
+    history.extend([expected_ids[1]])
+    want = []
+    for row in logits:
+        scores = history.candidates(row[None], np.arange(cfg.vocab)[None], want)[0]
+        want.append(int(np.argmax(scores)))
+    before = draft.snapshot()
+    batch = draft.launch_blocks([before, before], [2, 2], 3, histories=[None, history])
+    assert draft.finish_tree(batch[0], 10, 3, sampling) == (expected_ids, [-1, 0, 1], pytest.approx(expected_scores))
+    assert draft.finish_tree(batch[1], 10, 3, sampling, history)[0] == want != expected_ids
+    with pytest.raises(ValueError):
+        draft.finish_tree(batch[1], 10, 3, sampling)

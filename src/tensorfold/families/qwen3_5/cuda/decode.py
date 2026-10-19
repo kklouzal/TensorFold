@@ -49,8 +49,11 @@ def prefill_stops(w: Weights, prompt: Sequence[int], st: State, draft=None, *, s
 @torch.no_grad()
 def prefill(w: Weights, prompt: Sequence[int], sampling: Sampling | None,
             draft=None, *, state: State | None = None, limit: int = 0, stops: Sequence[int] = (),
-            keep: Callable | None = None, keep_at: int | None = None, vision=None, constraint=None, room=None):
-    """Commit the prompt and sample the first token; resuming a kept ``state`` gives a fresh prefill's bits (``keep_at`` adds a third item: the state after prompt[:keep_at] and the drafter's snapshot there)."""
+            keep: Callable | None = None, keep_at: int | None = None, vision=None, constraint=None, room=None,
+            history=None):
+    """Commit the prompt and sample the first token; resuming a kept ``state`` gives a fresh prefill's bits (``keep_at`` adds a third item: the state after prompt[:keep_at] and the drafter's snapshot there).
+
+    ``history`` (tensorfold.engine.penalties.History) penalizes the first token's scores and records it."""
 
     from .forward import _mm
 
@@ -68,9 +71,13 @@ def prefill(w: Weights, prompt: Sequence[int], sampling: Sampling | None,
     logits = _mm(normed, w.head)
     if constraint is not None:                  # a reply's grammar (tensorfold.engine.grammar): masked, then followed
         constraint.mask(logits)
+    if history is not None:
+        logits = history.apply(logits)
     pending = sample_rows(logits, [len(prompt)], sampling)[0]
     if constraint is not None:
         constraint.advance([pending])
+    if history is not None:
+        history.extend([pending])
     return (st, pending) if keep_at is None else (st, pending, out[1])
 
 
@@ -239,8 +246,11 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
                  *, max_rows: int = 128, tree_rows: int | None = None,
                  allow_copy: bool = True, stop_eos: bool = True,
                  on_tokens: Callable[[list[int]], bool | None] | None = None,
-                 trace: list | None = None, inplace: bool = False, constraint=None) -> DecodeResult:
-    """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole."""
+                 trace: list | None = None, inplace: bool = False, constraint=None, history=None) -> DecodeResult:
+    """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole.
+
+    ``history`` (tensorfold.engine.penalties.History, already holding ``pending``) penalizes each verify row by
+    its path and records the committed tokens; the drafter proposes under the same penalties."""
 
     if count < 1 or not 1 <= max_rows <= 128:
         raise ValueError("count >= 1 and 1 <= max_rows <= 128 required")
@@ -265,7 +275,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             parents = list(range(-1, len(guesses) - 1))
         elif draft is not None:
             guesses, parents = draft.propose_tree(
-                out[-1], len(context), tree_rows - 1, sampling)
+                out[-1], len(context), tree_rows - 1, sampling, history=history)
         else:                                # no draft model: one row a round unless the context offers a copy
             guesses, parents = [], []
         tokens = [out[-1]] + guesses
@@ -286,6 +296,8 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
         stage = time.perf_counter()
         if window is not None:
             constraint.mask(logits, window)
+        if history is not None:              # each row follows the reply and the drafts on its path
+            logits = history.apply(logits, tokens, tree_parents)
         depths, _ = _paths(tree_parents)
         sampled = sample_rows(logits, [st.pos + d + 1 for d in depths], sampling)
         children: dict[tuple[int, int], int] = {}
@@ -306,6 +318,8 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             terminal = sampled[child]
         if constraint is not None:
             constraint.advance([tokens[row] for row in path[1:]] + [terminal])
+        if history is not None:
+            history.extend([tokens[row] for row in path[1:]] + [terminal])
         spent["sample"] = time.perf_counter() - stage
         stages["sample"] += spent["sample"]
         if trace is not None:

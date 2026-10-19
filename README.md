@@ -67,7 +67,7 @@ qualification remains separate.
 Host read/publication storage and GPU packing scratch remain separate, including
 the distinct backbone and expert readers owned by a multi-rank leader.
 
-Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. The prepared SM120 vocabulary head reuses weights for the seven- and fifteen-row proposal tails of eight- and sixteen-row DFlash blocks. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
+Concurrent Qwen prompt batches run routed experts with the single-stream BF16 boundary and respect their admitted aggregate row limit. Installed numerical and full-model checks cover these increments on this host; other hardware requires separate qualification.
 
 RotorQuant's codec-range assertion now uses syntax accepted by Triton 3.8 while
 preserving the same inclusive 1–8 range. The selected container uses the official
@@ -371,6 +371,7 @@ sequence, and generation rejects prompts that exceed the served context.
 | `--eos-token-id ID` | Omitted: reconcile model/generation/tokenizer reply EOS. Repeat to replace the reply EOS set; PLE training EOS is unchanged. |
 | `--chat-template FILE`, `--chat-template-name NAME` | Omitted: checkpoint template, with automatic `default`/`tool_use` selection for named templates. Mutually exclusive explicit source/name overrides. |
 | `--temperature`, `--top-p`, `--top-k`, `--min-p` | Checkpoint `generation_config.json`; on both backends temperature falls back to 0, top-k to 0 (off), top-p to 1 (off), min-p to 0. Temperature 0 or top-p 0 is greedy; top-p and min-p outside 0 to 1 are refused at startup. |
+| `--presence-penalty`, `--frequency-penalty`, `--repetition-penalty` | 0, 0 and the checkpoint's `generation_config.json` `repetition_penalty`, else 1 (off). OpenAI/vLLM penalties applied by the CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 engines on one GPU ([API](docs/api.md#penalties)); presence/frequency outside -2 to 2 or repetition at or below 0 are refused at startup; other engines and the Metal backend name defaults they do not apply and refuse requests asking for them. |
 | `--thinking`, `--no-thinking` | Thinking enabled by default when the template supports it. |
 | `--reasoning-effort low\|medium\|high\|xhigh` | Template default when unset; unnamed levels map to the nearest named level, ties upward. |
 | `--thinking-budget N` | `0`: no limit. Positive budgets close the reasoning block at the limit; the container Harness requires the CLI value 0. |
@@ -846,6 +847,41 @@ python3 tools/bench_concurrent.py http://127.0.0.1:8080 local \
 ```
 
 These report client-observed streamed arrival/first-token timing; they do not measure exact GPU emission timestamps. The strict concurrent comparison checks its declared output/hash reference, while a serial throughput run alone is not an equality proof. Network/proxy buffering affects measurements. Inspect output and process exit status; do not treat a nonempty log as success. See [public benchmark fixtures](docs/recipes/README.md#measurements) and [validation methodology](docs/optimization-validation.md).
+
+For comparing two server configurations at prompt depths up to the full context there are five further tools. The
+bench and gate tools share one JSON profile per model (served name, context, reply budget, end ids, model-card
+sampling per thinking mode, depths and the per-prompt request schedule); the KL tool reads its card sampling:
+
+- `tools/campaign_bench.py` (standard library) sizes prompts from a fixed text corpus with the server's
+  `/v1/tokenize`, runs each prompt cold and then warm with greedy and seeded model-card sampling, and records the
+  `tensorfold` stats block per request (engine decode tok/s, prefill tok/s, TTFT, queue time, draft acceptance), host
+  MemAvailable and token ids. `analyze` reports per-cell means with 95% t intervals over server starts and, for
+  interleaved runs (ABBA), per-cycle ratios against a base configuration plus token identity of repeated requests;
+  it lists runs that stopped mid-schedule, replies shorter than the reply budget and mixed tool versions.
+- `tools/campaign_gates.py` (standard library) runs a strict and non-strict tool-call suite, multi-key
+  needle-in-a-haystack recall to the full context, determinism (repeat, prefix-cache warm against cold, an exact
+  token-id prompt extension through `/v1/completions`) and drafted-against-serial (`"draft": false`) identity;
+  thresholds are arguments. A determinism or identity comparison whose path the server did not exercise (by the
+  `cached` count of the stats block, or a greedy reply that verified no draft) makes the gate `incomplete`, never a
+  pass; exit status 1 = fail, 3 = incomplete.
+- `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
+  set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
+  plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
+  `gate GOLDEN OLD NEW --calibration CALIBRATION.json` is a non-inferiority test of two configurations against a
+  golden reference, with 95% block bootstrap intervals (circular blocks within eval items) of
+  KL(golden || new) - KL(golden || old) and of the top-1 agreement change. `calibrate GOLDEN BASE NAME=DUMP ...`
+  derives its margins from 4 to 6 reorder-only variants of the base (the same declared math in another summation
+  order): each margin is the largest absolute mean difference of a variant from the base, and the record keeps every
+  variant's difference, interval and dump hash. The gate fails when an interval lies wholly beyond its margin, is
+  `incomplete` when an interval is wider than its margin, and otherwise passes only when the upper KL bound and the
+  lower agreement bound lie within the margins; without a calibration it reports the intervals as `uncalibrated`.
+  Non-finite KL values (NaN or -inf log-probabilities) stop the comparison. Exit status 1 = fail, 3 = incomplete or
+  uncalibrated.
+- `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
+  pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
+  off for matmuls), in the campaign_kl dump format.
+- `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
+  busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
 
 ### Logs, metrics, shutdown and restart
 

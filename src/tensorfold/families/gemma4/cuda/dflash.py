@@ -14,7 +14,6 @@ is allocated once for the admitted context.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -23,6 +22,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cleanup import rollback
+from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda import b16
@@ -128,19 +128,6 @@ class DraftState:
             self.keys[i].index_copy_(0, index, k)
             self.values[i].index_copy_(0, index, v)
         self.length = length
-
-
-@dataclass
-class Proposal:
-    """Companion logits for block rows 1..n on the device; host greedy ids on demand."""
-    logits: torch.Tensor          # FP32 [n, vocab], softcapped
-    _tokens: list[int] | None = None
-
-    @property
-    def tokens(self) -> list[int]:
-        if self._tokens is None:
-            self._tokens = self.logits.max(-1).indices.tolist()
-        return self._tokens
 
 
 class DFlash:
@@ -251,8 +238,15 @@ class DFlash:
         state.length += taps.shape[0]
 
     @torch.no_grad()
-    def propose(self, state: DraftState, anchor: int, count: int) -> Proposal | None:
-        """Logits for up to ``count`` block rows after the anchor, from committed context only."""
+    def propose(self, state: DraftState, anchor: int, count: int, history=None) -> speculative.Chains | None:
+        """Up to ``count`` proposals after the anchor from committed context only: the shared chain utility's
+        argmax of the companion logits (penalized as the target's verify rows are when ``history`` is set)."""
+        logits = self.logits(state, anchor, count)
+        return None if logits is None else speculative.Chains(logits, [history], logits.shape[0])
+
+    @torch.no_grad()
+    def logits(self, state: DraftState, anchor: int, count: int) -> torch.Tensor | None:
+        """Softcapped FP32 companion logits [n, vocab] for block rows 1..n, n <= ``count``."""
         cfg = self.config
         if type(count) is not int or not 0 <= count <= 127:
             raise ValueError("Gemma DFlash proposal count must be an integer from zero through127")
@@ -291,4 +285,4 @@ class DFlash:
             gate, up = self.linears[base + "gate_up"](h).split(cfg.width, dim=-1)
             x = x + self.linears[base + "mlp.down_proj.weight"](torch.nn.functional.silu(gate) * up)
         h = rms_norm(x[1:], self.weights["norm.weight"], cfg.eps)
-        return Proposal(self.project_logits(h).float())
+        return self.project_logits(h).float()

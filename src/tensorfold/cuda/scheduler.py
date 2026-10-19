@@ -190,7 +190,7 @@ class Scheduler:
     def submit(self, prompt: list[int], count: int, sampling: Any, draft: bool,
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
                constraint: Any = None, background: bool = False, probabilities: Any = None,
-               progress: Callable[[int, int, int, float], bool] | None = None) -> dict:
+               progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
         connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
@@ -200,7 +200,8 @@ class Scheduler:
         box: queue.Queue = queue.Queue()
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
-                        constraint=constraint, background=background, probabilities=probabilities, cancel=cancel)
+                        constraint=constraint, background=background, probabilities=probabilities, cancel=cancel,
+                        penalties=penalties)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
         if progress is not None:
             stream.on_fill = lambda rows: box.put(("filled", rows))

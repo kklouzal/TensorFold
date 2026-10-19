@@ -108,6 +108,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     generation.add_argument("--min-p", type=float, default=None,
                             help="keep tokens at least this share of the likeliest one's probability (default: the "
                                  "model's generation config, else 0: off)")
+    generation.add_argument("--presence-penalty", type=float, default=None,
+                            help="-2 to 2: subtract this from every token the reply already holds (OpenAI; default 0: "
+                                 "off; the engines docs/api.md#penalties names)")
+    generation.add_argument("--frequency-penalty", type=float, default=None,
+                            help="-2 to 2: subtract this times a token's count in the reply (OpenAI; default 0: off; "
+                                 "the engines docs/api.md#penalties names)")
+    generation.add_argument("--repetition-penalty", type=float, default=None,
+                            help="above 0: divide positive (multiply other) scores of tokens in the prompt or reply by "
+                                 "this (Hugging Face/vLLM; default: the model's generation config, else 1: off; the "
+                                 "engines docs/api.md#penalties names)")
     generation.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=True,
                             help="open a think block when the chat template supports it")
     generation.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default=None,

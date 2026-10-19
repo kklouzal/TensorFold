@@ -5,9 +5,10 @@ import functools
 import hashlib
 import inspect
 import json
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +19,9 @@ from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
 from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_ids import new_request_id
-from tensorfold.server.request_options import fixed_thinking, heard_effort, parse_numbers, thinking_fields
+from tensorfold.server.request_options import (
+    PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields,
+)
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
 from tensorfold.server.stopping import matched_stop, stop_options
@@ -61,6 +64,24 @@ class PreparedRequest:
     think_budget: int = 0   # reply tokens before the server closes a think block the reply leaves open (0: no limit)
     calls: Any = None       # strict tools' call grammar and reader (server.strict_tools.Plan), or None
     thought_open: bool = False   # the Gemma prompt ends inside the thought channel it opened: the reply begins in it
+    penalties: Any = None   # active presence/frequency/repetition penalties (engine.penalties.Penalties), or None
+
+
+def applies_penalties(engine: Any) -> bool:
+    """Whether ``engine`` applies presence/frequency/repetition penalties: a ``penalties`` keyword, not refused."""
+
+    return ("penalties" in inspect.signature(engine.generate).parameters
+            and bool(getattr(engine, "penalties_supported", True)))
+
+
+def unapplied_penalties(engine: Any, sampling: dict[str, Any]) -> dict[str, Any]:
+    """Remove the penalty defaults (flags, generation_config.json) of ``sampling`` that ``engine`` cannot apply and
+    return the active ones, which the server names at startup as the Metal backend does: requests sending no
+    penalties are then served, and those asking for an active penalty still get HTTP 400."""
+
+    if not any(k in sampling for k in PENALTY_FIELDS) or applies_penalties(engine):
+        return {}
+    return drop_penalties(sampling)
 
 
 def _native_context(model_dir: Path) -> int:
@@ -133,6 +154,10 @@ class App:
         self.reasoning_effort, self.thinking_budget = reasoning_effort, int(thinking_budget)   # the Mac's defaults
         # what generation_config.json and the flags leave unset falls back as on the Mac (README): greedy, filters off
         self.sampling = {"temperature": 0.0, "top_k": 0, "top_p": 1.0, **(sampling or {})}
+        unapplied = unapplied_penalties(engine, self.sampling)
+        if unapplied:
+            print(f"[tensorfold] this engine does not apply penalties; not applying defaults {unapplied}",
+                  file=sys.stderr, flush=True)
         self.max_tokens = int(max_tokens)
         self.native_context_window = _native_context(model_dir)
         self.context_window = self.native_context_window if context_window is None else int(context_window)
@@ -326,6 +351,7 @@ class App:
         if thinking and effort:
             kwargs["reasoning_effort"] = effort
         budget = parse_numbers({"thinking_budget": body.get("thinking_budget")})["thinking_budget"]
+        penalties = self.penalties_for(body)
         budget = int(budget or getattr(self, "thinking_budget", 0)) if chat and thinking else 0     # 0: the default
         spec = grammar.request_spec(body)
         calls = self._strict_calls(body, tools, spec, policy)
@@ -367,7 +393,7 @@ class App:
                 return PreparedRequest(rendered.tokens, max_tokens, tools, thinking,
                                        self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
                                        vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls,
-                                       thought_open=thought_open)
+                                       thought_open=thought_open, penalties=penalties)
             text = render(body["messages"])
             prompt = (self.segments.encode(text) if self.segments is not None
                       else self.tok.encode(text, add_special_tokens=False).ids)
@@ -383,7 +409,7 @@ class App:
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
                                ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls,
-                               thought_open=thought_open)
+                               thought_open=thought_open, penalties=penalties)
 
     def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
                       policy: ToolCallPolicy) -> "strict_tools.Plan | None":
@@ -563,6 +589,22 @@ class App:
         min_p = fields.get("min_p", self.sampling.get("min_p", 0.0))
         return Sampling(int(seed) if seed is not None else seed_for(prompt), temp, int(top_k), float(top_p),
                         float(min_p))
+
+    def penalties_for(self, body: dict[str, Any]):
+        """The request's active penalties over the server's defaults, None when off; RequestError if malformed or
+        the engine has no penalty path (penalties apply under greedy decoding too, as in vLLM)."""
+
+        from tensorfold.engine.penalties import Penalties
+
+        fields = parse_numbers({k: body[k] for k in PENALTY_FIELDS if body.get(k) is not None})
+        value = {k: float(fields.get(k, self.sampling.get(k, off))) for k, off in PENALTY_FIELDS.items()}
+        penalties = Penalties(value["presence_penalty"], value["frequency_penalty"], value["repetition_penalty"])
+        if not penalties.active:
+            return None
+        if not applies_penalties(self.engine):
+            raise RequestError("this model's engine does not apply presence, frequency or repetition penalties: "
+                               "send them as 0, 0 and 1 (or omit them)")
+        return penalties
 
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
             prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
@@ -759,6 +801,8 @@ class App:
                     extra["vision"] = continued(prepared.vision, ids, self.vision.frontend.config)
             if reports and not cached:              # the first run's prompt only: a later run's prompt is the reply's
                 extra["progress"] = filled
+            if prepared.penalties is not None:      # a gate's continuation re-reads reply tokens as prompt: count them
+                extra["penalties"] = replace(prepared.penalties, prompt_length=len(prompt))
             stats = self.engine.generate(ids, count, sampling, feed, **extra)
             if not cached:
                 cached.append(int((stats or {}).get("cached") or 0))

@@ -82,7 +82,7 @@ class _Truth:
     def __init__(self, ref, depth):
         self.ref, self.depth = ref, depth
 
-    def propose_tree(self, pending, context_length, max_nodes, sampling):
+    def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
         k = context_length                          # the prompt is empty: the context is the reply so far
         chain = [self.ref[k + j] if k + j < len(self.ref) else 1 for j in range(self.depth)]
         guesses = chain + [(chain[0] + 1) % V]

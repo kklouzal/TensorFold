@@ -98,6 +98,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `parallel_tool_calls` | False returns at most one completed call | Both |
 | `max_tokens`, `max_completion_tokens` | Explicit reply limit; rejected if prompt plus reply exceeds the window | Both |
 | `temperature`, `top_p`, `top_k`, `min_p` | Sampling overrides; zero `temperature` or zero `top_p` is greedy | Both |
+| `presence_penalty`, `frequency_penalty`, `repetition_penalty` | OpenAI presence/frequency and vLLM repetition penalties ([penalties](#penalties)); greedy replies are penalized too | CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 on one GPU; others 400 |
 | `seed` | Sampling key; otherwise derived from the prompt (and `TENSORFOLD_SEED_SALT`) | Both |
 | `stream` | Server-sent events; the last event carries usage | Both |
 | `stream_options.include_usage` | Usage in its own final event with `"choices": []`, not on the finish event | Both |
@@ -114,8 +115,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 
 `n` must be 1; multiple choices receive HTTP 400.
 
-These fields are accepted and ignored, as `frequency_penalty` and `presence_penalty` are: the reply is the one the
-request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
+These fields are accepted and ignored: the reply is the one the request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
 `web_search_options`, `moderation` (no moderation result is returned), `prediction`, `store`, `metadata`, `user`,
 `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention` and `stream_options.include_obfuscation`;
 `tool_choice: {"type": "allowed_tools", ...}` runs as `auto` over every offered tool (the Responses API applies the
@@ -149,6 +149,25 @@ whole vocabulary shard when a row's nucleus runs past them (or with `top_p` 1 an
 as the likeliest one after temperature; the top-p cut is taken without it, as SGLang does (vLLM applies `min_p`
 first). A value outside 0 to 1 gets HTTP 400. It is part of the keyed rule on every engine, so drafted replies still
 equal `"draft": false` ones.
+
+### Penalties
+
+`presence_penalty` and `frequency_penalty` (each -2 to 2; 0 is off) follow the OpenAI definition over the tokens the
+reply has generated so far, reasoning included: a token's score loses `frequency_penalty` times its count plus
+`presence_penalty` once it has appeared. `repetition_penalty` (greater than 0; 1 is off) follows vLLM and Hugging
+Face over the prompt's and the reply's tokens: such a token's positive score is divided by it and any other score
+multiplied by it. As in vLLM, repetition applies first, then frequency and presence, to the model's float32 scores
+before temperature, top-k, top-p, min-p and the keyed draw (vLLM's float32 arithmetic, the division being a multiply by
+`1 / repetition_penalty`; a finite score an extreme value would take past float32's range saturates there), and greedy
+requests take the argmax of the penalized scores. Values outside those ranges get
+HTTP 400; null keeps the server default: the launch flags `--presence-penalty`, `--frequency-penalty` and
+`--repetition-penalty`, else `generation_config.json`'s `repetition_penalty`, else off. A speculative verify row is
+penalized by the reply plus the drafts on its own path, so drafted replies still equal `"draft": false` ones and stay
+independent of the prefix cache. A continuation after a thinking budget or a required tool call counts the reply
+tokens it re-reads as reply. The CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 (DFlash) engines apply them on
+one GPU, single or concurrent streams; other CUDA engines (Qwen3.6 MoE affine MTP, Flash Next, GLM, Nemotron),
+two-rank Qwen and the Metal backend answer HTTP 400 when a request asks for an active penalty, and name penalty
+defaults they do not apply at startup.
 
 On CUDA, stop strings are checked after every token on the generated text, reasoning included, so drafted and
 `"draft": false` replies stop at the same token; usage and `token_sha` count the tokens through the one that
@@ -585,8 +604,8 @@ same handler and engine path. A response has that chat completion's prompt and t
   carried to a later turn.
 - `tools` takes function tools; `tool_choice` takes `none`, `auto`, `required`, a function or `allowed_tools`;
   `parallel_tool_calls` works as in chat.
-- `max_output_tokens` counts reasoning tokens too. `temperature`, `top_p`, `top_k`, `min_p` and `seed` sample as in
-  chat.
+- `max_output_tokens` counts reasoning tokens too. `temperature`, `top_p`, `top_k`, `min_p`, `seed` and the penalties
+  sample as in chat.
 - `reasoning.effort` follows the chat effort rule: unset is the template's default and `none` turns thinking off.
   `reasoning.summary` is accepted, but no summary is written.
 - `text.format` takes `json_schema` or `json_object` through the structured-output path, with drafts.

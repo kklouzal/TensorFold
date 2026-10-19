@@ -121,14 +121,14 @@ TOLERANCE = 0.25
 MEAN_TOLERANCE = 0.04
 
 
-def assert_matches(proposal, expected):
+def assert_matches(logits, expected):
     """Logits within reduction-order tolerance of the equations; ids equal wherever the margin is clear."""
-    error = (proposal.logits.cpu() - expected).abs()
+    error = (logits.cpu() - expected).abs()
     assert error.max() <= TOLERANCE and error.mean() <= MEAN_TOLERANCE
     top = expected.topk(2, -1).values
     clear = (top[:, 0] - top[:, 1]) > 2 * TOLERANCE
     assert clear.any()
-    assert torch.equal(proposal.logits.cpu().argmax(-1)[clear], expected.argmax(-1)[clear])
+    assert torch.equal(logits.cpu().argmax(-1)[clear], expected.argmax(-1)[clear])
 
 
 def taps_for(cfg, rows, seed):
@@ -144,16 +144,16 @@ def test_proposals_match_independent_equations_across_swa_boundary(tmp_path, win
     taps = taps_for(cfg, rows, 101)
     for start in range(0, rows, 128):
         draft.append(state, taps[start:start + 128].to(DEV))
-    proposal = draft.propose(state, 2, 3)
-    assert_matches(proposal, reference_block(taps, 2, target, cfg, arrays))
+    logits = draft.logits(state, 2, 3)
+    assert_matches(logits, reference_block(taps, 2, target, cfg, arrays))
     if rows >= 2 * window:
         # The tolerance detects a companion that ignored its sliding window.
         wrong = reference_block(taps, 2, target, dataclasses.replace(cfg, sliding_window=1 << 20), arrays)
-        assert (proposal.logits.cpu() - wrong).abs().max() > TOLERANCE
+        assert (logits.cpu() - wrong).abs().max() > TOLERANCE
     # Proposing never commits: the block's slots are beyond the committed length.
-    again = draft.propose(state, 2, 3)
-    assert state.length == rows and torch.equal(again.logits, proposal.logits)
-    assert len(proposal.tokens) == 3
+    tokens, parents, scores = draft.propose(state, 2, 3).finish(0, 3)
+    assert state.length == rows and torch.equal(draft.logits(state, 2, 3), logits)
+    assert tokens == logits.argmax(-1).tolist() and parents == [-1, 0, 1] and len(scores) == 3
 
 
 @cuda
@@ -164,7 +164,7 @@ def test_explicit_causal_policy_matches_authoritative_override(tmp_path, causal)
     state = draft.make_state()
     taps = taps_for(cfg, 13, 19)
     draft.append(state, taps.to(DEV))
-    assert_matches(draft.propose(state, 3, 3), reference_block(taps, 3, target, cfg, arrays))
+    assert_matches(draft.logits(state, 3, 3), reference_block(taps, 3, target, cfg, arrays))
 
 
 @cuda
@@ -187,15 +187,15 @@ def test_only_accepted_rows_commit_and_snapshot_restores_ring_history(tmp_path):
     state.restore(accepted)
     # A verifier accepted two rows; rejected rows never reached append.
     append(state, 60, 62)
-    restored = draft.propose(state, 2, 3)
+    restored = draft.logits(state, 2, 3)
     assert_matches(restored, reference_block(taps[:62], 2, target, cfg, arrays))
     serial = draft.make_state()
     append(serial, 0, 62, step=16)
-    assert torch.equal(draft.propose(serial, 2, 3).logits, restored.logits)
+    assert torch.equal(draft.logits(serial, 2, 3), restored)
     fresh = draft.make_state()
     fresh.restore(accepted)
     append(fresh, 60, 62)
-    assert torch.equal(draft.propose(fresh, 2, 3).logits, restored.logits)
+    assert torch.equal(draft.logits(fresh, 2, 3), restored)
 
 
 @pytest.mark.parametrize("close_failure", [False, True])
@@ -313,7 +313,7 @@ def test_invalid_taps_anchors_and_limits_preserve_context(tmp_path):
             draft.propose(state, 2, nodes)
     assert draft.propose(state, 2, 0) is None
     draft.append(state, taps[:13])
-    assert state.length == 18 and len(draft.propose(state, 2, 3).tokens) == 1   # two block rows fit the window
+    assert state.length == 18 and len(draft.propose(state, 2, 3).finish(0, 3)[0]) == 1   # two block rows fit
     draft.append(state, taps[:1])
     assert draft.propose(state, 2, 3) is None
     with pytest.raises(ValueError, match="accepted taps"):
@@ -333,9 +333,35 @@ def test_fp8_proposals_track_bf16_and_keep_the_lifecycle(tmp_path):
     a, b = exact.make_state(), fp8.make_state()
     exact.append(a, taps)
     fp8.append(b, taps)
-    left, right = exact.propose(a, 2, 3).logits, fp8.propose(b, 2, 3).logits
+    left, right = exact.logits(a, 2, 3), fp8.logits(b, 2, 3)
     assert (left - right).abs().max() < 2.0 and (left - right).abs().mean() < 0.3
     top = left.topk(2, -1).values
     clear = (top[:, 0] - top[:, 1]) > 2.0
     assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
     assert all(not hasattr(fn, "keywords") for fn in fp8.linears.values())
+
+
+@cuda
+def test_penalized_streams_propose_the_argmax_of_their_penalized_rows(tmp_path):
+    """The shared chain utility: the drafter's argmax for plain (and sampled) streams; a penalized stream proposes the
+    argmax of its penalized rows, row j counting the proposals before it; finishing under another history refuses."""
+    import numpy as np
+
+    from tensorfold.engine.penalties import History, Penalties
+
+    cfg, arrays, target = make_fixture(tmp_path)
+    draft = dflash.DFlash(tmp_path, target, context_limit=8192)
+    state = draft.make_state()
+    draft.append(state, taps_for(cfg, 13, 29).to(DEV))
+    logits = draft.logits(state, 2, 3).cpu().numpy()
+    plain = draft.propose(state, 2, 3).finish(0, 3)[0]
+    assert plain == logits.argmax(-1).tolist()
+    history = History(Penalties(presence=2.0, repetition=1.5), [plain[0], 7])
+    history.extend([plain[1]])
+    want = []
+    for row in logits:
+        want.append(int(np.argmax(history.candidates(row[None], np.arange(cfg.vocab)[None], want)[0])))
+    chains = draft.propose(state, 2, 3, history)
+    assert chains.finish(0, 3, history)[0] == want
+    with pytest.raises(ValueError):
+        chains.finish(0, 3)

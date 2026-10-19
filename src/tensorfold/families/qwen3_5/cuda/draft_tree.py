@@ -14,8 +14,12 @@ POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False
 
 def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
                pred: np.ndarray, succ: np.ndarray, anchor: int, max_nodes: int,
-               sampling: Sampling | None, first_position: int) -> tuple[list[int], list[int], list[float]]:
-    """Metal's best-first lattice policy on the host: nodes, parents and path scores in pop order, parents first."""
+               sampling: Sampling | None, first_position: int,
+               history=None) -> tuple[list[int], list[int], list[float]]:
+    """Metal's best-first lattice policy on the host: nodes, parents and path scores in pop order, parents first.
+
+    With a penalty ``history`` (tensorfold.engine.penalties.History) a node's candidate scores are penalized as the
+    target's verify row will be: by the reply and the tokens on the node's path."""
 
     depth_count = cands.shape[0]
     temp = max(float(sampling.temperature), 1e-6) if sampling is not None else 1.0
@@ -27,10 +31,15 @@ def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
     heap: list[tuple[float, int, int, int]] = []
     tokens: list[int] = []
     parents: list[int] = []
+    paths: list[list[int]] = []                     # each node's tokens from the first depth down to it
 
     def expand(token: int, depth: int, parent: int, path_score: float) -> None:
         edge = successor[depth] @ (pred[token].astype(np.float64) * projected[depth])
-        values = (unary[depth] + POLICY["edge"] * edge) / temp
+        values = unary[depth] + POLICY["edge"] * edge
+        if history is not None:
+            values = history.candidates(values[None], cands[depth][None],
+                                        paths[parent] if parent >= 0 else ())[0].astype(np.float64)
+        values = values / temp
         if noise is not None:
             if POLICY["nucleus"] and sampling.top_p < 1:
                 probs = np.exp(values - values.max())
@@ -57,6 +66,8 @@ def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
         tokens.append(token)
         parents.append(parent)
         scores.append(score)
+        if history is not None:
+            paths.append((paths[parent] if parent >= 0 else []) + [token])
         if depth + 1 < depth_count:
             expand(token, depth + 1, me, score)
     return tokens, parents, scores

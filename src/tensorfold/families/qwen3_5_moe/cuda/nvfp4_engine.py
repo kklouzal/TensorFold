@@ -161,7 +161,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             self.multi.memory_gate.reserve = 0
 
     def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, stop_eos=True, *,
-                 vision=None, constraint=None, background=False):
+                 vision=None, constraint=None, background=False, penalties=None):
         token = object()
         try:
             with self._lifecycle:
@@ -172,7 +172,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                 self._calls[token] = threading.get_ident()
             with nullcontext() if self.concurrent else self._serial:
                 return super().generate(prompt, max_tokens, sampling, on_tokens, draft=draft, stop_eos=stop_eos,
-                                        vision=vision, constraint=constraint, background=background)
+                                        vision=vision, constraint=constraint, background=background,
+                                        penalties=penalties)
         finally:
             with self._lifecycle:
                 self._calls.pop(token, None)
