@@ -49,6 +49,7 @@ def test_loading_larger_than_runtime_keeps_original_host_peak(admission):
 
 
 def test_unified_runtime_host_and_device_buffers_coexist_with_cache(admission):
+    # Unified host_extra_staging9 belongs to loading; retained host20 belongs to both phases.
     receipt = admission(integrated=True, host_resident=20, host_extra_staging=9,
                         host_workspace_bytes=120, device_workspace_bytes=200)
     assert receipt["startup_peak_bytes_estimate"] == 279

@@ -501,8 +501,9 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     Additional serving workspaces exclude buffers already charged by geometry.
     Device and host workspaces coexist during serving. On discrete GPUs the
     host workspace replaces loading scratch in the host peak; on unified GPUs
-    both serving workspaces share the cache/weight budget. Legacy host extras
-    remain charged in both host phases, including retained expert control data.
+    both serving workspaces share the cache/weight budget. The separate host
+    availability/cgroup check keeps its conservative legacy host-extra charge
+    in both phases; that argument's unified loading-only charge is unchanged.
     """
 
     from tensorfold.cuda import build
