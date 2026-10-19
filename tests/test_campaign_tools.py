@@ -441,8 +441,8 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
     with pytest.raises(SystemExit, match=r"eval items \['long'\] exceed .*long-prefill hold"):
         dump("--eval", str(tmp_path / "eval.json"))
     missing = str(tmp_path / "new-eval.json")
-    with pytest.raises(SystemExit, match="long-prefill hold"):           # --build would write a 32k item
-        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))
+    with pytest.raises(SystemExit, match="long-prefill hold"):           # --build would write a 128k item
+        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "131072")
     with pytest.raises(SystemExit, match="does not exist"):
         dump("--eval", missing)
     with pytest.raises(SystemExit, match="long-prefill hold"):           # a mid item above the limit

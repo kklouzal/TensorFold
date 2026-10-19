@@ -870,9 +870,9 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   stream's first generated text, reasoning or tool-call delta, then `decode`; `wait` for a non-streamed reply; `idle`
   between requests), the request in flight with its prompt size (and reply budget for `wait`) and the chunk count.
   The tools report facts only; the stall policy belongs to the supervisor.
-- A long-prefill hold covers prompts above 16,384 tokens unless `--allow-long-prefill` is given
-  (`campaign_bench.py run`, `campaign_gates.py`, `campaign_kl.py dump`): `run` records them in its `held` list (and
-  `analyze` names them), a gate with held prompts or needle depths never passes (it is `incomplete` unless the
+- A long-prefill hold covers prompts above 65,536 tokens (the 128k and full-context items) unless
+  `--allow-long-prefill` is given (`campaign_bench.py run`, `campaign_gates.py`, `campaign_kl.py dump`,
+  `campaign_golden.py`): `run` records them in its `held` list (and `analyze` names them), a gate with held prompts or needle depths never passes (it is `incomplete` unless the
   comparisons that ran fail it, and lists each held item with status `incomplete (hold)`; determinism also holds a
   prompt whose tokens plus reply budget, or whose next chat turn, exceed the limit), and the KL dump refuses
   an eval set that contains such items before it loads the model. `campaign_kl.py subset GOLDEN EVAL OUT_DIR
@@ -901,7 +901,7 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
 - `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
   pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
   off for matmuls), in the campaign_kl dump format. `--rename CHECKPOINT_PREFIX=MODEL_PREFIX` loads a checkpoint
-  that stores a module under another path; it holds items above 16,384 prompt tokens like the KL dump.
+  that stores a module under another path; it holds items above 65,536 prompt tokens like the KL dump.
 - The KL eval set (`campaign_kl.py dump --build`) holds the `--short` prompt sets, `--mid-depths` items (multi-chunk
   prefill; document review and document-to-code asks, thinking off and on, each on its own corpus window from
   `--corpus-start`) and `--long-depths` corpus prefixes. `campaign_kl.py append BASE_GOLDEN BASE_EVAL NEW_GOLDEN

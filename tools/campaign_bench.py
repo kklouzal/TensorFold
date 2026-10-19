@@ -72,10 +72,10 @@ TASKS = {
 
 WARMUP = "Warm-up request, not measured. " + TASKS["code"]
 
-# The campaign's hold on sustained long prefills (after the 2026-10-18 GB10 hang at the start of a 32k prefill):
-# a prompt above this many tokens runs only with --allow-long-prefill (the "32k" items have ~32,760 tokens, so the
-# boundary sits well below them); held work is reported as held, never dropped silently.
-LONG_PREFILL_TOKENS = 16384
+# The campaign's hold on sustained long prefills (after the 2026-10-18 GB10 hang at the start of a 32k prefill;
+# lifted to 65,536 tokens on 2026-10-19 once the 32k controls passed): a prompt above this many tokens (the 128k and
+# full-context items) runs only with --allow-long-prefill; held work is reported as held, never dropped silently.
+LONG_PREFILL_TOKENS = 65536
 
 T95 = (12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
        2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042)
