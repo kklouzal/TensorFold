@@ -44,7 +44,7 @@ def rms_norm(x: torch.Tensor, weight: torch.Tensor | None, eps: float, *,
     d = x.shape[-1]
     _rms[(x.numel() // d,)](x, weight if weight is not None else x, out, D=d, EPS=eps,
                            SCALE=weight is not None, B=triton.next_power_of_2(d), ROUND_NORMALIZED=round_normalized,
-                           num_warps=4 if d <= 1024 else 8, enable_fp_fusion=False)
+                           num_warps=8 if d <= 1024 else 16, enable_fp_fusion=False)
     return out
 
 
