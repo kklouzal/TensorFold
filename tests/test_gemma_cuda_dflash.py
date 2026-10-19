@@ -329,8 +329,9 @@ def test_invalid_taps_anchors_and_limits_preserve_context(tmp_path):
 @cuda
 def test_fp8_proposals_track_bf16(tmp_path):
     """Private FP8 projections and head (bits 8), context appended through the FP8 [k | v] prefix: logits within
-    FP8 error of the BF16 companion and the same token ids wherever the BF16 margin is clear."""
-    cfg, arrays, target = make_fixture(tmp_path, window=8)
+    FP8 error of the BF16 companion, the same token ids wherever the BF16 margin is clear, deterministic repeats,
+    and exactly the device bytes admission counts for --drafter-bits 8 (capacity.admit)."""
+    cfg, _arrays, target = make_fixture(tmp_path, window=8)
     target.weights = NS(embed=NS(weight=target.head.to(DEV)))
     target.config.softcap = 30.0
     exact = dflash.DFlash(tmp_path, target, context_limit=8192)
@@ -343,8 +344,19 @@ def test_fp8_proposals_track_bf16(tmp_path):
     assert (left - right).abs().max() < 2.0 and (left - right).abs().mean() < 0.3
     top = left.topk(2, -1).values
     clear = (top[:, 0] - top[:, 1]) > 2.0
+    assert clear.any()                      # the id check below must not pass vacuously
     assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
+    assert torch.equal(fp8.logits(b, 2, 3), right)
     assert all(isinstance(fn, Fp8Rows) for fn in (*fp8.linears.values(), fp8.project_logits))
+    # Resident storage (the [k | v] prefixes share their [k | v | q] codes): an E4M3 byte per projection weight, an
+    # FP32 scale per output row, the BF16 norms, and the FP8 copy of the target's tied head.
+    held = {t.untyped_storage().data_ptr(): t.untyped_storage().nbytes()
+            for fn in (*fp8.linears.values(), fp8.project_logits) for t in (fn.codes, fn.scale)}
+    held.update((t.untyped_storage().data_ptr(), t.untyped_storage().nbytes()) for t in fp8.weights.values())
+    shapes = cfg.shapes().values()
+    assert sum(held.values()) == (sum(r * k + 4 * r for r, k in (s for s in shapes if len(s) == 2))
+                                  + sum(2 * n for (n,) in (s for s in shapes if len(s) == 1))
+                                  + cfg.vocab * (cfg.hidden + 4))
 
 
 @cuda
@@ -355,7 +367,7 @@ def test_penalized_streams_propose_the_argmax_of_their_penalized_rows(tmp_path):
 
     from tensorfold.engine.penalties import History, Penalties
 
-    cfg, arrays, target = make_fixture(tmp_path)
+    cfg, _arrays, target = make_fixture(tmp_path)
     draft = dflash.DFlash(tmp_path, target, context_limit=8192)
     state = draft.make_state()
     draft.append(state, taps_for(cfg, 13, 29).to(DEV))

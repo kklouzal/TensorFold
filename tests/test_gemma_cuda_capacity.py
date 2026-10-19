@@ -1,10 +1,13 @@
-"""Processor metadata reaches Gemma's real header-only serving geometry."""
+"""Processor metadata and the DFlash companion's precision reach Gemma's real header-only serving geometry."""
 
+import math
 import sys
 from types import ModuleType
 
 import pytest
 from gemma_cuda_target_metadata_test import inventory, tiny_config
+from test_gemma_cuda_dflash_metadata import config as draft_config
+from test_gemma_cuda_dflash_metadata import write_checkpoint
 
 from tensorfold.cuda import capacity as common
 from tensorfold.families.gemma4.cuda import capacity
@@ -58,3 +61,38 @@ def test_admission_accounts_for_largest_declared_processor_pool(component, tmp_p
     # was below this unavoidable allocation peak even for this tiny tower.
     minimum_pool_bytes = (1120 * 3**2) * 1120 * (8 + 4)
     assert large.needed(128) >= minimum_pool_bytes
+
+
+def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypatch):
+    """--drafter-bits 16 admits the companion's BF16 bytes; 8 admits what DFlash(bits=8) keeps resident (checked
+    against the loaded tensors in test_gemma_cuda_dflash): an E4M3 byte per projection weight and an FP32 scale per
+    output row, the BF16 norms, and the private FP8 copy of the target's tied [vocab, hidden] head. The companion's
+    K/V geometry does not depend on its weight precision."""
+    raw = tiny_config()
+    text = raw["text_config"]
+    _, where = inventory(raw)
+    target_headers = {name: {"dtype": value[3], "shape": value[4]} for name, value in where.items()}
+    draft_dir = tmp_path / "draft"
+    draft_dir.mkdir()
+    draft, _ = write_checkpoint(draft_dir, {**draft_config(), "num_target_layers": text["num_hidden_layers"],
+                                            "vocab_size": text["vocab_size"],
+                                            "dflash_config": {"target_layer_ids": [0, 1], "mask_token_id": 4}})
+    metadata = ModuleType("tensorfold.checkpoint_metadata")
+    metadata.read_config = lambda directory: raw
+    monkeypatch.setitem(sys.modules, "tensorfold.checkpoint_metadata", metadata)
+    monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
+    read = common.headers                   # the companion's real header-only read; the target's inventory above
+    monkeypatch.setattr(common, "headers", lambda directory: read(directory) if directory == draft_dir
+                        else target_headers)
+    monkeypatch.setattr(common, "admit", lambda directory, context, explicit, torch, geometry, rule, *,
+                        weight_estimator: (weight_estimator(directory)[0], geometry))
+
+    alone, plain = capacity.admit(tmp_path, 128, True)
+    bf16, with_bf16 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir)
+    fp8, with_fp8 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir, drafter_bits=8)
+    shapes = draft.shapes().values()
+    assert bf16.resident - alone.resident == sum(2 * math.prod(s) for s in shapes)
+    assert fp8.resident - alone.resident == (sum(r * k + 4 * r for r, k in (s for s in shapes if len(s) == 2))
+                                            + sum(2 * n for (n,) in (s for s in shapes if len(s) == 1))
+                                            + text["vocab_size"] * (text["hidden_size"] + 4))
+    assert with_fp8.needed(128) == with_bf16.needed(128) > plain.needed(128)

@@ -54,6 +54,9 @@ def test_moe_tail_equals_unfused(mlx):
     ref = (res + norm(norm(dense, wd) + norm(routed, wr), wo)) * scalar
     close(h, ref)
     close(nxt, norm(ref, wn))
+    rows = [glue.moe_tail(res[i:i + 1], dense[i:i + 1], routed[i:i + 1], wd, wr, wo, scalar, wn, EPS, mlx)
+            for i in range(19)]
+    assert all(torch.equal(torch.cat([r[j] for r in rows]), (h, nxt)[j]) for j in range(2))
 
 
 def test_geglu_equals_torch_bit_for_bit():

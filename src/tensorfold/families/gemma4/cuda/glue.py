@@ -30,12 +30,12 @@ def _norm(x, mask, w, D: tl.constexpr, EPS: tl.constexpr, ROUND: tl.constexpr):
 
 
 @triton.jit
-def _attention_tail(H, O, WA, WM, WE, HO, DI, EI, D: tl.constexpr, B: tl.constexpr, EPS: tl.constexpr,
+def _attention_tail(H, ATT, WA, WM, WE, HO, DI, EI, D: tl.constexpr, B: tl.constexpr, EPS: tl.constexpr,
                     ROUND: tl.constexpr):
     row = tl.program_id(0).to(tl.int64)
     d = tl.arange(0, B)
     mask = d < D
-    o = tl.load(O + row * D + d, mask=mask, other=0.0).to(tl.float32)
+    o = tl.load(ATT + row * D + d, mask=mask, other=0.0).to(tl.float32)
     t = _norm(o, mask, tl.load(WA + d, mask=mask, other=0.0).to(tl.float32), D, EPS, ROUND)
     h = (tl.load(H + row * D + d, mask=mask, other=0.0).to(tl.float32) + t).to(tl.bfloat16).to(tl.float32)
     tl.store(HO + row * D + d, h.to(tl.bfloat16), mask=mask)

@@ -57,7 +57,7 @@ class Fp8Rows:
             self.codes[i:i + CONVERT_ROWS] = (w / scale[:, None]).to(torch.float8_e4m3fn)
             self.scale[i:i + CONVERT_ROWS] = scale
 
-    def prefix(self, count: int) -> "Fp8Rows":
+    def prefix(self, count: int) -> Fp8Rows:
         """The first ``count`` output rows, sharing storage."""
         view = object.__new__(Fp8Rows)
         view.n, view.k, view.softcap = count, self.k, self.softcap
