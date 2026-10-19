@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import os
-from pathlib import Path
 import re
 import struct
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
 GIB = 1024**3
 # safetensors dtype names -> bytes a value (FP8: the FP4 checkpoints' block scales)
@@ -489,6 +489,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           weight_estimator: Callable[[Path], tuple[Weights, int]] | None = None,
           context_limit: int | None = None, original_context: int | None = None,
           host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0,
+          device_workspace_bytes: int = 0, host_workspace_bytes: int = 0,
           memory_reserve: int | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
@@ -497,6 +498,11 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     host_bytes)``. The default uses the generic estimate for both staging
     domains. A backend estimate must be a nonnegative integer byte contract.
     The draft model uses ``draft_weights`` or a transform.
+    Additional serving workspaces exclude buffers already charged by geometry.
+    Device and host workspaces coexist during serving. On discrete GPUs the
+    host workspace replaces loading scratch in the host peak; on unified GPUs
+    both serving workspaces share the cache/weight budget. Legacy host extras
+    remain charged in both host phases, including retained expert control data.
     """
 
     from tensorfold.cuda import build
@@ -519,8 +525,9 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                    (weights.resident, weights.staging, weights.mapped, host_staging)):
                 raise ValueError("backend weight estimates must be nonnegative integer bytes")
         if any(isinstance(n, bool) or not isinstance(n, int) or n < 0
-               for n in (host_resident, host_extra_staging, resident_extra)):
-            raise ValueError("additional resident and host staging byte estimates must be nonnegative integers")
+               for n in (host_resident, host_extra_staging, resident_extra,
+                         device_workspace_bytes, host_workspace_bytes)):
+            raise ValueError("additional resident, staging and workspace byte estimates must be nonnegative integers")
         weights = Weights(weights.resident + resident_extra, weights.staging, weights.mapped)
         if unified(torch):
             weights = Weights(weights.resident + host_resident,
@@ -544,17 +551,23 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 main = geometry
                 geometry = Geometry(lambda slots: main.bytes_at(slots) + draft_geometry.bytes_at(slots),
                                     main.reserve, main.minimum_slots)
-        if host_resident or host_extra_staging:
-            host_needed = host_resident + host_staging + host_extra_staging
+        serving_workspace = device_workspace_bytes + (host_workspace_bytes if unified(torch) else 0)
+        if serving_workspace:
+            base_geometry = geometry
+            geometry = Geometry(lambda slots: base_geometry.bytes_at(slots) + serving_workspace,
+                                base_geometry.reserve, base_geometry.minimum_slots)
+        host_needed = host_resident + host_extra_staging + max(host_staging, host_workspace_bytes)
+        if host_resident or host_extra_staging or host_workspace_bytes:
             allowance = host_cgroup_bytes()
             if allowance is not None and host_needed > allowance:
-                raise ValueError(f"host expert weights/staging need {host_needed / GIB:.2f} GiB, "
+                label = "host weights/staging/workspace" if host_workspace_bytes else "host expert weights/staging"
+                raise ValueError(f"{label} need {host_needed / GIB:.2f} GiB, "
                                  f"but the container/cgroup has only {allowance / GIB:.2f} GiB remaining")
         if not unified(torch):
             host_free = host_stream_bytes()
-            host_needed = host_resident + host_staging + host_extra_staging
             if host_free is not None and host_needed > host_free:
-                label = "host weights/staging" if host_resident or host_extra_staging else "host staging"
+                label = "host weights/staging/workspace" if host_workspace_bytes else (
+                    "host weights/staging" if host_resident or host_extra_staging else "host staging")
                 raise ValueError(f"{label} needs an estimated {host_needed / GIB:.2f} GiB, "
                                  f"but only {host_free / GIB:.2f} GiB is available after its reserve; "
                                  "free host memory or use a checkpoint with smaller loading buffers")
@@ -579,6 +592,9 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     window = choose(plan, [row[1:] for row in both],
                     window_kind="native" if context_limit is None else "RoPE")
     receipt = {**plan.receipt(window), "largest_window": min(row[5] for row in both)}
+    if device_workspace_bytes or host_workspace_bytes:
+        receipt.update(device_workspace_bytes_estimate=device_workspace_bytes,
+                       host_workspace_bytes_estimate=host_workspace_bytes)
     if context_limit is not None:
         receipt.update(native_window=original_context, rope_context_limit=context_limit)
     native_note = str(receipt["native_window"])
