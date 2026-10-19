@@ -94,7 +94,7 @@ def _engine(monkeypatch, *, with_head=True):
                 result.append(([after], [None], len(after), len(after)))
             return result
 
-        def launch_blocks(self, snaps, pending, limit):
+        def launch_blocks(self, snaps, pending, limit, histories=None):
             before = snaps[0][0][0]
             total = sum(before) + pending[0]
             proposals = []
@@ -155,6 +155,90 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
     assert engine._prefix.tokens == (3, 1, 4, 1, 5, 9, 2)
+
+
+@pytest.mark.parametrize("policy", [dict(temperature=1.0, top_k=7, top_p=.95), dict(temperature=.6, top_k=0, top_p=.9),
+                                    None])
+@pytest.mark.parametrize("penalized", [False, True])
+def test_proposals_of_an_exact_drafter_keep_serial_output(monkeypatch, policy, penalized):
+    """A drafter equal to the target proposes its argmax at anchor + 1 + j, penalized as the target's verify rows
+    are: greedy rounds accept every proposal (penalized or not), sampled ones keep the serial output."""
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda import speculative
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import Penalties
+    engine = _engine(monkeypatch)
+    monkeypatch.undo()                      # the real CUDA sampler's host rule, on CPU scores
+    monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
+    monkeypatch.setattr("tensorfold.cuda.sampling.validate_rows", lambda logits, positions, sampling: None)
+    sampling = Sampling(seed=4321, **policy) if policy is not None else None
+    penalties = Penalties(presence=0.8, frequency=0.4, repetition=1.2) if penalized else None
+
+    def scores(position):                   # the target's scores for the token at ``position``, whatever came before
+        return torch.randn(19, generator=torch.Generator().manual_seed(position)) * 2
+
+    def forward(tokens, state, *, output_logits=True, **kwargs):
+        rows = []
+        for token in tokens:
+            rows.append([token, len(state.tokens)])
+            state.tokens.append(token)
+        hidden = torch.tensor(rows, dtype=torch.float32)
+        return SimpleNamespace(hidden=hidden, logits=project(hidden) if output_logits else None, taps={1: hidden})
+
+    def project(hidden):
+        return torch.stack([scores(int(row[1]) + 1) for row in hidden])
+
+    engine.target.forward, engine.target.project_logits = forward, project
+    seen = []
+
+    class Exact(type(engine.head)):
+        def launch_blocks(self, snaps, pending, limit, histories=None):
+            first = snaps[0][3] + 1                 # the committed context ends at the anchor
+            logits = torch.stack([scores(first + j) for j in range(limit)])
+            return [(speculative.Chains(logits, histories, limit), first)]
+
+        def finish_tree(self, launched, context_length, limit, sampling, history=None):
+            chains, first = launched
+            seen.append((context_length, first))
+            return chains.finish(0, limit, history)
+
+    engine.head = Exact()
+
+    def run(draft, penalties=penalties):
+        output = []
+        stats = engine.generate([3, 1, 4, 1, 5], 40, sampling, lambda tokens: output.extend(tokens),
+                                draft=draft, stop_eos=False, penalties=penalties)
+        return output, stats
+
+    serial, _ = run(False)
+    drafted, stats = run(True)
+    assert drafted == serial and len(drafted) == 40 and stats["drafted"] > 0
+    assert seen and all(length == first for length, first in seen)
+    if sampling is None:
+        assert stats["accepted"] == stats["drafted"]
+    if penalized:
+        assert run(False, None)[0] != serial              # the penalties do change this reply
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_penalized_rows_keep_drafted_output_serial_with_unaware_drafts(monkeypatch, sampled):
+    """Proposals that ignore the penalties are still verified against penalized rows (each by its path)."""
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import Penalties
+    engine = _engine(monkeypatch)
+    sampling = Sampling(seed=5, temperature=.8, top_k=9, top_p=.95) if sampled else None
+
+    def run(draft, penalties):
+        output = []
+        stats = engine.generate([3, 1, 4, 1, 5], 35, sampling, lambda tokens: output.extend(tokens), draft=draft,
+                                stop_eos=False, penalties=penalties)
+        return output, stats
+
+    penalties = Penalties(presence=2.0, frequency=1.5, repetition=1.5)
+    serial, _ = run(False, penalties)
+    drafted, stats = run(True, penalties)
+    assert drafted == serial and stats["drafted"] > 0
+    assert serial != run(False, None)[0]
 
 
 def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch):

@@ -139,9 +139,9 @@ def test_complete_proposals_match_independent_equations_across_swa_boundary(tmp_
     draft.add_taps(taps)
     before = draft.snapshot()
     launched = draft.launch_block(2, 3)
-    assert launched[0][3] is not None
+    assert launched[0].owners is not None            # the context the kernels read stays alive until the readback
     ids, parents, scores = draft.finish_tree(launched, rows, 3)
-    assert launched[0][3] is None
+    assert launched[0].owners is None
     expected_ids, expected_scores, expected_hidden = reference_block(taps, 2, target, cfg, arrays)
     assert ids == expected_ids and scores == expected_scores and parents == [-1, 0, 1]
     assert torch.equal(target.projected[-1], expected_hidden)
@@ -356,3 +356,33 @@ def test_invalid_taps_anchors_limits_and_failed_append_preserve_context(tmp_path
     with pytest.raises(ValueError, match="admitted window"):
         draft.skip(16)
     assert draft._context is before
+
+
+def test_proposals_are_the_argmax_and_penalized_streams_count_their_path(tmp_path, monkeypatch):
+    """Every stream proposes the drafter's argmax (sampled ones too); a penalized stream batched with a plain one
+    proposes the argmax of its penalized rows, row j counting the proposals before it; a history differing from the
+    launch is refused."""
+    import numpy as np
+
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import History, Penalties
+
+    cfg, arrays, target = make_fixture(tmp_path, monkeypatch)
+    draft = dflash.DFlash(tmp_path, target, context_limit=8192)
+    taps = torch.randn((13, 128), generator=torch.Generator().manual_seed(29)).bfloat16()
+    draft.add_taps(taps)
+    sampling = Sampling(seed=77, temperature=1.0, top_k=20, top_p=.95)
+    expected, scores, hidden = reference_block(taps, 2, target, cfg, arrays, length=4)
+    assert draft.finish_tree(draft.launch_block(2, 3), 14, 3, sampling) == (expected, [-1, 0, 1], pytest.approx(scores))
+    logits = ((F.linear(hidden, target.head).float() / 30).tanh() * 30).numpy()
+    history = History(Penalties(presence=2.0, repetition=1.5), [expected[0], 7])
+    history.extend([expected[1]])
+    want = []
+    for row in logits:
+        want.append(int(np.argmax(history.candidates(row[None], np.arange(cfg.vocab)[None], want)[0])))
+    before = draft.snapshot()
+    batch = draft.launch_blocks([before, before], [2, 2], 3, histories=[None, history])
+    assert draft.finish_tree(batch[0], 14, 3, sampling) == (expected, [-1, 0, 1], pytest.approx(scores))
+    assert draft.finish_tree(batch[1], 14, 3, sampling, history)[0] == want != expected
+    with pytest.raises(ValueError):
+        draft.finish_tree(batch[1], 14, 3, sampling)

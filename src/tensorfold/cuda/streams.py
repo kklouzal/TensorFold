@@ -28,6 +28,8 @@ class Stream:
     drafts: list[int] = field(default_factory=list)       # an MTP family's drafts for the next round
     stops: list[int] = field(default_factory=list)        # prompt positions whose states the prefill keeps
     constraint: Any = None                                # the reply's grammar (tensorfold.engine.grammar), or None
+    penalties: Any = None                                 # active penalties (tensorfold.engine.penalties.Penalties)
+    history: Any = None                                   # their state, made when a lane admits it (rank 0)
     background: bool = False                              # priority "background": after, and yielding to, the rest
     probabilities: Any = None
     carry: dict | None = None                             # the stats of the stream this one continues
@@ -93,7 +95,7 @@ class Stream:
         grammar starts again with it."""
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
-                      background=self.background, probabilities=self.probabilities,
+                      background=self.background, probabilities=self.probabilities, penalties=self.penalties,
                       constraint=self.constraint.fresh() if self.constraint is not None else None,
                       carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)
 

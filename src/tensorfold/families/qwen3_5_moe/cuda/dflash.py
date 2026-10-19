@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from triton.language.core import TRITON_MAX_TENSOR_NUMEL
 
 from tensorfold.cleanup import rollback
+from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
@@ -185,9 +186,9 @@ class DFlash:
         return x + self._lin(h, base + "mlp.down_proj.weight")
 
     @torch.no_grad()
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
-        if len(snaps) != len(pendings):
-            raise ValueError("DFlash requires one anchor token per context")
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
+        if len(snaps) != len(pendings) or (histories is not None and len(histories) != len(snaps)):
+            raise ValueError("DFlash requires one anchor token (and penalty history, if any) per context")
         length = min(self.block if block is None else positive(block, "block"), max_nodes + 1)
         out = [None] * len(snaps)
         if length < 2:
@@ -213,24 +214,23 @@ class DFlash:
         h = _norm(x.view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden),
                   self.weights["norm.weight"], cfg.eps)
         logits = _mm(h, self.target_head).float()
-        best, tokens = logits.max(-1)
-        scores = (torch.logsumexp(logits, -1) - best).view(len(live), length - 1).cumsum(-1)
-        shared = [tokens.view(len(live), length - 1), scores, None]
+        # The argmax proposals; a penalized stream's rows are penalized as the target's will be.
+        chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1)
         for row, i in enumerate(live):
-            out[i] = shared, row
+            out[i] = chains, row
         return out
 
-    def launch_block(self, pending, max_nodes, block=None):
-        return self.launch_blocks([self.snapshot()], [pending], max_nodes, block)[0]
+    def launch_block(self, pending, max_nodes, block=None, history=None):
+        return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
-    def finish_tree(self, launched, context_length, max_nodes, sampling=None):
+    def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
+        """A launched chain. ``context_length`` (its first proposal's absolute position, the anchor's + 1) and
+        ``sampling`` complete the drafter interface; argmax proposals use neither."""
         if launched is None:
             return [], [], []
-        shared, row = launched
-        if shared[2] is None:
-            shared[2] = shared[0].cpu().tolist(), shared[1].cpu().tolist()
-        ids = shared[2][0][row][:max_nodes]
-        return ids, list(range(-1, len(ids) - 1)), shared[2][1][row][:max_nodes]
+        chains, row = launched
+        return chains.finish(row, max_nodes, history)
 
-    def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None):
-        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling)[:2]
+    def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None, history=None):
+        return self.finish_tree(self.launch_block(pending, max_nodes, block, history), context_length, max_nodes,
+                                sampling, history)[:2]

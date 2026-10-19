@@ -102,6 +102,18 @@ def test_reentrant_close_does_not_deadlock_or_release_active_owners(monkeypatch)
     assert events == ["fence"]
 
 
+def test_penalties_reach_the_shared_qwen_decoder(monkeypatch):
+    """A request's penalties pass to the shared Qwen decode path, whose one-GPU support the server checks: dropping
+    them here would serve unpenalized replies to requests the server accepted."""
+    engine, _ = _engine(monkeypatch)
+    seen = []
+    monkeypatch.setattr(Qwen27Engine, "generate", lambda self, *a, **kw: seen.append(kw.get("penalties")))
+    penalties = object()
+    engine.generate([1], 2, None, lambda _: None, penalties=penalties)
+    assert seen == [penalties]
+    engine.close()
+
+
 def test_partial_startup_failure_drains_factory_published_authority(monkeypatch):
     failure = ValueError("later layer failed")
     events = []

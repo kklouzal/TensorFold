@@ -111,7 +111,7 @@ def test_drafted_decode_keeps_serial_tokens():
     class Drafter:
         last_candidates = None
 
-        def propose_tree(self, pending, context_length, max_nodes, sampling):
+        def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
             k = context_length
             right = [ref[k + j] if k + j < len(ref) else 1 for j in range(4)]
             self.last_candidates = np.array([[t] * 16 for t in right])

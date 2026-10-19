@@ -576,6 +576,10 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 else:
                     messages = [{"role": "user", "content": self._legacy_prompt_to_text(body.get("prompt", ""))}]
                     tools = []
+                if body.get("presence_penalty") or body.get("frequency_penalty") \
+                        or body.get("repetition_penalty") not in (None, 1, 1.0):
+                    raise RequestError("presence, frequency and repetition penalties are applied by the CUDA engines "
+                                       "only: send them as 0, 0 and 1 (or omit them) on the Metal backend")
                 max_tokens = body.get("max_tokens") or body.get("max_completion_tokens")
                 temperature = float(body.get("temperature") or 0.0)
                 # Preserve raw sampling and scheduling options; an absent temperature differs from temperature zero.

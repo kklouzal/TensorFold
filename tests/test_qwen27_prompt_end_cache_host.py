@@ -429,7 +429,7 @@ def _stand_in_prefills(m, monkeypatch):
         return "normed", (kept, _snap(keep_at))
 
     monkeypatch.setattr(m.multi, "prefill_state", prefill_state)
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # these fixtures retain a complete, unsplit head on both ranks
         return _reply(recs[w.rank].last)[0]
 
@@ -590,7 +590,7 @@ class ContextDraft:
                     cache[layer] = self._made(self.torch.zeros(self.heads, rows, self.dim))
         return [(snap[0], snap[1], min(self.window, snap[2] + n), snap[3] + n) for snap, n in zip(snaps, sizes)]
 
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
         assert all(t is not None for snap in snaps for t in snap[0] + snap[1])
         return [None] * len(snaps)
 
@@ -617,7 +617,7 @@ def _tapped_prefills(m, monkeypatch):
 
     monkeypatch.setattr(m.prefill, "prefill_chunk", chunk)
     monkeypatch.setattr(m.multi, "State", lambda w: _ids_state(m, []))
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # the drafter-context fixture also holds an unsplit head
         return _reply([n])[0]
 

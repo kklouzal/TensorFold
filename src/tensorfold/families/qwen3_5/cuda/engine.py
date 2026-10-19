@@ -250,11 +250,22 @@ class Qwen27Engine:
             self.scheduler.close()
             self.scheduler = None
 
+    @property
+    def penalties_supported(self) -> bool:
+        """Penalties run on one GPU (single or concurrent streams); the two-rank protocols carry none."""
+
+        return self.tp == 1
+
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], bool | None],
-                 draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None, background=False):
+                 draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None, background=False,
+                 penalties=None):
         """``draft=False``: serial re-runs, no drafts; ``background``: last under ``--parallel``, yielding lanes."""
 
+        from tensorfold.engine.penalties import History
         from .decode import draft_decode, prefill
+
+        if penalties is not None and penalties.active and not self.penalties_supported:
+            raise ValueError("presence, frequency and repetition penalties require one GPU (--tp 1)")
 
         if vision is not None and self.vision is None:
             raise ValueError("image inputs require starting this engine with --vision")
@@ -265,6 +276,8 @@ class Qwen27Engine:
         grammar = {} if constraint is None else {"constraint": constraint}     # a plain request calls as before
         if self.scheduler is not None:
             grammar.update({"background": True} if background else {})
+            if penalties is not None and penalties.active:      # the decoder keeps each admission's history
+                grammar["penalties"] = penalties
             if vision is None:
                 return self.scheduler.submit(list(prompt), max_tokens, sampling, draft, on_tokens, stop_eos=stop_eos,
                                              **grammar)
@@ -281,6 +294,8 @@ class Qwen27Engine:
             drafter.restore(hit[2])
         elif drafter is not None:
             drafter.restore(([None] * drafter.layers, [None] * drafter.layers, 0, 0))
+        if penalties is not None and penalties.active:
+            grammar["history"] = History(penalties, prompt)
         stops, keep = self._stops(prompt, hit, draft) if vision is None else ((), None)
         end = entry_end(prompt) if draft and vision is None and self._ends(prompt, stops) else None
         st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=hit[1] if hit else None, room=self.room,

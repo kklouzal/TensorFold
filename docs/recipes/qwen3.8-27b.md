@@ -14,6 +14,11 @@ DFlash2 is used automatically once pulled. On MLX, `--drafter none` disables tha
 `--no-drafts` disables all drafts on either backend. CUDA requires DFlash2 unless `--no-drafts` is set.
 The target verifies every proposed token against its own serial sample.
 
+Sampling defaults come from the checkpoint's `generation_config.json`, `repetition_penalty` included (as in vLLM).
+Some checkpoints disagree with their model cards: AEON-7's Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED
+declares `repetition_penalty` 1.05 where its card recommends 1.0, so a profile that serves the card's settings
+passes `--repetition-penalty 1.0` (and the card's `--temperature`/`--top-p`/`--top-k`) explicitly.
+
 ## MLX
 
 M5 tensor-unit GPUs run the lane decoder with draft trees. M1 through M4 use `row_forward` and the

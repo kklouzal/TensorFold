@@ -91,7 +91,7 @@ def decoders(monkeypatch, allocations):  # noqa: F811
 
     monkeypatch.setattr(multi, "prefill_state", prefill_state)
     monkeypatch.setattr(multi, "prefill_batch", prefill_batch)
-    def first_token(*args, plan=None):
+    def first_token(*args, plan=None, history=None):
         assert plan is None                    # these stand-ins use the unsharded target sampler
         return 7
 
