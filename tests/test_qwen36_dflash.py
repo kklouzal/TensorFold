@@ -430,15 +430,11 @@ def test_proposals_are_the_argmax_and_penalized_streams_count_their_path(fixture
         draft.finish_tree(batch[1], 10, 3, sampling)
 
 
-class FixedChains:
-    """A launched chain stand-in with fixed per-stream proposals and cumulative scores."""
+class FixedChains(dflash.speculative.Chains):
+    """Already validated host packets with fixed scores; use the production shared cutoff."""
 
     def __init__(self, ids, scores):
-        self.ids, self.scores = ids, scores
-
-    def finish(self, row, max_nodes, history=None):
-        ids = self.ids[row][:max_nodes]
-        return ids, list(range(-1, len(ids) - 1)), self.scores[row][:max_nodes]
+        self.host, self.histories, self.scores = (ids, scores, None), [None] * len(ids), scores
 
 
 def test_proposals_stop_where_the_drafters_cumulative_score_exceeds_the_cut(fixture):

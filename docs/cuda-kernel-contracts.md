@@ -39,6 +39,25 @@ producer and any reduction consumer complete. Programmatic dependent launch in
 the grouped kernel retains its device dependency wait before reading inputs;
 it does not replace cross-stream waits.
 
+## Block-drafter confidence and readback
+
+`cuda.speculative.Chains` owns one stream-major launch packet. Its borrowed
+kernel-source owners remain live until the synchronous host readback completes;
+a failed readback does not clear them. Ownership does not establish cross-stream
+readiness: the caller must provide a dependency if the producer and readback use
+different CUDA streams. Newly decoded cumulative confidences must
+all be finite before the host packet is published, including rows outside a
+caller-specific node cap. Penalized confidences are checked after computation
+from the current request history, before publication or cutoff.
+
+The owning drafter validates a fixed optional stop threshold during
+configuration. `Chains.finish(stop=...)` then applies the existing node cap and
+stops before the first score strictly above that threshold, retaining one
+proposal when the cap permits it. Equality stays in the chain. A cached packet
+does not revalidate its unchanged confidence data or configuration; history
+identity remains part of the launch contract. This changes neither target math
+nor the rule for committing proposals.
+
 ## GDN schedules and pointer tables
 
 `schedule` accepts integer parent indices for one nonempty tree: row zero has
