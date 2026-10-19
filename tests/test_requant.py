@@ -75,12 +75,22 @@ def test_accounting_matches_the_copy_and_refuses_unknown_kinds():
             call("int4", 10, 64)
 
 
-@pytest.mark.parametrize("n,k", [(1, 64), (3, 64), (7, 256), (127, 64), (129, 256)])
+@pytest.mark.parametrize("n,k", [(1, 64), (3, 64), (7, 256), (127, 64), (129, 256), (4100, 256), (16385, 64)])
 def test_fp8_staging_covers_padded_fragment_storage_for_small_and_non_aligned_projections(n, k):
+    from tensorfold.cuda.nvfp4.linear import FRAGMENT_ROWS, fragment_index
+
     linear = requant.requantize(torch.ones(n, k, dtype=torch.bfloat16), "fp8")
-    # During one _fragment_order chunk, its final bytes, padded input and advanced-index result coexist with the
-    # channel-scale destination and the unpacked quantized codes/scales. Index tensors only increase this floor.
-    required = 3 * linear.w8.numel() + linear.cols.numel() * 4 + n * k + n * 4
+    rows = min(linear.npad, FRAGMENT_ROWS)
+    kk, nn = fragment_index(k, rows, "cpu")
+    assert kk.stride() != nn.stride()
+    # CUDA's advanced-index constructor materializes matching contiguous indices; their original backing storage
+    # still belongs to kk/nn. Observe both independently of the admission formula. CPU indexing skips these copies.
+    allocations = [linear.w8.numel(), linear.cols.numel() * 4, n * k, n * 4, rows * k, rows * k,
+                   kk.numel() * kk.element_size(), nn.numel() * nn.element_size(),
+                   kk.untyped_storage().nbytes(), nn.untyped_storage().nbytes()]
+    required = sum(-(-size // 512) * 512 for size in allocations)
+    if (n, k) == (1, 64):
+        assert required == 165376  # exact live-storage peak observed on the pinned native CUDA allocator
     assert linear.nbytes() == requant.resident_bytes("fp8", n, k)
     assert required <= linear.nbytes() + requant.staging_bytes("fp8", n, k)
 
