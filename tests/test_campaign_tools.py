@@ -554,7 +554,9 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     _dump(tmp_path / "old-vs-engine.npz", rows["old"], 16, reference=tmp_path / "engine.npz")
     with pytest.raises(ValueError, match="not a campaign_golden reference"):
         kl.gate(str(tmp_path / "engine.npz"), str(tmp_path / "old-vs-engine.npz"), str(tmp_path / "old-vs-engine.npz"))
-    path = lambda name: str(tmp_path / f"{name}.npz")                          # noqa: E731
+    def path(name):
+        return str(tmp_path / f"{name}.npz")
+
     variants = {f"r{i}": path(f"reorder{i}") for i in range(4)}
     record = kl.calibrate(path("golden"), path("old"), variants, resamples=300)
     deltas = [abs(v["kl_delta"]["mean"]) for v in record["variants"].values()]

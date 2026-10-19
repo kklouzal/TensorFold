@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -316,12 +317,12 @@ def compare(ref_path: str, cand_path: str) -> dict:
     kl, p_tail = position_kl(ref, cand)
     agree = ref["ids"][:, 0] == cand["ids"][:, 0]
     in_top5 = (cand["ids"][:, :5] == ref["ids"][:, :1]).any(-1)
-    names, offsets = ref_meta["names"], list(ref["offsets"]) + [len(kl)]
+    names, offsets = ref_meta["names"], [*ref["offsets"], len(kl)]
     per_item = {name: {"positions": int(offsets[i + 1] - offsets[i]),
                        "kl_mean": float(kl[offsets[i]:offsets[i + 1]].mean()),
                        "top1_agreement": float(agree[offsets[i]:offsets[i + 1]].mean())}
                 for i, name in enumerate(names)}
-    return {"reference": ref_path, "candidate": cand_path, "positions": int(len(kl)), "top_k": ref_meta["top_k"],
+    return {"reference": ref_path, "candidate": cand_path, "positions": len(kl), "top_k": ref_meta["top_k"],
             "logits_dtype": {"reference": ref_meta["logits_dtype"], "candidate": cand_meta["logits_dtype"]},
             "kl": {"mean": float(kl.mean()), "median": float(np.median(kl)), "p95": float(np.quantile(kl, 0.95)),
                    "p99": float(np.quantile(kl, 0.99)), "max": float(kl.max()),
@@ -351,9 +352,9 @@ def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
     if block < 1 or resamples < 1:
         raise ValueError("bootstrap block and resamples must be positive")
     values = np.asarray(values, dtype=np.float64)
-    bounds = list(offsets) + [len(values)]
+    bounds = [*offsets, len(values)]
     sums, sizes, weights = [], [], []
-    for first, end in zip(bounds, bounds[1:]):
+    for first, end in itertools.pairwise(bounds):
         item = values[first:end]
         if len(item) == 0:
             continue
@@ -402,7 +403,7 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
     return {"golden": golden_path, "golden_sha256": file_sha256(golden_path),
             "golden_subset_of": golden_meta.get("subset_of"), "old": old_path, "new": new_path,
             "old_sha256": file_sha256(old_path), "new_sha256": file_sha256(new_path),
-            "positions": int(len(columns)), "golden_source": golden_meta.get("source"),
+            "positions": len(columns), "golden_source": golden_meta.get("source"),
             "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
             "new_source": new_meta.get("source_revision"), **stats,
             "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
@@ -497,7 +498,7 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     meta = json.loads(str(golden["meta"]))
     if meta.get("eval_sha256") != file_sha256(eval_path) or not meta.get("golden"):
         raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
-    offsets = list(golden["offsets"]) + [len(golden["lp"])]
+    offsets = [*golden["offsets"], len(golden["lp"])]
     keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
     if not keep:
         raise ValueError(f"no eval item has at most {max_prompt_tokens} prompt tokens")
@@ -516,7 +517,7 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     np.savez(out / "golden" / "kl.npz", meta=json.dumps(new_meta), **arrays)
     (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": meta.get("model_dir"), "subset_of": origin,
                                                           "source": meta.get("source")}, indent=1))
-    return {"out": str(out), "items": names, "positions": int(len(rows)), **origin}
+    return {"out": str(out), "items": names, "positions": len(rows), **origin}
 
 
 def main() -> int:

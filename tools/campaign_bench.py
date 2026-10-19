@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import ClassVar
 import urllib.error
 import urllib.request
 
@@ -128,13 +129,14 @@ class Progress:
     tool-call delta of a stream, "decode" after it, "wait" for a non-streamed reply, "idle" between requests), when
     that phase started, the last event's time, the request in flight (``request``, ``prompt_tokens``, and for "wait"
     ``max_tokens``; kept across that request's phases) and its chunk count. Facts only: the supervisor owns the
-    stall policy. Writes are rate-limited to one per second except at phase changes. One per process: ``configure``
-    sets the path once (tools here are single-threaded CLIs); without it every call is a no-op."""
+    stall policy. Writes are rate-limited to one per second except at phase changes. One per process (tools here are
+    single-threaded CLIs): ``configure`` sets the path and resets the state, ``configure(None)`` turns it off again;
+    unconfigured, every call is a no-op."""
 
-    path: str | None = None
-    state: dict = {}
-    written = 0.0
-    CARRIED = ("request", "prompt_tokens", "max_tokens")       # one request's identity, across its phases
+    path: ClassVar[str | None] = None
+    state: ClassVar[dict] = {}
+    written: ClassVar[float] = 0.0
+    CARRIED: ClassVar[tuple[str, ...]] = ("request", "prompt_tokens", "max_tokens")   # one request's identity
 
     @classmethod
     def configure(cls, path: str | None) -> None:

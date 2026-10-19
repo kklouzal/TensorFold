@@ -15,6 +15,7 @@ profiler carry its overhead: they diagnose where a round's time goes, they are n
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 from pathlib import Path
 import statistics
@@ -39,7 +40,7 @@ def summarize(trace: dict, top: int = 25) -> dict:
     runtime = [(e["ts"], e["name"]) for e in events if e.get("cat") in ("cuda_runtime", "cuda_driver")]
     copies = [e["ts"] for e in events if e.get("cat") == "gpu_memcpy" and "DtoH" in e.get("name", "")]
     rounds = []
-    for start, end in zip(marks, marks[1:]):
+    for start, end in itertools.pairwise(marks):
         busy, cursor = 0.0, start
         for k0, k1, _ in kernels:
             if k1 <= start or k0 >= end:
