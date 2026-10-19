@@ -215,9 +215,11 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows, graphs=False
     explicit MoE buffers and native W4A4 temporary arrays are additional.
     Secondary-model weights/KV/workspace belong to its separate geometry.
     ``planned`` (resident native A4 banks) adds their retained device-plan
-    scratch per MoE buffer. ``graphs`` (one stream) adds the chain-graph runner's fixed state (full KV and
-    one recurrent copy), each (rows, context span) graph's retained outputs and
-    one shared activation bound for the graphs' private pool.
+    scratch per MoE buffer. ``graphs`` (one stream) adds the chain-graph runner's
+    recurrent copy, each (rows, context span) graph's retained outputs and one
+    shared activation bound for the graphs' private pool; its fixed attention
+    buffers are the stream's live attention cache (prefills extend them), not a
+    second one.
     """
     _integer(streams, "streams", 1)
     if graphs and streams != 1:
@@ -294,7 +296,6 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows, graphs=False
         if graphs:
             from .cuda import CHAIN_BUCKET as BUCKET
 
-            live += attention * active * kv_row
             snapshots += state
             spans = len({min(active, max(BUCKET, 1 << k)) for k in range(max(1, active.bit_length()) + 1)})
             # widths 1..max_rows with taps (drafted rounds) plus the one-row graph without taps (serial requests)

@@ -1,8 +1,9 @@
 """Qwen CT MoE chain rounds replayed as CUDA graphs equal eager decoding token for token.
 
 Resident native A4 banks (device routing plans) replace the tiny model's experts; the same DFlash drafter, copy
-proposals, samplers and prefix states drive both runs. The runner's state grows across context buckets and serves
-several requests.
+proposals, samplers and prefix states drive both runs. The runner's fixed state (reserved at its capacity) serves
+several requests across context buckets; through the engine it is also the stream's attention cache: prefills
+extend it in place and kept prompt states share it, moving to private buffers when another conversation needs it.
 """
 import pytest
 import torch
@@ -75,17 +76,16 @@ def test_chain_graph_rounds_equal_eager_rounds_across_requests_and_buckets(model
     w = model
     draft = make_draft(tmp_path, w)
     runner = ChainGraphs(w, 512, bucket=64)
-    grown = []
+    buffers = runner._addresses()
     for prompt, sampling, rows in zip(PROMPTS, SAMPLINGS, (4, 3, 2, 4)):
         eager, eager_widths = _decode(w, draft, prompt, sampling, 40, None, rows)
         replayed, widths = _decode(w, draft, prompt, sampling, 40, runner, rows)
         assert replayed == eager
         assert widths == eager_widths
-        grown.append(runner.rows)
     assert len(set(eager_widths)) > 1 or any(r > 1 for r in eager_widths)
-    # A longer request grew the fixed state (graphs dropped and recaptured), a later short one reused it.
-    assert grown[1] > grown[0] and grown[-1] == max(grown)
-    assert len({key[0] for key in runner.graphs}) > 1
+    # Private prefill states were copied in; the fixed buffers never moved; spans and widths each took graphs.
+    assert runner._addresses() == buffers and runner.rows == 512
+    assert len({key[0] for key in runner.graphs}) > 1 and len({key[1] for key in runner.graphs}) > 1
     # Serial rounds (no drafter, no copies) replay the one-row graph.
     st, pending = decode.prefill(w, PROMPTS[2], None)[:2]
     eager = decode.draft_decode(w, decode.clone_state(st), PROMPTS[2], pending, 12, None, None, allow_copy=False,
@@ -131,3 +131,57 @@ def test_separate_shared_projections_replay_like_eager(tmp_path):
     replayed, widths = _decode(w, draft, LONG, SAMPLINGS[1], 24, runner, 3)
     assert replayed == eager and widths == eager_widths
     assert runner.graphs and max(eager_widths) > 1                  # drafted chains wider than one row
+
+
+def _engine(w, draft, runner, budget):
+    from tensorfold.cuda.streams import KVRoom, PrefixCache
+    from tensorfold.families.qwen3_5.cuda.engine import KEEP_ONE, Qwen27Engine
+
+    engine = object.__new__(Qwen27Engine)
+    engine.torch = torch
+    engine.tp, engine.rank, engine.max_rows, engine.allow_copy = 1, 0, 4, True
+    engine.w, engine.draft, engine.eos, engine.cache = w, draft, tuple(w.config.eos), PrefixCache(KEEP_ONE)
+    engine.points, engine.vision = None, None
+    engine.context_window, engine.concurrent, engine.multi, engine.scheduler = 400, False, None, None
+    engine.room, engine.runner = KVRoom(engine.cache, budget), runner
+    return engine
+
+
+def _generate(engine, prompt, sampling, count=24):
+    out = []
+    stats = engine.generate(list(prompt), count, sampling, lambda tokens: out.extend(tokens) and False)
+    return out, stats
+
+
+@pytest.mark.parametrize("budget", [1 << 34, 0])
+def test_engine_prefills_on_the_fixed_buffers_and_conversations_switch_like_eager(model, tmp_path, budget):
+    """Through the engine: every prefill writes the runner's fixed buffers (no second attention cache); a new
+    conversation moves the kept prompt state to private buffers sized to its rows (or drops it when the stream's
+    room admits no copy), and resuming it copies it back. Tokens equal the eager engine's every time."""
+
+    w = model
+    runner = ChainGraphs(w, 512, bucket=64)
+    fixed = runner.st.kv
+    for name in ("eager", "graphed"):
+        (tmp_path / name).mkdir()
+    eager = _engine(w, make_draft(tmp_path / "eager", w), None, 1 << 34)
+    graphed = _engine(w, make_draft(tmp_path / "graphed", w), runner, budget)
+    first = LONG[:120]
+    reply, _ = _generate(eager, first, None)
+    assert _generate(graphed, first, None)[0] == reply
+    [(ids, kept, _)] = graphed.cache.entries
+    assert ids == first[:-1] and kept.kv is fixed                   # the prompt state shares the fixed buffers
+    other = list(range(20, 90))
+    assert _generate(graphed, other, SAMPLINGS[1])[0] == _generate(eager, other, SAMPLINGS[1])[0]
+    moved = [entry for entry in graphed.cache.entries if entry[0] == first[:-1]]
+    if budget:
+        [(_, kept, _)] = moved                                       # moved out, sized to its rows
+        assert kept.kv is not fixed and all(kv is None or kv[0].shape[0] == len(first) - 1 for kv in kept.kv)
+    else:
+        assert not moved                                             # no room for a copy: dropped
+    turn = first + reply + [7, 8, 9]
+    again, stats = _generate(graphed, turn, None)
+    assert again == _generate(eager, turn, None)[0]
+    assert stats["cached"] == (len(first) - 1 if budget else 0)
+    assert all(kept.kv is fixed for ids, kept, _ in graphed.cache.entries if turn[:len(ids)] == ids)
+    assert runner._addresses() == tuple(t.data_ptr() for kv in fixed if kv is not None for t in kv)
