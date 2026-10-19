@@ -483,7 +483,8 @@ def stream_geometry(t: dict, world: int, streams: int, keep: int, *, first: int 
         caches = (streams + keep + 1) * kv if first is None else \
             kv + (streams + keep) * attention * min(first, capacity) * hk * hd * 2 * 2
         scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
-        return fixed + caches + kv // max(1, attention) + scratch   # one layer's growth copy
+        granules = (streams + keep + 1) * 2 * attention * ARENA_GRANULE   # each arena's mapped tail (no growth copy)
+        return fixed + caches + granules + scratch
     return Geometry(bytes_at, 1)
 
 

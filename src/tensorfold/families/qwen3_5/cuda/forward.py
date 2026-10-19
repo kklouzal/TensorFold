@@ -203,11 +203,11 @@ def grow(st: State, i: int, need: int) -> tuple[torch.Tensor, torch.Tensor]:
     outgrows its reservation moves into new arenas once. Clones share the list and owner, so a grow reaches every
     clone; other views keep their rows."""
 
-    from tensorfold.cuda.kv_arena import Arena, owned
-
     k, v = st.kv[i]
     if k.shape[0] >= need:
         return st.kv[i]
+    from tensorfold.cuda.kv_arena import Arena, owned        # past the no-growth return every commit takes
+
     arenas = owned(k, st.kv_owner), owned(v, st.kv_owner)
     move = arenas[0] is None or arenas[1] is None or need > arenas[0].capacity
     if move:

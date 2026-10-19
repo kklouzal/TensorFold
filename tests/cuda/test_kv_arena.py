@@ -2,6 +2,7 @@
 to the driver, and qwen3_5's ``grow`` moves only caches a state does not own as an arena's current view."""
 
 import gc
+import threading
 
 import pytest
 import torch
@@ -83,6 +84,32 @@ def test_views_hold_the_arena_and_its_release_returns_the_memory():
     kv_arena.reap()
     assert kv_arena.pending_bytes() == 0 and kv_arena.mapped_bytes() == base_mapped
     assert torch.cuda.mem_get_info()[0] >= free0 - (8 << 20)          # back to the driver (not the allocator)
+
+
+def test_a_last_view_dropped_inside_an_arena_operation_queues_its_release():
+    """A garbage collection can finalize an arena on a thread already inside an arena operation (it runs at any
+    bytecode boundary): the release queues instead of deadlocking on the driver's lock."""
+
+    _settle()
+    a = kv_arena.Arena(1000, ROW, torch.bfloat16, DEV)
+    a.ensure(1000)
+    views, nbytes, lock = [a.view()], a.mapped, a.drv.lock
+    del a
+    done = threading.Event()
+
+    def drop():
+        with lock:
+            views.clear()                                             # the last view: finalized right here
+        done.set()
+
+    worker = threading.Thread(target=drop, daemon=True)
+    worker.start()
+    worker.join(60)
+    if worker.is_alive():                                             # deadlocked: free the lock for later tests
+        lock.release()
+    assert done.is_set() and kv_arena.pending_bytes() == nbytes
+    kv_arena.reap()
+    assert kv_arena.pending_bytes() == 0
 
 
 def test_only_the_owner_grows_its_current_view():

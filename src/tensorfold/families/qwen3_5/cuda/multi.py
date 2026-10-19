@@ -267,17 +267,26 @@ class MultiDecoder:
 
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
-        while not self.memory_gate.fits(self._first(s) * self.row_bytes):
+        while not self.memory_gate.fits(self._cache_bytes(self._first(s))):
             if not self.cache.evict():
                 if not self.live():
                     return                          # alone: startup fitted one stream's whole window
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
             torch.cuda.empty_cache()
 
-    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
-        """Grow ``st``'s caches from ``have`` to ``size`` rows while the gate has room (a layer's copy at a time)."""
+    def _cache_bytes(self, rows: int) -> int:
+        """What a stream's attention caches map at ``rows`` rows: each layer's keys and values an arena, rounded up
+        to its granule (``geometry.ARENA_GRANULE``)."""
 
-        while not self.memory_gate.fits((size - have) * self.row_bytes + size * self.layer_bytes):
+        from tensorfold.cuda.geometry import ARENA_GRANULE
+
+        tensor = -(-rows * self.layer_bytes // 2 // ARENA_GRANULE) * ARENA_GRANULE
+        return 2 * tensor * (self.row_bytes // self.layer_bytes if self.layer_bytes else 0)
+
+    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
+        """Grow ``st``'s caches from ``have`` mapped rows to ``size`` while the gate has room (mapped in place)."""
+
+        while not self.memory_gate.fits(self._cache_bytes(size) - self._cache_bytes(have)):
             if not self.cache.evict():
                 if alone:
                     break                           # startup fitted one stream's whole window
