@@ -75,6 +75,9 @@ def _decode(w, draft, prompt, sampling, count, runner, rows):
 def test_chain_graph_rounds_equal_eager_rounds_across_requests_and_buckets(model, tmp_path):
     w = model
     draft = make_draft(tmp_path, w)
+    # This fixture exercises graph geometry, not confidence selection: the random drafter's default cutoff can
+    # reduce every round to one proposal, so explicitly retain its whole block to exercise widths2/3/4 below.
+    draft.stop_score = None
     runner = ChainGraphs(w, 512, bucket=64)
     buffers = runner._addresses()
     for prompt, sampling, rows in zip(PROMPTS, SAMPLINGS, (4, 3, 2, 4)):
@@ -85,7 +88,8 @@ def test_chain_graph_rounds_equal_eager_rounds_across_requests_and_buckets(model
     assert len(set(eager_widths)) > 1 or any(r > 1 for r in eager_widths)
     # Private prefill states were copied in; the fixed buffers never moved; spans and widths each took graphs.
     assert runner._addresses() == buffers
-    assert len({key[0] for key in runner.graphs}) > 1 and len({key[1] for key in runner.graphs}) > 1
+    assert {2, 3, 4} <= {key[0] for key in runner.graphs}
+    assert {64, 128, 256} <= {key[1] for key in runner.graphs}
     # Serial rounds (no drafter, no copies) replay the one-row graph.
     st, pending = decode.prefill(w, PROMPTS[2], None)[:2]
     eager = decode.draft_decode(w, decode.clone_state(st), PROMPTS[2], pending, 12, None, None, allow_copy=False,
