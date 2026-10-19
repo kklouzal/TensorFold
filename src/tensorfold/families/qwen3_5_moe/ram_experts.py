@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tensorfold.cuda.capacity import Geometry, config, headers
-from tensorfold.cuda.geometry import gdn_geometry, layer_counts, stream_geometry
+from tensorfold.cuda.geometry import gdn_geometry, layer_counts, live_kv, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, routed_tensor_a4
 from tensorfold.cuda.read_budget import pinned_backing_bytes
 
@@ -234,6 +234,7 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
         if not isinstance(kinds, (list, tuple)) or len(kinds) != t["num_hidden_layers"] or any(
                 kind not in ("linear_attention", "full_attention") for kind in kinds):
             raise ValueError("layer_types must describe every linear_attention/full_attention layer")
+        t["layer_types"] = tuple(kinds)                 # the prepared geometry owns its layer-count input
     else:
         _integer(t.get("full_attention_interval", 4), "full_attention_interval", 1)
     d, width, slots = t["hidden_size"], t["moe_intermediate_size"], t["num_experts_per_tok"] + 1
@@ -246,11 +247,10 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     for count in (rows, prompt_rows):
         if (1 << max(4, (count - 1).bit_length())) * slots > (1 << 31) - 1:
             raise ValueError("MoE row/slot geometry exceeds the signed-int32 grouped-plan boundary")
-    linear, attention = layer_counts(t)
+    linear, _ = layer_counts(t)
     nk, nv = t["linear_num_key_heads"], t["linear_num_value_heads"]
     dk, dv, conv = t["linear_key_head_dim"], t["linear_value_head_dim"], t["linear_conv_kernel_dim"]
     state = linear * (nv * dk * dv * 4 + (conv - 1) * (2 * nk * dk + nv * dv) * 2)
-    kv_row = t["num_key_value_heads"] * t["head_dim"] * 4
     single = gdn_geometry(t, 1, max_rows, rows=rows, prompt=prompt_rows, evicts=True)
     workspace = single.bytes_at(0) - 4 * state       # its attention caches at zero rows map nothing (live_kv)
     copies = keep + 2
@@ -263,15 +263,13 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     workspace += 16 * _PAIR_WINDOW * (d + max(width, shared)) + 65536
 
     def components(capacity):
-        # Attention caches are kv_arena arenas mapped in place, in 2 MiB
-        # granules, up to the rows committed (at most this capacity): the
-        # 1024-row floor and the +1 layer (once a growth copy) are slack now,
-        # and the granule tails are not counted apart (re-derivation pending).
-        active = max(1024, capacity)
-        live = (streams * attention + 1) * active * kv_row
+        # Each live/kept lineage maps each layer's K/V separately. Single-stream KVRoom evicts other lineages;
+        # concurrent lanes keep their private caches and up to keep + 1 prefix owners during publication.
+        kv = live_kv(t, 1, capacity)
+        live = streams * kv
         snapshots = copies * state
         if streams > 1:
-            snapshots += (keep + 1) * attention * active * kv_row
+            snapshots += (keep + 1) * kv
         scratch = rows * t["num_attention_heads"] * (t["head_dim"] + 2) * ((capacity + 511) // 512) * 4
         return {"future_kv_bytes": live, "future_snapshot_bytes": snapshots,
                 "future_target_workspace_bytes": workspace + scratch}

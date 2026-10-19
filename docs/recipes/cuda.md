@@ -292,8 +292,12 @@ Qwen3.8-27B and Qwen3.6-35B-A3B keep each attention layer's keys and values in a
 whole 2 MiB granules, as the cache grows: rows never move, so growth copies nothing, and the 27B's admission counts
 each cache's rows rounded up to the granule. A dropped cache's memory goes back to the driver, not to PyTorch's caching allocator, once
 the work queued before it finishes, so `torch.cuda.memory_allocated` leaves it out while `nvidia-smi` shows it. A GPU
-or driver that does not report virtual memory management, or whose granularity does not divide 2 MiB, is refused when
-the first cache grows. Checked on an RTX PRO 2000 Blackwell (2 MiB granules); GB10 qualification is pending.
+or driver that does not report virtual memory management, or whose granularity does not divide 2 MiB, is refused at
+startup before weight loading. Admission rounds each independent retained lineage's K/V mappings separately;
+the current lineage and its clones share their arenas, while MoE MTP graphs retain separate buffers. The NVFP4 MoE
+expert-pool reservation uses the same rounded mappings for live lanes and retained prefixes, with no growth-copy
+allowance. The arena implementation was checked on an RTX PRO 2000 Blackwell (2 MiB granules); final composed-source
+GPU checks and GB10 qualification are pending.
 
 ## Measuring
 

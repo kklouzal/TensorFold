@@ -17,7 +17,7 @@ pytest.importorskip("triton")
 
 from tokenizers import Tokenizer, models
 
-from tensorfold.cuda import allocation_bound, capacity, expert_pin, geometry, precision, prompt_precision
+from tensorfold.cuda import allocation_bound, capacity, expert_pin, geometry, kv_arena, precision, prompt_precision
 from tensorfold.cuda.nvfp4 import cache_a4
 from tensorfold.families.qwen3_5.cuda import multi, nvfp4_load, nvfp4_memory
 from tensorfold.families.qwen3_5_moe import dflash_metadata, ram_experts
@@ -190,6 +190,7 @@ def startup(tmp_path, monkeypatch):
     monkeypatch.setattr(precision, "mode", lambda: precision.CHECKPOINT)
     monkeypatch.setattr(prompt_precision, "fp8", lambda: False)
     monkeypatch.setattr(torch.cuda, "set_device", lambda device: events.append("device"))
+    monkeypatch.setattr(kv_arena, "driver", lambda device: events.append("vmm"))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (12, 0))
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: events.append("fence"))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("empty-cache"))
@@ -225,6 +226,7 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
     try:
         assert engine.max_rows == engine.tree_rows == 8 and engine.context_window == 64
         assert engine.eos == (3, 1) and engine.model_dir == state.target
+        assert state.events.index("device") < state.events.index("vmm") < state.events.index("admit")
         assert state.events.index("admit") < state.events.index("model-load") < state.events.index("draft-load")
         options, runtime = state.runtimes[0]
         assert options == {"streams": streams, "keep": 3 if streams > 1 else 4, "max_rows": 8, "prompt_rows": 512}
@@ -291,6 +293,20 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert state.events.index("cache-close") < state.events.index("pins-close")
 
 
+def test_missing_vmm_refuses_before_expert_ownership_admission_or_payload(startup, monkeypatch):
+    failure = RuntimeError("CUDA device lacks virtual memory management")
+
+    def refused(device):
+        assert device == 0 and startup.events == ["device"]
+        raise failure
+
+    monkeypatch.setattr(kv_arena, "driver", refused)
+    with pytest.raises(RuntimeError) as caught:
+        QwenNvfp4MoeEngine(startup.target, startup.draft_dir, vram_experts="auto")
+    assert caught.value is failure
+    assert startup.events == ["device"] and not startup.caches and not startup.loads and not startup.pins
+
+
 def test_draft_row_one_is_refused_by_actual_startup_before_device_or_payload(startup):
     with pytest.raises(ValueError, match="at least 2 with a secondary model"):
         QwenNvfp4MoeEngine(startup.target, startup.draft_dir, max_rows=1, vram_experts="auto")
@@ -311,7 +327,7 @@ def test_unified_cache_refusal_precedes_native_ownership_and_payload(startup, mo
     monkeypatch.setattr(capacity, "unified", lambda runtime: True)
     with pytest.raises(ValueError, match="require discrete CUDA memory"):
         QwenNvfp4MoeEngine(startup.target, startup.draft_dir, max_rows=8, vram_experts="auto")
-    assert startup.events == ["device", "fence"]
+    assert startup.events == ["device", "vmm", "fence"]
     assert not startup.pins and not startup.caches and not startup.admissions and not startup.loads
 
 
@@ -326,7 +342,8 @@ def test_admission_failure_retires_bootstrap_and_preserves_primary(startup, fail
     with pytest.raises(failure_type) as caught:
         engine.__init__(state.target, state.draft_dir, max_rows=8, vram_experts="auto", vram_experts_pin="on")
     assert caught.value is primary
-    assert state.events == ["device", "pins", "bootstrap", "allocation-bound", "admit", "fence", "cache-close", "pins-close"]
+    assert state.events == ["device", "vmm", "pins", "bootstrap", "allocation-bound", "admit", "fence", "cache-close",
+                            "pins-close"]
     assert not state.loads and not state.drafts and engine.expert_cache is state.caches[0]
     if cleanup_fails:
         assert primary.__cause__ is cleanup and engine in primary._tensorfold_retained_owners

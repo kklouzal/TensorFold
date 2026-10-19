@@ -226,7 +226,8 @@ def live_kv(t: dict, world: int, window: int) -> int:
     (no growth copy), rounded up to ``ARENA_GRANULE``."""
 
     _, attention = layer_counts(t)
-    tensor = max(0, window) * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 2   # none below 0 rows
+    hd = int(t.get("head_dim") or int(t["hidden_size"]) // int(t["num_attention_heads"]))
+    tensor = max(0, window) * int(t["num_key_value_heads"]) // world * hd * 2   # none below 0 rows
     return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
 
 
@@ -235,7 +236,9 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
                  kept: int = 2, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                  kv_scale_bytes: int = 2, kv_status: bool = False,
                  kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> Geometry:
-    """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``evicts``: only the live window counts."""
+    """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``kept``: retained prefix states.
+    Non-indexed attention uses arenas: ``evicts`` charges one live lineage, otherwise ``kept`` plus the current one.
+    Non-indexed ``mtp`` also retains the MoE decoder's separate graph state and ordinary MTP head caches."""
 
     linear, attention = layer_counts(t)
     d, h = int(t["hidden_size"]), int(t["num_attention_heads"]) // world
@@ -248,8 +251,10 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
     index_dim, ratio = int(t.get("indexer_head_dim", 128)), int(t.get("indexer_compress_ratio", 4))
     width = 2 * nk * dk + 2 * nv * dv + 2 * nv
     # Persistent state, retained recurrent prefixes, rollback and row replay inputs.
-    fixed = linear * ((4 + kept if indexed else 4) * nv * dk * dv * 4 +
-                      (2 + kept if indexed else 4) * (conv - 1) * (2 * nk * dk + nv * dv) * 2)
+    # A commit publishes the new recurrent state before the old one goes; MoE MTP graphs own one more state.
+    retained = kept + 2 + int(mtp)
+    fixed = linear * ((4 + kept if indexed else retained) * nv * dk * dv * 4 +
+                      (2 + kept if indexed else retained) * (conv - 1) * (2 * nk * dk + nv * dv) * 2)
     rows = rows or (64 if indexed else 128)
     fixed += linear * rows * (width * 2 + nk * dk * 4 + nv * dv * 4 + nv * 8)
     # Bound the concurrent activation arrays, MoE expert rows, logits and split-K scratch.
@@ -281,9 +286,11 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             scratch += qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
             scratch += (2 + int(mtp)) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
         else:
-            # Bound two retained prefixes, current KV state and a growth copy; speculative rows use separate workspace.
-            rounded = 1 << (max(1024, capacity - reserve) - 1).bit_length()
-            cache = live_kv(t, world, capacity - reserve) if evicts else 4 * attention * rounded * hk * hd * 4
+            # Clones share their lineage's arenas. Independent kept prompts retain their own rounded mappings;
+            # in-place growth copies nothing. Graph buffers and MTP Cache's ordinary tensors have separate owners.
+            cache = (1 if evicts else kept + 1) * live_kv(t, world, capacity - reserve)
+            if mtp:
+                cache += live_kv(t, world, capacity) + (kept + 2) * capacity * hk * hd * 4
             scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
         return fixed + cache + scratch
     return Geometry(bytes_at, reserve)

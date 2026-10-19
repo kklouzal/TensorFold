@@ -66,6 +66,9 @@ class Qwen27Engine:
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
         self.vision = None
         torch.cuda.set_device(0)
+        from tensorfold.cuda.kv_arena import driver
+
+        driver(0)                           # required VMM and admission granularity, before payloads or requests
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
             torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         if tp == 2:
@@ -97,7 +100,8 @@ class Qwen27Engine:
         # prompt chunks sized to the card (4096 rows from 80 GB), the verify scratch to the rows a round takes
         chunk = prompt_rows(total_bytes(torch), prompt_row_bytes(config(model_dir), tp))
         geometry = ((lambda text: stream_geometry(text, tp, streams, keep, first=256 if tp == 1 else None)) if many
-                    else (lambda text: gdn_geometry(text, tp, max_rows, rows=max_rows, prompt=chunk, evicts=tp == 1)))
+                    else (lambda text: gdn_geometry(text, tp, max_rows, rows=max_rows, prompt=chunk,
+                                                   evicts=tp == 1, kept=KEEP_ONE)))
         # an affine checkpoint's packed words at their stored precision; an EXL3 pack's by its own format
         tensor_bytes = weight_transform(model_dir, one_gpu=tp == 1)
         weight_estimator = None

@@ -234,8 +234,8 @@ def test_single_runtime_keeps_all_prefix_states_and_every_retained_moe_shape():
     # Recurrent matrix2*8*4*F32 + two convolution rows of24 BF16 =352B.
     # Four kept prefixes + current + commit =six independently retained states.
     assert small["future_snapshot_bytes"] == 6 * 352
-    # One full-attention layer plus its growth copy, two heads of32 BF16 K/V.
-    assert small["future_kv_bytes"] == 2 * 1024 * 256
+    # One layer's K and V map separately: each short tensor occupies one 2 MiB granule, no growth copy.
+    assert small["future_kv_bytes"] == 2 * (2 << 20)
     # Separate constructor-shape census: decode16=31652; prompt16..512
     # =19364+38664+77264+154464+308864+623832. This includes the
     # otherwise-unused grouped arrays and wide rank/hist for1536 pairs.
@@ -244,21 +244,34 @@ def test_single_runtime_keeps_all_prefix_states_and_every_retained_moe_shape():
     assert plan.geometry.bytes_at(1024) == sum(small.values())
     assert plan.geometry.needed(1021) == sum(small.values())
     large = plan.components(4096)
-    assert large["future_kv_bytes"] == 2 * 4096 * 256
+    assert large["future_kv_bytes"] == small["future_kv_bytes"]
     assert large["future_snapshot_bytes"] == small["future_snapshot_bytes"]
     assert large["future_target_workspace_bytes"] - small["future_target_workspace_bytes"] == 52224
 
 
-def test_parallel_runtime_reserves_full_growth_of_private_and_kept_kv():
+def test_parallel_runtime_reserves_each_private_and_kept_arena_mapping():
     plan = ram.runtime_geometry(runtime_text(), streams=4, keep=3, max_rows=3, prompt_rows=512)
     small, large = plan.components(1024), plan.components(4096)
-    assert small["future_kv_bytes"] == (4 + 1) * 1024 * 256
-    assert small["future_snapshot_bytes"] == (2 * 4 + 3 + 2) * 352 + (3 + 1) * 1024 * 256
-    assert large["future_snapshot_bytes"] - small["future_snapshot_bytes"] == 4 * 3072 * 256
+    assert small["future_kv_bytes"] == 4 * 2 * (2 << 20)
+    assert small["future_snapshot_bytes"] == (2 * 4 + 3 + 2) * 352 + (3 + 1) * 2 * (2 << 20)
+    assert large["future_snapshot_bytes"] == small["future_snapshot_bytes"]
     # Calibration retains16,32,64-row decode buckets even for3-row requests.
     assert small["future_target_workspace_bytes"] == 28298752 + 221308 + 1222452 + 458752 + 69632
     assert plan.geometry.bytes_at(4096) == sum(large.values())
-    assert large["future_kv_bytes"] + large["future_snapshot_bytes"] > 4 * small["future_kv_bytes"]
+    assert large["future_kv_bytes"] + large["future_snapshot_bytes"] == 8 * 2 * (2 << 20) + 13 * 352
+
+
+@pytest.mark.parametrize("streams,keep", [(1, 0), (1, 4), (4, 3)])
+@pytest.mark.parametrize("rows", [0, 1, 16384, 16385, 65536])
+def test_runtime_caches_round_every_key_and_value_and_leave_no_empty_floor(streams, keep, rows):
+    plan = ram.runtime_geometry(runtime_text(), streams=streams, keep=keep, max_rows=3, prompt_rows=512)
+    got = plan.components(rows)
+    # Each side has two heads of 32 BF16 values; these dimensions come from runtime_text's accepted contract.
+    side = rows * 2 * 32 * 2
+    rounded_pair = 2 * ((side + (2 << 20) - 1) // (2 << 20)) * (2 << 20)
+    assert got["future_kv_bytes"] == streams * rounded_pair
+    snapshots = (keep + 2 if streams == 1 else 2 * streams + keep + 2) * 352
+    assert got["future_snapshot_bytes"] == snapshots + ((keep + 1) * rounded_pair if streams > 1 else 0)
 
 
 def test_runtime_freezes_header_inputs_and_accepts_inferred_head_dimension():
