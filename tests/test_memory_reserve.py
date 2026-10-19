@@ -6,11 +6,12 @@ import pytest
 
 from tensorfold.cuda import capacity
 
+pytestmark = pytest.mark.usefixtures("default_memory_policy")
+
 GIB = capacity.GIB
 
 
-def test_default_reserve_is_unchanged(monkeypatch):
-    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
+def test_default_reserve_is_unchanged():
     odd = 121 * GIB + 7                                  # the GPU path rounds a tenth up, the host path down
     assert capacity.reserve_bytes(odd) == -(-odd // 10)
     assert capacity.reserve_bytes(odd, host=True) == odd // 10
@@ -42,7 +43,6 @@ def test_available_bytes_uses_the_reserve(monkeypatch):
     monkeypatch.setattr(capacity, "_meminfo", lambda: meminfo)
     monkeypatch.setattr(capacity, "unified", lambda torch: True)
     torch = _cuda(100 * GIB, 121 * GIB)
-    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
     assert capacity.available_bytes(torch) == 110 * GIB - 121 * GIB // 10
     monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "6")
     assert capacity.available_bytes(torch) == 104 * GIB

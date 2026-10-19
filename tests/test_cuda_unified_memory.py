@@ -8,6 +8,8 @@ import pytest
 from tensorfold.cuda import capacity
 from tensorfold.cuda.capacity import Geometry, Weights, choose, make_plan
 
+pytestmark = pytest.mark.usefixtures("default_memory_policy")
+
 GB = 10**9
 MEMINFO = "MemTotal: 127535264 kB\nMemFree: 66406250 kB\nMemAvailable: 117500000 kB\n"   # a Spark with 50 GB cached
 
@@ -25,8 +27,7 @@ def meminfo(monkeypatch):
     return total, available
 
 
-def test_a_unified_grant_is_available_memory_less_the_floor(meminfo, monkeypatch):
-    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_LIMIT_GB", raising=False)
+def test_a_unified_grant_is_available_memory_less_the_floor(meminfo):
     total, available = meminfo
     # a GB10's free figure is MemFree: 68 GB here, although 117.5 GB is available once the page cache is reclaimed
     assert capacity.available_bytes(device(True)) == available - total // 10    # the host keeps a tenth of its RAM free
@@ -35,7 +36,6 @@ def test_a_unified_grant_is_available_memory_less_the_floor(meminfo, monkeypatch
 def test_a_discrete_grant_ignores_host_memory(monkeypatch):
     # only the loading buffers need host RAM, and host_stream_bytes weighs those on its own
     monkeypatch.setattr(Path, "read_text", lambda *a: "MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n")
-    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_LIMIT_GB", raising=False)
     assert capacity.available_bytes(device(False, 20 * GB, 80 * GB)) == 12 * GB    # the card's free memory less a tenth of it
 
 
@@ -46,7 +46,6 @@ def test_the_reserve_override_moves_the_unified_floor(meminfo, monkeypatch):
 
 
 def test_a_unified_grant_pays_the_floor_when_its_pool_is_small(meminfo, monkeypatch):
-    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_LIMIT_GB", raising=False)
     monkeypatch.setattr(Path, "read_text", lambda *a: "MemTotal: 41943040 kB\nMemAvailable: 31457280 kB\n")
     # 40 GiB of RAM with 30 GiB free: the four GiB floor is the largest one, so 26 GiB is granted
     assert capacity.available_bytes(device(True)) == 30 * capacity.GIB - 4 * capacity.GIB
@@ -62,7 +61,6 @@ def test_the_limit_env_caps_the_grant_on_both_bounds(meminfo, monkeypatch):
 def test_a_discrete_grant_under_a_limit_keeps_the_cards_floor(monkeypatch):
     monkeypatch.setattr(capacity, "_meminfo", lambda: None)
     monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_LIMIT_GB", "31")
-    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
     # the card keeps its floor under a limit too: four GiB by default, two at the smallest reserve
     assert capacity.available_bytes(device(False, 32 * capacity.GIB, 32 * capacity.GIB)) == 28 * capacity.GIB
     monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "2")

@@ -12,6 +12,10 @@ os.environ.setdefault("MLX_ENABLE_TF32", "0")
 # no release checks or first-run notes from tests; tests/test_update.py turns them on where it tests them
 os.environ.setdefault("TENSORFOLD_NO_UPDATE_CHECK", "1")
 
+# the CUDA memory policy's environment overrides: gpu-pytest exports a cap for the engine tests
+MEMORY_POLICY_ENV = ("TENSORFOLD_CUDA_MEMORY_LIMIT_GB", "TENSORFOLD_MEMORY_RESERVE_GIB",
+                     "TENSORFOLD_CUDA_MEMORY_RESERVE_GIB")
+
 TENSOR_UNIT_TESTS = {
     "test_lane_qmm.py", "test_lane_attention.py", "test_lane_tree.py", "test_lane_fuse.py", "test_lane_glue_norm.py",
     "test_dflash_draft_vocab.py",
@@ -25,6 +29,15 @@ def _tensor_units() -> bool:
         return tensor_units()
     except Exception:  # noqa: BLE001 - no MLX or no Metal: no tensor units
         return False
+
+
+@pytest.fixture
+def default_memory_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No memory cap or reserve override from the environment: a test that asserts an exact CUDA grant starts from
+    the default policy and sets only the overrides it exercises."""
+
+    for name in MEMORY_POLICY_ENV:
+        monkeypatch.delenv(name, raising=False)
 
 
 def pytest_configure(config: pytest.Config) -> None:

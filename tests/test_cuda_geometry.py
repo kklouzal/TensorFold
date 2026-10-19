@@ -353,6 +353,7 @@ def test_weight_partition_rounding_and_float_casts():
     assert transform("model.visual.weight", info) == (0, 0)
 
 
+@pytest.mark.usefixtures("default_memory_policy")
 def test_unified_available_memory_uses_reclaimable_host_pages(monkeypatch):
     from pathlib import Path
     fake = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (100 * capacity.GIB, 128 * capacity.GIB)))
