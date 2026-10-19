@@ -252,7 +252,7 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     state = linear * (nv * dk * dv * 4 + (conv - 1) * (2 * nk * dk + nv * dv) * 2)
     kv_row = t["num_key_value_heads"] * t["head_dim"] * 4
     single = gdn_geometry(t, 1, max_rows, rows=rows, prompt=prompt_rows, evicts=True)
-    workspace = single.bytes_at(0) - 4 * state - (attention + 1) * 1024 * kv_row
+    workspace = single.bytes_at(0) - 4 * state       # its attention caches at zero rows map nothing (live_kv)
     copies = keep + 2
     if streams > 1:
         copies = 2 * streams + keep + 2
@@ -263,8 +263,10 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     workspace += 16 * _PAIR_WINDOW * (d + max(width, shared)) + 65536
 
     def components(capacity):
-        # grow() may start at 1024 rows. reserve/private() then cap future
-        # growth at State.limit, which is the admitted cache-slot capacity.
+        # Attention caches are kv_arena arenas mapped in place, in 2 MiB
+        # granules, up to the rows committed (at most this capacity): the
+        # 1024-row floor and the +1 layer (once a growth copy) are slack now,
+        # and the granule tails are not counted apart (re-derivation pending).
         active = max(1024, capacity)
         live = (streams * attention + 1) * active * kv_row
         snapshots = copies * state
