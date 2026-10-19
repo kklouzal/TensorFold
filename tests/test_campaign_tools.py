@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
 import threading
 
@@ -377,15 +378,17 @@ def _outside(np, lp_full, ids):
     return np.where(np.isneginf(top), -np.inf, lse).ravel().astype(np.float64)
 
 
-def _dump(path, lp_full, top_k, reference=None, golden=False):
-    """A dump of full log-probability rows; with ``reference`` (a dump's path) a candidate dump against it."""
+def _dump(path, lp_full, top_k, reference=None, golden=False, offsets=(0,), **meta_fields):
+    """A dump of full log-probability rows (items starting at ``offsets``; ``meta_fields`` override the meta); with
+    ``reference`` (a dump's path) a candidate dump against it."""
 
     np = pytest.importorskip("numpy")
     order = np.argsort(-lp_full, axis=-1)[:, :top_k]
     arrays = {"ids": order.astype(np.int32), "lp": np.take_along_axis(lp_full, order, -1).astype(np.float32),
               "tail_lp": _outside(np, lp_full, order), "forced": lp_full[:, 0],
-              "entropy": -(np.exp(lp_full) * lp_full).sum(-1), "offsets": np.array([0])}
-    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"], "golden": golden}
+              "entropy": -(np.exp(lp_full) * lp_full).sum(-1), "offsets": np.array(offsets)}
+    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"], "golden": golden,
+            **meta_fields}
     if reference is not None:
         ids = np.load(reference)["ids"].astype(np.int64)
         arrays["at_ref"] = np.take_along_axis(lp_full, ids, -1).astype(np.float32)
@@ -759,12 +762,8 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     items = [{"name": "short", "prompt": list(range(10)), "answer": list(range(10))},
              {"name": "long", "prompt": list(range(100)), "answer": list(range(20))}]
     (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
-    order = np.argsort(-lp, axis=-1)[:, :8]
-    meta = {"eval_sha256": kl.file_sha256(str(tmp_path / "eval.json")), "top_k": 8, "logits_dtype": "f32",
-            "names": ["short", "long"], "golden": True, "source": "s@1", "model_dir": "/golden"}
-    np.savez(tmp_path / "golden.npz", meta=json.dumps(meta), ids=order.astype(np.int32),
-             lp=np.take_along_axis(lp, order, -1).astype(np.float32), tail_lp=np.zeros(30), forced=lp[:, 0],
-             entropy=np.zeros(30), offsets=np.array([0, 10]))
+    order = _dump(tmp_path / "golden.npz", lp, 8, golden=True, offsets=(0, 10), names=["short", "long"],
+                  eval_sha256=kl.file_sha256(str(tmp_path / "eval.json")), source="s@1", model_dir="/golden")
     result = kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path / "out"),
                        max_prompt_tokens=50)
     cut = np.load(tmp_path / "out" / "golden" / "kl.npz")
@@ -775,7 +774,7 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     assert cut_meta["subset_of"]["golden_sha256"] == kl.file_sha256(str(tmp_path / "golden.npz"))
     assert json.loads((tmp_path / "out" / "eval.json").read_text())["subset_of"]["items"] == ["short"]
     assert "golden_dir" in json.loads((tmp_path / "out" / "golden" / "meta.json").read_text())
-    cli = __import__("subprocess").run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset",
-                                        str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"),
-                                        str(tmp_path / "cli"), "--max-prompt-tokens", "50"], capture_output=True)
+    cli = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset", str(tmp_path / "golden.npz"),
+                          str(tmp_path / "eval.json"), str(tmp_path / "cli"), "--max-prompt-tokens", "50"],
+                         capture_output=True)
     assert cli.returncode == 0 and (tmp_path / "cli" / "golden" / "kl.npz").exists(), cli.stderr

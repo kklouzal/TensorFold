@@ -322,7 +322,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             target = (int(profile["context"]) - budget - int(profile.get("full_margin", 64))
                       if depth == "full" else int(depth))
             if target > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
-                held.append({"depth": depth, "target": target, "thinking": thinking})
+                held.append({"depth": depth, "target": target, "thinking": thinking, "status": "incomplete (hold)"})
                 print(json.dumps({"depth": depth, "thinking": thinking, "held": "long-prefill hold"}), flush=True)
                 continue
 
@@ -354,8 +354,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
     if status != "fail" and (held or not rows):            # held depths are coverage not run, never a pass
         status, verdict = "incomplete", None
     return {"gate": "needle", "status": status, "recall": recall, "threshold": args.min_needle_recall,
-            "verdict": verdict, "corpus_sha256": digest, "fractions": fractions, "rows": rows,
-            "held": [dict(h, status="incomplete (hold)") for h in held]}
+            "verdict": verdict, "corpus_sha256": digest, "fractions": fractions, "rows": rows, "held": held}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -368,12 +367,15 @@ def _items(args) -> tuple[list[dict], list[dict]]:
     items = {it["id"]: it for it in json.loads(Path(args.prompts).read_text())["items"]}
     chosen = [items[name] for name in args.gate_prompts.split(",") if name]
     chosen = [it for it in chosen if args.thinking == "both" or it["thinking"] == (args.thinking == "on")]
-    held = [it for it in chosen if it["prompt_tokens"] > LONG_PREFILL_TOKENS and not args.allow_long_prefill]
-    for it in held:
-        print(json.dumps({"prompt": it["id"], "prompt_tokens": it["prompt_tokens"], "held": "long-prefill hold"}),
-              flush=True)
-    return [it for it in chosen if it not in held], [{"prompt": it["id"], "prompt_tokens": it["prompt_tokens"],
-                                                      "status": "incomplete (hold)"} for it in held]
+    kept, held = [], []
+    for it in chosen:
+        if it["prompt_tokens"] <= LONG_PREFILL_TOKENS or args.allow_long_prefill:
+            kept.append(it)
+            continue
+        hold = {"prompt": it["id"], "prompt_tokens": it["prompt_tokens"]}
+        print(json.dumps({**hold, "held": "long-prefill hold"}), flush=True)
+        held.append({**hold, "status": "incomplete (hold)"})
+    return kept, held
 
 
 def _evictions(count: int) -> list[list[dict]]:
@@ -397,7 +399,7 @@ def _cached(reply: dict) -> int:
     return int(reply["stats"].get("cached") or 0)
 
 
-def _status(rows: list[dict], allow_failure: bool, held: list[dict] = ()) -> tuple[str, bool | None]:
+def _status(rows: list[dict], allow_failure: bool, held: list[dict]) -> tuple[str, bool | None]:
     """A gate's status from its rows: fail when any compared pair differs (unless reporting only), incomplete when
     there are no rows, any required comparison was not exercised (silence is not coverage) or items were held back
     (long-prefill hold), else pass. verdict mirrors it (null for incomplete or report-only)."""

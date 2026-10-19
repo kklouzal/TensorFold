@@ -496,7 +496,8 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     data = json.loads(Path(eval_path).read_text())
     golden = np.load(golden_path)
     meta = json.loads(str(golden["meta"]))
-    if meta.get("eval_sha256") != file_sha256(eval_path) or not meta.get("golden"):
+    eval_sha256 = file_sha256(eval_path)
+    if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
         raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
     offsets = [*golden["offsets"], len(golden["lp"])]
     keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
@@ -506,7 +507,7 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     out = Path(out_dir)
     (out / "golden").mkdir(parents=True, exist_ok=True)
     names = [data["items"][i]["name"] for i in keep]
-    origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": file_sha256(eval_path),
+    origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256,
               "max_prompt_tokens": max_prompt_tokens, "items": names}
     (out / "eval.json").write_text(json.dumps({**{k: v for k, v in data.items() if k != "items"},
                                                "items": [data["items"][i] for i in keep], "subset_of": origin}))
