@@ -10,10 +10,11 @@ count honestly is left out, never emitted at a fabricated zero.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import copy
 import threading
 import time
+from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 from tensorfold.server.memory_budget import process_footprint
@@ -53,6 +54,25 @@ class Histogram:
 
 
 HISTOGRAMS = ("latency", "ttft", "decode", "queue", "prefill", "tpot")
+
+
+@dataclass(frozen=True, slots=True)
+class StatsReading:
+    """JSON's scalar counter snapshot; outcomes are owned, with no histogram or HTTP-series aliases."""
+
+    requests: int
+    prompt: int
+    cached: int
+    generation: int
+    drafted: int
+    accepted: int
+    rounds: int
+    queue_s: float
+    prefill_s: float
+    decode_s: float
+    outcomes: dict[str, int]
+    live_requests: int
+    live_tokens: int
 
 
 class Metrics:
@@ -136,6 +156,15 @@ class Metrics:
         other.live_requests = len(self.live)
         other.live_tokens = sum(len(request.out) for request in self.live)
         return other
+
+    def stats_reading(self) -> StatsReading:
+        """Copy only JSON's counters under the same caller-owned lock as ``reading``."""
+
+        return StatsReading(requests=self.requests, prompt=self.prompt, cached=self.cached,
+                            generation=self.generation, drafted=self.drafted, accepted=self.accepted,
+                            rounds=self.rounds, queue_s=self.queue_s, prefill_s=self.prefill_s,
+                            decode_s=self.decode_s, outcomes=dict(self.outcomes),
+                            live_requests=len(self.live), live_tokens=sum(len(request.out) for request in self.live))
 
 
 def of(app: Any) -> Metrics:
@@ -245,8 +274,8 @@ def capacity_snapshot(app: Any, *, server: Any = None) -> dict[str, dict[str, in
     return result
 
 
-def counters_now(app: Any) -> Metrics:
-    """One scrape's copy of the app's counters, its key-label series reconciled with the configured keys."""
+def counters_now(app: Any, *, stats_only: bool = False) -> Metrics | StatsReading:
+    """One locked counter snapshot; JSON omits unused histograms and HTTP series, with key reconciliation unchanged."""
 
     counters = of(app)
     auth = getattr(app, "auth", None)
@@ -254,7 +283,7 @@ def counters_now(app: Any) -> Metrics:
     with labels_scope as labels, counters.lock:
         if labels is not None:
             counters.reconcile_http_labels(labels)
-        return counters.reading()
+        return counters.stats_reading() if stats_only else counters.reading()
 
 
 def render(app: Any, *, server: Any = None) -> str:

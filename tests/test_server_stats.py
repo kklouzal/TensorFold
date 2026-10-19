@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Mapping
 from types import SimpleNamespace
 
 import pytest
@@ -83,6 +84,101 @@ def test_cuda_stats_is_schema_v1_and_counts_what_health_and_metrics_count(tmp_pa
     assert totals["cancelled"] == totals["failed"] == 0 and totals["queue_seconds"] >= 0
     assert f"{metrics.PREFIX}prompt_tokens_total {totals['prompt_tokens']}" in scrape
     assert f'{metrics.PREFIX}request_success_total{{finished_reason="stop"}} 1' in scrape
+
+
+@pytest.mark.parametrize("backend", ["mlx", "cuda"])
+@pytest.mark.parametrize("path", ["/stats", "/v1/stats"])
+def test_json_stats_needs_no_histogram_or_http_series_copy(tmp_path, monkeypatch, backend, path):
+    """JSON retains all its counter fields without materializing Prometheus-only data."""
+
+    class UnreadSeries(Mapping):
+        def __iter__(self):
+            raise AssertionError("JSON copied HTTP series")
+
+        def __len__(self):
+            raise AssertionError("JSON inspected HTTP series")
+
+        def __getitem__(self, key):
+            raise AssertionError("JSON read HTTP series")
+
+    def histogram_copy(_self):
+        raise AssertionError("JSON copied a histogram")
+
+    app = app_for(tmp_path) if backend == "cuda" else MacApp()
+    metrics.note(app, prompt=7, generation=3, cached=2, drafted=5, accepted=1, rounds=2,
+                 queue=0.25, prefill=0.5, decode=0.75, latency=1.0, ttft=0.125, outcome="length")
+    counters = metrics.of(app)
+    counters.http_requests = counters.http_replies = UnreadSeries()
+    monkeypatch.setattr(metrics.Histogram, "copy", histogram_copy)
+    with (http_server(app) if backend == "cuda" else mac_server(app)) as port:
+        status, _, body = get_json(port, path)
+    assert status == 200 and set(body["totals"]) == TOTALS
+    assert body["totals"] == {
+        "requests": 1, "finished": {"stop": 0, "length": 1, "tool_calls": 0}, "cancelled": 0, "failed": 0,
+        "prompt_tokens": 7, "cached_prompt_tokens": 2, "generated_tokens": 3,
+        "generated_tokens_live": 3 if backend == "cuda" else None,
+        "queue_seconds": 0.25, "prefill_seconds": 0.5, "decode_seconds": 0.75,
+        "rounds": 2, "drafted": 5, "accepted": 1, "preemptions": None,
+        "memory_waits": None, "memory_stops": None,
+    }
+
+
+def test_stats_and_full_readings_own_their_counters_and_full_histograms():
+    app = SimpleNamespace()
+    metrics.note(app, prompt=7, generation=3, cached=2, drafted=5, accepted=1, rounds=2,
+                 queue=0.25, prefill=0.5, decode=0.75, latency=1.0, ttft=0.125, outcome="length")
+    counters = metrics.of(app)
+    # Health's live owners are hashable identity objects with a mutable output list.
+    class Live:
+        def __init__(self):
+            self.out = [1, 2]
+
+    request = Live()
+    counters.live.add(request)
+    scalar = metrics.counters_now(app, stats_only=True)
+    full = metrics.counters_now(app)
+    for name in metrics.StatsReading.__dataclass_fields__:
+        assert getattr(scalar, name) == getattr(full, name), name
+    metrics.note(app, prompt=11, generation=5, queue=0.5, decode=1.25, outcome="stop")
+    request.out.append(3)
+    assert scalar.requests == full.requests == 1 and scalar.outcomes["stop"] == full.outcomes["stop"] == 0
+    assert scalar.live_requests == full.live_requests == 1 and scalar.live_tokens == full.live_tokens == 2
+    assert full.decode.n == 1 and full.decode.total == 0.75 and sum(full.decode.counts) == 1
+    assert metrics.counters_now(app).decode.n == 2
+    text = metrics.render(app)
+    assert f"{metrics.PREFIX}request_decode_seconds_count 2\n" in text
+    assert f"{metrics.PREFIX}request_decode_seconds_sum 2\n" in text
+    scalar.outcomes["length"] = 9
+    full.outcomes["length"] = 8
+    assert counters.outcomes["length"] == 1
+
+
+def test_stats_scalar_reading_waits_for_the_counter_commit():
+    app = SimpleNamespace()
+    counters = metrics.of(app)
+    started, finished = threading.Event(), threading.Event()
+    result, errors = [], []
+
+    def read():
+        started.set()
+        try:
+            result.append(metrics.counters_now(app, stats_only=True))
+        except BaseException as error:  # noqa: BLE001 -- the joining test reports every worker failure
+            errors.append(error)
+        finally:
+            finished.set()
+
+    with counters.lock:
+        worker = threading.Thread(target=read)
+        worker.start()
+        assert started.wait(5)
+        assert not finished.is_set()
+        counters.add_locked(prompt=7, generation=3, rounds=2, outcome="length")
+    worker.join(5)
+    assert not worker.is_alive() and not errors and finished.is_set()
+    reading, = result
+    assert (reading.requests, reading.prompt, reading.generation, reading.rounds, reading.outcomes["length"]) == \
+           (1, 7, 3, 2, 1)
 
 
 def test_mac_stats_reads_its_scheduler_and_adds_its_memory():
