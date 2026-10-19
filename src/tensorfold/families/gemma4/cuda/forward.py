@@ -86,7 +86,8 @@ def apply_rope(x: torch.Tensor, inverse: torch.Tensor, position: int) -> torch.T
 
 @triton.jit
 def _attention(Q, K, V, BLOCK_START, BLOCK_END, O, BASE, FIRST, KEYS,
-               H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, WINDOW: tl.constexpr):
+               H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, WINDOW: tl.constexpr,
+               TILE: tl.constexpr):
     row, hk = tl.program_id(0), tl.program_id(1)
     gg = tl.arange(0, 16)
     dd = tl.arange(0, D)
@@ -101,8 +102,8 @@ def _attention(Q, K, V, BLOCK_START, BLOCK_END, O, BASE, FIRST, KEYS,
     out = tl.zeros((16, D), tl.float32)
     # Absolute 32-key tiles preserve row partition invariance. Single-stage
     # MMA operands must fit GB10 shared memory even for 512-wide global heads.
-    for at in range(earliest // 32 * 32, (last + 31) // 32 * 32, 32):
-        logical = at + tl.arange(0, 32)
+    for at in range(earliest // TILE * TILE, (last + TILE - 1) // TILE * TILE, TILE):
+        logical = at + tl.arange(0, TILE)
         exists = (logical >= FIRST) & (logical < FIRST + KEYS)
         visible = (logical <= pos) | ((logical >= block_start) & (logical < block_end))
         valid = exists & visible & (logical >= earliest) & (logical < last)
@@ -131,7 +132,7 @@ def attend(q, k, v, position: int, first: int, window: int, block_starts, block_
         raise ValueError("Gemma4 CUDA attention requires1..16 query heads per KV head")
     out = torch.empty_like(q)
     _attention[(q.shape[0], hk)](q, k, v, block_starts, block_ends, out, position, first, k.shape[0],
-                                H=h, HK=hk, D=d, G=h // hk, WINDOW=window,
+                                H=h, HK=hk, D=d, G=h // hk, WINDOW=window, TILE=64 if d <= 256 else 32,
                                 num_warps=4 if d <= 128 else 8, num_stages=1, enable_fp_fusion=False)
     return out
 
