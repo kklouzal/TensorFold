@@ -412,3 +412,29 @@ def test_graph_runner_serves_decode_rounds_and_prefill_stays_eager(monkeypatch, 
     # Every replayed round starts at a committed decode position and carries the first token plus drafts.
     assert all(position >= 11 and 1 <= len(tokens) <= engine.max_rows and taps == with_head
                for tokens, position, taps in calls)
+
+
+@pytest.mark.parametrize("context,smallest", [(256, 1), (4096, 8), (16384, 16)])
+def test_graph_startup_prepares_the_smallest_grid_even_when_the_context_caps_it(context, smallest):
+    pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from tensorfold.families.gemma4.cuda.graphs import Graphs
+    from tensorfold.families.gemma4.cuda.state import GLOBAL_CHUNK
+
+    state = SimpleNamespace(context=context, position=0)
+    state.rollback = lambda position: setattr(state, "position", position)
+    graphs = Graphs.__new__(Graphs)
+    graphs.state, graphs.max_rows, graphs.span = state, 3, 16
+    graphs.limit, graphs.graphs = -(-context // GLOBAL_CHUNK), {}
+    calls = []
+
+    def forward(tokens, seen, *, output_taps):
+        assert seen is state and seen.position == 0
+        key = (len(tokens), graphs.chunks(len(tokens)), output_taps)
+        calls.append(key)
+        graphs.graphs[key] = None
+        seen.position += len(tokens)
+
+    graphs.forward = forward
+    assert graphs.prepare() == 6 and state.position == 0
+    assert calls == [(rows, smallest, taps) for rows in range(1, 4) for taps in (False, True)]
