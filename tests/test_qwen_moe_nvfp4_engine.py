@@ -10,7 +10,7 @@ from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine
 from tensorfold.families.qwen3_5_moe.cuda.nvfp4_engine import QwenNvfp4MoeEngine
 
 
-@pytest.mark.parametrize("bits", [False, True, 0.0, 4.0, "4", None, -1, 8])
+@pytest.mark.parametrize("bits", [False, True, 0.0, 4.0, "4", None, -1, 2, 32])
 def test_invalid_draft_precision_refused_before_startup(monkeypatch, bits):
     monkeypatch.setattr(QwenNvfp4MoeEngine, "_start", lambda *a, **kw: pytest.fail("invalid precision reached startup"))
     with pytest.raises(ValueError, match="draft precision"):

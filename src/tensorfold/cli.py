@@ -347,8 +347,6 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     options.update(_model_overrides(args))
     if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
         options["drafter_bits"] = args.drafter_bits
-    if getattr(family.package, "CUDA_HEAD_BITS", False) and getattr(args, "head_bits", None) is not None:
-        options["head_bits"] = args.head_bits
     if getattr(args, "draft_rows", None) is not None:
         options["draft_rows"] = args.draft_rows
     if getattr(args, "expert_ranks", 1) > 1:
