@@ -77,6 +77,8 @@ def fixture():
         SUFFIXES=("weight",),
         Plain=lambda value: SimpleNamespace(value=value),
         prompt_precision=SimpleNamespace(fp8=lambda: False),
+        requant_group=lambda stem: None,                     # no requantization policy: projections as stored
+        requant=SimpleNamespace(target_kind=lambda group: None),
     )
     node = next(
         n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.FunctionDef) and n.name == "load_nvfp4"

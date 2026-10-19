@@ -199,6 +199,8 @@ class OwnershipControls(unittest.TestCase):
             "Plain8": weights,
             "Plain": weights,
             "skipped": lambda _: False,
+            "requant_group": lambda _: None,                 # no requantization policy: projections as stored
+            "requant": types.SimpleNamespace(target_kind=lambda _: None),
         }
         # The isolated entry point uses this immutable preparation label too.
         # Read its actual source literal rather than importing Torch to bind it.
