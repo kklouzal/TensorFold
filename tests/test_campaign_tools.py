@@ -350,6 +350,15 @@ def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch, capsys):
         assert summary["status"] == "error" and summary["record_error"].startswith("ValueError"), summary
     assert not (tmp_path / "nan.json").exists()
 
+    def exhausted(path, value):                        # any other failure of the record write: still exit 4
+        raise MemoryError("record")
+
+    monkeypatch.setattr(gates, "write_json", exhausted)
+    capsys.readouterr()
+    assert gates.main() == 4
+    summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert summary["status"] == "error" and summary["record_error"] == "MemoryError: record", summary
+
 
 def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
     import argparse
