@@ -13,7 +13,7 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_qwen_b16_v6", sources=[str(here / "b16.cpp"), str(here / "b16.cu")],
+    return load(name="tensorfold_qwen_b16_v7", sources=[str(here / "b16.cpp"), str(here / "b16.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
 
 
@@ -44,6 +44,12 @@ def prompt(x: torch.Tensor, w: torch.Tensor, bm: int = 0) -> torch.Tensor:
     if w.dtype != torch.bfloat16 or x.shape[1] % 64:
         return matmul(x, w)
     return _ext().b16_prompt(x.to(torch.bfloat16).contiguous(), w.contiguous(), bm)
+
+
+def rows16(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    """Up to 16 BF16 rows x [M, K] @ w [N, K]^T with prompt's bits: the same mma chain from a 16-row tile."""
+
+    return _ext().b16_rows16(x.to(torch.bfloat16).contiguous(), w.contiguous())
 
 
 def matmul_pair(x: torch.Tensor, w0: torch.Tensor, w1: torch.Tensor) -> list[torch.Tensor]:

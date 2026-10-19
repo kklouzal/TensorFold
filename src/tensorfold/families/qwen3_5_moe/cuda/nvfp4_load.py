@@ -14,6 +14,8 @@ from tensorfold.cuda.moe import Routed
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import SUFFIXES
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import load_nvfp4 as load_backbone
 
+from .linear import prepare as prepare_bf16
+
 
 @dataclass(frozen=True)
 class SharedExpert:
@@ -109,6 +111,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
     their row stride includes the final shared slot. The factory must preserve
     original packed codes and reciprocal CT scales, consume every routed field
     exactly once through ``context.read``, and own its authority until close.
+    The BF16 GDN projections and head are then bound to ``linear.MmaLinear`` (``linear.prepare``).
     """
     if not callable(expert_factory):
         raise TypeError("NVFP4 MoE loading requires an expert-bank factory")
@@ -124,5 +127,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
         bank = expert_factory(context, prefix.removesuffix("."), cfg)
         return {"moe": Routed(router, bank, cfg.top_k, run=NativeMoE(bank, shared))}
 
-    return load_backbone(model_dir, device, mlp=mlp,
-                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+    weights = load_backbone(model_dir, device, mlp=mlp,
+                            **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+    prepare_bf16(weights)
+    return weights

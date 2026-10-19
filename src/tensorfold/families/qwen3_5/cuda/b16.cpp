@@ -4,6 +4,7 @@
 at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bias);
 at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t rows);
 at::Tensor b16_prompt(const at::Tensor& x, const at::Tensor& w, int64_t bm);
+at::Tensor b16_rows16(const at::Tensor& x, const at::Tensor& w);
 std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w0, const at::Tensor& w1);
 std::vector<at::Tensor> b16_prompt_pair(const at::Tensor& x, const at::Tensor& w0, const at::Tensor& w1, int64_t bm);
 
@@ -11,6 +12,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("b16_linear", &b16_linear, "plain fp16/bf16 linear (x, w [N, K], bias [N] or undefined)");
     m.def("b16_linear_rows", &b16_linear_rows, "separately prepared bias-free projection with exact per-row arithmetic");
     m.def("b16_prompt", &b16_prompt, "prompt rows on the bf16 mma: one fp32 chain over K a row");
+    m.def("b16_rows16", &b16_rows16, "up to 16 decode rows with b16_prompt's bits from a narrow tile");
     m.def("b16_linear_pair", &b16_linear_pair, "two weights of the same rows in one launch, each b16_linear's bits");
     m.def("b16_prompt_pair", &b16_prompt_pair, "two weights of the same prompt rows in one launch");
 }

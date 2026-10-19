@@ -237,6 +237,81 @@ void prompt_launch(const at::Tensor& x, const at::Tensor& w, at::Tensor& y, int 
         y1 ? reinterpret_cast<__nv_bfloat16*>(y1->data_ptr()) : nullptr, N1);
 }
 
+// Decode rows (M <= 16) with b16_prompt_kernel's exact per-output arithmetic: one m16 row tile, NW warps side by
+// side over NW x 32 columns, ST cp.async stages of 64 inputs. Every (row, column) takes the same m16n8k16 bf16 mma
+// sequence over 16-wide k steps in increasing order into one fp32 accumulator as in b16_prompt_kernel (same fragment
+// rows, k chunks and operand order), so a row's bits equal b16_prompt's for any row count; the narrower tile only
+// avoids staging 32 x rows and computing a second, empty m16 tile.
+template <int NW, int ST>
+__global__ void __launch_bounds__(NW * 32) b16_rows16_kernel(const __nv_bfloat16* __restrict__ x,
+                                                             const __nv_bfloat16* __restrict__ w,
+                                                             __nv_bfloat16* __restrict__ y, int M, int K, int N) {
+    constexpr int BN = NW * 32, STAGE = (16 + BN) * PROW;
+    extern __shared__ __align__(128) unsigned char rbuf[];
+    const int tid = threadIdx.x, lane = tid & 31, wn = tid >> 5;
+    const int n0 = blockIdx.x * BN, KT = K / 64;
+    auto load = [&](int s, int kt) {
+        unsigned char* p = rbuf + s * STAGE;
+        for (int c = tid; c < (16 + BN) * 8; c += NW * 32) {
+            const int r = c >> 3, ch = c & 7;
+            const bool wrow = r >= 16;
+            const int src_row = wrow ? n0 + r - 16 : r, lim = wrow ? N : M;
+            const __nv_bfloat16* base = wrow ? w : x;
+            cpz(p + pswz(r, ch), base + (size_t)(src_row < lim ? src_row : 0) * K + kt * 64 + ch * 8, src_row < lim);
+        }
+    };
+    float acc[4][4] = {};
+    for (int s = 0; s < ST - 1; ++s) {
+        if (s < KT) load(s, s);
+        asm volatile("cp.async.commit_group;\n" ::);
+    }
+    for (int kt = 0; kt < KT; ++kt) {
+        asm volatile("cp.async.wait_group %0;\n" ::"n"(ST - 2));
+        __syncthreads();
+        if (kt + ST - 1 < KT) load((kt + ST - 1) % ST, kt + ST - 1);
+        asm volatile("cp.async.commit_group;\n" ::);
+        const unsigned char* p = rbuf + (kt % ST) * STAGE;
+#pragma unroll
+        for (int ks = 0; ks < 4; ++ks) {
+            uint32_t a[4], b[2][4];
+            ldsm4(a, p + pswz((lane & 7) + ((lane >> 3) & 1) * 8, ks * 2 + (lane >> 4)));
+#pragma unroll
+            for (int j = 0; j < 2; ++j)
+                ldsm4(b[j], p + pswz(16 + wn * 32 + j * 16 + (lane & 7) + ((lane >> 4) << 3),
+                                     ks * 2 + ((lane >> 3) & 1)));
+#pragma unroll
+            for (int j = 0; j < 4; ++j)
+                asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0, %1, %2, %3}, "
+                             "{%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};\n"
+                             : "+f"(acc[j][0]), "+f"(acc[j][1]), "+f"(acc[j][2]), "+f"(acc[j][3])
+                             : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[j >> 1][(j & 1) * 2]),
+                               "r"(b[j >> 1][(j & 1) * 2 + 1]));
+        }
+    }
+    asm volatile("cp.async.wait_group 0;\n" ::);
+#pragma unroll
+    for (int j = 0; j < 4; ++j)
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            const int row = (lane >> 2) + h * 8;
+            const int col = n0 + wn * 32 + j * 8 + (lane & 3) * 2;
+            if (row >= M) continue;
+            if (col < N) y[(size_t)row * N + col] = __float2bfloat16_rn(acc[j][2 * h]);
+            if (col + 1 < N) y[(size_t)row * N + col + 1] = __float2bfloat16_rn(acc[j][2 * h + 1]);
+        }
+}
+
+template <int NW>
+void rows16_launch(const at::Tensor& x, const at::Tensor& w, at::Tensor& y, int M, int K, int N) {
+    constexpr int ST = 4, SMEM = ST * (16 + NW * 32) * PROW;
+    static tensorfold::KernelConfiguration configured;
+    configured.configure(b16_rows16_kernel<NW, ST>, SMEM, x.get_device());
+    const dim3 grid((unsigned)((N + NW * 32 - 1) / (NW * 32)));
+    b16_rows16_kernel<NW, ST><<<grid, NW * 32, SMEM, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __nv_bfloat16*>(x.data_ptr()), reinterpret_cast<const __nv_bfloat16*>(w.data_ptr()),
+        reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), M, K, N);
+}
+
 }  // namespace
 
 // Kernel row/column padding and the linear K-loop increment use signed int.
@@ -393,4 +468,25 @@ std::vector<at::Tensor> b16_prompt_pair(const at::Tensor& x, const at::Tensor& w
     else prompt_launch<128>(x, w0, y0, M, K, N, &w1, &y1);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return {y0, y1};
+}
+
+// Up to 16 decode rows with b16_prompt's bits: column tiles of 128, 64 or 32 (the widest that still gives every SM
+// two blocks; never a row's bits). pair_in checks w against x, dimensions M >= 1, grid_dimensions N >= 1.
+at::Tensor b16_rows16(const at::Tensor& x, const at::Tensor& w) {
+    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 &&
+                    x.size(0) <= 16 && x.size(1) % 64 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
+                "x: contiguous 16-byte aligned (M <= 16, K) bf16, K a multiple of 64");
+    pair_in(x, w);
+    dimensions(x, w, true);
+    const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
+    at::cuda::CUDAGuard guard(x.device());
+    const int64_t want = 2LL * at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+    const int nw = (N + 127) / 128 >= want ? 4 : (N + 63) / 64 >= want ? 2 : 1;
+    grid_dimensions(x, N, 16, nw * 32, false);
+    auto y = at::empty({M, N}, x.options());
+    if (nw == 4) rows16_launch<4>(x, w, y, M, K, N);
+    else if (nw == 2) rows16_launch<2>(x, w, y, M, K, N);
+    else rows16_launch<1>(x, w, y, M, K, N);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return y;
 }

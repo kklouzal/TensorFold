@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair
+from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair, rows16
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
@@ -74,6 +74,24 @@ def test_paired_gates_follow_the_policy_with_each_weights_bits():
         y0, y1 = matmul_pair(x[:m], w0, w1)
         assert (torch.equal(y0.view(torch.int16), a0[:m].view(torch.int16))
                 and torch.equal(y1.view(torch.int16), a1[:m].view(torch.int16))), m
+
+
+@pytest.mark.parametrize("n,k", [(32, 2048), (130, 256), (2048, 4096), (8192, 2048), (248320, 2048)])
+def test_sixteen_row_decode_tile_keeps_prompt_bits(n, k):
+    """rows16 issues prompt's mma chain from a 16-row tile (128-, 64- or 32-column blocks): the same bits."""
+
+    g = torch.Generator(device="cuda").manual_seed(n + k)
+    w = torch.empty((n, k), dtype=torch.bfloat16, device="cuda").uniform_(-.05, .05, generator=g)
+    x = torch.empty((16, k), dtype=torch.bfloat16, device="cuda").uniform_(-1, 1, generator=g)
+    want = prompt(x, w)
+    for m in range(1, 17):
+        assert torch.equal(rows16(x[:m], w).view(torch.int16), want[:m].view(torch.int16)), m
+
+
+def test_sixteen_row_decode_tile_refuses_more_rows():
+    with pytest.raises(RuntimeError, match="M <= 16"):
+        rows16(torch.zeros((17, 64), dtype=torch.bfloat16, device="cuda"),
+               torch.zeros((8, 64), dtype=torch.bfloat16, device="cuda"))
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
