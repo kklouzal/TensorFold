@@ -71,8 +71,10 @@ has been loaded here yet.
 
 The CUDA engine reads NVIDIA's ModelOpt export of the model (`nvidia/Qwen3.8-27B-NVFP4`: NVFP4 MLP and head, FP8
 attention and DeltaNet projections, bf16 embedding and gates) as it ships. The reader also takes
-compressed-tensors NVFP4 and FP8 exports. The `RishabhSinha/Qwen3.5-9B-NVFP4` packed export has the bounded
-public-constructor qualification described in [NVFP4 precision](cuda.md#nvfp4-precision); other export layouts
+compressed-tensors NVFP4 and FP8 exports, and ModelOpt mixed exports whose FP8 layers keep a scale per output channel
+with dynamic per-token inputs ([AEON's](#aeon-mixed-nvfp4-export)). The `RishabhSinha/Qwen3.5-9B-NVFP4` packed export
+has the bounded public-constructor qualification described in [NVFP4 precision](cuda.md#nvfp4-precision); other
+export layouts
 retain their separate validation scope. Each projection is read by its tensors: NVFP4 codes with their e4m3 block scales and
 FP8 bytes go to the device unchanged. Under `--precision full`, the lane matmuls turn them into exact bf16 operands
 (an e2m1 code times
@@ -108,7 +110,17 @@ checkpoint's. The startup estimate is 62.5 GiB at the 262,144-token window.
 
 ### AEON mixed NVFP4 export
 
-`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` (revision `282e6775`) ships a `tokenizer.json` (sha256
+`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` (revision `282e6775`) is a ModelOpt 0.46.0 mixed export:
+the MLPs of layers 0-55 are NVFP4 with static FP4 activation scales (168 projections), and the attention and DeltaNet
+projections and the MLPs of layers 56-63 are FP8 with a scale per output channel and dynamic per-token activations,
+ModelOpt's `FP8_PER_CHANNEL_PER_TOKEN` (232 projections). The embedding, head and DeltaNet gates are bf16. Under the
+default `--precision checkpoint` the FP8 layers quantize each prompt or draft row under its own scale onto the FP8
+tensor cores ([NVFP4 precision](cuda.md#nvfp4-precision) has the rule); `--precision full` runs bf16 rows against the
+stored FP8 weights, each sum times its channel's scale. `--prefill-fp8` is refused at load for this export, since its
+prompts already take the declared FP8 math. The startup line says "FP8 layers FP8 x FP8 (rows quantized a token at a
+time)".
+
+The export also ships a `tokenizer.json` (sha256
 `6f32ce20…`) whose pre-tokenizer splits combining marks from their letters: `\p{L}+` where the model it was tuned from,
 `Qwen/Qwen3.8-27B` (revision `1d4bf0f2`, `tokenizer.json` sha256 `0997f410…`), has `[\p{L}\p{M}]+`. Devanagari, Thai
 and Arabic text with marks therefore encodes into other tokens; English, code, CJK, Korean and Vietnamese samples encode
@@ -121,8 +133,14 @@ TOKENIZER=$(python3 -c "from huggingface_hub import hf_hub_download as get; prin
 tensorfold serve AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED --tokenizer "$TOKENIZER"
 ```
 
-These tokenizer results come from CPU comparisons of the two files. End-to-end `tensorfold serve` qualification of this
-export (quality gates, performance) is pending.
+The tokenizer results come from CPU comparisons of the two files. On one DGX Spark (GB10) with the upstream tokenizer,
+the default `--precision checkpoint` and DFlash2, drafted replies equal serial ones token for token (greedy and seeded,
+also under `full`), and a reply resumed from a cached prompt equals a cold one. 512-token replies decoded at 76.4
+(code), 30.5 (chat), 81.1 (JSON) and 11.1 (Hindi) tok/s greedy on the engine at an 8,192-token context, against
+11.2-12.2 serially, and at 31-53 tok/s through `tensorfold serve` at short and 4,096-token prompts. Prompts ran at
+about 1,750 / 2,580 / 2,300 tok/s at 4k / 16k / 32k tokens. The tool, needle and KL gates are pending;
+[the validation record](../optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19) has the conditions,
+including the GB10's thermal observations at long prompts.
 
 ### EXL3 checkpoints (experimental)
 

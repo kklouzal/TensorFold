@@ -18,6 +18,43 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
+
+Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch
+`campaign-qwen38-20261018`, measured from `35b61ae4`; the rebased commits are patch-identical). Checkpoint
+`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` revision `282e6775`, drafter `z-lab/Qwen3.8-27B-DFlash2`
+revision `50307d4c`, and the `tokenizer.json` of `Qwen/Qwen3.8-27B` revision `1d4bf0f2` through `--tokenizer`; one
+DGX Spark (GB10, SM 12.1), `--precision checkpoint`, bf16 KV, one stream. Its 232 FP8 projections are ModelOpt
+`FP8_PER_CHANNEL_PER_TOKEN`; see the [27B recipe](recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export).
+
+- Numerics: the per-token quantizer matches a PyTorch reference byte for byte, scales included; the FP8 GEMMs (decode
+  lanes, split-K, prompt GEMMs, W8A16 under `full`) match float64 references of the declared math within a Higham
+  bound of fp32 accumulation; rows, chunks and split-K parts are bit-invariant. 205 GPU checks passed on the GB10,
+  the checkpoint's own included; the kernel and synthetic-model suites also pass on an RTX PRO 2000 Blackwell (SM
+  12.0). A 60 s FP8 GEMM stress at the export's shapes stayed within 0.0018-0.0027 relative error of an fp32
+  reference.
+- Exactness on the checkpoint (context 4,096): drafted replies equal serial ones token for token, greedy and two
+  seeds, under `checkpoint`, `full` and the FP8-only math SM 8.9-10.x GPUs run. Through `tensorfold serve` (512
+  tokens, both thinking modes, short and 4,096-token prompts), each greedy reply resumed from a cached prompt equals its
+  cold run (seven cells).
+- Decode, 512 tokens: on the engine path at an 8,192-token context, 76.4 (code), 30.5 (chat), 81.1 (JSON) and 11.1
+  (Hindi) tok/s greedy and 70.7 / 26.6 / 79.9 / 11.0 sampled (T 0.6, top-k 20, top-p 0.95), against 11.2-12.2
+  serially; a 16-row verify round took 96-97 ms and a draft 8-10 ms. Through `tensorfold serve` (one run a cell):
+  greedy 31.0-48.3 tok/s with thinking and 32.8-52.6 without, at short and 4,096-token prompts. Hindi drafts almost
+  nothing: the drafter scores only the vocabulary's first 98,304 ids and its control tokens.
+- Prefill on the engine path, each prompt cold: 1,745-1,753 / 2,574-2,581 / 2,221-2,327 tok/s at 4,096 / 16,384 /
+  32,768 tokens; through the server a 4,096-token prompt took 1.56-1.57 s.
+- YaRN code on the default path: one interleaved pair against the build before it, at the default 262,144-token
+  window, gave the same tokens (serial and drafted, greedy and sampled) and prefill replies at 4,096 and 16,384 tokens,
+  at 0.999-1.005x the speed. The second pair is pending.
+- GB10 observations: a 32,768-token prompt draws 87-95 W with SM clocks at 2,288-2,350 MHz and no clock-event reason
+  (boost backing off on power), and takes the hottest thermal zone to about 94 C within 15 s. After minutes of decode
+  near 52 W, prompt bursts reached the firmware's SW thermal slowdown, and the GB10 stopped responding twice at the
+  start of such a burst (2026-10-18 23:33Z and 2026-10-19 10:20Z, memory flat). The cause is under investigation, and
+  further runs on the GB10 are on hold.
+- Pending: the strict and non-strict tool suite, needle recall, 32k and longer server cells, KL and agreement against
+  the BF16 export, and the extended YaRN window (1,048,576 positions).
+
 ## Qwen MoE CT NVFP4, 2026-10-17
 
 Installed source `099eb4d0` ran the original pinned Heretic 35B-A3B compressed-tensors
