@@ -54,9 +54,9 @@ def torch_live(torch, available: Callable, *, unavailable_spare_bytes: int = 0, 
         # decoders; select the owned-pool arithmetic once during preparation.
         def room() -> int:
             queued = pending_bytes()
-            allocated = int(torch.cuda.memory_allocated()) + mapped_bytes() - queued
-            free = int(available(torch)) + int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated()) \
-                + queued
+            torch_allocated = int(torch.cuda.memory_allocated())
+            allocated = torch_allocated + mapped_bytes() - queued
+            free = int(available(torch)) + int(torch.cuda.memory_reserved()) - torch_allocated + queued
             limit = cuda_limit_bytes()
             return max(0, min(free, limit - allocated)) if limit is not None else max(0, free)
         return room
