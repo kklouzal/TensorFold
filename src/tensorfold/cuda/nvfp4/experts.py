@@ -100,26 +100,14 @@ def down(act: torch.Tensor, ex: Experts4, plan: grouped.Plan, out: torch.Tensor,
          plan, out, ex.dims, 0.0, skip, rows)
 
 
-E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+def quantize(w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """bf16 [E, N, K] -> NVFP4 (words, e4m3 scales, per-expert scales) by ModelOpt's recipe, for draft-only weights:
+    ``tensorfold.cuda.requant.nvfp4_rows`` (the one NVFP4 weight quantizer) on each expert."""
 
+    from tensorfold.cuda.requant import nvfp4_rows
 
-def _quantize(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    e, n, k = x.shape
-    g = (x.abs().amax(dim=(1, 2)) / (6.0 * 448.0)).clamp_min(1e-30)                    # [E]
-    blocks = x.view(e, n, k // 16, 16)
-    s = (blocks.abs().amax(-1) / 6.0 / g[:, None, None]).clamp(max=448.0).to(torch.float8_e4m3fn)
-    step = (s.float() * g[:, None, None])[..., None]
-    v = torch.where(step > 0, blocks / step.clamp_min(1e-30), torch.zeros_like(blocks))
-    mags = torch.tensor(E2M1, device=x.device)
-    code = ((v.abs()[..., None] - mags).abs().argmin(-1) + 8 * (v < 0).to(torch.int64)).view(e, n, k).to(torch.uint8)
-    return (code[..., 0::2] | (code[..., 1::2] << 4)).contiguous(), s.view(torch.uint8).contiguous(), g
-
-
-def quantize(w: torch.Tensor, chunk: int = 8) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """bf16 [E, N, K] -> NVFP4 (words, e4m3 scales, per-expert scales) by ModelOpt's recipe, for draft-only weights."""
-
-    parts = [_quantize(w[e0:e0 + chunk].to(torch.float32)) for e0 in range(0, w.shape[0], chunk)]
-    return tuple(torch.cat(p) for p in zip(*parts))
+    parts = [nvfp4_rows(w[e]) for e in range(w.shape[0])]
+    return tuple(torch.stack(part) for part in zip(*parts))
 
 
 def dense(ex: Experts4, e: int, which: str) -> torch.Tensor:
@@ -134,6 +122,8 @@ def dense(ex: Experts4, e: int, which: str) -> torch.Tensor:
     slot = 2 * h[:, None] + q[None, :] // 2 + 4 * (q[None, :] % 2)
     codes = (words[..., None, None] >> (4 * slot)) & 0xF                                 # [cb, g, gq, t, j, h, q]
     codes = codes.permute(0, 4, 2, 1, 5, 3, 6).reshape(nb * COLS, kg * 32)
+    from tensorfold.cuda.requant import E2M1
+
     mags = torch.tensor(E2M1 + tuple(-v for v in E2M1), device=blocks.device)
     sc = blocks[..., 128:].contiguous().view(torch.uint8).view(nb, kg, 4, 2, 4, 2)      # [cb, g, t, h, j, c]
     sc = sc.permute(0, 4, 2, 5, 1, 3).reshape(nb * COLS, kg * 2).contiguous()

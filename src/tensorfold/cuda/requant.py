@@ -8,6 +8,10 @@ Both use this module, which builds copies on the existing kernels of ``tensorfol
              codes ``e4m3(W / s_n)`` round to nearest even, saturating: ModelOpt's FP8_PER_CHANNEL layout, run as
              W8A16 (BF16 rows, each channel's scale in the epilogue) by ``Fp8Linear``.
   ``fp8a8``  the same codes, rows quantized a token at a time onto the E4M3 tensor-core MMA (``Fp8Linear(token)``).
+  ``nvfp4``  E2M1 codes with an E4M3 scale per 16 inputs and one FP32 global scale (ModelOpt's NVFP4 weight recipe:
+             global = max|W| / (6 x 448), block scale e4m3(max_block / 6 / global), codes the nearest E2M1 magnitude
+             of W / (block scale x global), ties to the smaller), run as W4A16 by ``Fp4Linear``. ``nvfp4_rows`` is the
+             one NVFP4 weight quantizer (``tensorfold.cuda.nvfp4.experts.quantize`` applies it per expert).
 
 Every copy is quantized in row chunks so its FP32 working set stays bounded (a vocabulary head has 0.25M rows); the
 caller may free the source afterwards. ``resident_bytes`` / ``staging_bytes`` give admission its bytes.
@@ -18,8 +22,10 @@ from __future__ import annotations
 import torch
 
 E4M3_MAX = 448.0
-KINDS = ("fp8", "fp8a8")
+E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
+KINDS = ("fp8", "fp8a8", "nvfp4")
 CHUNK_ROWS = 16384
+NVFP4_CHUNK_ROWS = 4096     # NVFP4 rows hold ~13 bytes an element while quantized (FP32 blocks and quotients)
 
 
 def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.Tensor, torch.Tensor]:
@@ -43,17 +49,57 @@ def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.T
     return codes, scales
 
 
+def nvfp4_rows(weight: torch.Tensor, chunk: int = NVFP4_CHUNK_ROWS) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``(codes, scales, global)`` of a floating [N, K] weight (K a multiple of 16): E2M1 codes two a byte (low nibble
+    first) [N, K/2] uint8, E4M3 block scales [N, K/16] as uint8 bytes, and the FP32 global scale (a 0-d tensor).
+
+    Every value is computed in FP32 exactly as ModelOpt's recipe orders it, so a chunked call equals a whole one.
+    """
+
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2 or not weight.is_floating_point() \
+            or weight.dtype == torch.float8_e4m3fn or weight.shape[1] % 16:
+        raise ValueError("NVFP4 requantization takes a floating [N, K] weight with K a multiple of 16")
+    n, k = weight.shape
+    top = torch.zeros((), dtype=torch.float32, device=weight.device)
+    for start in range(0, n, chunk):
+        w = weight[start:start + chunk].float()
+        if not bool(torch.isfinite(w).all()):
+            raise ValueError("NVFP4 requantization needs finite weights")
+        top = torch.maximum(top, w.abs().amax())
+    g = (top / (6.0 * E4M3_MAX)).clamp_min(1e-30)
+    mids = torch.tensor(E2M1, device=weight.device)
+    mids = (mids[1:] + mids[:-1]) / 2                       # E2M1 decision points: ties go to the smaller magnitude
+    codes = torch.empty((n, k // 2), dtype=torch.uint8, device=weight.device)
+    scales = torch.empty((n, k // 16), dtype=torch.uint8, device=weight.device)
+    for start in range(0, n, chunk):
+        blocks = weight[start:start + chunk].float().view(-1, k // 16, 16)
+        s = (blocks.abs().amax(-1) / 6.0 / g).clamp(max=E4M3_MAX).to(torch.float8_e4m3fn)
+        step = (s.float() * g)[..., None]
+        v = torch.where(step > 0, blocks / step.clamp_min(1e-30), 0.0)
+        del blocks
+        negative = (v < 0).view(-1, k)
+        code = torch.bucketize(v.abs_(), mids, out_int32=True).view(-1, k).to(torch.uint8)
+        del v
+        code |= negative.to(torch.uint8) << 3                # the sign bit above the three magnitude bits
+        codes[start:start + chunk] = code[:, 0::2] | (code[:, 1::2] << 4)
+        scales[start:start + chunk] = s.view(torch.uint8).view(-1, k // 16)
+    return codes, scales, g
+
+
 def requantize(weight: torch.Tensor, kind: str):
-    """A ``kind`` copy of a CUDA floating [N, K] weight (K a multiple of 64): an ``Fp8Linear``.
+    """A ``kind`` copy of a CUDA floating [N, K] weight (K a multiple of 64): an ``Fp8Linear`` or (nvfp4) ``Fp4Linear``.
 
     Its ``__call__(x)`` maps BF16 rows [M, K] to BF16 [M, N] (FP32 sums into an FP32 ``out``), ``prefill(x)`` takes
     prompt rows on the prompt GEMM, ``tiles(t0, t1)`` is a view of output rows [64 t0, 64 t1).
     """
 
-    from tensorfold.cuda.nvfp4.linear import Fp8Linear
+    from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear
 
     if kind not in KINDS:
         raise ValueError(f"requantization kind must be one of {KINDS}")
+    if kind == "nvfp4":
+        codes, scales, g = nvfp4_rows(weight)
+        return Fp4Linear.from_checkpoint(codes, scales, float(g))
     codes, scales = requant_rows(weight)
     return Fp8Linear.from_checkpoint(codes, scales, token=kind == "fp8a8")
 
@@ -75,14 +121,16 @@ class Head:
     """
 
     def __init__(self, source, kind: str, *, softcap: float | None = None):
-        from tensorfold.cuda.nvfp4.linear import Fp8Linear
+        from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear
 
         if softcap is not None and not (isinstance(softcap, (int, float)) and softcap > 0):
             raise ValueError("a head softcap must be a positive number")
         if isinstance(source, Head):
             source = source.linear
-        if isinstance(source, Fp8Linear):
-            if source.cols is None or source.token != (kind == "fp8a8"):
+        if isinstance(source, (Fp8Linear, Fp4Linear)):
+            same = (source.act is None and kind == "nvfp4" if isinstance(source, Fp4Linear) else
+                    source.cols is not None and kind != "nvfp4" and source.token == (kind == "fp8a8"))
+            if not same:
                 raise ValueError("a requantized head is shared as the same kind; other kinds start from BF16")
             self.linear = source
         else:
@@ -101,12 +149,13 @@ class Head:
 
 
 def resident_bytes(kind: str, n: int, k: int) -> int:
-    """Device bytes a ``kind`` copy of an [N, K] weight keeps: codes over 128-padded rows and an FP32 scale a row."""
+    """Device bytes a ``kind`` copy of an [N, K] weight keeps: codes over 128-padded rows and an FP32 scale a row
+    (fp8), or half-byte codes and an E4M3 scale per 16 inputs (nvfp4)."""
 
     if kind not in KINDS:
         raise ValueError(f"requantization kind must be one of {KINDS}")
     padded = -(-n // 128) * 128
-    return padded * k + padded * 4
+    return padded * k // 2 + padded * k // 16 if kind == "nvfp4" else padded * k + padded * 4
 
 
 def staging_bytes(kind: str, n: int, k: int) -> int:
@@ -117,8 +166,16 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
 
     if kind not in KINDS:
         raise ValueError(f"requantization kind must be one of {KINDS}")
+    if kind == "nvfp4":
+        # nvfp4_rows' codes and scales beside either its chunk temporaries (FP32 blocks, quotients and their where,
+        # int32 bucket indices, byte codes: <= 14 bytes an element) or qmm.pack's 4096-row chunk temporaries (int32
+        # nibbles, the gathered fragment, two int64 shifts: <= 25 bytes an element) with its tiled output and the
+        # block-scale relayout (two scale copies).
+        padded, rows = -(-n // 128) * 128, min(n, NVFP4_CHUNK_ROWS)
+        return n * k // 2 + n * k // 16 + max(rows * k * 14, min(padded, 4096) * k * 25 + padded * k // 2
+                                                               + 2 * padded * k // 16)
     return min(n, CHUNK_ROWS) * k * 9 + n * k + min(n, FRAGMENT_ROWS) * k * 17
 
 
-__all__ = ["CHUNK_ROWS", "E4M3_MAX", "Head", "KINDS", "prefix", "requant_rows", "requantize", "resident_bytes",
-           "staging_bytes"]
+__all__ = ["CHUNK_ROWS", "E2M1", "E4M3_MAX", "Head", "KINDS", "NVFP4_CHUNK_ROWS", "nvfp4_rows", "prefix",
+           "requant_rows", "requantize", "resident_bytes", "staging_bytes"]
