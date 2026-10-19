@@ -275,6 +275,24 @@ def construct(family, path, requested, explicit, world, rank=0):
     return obj, start
 
 
+def expected_linear_geometry(text, world):
+    """The tested constructor permits12 verify rows, copy proposals and a replicated1024-token vocabulary.
+
+    Shared workspace formulas have independent unit controls. This integration reference deliberately declares
+    their dimensions separately from the constructor and retains its real per-rank cache/prompt geometry.
+    """
+    from tensorfold.cuda.geometry import gdn_geometry, with_fixed
+    from tensorfold.cuda.sampling import effective_workspace
+    from tensorfold.cuda.speculative import chain_workspace
+
+    assert text["vocab_size"] == 1024
+    target = effective_workspace(12, 1024, world=1)
+    copies = chain_workspace(11, 16)
+    workspace = target["device_bytes"] + copies["device_bytes"]
+    geometry = gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1)
+    return with_fixed(geometry, workspace)
+
+
 @pytest.mark.parametrize("family,world", [("linear", 1), ("linear", 2), ("indexed", 1), ("indexed", 2), ("mla", 2)])
 @pytest.mark.parametrize("requested,explicit,window", [(None, None, 65536), (65536, False, 65536),
                                                         (0, True, 65536), (1024, True, 1024)])
@@ -304,7 +322,7 @@ def test_real_constructors_shrink_default_and_refuse_explicit_before_loading(tmp
     text = small_config()
     geometry = (mla_geometry(text, world, 8, latent=LATENT) if family == "mla" else
                 gdn_geometry(text, world, 1, indexed=True) if family == "indexed" else
-                gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1))
+                expected_linear_geometry(text, world))
     budget = geometry.needed(12000) + 32768
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     obj, start = construct(family, tmp_path, None, None, world)
@@ -403,7 +421,7 @@ def test_actual_distributed_startup_agrees_on_smaller_rank_before_loading(tmp_pa
     calls, capacity = fake_runtime
     geom = (mla_geometry(small_config(), 2, 8, latent=LATENT) if family == "mla" else
             gdn_geometry(small_config(), 2, 1, indexed=True, kept=5) if family == "indexed" else
-            gdn_geometry(small_config(), 2, 12, rows=12, prompt=4096, kept=4))  # actual 27B retained-prefix policy
+            expected_linear_geometry(small_config(), 2))
     transform = split_weights(rule) if family == "mla" else indexed_weights(2, False) if family == "indexed" else linear_weights
     weights = capacity.estimate_weights(tmp_path, transform)
     if family == "linear":

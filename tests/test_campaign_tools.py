@@ -35,6 +35,31 @@ kl = load("campaign_kl")
 trace = load("campaign_trace")
 
 
+def test_eviction_preparation_displaces_a_reused_prefix_under_actual_cache_policy(monkeypatch):
+    from tensorfold.cuda.streams import PrefixCache
+
+    original = [9000, 9001]
+    cache = PrefixCache(4)
+    cache.add(original, object(), None)
+    assert cache.longest([*original, 9002]) is not None
+    messages = gates._evictions(6)
+    calls = []
+
+    def request(url, body):
+        calls.append(body)
+        key = [messages.index(body["messages"]) + 1]
+        hit = cache.longest([*key, 99])
+        if hit is None:
+            cache.add(key, object(), None)
+
+    monkeypatch.setattr(gates, "stream_chat", request)
+    gates._evict("http://fixture", {"model": "test"}, SimpleNamespace(evict_requests=6))
+    assert cache.longest([*original, 9002]) is None
+    assert len(calls) == 12
+    assert all(calls[2 * i]["messages"] == calls[2 * i + 1]["messages"] == messages[i] for i in range(6))
+    assert all(c["max_tokens"] == 4 and c["temperature"] == 0 for c in calls)
+
+
 # --- statistics -----------------------------------------------------------------------------------------------------
 
 def test_t_quantiles_match_the_table_and_the_large_sample_limit():

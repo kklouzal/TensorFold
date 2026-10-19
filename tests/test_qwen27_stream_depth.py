@@ -188,7 +188,10 @@ def test_tree_streams_draft_and_finish_under_their_own_policies(allocations, mon
             return rows
 
     history = History()
-    for sid, policy, penalties in [(0, "first", None), (1, "one-row", None), (2, None, history)]:
+    from tensorfold.engine.exact_sampling import Sampling
+
+    first, one_row = Sampling(1, temperature=0), Sampling(2, temperature=0)
+    for sid, policy, penalties in [(0, first, None), (1, one_row, None), (2, None, history)]:
         dec.streams[sid].sampling, dec.streams[sid].history = policy, penalties
     draft, launched, finished = dec.draft, [], []
     launch, finish = draft.launch_blocks, draft.finish_tree
@@ -206,5 +209,5 @@ def test_tree_streams_draft_and_finish_under_their_own_policies(allocations, mon
     monkeypatch.setattr(multi, "multi_tree_forward", lambda w, wins, **kw: (Rows(), None, None, [0, 4, 5, 8]))
     dec._verify([(0, multi.TREE, 5, 20), (1, multi.ONE, 6, 31), (2, multi.TREE, 7, 42)], {})
     assert launched == [[None, history]]
-    assert finished == [(20, "first", None), (42, None, history)]
+    assert finished == [(20, first, None), (42, None, history)]
     assert applied == [(slice(5, 8), [7, 1, 2], [-1, 0, 1])]          # stream 2's rows: its window and path

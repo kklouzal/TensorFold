@@ -28,6 +28,25 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion r
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
 
 
+def test_proposal_factory_owns_sampled_q_packet_and_preserves_greedy_default():
+    """The Gemma adapter chooses the shared launch contract before publication; no model/kernel is needed."""
+    from tensorfold.engine.exact_sampling import Sampling
+
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    logits = torch.zeros((3, 5), dtype=torch.float32)
+    draft.logits = lambda state, anchor, count: logits[:count]
+    state = object()
+    greedy = draft.propose(state, 2, 3)
+    assert greedy.finish(0, 3)[0] == [0, 0, 0]
+    launched = draft.propose(state, 2, 3, sampled=True)
+    packet = launched.sample(0, 3, Sampling(seed=43, temperature=.7, top_k=0, top_p=1.0), 37)
+    assert packet.first_position == 37 and len(packet.tokens) == len(packet.q_rows) == 3
+    for token, row in zip(packet.tokens, packet.q_rows):
+        assert row.ids.tolist() == list(range(5)) and row.probs.tolist() == [.2] * 5
+        assert 0 <= token < 5 and not row.ids.flags.writeable and not row.probs.flags.writeable
+    assert launched.words is None and launched.owners is None
+
+
 def norm(x, weight, eps):
     return (x.float() * (x.float().pow(2).mean(-1, keepdim=True) + eps).rsqrt()).to(x.dtype) * weight
 

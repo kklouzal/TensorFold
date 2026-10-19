@@ -132,6 +132,15 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     longest = max(media_geometry.image_soft_tokens, media_geometry.video_soft_tokens) if vision else 0
     rows = widest_forward(max_rows, longest)
+    from tensorfold.cuda.sampling import effective_workspace
+    from tensorfold.cuda.speculative import chain_workspace
+    # Every request policy is supported after admission, including full-support top-k0 and tied-boundary repair.
+    # Producer logits are already in workspace/graph geometry; charge only the sampler's additional owners here.
+    # Without a companion the engine retains sample_rows and never enters sampled rejection verification.
+    sampling = (effective_workspace(streams * max_rows, cfg.vocab, top_k=0)
+                if draft is not None else {"device_bytes": 0, "host_bytes": 0})
+    proposals = (chain_workspace(max_rows - 1, cfg.vocab, streams=streams, penalized=True)
+                 if draft is not None else {"device_bytes": 0, "host_bytes": 0})
 
     def workspace(slots):
         # One layer's simultaneous activation/route tensors and retained taps.
@@ -165,4 +174,6 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     return common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
                   lambda name, info: (0, 0),
-                  weight_estimator=lambda _: (Weights(resident, staging), staging))
+                  weight_estimator=lambda _: (Weights(resident, staging), staging),
+                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"],
+                  host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"])

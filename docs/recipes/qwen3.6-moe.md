@@ -1,5 +1,7 @@
 # Qwen3.6-35B-A3B
 
+CUDA CT NVFP4 DFlash sampled requests use standard rejection sampling; greedy serial identity remains required. Fixed seed/configuration, cache reuse and supported batching reproduce the drafted request, while sampled serial/drafted or different proposal-precision tokens may differ. Affine native MTP and Apple paths retain their separate sampling contracts. Historical measurements below retain their source and scope. See [migration validation](../rejection-sampling-validation.md) for outstanding qualification gates.
+
 The `qwen3_5_moe` family serves Qwen3.6-35B-A3B on Apple Silicon and on one NVIDIA GPU. Its layers are the 27B's
 (Gated DeltaNet and gated full attention, every fourth layer attention) with routed experts in place of the dense
 MLP. Affine CUDA checkpoints draft with their MTP layer; original CT NVFP4 uses a separate DFlash v1 model.

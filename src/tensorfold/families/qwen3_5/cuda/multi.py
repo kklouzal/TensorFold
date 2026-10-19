@@ -18,14 +18,14 @@ from .decode import CopyIndex, clone_state
 from .decode_tp import (
     SAMPLING_WORDS as W, _sample_split, _share, first_token, pack_sampling, split_sampling_plan, unpack_sampling,
 )
-from .draft_tree import allocate
+from .draft_tree import RejectionResult, allocate, chain_probabilities, copy_packet
 from .engine import entry_end
 from .forward import State, _paths, commit_streams, multi_tree_forward, path_indices, reserve
 from .prefill import CHUNK, Piece, prefill_batch, prefill_state
 from .weights import Weights
 
 ADMIT, ROUND, DONE, FILL, FILLS = 1, 2, 3, 4, 5   # rank 0's messages
-COPY, TREE, ONE = 0, 1, 2               # a stream's window this round
+COPY, TREE, ONE, CHAIN, COPY_CHAIN = 0, 1, 2, 3, 4    # greedy windows, serial, and stochastic q-bearing windows
 STEP = 1024                             # prompt rows a prefill step takes while other streams decode
 GROW = 8192                             # rows a stream's attention caches grow by at a time (one GPU)
 GIB = 1024**3
@@ -508,7 +508,8 @@ class MultiDecoder:
         wins, record, taps, starts, sampled = self._verify(plan, copied)
         paths, ends = [], []
         for s, (tokens, parents), rows in zip(live, wins, sampled):
-            path, end = accept(tokens, parents, rows, s.count - len(s.out), self._ends(s))
+            path, end = rows if isinstance(rows, RejectionResult) else \
+                accept(tokens, parents, rows, s.count - len(s.out), self._ends(s))
             paths.append(path)
             ends.append(end)
         self._send([x for path in paths for x in (len(path), *path)])
@@ -560,8 +561,13 @@ class MultiDecoder:
     def _mode(self, s: Stream, copied: dict[int, list[int]]) -> int:
         if not s.draft:
             return ONE
-        copied[s.sid] = s.copies.propose(s.context, self.max_rows - 1) if s.copies is not None else []
-        return COPY if copied[s.sid] else (TREE if self.draft is not None else ONE)
+        stochastic = s.sampling is not None and s.sampling.temperature > 0
+        nodes = min(self.draft.trained if self.draft is not None else self.max_rows, self.max_rows) - 1 \
+            if stochastic else self.max_rows - 1
+        copied[s.sid] = s.copies.propose(s.context, nodes) if s.copies is not None else []
+        if copied[s.sid]:
+            return COPY_CHAIN if stochastic else COPY
+        return (CHAIN if stochastic else TREE) if self.draft is not None else ONE
 
     def _trees(self, plan, blocks) -> dict[int, tuple[list[int], list[int], list[float]]]:
         """Rank 0: each tree stream's nodes, parents and path scores, in the policy's pop order."""
@@ -577,25 +583,36 @@ class MultiDecoder:
                 return t0 + (t1 - t0) * (rows - r0) / (r1 - r0)
         return pts[0][1]
 
-    def _windows(self, plan, copied, blocks) -> list[tuple[list[int], list[int]]]:
+    def _windows(self, plan, copied, blocks, chains=None) -> list[tuple[list[int], list[int]]]:
         """Rank 0: every stream's window; with a cost curve, the trees' widths by expected tokens a millisecond."""
 
+        chains = {} if chains is None else chains
         trees = self._trees(plan, blocks)
         keep = {sid: len(t[0]) for sid, t in trees.items()}
         if self.costs is not None and trees:
             sids = list(trees)
-            fixed = sum(1 + (len(copied[sid]) if mode == COPY else 0) for sid, mode, _, _ in plan)
+            fixed = sum(1 + (len(chains[sid].tokens) if sid in chains else len(copied[sid]) if mode == COPY else 0)
+                        for sid, mode, _, _ in plan)
             counts = allocate([trees[sid][2] for sid in sids], fixed, float(len(plan)), self._cost,
                               self._overhead(len(plan)))
             keep = dict(zip(sids, counts))
         wins = []
         for sid, mode, pending, _ in plan:
+            if mode in (CHAIN, COPY_CHAIN) and sid not in chains:
+                raise ValueError("a stochastic window requires its original probability packet")
             guesses, parents = [], []
-            if mode == COPY:
+            if sid in chains:
+                guesses = list(chains[sid].tokens)
+                parents = list(range(-1, len(guesses) - 1))
+            elif mode == COPY:
                 guesses, parents = copied[sid], list(range(-1, len(copied[sid]) - 1))
             elif sid in trees:
                 guesses, parents = trees[sid][0][:keep[sid]], trees[sid][1][:keep[sid]]
-            wins.append(([pending] + list(guesses), [-1] + [0 if p < 0 else p + 1 for p in parents]))
+            tokens, ancestors = [pending] + list(guesses), [-1] + [0 if p < 0 else p + 1 for p in parents]
+            if sid in chains:
+                room = self.streams[sid].count - len(self.streams[sid].out)
+                tokens, ancestors = tokens[:room], ancestors[:room]
+            wins.append((tokens, ancestors))
         return wins
 
     @torch.no_grad()
@@ -622,17 +639,30 @@ class MultiDecoder:
     def _verify(self, plan, copied=None):
         """Both ranks: drafter blocks, rank 0's windows, the forward and each stream's samples."""
 
-        blocks = {}
-        tree = [(sid, pending) for sid, mode, pending, _ in plan if mode == TREE] if self.drafts else []
+        blocks, chains = {}, {}
+        tree = [(sid, pending, mode) for sid, mode, pending, _ in plan if mode in (TREE, CHAIN)] if self.drafts else []
         block = self.block if self.depth else self.max_rows    # one stream too: DFlash2 drafts best near 8 rows
         if tree:                                      # every stream's block in one drafter pass
-            launched = self.draft.launch_blocks([self.streams[sid].snap for sid, _ in tree],
-                                                [pending for _, pending in tree], self.max_rows - 1, block,
-                                                histories=[self.streams[sid].history for sid, _ in tree])
-            blocks = {sid: block for (sid, _), block in zip(tree, launched)}
+            for sampled in (False, True):
+                group = [(sid, pending) for sid, pending, mode in tree if (mode == CHAIN) == sampled]
+                if not group:
+                    continue
+                snaps = [self.streams[sid].snap for sid, _ in group]
+                pendings = [pending for _, pending in group]
+                launched = (self.draft.launch_chains(snaps, pendings, self.max_rows - 1) if sampled else
+                            self.draft.launch_blocks(snaps, pendings, self.max_rows - 1, block,
+                                                     histories=[self.streams[sid].history for sid, _ in group]))
+                blocks.update({sid: value for (sid, _), value in zip(group, launched)})
         grammars = {}
         if self.rank == 0:
-            wins = self._windows(plan, copied, blocks)
+            for sid, mode, _, length in plan:
+                s = self.streams[sid]
+                if mode == CHAIN:
+                    chains[sid] = self.draft.finish_chain(blocks[sid], length, self.max_rows - 1,
+                                                         s.sampling, s.history)
+                elif mode == COPY_CHAIN:
+                    chains[sid] = copy_packet(copied[sid], length)
+            wins = self._windows(plan, copied, blocks, chains)
             grammars = self._constrain(plan, wins)
             self._send([x for tokens, parents in wins for x in (len(tokens), *tokens, *parents)])
         else:
@@ -656,7 +686,29 @@ class MultiDecoder:
                     history.apply(logits[starts[k]:starts[k + 1]], *wins[k])
         positions = [[st.pos + d + 1 for d in _paths(parents)[0]] for (_, parents), st in zip(wins, states)]
         samplings = [self.streams[item[0]].sampling for item in plan]
-        if self.split:                                # both ranks gather their halves' candidates
+        rejecting = any(mode in (CHAIN, COPY_CHAIN) for _, mode, _, _ in plan)
+        if rejecting:
+            from tensorfold.cuda.sampling import sample_rows
+            from tensorfold.engine.rejection import verify
+
+            sampled = []
+            for k, (sid, mode, _, _) in enumerate(plan):
+                s = self.streams[sid]
+                scores = logits[starts[k]:starts[k + 1]] if self.split or self.rank == 0 else None
+                if mode in (CHAIN, COPY_CHAIN):
+                    chain = chains.get(sid)
+                    # Followers need the same collectives; only the leader owns q and consumes the outcome.
+                    p = chain_probabilities(scores, s.sampling, len(chain.tokens) + 1 if chain is not None else
+                                            len(wins[k][0]), plan=self._sampling_plan) if self.split else \
+                        chain_probabilities(scores, s.sampling, len(chain.tokens) + 1) if self.rank == 0 else None
+                    result = verify(chain, p, s.sampling.seed, room=s.count - len(s.out), eos=self._ends(s)) \
+                        if self.rank == 0 else None
+                    sampled.append(RejectionResult(*result) if result is not None else None)
+                else:
+                    sampled.append(_sample_split(scores, positions[k], samplings[k], self.rank,
+                                                  plan=self._sampling_plan) if self.split else
+                                   sample_rows(scores, positions[k], samplings[k]) if self.rank == 0 else None)
+        elif self.split:                              # both ranks gather their halves' candidates
             sampled = [_sample_split(logits[starts[k]:starts[k + 1]], positions[k], samplings[k], self.rank,
                                      plan=self._sampling_plan) for k in range(len(plan))]
         else:

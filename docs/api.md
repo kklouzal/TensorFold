@@ -147,8 +147,21 @@ and two GPUs holding halves of the vocabulary draw the same token: each GPU read
 whole vocabulary shard when a row's nucleus runs past them (or with `top_p` 1 and no `min_p`).
 `min_p` (0 to 1; 0 is off) keeps, after the top-k and top-p cuts, only the tokens at least `min_p` times as likely
 as the likeliest one after temperature; the top-p cut is taken without it, as SGLang does (vLLM applies `min_p`
-first). A value outside 0 to 1 gets HTTP 400. It is part of the keyed rule on every engine, so drafted replies still
-equal `"draft": false` ones.
+first). A value outside 0 to 1 gets HTTP 400. The same target filter applies with drafting enabled or disabled.
+
+### Sampling under CUDA DFlash
+
+CUDA Gemma 4 DFlash, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash use standard rejection sampling for sampled
+requests. It preserves the target distribution after grammar masks, penalties, temperature and sampling filters.
+A fixed seed and engine configuration reproduce the same drafted request across cache reuse and supported batching;
+sampled tokens can differ from `"draft": false` or from another proposal precision/configuration. Greedy requests
+retain full-token serial identity. Other engine/backend sampling contracts retain their own scope.
+
+The stochastic drafter uses a fixed request-local linear proposal block with independent proposal, acceptance and
+residual random streams. Greedy drafting retains its existing tree/chain policy. Background replay uses the same
+request and checks previously emitted tokens. See [migration validation](rejection-sampling-validation.md) for the
+implementation checkpoint and outstanding installed/native/model gates; historical coupled-sampler measurements
+do not qualify the migrated implementation.
 
 ### Penalties
 
@@ -162,15 +175,15 @@ before temperature, top-k, top-p, min-p and the keyed draw (vLLM's float32 arith
 requests take the argmax of the penalized scores. Values outside those ranges get
 HTTP 400; null keeps the server default: the launch flags `--presence-penalty`, `--frequency-penalty` and
 `--repetition-penalty`, else `generation_config.json`'s `repetition_penalty`, else off. A speculative verify row is
-penalized by the reply plus the drafts on its own path, so drafted replies still equal `"draft": false` ones and stay
+penalized by the reply plus the drafts on its own path. The sampling contract above applies, and replies stay
 independent of the prefix cache. A continuation after a thinking budget or a required tool call counts the reply
 tokens it re-reads as reply. The CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 (DFlash) engines apply them on
 one GPU, single or concurrent streams; other CUDA engines (Qwen3.6 MoE affine MTP, Flash Next, GLM, Nemotron),
 two-rank Qwen and the Metal backend answer HTTP 400 when a request asks for an active penalty, and name penalty
 defaults they do not apply at startup.
 
-On CUDA, stop strings are checked after every token on the generated text, reasoning included, so drafted and
-`"draft": false` replies stop at the same token; usage and `token_sha` count the tokens through the one that
+On CUDA, stop strings are checked after every token on the generated text, reasoning included. Drafted and
+`"draft": false` replies use the same stopping rule; usage and `token_sha` count the tokens through the one that
 completes the match. The GLM engine, and Flash Next and Nemotron on two ranks, decode on after a match to an end
 token or the reply limit; the server returns the reply only up to the match. Where a CUDA engine honors
 `ignore_eos`, end tokens inside the reply are decoded into its text, as on MLX, and `finish_reason` is `length`
@@ -240,8 +253,8 @@ or thought channel) opens a call to an offered tool. The server replaces the fir
 whitespace with the tool-call opener (`<tool_call>`, or Gemma 4's `<|tool_call>`) and the template's text before a
 tool name, then holds the name to the offered tools: a token that leaves them is replaced by the rest of the first
 offered name its written part starts. The template's own rendered call gives that text. A named function is the
-only tool the template offers. Each fix depends only on the tokens before it, so drafted, serial and concurrent
-decoding write the same call. The MLX engine fixes tokens inside its rounds; CUDA stops the engine at a fix and
+only tool the template offers. Each fix depends only on the tokens before it; the same prefix receives the same
+envelope fix in drafted, serial and concurrent decoding. The MLX engine fixes tokens inside its rounds; CUDA stops the engine at a fix and
 decodes on from the reply. The model writes the arguments; a malformed call returns as content. A request with strict
 tools uses their grammar instead (below), which also holds the arguments.
 
@@ -252,9 +265,9 @@ or `{"type": "json_object"}`) and vLLM's `guided_json`, `guided_regex`, `guided_
 `structured_outputs` (`json`, `json_object`, `regex`, `choice` or `grammar`): on the Mac, and on CUDA with one or two
 GPUs, alone or under supported `--parallel N` modes. Flash Next on two CUDA ranks refuses structured output
 under `--parallel`; other engine/mode support follows its family contract. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
-installs torch, Macs included. Drafting stays on. Before each verify forward the engine cuts the drafts the grammar
-rejects, then masks each remaining row's logits to the tokens the grammar allows after that row's path, so a
-constrained reply equals its `"draft": false` reply and its solo run. Two GPUs compile the same grammar and mask
+installs torch, Macs included. Drafting stays on. The engine masks each target row to the tokens the grammar allows
+after that row's path and omits invalid verification paths. The sampling contract above applies to constrained
+replies, including its distinction between greedy identity and sampled distribution preservation. Two GPUs compile the same grammar and mask
 their own vocabulary columns. With thinking on, the grammar starts after the think end (`</think>`, or Gemma 4's
 `<channel|>`), and a thinking budget's close stops at that token. The grammar allows the end token only once the value
 is complete; a reply cut at `max_tokens` is incomplete, with `finish_reason: "length"`. JSON grammars allow at most
@@ -270,7 +283,7 @@ streaming); the other requests go on.
 
 A request whose active tools (after `tool_choice`) include `"strict": true` (`tools[].function.strict` in chat,
 `tools[].strict` in Responses) decodes under one xgrammar grammar built from them, with the structured-output machinery
-above: drafting stays on, a reply equals its `"draft": false` and solo replies, and a background request still yields
+above: drafting stays on, the sampling contract above applies, and a background request still yields
 its lane (it replays under the grammar from the start). `strict` must be a boolean or null. With thinking on, the
 grammar starts after `</think>`, so reasoning is never constrained, and a thinking budget's close stops at that token.
 The grammar holds only the calls and what `tool_choice` asks; prose is the model's own.

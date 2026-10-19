@@ -49,17 +49,18 @@ change available memory. Contexts share the growing cache pool, so four full
 windows are not a fit guarantee. Model files are read-only. Kernel caches,
 bounded logs, health checks and `unless-stopped` restart policy are persistent.
 
-This GB10 has a separate Docker event service that overrides container affinity
-to ten CPUs on create/start. After starting or restarting this profile, restore
-its measured twenty-CPU affinity and inspect it:
+This GB10 has a separate Docker event service that assigns container affinity
+to ten CPUs (`5-9,15-19`) on create/start. Preserve that host policy and inspect
+the effective affinity after starting or restarting a container:
 
 ```bash
 TF_CONTAINER_ID=$(docker compose --env-file /path/to/nvfp4.env -f deploy/gb10/compose.nvfp4.yaml ps -q tensorfold)
-docker update --cpuset-cpus 0-19 "$TF_CONTAINER_ID"
 docker inspect --format '{{.HostConfig.CpusetCpus}}' "$TF_CONTAINER_ID"
 ```
 
-The deployment check records actual process/cgroup affinity before accepting
-the service. The endpoint is `http://GB10:8888/v1`; its primary model ID remains
+The historical twenty-CPU results above describe their recorded configuration;
+the ten-CPU configuration needs its own performance qualification. The deployment
+check records actual process/cgroup affinity before accepting the service.
+The endpoint is `http://GB10:8888/v1`; its primary model ID remains
 `Qwen3.8-Flash-Next`, with `flash-next-gb10` as an alias. The older affine/YaRN
 [profile](compose.yaml) remains a separate historical configuration.

@@ -41,10 +41,12 @@ def test_admission_accounts_for_largest_declared_processor_pool(component, tmp_p
     monkeypatch.setitem(sys.modules, "torch", runtime)
     monkeypatch.setattr(common, "headers", lambda directory: headers)
 
-    def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator):
+    def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
+                 device_workspace_bytes, host_workspace_bytes):
         # The boundary stands in for physical admission, not the family formula.
         # Real config/header validation, processor policy and geometry all run.
         assert torch is runtime
+        assert device_workspace_bytes == host_workspace_bytes == 0  # no companion: sampled rejection is unreachable
         weights, _ = weight_estimator(directory)
         return weights, geometry
 
@@ -85,8 +87,14 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     read = common.headers                   # the companion's real header-only read; the target's inventory above
     monkeypatch.setattr(common, "headers", lambda directory: read(directory) if directory == draft_dir
                         else target_headers)
-    monkeypatch.setattr(common, "admit", lambda directory, context, explicit, torch, geometry, rule, *,
-                        weight_estimator: (weight_estimator(directory)[0], geometry))
+    runtime_workspace = []
+
+    def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
+                 device_workspace_bytes, host_workspace_bytes):
+        runtime_workspace.append((device_workspace_bytes, host_workspace_bytes))
+        return weight_estimator(directory)[0], geometry
+
+    monkeypatch.setattr(common, "admit", admitted)
 
     alone, plain = capacity.admit(tmp_path, 128, True)
     bf16, with_bf16 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir)
@@ -107,3 +115,10 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
                                             + copy(text["vocab_size"], text["hidden_size"]))
     assert fp8.staging >= sum(2 * math.prod(s) for s in shapes)
     assert with_fp8.needed(128) == with_bf16.needed(128) > plain.needed(128)
+    # Complete effective distributions alone own int64 IDs+FP64 probabilities at every simultaneous verify row.
+    # Admission must charge the full supported top-k0 policy, not just the card's bounded top64 packet.
+    vocab = text["vocab_size"]
+    assert runtime_workspace[0] == (0, 0)  # the unchanged serial sampler does not retain rejection p/q rows
+    assert runtime_workspace[1] == runtime_workspace[2]
+    assert runtime_workspace[1][1] >= 16 * 16 * vocab
+    assert all(full > serial for full, serial in zip(runtime_workspace[1], runtime_workspace[0]))

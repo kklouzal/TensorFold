@@ -1,4 +1,4 @@
-"""Qwen3.8-27B's JSON-schema replies on CUDA: drafted equals serial, concurrent equals solo, and the replies validate.
+"""Qwen3.8 JSON-schema replies: greedy serial identity, stochastic repeat, concurrent/solo identity and validation.
 
 Needs ``TENSORFOLD_MLX_MODEL=<TensorFold/Qwen3.8-27B-MLX-4bit dir>``, ``TENSORFOLD_QWEN27_DRAFTER=<z-lab/Qwen3.8-27B-DFlash2
 dir>`` and xgrammar (``pip install 'tensorfold[grammar]'``); skipped otherwise. About 22 GB of GPU memory.
@@ -131,10 +131,15 @@ def test_constrained_drafted_replies_equal_serial_and_validate(engine, chat, nam
     prompt = chat.prompt(text)
     serial, s_stats = _run(engine, prompt, 320, SAMPLINGS[sampling], False, chat.fresh(name))
     drafted, d_stats = _run(engine, prompt, 320, SAMPLINGS[sampling], True, chat.fresh(name))
-    assert _sha(drafted) == _sha(serial), (name, sampling)
-    assert serial[-1] in engine.eos, "the JSON value completed within the reply limit"
-    assert valid(json.loads(_answer(chat, serial, engine)), schema), _answer(chat, serial, engine)
-    assert d_stats["rounds"] < s_stats["rounds"]                     # drafting kept tokens under the grammar
+    if SAMPLINGS[sampling] is None:
+        assert _sha(drafted) == _sha(serial), (name, sampling)
+        assert d_stats["rounds"] < s_stats["rounds"]
+    else:
+        again, _ = _run(engine, prompt, 320, SAMPLINGS[sampling], True, chat.fresh(name))
+        assert drafted == again and d_stats["drafted"] > 0
+    for ids in (serial, drafted):
+        assert ids[-1] in engine.eos, "the JSON value completed within the reply limit"
+        assert valid(json.loads(_answer(chat, ids, engine)), schema), _answer(chat, ids, engine)
 
 
 @pytest.mark.parametrize("sampling", list(SAMPLINGS), ids=list(SAMPLINGS))
@@ -142,7 +147,11 @@ def test_unconstrained_drafted_replies_still_equal_serial(engine, chat, sampling
     prompt = chat.prompt(CASES["weather"][1])
     serial, _ = _run(engine, prompt, 160, SAMPLINGS[sampling], False)
     drafted, _ = _run(engine, prompt, 160, SAMPLINGS[sampling], True)
-    assert _sha(drafted) == _sha(serial)
+    if SAMPLINGS[sampling] is None:
+        assert _sha(drafted) == _sha(serial)
+    else:
+        again, _ = _run(engine, prompt, 160, SAMPLINGS[sampling], True)
+        assert drafted == again
 
 
 def test_with_thinking_the_schema_holds_after_think_end(engine, chat):
@@ -150,10 +159,12 @@ def test_with_thinking_the_schema_holds_after_think_end(engine, chat):
     sampling = SAMPLINGS["seed7"]
     serial, _ = _run(engine, prompt, 1600, sampling, False, chat.fresh("weather", thinking=True))
     drafted, _ = _run(engine, prompt, 1600, sampling, True, chat.fresh("weather", thinking=True))
-    assert _sha(drafted) == _sha(serial)
+    again, _ = _run(engine, prompt, 1600, sampling, True, chat.fresh("weather", thinking=True))
+    assert drafted == again
     think_end = chat.tok.token_to_id("</think>")
-    if think_end in serial and serial[-1] in engine.eos:          # the model finished thinking within the limit
-        assert valid(json.loads(_answer(chat, serial, engine)), WEATHER)
+    for ids in (serial, drafted):
+        if think_end in ids and ids[-1] in engine.eos:           # the model finished thinking within the limit
+            assert valid(json.loads(_answer(chat, ids, engine)), WEATHER)
 
 
 def test_concurrent_constrained_replies_equal_their_solo_runs(engine, chat):
@@ -193,12 +204,13 @@ def test_concurrent_constrained_replies_equal_their_solo_runs(engine, chat):
     for t in threads:
         t.join()
     for request, got in zip(requests, together):
-        name, sampling, _ = request
+        name, sampling, draft = request
         solo = submit(request)
         assert _sha(got) == _sha(solo), request
         text = CASES[name or "recipe"][1]
-        serial, _ = _run(engine, chat.prompt(text), 240, SAMPLINGS[sampling], False,
-                         chat.fresh(name) if name else None)
-        assert _sha(solo) == _sha(serial), request
+        reference, _ = _run(engine, chat.prompt(text), 240, SAMPLINGS[sampling],
+                            draft and SAMPLINGS[sampling] is not None,
+                            chat.fresh(name) if name else None)
+        assert _sha(solo) == _sha(reference), request
         if name is not None and got[-1] in engine.eos:
             assert valid(json.loads(_answer(chat, got, engine)), CASES[name][0]), request

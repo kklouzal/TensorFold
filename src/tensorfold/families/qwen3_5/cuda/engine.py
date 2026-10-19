@@ -58,12 +58,48 @@ class Qwen27Engine:
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
         rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
         yarn = rope if rope.rope_type == "yarn" else None
+        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+
+        from .draft_tree import draft_limit, draft_spans
+
+        draft_metadata = read_metadata_json(checkpoint_path(draft_dir, "config.json")) if draft_dir is not None else None
+        companion_limit = draft_limit(draft_metadata) if draft_metadata is not None else None
+        if companion_limit is not None and context is not None and context > companion_limit:
+            raise ValueError(f"DFlash2 declares at most {companion_limit} positions; requested context {context} "
+                             "exceeds its limit. Use --drafter none/--no-drafts for extended target-only context")
         from .weights import load
-        from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
+        from tensorfold.cuda.capacity import admit, config, gather_ints, headers, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
         from .affine_memory import draft_weights, weight_transform
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
+
+        rejection_device = rejection_host = rejection_resident_host = 0
+        if draft_dir is not None or allow_copy:
+            from tensorfold.cuda.sampling import effective_workspace
+            from tensorfold.cuda.speculative import chain_workspace
+
+            text = config(model_dir)
+            each = max_rows if streams == 1 else 16
+            configured = min(each, self.tree_rows) if streams == 1 and self.tree_rows is not None else each
+            trained = int(draft_metadata["dflash_config"].get("block_size", 8)) if draft_metadata is not None else each
+            sampled_each = max(1, min(configured, trained))
+            rows = sampled_each * streams
+            sharded = tp if split_head else 1
+            target = effective_workspace(rows, -(-int(text["vocab_size"]) // sharded), world=sharded)
+            packet = chain_workspace(max(1, sampled_each - 1), 16, streams=streams)
+            rejection_device = target["device_bytes"] + packet["device_bytes"]
+            rejection_host = target["host_bytes"] + packet["host_bytes"]
+            if draft_dir is not None:
+                rank_width = int(headers(draft_dir)["candidate_selector.hidden_projection.weight"]["shape"][0])
+                proposal_rows = (sampled_each - 1) * streams
+                # Projected selector rows survive beside their packed readback and FP64 conversion. Per-parent
+                # edge evaluation also owns a16-row gathered successor matrix and its FP64 copy.
+                rejection_device += 8 * proposal_rows * rank_width
+                rejection_host += 16 * proposal_rows * rank_width + 256 * rank_width
+                proposal_world = tp if tp_draft else 1
+                proposal_vocab = sum(b - a for a, b in draft_spans(int(text["vocab_size"])))
+                rejection_resident_host = 8 * -(-proposal_vocab // proposal_world)  # prepared immutable ID map
 
         self.torch = torch
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
@@ -133,9 +169,15 @@ class Qwen27Engine:
                                                                               bounded=True, streams=streams,
                                                                               kept=keep + 1 if many else 0),
                                    startup_copies=int(tp == 2),
+                                   device_workspace_bytes=rejection_device, host_workspace_bytes=rejection_host,
+                                   host_resident=rejection_resident_host,
                                    **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
                                       if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
+        if companion_limit is not None and self.context_window > companion_limit:
+            raise ValueError(f"DFlash2 declares at most {companion_limit} positions; admitted context "
+                             f"{self.context_window} exceeds its limit. Use --drafter none/--no-drafts for extended "
+                             "target-only context")
         bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
                     if value is not None}
         if tp == 2:

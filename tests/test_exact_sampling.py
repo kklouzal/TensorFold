@@ -108,3 +108,65 @@ def test_nucleus_without_top_k_matches_the_whole_vocabulary_draw():
     assert drawn > 40
     flat = mx.zeros((1, 50_000), dtype=mx.bfloat16)          # every token tied: the nucleus needs them all
     assert es._nucleus_rows(flat, [0], es.Sampling(seed=1, top_k=0, top_p=0.95)) is None
+
+
+@pytest.mark.parametrize("offset", [1e30, -1e30, np.finfo(np.float64).max, -np.finfo(np.float64).max])
+@pytest.mark.parametrize("top_k,top_p,min_p", [(0, 1., 0.), (2, .9, .2), (0, .5, 1.)])
+def test_extreme_common_offset_cannot_erase_keyed_noise(offset, top_k, top_p, min_p):
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    ids = np.array([7, 2, 19, 5], dtype=np.int64)
+    baseline, shifted = np.zeros(4), np.full(4, offset)
+    seen = set()
+    for seed in range(32):
+        policy = Sampling(seed, .7, top_k, top_p, min_p)
+        expected = choose(baseline, ids, 17, policy)
+        assert choose(shifted, ids, 17, policy) == expected
+        assert choose_rows(np.stack([baseline, shifted]), np.stack([ids, ids]), [17, 17], policy) == [expected, expected]
+        seen.add(expected)
+    assert len(seen) > 1
+
+
+def test_exactly_represented_score_shifts_preserve_support_and_draw():
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    values = np.array([[4., 2., 1., -3.], [-5., -1., 2., 0.]])
+    ids = np.array([[9, 8, 2, 3], [9, 8, 2, 3]], dtype=np.int64)
+    for seed in range(32):
+        for k, p, m in [(0, 1., 0.), (3, .9, .1), (0, .7, 0.)]:
+            policy = Sampling(seed, .7, k, p, m)
+            expected = choose_rows(values, ids, [17, 20], policy)
+            assert choose_rows(values + 2.**40, ids, [17, 20], policy) == expected
+            assert expected == [choose(v, i, pos, policy) for v, i, pos in zip(values, ids, [17, 20])]
+
+
+def test_extreme_finite_difference_has_zero_tail_mass_without_invalid_operation():
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    bound = np.finfo(np.float64).max
+    values, ids = np.array([bound, -bound, -np.inf]), np.array([3, 4, 5], dtype=np.int64)
+    policy = Sampling(1, 1e-6, 0, 1.)
+    with np.errstate(all="raise"):
+        assert choose(values, ids, 17, policy) == 3
+        assert choose_rows(values[None], ids[None], [17], policy) == [3]
+
+
+@pytest.mark.parametrize("offset", [1e30, -1e30])
+def test_mlx_extreme_offset_nucleus_and_native_kernel_keep_noise(offset):
+    mx = pytest.importorskip("mlx.core")
+    from tensorfold.engine import exact_sampling, gpu_sampling
+
+    logits = mx.full((2, 2048), offset, dtype=mx.float32)
+    baseline = mx.zeros_like(logits)
+    # A narrow nucleus also exercises the host MLX normalizer, not just its complete-row fallback.
+    narrow = mx.full((1, 2048), -100., dtype=mx.float32)
+    narrow[0, :4] = 0.
+    for top_k, top_p in [(0, .9), (20, 1.)]:
+        for seed in (0, 1, 6, 13):
+            policy = Sampling(seed, .7, top_k, top_p)
+            assert exact_sampling.sample_rows(logits, [17, 19], policy) == exact_sampling.sample_rows(baseline, [17, 19], policy)
+            native = gpu_sampling.sample(logits, policy, [17, 19])
+            np.testing.assert_array_equal(np.array(native), np.array(gpu_sampling.sample(baseline, policy, [17, 19])))
+            assert np.array(native).tolist() == [gpu_sampling.reference(np.full(2048, offset), policy, p) for p in (17, 19)]
+    policy = Sampling(6, .7, 0, .7)
+    assert exact_sampling._nucleus_rows(narrow, [17], policy) == exact_sampling.sample_rows(narrow, [17], policy, keep={})

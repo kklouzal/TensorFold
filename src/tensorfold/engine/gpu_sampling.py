@@ -1,4 +1,7 @@
-"""Key GPU Gumbel draws by seed, position and token id so drafts match serial sampling on the same fp32 rule."""
+"""Key GPU Gumbel draws by seed, position and token ID under a centered FP32 rule.
+
+Extreme-offset stochastic draws correct older versions that lost noise to rounding.
+"""
 
 from __future__ import annotations
 
@@ -60,18 +63,21 @@ _SOURCE = r"""
 
   // row max (fixed order: each thread's stride, simd reduction, simdgroups in order)
   float lm = -INFINITY;
-  for (uint i = t; i < V; i += TG) lm = max(lm, float(L[base + i]) * inv_t);
+  for (uint i = t; i < V; i += TG) lm = max(lm, float(L[base + i]));
   lm = simd_max(lm);
   if (lane == 0) fsh[sg] = lm;
   threadgroup_barrier(mem_flags::mem_threadgroup);
   float m = -INFINITY;
   for (uint s = 0; s < NSG; s++) m = max(m, fsh[s]);
   threadgroup_barrier(mem_flags::mem_threadgroup);
+  // Center before temperature and noise; keep the common offset out of every mass computation.
+  const float row_max = m;
+  m = 0.0f;
   // normalizer, and the count and mass of the tokens within NEAR, NEAR / 2 and NEAR / 4 of the max
   float ls = 0.0f, lnear[3] = {0.0f, 0.0f, 0.0f};
   uint near_count[3] = {0u, 0u, 0u};
   for (uint i = t; i < V; i += TG) {
-    const float v = float(L[base + i]) * inv_t;
+    const float v = (float(L[base + i]) - row_max) * inv_t;
     const float e = metal::exp(v - m);
     ls += e;
     for (int w = 0; w < 3; w++) {
@@ -121,7 +127,7 @@ _SOURCE = r"""
   if (fast) {
     uint at = offset;
     for (uint i = t; i < V; i += TG) {
-      const float v = float(L[base + i]) * inv_t;
+      const float v = (float(L[base + i]) - row_max) * inv_t;
       if (v >= floor_v) { ck[at] = tf_key(v); ci[at] = i; at++; }
     }
     n_cand = n_near;
@@ -134,7 +140,7 @@ _SOURCE = r"""
       if (t < 256) atomic_store_explicit(&hist[t], 0u, memory_order_relaxed);
       threadgroup_barrier(mem_flags::mem_threadgroup);
       for (uint i = t; i < V; i += TG) {
-        const uint k = tf_key(float(L[base + i]) * inv_t);
+        const uint k = tf_key((float(L[base + i]) - row_max) * inv_t);
         if ((k & pmask) == prefix) atomic_fetch_add_explicit(&hist[(k >> shift) & 255u], 1u, memory_order_relaxed);
       }
       threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -161,7 +167,7 @@ _SOURCE = r"""
         if (t < 256) atomic_store_explicit(&hist[t], 0u, memory_order_relaxed);
         threadgroup_barrier(mem_flags::mem_threadgroup);
         for (uint i = t; i < V; i += TG) {
-          if (tf_key(float(L[base + i]) * inv_t) == prefix && (i & imask) == ipre)
+          if (tf_key((float(L[base + i]) - row_max) * inv_t) == prefix && (i & imask) == ipre)
             atomic_fetch_add_explicit(&hist[(i >> shift) & 255u], 1u, memory_order_relaxed);
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -187,7 +193,7 @@ _SOURCE = r"""
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint i = t; i < V; i += TG) {
-      const uint k = tf_key(float(L[base + i]) * inv_t);
+      const uint k = tf_key((float(L[base + i]) - row_max) * inv_t);
       if (k > prefix) {
         const uint s = atomic_fetch_add_explicit(&fill_hi, 1u, memory_order_relaxed);
         ck[s] = k; ci[s] = i;
@@ -332,8 +338,9 @@ def reference(values: Any, sampling: Any, position: int) -> int:
 
     import numpy as np
 
-    v = (np.asarray(values, dtype=np.float32) * np.float32(1.0 / max(float(sampling.temperature), 1e-6)))
-    v = v.astype(np.float32)
+    v = np.asarray(values, dtype=np.float32)
+    with np.errstate(over="ignore"):
+        v = ((v - v.max()) * np.float32(1.0 / max(float(sampling.temperature), 1e-6))).astype(np.float32)
     ids = np.arange(v.shape[0], dtype=np.int64)
     order = np.lexsort((ids, -v))[:CANDIDATES]
     cap = CANDIDATES if not sampling.top_k else min(int(sampling.top_k), CANDIDATES)

@@ -401,9 +401,10 @@ def _prompt_ids(url: str, profile: dict, item: dict) -> list[int]:
 
 
 def _evictions(count: int) -> list[list[dict]]:
-    """Distinct ~600-token prompts that displace every kept prefix-cache state of an earlier prompt: one-entry caches
+    """Distinct long prompts that displace every kept prefix-cache state of an earlier prompt: one-entry caches
     (Gemma4) need one, multi-state caches (Qwen keeps message-start and prompt-end states) need several prompts long
-    enough to be kept."""
+    enough to be kept. Each is reused before moving on so hot-entry retention does not discard only new cold states.
+    """
 
     words = ("amber", "basalt", "cobalt", "dune", "ember", "flint", "garnet", "harbor", "indigo", "jasper")
     return [[{"role": "user", "content": f"Cache eviction request {n}. " + " ".join(
@@ -413,8 +414,9 @@ def _evictions(count: int) -> list[list[dict]]:
 
 def _evict(url: str, profile: dict, args) -> None:
     for messages in _evictions(args.evict_requests):
-        stream_chat(url, {"model": profile["model"], "messages": messages, "max_tokens": 4, "temperature": 0,
-                          "chat_template_kwargs": {"enable_thinking": False}})
+        for _ in range(2):
+            stream_chat(url, {"model": profile["model"], "messages": messages, "max_tokens": 4, "temperature": 0,
+                              "chat_template_kwargs": {"enable_thinking": False}})
 
 
 def _cached(reply: dict) -> int:

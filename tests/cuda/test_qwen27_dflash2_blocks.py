@@ -89,6 +89,36 @@ def test_blocks_of_several_streams_equal_their_own(tmp_path):
         assert d.finish_tree(a, 50, 11, sampling) == d.finish_tree(b, 50, 11, sampling)
 
 
+def test_stochastic_packets_keep_exact_support_probability_bytes_and_draws_across_batches(tmp_path):
+    from tensorfold.engine.penalties import History, Penalties
+
+    d = _drafter(tmp_path)
+    gen = torch.Generator(device="cuda").manual_seed(4)
+    snaps = []
+    for n in (3, 70, 20):
+        d.restore(([None] * d.layers, [None] * d.layers, 0, 0))
+        d.add_taps((torch.randn(n, 5 * H, generator=gen, device="cuda") * .5).bfloat16())
+        snaps.append(d.snapshot())
+    empty = ([None] * d.layers, [None] * d.layers, 0, 0)
+    pendings, policies = [7, 400, 21], [Sampling(1234), Sampling(99, .7, 0, .9, .1), Sampling(5)]
+    histories = [History(Penalties(presence=.4, frequency=.2, repetition=1.2), [i, 7]) for i in (1, 2, 3)]
+    alone = [d.launch_chains([snap], [pending], 11)[0] for snap, pending in zip(snaps, pendings)]
+    sorted_reference = [d._launch_blocks([snap], [pending], d.trained, stable=True, repair=False)[0]
+                        for snap, pending in zip(snaps, pendings)]
+    together = d.launch_chains([snaps[2], empty, snaps[0], snaps[1]], [21, 9, 7, 400], 15)
+    assert together[1] is None
+    for i, other in enumerate((together[2], together[3], together[0])):
+        position = snaps[i][3] + 1
+        a = d.finish_chain(alone[i], position, 11, policies[i], histories[i])
+        b = d.finish_chain(other, position, 15, policies[i], histories[i])
+        reference = d.finish_chain(sorted_reference[i], position, 11, policies[i], histories[i])
+        assert a.tokens == b.tokens == reference.tokens and a.first_position == b.first_position
+        assert len(a.tokens) == d.trained - 1 and alone[i][0][3]["logits"] is None
+        for q, r, s in zip(a.q_rows, b.q_rows, reference.q_rows):
+            assert q.ids.tobytes() == r.ids.tobytes() == s.ids.tobytes()
+            assert q.probs.tobytes() == r.probs.tobytes() == s.probs.tobytes()
+
+
 def test_taps_of_several_streams_equal_their_own(tmp_path):
     d = _drafter(tmp_path)
     gen = torch.Generator(device="cuda").manual_seed(4)

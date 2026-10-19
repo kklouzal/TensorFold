@@ -1,5 +1,7 @@
 # Qwen3.8-27B
 
+CUDA DFlash2 sampled requests use standard rejection sampling: a fixed seed/configuration stays reproducible across cache reuse and supported batching, while sampled serial/drafted tokens may differ. Greedy serial identity remains required. Historical coupled-sampler measurements below retain their source and scope. See [migration validation](../rejection-sampling-validation.md) for outstanding qualification gates.
+
 Experimental [packed affine formats](../quantization.md) include 8-bit and mixed layer precision.
 
 The `qwen3_5` family combines Gated DeltaNet and full attention. The standard recipe below uses its
@@ -78,7 +80,7 @@ export layouts
 retain their separate validation scope. Each projection is read by its tensors: NVFP4 codes with their e4m3 block scales and
 FP8 bytes go to the device unchanged. Under `--precision full`, the lane matmuls turn them into exact bf16 operands
 (an e2m1 code times
-its block scale fits bf16), so drafted replies equal `"draft": false` ones and prompts keep their bits in any
+its block scale fits bf16), so greedy drafted replies equal `"draft": false` ones and prompts keep their bits in any
 chunking. `--parallel` serves concurrent requests as on the MLX checkpoint, each reply equal to the same request
 alone. One GPU: `--tp 2` stops at startup (two ranks read the MLX checkpoint), and so does `--vision` until image
 input is qualified on this checkpoint. The default `--precision checkpoint` selects the checkpoint activation math
@@ -133,7 +135,7 @@ TOKENIZER=$(python3 -c "from huggingface_hub import hf_hub_download as get; prin
 tensorfold serve AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED --tokenizer "$TOKENIZER"
 ```
 
-The tokenizer results come from CPU comparisons of the two files. On one DGX Spark (GB10) with the upstream tokenizer,
+The tokenizer results come from CPU comparisons of the two files. In the historical coupled-sampler qualification on one DGX Spark (GB10) with the upstream tokenizer,
 the default `--precision checkpoint` and DFlash2, drafted replies equal serial ones token for token (greedy and seeded,
 also under `full`), and a reply resumed from a cached prompt equals a cold one. 512-token replies decoded at 76.4
 (code), 30.5 (chat), 81.1 (JSON) and 11.1 (Hindi) tok/s greedy on the engine at an 8,192-token context, against
@@ -155,7 +157,7 @@ tensorfold pull z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve qwen27b-exl3-3.00bpw --host 0.0.0.0 --port 8080
 ```
 
-Verify windows use the row-invariant EXL3 linear, so drafted replies equal `"draft": false` ones; prompts use the
+Verify windows use the row-invariant EXL3 linear, so greedy drafted replies equal `"draft": false` ones; prompts use the
 EXL3 prompt path (W_q decoded once a chunk, a fixed-tile GEMM), whose bits do not depend on chunking, so the
 engine keeps prompt ends as it does for the MLX checkpoint. The drafter reads the target's 6-bit head over its
 draft vocabulary by slicing the head's 128-column strips as stored: its logits are the target's, bit for bit.
@@ -237,8 +239,8 @@ speed) is pending.
 ### Structured output
 
 With `pip install 'tensorfold[grammar]'` (xgrammar), serving on one or two GPUs enforces `response_format` and the
-`guided_*` fields: drafts the grammar rejects are cut and rows are masked by their paths' grammar before sampling, so
-drafted, serial and concurrent replies stay equal. See [the API reference](../api.md#structured-output).
+`guided_*` fields: target rows are masked by their paths' grammar before sampling. Greedy serial identity and the
+sampled distribution/repeat/cache/batch contracts above apply. See [the API reference](../api.md#structured-output).
 
 ### Historical public-fixture results
 

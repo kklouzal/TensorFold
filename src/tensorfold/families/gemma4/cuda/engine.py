@@ -314,8 +314,9 @@ class Gemma4Engine:
                  stop_eos: bool = True, *, vision=None, constraint=None,
                  background: bool = False, progress=None, penalties=None) -> dict[str, Any]:
         import torch
-        from tensorfold.cuda.sampling import sample_rows
+        from tensorfold.cuda.sampling import effective_rows, sample_rows
         from tensorfold.engine.penalties import History
+        from tensorfold.engine.rejection import ChainPacket, verify
 
         prompt = _prompt_ids(prompt, self.target.config.vocab)
         if type(max_tokens) is not int or max_tokens < 1:
@@ -349,15 +350,27 @@ class Gemma4Engine:
             eos = self.eos if stop_eos else ()
             stopped = bool(on_tokens([first]))
             active_drafts = bool(draft and self.head is not None)
+            stochastic = active_drafts and sampling is not None and sampling.temperature > 0
             while not stopped and len(out) < max_tokens and out[-1] not in eos \
                     and not (constraint is not None and constraint.finished):
                 self._check_open()
                 room = max_tokens - len(out)
                 inputs = [out[-1]]
-                if active_drafts and room > 1:
-                    limit = min(self.max_rows - 1, room - 1)
-                    chains = self.head.propose(self._draft, inputs[0], limit, history)
-                    guesses = chains.finish(0, limit, history)[0] if chains is not None else []
+                packet = None
+                if active_drafts and (stochastic or room > 1):
+                    # Sampled noncausal proposal geometry belongs to this request's deployment, never its
+                    # remaining output room. Even the final emitted slot tests the same full q packet.
+                    limit = self.max_rows - 1 if stochastic else min(self.max_rows - 1, room - 1)
+                    if stochastic:
+                        chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True)
+                        first_position = state.position + 1
+                        packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
+                                  else ChainPacket((), (), first_position))
+                        guesses = packet.tokens
+                    else:
+                        chains = self.head.propose(self._draft, inputs[0], limit, history)
+                        guesses = chains.finish(0, limit, history)[0] if chains is not None else []
+                    chains = None  # synchronous packet readback completed; retire decoded launch staging now
                     if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
                                                    for t in guesses):
                         raise RuntimeError("Gemma4 DFlash returned an invalid proposal")
@@ -376,8 +389,18 @@ class Gemma4Engine:
                     constraint.mask(logits, window)
                 if history is not None:          # row r follows the reply and the drafts inputs[1..r]
                     logits = history.apply(logits, inputs)
-                sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
-                chosen = _accepted(sampled, inputs, room, eos)
+                if stochastic:
+                    # A linear grammar window retains a prefix. Only the unreachable original suffix is absent;
+                    # a rejected/terminated proposal is tested under its parent's masked effective p row.
+                    probabilities = effective_rows(logits, sampling)
+                    probabilities.extend([None] * (len(packet.tokens) + 1 - len(inputs)))
+                    path, terminal = verify(packet, probabilities, sampling.seed, room=room, eos=eos)
+                    chosen = [inputs[row] for row in path[1:]] + [terminal]
+                    del probabilities
+                    packet = None
+                else:
+                    sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
+                    chosen = _accepted(sampled, inputs, room, eos)
                 if history is not None:
                     history.extend(chosen)
                 state.rollback(position + len(chosen))

@@ -6,7 +6,8 @@ keys and values into slots beyond the committed length, which the next
 accepted context overwrites. The official Torch generator uses raw target
 embedding rows; the borrowed target head owns softcap30 once.
 
-Proposals never change output: the target verifies every proposed token, so
+The target verifies every proposal (probability-ratio rejection for sampled
+requests), preserving its output law, so
 the companion's arithmetic (BF16 row-reuse projections, or at bits 8 private
 FP8 row-scaled copies of the projections and the borrowed head; kernel
 geometry) only has to be deterministic. One DraftState belongs to one request
@@ -246,11 +247,13 @@ class DFlash:
         state.length += taps.shape[0]
 
     @torch.no_grad()
-    def propose(self, state: DraftState, anchor: int, count: int, history=None) -> speculative.Chains | None:
+    def propose(self, state: DraftState, anchor: int, count: int, history=None, *, sampled=False
+                ) -> speculative.Chains | None:
         """Up to ``count`` proposals after the anchor from committed context only: the shared chain utility's
-        argmax of the companion logits (penalized as the target's verify rows are when ``history`` is set)."""
+        argmax for greedy requests or actual sampled q candidates. Both use the preceding proposal path's
+        penalties; sampled packets retain their real distribution for target rejection verification."""
         logits = self.logits(state, anchor, count)
-        return None if logits is None else speculative.Chains(logits, [history], logits.shape[0])
+        return None if logits is None else speculative.Chains(logits, [history], logits.shape[0], sampled=sampled)
 
     @torch.no_grad()
     def logits(self, state: DraftState, anchor: int, count: int) -> torch.Tensor | None:

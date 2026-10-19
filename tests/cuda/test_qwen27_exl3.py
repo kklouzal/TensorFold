@@ -1,4 +1,4 @@
-"""Qwen3.8-27B on an EXL3 checkpoint: the verify window's rows are independent, and drafted replies equal serial.
+"""Qwen3.8 EXL3: verify-row invariance, greedy serial identity and stochastic request/prefix determinism.
 
 The synthetic part runs anywhere CUDA is: a one-layer model whose projections are EXL3 trellis layers (random
 words, the mul1 codebook) and whose in_proj_a/b and embedding are plain bf16, as a real pack stores them.
@@ -9,7 +9,6 @@ The checkpoint part needs ``TENSORFOLD_QWEN27_EXL3=<pack dir>`` and ``TENSORFOLD
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 
@@ -25,7 +24,6 @@ from tensorfold.families.qwen3_5.cuda.dflash2 import _exl3_sub_head
 from tensorfold.families.qwen3_5.cuda.exl3_load import PLANS
 from tensorfold.families.qwen3_5.cuda.forward import State, commit, tree_forward
 from tensorfold.families.qwen3_5.cuda.weights import GDN, Config, Exl3, Layer, Plain, Weights
-from qwen_engine_checks import generated_ids
 
 MODEL = os.environ.get("TENSORFOLD_QWEN27_EXL3", "")
 DRAFTER = os.environ.get("TENSORFOLD_QWEN27_DRAFTER", "")
@@ -174,18 +172,15 @@ def engine():
 
 @pytest.mark.parametrize("seed", [None, 1234, 1237], ids=["greedy", "seed1234", "seed1237"])
 def test_checkpoint_drafted_equals_serial(engine, seed):
-    """The real pack with DFlash2: drafted replies are serial's token ids (SHA-256 of the ids compared)."""
+    """Greedy identity and stochastic repeat/prefix independence under the same EXL3 target math."""
 
     from tokenizers import Tokenizer
 
     from tensorfold.engine.exact_sampling import Sampling
+    from qwen_rejection_checks import checkpoint_controls
 
     tok = Tokenizer.from_file(str(Path(MODEL) / "tokenizer.json"))
     prompt = tok.encode("Write a short Python function that computes the Fibonacci sequence and explain it.",
                         add_special_tokens=False).ids
     sampling = None if seed is None else Sampling(seed, 1.0, 20, 0.95)
-    serial, s_stats = generated_ids(engine, prompt, sampling, draft=False)
-    drafted, d_stats = generated_ids(engine, prompt, sampling, draft=True)
-    digest = [hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest() for ids in (serial, drafted)]
-    assert len(serial) == 48 and digest[0] == digest[1]
-    assert d_stats["rounds"] < s_stats["rounds"]                     # drafting did accept tokens
+    checkpoint_controls(engine, prompt, sampling)

@@ -55,6 +55,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.cuda.geometry import prompt_row_bytes, prompt_rows
         from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
+        from tensorfold.cuda.sampling import effective_workspace
+        from tensorfold.cuda.speculative import chain_workspace
         from tensorfold.families.qwen3_5.cuda.nvfp4_load import weight_bytes
         from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 
@@ -80,6 +82,16 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                              "--parallel, or at most 128 on one stream")
         self.max_rows = self.tree_rows = rows
         bits = 16 if drafter_bits == 0 else drafter_bits
+        # Requests may select top-k off, penalties or copy proposals after startup: admit the complete supported
+        # effective-target fallback and each request-local packet, not only the default card-sampling shape.
+        target_workspace = (effective_workspace(rows * streams, text["vocab_size"])
+                            if draft_config is not None or allow_copy else {"device_bytes": 0, "host_bytes": 0})
+        proposals = (chain_workspace(min(rows, draft_config.block) - 1, text["vocab_size"], streams=streams)
+                     if draft_config is not None else {"device_bytes": 0, "host_bytes": 0})
+        copies = (chain_workspace(rows - 1, 1, streams=streams) if allow_copy and rows > 1
+                  else {"device_bytes": 0, "host_bytes": 0})
+        self.rejection_workspace = {key: target_workspace[key] + max(proposals[key], copies[key])
+                                    for key in ("device_bytes", "host_bytes")}
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         torch.cuda.set_device(0)
@@ -109,10 +121,12 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         drafted = partial(draft_weights, bits=bits, private_head=head_dtype in ("BF16", "F16", "F32"))
         draft_held = drafted(draft_dir).resident if draft_dir is not None else 0
         minimum = runtime.geometry.needed(1) + (draft_runtime.needed(1) if draft_runtime is not None else 0)
+        is_unified = unified(torch)
+        minimum += self.rejection_workspace["device_bytes"] + (self.rejection_workspace["host_bytes"] if is_unified else 0)
         automatic_offload = vram_experts is None and resident.resident + draft_held + minimum > available_bytes(torch)
         plan = layout(model_dir, "auto" if automatic_offload else vram_experts) if (
             automatic_offload or vram_experts is not None) else None
-        if plan is not None and unified(torch):
+        if plan is not None and is_unified:
             raise ValueError("Qwen CT NVFP4 host expert pools currently require discrete CUDA memory; "
                              "on unified-memory GPUs use resident experts without --vram-experts")
         graphs = streams == 1 and plan is None
@@ -129,7 +143,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
 
             before_pool = torch.cuda.memory._snapshot()
             pins = ExpertPinPolicy(plan.host_bytes, mode=vram_experts_pin,
-                                   future_bytes=host_extra + host_weight_staging,
+                                   future_bytes=host_extra + max(host_weight_staging, self.rejection_workspace["host_bytes"]),
                                    allocation_bytes=plan.authority_allocations)
             try:
                 self.expert_cache = A4ExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins,
@@ -145,6 +159,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             model_dir, context, context_explicit, torch, runtime.geometry, transform,
             weight_estimator=partial(weight_estimate, transform=transform),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
+            device_workspace_bytes=self.rejection_workspace["device_bytes"],
+            host_workspace_bytes=self.rejection_workspace["host_bytes"],
             resident_extra=allocate(plan.gpu_bytes) if plan is not None and not plan.automatic else 0,
             draft_dir=draft_dir, draft_weights=drafted, draft_geometry=draft_runtime,
             **({"context_limit": yarn.context_limit, "original_context": yarn.native_context} if yarn is not None
@@ -178,8 +194,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             self.expert_pool_plan = plan_pool(
                 plan, raw_free_bytes=int(torch.cuda.mem_get_info()[0]),
                 existing_pool_bytes=self.expert_cache.gpu_bytes, **components,
-                future_draft_workspace_bytes=draft_runtime.bytes_at(self.capacity_plan["cache_slots"])
-                if draft_runtime is not None else 0,
+                future_draft_workspace_bytes=(draft_runtime.bytes_at(self.capacity_plan["cache_slots"])
+                                             if draft_runtime is not None else 0) + self.rejection_workspace["device_bytes"],
                 device_reserve_bytes=cuda_reserve_bytes(total_bytes(torch)), allocation_size=allocate)
             self.expert_pool_plan["allocator"] = allocator
             self.expert_layout = plan.receipt()

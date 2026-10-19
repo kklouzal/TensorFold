@@ -357,7 +357,7 @@ def _generate(engine, prompt, sampling, max_tokens=24, **kwargs):
 @pytest.mark.parametrize("base", [3, 126, 127, 250])
 def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base):
     """End to end on one GPU: the second turn resumes from the entry at n - 1 (``cached``), its prefill ends in a
-    fresh prefill's state, logits and first token, and its reply is a fresh engine's and the serial reference's. The
+    fresh prefill's state, logits and first token, and its reply is a fresh engine's (and serial's when greedy). The
     entries end one token before their prompts' ends and equal fresh prefills of their tokens."""
 
     first, second = _turns(base, seed=60 + base)
@@ -388,8 +388,9 @@ def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base
     (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, second, sampling)
     assert same_bits(logits, fresh_logits) and pending == fresh_pending == reply[0]
     _assert_same_state(st, fresh)
-    assert reply == _generate(_engine(w), second, sampling)[0] == _generate(_engine(w), second, sampling,
-                                                                           draft=False)[0]
+    assert reply == _generate(_engine(w), second, sampling)[0]
+    if sampling is None:
+        assert reply == _generate(_engine(w), second, sampling, draft=False)[0]
     assert [ids for ids, _, _ in engine.cache.entries] == [first[:-1], second[:-1]]
     for ids, entry, _ in engine.cache.entries:
         _assert_same_state(entry, _prefill(monkeypatch, w, ids)[0][0])
@@ -398,7 +399,7 @@ def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base
 @pytest.mark.parametrize("sampling", [None, Sampling(77)])
 def test_the_concurrent_decoder_resumes_the_next_turn_exactly(w, sampling):
     """``--parallel N``: the prefix cache holds private states at n - 1; the next turn resumes from one and decodes
-    the serial reference's tokens."""
+    the same decoder's cold-reference tokens (also serial's when greedy)."""
 
     dec = MultiDecoder(w, None, keep=8, context=1 << 14)
     first, second = _turns(140, seed=70)
@@ -410,8 +411,15 @@ def test_the_concurrent_decoder_resumes_the_next_turn_exactly(w, sampling):
         while dec.live():
             dec.finish(dec.round())
         out[tuple(prompt)] = (got, s.cached)
-    st, first_token = prefill(w, second, sampling)
-    want = serial_decode(w, st, first_token, 16, sampling).tokens
+    fresh = MultiDecoder(w, None, keep=8, context=1 << 14)
+    control = Stream(list(second), 16, sampling)
+    fresh.admit(control)
+    while fresh.live():
+        fresh.finish(fresh.round())
+    want = control.out
+    if sampling is None:
+        st, first_token = prefill(w, second, sampling)
+        assert want == serial_decode(w, st, first_token, 16, sampling).tokens
     assert out[tuple(second)] == (want, len(first) - 1)
     assert [ids for ids, _, _ in dec.cache.entries] == [first[:-1], second[:-1]]
     for ids, entry, _ in dec.cache.entries:

@@ -1,4 +1,7 @@
-"""Key Gumbel draws by seed, position and token id so verification matches serial top-k/top-p/min-p sampling."""
+"""Position/token-keyed categorical sampling, centered before temperature and random noise.
+
+Centering corrects older versions' seeded draws at extreme finite common score offsets.
+"""
 
 from __future__ import annotations
 
@@ -88,8 +91,10 @@ def choose(values: np.ndarray, ids: np.ndarray, position: int, s: Sampling) -> i
     order = np.lexsort((ids, -values))
     k = max(1, min(int(s.top_k) if s.top_k else len(ids), len(ids)))
     ids = ids[order][:k]
-    scaled = values[order][:k].astype(np.float64) / max(float(s.temperature), 1e-6)
-    probs = np.exp(scaled - scaled.max())
+    scaled = values[order][:k].astype(np.float64)
+    with np.errstate(over="ignore"):  # a negative overflow has zero categorical mass
+        scaled = (scaled - scaled[0]) / max(float(s.temperature), 1e-6)
+    probs = np.exp(scaled)
     probs /= probs.sum()
     if 0.0 < s.top_p < 1.0:
         keep = int(np.searchsorted(np.cumsum(probs), s.top_p) + 1)
@@ -108,10 +113,12 @@ def choose_rows(values: np.ndarray, ids: np.ndarray, positions: Sequence[int], s
     order = np.lexsort((ids, -values), axis=-1)
     k = max(1, min(int(s.top_k) if s.top_k else width, width))
     ids = np.take_along_axis(ids, order, axis=-1)[:, :k]
-    scaled = np.take_along_axis(values, order, axis=-1)[:, :k].astype(np.float64) / max(float(s.temperature), 1e-6)
+    scaled = np.take_along_axis(values, order, axis=-1)[:, :k].astype(np.float64)
+    with np.errstate(over="ignore"):
+        scaled = (scaled - scaled[:, :1]) / max(float(s.temperature), 1e-6)
     score = scaled - np.log(-np.log(uniform_rows(s.seed, np.asarray(positions), ids)))
     if 0.0 < s.top_p < 1.0:
-        probs = np.exp(scaled - scaled.max(axis=-1, keepdims=True))
+        probs = np.exp(scaled)
         probs /= probs.sum(axis=-1, keepdims=True)
         keep = (np.cumsum(probs, axis=-1) < s.top_p).sum(axis=-1) + 1    # searchsorted(cumsum, top_p) + 1
         score[np.arange(k)[None, :] >= keep[:, None]] = -np.inf
@@ -182,13 +189,16 @@ def _nucleus_rows(logits: Any, positions: Sequence[int], s: Sampling) -> list[in
     temperature = max(float(s.temperature), 1e-6)
     cand = mx.argpartition(-flat, kth=count - 1, axis=-1)[:, :count]
     vals = mx.take_along_axis(flat, cand, axis=-1)
-    norm = mx.logsumexp(flat / temperature, axis=-1)
-    cand_np, vals_np, norm_np = np.array(cand).astype(np.int64), np.array(vals), np.array(norm).astype(np.float64)
+    maximum = mx.max(flat, axis=-1, keepdims=True)
+    # Keep the common offset separate: max + log(sum) can round away log(sum).
+    norm = mx.logsumexp((flat - maximum) / temperature, axis=-1)
+    cand_np, vals_np = np.array(cand).astype(np.int64), np.array(vals)
+    maximum_np, norm_np = np.array(maximum).astype(np.float64), np.array(norm).astype(np.float64)
     out: list[int | None] = []
     for row in range(cand_np.shape[0]):
         order = np.lexsort((cand_np[row], -vals_np[row]))
         ids, values = cand_np[row][order], vals_np[row][order].astype(np.float64)
-        scaled = values / temperature
+        scaled = (values - maximum_np[row, 0]) / temperature
         kept = int((np.cumsum(np.exp(scaled - norm_np[row])) < s.top_p).sum()) + 1
         if s.min_p > 0.0:
             kept = min(kept, int((scaled >= scaled[0] + s.min_log).sum()))

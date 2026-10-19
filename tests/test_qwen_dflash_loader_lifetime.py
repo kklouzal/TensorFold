@@ -104,6 +104,9 @@ class Controls(unittest.TestCase):
             "SafeTensors": Reader,
             "BoundaryDone": BoundaryDone,
         }
+        from tensorfold.families.qwen3_5.cuda.draft_tree import draft_limit
+
+        ns["draft_limit"] = draft_limit
         exec(
             compile(
                 ast.fix_missing_locations(ast.Module([init], [])),

@@ -27,7 +27,7 @@ def startup(tmp_path, monkeypatch):
     tokenizer.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "tokenizer_config.json").write_text(json.dumps({
         "chat_template": "{% for m in messages %}{{ m.content }}{% endfor %}", "eos_token": "stop"}))
-    text = {"hidden_size": 64, "intermediate_size": 128}
+    text = {"hidden_size": 64, "intermediate_size": 128, "vocab_size": 4}
     # the constructor reads its RoPE policy (default here) from the checkpoint's own config
     (tmp_path / "config.json").write_text(json.dumps({"text_config": {**text, "head_dim": 64}}))
     plan = {"context_window": 32, "cache_slots": 33, "budget_bytes": 1024,

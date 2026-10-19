@@ -7,9 +7,10 @@ scale) requantizes the projections and a private copy of a floating target head
 is. These change proposals only; target weights, sampling and commits are separate.
 Snapshots share immutable K/V tensors and own their per-layer lists.
 
-A round's proposals stop where the drafter's own confidence runs out (``stop_score``): every draft row is verified
-by the target at a cost that grows with the window (each row brings its own experts), while a draft rarely holds
-once the drafter's top-path probability has fallen below a few percent. Proposals only; outputs are unchanged.
+Greedy rounds stop at the configured cumulative confidence (``stop_score``). Sampled rounds use fixed request-local
+logical blocks and independent proposal draws for standard rejection; they do not use this greedy cutoff. Every
+committed token is still verified by the target; sampled replies may differ from serial replies while preserving
+the target distribution.
 """
 from __future__ import annotations
 
@@ -53,8 +54,9 @@ def _rotate(x, cos, sin):
 class DFlash:
     """Full-context, noncausal block diffusion behind the shared draft-tree contract.
 
-    ``stop_score``: a round's drafts end at the first row whose cumulative drafter score exceeds it (``STOP_SCORE``;
-    None proposes every row of the block).
+    ``stop_score``: greedy drafts end at the first row whose cumulative score exceeds it (``STOP_SCORE``; None keeps
+    every row). Stochastic chains use the fixed trained-block/configured-row cap, independent of this greedy-only
+    policy, batch composition and transient output room.
     """
 
     world = 1
@@ -209,7 +211,7 @@ class DFlash:
         return x + self._lin(h, base + "mlp.down_proj.weight")
 
     @torch.no_grad()
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None, *, sampled=False):
         if len(snaps) != len(pendings) or (histories is not None and len(histories) != len(snaps)):
             raise ValueError("DFlash requires one anchor token (and penalty history, if any) per context")
         length = min(self.block if block is None else positive(block, "block"), max_nodes + 1)
@@ -238,7 +240,8 @@ class DFlash:
                   self.weights["norm.weight"], cfg.eps)
         logits = _mm(h, self.target_head).float()
         # The argmax proposals; a penalized stream's rows are penalized as the target's will be.
-        chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1)
+        chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1,
+                                     sampled=sampled)
         for row, i in enumerate(live):
             out[i] = chains, row
         return out
@@ -246,8 +249,47 @@ class DFlash:
     def launch_block(self, pending, max_nodes, block=None, history=None):
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
+    def launch_chains(self, snaps, pendings, max_nodes, block=None, histories=None):
+        """Fixed request-local stochastic blocks, grouped only when their context capacities agree.
+
+        A neighboring stream near its context limit cannot shorten another request's logical proposal window.
+        Output room and batch-wide cost allocation never enter this policy.
+        """
+        if len(snaps) != len(pendings) or (histories is not None and len(histories) != len(snaps)):
+            raise ValueError("one anchor and penalty history per draft context required")
+        if type(max_nodes) is not int or max_nodes < 0:
+            raise ValueError("proposal node count must be a nonnegative integer")
+        out, groups = [None] * len(snaps), {}
+        width = min(self.trained, self.block, max_nodes + 1)
+        for i, snap in enumerate(snaps):
+            length = min(width, self.window - snap[3])
+            if snap[2] > 0 and length >= 2:
+                groups.setdefault(length, []).append(i)
+        for length, indices in groups.items():
+            launched = self.launch_blocks([snaps[i] for i in indices], [pendings[i] for i in indices],
+                                          max_nodes, length,
+                                          None if histories is None else [histories[i] for i in indices], sampled=True)
+            for i, packet in zip(indices, launched):
+                out[i] = packet
+        return out
+
+    def launch_chain(self, pending, max_nodes, block=None, history=None):
+        return self.launch_chains([self.snapshot()], [pending], max_nodes, block, [history])[0]
+
+    def finish_chain(self, launched, context_length, max_nodes, sampling, history=None):
+        from tensorfold.engine.rejection import ChainPacket
+
+        if launched is None:
+            return ChainPacket((), (), context_length)
+        chains, row = launched
+        return chains.sample(row, max_nodes, sampling, context_length, history)
+
+    def propose_chain(self, pending, context_length, max_nodes, sampling, block=None, history=None):
+        return self.finish_chain(self.launch_chain(pending, max_nodes, block, history), context_length,
+                                 max_nodes, sampling, history)
+
     def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
-        """A launched chain, cut at ``stop_score``. ``context_length`` (its first proposal's absolute position, the
+        """A launched greedy chain, cut at ``stop_score``. ``context_length`` (its first proposal's absolute position, the
         anchor's + 1) and ``sampling`` complete the drafter interface; argmax proposals use neither."""
         if launched is None:
             return [], [], []

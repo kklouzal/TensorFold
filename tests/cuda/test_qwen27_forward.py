@@ -216,11 +216,20 @@ def test_penalized_tree_and_copy_rounds_keep_serial_tokens(sampled):
     assert ref != plain.tokens
 
     class Drafter:
+        trained = 5
+
         def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
             k = context_length - len(prompt)
             right = [ref[k + j] if k + j < len(ref) else 1 for j in range(4)]
             guesses = right[:3] + [(right[3] + 1) % 256, (right[0] + 1) % 256]
             return guesses[:max_nodes], [-1, 0, 1, 2, -1][:max_nodes]
+
+        def propose_chain(self, pending, context_length, max_nodes, sampling, history=None):
+            from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
+
+            assert history is not None
+            tokens = tuple(self.propose_tree(pending, context_length, max_nodes, sampling)[0][:4])
+            return ChainPacket(tokens, tuple(ProbabilityRow([t], [1.0]) for t in tokens), context_length)
 
         def add_taps(self, taps):
             pass
@@ -228,6 +237,13 @@ def test_penalized_tree_and_copy_rounds_keep_serial_tokens(sampled):
         def in_vocab(self, token):
             return True
 
+    current_history = history()
     drafted = draft_decode(w, State(w), prompt, 5, 40, sampling, Drafter(), max_rows=8, allow_copy=True,
-                           stop_eos=False, history=history())
-    assert drafted.tokens == ref and drafted.accepted_drafts > 0
+                           stop_eos=False, history=current_history)
+    assert all(current_history.count(t) == drafted.tokens.count(t) for t in set(drafted.tokens))
+    if sampled:
+        repeated = draft_decode(w, State(w), prompt, 5, 40, sampling, Drafter(), max_rows=8, allow_copy=True,
+                                stop_eos=False, history=history())
+        assert repeated.tokens == drafted.tokens and drafted.drafted_rows > 0
+    else:
+        assert drafted.tokens == ref and drafted.accepted_drafts > 0

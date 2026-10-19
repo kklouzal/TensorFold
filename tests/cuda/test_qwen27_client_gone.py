@@ -104,7 +104,13 @@ def test_one_stream_stops_early_and_stays_exact():
     engine = _engine(w)
     app = _app(engine)
     prompt, sampling = PROMPTS[1], SAMPLINGS[1]
-    ref = _full(w, prompt, sampling)
+    def control(ids, count=COUNT):
+        out = []
+        _engine(w).generate(list(ids), count, sampling, lambda new: out.extend(new) and False)
+        assert len(out) == count
+        return out
+
+    ref = control(prompt)
     sent: list[str] = []
     with pytest.raises(RequestCancelled):
         _run(app, prompt, sampling, emit=_keeping(sent), cancelled=_after(3))
@@ -114,7 +120,7 @@ def test_one_stream_stops_early_and_stays_exact():
     longer = prompt + ref[:5] + [42, 43]
     got = _run(app, longer, sampling, count=12)
     assert got["stats"]["cached"] == len(prompt) - 1                   # the entry ends a token early (#65)
-    assert got["stats"]["token_sha"] == server.token_sha(_serial(w, longer, sampling, 12))
+    assert got["stats"]["token_sha"] == server.token_sha(control(longer, 12))
     with pytest.raises(RuntimeError, match="emit failed"):
         _run(app, prompt, sampling, emit=_failing(3))
     assert _run(app, prompt, sampling)["stats"]["token_sha"] == server.token_sha(ref)

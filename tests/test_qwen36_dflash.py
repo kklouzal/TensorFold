@@ -2,6 +2,7 @@
 import json
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -151,6 +152,24 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     geometry = draft_geometry(raw, streams=2, kept=3, prompt_rows=8)
     per_token = 2 * cfg.layers * cfg.kv_heads * cfg.head_dim * 2
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
+
+
+def test_stochastic_chains_keep_request_width_when_another_context_has_no_proposal_room(fixture):
+    directory, _raw, _cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64)
+    draft.add_taps(torch.ones((3, 128), dtype=torch.bfloat16))
+    snap = draft.snapshot()
+    policy = Sampling(seed=71, temperature=.7, top_k=20, top_p=.95)
+    first = draft.propose_chain(2, 4, 3, policy)
+    assert len(first.tokens) == 3 and first.first_position == 4
+    draft.add_taps(torch.ones((60, 128), dtype=torch.bfloat16))
+    near = draft.snapshot()
+    launched = draft.launch_chains([snap, near], [2, 2], 3)
+    assert launched[1] is None
+    again = draft.finish_chain(launched[0], 4, 3, policy)
+    assert again.tokens == first.tokens
+    assert all(np.array_equal(a.ids, b.ids) and np.array_equal(a.probs, b.probs)
+               for a, b in zip(again.q_rows, first.q_rows))
 
 
 @pytest.mark.parametrize("bits", [4, 8, 16])
@@ -434,6 +453,7 @@ class FixedChains(dflash.speculative.Chains):
     """Already validated host packets with fixed scores; use the production shared cutoff."""
 
     def __init__(self, ids, scores):
+        self._sampled = False
         self.host, self.histories, self.scores = (ids, scores, None), [None] * len(ids), scores
 
 

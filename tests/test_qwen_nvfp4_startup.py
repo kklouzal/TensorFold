@@ -252,6 +252,8 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert admission["draft_weights"].func is dflash_metadata.draft_weights
         assert admission["draft_weights"].keywords == {"bits": 4, "private_head": True}   # a BF16 target head
         assert admission["draft_dir"] == state.draft_dir
+        assert admission["device_workspace_bytes"] == engine.rejection_workspace["device_bytes"] > 0
+        assert admission["host_workspace_bytes"] == engine.rejection_workspace["host_bytes"] > 0
         assert state.drafts == [(state.draft_dir, engine.w, {"context_limit": 64, "block": 8, "bits": 4,
                                                              "stop_score": dflash.STOP_SCORE if streams == 1 else None})]
         assert state.loads[0][1]["expert_factory"].keywords["cache"] is engine.expert_cache
@@ -287,10 +289,11 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
                           + plan.control_host_bytes + plan.source_filesystem_bytes)
             _, host_loading = nvfp4_memory.weight_estimate(state.target, nvfp4_load.weight_bytes)
             assert pins.planned == admission["host_resident"] == plan.host_bytes
-            assert pins.options == {"mode": "auto", "future_bytes": host_extra + host_loading,
+            assert pins.options == {"mode": "auto", "future_bytes": host_extra + max(host_loading, engine.rejection_workspace["host_bytes"]),
                                     "allocation_bytes": plan.authority_allocations}
             assert admission["host_extra_staging"] == host_extra
-            assert engine.expert_pool_plan["future_draft_workspace_bytes"] == draft_runtime.bytes_at(72)
+            assert engine.expert_pool_plan["future_draft_workspace_bytes"] == (
+                draft_runtime.bytes_at(72) + engine.rejection_workspace["device_bytes"])
             for name, count in runtime.components(72).items():
                 assert engine.expert_pool_plan[name] == count
             assert state.events.index("draft-load") < state.events.index("configure")
@@ -306,6 +309,20 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
     if state.caches:
         assert state.caches[0].closed and state.pins[0].closed
         assert state.events.index("cache-close") < state.events.index("pins-close")
+
+
+@pytest.mark.parametrize("allow_copy", [False, True])
+def test_no_companion_charges_only_reachable_probability_workspace(startup, allow_copy):
+    engine = QwenNvfp4MoeEngine(startup.target, None, context=64, context_explicit=True, max_rows=8,
+                               allow_copy=allow_copy, eos_token_ids=())
+    try:
+        options = startup.admissions[0][-1]
+        assert (options["device_workspace_bytes"] > 0) == allow_copy
+        assert (options["host_workspace_bytes"] > 0) == allow_copy
+        assert engine.draft is None and engine.allow_copy == allow_copy
+    finally:
+        engine.close()
+    assert engine._closed
 
 
 def test_missing_vmm_refuses_before_expert_ownership_admission_or_payload(startup, monkeypatch):

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from tensorfold import __version__
 from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
@@ -135,7 +135,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
 
     speed = serve.add_argument_group("drafting and caches")
     speed.add_argument("--no-drafts", action="store_true",
-                       help="one token a round: the serial reference (same output, slower)")
+                       help="one token a round: the serial reference. CUDA DFlash sampled replies may differ; "
+                            "greedy replies match")
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
@@ -232,7 +233,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "
                            "layers): faster prompts, lower precision (e4m3 keeps 3 mantissa bits, bf16 keeps 7; "
                            "docs/recipes/cuda.md#prompt-precision has the measured cost). Default: "
-                           f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Replies equal this server's own serial "
+                           f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Greedy replies equal this server's own serial "
                            "decoding either way")
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "
@@ -241,7 +242,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "or each row's own scale for per-channel FP8 with dynamic per-token inputs; "
                            "layers a GPU has no mma for run W4A16, and the startup line says which); full runs bf16 "
                            "activations against the stored weights exactly. The weights never change, only the math; "
-                           "MLX checkpoints have one math. Replies equal this server's own serial decoding either way")
+                           "MLX checkpoints have one math. Greedy replies equal this server's own serial decoding either way")
     serve.set_defaults(func=handlers["serve"])
 
     pull = commands.add_parser("pull", help="download models (or draft models) from Hugging Face")

@@ -229,25 +229,42 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
     stopped = False
     behind = False                  # rank 1 learns a round's last token as the next window's first
     kept = None
+    stochastic = sampling is not None and sampling.temperature > 0
+    logical_nodes = min(draft.trained if draft is not None else max_rows, max_rows) - 1 if stochastic else 0
+    # A rank-zero-only companion is absent on its follower. Agree once before selecting per-round collectives.
+    rejecting = bool(_share([int(stochastic and draft is not None)] if rank == 0 else None, rank, device)[0])
     while True:
         stage = time.perf_counter()
         window: list[int] | None = None
         parents: list[int] = []
+        chain = None
         if rank == 0:
             if len(out) >= count or (stop_eos and out[-1] in eos) or stopped:
                 window = []
             else:
                 guesses, gparents = [], []
                 if draft is not None:
-                    copied = copies.propose(context, max_rows - 1) if copies is not None else []
+                    copied = copies.propose(context, logical_nodes if stochastic else max_rows - 1) \
+                        if copies is not None else []
                     if tp_draft:
                         _share([0 if copied else 1, out[-1], len(context)], rank, device)
                     if copied:
                         guesses, gparents = copied, list(range(-1, len(copied) - 1))
+                        if stochastic:
+                            from .draft_tree import copy_packet
+
+                            chain = copy_packet(guesses, len(context))
                     else:
-                        guesses, gparents = draft.propose_tree(out[-1], len(context), max_rows - 1, sampling)
+                        if stochastic:
+                            chain = draft.propose_chain(out[-1], len(context), logical_nodes, sampling)
+                            guesses, gparents = list(chain.tokens), list(range(-1, len(chain.tokens) - 1))
+                        else:
+                            guesses, gparents = draft.propose_tree(out[-1], len(context), max_rows - 1, sampling)
                 window = [out[-1]] + list(guesses)
                 parents = [-1] + [0 if p < 0 else p + 1 for p in gparents]
+                if chain is not None:
+                    window = window[:count - len(out)]
+                    parents = parents[:len(window)]
                 if constraint is not None:          # the drafts no accepted path can hold are cut before the share
                     kept = constraint.window(window, parents)
                     window, parents = kept.tokens, kept.parents
@@ -256,7 +273,10 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
         elif tp_draft:
             mode, last, length = _share(None, rank, device)
             if mode == 1:
-                draft.propose_tree(last, length, max_rows - 1, sampling)
+                if stochastic:
+                    draft.propose_chain(last, length, logical_nodes, sampling)
+                else:
+                    draft.propose_tree(last, length, max_rows - 1, sampling)
         packed = _share((window + parents if window else []) if rank == 0 else None, rank, device)
         if not packed:
             break
@@ -280,14 +300,27 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
             constraint.mask(logits, masks, rank * w.head.n if split else 0)
         depths, _ = _paths(parents)
         positions = [st.pos + d + 1 for d in depths]
-        sampled = _sample_split(logits, positions, sampling, rank, plan=sampling_plan) if split else None
+        if rejecting:
+            from .draft_tree import chain_probabilities
+
+            probability = chain_probabilities(logits, sampling, len(chain.tokens) + 1 if chain is not None else
+                                               len(window), plan=sampling_plan) if split or rank == 0 else None
+            sampled = None
+        else:
+            sampled = _sample_split(logits, positions, sampling, rank, plan=sampling_plan) if split else None
         if rank == 0:
             torch.cuda.synchronize()
             stages["verify"] += time.perf_counter() - stage
             stage = time.perf_counter()
-            if sampled is None:
-                sampled = sample_rows(logits, positions, sampling)
-            path, terminal = _accept(window, parents, sampled, count - len(out), eos, stop_eos)
+            if rejecting:
+                from tensorfold.engine.rejection import verify
+
+                path, terminal = verify(chain, probability, sampling.seed, room=count - len(out),
+                                        eos=eos if stop_eos else ())
+            else:
+                if sampled is None:
+                    sampled = sample_rows(logits, positions, sampling)
+                path, terminal = _accept(window, parents, sampled, count - len(out), eos, stop_eos)
             stages["sample"] += time.perf_counter() - stage
             stage = time.perf_counter()
         path = _share(path, rank, device)

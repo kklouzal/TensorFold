@@ -16,7 +16,7 @@ from tensorfold.families.qwen3_5.cuda.decode import prefill, serial_decode  # no
 from tensorfold.families.qwen3_5.cuda.forward import (State, commit, commit_streams, multi_tree_forward,  # noqa: E402
                                                         tree_forward)
 from tensorfold.families.qwen3_5.cuda.draft_tree import allocate  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.multi import TREE, MultiDecoder, private, viewed  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.multi import ONE, TREE, MultiDecoder, private, viewed  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
 from qwen_engine_checks import points_after  # noqa: E402
 
@@ -98,6 +98,11 @@ class _Oracle(MultiDecoder):
         self.truth, self.rng = truth, random.Random(seed)
 
     def _mode(self, s, copied):
+        if s.sampling is not None and s.sampling.temperature > 0:
+            # This independent scheduler oracle deliberately supplies arbitrary q-less trees and checks target
+            # choices. Real stochastic DFlash/copy producers use explicit CHAIN/COPY_CHAIN modes instead.
+            copied[s.sid] = []
+            return TREE if s.draft else ONE
         mode = super()._mode(s, copied)
         return TREE if s.draft and not copied.get(s.sid) else mode
 

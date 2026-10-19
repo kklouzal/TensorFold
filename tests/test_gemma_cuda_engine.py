@@ -35,6 +35,15 @@ def test_acceptance_stops_at_first_mismatch_room_or_eos():
     assert _accepted([4, 6, 7], [2, 4, 6], 9, (6,)) == [4, 6]
 
 
+def _effective_cpu(logits, sampling):
+    """Fixture probability boundary; shared sampler extraction has its own CUDA/numerical controls."""
+    import numpy as np
+
+    from tensorfold.engine.rejection import proposal_row
+
+    return [proposal_row(row.float().numpy(), np.arange(row.numel()), sampling) for row in logits]
+
+
 def _engine(monkeypatch, *, with_head=True):
     torch = pytest.importorskip("torch")
     import numpy as np
@@ -110,7 +119,7 @@ def _engine(monkeypatch, *, with_head=True):
         def append(self, draft, taps):
             draft.taps.extend(int(v) for v in taps[:, 0])
 
-        def propose(self, draft, anchor, limit, history=None):
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False):
             if not draft.taps:
                 return None
             total = sum(draft.taps) + anchor
@@ -122,7 +131,13 @@ def _engine(monkeypatch, *, with_head=True):
             # Force rejection after a correct prefix to expose rollback/tap bugs.
             if len(proposals) > 2:
                 proposals[2] = (proposals[2] + 1) % 19
-            return SimpleNamespace(finish=lambda row, count, history=None: (proposals[:count],
+            def packet(row, count, sampling, first_position, history=None):
+                from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
+                # An intentionally unaware deterministic proposal is valid q: target rejection corrects it.
+                tokens = tuple(proposals[:count])
+                return ChainPacket(tokens, tuple(ProbabilityRow([t], [1.0]) for t in tokens), first_position)
+
+            return SimpleNamespace(sample=packet, finish=lambda row, count, history=None: (proposals[:count],
                                                                             list(range(-1, min(count, limit) - 1)),
                                                                             []))
 
@@ -144,6 +159,7 @@ def _engine(monkeypatch, *, with_head=True):
     engine._stream = SimpleNamespace(synchronize=lambda: None)
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
     monkeypatch.setattr("tensorfold.cuda.sampling.sample_rows", sample)
+    monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     return engine
 
 
@@ -155,7 +171,7 @@ def _assert_prompt_path(engine, prompt):
 
 
 @pytest.mark.parametrize("sampled", [False, True])
-def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
+def test_dflash_rejections_and_prompt_resume_keep_request_contract(monkeypatch, sampled):
     engine = _engine(monkeypatch)
     from tensorfold.engine.exact_sampling import Sampling
     sampling = Sampling(seed=912, temperature=.7, top_k=7, top_p=.9) if sampled else None
@@ -168,7 +184,7 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
 
     serial, _ = run([3, 1, 4, 1, 5], False)
     drafted, stats = run([3, 1, 4, 1, 5], True)
-    assert drafted == serial
+    assert drafted == (run([3, 1, 4, 1, 5], True)[0] if sampled else serial)
     assert stats["cached"] == 5
     assert stats["drafted"] > 0
     assert stats["accepted"] < stats["drafted"]
@@ -176,7 +192,7 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
     fresh_engine = _engine(monkeypatch)
     fresh = []
     fresh_engine.generate([3, 1, 4, 1, 5, 9, 2], 35, sampling, lambda tokens: fresh.extend(tokens),
-                          draft=False, stop_eos=False)
+                          draft=sampled, stop_eos=False)
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
     assert engine._prefix.tokens == (3, 1, 4, 1, 5, 9, 2)
@@ -188,9 +204,9 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
 @pytest.mark.parametrize("policy", [dict(temperature=1.0, top_k=7, top_p=.95), dict(temperature=.6, top_k=0, top_p=.9),
                                     None])
 @pytest.mark.parametrize("penalized", [False, True])
-def test_proposals_of_an_exact_drafter_keep_serial_output(monkeypatch, policy, penalized):
+def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypatch, policy, penalized):
     """A drafter equal to the target proposes its argmax at anchor + 1 + j, penalized as the target's verify rows
-    are: greedy rounds accept every proposal (penalized or not), sampled ones keep the serial output."""
+    are. Greedy keeps serial output; sampled equal-q/p proposals all accept under their actual target law."""
     torch = pytest.importorskip("torch")
     from tensorfold.cuda import speculative
     from tensorfold.engine.exact_sampling import Sampling
@@ -199,6 +215,7 @@ def test_proposals_of_an_exact_drafter_keep_serial_output(monkeypatch, policy, p
     monkeypatch.undo()                      # the real CUDA sampler's host rule, on CPU scores
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
     monkeypatch.setattr("tensorfold.cuda.sampling.validate_rows", lambda logits, positions, sampling: None)
+    monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     sampling = Sampling(seed=4321, **policy) if policy is not None else None
     penalties = Penalties(presence=0.8, frequency=0.4, repetition=1.2) if penalized else None
 
@@ -220,32 +237,32 @@ def test_proposals_of_an_exact_drafter_keep_serial_output(monkeypatch, policy, p
     seen = []
 
     class Exact(type(engine.head)):
-        def propose(self, draft, anchor, limit, history=None):
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False):
             first = len(draft.taps) + 1             # the committed context ends at the anchor
             seen.append(first == engine._state.position + 1)
             logits = torch.stack([scores(first + j) for j in range(limit)])
-            return speculative.Chains(logits, [history], limit)
+            return speculative.Chains(logits, [history], limit, sampled=sampled)
 
     engine.head = Exact()
 
     def run(draft, penalties=penalties):
         output = []
-        stats = engine.generate([3, 1, 4, 1, 5], 40, sampling, lambda tokens: output.extend(tokens),
+        stats = engine.generate([3, 1, 4, 1, 5], 41, sampling, lambda tokens: output.extend(tokens),
                                 draft=draft, stop_eos=False, penalties=penalties)
         return output, stats
 
     serial, _ = run(False)
     drafted, stats = run(True)
-    assert drafted == serial and len(drafted) == 40 and stats["drafted"] > 0
+    assert drafted == (run(True)[0] if sampling is not None else serial)
+    assert len(drafted) == 41 and stats["drafted"] > 0
     assert seen and all(seen)
-    if sampling is None:
-        assert stats["accepted"] == stats["drafted"]
+    assert stats["accepted"] == stats["drafted"]
     if penalized:
         assert run(False, None)[0] != serial              # the penalties do change this reply
 
 
 @pytest.mark.parametrize("sampled", [False, True])
-def test_penalized_rows_keep_drafted_output_serial_with_unaware_drafts(monkeypatch, sampled):
+def test_penalized_rows_keep_target_contract_with_unaware_drafts(monkeypatch, sampled):
     """Proposals that ignore the penalties are still verified against penalized rows (each by its path)."""
     from tensorfold.engine.exact_sampling import Sampling
     from tensorfold.engine.penalties import Penalties
@@ -261,8 +278,11 @@ def test_penalized_rows_keep_drafted_output_serial_with_unaware_drafts(monkeypat
     penalties = Penalties(presence=2.0, frequency=1.5, repetition=1.5)
     serial, _ = run(False, penalties)
     drafted, stats = run(True, penalties)
-    assert drafted == serial and stats["drafted"] > 0
+    assert drafted == (run(True, penalties)[0] if sampled else serial)
+    assert stats["drafted"] > 0
     assert serial != run(False, None)[0]
+    if sampled:
+        assert drafted != run(True, None)[0]
 
 
 def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch):
@@ -315,7 +335,8 @@ def test_reentrant_callback_is_rejected_without_stranding_engine(monkeypatch):
     engine.generate([1, 2], 1, None, lambda tokens: None)
 
 
-def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypatch):
+@pytest.mark.parametrize("sampled", [False, True])
+def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypatch, sampled):
     engine = _engine(monkeypatch)
     torch = pytest.importorskip("torch")
 
@@ -343,7 +364,9 @@ def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypa
     engine.generate(prompt, 1, None, lambda tokens: None)
     before = engine._prefix.checkpoints[-1].logits.clone()
     output = []
-    engine.generate(prompt, 11, None, lambda tokens: output.extend(tokens), constraint=Constraint(), stop_eos=False)
+    from tensorfold.engine.exact_sampling import Sampling
+    sampling = Sampling(seed=5, temperature=.7, top_k=7, top_p=.9) if sampled else None
+    engine.generate(prompt, 11, sampling, lambda tokens: output.extend(tokens), constraint=Constraint(), stop_eos=False)
     assert output == [6] * 11
     assert torch.equal(engine._prefix.checkpoints[-1].logits, before)
 
@@ -377,6 +400,90 @@ def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(mo
     assert engine._state.tokens == cold_engine._state.tokens
     # The whole-prompt checkpoint still serves an exact repeat (with its logits) and extensions.
     assert engine.generate(second, 9, sampling, lambda t: None, stop_eos=False)["cached"] == 12
+
+
+@pytest.mark.parametrize("budget", [2, 3, 8, 9, 17, 35])
+@pytest.mark.parametrize("penalized", [False, True])
+def test_sampled_logical_packets_keep_prefix_across_reply_budgets_and_cache(monkeypatch, budget, penalized):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import Penalties
+
+    engine = _engine(monkeypatch)
+    sampling = Sampling(seed=173, temperature=.8, top_k=0, top_p=.91, min_p=.01)
+    penalties = Penalties(presence=.4, frequency=.2, repetition=1.2) if penalized else None
+    launch = engine.head.propose
+    widths = []
+
+    def propose(state, anchor, limit, history=None, *, sampled=False):
+        widths.append((limit, sampled))
+        return launch(state, anchor, limit, history, sampled=sampled)
+
+    engine.head.propose = propose
+
+    def run(count):
+        tokens = []
+        stats = engine.generate([3, 1, 4], count, sampling, lambda t: tokens.extend(t),
+                                stop_eos=False, penalties=penalties)
+        assert engine._draft.taps == engine._state.tokens
+        return tokens, stats
+
+    reference, cold = run(35)
+    short, cached = run(budget)
+    assert short == reference[:budget] and cold["cached"] == 0 and cached["cached"] == 3
+    assert widths and all(width == (7, True) for width in widths)
+    assert engine._state.tokens == [3, 1, 4] + short[:-1]
+
+
+@pytest.mark.parametrize("sampled_eos", [False, True])
+def test_sampled_terminal_eos_or_residual_stays_pending_outside_committed_taps(monkeypatch, sampled_eos):
+    torch = pytest.importorskip("torch")
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
+
+    engine = _engine(monkeypatch)
+    engine.eos = (6,)
+    prompt = [2, 3]
+
+    def project(hidden):
+        logits = torch.full((len(hidden), 19), -float("inf"))
+        logits[:, 1 if engine._state.position == len(prompt) else 6] = 0
+        return logits
+
+    def propose(state, anchor, limit, history=None, *, sampled=False):
+        assert sampled and limit == 7
+        token = 6 if sampled_eos else 9  # actual q accepts EOS or is surely rejected into the target's EOS
+        return SimpleNamespace(sample=lambda row, count, policy, position, history=None:
+                               ChainPacket((token,) * count, (ProbabilityRow([token], [1.0]),) * count, position))
+
+    engine.target.project_logits, engine.head.propose = project, propose
+    output = []
+    engine.generate(prompt, 20, Sampling(seed=41, temperature=.7, top_k=7), lambda t: output.extend(t))
+    assert output == [1, 6]
+    assert engine._draft.taps == engine._state.tokens == prompt + [1]
+    assert engine._prefix.tokens == tuple(prompt)
+
+
+def test_sampled_probability_failure_never_publishes_speculative_context(monkeypatch):
+    from tensorfold.engine.exact_sampling import Sampling
+
+    engine = _engine(monkeypatch)
+    policy = Sampling(seed=271, temperature=.7, top_k=7)
+    prompt = [4, 1, 3]
+    output = []
+
+    def failed(_logits, _sampling):
+        raise ValueError("invalid effective probability row")
+
+    monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", failed)
+    with pytest.raises(ValueError, match="invalid effective probability"):
+        engine.generate(prompt, 17, policy, lambda t: output.extend(t), stop_eos=False)
+    assert len(output) == 1 and engine._owner is None and engine._prefix.tokens == tuple(prompt)
+    monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
+    resumed, fresh = [], []
+    engine.generate(prompt, 17, policy, lambda t: resumed.extend(t), stop_eos=False)
+    other = _engine(monkeypatch)
+    other.generate(prompt, 17, policy, lambda t: fresh.extend(t), stop_eos=False)
+    assert resumed == fresh and engine._draft.taps == engine._state.tokens == other._state.tokens
 
 
 def test_turn_boundary_is_the_last_marker_past_the_cached_prefix_outside_visual_blocks(monkeypatch):
