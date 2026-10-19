@@ -84,7 +84,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="prompt plus reply window (default: model config; CUDA default/0: "
                                  "affordable native capacity; Metal 0: remove metadata cap)")
     generation.add_argument("--yarn-factor", type=float, default=None,
-                            help="Flash Next and Qwen3.8 dense on CUDA: static YaRN text RoPE extension (2: "
+                            help="Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: static YaRN text RoPE extension (2: "
                                  "524288 tokens, 4: 1048576 for a 262144-token checkpoint); overrides the checkpoint "
                                  "factor, requires >=1. Short-context quality may change; --context still controls "
                                  "admission")

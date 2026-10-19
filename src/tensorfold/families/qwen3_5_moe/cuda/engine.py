@@ -46,8 +46,11 @@ class Qwen36Engine:
 
     def __init__(self, model_dir: Path, *, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  context: int | None = None, context_explicit: bool | None = None, streams: int = 1,
-                 eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 yarn_factor: float | None = None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
+
+        from .. import rope_parameters
 
         self.depth, self.confidence = int(depth), float(confidence)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
@@ -67,15 +70,23 @@ class Qwen36Engine:
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
             torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         extra = (Path(model_dir) / MTP_FILE,) if self.depth and (Path(model_dir) / MTP_FILE).is_file() else ()
+        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = self.rope if self.rope.rope_type == "yarn" else None
         # one admission for one stream or many (every stream's states and caches, kept prompt ends), before any load
         geometry = ((lambda text: stream_geometry(text, streams, KEEP_MANY, self.depth)) if many else
                     (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0)))
         self.capacity_plan = admit(model_dir, context, context_explicit, torch, geometry,
                                    lambda name, info: (mtp_weights(name, info) if ".mtp." in name
                                                        else linear_weights(name, info)),
-                                   extra_files=extra)
+                                   extra_files=extra,
+                                   **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
+                                      if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
-        self.w = load(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        self.w = load(model_dir, **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
+                                    if value is not None})
+        if yarn is not None:
+            print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
+                  f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)
         self.head = self.graphs = None
         if self.depth:
             m = load_mtp(model_dir, self.w)

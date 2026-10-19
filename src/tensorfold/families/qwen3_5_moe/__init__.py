@@ -28,14 +28,21 @@ CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet p
 
 
 def check_metadata(raw: dict[str, Any], backend: str) -> None:
-    """The dense family's preflight; CUDA reads default text RoPE only (its MTP head and admission take no YaRN)."""
+    """The dense family's preflight (CUDA reads default text RoPE or static YaRN, as the dense family does)."""
 
     _dense_metadata(raw, backend)
-    if backend == "cuda":
-        from ..qwen3_5.config_metadata import declared_yarn
 
-        if declared_yarn(raw) is not None:
-            raise ValueError(f"{TITLE} on CUDA reads default text RoPE; this checkpoint declares YaRN")
+
+ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
+
+
+def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
+    """The text RoPE policy, as the dense family resolves it: the checkpoint's default one, or static YaRN (declared,
+    or ``yarn_factor`` over the native positions: the card's 1,010,000-token reach is ``--yarn-factor 4``)."""
+
+    from ..qwen3_5 import rope_parameters as dense
+
+    return dense(model_dir, yarn_factor)
 
 
 def check(model_dir: str | Path) -> None:
@@ -177,7 +184,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
     from tensorfold.families import read_config
 
-    check_metadata(read_config(Path(model_dir)), "cuda")  # also refused outside the CLI: its MTP head takes no YaRN
+    check_metadata(read_config(Path(model_dir)), "cuda")
     from tensorfold.cuda.nvfp4.format import is_quantized
 
     if is_quantized(Path(model_dir)):
@@ -189,7 +196,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         return QwenNvfp4MoeEngine(
             Path(model_dir), Path(drafter) if drafter and not no_drafts else None,
             context=context, context_explicit=options.get("context_explicit"),
-            allow_copy=not no_drafts,
+            allow_copy=not no_drafts, yarn_factor=options.get("yarn_factor"),
             streams=max(1, int(options.get("parallel") or 1)),
             **{name: options[name] for name in ("vram_experts", "vram_experts_pin", "drafter_bits",
                                                "eos_token_ids", "chat_template_file", "chat_template_name")
@@ -207,6 +214,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if streams > 1 and not 0 <= depth <= 15:
         raise ValueError(f"--parallel verifies up to 16 rows a stream: --mtp-drafts 0 to 15, not {depth}")
     return Qwen36Engine(Path(model_dir), depth=depth, context=context, context_explicit=options.get("context_explicit"),
-                        streams=streams,
+                        streams=streams, yarn_factor=options.get("yarn_factor"),
                         **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
                            if options.get(name) is not None})

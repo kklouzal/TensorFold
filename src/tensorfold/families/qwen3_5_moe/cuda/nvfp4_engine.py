@@ -15,7 +15,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
 
     def __init__(self, model_dir, draft_dir=None, *, context=None, context_explicit=None, streams=1,
                  vram_experts=None, vram_experts_pin="off", drafter_bits=16, max_rows=None,
-                 allow_copy=True, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
+                 allow_copy=True, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 yarn_factor=None):
         if type(drafter_bits) is not int or drafter_bits not in (0, 4, 8, 16):
             raise ValueError("Qwen DFlash draft precision must be 0/16 (BF16), 8 (proposal-only FP8) or 4 "
                              "(proposal-only NVFP4)")
@@ -31,12 +32,14 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                         context=context, context_explicit=context_explicit, streams=streams,
                         vram_experts=vram_experts, vram_experts_pin=vram_experts_pin,
                         drafter_bits=drafter_bits, max_rows=max_rows, allow_copy=allow_copy, eos_token_ids=eos_token_ids,
-                        chat_template_file=chat_template_file, chat_template_name=chat_template_name)
+                        chat_template_file=chat_template_file, chat_template_name=chat_template_name,
+                        yarn_factor=yarn_factor)
         except BaseException as primary:  # noqa: BLE001 -- Interrupts must also retire partial owners; rollback reraises.
             rollback(self, primary, self.close)
 
     def _start(self, model_dir, draft_dir, *, context, context_explicit, streams, vram_experts,
-               vram_experts_pin, drafter_bits, max_rows, allow_copy, eos_token_ids, chat_template_file, chat_template_name):
+               vram_experts_pin, drafter_bits, max_rows, allow_copy, eos_token_ids, chat_template_file, chat_template_name,
+               yarn_factor):
         import torch
 
         from tensorfold.cuda import moe, precision, prompt_precision
@@ -55,6 +58,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         from tensorfold.families.qwen3_5.cuda.nvfp4_load import weight_bytes
         from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 
+        from .. import rope_parameters
         from ..dflash_metadata import DraftConfig, draft_geometry, draft_weights
         from ..ram_experts import layout, plan_pool, runtime_geometry
         from .weights import load
@@ -66,6 +70,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         if type(streams) is not int or streams < 1:
             raise ValueError("parallel streams must be a positive integer")
         text = config(model_dir)
+        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = self.rope if self.rope.rope_type == "yarn" else None
         draft_config = DraftConfig.read(draft_dir) if draft_dir is not None else None
         rows = (draft_config.block if draft_config is not None else 16) if max_rows is None else max_rows
         minimum_rows = 2 if draft_config is not None else 1
@@ -137,16 +143,23 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             weight_estimator=partial(weight_estimate, transform=transform),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
             resident_extra=allocate(plan.gpu_bytes) if plan is not None and not plan.automatic else 0,
-            draft_dir=draft_dir, draft_weights=drafted, draft_geometry=draft_runtime)
+            draft_dir=draft_dir, draft_weights=drafted, draft_geometry=draft_runtime,
+            **({"context_limit": yarn.context_limit, "original_context": yarn.native_context} if yarn is not None
+               else {}))
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
-            raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context")
+            raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context "
+                             f"({draft_config.rope.context_limit}): lower --context, or serve without the drafter")
         # Resident banks carry a routed-form A4 shared expert as their last cell (one device plan per layer);
         # any other shared expert loads as separate projections.
         factory = partial(load_host_experts_a4, cache=self.expert_cache, device="cuda", swiglu=moe.swiglu_bf16,
                           shared=self.expert_cache is None)
         self.w = load(model_dir, expert_factory=factory,
-                      **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+                      **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
+                         if value is not None})
+        if yarn is not None:
+            print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
+                  f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)
         self.w.prompt_rows = chunk
         if draft_dir is not None:
             from .dflash import STOP_SCORE, DFlash

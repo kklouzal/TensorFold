@@ -237,6 +237,20 @@ Prompts prefill in chunks; the head absorbs every prompt row but the last. State
 message's start, the last assistant turn's start and prompt ends, so a prompt sharing a system block or
 extending a conversation resumes there with a fresh prefill's bits.
 
+### Context and YaRN
+
+The checkpoints declare 262,144 positions of default RoPE, and `tensorfold serve` admits that by default. On CUDA,
+`--yarn-factor F` extends the text RoPE with the same static YaRN policy as Qwen3.8 dense (see the
+[27B recipe](qwen3.8-27b.md#context-and-yarn)): the card's 1,010,000-token reach is `--yarn-factor 4` (1,048,576
+positions), for the CT NVFP4 and MLX checkpoints alike, and a checkpoint that declares YaRN brings its own factor.
+Every target prompt, decode and verify forward and the affine path's MTP layer rotate with YaRN's amplitude
+(1.1386 at F = 4); the startup log prints the factor, amplitude, original context and position limit. Only the ten
+full-attention layers hold KV (20 KiB a token in bf16: 20 GiB for one stream at 1,048,576 tokens). The DFlash v1
+drafter `42d3b34` declares a 262,144-position RoPE limit, so a larger admitted window is refused with it: serve
+past 262,144 without `--drafter` (or with `--context 262144`). The card notes that static YaRN applies at every
+length and can hurt short texts. Checked so far: the shared policy and rotation tests, and the Qwen3.6 wiring
+(admission window, loaders, MTP amplitude); a full-model run at the extended window is pending.
+
 ### Concurrent requests
 
 ```bash
