@@ -362,6 +362,32 @@ def test_stored_fp8_target_head_does_not_reserve_a_second_private_draft_head(sta
         engine.close()
 
 
+def test_resident_graph_room_credits_its_admitted_rounded_cache_capacity(startup, monkeypatch):
+    state = startup
+    admit = capacity.admit
+
+    def boundary_plan(*args, **kwargs):
+        plan = admit(*args, **kwargs)
+        plan["context_window"], plan["cache_slots"] = 1024, 1032
+        plan["cache_workspace_bytes_estimate"] = args[4].bytes_at(plan["cache_slots"])
+        return plan
+
+    monkeypatch.setattr(capacity, "admit", boundary_plan)
+    engine = QwenNvfp4MoeEngine(state.target, None, context=1024, context_explicit=True,
+                               max_rows=8, eos_token_ids=[1])
+    try:
+        plan = engine.capacity_plan
+        # One full-attention layer, 8 KV heads * 128 BF16 values per K/V row:
+        # the served window maps 2 MiB per side; the graph's extra rows map 4 MiB.
+        assert geometry.live_kv(state.text, 1, engine.context_window) == 4 << 20
+        fixed = geometry.live_kv(state.text, 1, plan["cache_slots"])
+        assert fixed == 8 << 20 and engine.runner.capacity == plan["cache_slots"]
+        spare = plan["budget_bytes"] - plan["weight_bytes_estimate"] - plan["cache_workspace_bytes_estimate"]
+        assert engine.room.budget == spare + fixed
+    finally:
+        engine.close()
+
+
 def test_unified_cache_refusal_precedes_native_ownership_and_payload(startup, monkeypatch):
     monkeypatch.setattr(capacity, "unified", lambda runtime: True)
     with pytest.raises(ValueError, match="require discrete CUDA memory"):
