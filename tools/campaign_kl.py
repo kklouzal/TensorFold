@@ -395,8 +395,8 @@ def with_app(serve_args: list[str], port: int, work) -> None:
     ``work(app)`` in place of serving HTTP; the CLI closes the engine afterwards. The CLI binds its socket on
     127.0.0.1:``port`` before serving, so the port must be free; no request is accepted on it."""
 
-    import tensorfold.cuda.server as server
     from tensorfold import cli
+    from tensorfold.cuda import server
 
     argv = list(serve_args)
     for flag, value in (("--host", "127.0.0.1"), ("--port", str(port))):
@@ -410,8 +410,16 @@ def with_app(serve_args: list[str], port: int, work) -> None:
         work(app)
         done.append(True)
 
+    previous = server.serve
     server.serve = hooked
-    cli.main(argv)
+    try:
+        status = cli.main(argv)
+    finally:
+        server.serve = previous
+    if type(status) is not int:
+        raise RuntimeError("the production CLI must return an integer status")
+    if status != 0:
+        raise SystemExit(status)
     if not done:
         raise SystemExit("the serve hook never ran")
 

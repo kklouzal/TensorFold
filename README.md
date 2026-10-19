@@ -1,5 +1,10 @@
 # TensorFold fork
 
+Teacher-forced KL dumps require successful CLI cleanup as well as completed
+scoring; the temporary serving hook is restored on every outcome. See
+[campaign evidence boundaries](docs/campaign-evidence.md) for the unchanged
+numerical contract and the separate model qualification requirements.
+
 **Verification checkpoint (2026-10-19):** source `808408aa` passed all four ARM64/AMD64 installed-image audits and 10,357 installed ARM64 CPU tests (206 documented skips). The GB10 component batch passed 426 tests with four skips on `5cc6dbe3`, whose production and native-test bytes equal `808408aa`. AMD64 CPU and desktop native runs were interrupted when work stopped; full-model API, context, quality and performance qualification remain pending. [Exact checkpoint and limits](docs/verification-rejection-checkpoint-20261019.json).
 
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
