@@ -226,7 +226,7 @@ def live_kv(t: dict, world: int, window: int) -> int:
     (no growth copy), rounded up to ``ARENA_GRANULE``."""
 
     _, attention = layer_counts(t)
-    tensor = window * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 2
+    tensor = max(0, window) * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 2   # none below 0 rows
     return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
 
 
@@ -483,7 +483,8 @@ def stream_geometry(t: dict, world: int, streams: int, keep: int, *, first: int 
         caches = (streams + keep + 1) * kv if first is None else \
             kv + (streams + keep) * attention * min(first, capacity) * hk * hd * 2 * 2
         scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
-        granules = (streams + keep + 1) * 2 * attention * ARENA_GRANULE   # each arena's mapped tail (no growth copy)
+        # each arena's mapped tail (no growth copy); no rows map nothing
+        granules = (streams + keep + 1) * 2 * attention * ARENA_GRANULE if capacity > 0 else 0
         return fixed + caches + granules + scratch
     return Geometry(bytes_at, 1)
 

@@ -8,7 +8,6 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from tests.kv_arena_stand_in import install
 from tests.test_cuda_geometry import allocations  # noqa: F401
 
 Q = "tensorfold.families.qwen3_5.cuda."
@@ -29,6 +28,8 @@ def _weights(pattern):
 def _host(monkeypatch, pattern=(True, False, True, False)):
     """The three prefill entries on the host (the caches' arenas on host tensors), ``prefill_chunk`` cut to its cache
     writes, and every key cache's rows and arena after each chunk."""
+
+    from tests.kv_arena_stand_in import install
 
     install(monkeypatch)
     forward = importlib.import_module(Q + "forward")

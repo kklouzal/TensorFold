@@ -30,7 +30,7 @@ produces on this machine. The bits differ from the Mac engine's; each engine is 
 ## The rest of the package
 
 - `weights.py` loads the checkpoint as stored (the vision tower is skipped).
-- `forward.py` has `tree_forward`, `multi_tree_forward`, `commit`, `commit_streams` and `State` for one or several streams.
+- `forward.py` has `tree_forward`, `multi_tree_forward`, `commit`, `commit_streams` and `State` for one or several streams. Its attention caches grow in place (`grow`, `reserve`) as `tensorfold/cuda/kv_arena.py` arenas of CUDA virtual memory, which Qwen3.6 (`qwen3_5_moe`) shares.
 - `prefill.py` processes up to 4,096 prompt tokens per chunk through shared `qmm_prefill8.cu`, `gdn_prefill.cu` and `prefill_attention.py` kernels. `prefill_glue.py` produces FP8 activations with row scales and group sums. Two-rank prefill gathers bf16 partials and adds them in fp32. Prefill is chunk invariant but differs from decode, so the prefix cache retains prompt ends and a follow-up prefills the reply again. An entry stops one token before its prompt's end (`engine.entry_end`): when a chat's next turn sends the reply back without its reasoning, it renders the generation prompt's `<think>` and newline as `<think>` and two newlines, a different last token. The chunk holding that point runs its GDN chains as two launches, so the prompt's own state keeps its bits.
 - `decode.py` has `prefill` through `prefill.py`, `serial_decode`, `draft_decode` (trees from DFlash2 or copies from the context) and an optional per-round trace.
 - `decode_tp.py` is the two-GPU loop: rank 0 decides each window and shares it; both ranks run the same forwards.
@@ -38,4 +38,4 @@ produces on this machine. The bits differ from the Mac engine's; each engine is 
 - `multi.py` shares verify rounds between requests when an explicit `--parallel N` exceeds one, on one or two ranks. It uses `tensorfold/cuda/scheduler.py` for request admission and `draft_tree.py` to allocate draft windows. CUDA `--parallel auto` serves one request at a time.
 - `reference.py` is a plain fp32 PyTorch forward for the quality tests.
 
-The tests in `tests/cuda/test_qwen27_*.py` cover row invariance, tree windows against serial paths, accepted-state commits, weight layouts, chunked and resumed prefill, shared streams and the two-rank share protocol. Shared kernel tests are in `tests/cuda/test_qmm.py`, `test_gdn.py` and `test_attention.py`.
+The tests in `tests/cuda/test_qwen27_*.py` cover row invariance, tree windows against serial paths, accepted-state commits, weight layouts, chunked and resumed prefill, shared streams and the two-rank share protocol; `tests/cuda/test_kv_arena.py` and `tests/test_kv_arena_host.py` cover the cache arenas. Shared kernel tests are in `tests/cuda/test_qmm.py`, `test_gdn.py` and `test_attention.py`.

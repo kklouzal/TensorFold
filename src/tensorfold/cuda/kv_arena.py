@@ -13,17 +13,21 @@ Contracts:
 - An arena belongs to an ``owner`` token (a state and its clones). ``owned(t, owner)`` is the arena whose current
   view ``t`` is (object identity) when ``owner`` owns it: only then may it grow in place. A slice, an older view, or
   the same view under another owner (a copied cache list) is someone else's prefix and moves into an arena of its own.
-- An arena's memory is used on the stream current when its last view goes (as the caching allocator assumes of a
-  tensor). Its release is queued with an event on that stream (none during graph capture) and done by the next
-  arena operation (``Arena()``, ``ensure``) or ``reap``, which wait for that work (a capture-time release syncs the
+- An arena's memory is used on the stream current when its last view goes (the caching allocator ties a block to
+  its allocation stream instead; qwen3_5 creates and uses its caches on the default stream, where the two agree).
+  Its release is queued with an event on that stream (none during graph capture) and done by the next arena
+  operation (``Arena()``, ``ensure``) or ``reap``, which wait for that work (a capture-time release syncs the
   device). Until then its bytes count in ``pending_bytes``: reusable, like the allocator's cached blocks.
 - Driver failures raise at the operation that meets them; out of memory raises ``torch.OutOfMemoryError`` after the
-  queued releases are done. A failed map undoes its partial steps; a failing undo is noted on the primary error.
+  queued releases are done. A failed map undoes its partial steps; a failing undo is noted on the primary error. A
+  release leaves the queue as it is tried, so a failing one raises with the rest still queued and nothing is ever
+  released twice; memory a failed release kept stays in ``mapped_bytes``.
 - The process-wide ``_Driver`` per device (libcuda binding, granularity, queued releases, mapped total) is created on
-  first use and lives until exit (the driver frees everything then); its queue and counters are guarded by a
-  reentrant lock, as a last view may go on any thread, even inside an arena operation (a garbage collection runs
-  finalizers at any bytecode boundary). The accounting (``mapped_bytes``, ``pending_bytes``) imports nothing:
-  memory gates read it without torch.
+  first use, refusing a device without virtual memory management or whose granularity does not divide the
+  admission's ``geometry.ARENA_GRANULE``, and lives until exit (the driver frees everything then); its queue and
+  counters are guarded by a reentrant lock, as a last view may go on any thread, even inside an arena operation (a
+  garbage collection runs finalizers at any bytecode boundary). The accounting (``mapped_bytes``, ``pending_bytes``)
+  imports nothing: memory gates read it without torch.
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from __future__ import annotations
 import ctypes
 import threading
 import weakref
-from functools import lru_cache
+from functools import cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -96,6 +100,12 @@ class _Driver:
         self.access = _Access(location=_Location(_DEVICE, device), flags=_READWRITE)
         self.call("cuMemGetAllocationGranularity", ctypes.byref(gran), ctypes.byref(self.prop), _MINIMUM)
         self.granularity = int(gran.value)
+        from .geometry import ARENA_GRANULE
+
+        if self.granularity < 1 or ARENA_GRANULE % self.granularity:
+            raise RuntimeError(f"CUDA device {device} maps virtual memory in {self.granularity}-byte granules, which "
+                               f"do not divide the {ARENA_GRANULE} bytes the attention-cache admission counts per "
+                               "cache (geometry.ARENA_GRANULE)")
         self.device = device
         self.lock = threading.RLock()         # reentrant: ``retire`` may run on a thread that holds it (module doc)
         self.pending: list[tuple] = []        # (event or None, base, reserved, chunks) of arenas whose last view went
@@ -137,34 +147,38 @@ class _Driver:
 
     def reap(self) -> None:
         """Release the queued arenas, first waiting for the work queued before each went (a capture-time one syncs the
-        device, so it stays queued while a capture runs)."""
+        device, so it stays queued while a capture runs). Each chunk, then the reservation, leaves the queue as its
+        release is tried: a driver failure raises with what it did not reach still queued, never released twice."""
 
         cuda = self.torch.cuda
         with self.lock:
-            keep = []
-            for item in self.pending:                   # a reentrant ``retire`` appends here: visited before the end
-                event, base, reserved, chunks = item
-                if event is not None:
-                    event.synchronize()
-                elif cuda.is_current_stream_capturing():
-                    keep.append(item)
-                    continue
-                else:
-                    cuda.synchronize(self.device)
-                for offset, nbytes, handle in reversed(chunks):
-                    self.call("cuMemUnmap", base + offset, nbytes)
-                    self.call("cuMemRelease", handle)
-                    self.mapped -= nbytes
-                chunks.clear()
-                self.call("cuMemAddressFree", base, reserved)
-            self.pending = keep
+            capturing = []
+            try:
+                while self.pending:                     # a reentrant ``retire`` appends here: reaped in this pass
+                    event, base, reserved, chunks = self.pending[0]
+                    if event is None and cuda.is_current_stream_capturing():
+                        capturing.append(self.pending.pop(0))
+                        continue
+                    if event is not None:
+                        event.synchronize()
+                    else:
+                        cuda.synchronize(self.device)
+                    while chunks:
+                        offset, nbytes, handle = chunks.pop()
+                        self.call("cuMemUnmap", base + offset, nbytes)
+                        self.call("cuMemRelease", handle)
+                        self.mapped -= nbytes
+                    self.pending.pop(0)
+                    self.call("cuMemAddressFree", base, reserved)
+            finally:
+                self.pending[:0] = capturing
 
 
 _DRIVERS: list[_Driver] = []
-_ARENAS: "weakref.WeakValueDictionary[int, Arena]" = weakref.WeakValueDictionary()   # base address -> live arena
+_ARENAS: weakref.WeakValueDictionary[int, Arena] = weakref.WeakValueDictionary()   # base address -> live arena
 
 
-@lru_cache(maxsize=None)
+@cache
 def driver(device: int) -> _Driver:
     d = _Driver(device)
     _DRIVERS.append(d)
@@ -190,7 +204,7 @@ def reap() -> None:
         d.reap()
 
 
-def owned(t: torch.Tensor, owner: object) -> "Arena | None":
+def owned(t: torch.Tensor, owner: object) -> Arena | None:
     """The arena ``owner`` may grow in place through ``t``: its current view is ``t``. Else None (a plain tensor, a
     slice, a view an older grow made, or another owner's arena)."""
 
@@ -203,7 +217,7 @@ def owned(t: torch.Tensor, owner: object) -> "Arena | None":
 class _Span:
     """The CUDA array interface of an arena's mapped prefix; a tensor made from it holds the arena alive."""
 
-    def __init__(self, arena: "Arena", nbytes: int):
+    def __init__(self, arena: Arena, nbytes: int):
         self.arena = arena
         self.__cuda_array_interface__ = {"shape": (nbytes // 2,), "typestr": "<i2", "data": (arena.base, False),
                                          "version": 3}
