@@ -53,7 +53,7 @@ def is_quantized(model_dir: str | Path) -> bool:
 
 
 def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
-    """One linear's scheme from its tensors' (dtype, shape) by suffix: nvfp4, fp8, mxfp8 or bf16."""
+    """One linear's scheme from its tensors' (dtype, shape) by suffix: nvfp4, fp8, fp8channel, mxfp8 or bf16."""
 
     w = tensors.get("weight") or tensors.get("weight_packed")
     s = tensors.get("weight_scale")
@@ -66,6 +66,9 @@ def scheme(tensors: dict[str, tuple[str, list[int]]]) -> str:
     si = tensors.get("weight_scale_inv")
     if w[0] == "F8_E4M3" and si is not None and si[0] == "F32" and len(si[1]) == 2:
         return "fp8block"                      # ModelOpt FP8_PB_WO / DeepSeek: an fp32 scale per 128x128 block
+    if (w[0] == "F8_E4M3" and s is not None and s[0] in ("F32", "F16", "BF16") and len(w[1]) == 2 and w[1][0] > 1
+            and list(s[1]) in ([w[1][0]], [w[1][0], 1])):
+        return "fp8channel"                    # a scale per output channel (ModelOpt FP8_PER_CHANNEL_PER_TOKEN)
     if w[0] == "F8_E4M3":
         return "fp8"
     if w[0] in ("BF16", "F16", "F32"):
@@ -104,15 +107,16 @@ class LinearMetadata:
                 if kind != "bf16":
                     raise ValueError(f"{name}: metadata declares unquantized weights but storage is {kind}")
             elif declared.get("type", "float") != "float" or declared.get("num_bits") != (
-                    4 if kind == "nvfp4" else 8 if kind in ("fp8", "mxfp8", "fp8block") else 16):
+                    4 if kind == "nvfp4" else 8 if kind in ("fp8", "fp8channel", "mxfp8", "fp8block") else 16):
                 raise ValueError(f"{name}: stored {kind} weights disagree with quantization metadata")
             elif kind == "nvfp4" and declared.get("group_size", 16) != 16:
                 raise ValueError(f"{name}: stored NVFP4 blocks require group_size 16")
             if declared is not None:
                 strategy = declared.get("strategy")
-                allowed = (None, "group", "tensor_group") if kind == "nvfp4" else (None, "tensor")
-                if kind in ("nvfp4", "fp8") and strategy not in allowed:
-                    raise ValueError(f"{name}: unsupported weight scale strategy {strategy!r}")
+                allowed = {"nvfp4": (None, "group", "tensor_group"), "fp8": (None, "tensor"),
+                           "fp8channel": ("channel",)}.get(kind)
+                if allowed is not None and strategy not in allowed:
+                    raise ValueError(f"{name}: weight scale strategy {strategy!r} disagrees with stored {kind} scales")
                 scale_dtype = declared.get("scale_dtype")
                 expected_dtype = "torch.float8_e4m3fn" if kind == "nvfp4" else "torch.float32"
                 if scale_dtype is not None and scale_dtype != expected_dtype:
@@ -144,10 +148,16 @@ class LinearMetadata:
                   and activation.get("strategy") in (None, "group", "tensor_group")
                   and activation.get("scale_dtype") in (None, "torch.float8_e4m3fn")
                   or kind == "fp8" and bits == 8 and dynamic is False
-                  and activation.get("strategy", "tensor") in ("tensor", None)))
+                  and activation.get("strategy", "tensor") in ("tensor", None)
+                  or kind == "fp8channel" and bits == 8 and dynamic is True
+                  and activation.get("strategy") == "token" and activation.get("group_size") is None))
         if not valid or activation.get("symmetric", True) is not True or activation.get("zp_dtype") is not None:
             raise ValueError(f"{name}: unsupported checkpoint activation quantization; use --precision full")
         scales = [key for key in ("input_scale", "input_global_scale") if key in tensors]
+        if dynamic is True:
+            if scales:
+                raise ValueError(f"{name}: dynamic per-token activations take no static input calibration")
+            return kind, bits
         if len(scales) != 1:
             raise ValueError(f"{name}: checkpoint activation math requires one static input calibration")
         self._scalar(name, tensors, scales[0])
@@ -202,7 +212,8 @@ def e8m0(bits: np.ndarray) -> np.ndarray:
 
 def dequant(scheme_name: str, weight: np.ndarray, scale: np.ndarray | None = None, global_scale: float = 1.0,
             *, reciprocal_global: bool = False) -> np.ndarray:
-    """[N, K] float32 of one stored weight: e2m1 pairs with e4m3 per 16 x global, e4m3 x scale, or e4m3 x e8m0 per 32."""
+    """[N, K] float32 of one stored weight: e2m1 pairs with e4m3 per 16 x global, e4m3 x scale (a tensor's or an
+    output channel's), e4m3 x e8m0 per 32, or e4m3 x a 128x128 block's scale."""
 
     if scheme_name == "nvfp4":
         n, half = weight.shape
@@ -212,6 +223,8 @@ def dequant(scheme_name: str, weight: np.ndarray, scale: np.ndarray | None = Non
         return E2M1[codes] * np.repeat(e4m3(scale), 16, axis=1) * np.float32(g)
     if scheme_name == "fp8":
         return e4m3(weight) * np.float32(np.asarray(scale, dtype=np.float32).reshape(-1)[0])
+    if scheme_name == "fp8channel":            # ``scale`` [N] or [N, 1]: one factor an output channel
+        return e4m3(weight) * np.asarray(scale, dtype=np.float32).reshape(-1, 1)
     if scheme_name == "mxfp8":
         return e4m3(weight) * np.repeat(e8m0(scale), 32, axis=1)
     if scheme_name == "fp8block":              # ``scale`` = weight_scale_inv [ceil(N/128), K/128]

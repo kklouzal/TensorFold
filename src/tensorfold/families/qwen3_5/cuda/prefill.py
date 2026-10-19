@@ -12,6 +12,7 @@ from tensorfold.cuda import moe, prompt_precision
 from tensorfold.cuda.kernels import gdn as deltanet
 from tensorfold.cuda.kernels import qmm as shared
 from tensorfold.cuda.kernels.prefill_attention import attention
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from . import prefill_bf16, prefill_glue
@@ -37,9 +38,9 @@ def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
 
 
 def _mm_group(x, ws: list) -> list[torch.Tensor]:
-    """Projections of one input: checkpoint-math ones under one input scale quantize the rows once (same bits)."""
+    """Projections of one input: checkpoint-math ones quantized alike quantize the rows once (same bits)."""
 
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None] if torch.is_tensor(x) else []
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)] if torch.is_tensor(x) else []
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint
@@ -140,7 +141,8 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             kbuf, vbuf = _grow(st, i, p0 + W)
             kbuf[p0:p0 + W] = key.view(W, c.kv_heads, c.head_dim)
             vbuf[p0:p0 + W] = value
@@ -309,7 +311,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             q, key = q.view(W, c.heads, c.head_dim), key.view(W, c.kv_heads, c.head_dim)
             outs = []
             for st, p0, (o, n) in zip(sts, p0s, spans):

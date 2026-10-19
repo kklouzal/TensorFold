@@ -1,7 +1,8 @@
 """Pure checkpoint quantization schema reconciliation; no filesystem or accelerator imports.
 
 ModelOpt sidecars use the export schema in Model-Optimizer 0.46.0's
-``convert_hf_config.py``. Normalization never chooses a runtime precision.
+``convert_hf_config.py``, except for its FP8_PER_CHANNEL_PER_TOKEN activation record (``_per_token``).
+Normalization never chooses a runtime precision.
 """
 
 from __future__ import annotations
@@ -37,6 +38,30 @@ def _merge(left, right, where):
     return result
 
 
+# ModelOpt's FP8_PER_CHANNEL_PER_TOKEN quantizes inputs dynamically, one e4m3 scale a token (its preset
+# ``fp8_per_channel_per_token``: fp8 ``type: dynamic`` over ``block_sizes {-1: null}``), and ships no input_scale.
+# Model-Optimizer 0.46.0's ``convert_hf_config.py`` nevertheless recorded those activations as ``_STATIC_RECORD``
+# (no strategy); later releases record ``PER_TOKEN``. ``_per_token`` gives such a group the algorithm's record.
+PER_TOKEN = {"dynamic": True, "num_bits": 8, "type": "float", "strategy": "token"}
+_STATIC_RECORD = {"dynamic": False, "num_bits": 8, "type": "float"}
+
+
+def _per_token(group, algo, layers):
+    """A config group with 0.46.0's static record whose every declared layer is FP8_PER_CHANNEL_PER_TOKEN, as
+    ``PER_TOKEN``; any other group unchanged (a static record on other layers stays a conflict downstream)."""
+
+    if group.get("input_activations") != _STATIC_RECORD:
+        return group
+    if algo == "MIXED_PRECISION":
+        targets = group.get("targets") or []
+        if not targets or any(not isinstance(layers.get(t), dict)
+                              or layers[t].get("quant_algo") != "FP8_PER_CHANNEL_PER_TOKEN" for t in targets):
+            return group
+    elif algo != "FP8_PER_CHANNEL_PER_TOKEN":
+        return group
+    return dict(group, input_activations=deepcopy(PER_TOKEN))
+
+
 def _algorithm(name, group_size, where):
     """Recognized ModelOpt algorithms; unsupported arithmetic remains explicit."""
     if name in ("NVFP4", "W4A16_NVFP4"):
@@ -55,13 +80,13 @@ def _algorithm(name, group_size, where):
     elif name == "FP8_PB_WO":
         weight = {"dynamic": False, "num_bits": 8, "type": "float", "block_structure": [128, 128]}
         activation = None
-    elif name in ("W4A8_NVFP4_FP8", "FP8_PER_CHANNEL_PER_TOKEN"):
-        weight = {"dynamic": False, "num_bits": 4 if name.startswith("W4") else 8, "type": "float"}
-        if name.startswith("W4"):
-            weight["group_size"] = 16 if group_size is None else group_size
-        else:
-            weight["strategy"] = "channel"
+    elif name == "W4A8_NVFP4_FP8":
+        weight = {"dynamic": False, "num_bits": 4, "type": "float",
+                  "group_size": 16 if group_size is None else group_size}
         activation = {"dynamic": False, "num_bits": 8, "type": "float"}
+    elif name == "FP8_PER_CHANNEL_PER_TOKEN":
+        weight = {"dynamic": False, "num_bits": 8, "type": "float", "strategy": "channel"}
+        activation = deepcopy(PER_TOKEN)
     else:
         raise ValueError(f"{where}: unsupported ModelOpt quant_algo {name!r}")
     return {"weights": weight, "input_activations": activation}
@@ -132,10 +157,13 @@ def _block(value, where):
             # can complement it. An explicit null is retained and conflicts
             # with an algorithm that declares activation quantization.
             expected = _algorithm(algo, result.get("group_size"), where)
-            result["config_groups"] = {name: _merge(expected, group, f"{where}.{name}")
+            result["config_groups"] = {name: _merge(expected, _per_token(group, algo, None), f"{where}.{name}")
                                        for name, group in result["config_groups"].items()}
-        # Mixed groups retain their own declarations. The prepared resolver
-        # cross-checks their per-layer algorithm records.
+        else:
+            # Mixed groups retain their own declarations. The prepared resolver
+            # cross-checks their per-layer algorithm records.
+            result["config_groups"] = {name: _per_token(group, algo, layers)
+                                       for name, group in result["config_groups"].items()}
     return result
 
 

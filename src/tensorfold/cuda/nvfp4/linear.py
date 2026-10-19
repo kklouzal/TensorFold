@@ -18,7 +18,7 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_v3", sources=[str(here / "qmmf.cpp"), str(here / "qmmf.cu"),
+    return load(name="tensorfold_nvfp4_v4", sources=[str(here / "qmmf.cpp"), str(here / "qmmf.cu"),
                                                       str(here / "experts.cu")], need=MIN_CAPABILITY,
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
 
@@ -28,7 +28,7 @@ def _prompt_ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_prompt_v1", sources=[str(here / "prompt.cpp"), str(here / "prompt.cu")],
+    return load(name="tensorfold_nvfp4_prompt_v2", sources=[str(here / "prompt.cpp"), str(here / "prompt.cu")],
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
 
 
@@ -36,14 +36,15 @@ PROMPT_TILE = 4             # ``prompt.cu``'s tile (128x128 on four 64x64 warps,
 
 
 def _prompt(mode: int, w: torch.Tensor, bs: torch.Tensor | None, scale: float, n: int, npad: int, x: torch.Tensor,
-            out: torch.Tensor | None = None) -> torch.Tensor:
-    """bf16 prompt rows (M, K) -> (M, n) bf16: exact weights, one fp32 chain over K; a row's bits never depend on M."""
+            out: torch.Tensor | None = None, cols: torch.Tensor | None = None) -> torch.Tensor:
+    """bf16 prompt rows (M, K) -> (M, n) bf16: exact weights, one fp32 chain over K; a row's bits never depend on M.
+    ``cols``: FP8's per-output-channel scales (fp32 [npad]) in place of ``scale``."""
 
     if x.dtype != torch.bfloat16 or x.stride(-1) != 1 or (x.shape[0] > 1 and x.stride(0) % 8) or x.data_ptr() % 16:
         x = x.to(torch.bfloat16).contiguous()
     fits = out is not None and out.is_contiguous() and out.dtype == torch.bfloat16 and out.shape == (x.shape[0], n)
     y = out if fits else torch.empty((x.shape[0], n), dtype=torch.bfloat16, device=x.device)
-    _prompt_ext().prompt16(x, w, bs, float(scale), y, mode, n, npad, PROMPT_TILE)
+    _prompt_ext().prompt16(x, w, bs, float(scale), cols, y, mode, n, npad, PROMPT_TILE)
     if out is not None and y is not out:
         out.copy_(y)
     return y
@@ -64,14 +65,24 @@ def fragment_index(k: int, npad: int, device) -> tuple[torch.Tensor, torch.Tenso
     return kk.expand(shape), nn.expand(shape)
 
 
+FRAGMENT_ROWS = 4096          # rows (a multiple of 64) ``_fragment_order`` gathers at a time
+
+
 def _fragment_order(codes: torch.Tensor, npad: int) -> torch.Tensor:
-    """e4m3 bytes [N, K] -> ``qmm_prefill8w``'s order [npad/64][K/64][8][32][2][8] (fragment lanes, k32 halves)."""
+    """e4m3 bytes [N, K] -> ``qmm_prefill8w``'s order [npad/64][K/64][8][32][2][8] (fragment lanes, k32 halves).
+
+    The order is row-tile major, so it is built ``FRAGMENT_ROWS`` rows at a time: the gather's int64 index tensors stay
+    that many rows wide instead of npad (a 248k-row vocabulary head's would take several GiB). From agent E."""
 
     n, k = codes.shape
-    padded = torch.zeros((npad, k), dtype=torch.uint8, device=codes.device)
-    padded[:n] = codes
-    kk, nn = fragment_index(k, npad, codes.device)
-    return padded.t()[kk, nn].contiguous().view(-1)
+    out = torch.empty((npad * k,), dtype=torch.uint8, device=codes.device)
+    for r0 in range(0, npad, FRAGMENT_ROWS):
+        r1 = min(r0 + FRAGMENT_ROWS, npad)
+        padded = torch.zeros((r1 - r0, k), dtype=torch.uint8, device=codes.device)
+        padded[:max(0, min(r1, n) - r0)] = codes[r0:min(r1, n)]
+        kk, nn = fragment_index(k, r1 - r0, codes.device)
+        out[r0 * k:r1 * k] = padded.t()[kk, nn].reshape(-1)
+    return out
 
 
 _ONES: dict[str, torch.Tensor] = {}
@@ -212,27 +223,46 @@ class Fp4Linear:
 
 @dataclass
 class Fp8Linear:
-    """An FP8 projection: e4m3 bytes in the FP8 GEMM's fragment order (which the W8A16 decode reads too), one scale."""
+    """An FP8 projection: e4m3 bytes in the FP8 GEMM's fragment order (which the W8A16 decode reads too), one scale
+    for the tensor or (``cols``) one for each output channel."""
 
     w8: torch.Tensor              # uint8, [npad/64][K/64][8][32][2][8]
-    scale: float
+    scale: float                  # the tensor's factor (1 with ``cols``)
     n: int
     k: int
     npad: int
     layout: str = "fp8"
     groups: torch.Tensor | None = None   # bf16 [K/64, npad] of a copy made from bf16 (prompts only); else unit
     act: float | None = None             # checkpoint math: the static input scale (rows in e4m3, the FP8 mma)
+    cols: torch.Tensor | None = None     # fp32 [npad]: each output channel's scale (ModelOpt FP8_PER_CHANNEL_...)
+    token: bool = False                  # checkpoint math with rows in e4m3 under each row's own (per-token) scale
 
     @classmethod
-    def from_checkpoint(cls, weight: torch.Tensor, scale: float, act: float | None = None) -> "Fp8Linear":
-        """``weight`` e4m3 [N, K] with one fp32 scale (ModelOpt's per-tensor FP8); ``act``: its static input scale."""
+    def from_checkpoint(cls, weight: torch.Tensor, scale: float | torch.Tensor, act: float | None = None, *,
+                        token: bool = False) -> "Fp8Linear":
+        """``weight`` e4m3 [N, K] with one fp32 scale (ModelOpt's per-tensor FP8) or ``scale`` [N] (its per-channel
+        FP8); ``act``: the static input scale of per-tensor checkpoint math, ``token``: per-token checkpoint math."""
 
         n, k = weight.shape
         if k % 64:
             raise ValueError(f"FP8 weight [{n}, {k}]: K must be a multiple of 64")
         npad = -(-n // 128) * 128
+        cols = None
+        if torch.is_tensor(scale):
+            s = scale.to(device=weight.device, dtype=torch.float32).reshape(-1)
+            if s.numel() != n:
+                raise ValueError(f"FP8 weight [{n}, {k}]: {s.numel()} channel scales")
+            if not bool((torch.isfinite(s) & (s > 0)).all()):
+                raise ValueError("FP8 channel scales must be finite and positive")
+            cols = torch.zeros((npad,), dtype=torch.float32, device=weight.device)
+            cols[:n] = s
+            scale = 1.0
+        if token and cols is None:
+            raise ValueError("per-token FP8 rows pair with per-channel weight scales")
+        if cols is not None and act is not None:     # static-scale checkpoint math applies one tensor factor alone
+            raise ValueError("per-channel FP8 weight scales take per-token or bf16 rows, not a static input scale")
         return cls(_fragment_order(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
-                   act=None if act is None else float(act))
+                   act=None if act is None else float(act), cols=cols, token=token)
 
     @classmethod
     def from_bf16(cls, weight: torch.Tensor) -> "Fp8Linear":
@@ -251,36 +281,41 @@ class Fp8Linear:
         return cls(_fragment_order(codes, npad), 1.0, n, k, npad, groups=groups)
 
     def nbytes(self) -> int:
-        return self.w8.numel() + (self.groups.numel() * 2 if self.groups is not None else 0)
+        return (self.w8.numel() + (self.groups.numel() * 2 if self.groups is not None else 0)
+                + (self.cols.numel() * 4 if self.cols is not None else 0))
 
     def tiles(self, t0: int, t1: int) -> "Fp8Linear":
         """Outputs [64 t0, 64 t1) as views, no copy (decode only)."""
 
         per = 64 * self.k
         return Fp8Linear(self.w8[t0 * per:t1 * per], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
-                         64 * (t1 - t0), act=self.act)
+                         64 * (t1 - t0), act=self.act, token=self.token,
+                         cols=None if self.cols is None else self.cols[64 * t0:64 * t1])
 
     def __call__(self, x: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
-        if self.act is not None:
+        if self.act is not None or self.token:
             from . import checkpoint
 
             return checkpoint.matmul(checkpoint.A8, x, self, out)
-        return _matmul(FP8, self.w8, None, self.scale, self.n, self.k, self.npad, x, out)
+        return _matmul(FP8, self.w8, None, self.scale, self.n, self.k, self.npad, x, out, self.cols)
 
     def prefill(self, x: torch.Tensor) -> torch.Tensor:
         """bf16 prompt rows on the exact prompt GEMM (a bf16 copy for --prefill-fp8 only); checkpoint math: e4m3."""
 
-        if self.act is not None:
+        if self.act is not None or self.token:
             from . import checkpoint
 
             return checkpoint.prompt(checkpoint.A8, x, self)
-        return _prompt(FP8, self.w8, None, self.scale, self.n, self.npad, x)
+        return _prompt(FP8, self.w8, None, self.scale, self.n, self.npad, x, cols=self.cols)
 
     def prefill8(self, xq: tuple) -> torch.Tensor:
         """--prefill-fp8: e4m3 rows from the glue times the stored bytes; the tensor scale joins each row's scale."""
 
         from tensorfold.cuda.kernels import qmm
 
+        if self.cols is not None:
+            raise ValueError("--prefill-fp8 reads per-tensor FP8 weights; channel-scaled FP8 runs FP8 prompts under "
+                             "--precision checkpoint")
         groups = self.groups if self.groups is not None else _ones(self.k // 64, self.npad, self.w8.device)
         out = torch.empty((xq[0].shape[0], self.npad), dtype=torch.bfloat16, device=xq[0].device)
         qmm._ext().qmm_prefill8w(xq[0], xq[2] * self.scale, self.w8, groups, out, self.npad, 64, False, 0, False)
@@ -478,9 +513,9 @@ class Concat:
 
 
 def _matmul(mode: int, w: torch.Tensor, bs: torch.Tensor | None, scale: float, n: int, k: int, npad: int,
-            x: torch.Tensor, out: torch.Tensor | None) -> torch.Tensor:
+            x: torch.Tensor, out: torch.Tensor | None, cols: torch.Tensor | None = None) -> torch.Tensor:
     """x (M, K) bf16 -> (M, n) bf16, or the fp32 sums into an fp32 ``out`` (the head's logits); K slices from the
-    shape alone, so a row's bits never depend on M."""
+    shape alone, so a row's bits never depend on M. ``cols``: FP8's per-output-channel scales in place of ``scale``."""
 
     from tensorfold.cuda.kernels import qmm
 
@@ -492,5 +527,5 @@ def _matmul(mode: int, w: torch.Tensor, bs: torch.Tensor | None, scale: float, n
         torch.empty((m, n), dtype=torch.float32 if f32 else torch.bfloat16, device=x.device)
     sk = qmm.split_k(n, k)
     part = torch.empty((sk, m, n), dtype=torch.float32, device=x.device) if sk > 8 else None
-    _ext().qmmf(x, w, bs, scale, y, part, mode, n, sk, npad, qmm.bucket(m), f32)
+    _ext().qmmf(x, w, bs, scale, cols, y, part, mode, n, sk, npad, qmm.bucket(m), f32)
     return y if out is None or y is out else out.copy_(y)

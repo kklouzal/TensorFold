@@ -217,3 +217,54 @@ def test_exclusions_cannot_silently_erase_explicit_layer_declarations():
     default = LinearQuantization({"quant_method": "compressed-tensors", "ignore": ["model.mlp"],
                                   "config_groups": {"g": {"targets": ["Linear"], "weights": {"num_bits": 4}}}})
     assert default.resolve("model.mlp") is None
+
+
+PER_TOKEN = {"dynamic": True, "num_bits": 8, "type": "float", "strategy": "token"}
+STATIC_046 = {"dynamic": False, "num_bits": 8, "type": "float"}             # ModelOpt 0.46.0's converter record
+CHANNEL = {"dynamic": False, "num_bits": 8, "type": "float", "strategy": "channel"}
+
+
+def _mixed(groups, layers):
+    return effective_config({"quantization_config": {
+        "quant_method": "modelopt", "quant_algo": "MIXED_PRECISION", "producer": {"name": "modelopt",
+        "version": "0.46.0"}, "quantized_layers": layers, "config_groups": groups}}, None, where="mixed")
+
+
+def test_per_channel_per_token_algorithm_declares_dynamic_token_activations():
+    got = effective_config({}, side("FP8_PER_CHANNEL_PER_TOKEN"), where="sidecar")["quantization_config"]
+    spec = LinearQuantization(got).resolve("model.layers.0.self_attn.q_proj")
+    assert spec["weights"] == CHANNEL and spec["input_activations"] == PER_TOKEN
+    recorded = effective_config({"quantization_config": {"quant_method": "modelopt",
+                                 "quant_algo": "FP8_PER_CHANNEL_PER_TOKEN", "config_groups": {"g": {
+                                     "targets": ["Linear"], "weights": CHANNEL,
+                                     "input_activations": STATIC_046}}}}, None, where="single")
+    assert LinearQuantization(recorded["quantization_config"]).resolve("x")["input_activations"] == PER_TOKEN
+
+
+def test_mixed_0460_records_take_the_algorithms_per_token_activations_only_where_declared():
+    layers = {"a.qkv": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"},
+              "a.out": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"}, "b.mlp": {"quant_algo": "NVFP4", "group_size": 16}}
+    groups = {"g0": {"targets": ["a.qkv", "a.out"], "weights": CHANNEL, "input_activations": STATIC_046},
+              "g1": {"targets": ["b.mlp"], "weights": {"dynamic": False, "num_bits": 4, "type": "float",
+                                                       "group_size": 16},
+                     "input_activations": {"dynamic": False, "num_bits": 4, "type": "float", "group_size": 16}}}
+    q = _mixed(deepcopy(groups), layers)["quantization_config"]
+    policy = LinearQuantization(q)
+    assert policy.resolve("a.qkv")["input_activations"] == PER_TOKEN
+    assert policy.resolve("a.out")["weights"] == CHANNEL
+    assert policy.resolve("b.mlp")["input_activations"]["num_bits"] == 4
+    current = deepcopy(groups)
+    current["g0"]["input_activations"] = PER_TOKEN                             # later ModelOpt's record
+    assert LinearQuantization(_mixed(current, layers)["quantization_config"]).resolve("a.qkv") == \
+        policy.resolve("a.qkv")
+
+
+def test_a_static_record_on_other_layers_stays_a_conflict():
+    layers = {"a.qkv": {"quant_algo": "FP8_PER_CHANNEL_PER_TOKEN"}, "a.o": {"quant_algo": "FP8"}}
+    groups = {"g0": {"targets": ["a.qkv", "a.o"], "weights": CHANNEL, "input_activations": STATIC_046}}
+    with pytest.raises(ValueError, match="conflict"):
+        LinearQuantization(_mixed(groups, layers)["quantization_config"])
+    other = {"g0": {"targets": ["a.qkv"], "weights": CHANNEL,
+                    "input_activations": {"dynamic": False, "num_bits": 8, "type": "float", "strategy": "tensor"}}}
+    with pytest.raises(ValueError, match="conflict"):
+        LinearQuantization(_mixed(other, {"a.qkv": layers["a.qkv"]})["quantization_config"])

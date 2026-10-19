@@ -98,6 +98,11 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            help="use this UTF-8 Jinja template instead of checkpoint templates")
     templates.add_argument("--chat-template-name", default=None,
                            help="select a named checkpoint template; otherwise default/tool_use are selected automatically")
+    generation.add_argument("--tokenizer", dest="tokenizer_file", type=Path, default=None,
+                            help="CUDA: encode and decode with this tokenizer.json instead of the checkpoint's; its "
+                                 "vocabulary, merges and added tokens must equal the checkpoint's (only text handling "
+                                 "such as the pre-tokenizer may differ), e.g. the base model's when a fine-tune ships "
+                                 "an altered one; one rank, not with --vision")
     generation.add_argument("--temperature", type=float, default=None,
                             help="0 decodes greedily (default: the model's generation_config.json, else 0)")
     generation.add_argument("--top-p", type=float, default=None,
@@ -229,7 +234,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "
                            "default, runs their own math as their runtimes do (FP4 x FP4 in NVFP4 layers on SM 12.x "
-                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9, under the checkpoint's static input scales; "
+                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9; rows under the checkpoint's static input scales, "
+                           "or each row's own scale for per-channel FP8 with dynamic per-token inputs; "
                            "layers a GPU has no mma for run W4A16, and the startup line says which); full runs bf16 "
                            "activations against the stored weights exactly. The weights never change, only the math; "
                            "MLX checkpoints have one math. Replies equal this server's own serial decoding either way")

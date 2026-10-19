@@ -135,11 +135,16 @@ class Config:
     moe_width: int = 0
     mrope_section: tuple[int, int, int] = (11, 11, 10)
     layer_types: tuple[str, ...] = ()  # absent layout retains constant-space interval selection
+    yarn: Any = None          # static YaRN (``qwen4_exp.rope.RopeParameters``): its frequencies; None: default RoPE
+    rope_scale: float = 1.0   # YaRN's rotary amplitude (attention factor) on cos and sin; 1 under default RoPE
 
     @classmethod
-    def read(cls, model_dir: str | Path, *, eos_token_ids=None) -> "Config":
+    def read(cls, model_dir: str | Path, *, eos_token_ids=None, rope=None) -> "Config":
+        """``rope``: a static YaRN policy (``--yarn-factor``) over a default checkpoint; a checkpoint that declares
+        YaRN brings its own."""
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families.qwen3_5.config_metadata import (
+            declared_yarn,
             resolve_default_rope,
             resolve_layer_types,
             validate_cuda_metadata,
@@ -152,7 +157,10 @@ class Config:
         if not isinstance(t, dict):
             raise ValueError("text_config must be a JSON object")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
-        rope = resolve_default_rope(t, head_dim=head_dim)
+        if rope is None:
+            rope = declared_yarn(raw)
+        yarn = rope if rope is not None and rope.rope_type == "yarn" else None
+        rope = yarn if yarn is not None else resolve_default_rope(t, head_dim=head_dim)
         kinds = resolve_layer_types(t, layers=int(t["num_hidden_layers"])) if t.get("layer_types") is not None else ()
         eos = resolve_eos(model_dir, raw.get("eos_token_id", t.get("eos_token_id")),
                           vocab_size=int(t["vocab_size"]), override=eos_token_ids)
@@ -168,6 +176,7 @@ class Config:
             eos=eos, experts=int(t.get("num_experts", 0)), top_k=int(t.get("num_experts_per_tok", 0)),
             moe_width=int(t.get("moe_intermediate_size", 0)),
             mrope_section=rope.mrope_section, layer_types=kinds,
+            yarn=yarn, rope_scale=1.0 if yarn is None else float(yarn.attention_factor),
         )
         from triton.language.core import TRITON_MAX_TENSOR_NUMEL
 
@@ -257,11 +266,14 @@ class Config:
 
 
 def _rotary_frequencies(cfg, device):
-    """Validated default RoPE, retaining the original FP64 power/FP32 cast order.
+    """Validated default RoPE, retaining the original FP64 power/FP32 cast order; static YaRN's own (Transformers'
+    interpolation/extrapolation blend, checked finite and positive by its policy).
 
     Theta>=1 produces frequencies in [0,1]. Only an active attention role with
     theta<1 and more than one pair needs the constructed FP32 finite check.
     """
+    if cfg.yarn is not None:
+        return cfg.yarn.inverse_frequencies(torch).to(device)
     half = cfg.rope_dims // 2
     inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)
     inv = inv.to(torch.float32)
@@ -495,8 +507,10 @@ def _close_failed_checkpoint(reader, primary: BaseException) -> None:
 
 
 def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, mlp=None,
-         prefill_world: int = 1, prefill_mlp: tuple[str, ...] | None = None, eos_token_ids=None) -> Weights:
-    """MLX affine 4-bit, EXL3 or NVFP4 weights; ``tiled`` packs projections as read.
+         prefill_world: int = 1, prefill_mlp: tuple[str, ...] | None = None, eos_token_ids=None,
+         rope=None) -> Weights:
+    """MLX affine 4-bit, EXL3 or NVFP4 weights; ``tiled`` packs projections as read; ``rope``: a static YaRN policy
+    (``--yarn-factor``) for a default-RoPE checkpoint.
 
     ``prefill_world`` describes the eventual rank layout before loading its full
     weights. A custom ``mlp`` may declare its consumed prompt projection names
@@ -512,11 +526,12 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
             or any(type(name) is not str or name not in ("gate_proj", "up_proj", "down_proj") for name in prefill_mlp)
             or len(set(prefill_mlp)) != len(prefill_mlp))):
         raise ValueError("custom prefill MLP metadata must name its unique gate/up/down projections")
+    bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quant_config(model_dir) is not None:
-        return load_exl3(model_dir, device, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        return load_exl3(model_dir, device, **bindings)
     if quantized(model_dir):
-        return load_nvfp4(model_dir, device, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
-    cfg = Config.read(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        return load_nvfp4(model_dir, device, **bindings)
+    cfg = Config.read(model_dir, **bindings)
     raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
     t = _Tensors(model_dir, device)
     try:

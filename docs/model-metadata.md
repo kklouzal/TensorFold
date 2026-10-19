@@ -1,7 +1,7 @@
 # Checkpoint metadata and launch overrides
 
 TensorFold resolves model settings during startup. Keep checkpoint files immutable
-while loading or serving, including files selected by explicit template flags.
+while loading or serving, including files selected by explicit template or tokenizer flags.
 `config.json` describes the architecture and supported
 weight representation; tensor headers and scales must agree with that declaration.
 Ancillary metadata supplements it. Conflicting representation declarations are
@@ -13,14 +13,16 @@ errors, rather than permission to reinterpret weights.
 | Dense Qwen CUDA NVFP4 activations | Per-projection declared activation schemes, validated storage/scales and actual GPU capabilities | `--precision full` requests BF16 activations against stored weights; `--precision checkpoint` selects declared supported math |
 | Reply EOS | Model, generation and tokenizer EOS declarations, deduplicated in stable order | Repeat `--eos-token-id ID` to replace reply EOS IDs |
 | Chat formatting | Checkpoint Jinja or tokenizer-config template, including named `default`/`tool_use` templates | `--chat-template FILE` or `--chat-template-name NAME` |
+| CUDA text tokenization | Checkpoint `tokenizer.json` | `--tokenizer FILE` with the same vocabulary model and added tokens; only text handling (normalizer, pre-tokenizer, post-processor, decoder) may differ. Not with `--vision` or several ranks |
 | Sampling | `generation_config.json`: `do_sample`, `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty` | Corresponding launch flags (and `--presence-penalty`, `--frequency-penalty`), then request fields |
 | Reply limit | `generation_config.json` `max_new_tokens`, otherwise 4096 | `--max-tokens`, then the request's reply limit |
 | Context/RoPE | Model's supported native window and RoPE metadata, fitted to available memory | `--context` and supported family-specific RoPE flags |
 
 CUDA uses the checkpoint tokenizer's vocabulary, normalizer, special tokens and
-postprocessor. Saved padding/truncation settings describe batch preparation;
-TensorFold disables them on its private inference tokenizer so short prompts are
-not padded and longer prompts are never silently shortened. Token counting sees
+postprocessor, or the text handling of an admitted `--tokenizer` file. Saved
+padding/truncation settings describe batch preparation; TensorFold disables them
+on its private inference tokenizer so short prompts are not padded and longer
+prompts are never silently shortened. Token counting sees
 the complete sequence. Generation retains the server's explicit context
 admission, including after image/video expansion.
 

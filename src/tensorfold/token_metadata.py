@@ -5,7 +5,90 @@ token stop; other special tokens have no implied end-of-reply meaning.
 """
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
+from pathlib import Path
+
 from tensorfold.checkpoint_metadata import read_json, read_text
+
+# tokenizer.json sections that only shape text <-> pieces; the rest (the vocabulary model and the added tokens) fixes
+# what every token ID means and must equal the checkpoint's.
+TEXT_SECTIONS = ("normalizer", "pre_tokenizer", "post_processor", "decoder", "truncation", "padding", "version")
+
+
+@dataclass(frozen=True)
+class TokenizerOverride:
+    """``--tokenizer``: a tokenizer.json read in place of the checkpoint's own (same token IDs, other text handling)."""
+
+    path: Path
+    text: str
+    sha256: str
+    differs: tuple[str, ...]          # TEXT_SECTIONS that differ from the checkpoint's
+
+    def line(self) -> str:
+        what = ", ".join(self.differs) if self.differs else "nothing"
+        return (f"[tensorfold] tokenizer: {self.path} (sha256 {self.sha256[:12]}) in place of the checkpoint's "
+                f"tokenizer.json; same vocabulary, merges and added tokens, differs in: {what}")
+
+
+_override: TokenizerOverride | None = None     # set once at startup (``use_tokenizer``); one process serves one model
+
+
+def _meaning(model: dict | None, where: str) -> dict | None:
+    """The vocabulary model with BPE merges in one spelling: tokenizers writes a merge as "a b" (legacy) or [a, b]."""
+
+    if not isinstance(model, dict) or not isinstance(model.get("merges"), list):
+        return model
+    merges = []
+    for merge in model["merges"]:
+        pair = merge.split(" ") if isinstance(merge, str) else merge
+        if not isinstance(pair, list) or len(pair) != 2 or not all(isinstance(t, str) for t in pair):
+            raise ValueError(f"{where}: BPE merges must be token pairs")
+        merges.append(tuple(pair))
+    return dict(model, merges=merges)
+
+
+def use_tokenizer(path, model_dir) -> TokenizerOverride:
+    """Encode and decode with ``path`` (a tokenizer.json) instead of the checkpoint's, from now on in this process.
+
+    Token IDs must keep the meaning the checkpoint was trained with: the vocabulary model (its type, vocabulary,
+    merges in either spelling, and options) and the added tokens must equal the checkpoint's own tokenizer.json, so
+    only the text handling in ``TEXT_SECTIONS`` may differ. Call once at startup, before any tokenizer, template or grammar reads it.
+    """
+    global _override
+
+    if _override is not None:
+        raise RuntimeError("the tokenizer override is set once, at startup")
+    from tensorfold.cuda.tensor_file import _metadata_object
+
+    path = Path(path).expanduser().resolve()
+    text = read_text(path.parent, path.name, required=True)   # one bounded regular read, as for --chat-template FILE
+    raw = text.encode("utf-8")
+    value = _metadata_object(raw, path)
+    own = read_json(model_dir, "tokenizer.json", required=True)
+    model = _meaning(value.get("model"), f"--tokenizer {path}")
+    for key, same in (("model", model == _meaning(own.get("model"), str(Path(model_dir) / "tokenizer.json"))),
+                      ("added_tokens", value.get("added_tokens") == own.get("added_tokens"))):
+        if not same:
+            raise ValueError(f"--tokenizer {path}: its {key} differs from the checkpoint's tokenizer.json, so token "
+                             "IDs would change meaning; only text handling (" + ", ".join(TEXT_SECTIONS[:4]) +
+                             ") may differ")
+    unknown = sorted(set(value) - set(own) - set(TEXT_SECTIONS))
+    if unknown:
+        raise ValueError(f"--tokenizer {path}: unknown tokenizer.json sections {unknown}")
+    differs = tuple(key for key in TEXT_SECTIONS if value.get(key) != own.get(key))
+    _override = TokenizerOverride(path, text, hashlib.sha256(raw).hexdigest(), differs)
+    return _override
+
+
+def tokenizer_override() -> TokenizerOverride | None:
+    return _override
+
+
+def tokenizer_json(model_dir) -> str:
+    """The tokenizer.json text this process encodes with: the ``--tokenizer`` override, else the checkpoint's."""
+
+    return _override.text if _override is not None else read_text(model_dir, "tokenizer.json", required=True)
 
 
 def load_tokenizer(model_dir):
@@ -18,7 +101,7 @@ def load_tokenizer(model_dir):
     """
     from tokenizers import Tokenizer
 
-    tokenizer = Tokenizer.from_str(read_text(model_dir, "tokenizer.json", required=True))
+    tokenizer = Tokenizer.from_str(tokenizer_json(model_dir))
     tokenizer.no_padding()
     tokenizer.no_truncation()
     return tokenizer

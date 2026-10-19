@@ -98,7 +98,7 @@ def reference():
             "head_dim": 64, "vocab": 128, "k_heads": 2, "v_heads": 4, "dk": 128, "dv": 128,
             "conv_kernel": 4, "interval": 4, "eps": 1e-6, "rope_dims": 16, "rope_theta": 10000000.0,
             "eos": (3,), "experts": 0, "top_k": 0, "moe_width": 0, "mrope_section": (11, 11, 10),
-            "layer_types": ()}
+            "layer_types": (), "yarn": None, "rope_scale": 1.0}
 
 
 class ConfigMetadataControls(unittest.TestCase):
