@@ -7,6 +7,8 @@ import pytest
 
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.engine.rejection import (
+    PROPOSAL,
+    RESIDUAL,
     ChainPacket,
     ProbabilityRow,
     draw,
@@ -136,3 +138,16 @@ def test_sparse_proposal_is_the_actual_temperature_filtered_distribution():
     q = proposal_row(np.array([0., 2., 1.]), np.array([9, 4, 2]), sampling)
     assert q.ids.tolist() == [4] and q.probs.tolist() == [1]
     assert draw(q, 9, 3) == 4
+
+
+def test_endpoint_witness_cannot_promote_a_tiny_mass_or_grammar_mask():
+    witness = 4199689772251414973
+    p, forbidden = row({0: 1e-300, 1: 1.}), row({2: 1.})
+    # Force the historical endpoint under each actual stochastic domain, retaining full target support.
+    with np.errstate(all="raise"):
+        assert draw(p, witness ^ PROPOSAL, 1, domain=PROPOSAL) == 1
+        assert draw(p, witness ^ RESIDUAL, 1, domain=RESIDUAL) == 1
+        assert node(p, forbidden, [2], witness ^ RESIDUAL, 1) == (-1, 1)
+        chain = ChainPacket((2,), (forbidden,), 1)
+        assert verify(chain, [p, None], witness ^ RESIDUAL) == ([0], 1)
+        assert verify(chain, [row({1: 1.}), None], witness, room=1) == ([0], 1)

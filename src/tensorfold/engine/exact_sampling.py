@@ -66,13 +66,18 @@ def _mix(x: np.ndarray) -> np.ndarray:
 
 
 def uniform(seed: int, position: int, ids: np.ndarray) -> np.ndarray:
-    """Uniform (0, 1) doubles from a splitmix64 hash of (seed, position, token id)."""
+    """Open-interval binary64 midpoints from a splitmix64 hash of (seed, position, token ID).
+
+    With b in [0, 2**52), (2*b+1)*2**-53 has at most 53 significant bits and is exact in binary64:
+    the endpoints are 2**-53 and 1-2**-53. A 53-bit bin plus half a step can round to 1.0 instead.
+    The 52-bit grid corrects that older seeded behavior; hash inputs and domain keys are unchanged.
+    """
 
     with np.errstate(over="ignore"):
         x = _mix(np.uint64(seed & 0xFFFFFFFFFFFFFFFF) + np.uint64(0x9E3779B97F4A7C15))
         x = _mix(x ^ (np.uint64(position) * np.uint64(0xD1B54A32D192ED03)))
         x = _mix(x ^ ids.astype(np.uint64))
-    return (x >> np.uint64(11)).astype(np.float64) * 2.0 ** -53 + 2.0 ** -54
+    return (x >> np.uint64(12)).astype(np.float64) * 2.0 ** -52 + 2.0 ** -53
 
 
 def uniform_rows(seed: int, positions: np.ndarray, ids: np.ndarray) -> np.ndarray:
@@ -82,7 +87,7 @@ def uniform_rows(seed: int, positions: np.ndarray, ids: np.ndarray) -> np.ndarra
         x = _mix(np.uint64(seed & 0xFFFFFFFFFFFFFFFF) + np.uint64(0x9E3779B97F4A7C15))
         x = _mix(x ^ (np.asarray(positions).astype(np.uint64)[:, None] * np.uint64(0xD1B54A32D192ED03)))
         x = _mix(x ^ ids.astype(np.uint64))
-    return (x >> np.uint64(11)).astype(np.float64) * 2.0 ** -53 + 2.0 ** -54
+    return (x >> np.uint64(12)).astype(np.float64) * 2.0 ** -52 + 2.0 ** -53
 
 
 def choose(values: np.ndarray, ids: np.ndarray, position: int, s: Sampling) -> int:

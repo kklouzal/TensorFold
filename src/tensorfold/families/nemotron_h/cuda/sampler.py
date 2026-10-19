@@ -237,7 +237,8 @@ def _keyed(VALS, IDS, META, OUT, SEED, FP, PROB, c1, c2, m1, m2, offset,
     x = _mix(seed.to(tl.uint64) + c1, m1, m2)
     x = _mix(x ^ (pos * c2), m1, m2)
     x = _mix(x ^ ids.to(tl.uint64), m1, m2)
-    u = (x >> 11).to(tl.float64) * (2.0 ** -53) + 2.0 ** -54
+    # Same exact open-interval binary64 midpoint grid as engine.exact_sampling.uniform.
+    u = (x >> 12).to(tl.float64) * (2.0 ** -52) + 2.0 ** -53
     score = scaled - tl.log(-tl.log(u))
     score = tl.where(kept & (rank < limit), score, float("-inf"))
     best = tl.max(score, axis=0)
@@ -347,7 +348,7 @@ def nucleus(logits: torch.Tensor, meta: torch.Tensor, params: Params, out: torch
     x = _mix_t(params.seed.to(torch.int64) + _signed(C1))
     x = _mix_t(x ^ (pos * _signed(C2)))
     x = _mix_t(x ^ ranked_ids)
-    u = _shr(x, 11).double() * 2.0 ** -53 + 2.0 ** -54
+    u = _shr(x, 12).double() * 2.0 ** -52 + 2.0 ** -53
     score = ranked - torch.log(-torch.log(u))
     rank = torch.arange(vocab, device=logits.device)[None, :]
     score = torch.where(rank < limit, score, torch.full_like(score, float("-inf")))

@@ -173,3 +173,21 @@ def test_native_extreme_offset_target_support_noise_and_probabilities(offset, to
         assert sampling.sample_rows(logits, [17, 20, 31], policy) == expected
         assert [sampling.sample_rows(logits[r:r + 1], [p], policy)[0] for r, p in enumerate([17, 20, 31])] == expected
         assert expected == [draw(p, seed, pos, domain=0) for p, pos in zip(actual, [17, 20, 31])]
+
+
+@pytest.mark.parametrize("top_k", [0, 2])
+def test_native_open_interval_witness_preserves_target_grammar_and_rejection_support(top_k):
+    from tensorfold.engine.rejection import PROPOSAL, RESIDUAL, ChainPacket, ProbabilityRow, verify
+
+    seed = 4199689772251414973
+    masked = torch.tensor([[-float("inf"), 0.]], device="cuda")
+    policy = Sampling(seed, 1., top_k, 1.)
+    assert sampling.sample_rows(masked, [1], policy) == [1]
+    assert sampling.effective_rows(masked, policy)[0].ids.tolist() == [1]
+    scores = torch.tensor([[-690., 0.]], device="cuda")
+    q_policy = Sampling(seed ^ PROPOSAL, 1., top_k, 1.)
+    packet = speculative.Chains(scores, [None], 1, sampled=True).sample(0, 1, q_policy, 1)
+    assert packet.tokens == (1,)
+    target = sampling.effective_rows(scores, policy)[0]
+    forbidden = ProbabilityRow([2], [1.])
+    assert verify(ChainPacket((2,), (forbidden,), 1), [target, None], seed ^ RESIDUAL) == ([0], 1)

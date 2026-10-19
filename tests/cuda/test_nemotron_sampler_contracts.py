@@ -42,7 +42,7 @@ def oracle(row, ids, position, sampling, *, greedy=False):
         key = mix(((sampling.seed & ((1 << 63) - 1)) + 0x9E3779B97F4A7C15) & mask)
         key = mix(key ^ ((position * 0xD1B54A32D192ED03) & mask))
         key = mix(key ^ int(token))
-        uniform = (key >> 11) * 2.0 ** -53 + 2.0 ** -54
+        uniform = (2 * (key >> 12) + 1) / (1 << 53)
         scores.append(float(value) - math.log(-math.log(uniform)))
     selected = max(range(limit), key=lambda index: scores[index])
     return int(ordered_ids[selected]), np.float32(mass[selected] / total)
@@ -118,6 +118,20 @@ def test_one_finite_score_and_legitimate_negative_infinity_masks():
         S.sample(logits, meta, params, out, prob=prob, id_map=mapping)
         assert out.cpu().tolist() == [969, 969]
         assert prob.cpu().tolist() == [1.0, 1.0]
+
+
+@pytest.mark.parametrize('top_k', [0, 2])
+def test_native_nemotron_open_interval_endpoint_witness(top_k):
+    # top_k2 reaches the Triton draw; top_k0 reaches the separate Torch nucleus implementation.
+    seed = 4199689772251414973
+    logits = torch.tensor([[-math.inf, 0.]], dtype=torch.float32, device='cuda')
+    params, meta, out, _ = setup(Sampling(seed, 1., top_k, 1.), rows=1)
+    meta.zero_()  # actual absolute position1 for the independently recovered endpoint witness
+    S.sample(logits, meta, params, out)
+    assert out.item() == 1
+    ids = torch.tensor([[0, 1]], dtype=torch.int64, device='cuda')
+    S.sample_candidates(logits, ids, meta, params, out)
+    assert out.item() == 1
 
 
 def test_raw_fp64_candidate_union_is_distinct_from_fp32_producer_transport():
