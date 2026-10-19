@@ -242,3 +242,49 @@ def test_16_and_64_pair_items_equal_the_host_window_path(activation, uniform, pr
         _route(buf, rows, tile)
         bank.run_plan(x, buf, prefill=prefill)
         assert torch.equal(buf.y[:rows], expected), tile
+
+
+@pytest.mark.parametrize("direct,activation", [(False, "silu"), (False, "geglu"), (True, "silu")])
+@pytest.mark.parametrize("prefill,rows", [(False, 17), (True, 65)])
+def test_shared_activation_fragments_match_projection_specific_fragments(direct, activation, prefill, rows):
+    """Reuse one A plane only under the shared-input proof: both K-slice forms and partial16/64-pair items
+    retain the separate-projection result. The host-window path is the independent eager arithmetic route."""
+    from tensorfold.families.gemma4.cuda.nvfp4_experts import geglu
+
+    count, width, dims, slots = 2, 192, 1024, 2
+    if direct:
+        from modelopt_a4_inputs import Reader
+
+        from tensorfold.cuda.nvfp4.modelopt_experts import load_modelopt_a4
+
+        source = Reader(count=count, width=width, dims=dims)
+        common = source.payload[f"{PREFIX}.experts.0.gate_proj.input_scale"].clone()
+        for name, tensor in source.payload.items():
+            if name.endswith(("gate_proj.input_scale", "up_proj.input_scale")):
+                tensor.copy_(common)
+        bank = load_modelopt_a4(source, PREFIX, source.cfg, device="cuda:0")
+    else:
+        source = Context(count=count, width=width, dims=dims, uniform=True)
+        bank = load_host_experts_a4(source, PREFIX, source.cfg, "cuda:0",
+                                   swiglu=swiglu if activation == "silu" else geglu)
+    assert bank.shared_input and bank.direct_input is direct
+    x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(713 + rows)) * .4).to(
+        "cuda", torch.bfloat16)
+    x[0].zero_()
+    x[1].fill_(.5)                                      # CT calibration-rounding boundary, unlike the zero row
+    x[-1].fill_(-.75)
+    picks = _picks(rows, slots, count, 89 + rows)
+    expected = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
+    for lo in range(0, rows, 16):
+        bank.run(x[lo:lo + 16], picks[lo:lo + 16], expected[lo:lo + 16], prefill=prefill)
+    for tile in (16, 64):
+        buf = PlanBuffers(rows + 5, slots, count, dims, "cuda", prefill=prefill)
+        buf.pick[:rows].copy_(picks)
+        _route(buf, rows, tile)
+        for shared in (True, False):
+            bank.shared_input = shared                # false is the valid two-plane representation of these globals
+            buf.y.fill_(37.)
+            bank.run_plan(x, buf, prefill=prefill)
+            assert torch.equal(buf.y[:rows], expected), (tile, shared)
+            assert torch.equal(buf.y[rows:], torch.full_like(buf.y[rows:], 37.))
+        bank.shared_input = True

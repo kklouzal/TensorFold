@@ -17,6 +17,8 @@ numerical contract and the separate model qualification requirements.
 
 **Verification checkpoint (2026-10-19):** source `808408aa` passed all four ARM64/AMD64 installed-image audits and 10,357 installed ARM64 CPU tests (206 documented skips). The GB10 component batch passed 426 tests with four skips on `5cc6dbe3`, whose production and native-test bytes equal `808408aa`. AMD64 CPU and desktop native runs were interrupted when work stopped; full-model API, context, quality and performance qualification remain pending. [Exact checkpoint and limits](docs/verification-rejection-checkpoint-20261019.json).
 
+**Native A4 shared-input candidate (2026-10-19):** resident CT and ModelOpt expert plans reuse one activation-fragment set between the gate and up projections when their loader-proven input calibration is shared. Projection weights, activation rounding, K-slice order and routing stay unchanged. This candidate affects shared-input decode as well as prefill; native correctness, installed-model quality and repeated GB10 HTTP performance selection under VBoost 0 remain pending. Historical development-host timings do not qualify this build. [Arithmetic and qualification scope](docs/cuda-kernel-contracts.md#shared-input-fragment-reuse-candidate-2026-10-19).
+
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
 and determinism probes hold a rendered next turn whose reply cannot fit the served
 context. Diagnostic substring recall remains separate from exact answer quality;
