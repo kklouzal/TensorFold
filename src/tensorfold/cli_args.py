@@ -139,9 +139,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
     speed.add_argument("--drafter-bits", type=int, default=None,
-                       help="draft linear precision (0: bf16; Qwen MoE DFlash CUDA also accepts 16, 8: an FP8 "
-                            "E4M3 copy with a scale per output row, and 4); default: 4 on MLX, stored precision for "
-                            "Qwen MoE DFlash on CUDA. Drafts are proposals the target verifies: replies do not change")
+                       help="draft precision, proposals only (0: bf16). MLX: affine bits of the draft linears, "
+                            "default 4. Qwen MoE DFlash on CUDA: 0 or 16 (default) keep bf16; 8 (FP8) and 4 (NVFP4) "
+                            "requantize the draft linears and a private copy of the target head. The target verifies every draft: "
+                            "replies do not change")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
                             "the draft model's block size)")

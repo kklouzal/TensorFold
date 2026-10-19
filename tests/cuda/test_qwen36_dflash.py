@@ -50,7 +50,7 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
     draft = DFlash(tmp_path, Target(), context_limit=64, bits=bits)
     owned = sum(linear.nbytes() for linear in draft.linears.values())
     owned += sum(t.numel() * t.element_size() for t in [*draft.weights.values(), draft.inv_freq])
-    owned += draft.target_head.nbytes() if bits == 8 else 0       # FP8 proposals own a private head copy
+    owned += draft.target_head.nbytes() if bits in (4, 8) else 0  # requantized proposals own a private head copy
     assert owned == draft_weights(tmp_path, bits=bits).resident
     empty = draft.snapshot()
     taps = torch.randn((7, len(cfg.tap_layers) * cfg.hidden), generator=generator).bfloat16().cuda()
