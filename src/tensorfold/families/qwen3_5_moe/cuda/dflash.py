@@ -8,6 +8,10 @@ re-concatenated: a decode round writes only its accepted rows. Store capacities 
 MIN_ROWS * 2**k rows capped at the admitted window, so a lineage allocates O(log window)
 times from one size series and the caching allocator reuses freed stores across lineages
 instead of every round allocating a longer copy.
+
+A round's proposals stop where the drafter's own confidence runs out (``stop_score``): every draft row is verified
+by the target at a cost that grows with the window (each row brings its own experts), while a draft rarely holds
+once the drafter's top-path probability has fallen below a few percent. Proposals only; outputs are unchanged.
 """
 from __future__ import annotations
 
@@ -31,6 +35,11 @@ from ..dflash_metadata import QUERY_TILE, checked_headers, padded_block, positiv
 from . import context_attention, draft_glue
 
 MIN_ROWS = 1024     # the smallest store capacity; capacities are MIN_ROWS * 2**k, capped at the admitted window
+# Proposal cut: a round keeps its drafts while sum(logsumexp - max) over their rows (the drafter's -log top-path
+# probability) stays at or under this many nats, and always the first. Selected on the GB10 (Qwen3.6 heretic + 42d3b34,
+# 64/4096-token contexts, greedy and card sampling, thinking on and off; runs qwen36-f2s1): 3 gave +27..31% decode
+# tok/s over all 15 drafts, 2 and 5 within 3% of it, 1 and fixed 4..12-row windows below.
+STOP_SCORE = 3.0
 
 
 class _Store:
@@ -68,11 +77,14 @@ class DFlash:
     resumes a shorter prefix, as for its target State): an append past a snapshot overwrites later rows in place.
     Otherwise an append that does not extend its lineage's latest rows copies the snapshot's rows into a new store,
     so concurrent streams resumed from one cached context never write each other's rows.
+    ``stop_score``: a round's drafts end at the first row whose cumulative drafter score exceeds it (``STOP_SCORE``;
+    None proposes every row of the block).
     """
 
     world = 1
 
-    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, exclusive=False):
+    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, exclusive=False,
+                 stop_score=STOP_SCORE):
         if type(bits) is not int or bits not in (4, 16):
             raise ValueError("DFlash bits must be 16 or explicit proposal-only affine4")
         cfg, _ = checked_headers(draft_dir)
@@ -89,6 +101,10 @@ class DFlash:
             raise ValueError("DFlash grouped attention tile exceeds installed Triton tensor capacity")
         if type(exclusive) is not bool:
             raise ValueError("DFlash context exclusivity must be a bool")
+        if stop_score is not None and (isinstance(stop_score, bool) or not isinstance(stop_score, (int, float))
+                                       or not 0 <= stop_score < float("inf")):
+            raise ValueError("DFlash proposal stop score must be a finite nonnegative number of nats, or None")
+        self.stop_score = stop_score
         self.config, self.device, self.bits, self.exclusive = cfg, target.norm.device, bits, exclusive
         self.hidden, self.layers, self.trained = cfg.hidden, cfg.layers, cfg.block
         self.tap_layers, self.mask_id = cfg.tap_layers, cfg.mask_id
@@ -286,12 +302,16 @@ class DFlash:
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
     def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
-        """A launched chain. ``context_length`` (its first proposal's absolute position, the anchor's + 1) and
-        ``sampling`` complete the drafter interface; argmax proposals use neither."""
+        """A launched chain, cut at ``stop_score``. ``context_length`` (its first proposal's absolute position, the
+        anchor's + 1) and ``sampling`` complete the drafter interface; argmax proposals use neither."""
         if launched is None:
             return [], [], []
         chains, row = launched
-        return chains.finish(row, max_nodes, history)
+        ids, parents, scores = chains.finish(row, max_nodes, history)
+        if self.stop_score is not None and ids:
+            keep = max(1, next((i for i, score in enumerate(scores) if score > self.stop_score), len(scores)))
+            ids, parents, scores = ids[:keep], parents[:keep], scores[:keep]
+        return ids, parents, scores
 
     def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None, history=None):
         return self.finish_tree(self.launch_block(pending, max_nodes, block, history), context_length, max_nodes,
