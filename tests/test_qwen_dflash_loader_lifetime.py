@@ -103,6 +103,7 @@ class Controls(unittest.TestCase):
             "checkpoint_path": FILES.checkpoint_path,
             "SafeTensors": Reader,
             "BoundaryDone": BoundaryDone,
+            "draft_spans": lambda vocab, policy: ((0, vocab),),
         }
         exec(
             compile(
@@ -114,7 +115,8 @@ class Controls(unittest.TestCase):
             ns,
         )
         self.init = ns["__init__"]
-        self.target = SimpleNamespace(embed=object(), norm=SimpleNamespace(device="opaque owner"))
+        self.target = SimpleNamespace(config=SimpleNamespace(vocab=16), quant="mlx", embed=object(),
+                                      norm=SimpleNamespace(device="opaque owner"))
         self.owner = SimpleNamespace()
 
     def invoke(self, path=None):

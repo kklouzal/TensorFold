@@ -1,5 +1,11 @@
 # TensorFold fork
 
+Qwen3.8 dense NVFP4 DFlash2 on one CUDA rank adds explicit proposal-only choices: `--draft-vocab full` scores every
+target token, and `--draft-head-bits 8` copies a floating target head into private FP8 proposal storage. The original
+truncated vocabulary and original stored head remain the defaults. Target weights, target precision and verification
+are unchanged; final native/model identity and performance qualification of these options is pending. See the
+[proposal-head comparison](docs/recipes/qwen3.8-27b.md#proposal-vocabulary-and-head).
+
 **Gemma4 CUDA trial (2026-10-18):** Native paths read original MLX affine mixed4/6 weights or the original AEON compressed-tensors NVFP4 export, with BF16 DFlash, BF16 KV, and the model's image/video processor and thinking/tool syntax. The NVFP4 path requires SM12.x and retains its declared FP4 activation calibrations; the tied embedding/head, router and vision weights stay BF16. This initial path serves one request at a time. The installed GB10 image passed **461 CPU and 50 CUDA checks**, full-token serial/DFlash identity, Harness counting, streaming, image/video and strict tools. Its 512-token coding requests observed **64.49–74.41 decode tok/s** with five verification rows, versus **41.16–41.37** serially. [Source/image, conditions and limits](docs/gemma4-cuda-validation.md) distinguish these observations from the separate head comparison and unresolved R8/R16 ranking. See the [Gemma recipe](docs/recipes/gemma-4.md) and [GB10 Gemma profile](deploy/gb10/compose.gemma4.yaml).
 
 Harness connections require the container's compatibility entrypoint, `cuda_entrypoint.py` → `tensorfold_harness.py`, with `--thinking-budget 0`. The native CLI's token-count response lacks Harness's versioned model/context metadata. Gemma count-only image preparation can measure prompts beyond the served context while retaining media safety limits; generation still enforces its context window.

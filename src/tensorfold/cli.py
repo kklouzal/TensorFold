@@ -349,6 +349,9 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["drafter_bits"] = args.drafter_bits
     if getattr(args, "draft_rows", None) is not None:
         options["draft_rows"] = args.draft_rows
+    for name in ("draft_vocab", "draft_head_bits"):
+        if getattr(args, name, None) is not None:
+            options[name] = getattr(args, name)
     if getattr(args, "expert_ranks", 1) > 1:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:

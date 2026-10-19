@@ -124,6 +124,54 @@ def test_actual_tp_constructor_refuses_effective_eos_mismatch_before_resume_setu
     assert len(gathers) == 3 and gathers[1:] == [[1, 2], [1, 3]]
 
 
+@pytest.mark.parametrize("vocab,bits", [("truncated", 16), ("full", 16), ("truncated", 8), ("full", 8)])
+def test_actual_constructor_binds_static_head_choices_and_admits_private_storage(startup, monkeypatch, vocab, bits):
+    from cuda_27b_headers import _write
+
+    from tensorfold.families.qwen3_5.cuda import dflash2
+
+    directory, state, _events, _options, _gathers = startup
+    state.format = "nvfp4"
+    _write(directory, {"text_config": {"hidden_size": 64, "intermediate_size": 128, "head_dim": 64, "vocab_size": 512}},
+           [("lm_head.weight", "BF16", [512, 64])])
+    admissions, drafts = [], []
+    plan = {"context_window": 32, "cache_slots": 33, "budget_bytes": 1024,
+            "weight_bytes_estimate": 128, "cache_workspace_bytes_estimate": 256}
+
+    def admit(*args, **kwargs):
+        admissions.append(kwargs)
+        return plan
+
+    monkeypatch.setattr(capacity, "admit", admit)
+    monkeypatch.setattr(capacity, "config", lambda path: {"hidden_size": 64, "intermediate_size": 128, "vocab_size": 512})
+    monkeypatch.setattr(dflash2, "DFlash2", lambda *a, **kw: drafts.append(kw) or object())
+    engine = Qwen27Engine(directory, directory / "draft", draft_vocab=vocab, draft_head_bits=bits)
+    try:
+        choices = {} if (vocab, bits) == ("truncated", 16) else {"draft_vocab": vocab, "head_bits": bits}
+        assert drafts == [choices]
+        estimate = admissions[0]["draft_weights"]
+        if bits == 8:
+            assert estimate.func is affine_memory.draft_weights
+            assert estimate.keywords["head_copy"] == affine_memory.draft_head_copy(
+                directory, draft_vocab=vocab, head_bits=bits)
+        else:
+            assert estimate is affine_memory.draft_weights
+    finally:
+        engine.close()
+
+
+def test_private_head_admission_refuses_nonfloating_checkpoint_storage_before_device_or_load(startup):
+    from cuda_27b_headers import _write
+
+    directory, state, events, _options, _gathers = startup
+    state.format = "nvfp4"
+    _write(directory, {"text_config": {"hidden_size": 64, "intermediate_size": 128, "head_dim": 64, "vocab_size": 512}},
+           [("lm_head.weight", "U8", [512, 32])])
+    with pytest.raises(ValueError, match="floating lm_head"):
+        Qwen27Engine(directory, directory / "draft", draft_head_bits=8)
+    assert events == []
+
+
 @pytest.fixture
 def serving(startup, monkeypatch):
     from tensorfold.cuda import scheduler

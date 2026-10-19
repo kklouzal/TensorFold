@@ -11,6 +11,18 @@ from tensorfold.engine.exact_sampling import Sampling, uniform_rows
 # the Metal engine's values; the target's keyed Gumbel noise is known ahead, so ``noise`` weighs it into draft scores
 POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False}
 
+# The original proposal-head rows. Full-vocabulary scoring is selected once at startup; target verification is
+# unchanged for either policy.
+HOT_SPANS = ((0, 98304), (248032, 248320))
+
+
+def draft_spans(vocab: int, policy: str = "truncated") -> tuple[tuple[int, int], ...]:
+    """Output-token ranges for the original truncated proposal head or the full vocabulary."""
+
+    if type(vocab) is not int or vocab < 1 or policy not in ("truncated", "full"):
+        raise ValueError("draft vocabulary needs a positive vocabulary size and truncated or full policy")
+    return ((0, vocab),) if policy == "full" else tuple((a, min(b, vocab)) for a, b in HOT_SPANS if a < vocab)
+
 
 def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
                pred: np.ndarray, succ: np.ndarray, anchor: int, max_nodes: int,
