@@ -2,7 +2,8 @@
 Hugging Face transformers and float32 compute, written in the campaign_kl dump format.
 
   campaign_golden.py --model DIR --eval EVAL.json --out GOLDEN.npz --source REPO@REVISION [--top-k 1024]
-                     [--chunk 2048] [--compute fp32|bf16]
+                     [--chunk 2048] [--compute fp32|bf16] [--rename CHECKPOINT_PREFIX=MODEL_PREFIX ...]
+                     [--allow-long-prefill]
 
 EVAL.json is campaign_kl's eval set (rendered prompt ids and answer ids); the checkpoint must share that tokenizer
 (the NVFP4 export's own BF16 source does). The model class is the checkpoint's ``architectures[0]`` from
@@ -30,9 +31,9 @@ from pathlib import Path
 import time
 
 if __package__:
-    from .campaign_kl import file_sha256, row_stats, save_dump
+    from .campaign_kl import LONG_PREFILL_TOKENS, file_sha256, read_eval, row_stats, save_dump
 else:
-    from campaign_kl import file_sha256, row_stats, save_dump
+    from campaign_kl import LONG_PREFILL_TOKENS, file_sha256, read_eval, row_stats, save_dump
 
 
 @contextlib.contextmanager
@@ -55,13 +56,15 @@ def parameters_on_meta(torch):
         torch.nn.Module.register_parameter = register
 
 
-def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
+def load_bf16(torch, transformers, cls, model_dir: Path, device: str, renames: dict[str, str] | None = None):
     """The model built with parameters on the meta device (buffers computed in float32), then every parameter
     materialised on ``device`` straight from the checkpoint's safetensors in its stored dtype (BF16): no CPU copy of
     the whole model (on unified memory a CPU load plus a device move would hold the weights twice; transformers'
     device_map path needs accelerate, absent from the image). Every model parameter must come from the checkpoint
     or be tied to one that did, and every persistent buffer (Gemma4's per-layer ``layer_scalar``) must come from it;
-    checkpoint keys without a model tensor fail."""
+    checkpoint keys without a model tensor fail. ``renames`` maps a checkpoint key prefix to the model's for
+    checkpoints that store a module under another path (tvall43's Qwen3.6 heretic keeps the vision tower at
+    ``model.language_model.visual.``, transformers builds ``model.visual.``); a prefix matching no key fails."""
 
     from safetensors import safe_open
     from transformers.initialization import no_init_weights
@@ -74,15 +77,20 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
     for module_name, module in model.named_modules(remove_duplicate=False):
         for name in [*module._parameters, *module._buffers]:
             owners[f"{module_name}.{name}" if module_name else name] = (module, name)
-    loaded, unexpected = set(), []
+    renames = renames or {}
+    loaded, unexpected, renamed = set(), [], dict.fromkeys(renames, 0)
     for shard in sorted(model_dir.glob("*.safetensors")):
         with safe_open(str(shard), framework="pt", device=str(device)) as f:
-            for key in f.keys():
+            for stored in f.keys():
+                prefix = next((p for p in renames if stored.startswith(p)), None)
+                key = stored if prefix is None else renames[prefix] + stored[len(prefix):]
+                if prefix is not None:
+                    renamed[prefix] += 1
                 if key not in owners:
-                    unexpected.append(key)
+                    unexpected.append(stored)
                     continue
                 module, name = owners[key]
-                tensor = f.get_tensor(key)
+                tensor = f.get_tensor(stored)
                 current = module._parameters.get(name, module._buffers.get(name))
                 if tuple(tensor.shape) != tuple(current.shape):
                     raise ValueError(f"{key}: checkpoint shape {tuple(tensor.shape)} != model {tuple(current.shape)}")
@@ -93,6 +101,8 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
                 loaded.add(key)
     if unexpected:
         raise ValueError(f"{len(unexpected)} checkpoint tensors have no model tensor, e.g. {unexpected[:5]}")
+    if unused := [p for p, n in renamed.items() if n == 0]:
+        raise ValueError(f"rename prefixes {unused} match no checkpoint tensor")
     model.tie_weights()
     missing = [name for name, param in model.named_parameters() if param.is_meta]
     missing += [key for key, (module, name) in owners.items() if name in module._buffers
@@ -104,7 +114,7 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str):
         for name, buffer in module._buffers.items():
             if buffer is not None and buffer.device != torch.device(device):
                 module._buffers[name] = buffer.to(device)
-    return model, {"loaded_tensors": len(loaded),
+    return model, {"loaded_tensors": len(loaded), "renamed": renamed,
                    "parameters": sum(1 for _ in model.parameters()),
                    "parameter_dtypes": sorted({str(p.dtype) for p in model.parameters()})}
 
@@ -175,7 +185,21 @@ def main() -> int:
     ap.add_argument("--chunk", type=int, default=2048, help="prompt prefill chunk (tokens)")
     ap.add_argument("--compute", choices=("fp32", "bf16"), default="fp32")
     ap.add_argument("--device", default="cuda:0", help="torch device for the whole model (cpu for tool tests)")
+    ap.add_argument("--rename", action="append", default=[], metavar="CHECKPOINT_PREFIX=MODEL_PREFIX",
+                    help="load checkpoint keys under one prefix into the model's module at another (see load_bf16)")
+    ap.add_argument("--allow-long-prefill", action="store_true",
+                    help=f"score eval items above {LONG_PREFILL_TOKENS} prompt tokens (refused during the campaign's "
+                         "long-prefill hold, before the model loads)")
     args = ap.parse_args()
+    data, eval_sha256 = read_eval(Path(args.eval))     # the record names the very bytes scored
+    long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
+    if long_items and not args.allow_long_prefill:
+        ap.error(f"eval items {long_items} exceed {LONG_PREFILL_TOKENS} prompt tokens: held by the campaign's "
+                 "long-prefill hold (score a subset eval set, or pass --allow-long-prefill once it is lifted)")
+    pairs = [r.split("=", 1) for r in args.rename]
+    if any(len(p) != 2 or not all(p) for p in pairs) or len({p[0] for p in pairs}) != len(pairs):
+        ap.error("--rename takes distinct CHECKPOINT_PREFIX=MODEL_PREFIX pairs")
+    renames = dict(pairs)
 
     import torch
     import transformers
@@ -187,10 +211,10 @@ def main() -> int:
     config = json.loads((model_dir / "config.json").read_text())
     architecture = config["architectures"][0]
     started = time.perf_counter()
-    model, load_report = load_bf16(torch, transformers, getattr(transformers, architecture), model_dir, args.device)
+    model, load_report = load_bf16(torch, transformers, getattr(transformers, architecture), model_dir, args.device,
+                                   renames)
     loaded_s = time.perf_counter() - started
     counts = float32_layers(torch, model) if args.compute == "fp32" else None
-    data = json.loads(Path(args.eval).read_text())
     rows, offsets, dtype = [], [], None
     cuda = torch.cuda.is_available() and args.device.startswith("cuda")
     for item in data["items"]:
@@ -203,7 +227,7 @@ def main() -> int:
                           "elapsed_s": round(time.perf_counter() - started, 1),
                           "max_allocated_gib": round(torch.cuda.max_memory_allocated() / 2**30, 2) if cuda else None}),
               flush=True)
-    meta = {"eval_sha256": file_sha256(args.eval), "top_k": args.top_k, "logits_dtype": dtype,
+    meta = {"eval_sha256": eval_sha256, "top_k": args.top_k, "logits_dtype": dtype,
             "names": [it["name"] for it in data["items"]], "reference": None, "golden": True,
             "source": args.source, "model_dir": str(model_dir), "architecture": architecture,
             "config_sha256": file_sha256(str(model_dir / "config.json")),

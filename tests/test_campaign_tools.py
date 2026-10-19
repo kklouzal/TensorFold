@@ -4,12 +4,14 @@ checks, needle placement and the teacher-forced KL bound. No model or GPU."""
 import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import itertools
 import json
 import math
 from pathlib import Path
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -430,10 +432,153 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
         dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))
     with pytest.raises(SystemExit, match="does not exist"):
         dump("--eval", missing)
+    with pytest.raises(SystemExit, match="long-prefill hold"):           # a mid item above the limit
+        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "",
+             "--mid-depths", f"4096,{bench.LONG_PREFILL_TOKENS + 1}")
+    with pytest.raises(SystemExit, match="needs --corpus"):
+        dump("--eval", missing, "--build", "--mid-depths", "4096")
     assert loads == []                                                    # no refusal paid for a model load
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
     dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "8192")
     assert loads == [["serve", "m"]] * 2
+
+
+class FakeApp:
+    """campaign_kl.build_eval's view of the App: a template of 10 tokens (12 with thinking) plus one per 4 characters
+    of the user message, and an engine that samples ``answer_tokens`` ids recording each request's sampling."""
+
+    def __init__(self):
+        self.sampled = []
+        self.engine = self
+
+    def prepare(self, body, chat):
+        content = body["messages"][0]["content"]
+        thinking = body["chat_template_kwargs"]["enable_thinking"]
+        return SimpleNamespace(prompt=[7] * (10 + 2 * thinking + len(content) // 4), sampling=dict(body))
+
+    def generate(self, prompt, n, sampling, callback):
+        self.sampled.append(sampling)
+        callback(list(range(n + 3)))                   # more than asked: the eval keeps answer_tokens
+
+
+def _build_args(tmp_path, **overrides):
+    import argparse
+
+    (tmp_path / "corpus.txt").write_text("".join(f"line {i:06d} of the corpus\n" for i in range(20000)))
+    fields = {"corpus": str(tmp_path / "corpus.txt"), "short": "v1", "mid_depths": "", "long_depths": "",
+              "corpus_start": 0, "allow_long_prefill": False, "answer_tokens": 5, "serve": ["serve", "/m"],
+              "cards": {"nothink": {"temperature": 0.7}, "think": {"temperature": 1.0}}}
+    return argparse.Namespace(**{**fields, **overrides})
+
+
+def test_build_eval_mid_items_fill_their_depths_on_disjoint_windows_in_both_thinking_modes(tmp_path):
+    app = FakeApp()
+    args = _build_args(tmp_path, short="", mid_depths="400,800,1200,1600", corpus_start=1000)
+    data = kl.build_eval(app, args)
+    names = [it["name"] for it in data["items"]]
+    assert names == ["mid-400-doc-review-nothink", "mid-800-doc-code-think", "mid-1200-doc-review-think",
+                     "mid-1600-doc-code-nothink"]
+    windows = [it["document"] for it in data["items"]]
+    assert windows[0][0] == 1000 and all(a[1] == b[0] for a, b in itertools.pairwise(windows))
+    corpus = (tmp_path / "corpus.txt").read_text()
+    for it, depth in zip(data["items"], (400, 800, 1200, 1600), strict=True):
+        start, end = it["document"]
+        assert corpus[start:end] in it["messages"][0]["content"]
+        assert depth - 64 // 4 - 1 <= len(it["prompt"]) <= depth       # the bisection resolves 64 characters
+        thinking = it["name"].endswith("-think")
+        assert it["sampling"]["chat_template_kwargs"] == {"enable_thinking": thinking}
+        assert it["sampling"]["temperature"] == (1.0 if thinking else 0.7) and len(it["answer"]) == 5
+        assert "thinking" not in it
+    assert data["built_by"]["corpus_sha256"] == kl.file_sha256(str(tmp_path / "corpus.txt"))
+    assert [s["seed"] for s in app.sampled] == [7000, 7001, 7002, 7003]
+
+
+def test_build_eval_keeps_the_v1_short_and_long_items(tmp_path):
+    data = kl.build_eval(FakeApp(), _build_args(tmp_path, long_depths="900"))
+    assert [it["name"] for it in data["items"]] == [f"short-{i}" for i in range(len(kl.PROMPTS))] + ["long-900"]
+    long = data["items"][-1]
+    corpus = (tmp_path / "corpus.txt").read_text()
+    assert long["messages"][0]["content"] == ("<document>\n" + corpus[:long["document"][1]] + "\n</document>\n\n"
+                                              + kl.LONG_ASK)
+    assert all(it["sampling"]["chat_template_kwargs"] == {"enable_thinking": False} for it in data["items"])
+    # eval-v2's extra prompts alone (to append): numbered after v1's, each in its own thinking mode
+    extra = kl.build_eval(FakeApp(), _build_args(tmp_path, short="extra"))["items"]
+    first = len(kl.PROMPTS)
+    assert [it["name"] for it in extra] == [f"short-{first + i}" for i in range(len(kl.EXTRA_PROMPTS))]
+    assert [it["sampling"]["chat_template_kwargs"]["enable_thinking"] for it in extra] == [
+        thinking for _, thinking in kl.EXTRA_PROMPTS]
+    both = kl.build_eval(FakeApp(), _build_args(tmp_path, short="v1,extra"))["items"]
+    assert [it["name"] for it in both] == [f"short-{i}" for i in range(first + len(kl.EXTRA_PROMPTS))]
+
+
+
+
+def _golden_part(tmp_path, name, items, lp, **meta):
+    np = pytest.importorskip("numpy")
+    path = tmp_path / name
+    path.mkdir()
+    (path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    sizes = [len(it["answer"]) for it in items]
+    offsets = tuple(int(x) for x in np.concatenate([[0], np.cumsum(sizes)[:-1]]))
+    contract = {"source": "s@1", "architecture": "A", "config_sha256": "c", "versions": {"torch": "t"},
+                "chunk": 2048, "precision": {"weights": "bf16", "compute": "fp32"}, "model_dir": "/golden"}
+    _dump(path / "golden.npz", lp, 8, golden=True, offsets=offsets, names=[it["name"] for it in items],
+          eval_sha256=kl.file_sha256(str(path / "eval.json")), **{**contract, **meta})
+    return str(path / "golden.npz"), str(path / "eval.json")
+
+
+def test_append_extends_a_golden_reference_without_rescoring_and_records_its_parts(tmp_path):
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(9)
+    lp = _log_softmax(np, rng.normal(0, 3, (40, 32)))
+    old = [{"name": "short-0", "prompt": [1] * 10, "answer": [2] * 10},
+           {"name": "long-32768", "prompt": [1] * 99, "answer": [2] * 6}]
+    new = [{"name": "mid-400", "prompt": [1] * 40, "answer": [2] * 14}, {"name": "mid-800", "prompt": [1] * 80,
+                                                                          "answer": [2] * 10}]
+    base_golden, base_eval = _golden_part(tmp_path, "base", old, lp[:16], tool_sha256="v1",
+                                                      precision={"weights": "bf16", "compute": "fp32", "tf32": False})
+    new_golden, new_eval = _golden_part(tmp_path, "new", new, lp[16:], tool_sha256="v2")
+    result = kl.append(base_golden, base_eval, new_golden, new_eval, str(tmp_path / "v2"))
+    joined = np.load(tmp_path / "v2" / "golden" / "kl.npz")
+    meta = json.loads(str(joined["meta"]))
+    assert result["items"] == meta["names"] == ["short-0", "long-32768", "mid-400", "mid-800"]
+    assert list(joined["offsets"]) == [0, 10, 16, 30] and result["positions"] == 40
+    for key in ("ids", "lp", "tail_lp", "forced", "entropy"):         # rows copied, never recomputed
+        assert np.array_equal(joined[key], np.concatenate([np.load(base_golden)[key], np.load(new_golden)[key]]))
+    v2 = json.loads((tmp_path / "v2" / "eval.json").read_text())
+    assert [it["name"] for it in v2["items"]] == meta["names"] and meta["golden"]
+    assert meta["eval_sha256"] == kl.file_sha256(str(tmp_path / "v2" / "eval.json"))
+    assert [p["tool_sha256"] for p in v2["parts"]] == ["v1", "v2"] and v2["parts"] == meta["parts"]
+    assert v2["parts"][0]["golden_sha256"] == kl.file_sha256(base_golden) and "tool_sha256" not in meta
+    assert "golden_dir" in json.loads((tmp_path / "v2" / "golden" / "meta.json").read_text())
+    cut = kl.subset(str(tmp_path / "v2" / "golden" / "kl.npz"), str(tmp_path / "v2" / "eval.json"),
+                    str(tmp_path / "v2s"), max_prompt_tokens=90)
+    assert cut["items"] == ["short-0", "mid-400", "mid-800"] and cut["positions"] == 34
+    again = kl.append(str(tmp_path / "v2" / "golden" / "kl.npz"), str(tmp_path / "v2" / "eval.json"),
+                      *_golden_part(tmp_path, "later", [{"name": "long-131072", "prompt": [1] * 9, "answer": [2] * 4}],
+                                    lp[:4], tool_sha256="v3"), str(tmp_path / "v3"))
+    assert [p["items"] for p in again["parts"]] == [["short-0", "long-32768"], ["mid-400", "mid-800"],
+                                                    ["long-131072"]]
+
+
+def test_append_refuses_parts_that_are_not_one_reference(tmp_path):
+    np = pytest.importorskip("numpy")
+    lp = _log_softmax(np, np.random.default_rng(3).normal(0, 3, (8, 32)))
+    item = {"name": "a", "prompt": [1], "answer": [2] * 4}
+    base = _golden_part(tmp_path, "base", [item], lp[:4])
+    cases = {"other": ({"name": "b", "prompt": [1], "answer": [2] * 4}, {"source": "s@2"}, "differ in \\['source'"),
+             "compute": ({"name": "b", "prompt": [1], "answer": [2] * 4},
+                         {"precision": {"weights": "bf16", "compute": "bf16"}}, "precision.compute"),
+             "same": (item, {}, "names repeat")}
+    for name, (new_item, meta, message) in cases.items():
+        new = _golden_part(tmp_path, name, [new_item], lp[4:], **meta)
+        with pytest.raises(ValueError, match=message):
+            kl.append(*base, *new, str(tmp_path / f"out-{name}"))
+    kl.subset(*base, str(tmp_path / "cut"), max_prompt_tokens=5)
+    with pytest.raises(ValueError, match="subset"):
+        kl.append(str(tmp_path / "cut" / "golden" / "kl.npz"), str(tmp_path / "cut" / "eval.json"),
+                  *_golden_part(tmp_path, "b", [{"name": "b", "prompt": [1], "answer": [2] * 4}], lp[4:]),
+                  str(tmp_path / "out-subset"))
 
 
 def test_schema_errors_cover_type_enum_required_extra_and_items():
@@ -851,6 +996,36 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
     save_file({k: v for k, v in tensors.items() if k != dropped}, str(partial / "model.safetensors"))
     with pytest.raises(ValueError, match="persistent buffers were not in the checkpoint"):
         golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, partial, "cpu")
+    # a checkpoint that keeps a module under another path (tvall43's Qwen3.6 vision tower) loads only through an
+    # explicit rename, into the same values; a rename that matches nothing fails
+    tower_tensors = sum(k.startswith("model.vision_tower.") for k in tensors)
+    assert tower_tensors
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    (moved / "config.json").write_text((tmp_path / "config.json").read_text())
+    save_file({k.replace("model.vision_tower.", "model.language_model.vision_tower.", 1): v
+               for k, v in tensors.items()}, str(moved / "model.safetensors"))
+    with pytest.raises(ValueError, match="have no model tensor"):
+        golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, moved, "cpu")
+    renamed, report = golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, moved, "cpu",
+                                       {"model.language_model.vision_tower.": "model.vision_tower."})
+    assert report["renamed"] == {"model.language_model.vision_tower.": tower_tensors}
+    original = dict(loaded.named_parameters())
+    assert all(torch.equal(p.to(original[n].dtype), original[n]) for n, p in renamed.named_parameters()
+               if n.startswith("model.vision_tower."))
+    with pytest.raises(ValueError, match="match no checkpoint tensor"):
+        golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, tmp_path, "cpu",
+                         {"model.nothing.": "model.vision_tower."})
+
+
+def test_golden_refuses_held_items_before_the_model_loads(tmp_path):
+    items = [{"name": "short", "prompt": [1] * 10, "answer": [2]},
+             {"name": "long", "prompt": [1] * (bench.LONG_PREFILL_TOKENS + 1), "answer": [2]}]
+    (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    run = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_golden.py"), "--model", str(tmp_path / "none"),
+                          "--eval", str(tmp_path / "eval.json"), "--out", str(tmp_path / "g.npz"), "--source", "s@1"],
+                         capture_output=True, text=True, check=False)
+    assert run.returncode == 2 and "['long'] exceed" in run.stderr and "long-prefill hold" in run.stderr
 
 
 def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(tmp_path, monkeypatch):

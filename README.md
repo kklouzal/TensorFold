@@ -899,7 +899,14 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   uncalibrated.
 - `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
   pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
-  off for matmuls), in the campaign_kl dump format.
+  off for matmuls), in the campaign_kl dump format. `--rename CHECKPOINT_PREFIX=MODEL_PREFIX` loads a checkpoint
+  that stores a module under another path; it holds items above 16,384 prompt tokens like the KL dump.
+- The KL eval set (`campaign_kl.py dump --build`) holds the `--short` prompt sets, `--mid-depths` items (multi-chunk
+  prefill; document review and document-to-code asks, thinking off and on, each on its own corpus window from
+  `--corpus-start`) and `--long-depths` corpus prefixes. `campaign_kl.py append BASE_GOLDEN BASE_EVAL NEW_GOLDEN
+  NEW_EVAL OUT_DIR` adds items scored by a later golden session (built with `--short` naming only the new prompt sets) without rescoring the
+  existing ones; both parts must share the checkpoint, model config, top-K, library versions, prefill chunk and
+  precision, and the result lists every part's hashes.
 - `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
   busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
 
