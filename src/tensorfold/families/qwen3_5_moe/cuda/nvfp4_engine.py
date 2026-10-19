@@ -167,7 +167,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             from .chain_graphs import ChainGraphs
 
             self.runner = ChainGraphs(self.w, self.capacity_plan["cache_slots"])
-            # Capture every chain width's smallest-span graph before serving (no first-request capture stalls).
+            # Capture every chain width's smallest-span graph before serving (larger spans still capture on first use).
             self.runner.prepare(range(1, rows + 1), taps=self.draft is not None)
         if plan is not None and self.multi is None:
             from tensorfold.cuda.streams import KVRoom
