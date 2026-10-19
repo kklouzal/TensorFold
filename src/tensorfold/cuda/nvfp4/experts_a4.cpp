@@ -209,7 +209,6 @@ void down_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tens
     const auto p = members.size(0), cells = blob.size(0);
     TORCH_CHECK(blob.size(1) == 1 && weight.size(0) == cells && weight.size(1) == 1 && input.sizes() == weight.sizes(),
                 "native A4 down: one projection's blob and calibrations");
-    TORCH_CHECK(tile != 128 || n % 128 == 0, "native A4 down: 128-pair items stage 128-column blocks");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 4 == 0 &&
                 reinterpret_cast<uintptr_t>(scales.data_ptr()) % 4 == 0 && codes.size(0) == 1 &&
                 codes.size(1) == p && codes.size(2) == k / 2 && scales.size(0) == 1 && scales.size(1) == p &&

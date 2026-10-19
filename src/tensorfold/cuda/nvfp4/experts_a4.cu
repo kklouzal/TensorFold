@@ -348,7 +348,7 @@ __global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* cod
     // 4 warps: one m16 tile a warp (WM 1): with both projections' accumulators, 2-tile warps cost occupancy
     // (measured 2.02 -> 2.68 ms for a 4096-row Qwen layer on sm_120), unlike down_kernel. 128-pair items (8 warps):
     // 2 m16 x 4 n8 tiles a warp. A shared input (COMMON) holds one set of A fragments for both projections.
-    constexpr int WM = MT >= 8 ? 2 : 1, WGN = WARPS * WM / MT, SPW = 8 / WGN, AP = COMMON ? 1 : 2;
+    constexpr int WM = 1, WGN = WARPS * WM / MT, SPW = 8 / WGN, AP = COMMON ? 1 : 2;
     static_assert(MT % WM == 0 && (MT / WM) * WGN == WARPS && 8 % WGN == 0, "staged A4 warp layout");
     static_assert(SPW % 2 == 0, "a warp owns whole 16-column down blocks");
     __shared__ __align__(16) uint8_t stage[STAGES][2][BTILE];
@@ -636,7 +636,7 @@ void expert_a4_down_plan_cuda(const at::Tensor& codes, const at::Tensor& scales,
     int64_t tile) {
     const auto launch = [&](auto f32, auto mode, auto mt) {
         // 128-pair items: 8 warps over two 64-column blocks.
-        constexpr int MT = decltype(mt)::value, WARPS = MT >= 8 ? 8 : TILE_WARPS, NB = MT >= 8 ? 2 : 1;
+        constexpr int MT = decltype(mt)::value, WARPS = MT >= 8 ? 8 : TILE_WARPS, NB = 1;
         const auto kernel = sk == 1 ? down_kernel<decltype(f32)::value, decltype(mode)::value, MT, true, WARPS, NB>
                                     : down_kernel<decltype(f32)::value, decltype(mode)::value, MT, false, WARPS, NB>;
         kernel<<<dim3(items.size(0), n / (64 * NB)), WARPS * 32, 0, at::cuda::getCurrentCUDAStream()>>>(
