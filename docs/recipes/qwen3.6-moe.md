@@ -68,10 +68,11 @@ The secondary `z-lab/Qwen3.6-35B-A3B-DFlash` at
 model, with target residual taps `[1, 10, 19, 28, 37]`, block size 16 and its declared
 YaRN rotary configuration. It is separate from a native MTP head. TensorFold reads
 its metadata and weights through owned code; checkpoint Python is never imported.
-Default draft linears keep BF16 storage. Explicit `--drafter-bits 8` (FP8, one scale an
-output row) or `--drafter-bits 4` (NVFP4, an E4M3 scale per 16 inputs and one global
-scale) requantizes the draft linears and a private copy of a floating target head.
-A checkpoint's quantized target head is borrowed without another copy. These change
+Default draft linears keep BF16 storage. Explicit `--drafter-bits 8` keeps the current FP8 projections and private copy of a floating target head.
+This isolated comparison reference restores `--drafter-bits 4` to the preserved affine4 projection recipe
+and borrows the unchanged target head. Canonical NVFP4/private-head4 is a separate comparison input;
+no native or regional advantage is established for this new composition. A checkpoint's quantized target
+head remains borrowed without another copy. These change
 only proposals; the target verifies every committed token. `0` or `16` selects BF16 on
 this CUDA path. BF16 remains the default; GB10 precision selection at 32k is pending.
 With a secondary, `--draft-rows N` overrides the metadata block
