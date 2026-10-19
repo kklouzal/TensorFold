@@ -10,7 +10,9 @@ allowing a consumer to distinguish target coverage from a corpus-limited shortfa
 without another sizing search or inference.
 Publication uses the existing atomic benchmark writer before and after inference.
 A failed operation retains its request/error and propagates; publication failure
-does not replace an inference failure. No second request or new sizing loop runs.
+does not replace an inference failure or its nested cause chain. When both fail,
+a supported exception group retains the original inference exception and the
+publication exception independently. No second request or new sizing loop runs.
 The callable `gate_needle(..., evidence_out=PATH)` exposes the same bounded output.
 
 This evidence does not change the diagnostic needle metric: `found` still means

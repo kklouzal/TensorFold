@@ -1,6 +1,7 @@
 """Full needle evidence and context-bound next-turn control; CPU fixtures only."""
 import json
 import sys
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -57,10 +58,11 @@ def test_needle_error_preserves_request_and_primary_failure(tmp_path, monkeypatc
     corpus.write_text("haystack " * 100)
     monkeypatch.setattr(gates, "post_json", lambda *_a: {"count": 1})
     calls = []
+    transport = OSError("nested transport failure")
 
     def request(_url, body, **_kwargs):
         calls.append(body)
-        raise RuntimeError("inference failed")
+        raise RuntimeError("inference failed") from transport
 
     write = gates.write_json
 
@@ -72,14 +74,21 @@ def test_needle_error_preserves_request_and_primary_failure(tmp_path, monkeypatc
     monkeypatch.setattr(gates, "stream_chat", request)
     monkeypatch.setattr(gates, "write_json", publish)
     evidence = tmp_path / "evidence"
-    with pytest.raises(RuntimeError, match="inference failed") as caught:
+    expected_error = BaseExceptionGroup if publication_failure else RuntimeError
+    with pytest.raises(expected_error) as caught:
         gates.gate_needle("http://fixture", PROFILE, needle_args(corpus), evidence_out=evidence)
     assert len(calls) == 1
     record = json.loads((evidence / "needle-0000.json").read_text())
     assert record["request"]["messages"] == calls[0]["messages"]
     assert record["status"] == ("requested" if publication_failure else "error")
     if publication_failure:
-        assert isinstance(caught.value.__cause__, OSError)
+        primary, publication = caught.value.exceptions
+        assert isinstance(primary, RuntimeError) and primary.__cause__ is transport
+        assert isinstance(publication, OSError) and str(publication) == "evidence disk failed"
+        trace = "".join(traceback.format_exception(caught.value))
+        assert all(message in trace for message in ("inference failed", "nested transport failure", "evidence disk failed"))
+    else:
+        assert caught.value.__cause__ is transport
 
 
 def test_existing_needle_evidence_is_never_overwritten(tmp_path, monkeypatch):

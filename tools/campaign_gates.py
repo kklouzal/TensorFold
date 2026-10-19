@@ -381,8 +381,8 @@ def gate_needle(url: str, profile: dict, args, *, evidence_out: str | Path | Non
                     try:
                         write_json(evidence / name, record)
                     except BaseException as publication:
-                        error.add_note("needle error evidence publication also failed")
-                        raise error from publication
+                        raise BaseExceptionGroup("needle inference and error evidence publication failed",
+                                                 [error, publication]) from None
                 raise
             if evidence is not None:
                 record.update(status="complete", reply=reply)
