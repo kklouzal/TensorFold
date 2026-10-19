@@ -28,7 +28,9 @@ class Chains:
 
     ``logits`` [len(histories) * rows, V] holds stream-major rows. ``histories`` holds each stream's penalty
     history (``tensorfold.engine.penalties.History``) or None; ``finish`` refuses any other one. ``owners`` (tensors
-    the launch's kernels read through pointers) stay alive until the readback completes.
+    the launch's kernels read through pointers) stay alive until the readback completes. Fresh readback confidences
+    are checked before publication; cached host data remains immutable for this launch's lifetime. Producer and
+    readback use the current CUDA stream; callers crossing streams must establish their execution dependency.
     """
 
     def __init__(self, logits: torch.Tensor, histories: Sequence, rows: int, owners=None):
@@ -44,24 +46,35 @@ class Chains:
         self.words = torch.cat(parts, dim=1)
         self.histories, self.owners, self.host, self.rows = list(histories), owners, None, rows
 
-    def finish(self, row: int, max_nodes: int, history=None) -> tuple[list[int], list[int], list[float]]:
-        """Stream ``row``'s chain: (tokens, parents, cumulative ``-log`` confidences)."""
+    def finish(self, row: int, max_nodes: int, history=None, *, stop: float | None = None
+               ) -> tuple[list[int], list[int], list[float]]:
+        """Stream ``row``'s chain: (tokens, parents, cumulative ``-log`` confidences).
+
+        ``stop`` is None or a finite nonnegative threshold validated by the owning drafter at configuration time.
+        After the node cap, keep rows before the first confidence strictly above it, retaining one if any fit.
+        """
 
         if self.histories[row] is not history:
             raise ValueError("a draft block must finish under the penalties it was launched with")
         if self.host is None:
             words = self.words.cpu().numpy()
             c = (words.shape[1] - 2) // 2
+            confidence = words[:, 1].astype(np.int32).view(np.float32).reshape(-1, self.rows)
+            if not np.isfinite(confidence).all():
+                raise ValueError("draft confidence scores must be finite")
             self.host = (words[:, 0].reshape(-1, self.rows).tolist(),
-                         words[:, 1].astype(np.int32).view(np.float32).reshape(-1, self.rows).tolist(),
+                         confidence.tolist(),
                          (words[:, 2:2 + c].astype(np.int32).view(np.float32), words[:, 2 + c:]) if c else None)
             self.owners = self.words = None
         if history is None:
             ids, scores = self.host[0][row], self.host[1][row]
         else:
             ids, scores = penalized(*(part[row * self.rows:(row + 1) * self.rows] for part in self.host[2]), history)
-        ids = ids[:max_nodes]
-        return ids, list(range(-1, len(ids) - 1)), scores[:max_nodes]
+        ids, scores = ids[:max_nodes], scores[:max_nodes]
+        if stop is not None and ids:
+            keep = max(1, next((i for i, score in enumerate(scores) if score > stop), len(scores)))
+            ids, scores = ids[:keep], scores[:keep]
+        return ids, list(range(-1, len(ids) - 1)), scores
 
 
 def penalized(values: np.ndarray, ids: np.ndarray, history) -> tuple[list[int], list[float]]:
@@ -89,7 +102,10 @@ def penalized(values: np.ndarray, ids: np.ndarray, history) -> tuple[list[int], 
             redone = pick(history.candidates(values[j:j + 1], ids[j:j + 1], tokens), slice(j, j + 1))
             picks[j], logconf[j] = redone[0][0], redone[1][0]
         tokens.append(int(picks[j]))
-    return tokens, np.cumsum(-logconf).tolist()
+    confidence = np.cumsum(-logconf)
+    if not np.isfinite(confidence).all():
+        raise ValueError("draft confidence scores must be finite")
+    return tokens, confidence.tolist()
 
 
 __all__ = ["Chains", "PENALIZED_CANDIDATES", "penalized"]

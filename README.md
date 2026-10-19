@@ -328,6 +328,10 @@ GLM reads affine 4-bit/group-64 and supported mixed-bit MLX conversions; CUDA al
 
 Drafting accepts a token only when it equals the same engine's serial choice. Sampling keys use the prompt or explicit seed, absolute position and token ID. Compare an otherwise identical request with `"draft": false` to check the serial reference.
 
+CUDA block drafters refuse nonfinite proposal confidence scores before publishing
+their chains or applying the confidence cutoff. Valid proposals retain the same
+node budget and cutoff rule; every committed token remains target-verified.
+
 Exactness is scoped to the **same engine, weights, runtime, precision, KV format and request settings**. It does not promise bit identity between MLX and CUDA, different weight/KV quantizations or tensor-parallel layouts.
 
 GLM's CUDA MoE sum rounds each weighted expert output to FP32 before its

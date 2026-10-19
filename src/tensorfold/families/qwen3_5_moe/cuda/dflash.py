@@ -248,11 +248,7 @@ class DFlash:
         if launched is None:
             return [], [], []
         chains, row = launched
-        ids, parents, scores = chains.finish(row, max_nodes, history)
-        if self.stop_score is not None and ids:
-            keep = max(1, next((i for i, score in enumerate(scores) if score > self.stop_score), len(scores)))
-            ids, parents, scores = ids[:keep], parents[:keep], scores[:keep]
-        return ids, parents, scores
+        return chains.finish(row, max_nodes, history, stop=self.stop_score)
 
     def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None, history=None):
         return self.finish_tree(self.launch_block(pending, max_nodes, block, history), context_length, max_nodes,
