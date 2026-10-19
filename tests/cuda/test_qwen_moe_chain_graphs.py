@@ -84,7 +84,7 @@ def test_chain_graph_rounds_equal_eager_rounds_across_requests_and_buckets(model
         assert widths == eager_widths
     assert len(set(eager_widths)) > 1 or any(r > 1 for r in eager_widths)
     # Private prefill states were copied in; the fixed buffers never moved; spans and widths each took graphs.
-    assert runner._addresses() == buffers and runner.rows == 512
+    assert runner._addresses() == buffers
     assert len({key[0] for key in runner.graphs}) > 1 and len({key[1] for key in runner.graphs}) > 1
     # Serial rounds (no drafter, no copies) replay the one-row graph.
     st, pending = decode.prefill(w, PROMPTS[2], None)[:2]
@@ -185,3 +185,30 @@ def test_engine_prefills_on_the_fixed_buffers_and_conversations_switch_like_eage
     assert stats["cached"] == (len(first) - 1 if budget else 0)
     assert all(kept.kv is fixed for ids, kept, _ in graphed.cache.entries if turn[:len(ids)] == ids)
     assert runner._addresses() == tuple(t.data_ptr() for kv in fixed if kv is not None for t in kv)
+
+
+def test_begin_refuses_kept_states_on_the_fixed_buffers_that_are_not_one_prompts_prefixes(model):
+    """V4: a kept state on the fixed buffers that is not a prefix of the prompt (or of the chain being moved out)
+    would read another prompt's rows; begin raises instead of resuming or moving it."""
+
+    from tensorfold.cuda.streams import PrefixCache
+    from tensorfold.families.qwen3_5.cuda.forward import State
+
+    w = model
+    runner = ChainGraphs(w, 256, bucket=64)
+
+    def kept(ids):
+        st = State(w)
+        st.kv, st.pos = runner.st.kv, len(ids)
+        return st
+
+    cache = PrefixCache(4)
+    base = kept([1, 2, 3, 4])
+    cache.add([1, 2, 3, 4], base, None)
+    cache.add([1, 2], kept([1, 2]), None)
+    assert runner.begin(cache, None, base, [1, 2, 3, 4, 5]) is base          # one prompt's prefixes: resumed
+    cache.add([1, 9, 9], kept([1, 9, 9]), None)                              # another prompt's rows on the same buffers
+    with pytest.raises(RuntimeError, match="not one prompt's prefixes"):
+        runner.begin(cache, None, base, [1, 2, 3, 4, 5])
+    with pytest.raises(RuntimeError, match="not one prompt's prefixes"):
+        runner.begin(cache, None, None, [7, 7, 7])                           # moving them out checks the chain too

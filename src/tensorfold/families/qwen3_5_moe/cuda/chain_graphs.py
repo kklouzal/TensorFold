@@ -22,16 +22,24 @@ from tensorfold.families.qwen3_5.cuda.forward import State, reserve, stage, tree
 from . import CHAIN_BUCKET
 
 
+def copy_kv(dst, src, rows: int) -> None:
+    """The first ``rows`` rows of every attention layer's (K, V) in the KV list ``src``, copied into ``dst``'s."""
+
+    for kv, other in zip(dst, src):
+        if kv is not None:
+            kv[0][:rows].copy_(other[0][:rows])
+            kv[1][:rows].copy_(other[1][:rows])
+
+
 def copy_state(dst: State, st: State) -> None:
-    """``st``'s committed recurrent/conv state and first ``st.pos`` KV rows, copied into ``dst``'s buffers in place."""
+    """``st``'s committed recurrent/conv state and first ``st.pos`` KV rows (already there when the two share one KV
+    list), copied into ``dst``'s buffers in place."""
 
     for a, b in zip(dst.rec + dst.conv, st.rec + st.conv):
         if a is not None:
             a.copy_(b)
-    for kv, src in zip(dst.kv, st.kv):
-        if kv is not None:
-            kv[0][:st.pos].copy_(src[0][:st.pos])
-            kv[1][:st.pos].copy_(src[1][:st.pos])
+    if dst.kv is not st.kv:
+        copy_kv(dst.kv, st.kv, st.pos)
     dst.pos = st.pos
 
 
@@ -59,7 +67,6 @@ class ChainGraphs:
         if type(capacity) is not int or capacity < 1 or type(bucket) is not int or bucket < 1:
             raise ValueError("chain graphs need a positive row capacity and context bucket")
         self.w, self.capacity, self.bucket = w, capacity, bucket
-        self.rows = capacity
         self.st = State(w)
         reserve(self.st, capacity)
         self._buffers = self._addresses()
@@ -67,54 +74,63 @@ class ChainGraphs:
         self.graphs: dict[tuple[int, int, bool], tuple] = {}
 
     def _span(self, end: int) -> int:
-        return min(self.rows, max(self.bucket, 1 << (end - 1).bit_length()))
+        return min(self.capacity, max(self.bucket, 1 << (end - 1).bit_length()))
 
-    def begin(self, cache, room, base: State | None) -> State:
-        """The state a request's prefill extends in place on the fixed attention buffers.
+    def begin(self, cache, room, base: State | None, prompt: Sequence[int]) -> State:
+        """The state ``prompt``'s prefill extends in place on the fixed attention buffers.
 
         ``base``: the prefix-cache state the request resumes (None: a fresh prompt); ``cache`` (streams.PrefixCache,
         whose extensions of ``base`` the engine already dropped) and ``room`` (streams.KVRoom or None) are the
         stream's. Kept states on the fixed buffers that the request would overwrite (every one, unless it resumes
         from them) first move to private buffers sized to their rows (while ``room`` admits them; else they are
         dropped); a resumed state on private buffers is copied in and its kept relatives return to the fixed ones.
+        Every kept state on the fixed buffers must be a prefix of one prompt (at most ``cache.keep`` of them): the
+        rows they share hold only that prompt. Anything else is a broken cache invariant and raises, since a kept
+        state would read another prompt's rows.
         """
 
         fixed = self.st.kv
         if base is not None and base.kv is fixed:
-            return base                          # prefill writes past base.pos: only prefixes of base stay on fixed
+            self._check_chain(cache, prompt)     # prefill writes past base.pos: only prefixes of the prompt stay
+            return base
         self._move_out(cache, room)
         if base is None:
             st = State(self.w)
             st.kv, st.limit = fixed, self.capacity
             return st
         private = base.kv
-        for dst, src in zip(fixed, private):
-            if dst is not None:
-                dst[0][:base.pos].copy_(src[0][:base.pos])
-                dst[1][:base.pos].copy_(src[1][:base.pos])
+        copy_kv(fixed, private, base.pos)
         for _, kept, _ in cache.entries:         # base's chain (its extensions are gone): rows < base.pos
             if kept.kv is private:
                 kept.kv = fixed
         base.kv, base.limit = fixed, self.capacity
         return base
 
+    def _check_chain(self, cache, prompt: Sequence[int]) -> list:
+        """The kept entries on the fixed buffers, each verified a prefix of ``prompt`` (at most ``cache.keep``)."""
+
+        held = [entry for entry in cache.entries if entry[1].kv is self.st.kv]
+        if len(held) > cache.keep or any(len(ids) > len(prompt) or list(prompt[:len(ids)]) != list(ids)
+                                         or kept.pos != len(ids) for ids, kept, _ in held):
+            raise RuntimeError("chain-graph buffers hold kept prompt states that are not one prompt's prefixes")
+        return held
+
     def _move_out(self, cache, room) -> None:
         fixed = self.st.kv
         held = [entry for entry in cache.entries if entry[1].kv is fixed]
         if not held:
             return
+        self._check_chain(cache, max((ids for ids, _, _ in held), key=len))
         rows = max(kept.pos for _, kept, _ in held)
         size = sum(rows * (t.stride(0) * t.element_size()) for kv in fixed if kv is not None for t in kv)
-        probe = object.__new__(State)
-        probe.kv = fixed
         if room is not None:
-            room(probe, size)                    # evicts kept entries on other private buffers, oldest first
-        if rows == 0 or room is not None and room.held(probe) + size > room.budget:
+            room(self.st, size)                  # evicts kept entries on other private buffers, oldest first
+        if rows == 0 or room is not None and room.held(self.st) + size > room.budget:
             cache.entries = [entry for entry in cache.entries if entry[1].kv is not fixed]
             cache.hit &= {tuple(entry[0]) for entry in cache.entries}
             return
         private = [None if kv is None else (kv[0][:rows].clone(), kv[1][:rows].clone()) for kv in fixed]
-        for _, kept, _ in held:                  # one prompt's chain of prefixes: rows < rows hold them all
+        for _, kept, _ in held:                  # one prompt's chain of prefixes: the longest one's rows hold them all
             kept.kv = private
 
     def load(self, st: State, need: int) -> State:
@@ -125,13 +141,7 @@ class ChainGraphs:
             raise ValueError("chain graphs verify text positions; image prompts decode eagerly")
         if max(need, st.pos + 1) > self.capacity:
             raise ValueError("chain graphs hold at most their capacity's rows")
-        if st.kv is self.st.kv:
-            for a, b in zip(self.st.rec + self.st.conv, st.rec + st.conv):
-                if a is not None:
-                    a.copy_(b)
-            self.st.pos = st.pos
-        else:
-            copy_state(self.st, st)
+        copy_state(self.st, st)
         return self.st
 
     def _addresses(self) -> tuple[int, ...]:
@@ -150,7 +160,7 @@ class ChainGraphs:
         self.load(empty, 1)
         keys = [(width, taps) for width in widths] + ([(1, False)] if taps else [])
         for width, tap in keys:
-            if width <= self.rows:
+            if width <= self.capacity:
                 self.verify([0] * width, list(range(-1, width - 1)), capture_taps=tap)
         torch.cuda.synchronize()
         return len(self.graphs)
@@ -165,7 +175,7 @@ class ChainGraphs:
         """
 
         st, width = self.st, len(tokens)
-        if list(parents) != list(range(-1, width - 1)) or st.pos + width > self.rows:
+        if list(parents) != list(range(-1, width - 1)) or st.pos + width > self.capacity:
             ids = torch.tensor(tokens, dtype=torch.int32, device=self.w.norm.device)
             return tree_forward(self.w, ids, parents, st, capture_taps=capture_taps)
         if self._addresses() != self._buffers:
