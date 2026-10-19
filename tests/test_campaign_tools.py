@@ -685,6 +685,11 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
                                                                   check["delta_kl"], check["delta_agreement"])
     assert record["leave_one_out"]["false_alarms"] == sorted(n for n, c in held_out.items() if c["status"] != "pass")
     assert record["variants"]["r0"]["new_sha256"] == kl.file_sha256(path("reorder0"))
+    _dump(tmp_path / "exact.npz", golden, 16, reference=tmp_path / "golden.npz")      # a base whose KL is exactly 0
+    exact = kl.calibrate(path("golden"), path("exact"), variants, resamples=300)
+    assert exact["base_values"]["kl_old"]["mean"] == 0 and exact["delta_kl_pct_of_base_kl"] is None   # no percentage
+    assert kl.gate(path("golden"), path("exact"), path("same"), calibration=exact,
+                   resamples=300)["margins"]["delta_kl_pct_of_base_kl"] is None
     with pytest.raises(ValueError, match="4 to 6 reorder-only variants, not 3"):
         kl.calibrate(path("golden"), path("old"), dict(list(variants.items())[:3]), resamples=300)
     assert kl.gate(path("golden"), path("old"), path("same"), resamples=300)["status"] == "uncalibrated"
@@ -750,6 +755,15 @@ def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
         margins = ["--calibration", str(tmp_path / "calibration.json")] if kl_ci else []
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", *margins])
         assert kl.main() == code
+    monkeypatch.setattr(kl, "paired", paired_with((4.0, 6.0), (-0.01, 0.01)))        # a gross KL regression
+    monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
+                                      str(tmp_path / "calibration.json")])
+    for field, bad in (("delta_kl", math.nan), ("delta_kl", math.inf), ("delta_agreement", math.nan),
+                       ("delta_agreement", -0.1), ("delta_kl", None)):
+        # json writes and reads NaN and Infinity, margins that would pass any candidate; negative or null: no margin
+        (tmp_path / "calibration.json").write_text(json.dumps({**record, field: bad}))
+        with pytest.raises(ValueError, match="not finite non-negative numbers"):
+            kl.main()
     for bad in (["r0"], ["=x.npz"], ["r0=a.npz", "r0=b.npz"]):            # NAME=DUMP, distinct names
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "calibrate", "g", "b", *bad])
         with pytest.raises(SystemExit) as stop:

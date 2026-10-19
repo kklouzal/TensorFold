@@ -886,8 +886,10 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   derives its margins from 4 to 6 reorder-only variants of the base (the same declared math in another summation
   order): each margin is the largest absolute 95% bound of a variant's paired difference from the base (the largest
   deviation a numerically equivalent build shows at this eval size); delta_kl is reported in nats and as a
-  percentage of the base's KL; the record keeps every variant's difference, interval and dump hash and a
-  leave-one-out check (each variant judged with the others' margins) that counts false alarms. The gate fails
+  percentage of the base's KL, in the record and in every calibrated gate result; the record keeps every
+  variant's difference, interval and dump hash and a leave-one-out check (each variant judged with the others'
+  margins) that counts false alarms. The record names its margin method (`ci_bound`); a gate refuses a record
+  made under another rule or whose margins are not finite non-negative numbers (recalibrate). The gate fails
   when an interval lies wholly beyond its margin (a regression is established), passes when the upper KL bound
   and the lower agreement bound lie within the margins (improvements never fail), and is otherwise `incomplete`
   (an interval straddles its margin: more evidence, never a pass); without a calibration it reports the

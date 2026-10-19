@@ -38,6 +38,7 @@ import contextlib
 import hashlib
 import itertools
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -518,8 +519,9 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     """Golden-reference non-inferiority gate of NEW against OLD under the model's calibration record (margins from
     reorder-only variants, ``margins``; the verdict rule is ``verdict``). Without a calibration the status is
     "uncalibrated" (intervals reported, no verdict; the CLI exits 3 as for incomplete). A calibration belongs to one
-    golden reference (eval set and positions) and bootstrap setting; delta_kl is reported in nats and as a percentage
-    of the calibration base's KL."""
+    golden reference (eval set and positions) and bootstrap setting, and must name MARGIN_METHOD and carry finite
+    non-negative margins (refused otherwise); delta_kl is reported in nats and as a percentage of the calibration
+    base's KL."""
 
     result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
     result["ci_width"] = {k: result[k]["ci95"][1] - result[k]["ci95"][0] for k in ("kl_delta", "agreement_delta")}
@@ -537,6 +539,11 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
             raise ValueError(f"bootstrap {key} {result['bootstrap'][key]} differs from the calibration's "
                              f"{calibration['bootstrap'][key]}")
     delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
+    # the record crossed a file boundary (json reads NaN and Infinity): every comparison with a NaN margin is false and
+    # an infinite one is never exceeded, so either would pass any candidate; calibrate writes finite bounds >= 0
+    if not all(isinstance(m, (int, float)) and 0 <= m < math.inf for m in (delta_kl, delta_agree)):
+        raise ValueError(f"calibration margins delta_kl={delta_kl!r}, delta_agreement={delta_agree!r} are not finite "
+                         "non-negative numbers: recalibrate (campaign_kl.py calibrate) from the variant dumps")
     status, measures = verdict(result["kl_delta"]["ci95"], result["agreement_delta"]["ci95"], delta_kl, delta_agree)
     result["margins"] = {"delta_kl": delta_kl, "delta_kl_pct_of_base_kl": calibration["delta_kl_pct_of_base_kl"],
                          "delta_agreement": delta_agree, "method": calibration["margin_method"],
