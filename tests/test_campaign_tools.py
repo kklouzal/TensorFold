@@ -912,22 +912,18 @@ def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", *margins])
         assert kl.main() == code
     monkeypatch.setattr(kl, "paired", paired_with((4.0, 6.0), (-0.01, 0.01)))        # a gross KL regression
-    monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
-                                      str(tmp_path / "calibration.json")])
-    for field, bad in (("delta_kl", math.nan), ("delta_kl", math.inf), ("delta_agreement", math.nan),
-                       ("delta_agreement", -0.1), ("delta_kl", None)):
-        # json writes and reads NaN and Infinity, margins that would pass any candidate; negative or null: no margin
-        (tmp_path / "calibration.json").write_text(json.dumps({**record, field: bad}))
-        assert kl.main() == 4                                  # refused: an error result, neither pass nor fail
     out = tmp_path / "gate.json"
-    refusals = ((dict(record, delta_kl=math.nan), "not finite non-negative numbers"),
-                ({k: v for k, v in record.items() if k != "margin_method"}, "recalibrate"),
-                (dict(record, golden_sha256="other"), "golden_sha256 does not match"),
-                (dict(record, bootstrap=dict(boot, seed=1)), "bootstrap seed"))
-    for calibration, reason in refusals:                       # each refusal kind: status error, exit 4
+    monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
+                                      str(tmp_path / "calibration.json"), "--out", str(out)])
+    # json writes and reads NaN and Infinity, margins that would pass any candidate; negative or null: no margin
+    refusals = [({**record, field: bad}, "not finite non-negative numbers")
+                for field, bad in (("delta_kl", math.nan), ("delta_kl", math.inf), ("delta_agreement", math.nan),
+                                   ("delta_agreement", -0.1), ("delta_kl", None))]
+    refusals += [({k: v for k, v in record.items() if k != "margin_method"}, "recalibrate"),
+                 (dict(record, golden_sha256="other"), "golden_sha256 does not match"),
+                 (dict(record, bootstrap=dict(boot, seed=1)), "bootstrap seed")]
+    for calibration, reason in refusals:       # each refusal kind, over a gross regression: status error, exit 4
         (tmp_path / "calibration.json").write_text(json.dumps(calibration))
-        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
-                                          str(tmp_path / "calibration.json"), "--out", str(out)])
         assert kl.main() == 4, reason
         result = json.loads(out.read_text())
         assert result["status"] == "error" and reason in result["error"], (reason, result)
