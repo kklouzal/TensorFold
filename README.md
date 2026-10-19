@@ -1,5 +1,7 @@
 # TensorFold fork
 
+**Native A4 shared-input candidate (2026-10-19):** resident CT and ModelOpt expert plans reuse one activation-fragment set between the gate and up projections when their loader-proven input calibration is shared. Projection weights, activation rounding, K-slice order and routing stay unchanged. This candidate affects shared-input decode as well as prefill; native correctness, installed-model quality and repeated GB10 HTTP performance selection under VBoost 0 remain pending. Historical development-host timings do not qualify this build. [Arithmetic and qualification scope](docs/cuda-kernel-contracts.md#shared-input-fragment-reuse-candidate-2026-10-19).
+
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
 and determinism probes hold a rendered next turn whose reply cannot fit the served
 context. Diagnostic substring recall remains separate from exact answer quality;

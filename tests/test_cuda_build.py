@@ -533,3 +533,31 @@ def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
     assert lock.exists()
     with actual_lock(str(lock), timeout=1):
         pass
+
+
+def test_native_a4_fragment_revision_uses_its_owned_target_build_and_one_cached_load(monkeypatch):
+    import torch
+
+    from tensorfold.cuda.nvfp4 import grouped_a4
+
+    calls = []
+    module = object()
+
+    def load(**options):
+        calls.append(options)
+        return module
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (12, 1))
+    monkeypatch.setattr(build, "load", load)
+    grouped_a4._ext.cache_clear()
+    try:
+        assert grouped_a4._ext() is grouped_a4._ext() is module
+    finally:
+        grouped_a4._ext.cache_clear()
+    assert len(calls) == 1
+    options = calls[0]
+    assert options["name"] == "tensorfold_nvfp4_experts_a4_v7"  # does not alias the prior v5 binary
+    assert options["arch_specific"] and options["need"] == build.MIN_CAPABILITY
+    assert {Path(source).name for source in options["sources"]} == {"experts_a4.cpp", "experts_a4.cu"}
+    assert all(Path(source).parent == Path(grouped_a4.__file__).parent for source in options["sources"])
+    assert options["extra_cuda_cflags"] == ["-O3", "--ftz=false", "--prec-div=true"]
