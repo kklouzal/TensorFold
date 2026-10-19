@@ -21,7 +21,7 @@ from typing import Any
 from .weights import Config
 
 RING_ALIGN = 64
-PREFILL_ROWS = 128       # widest text prefill forward of a request lane
+PREFILL_ROWS = 1024      # widest text prefill forward of a request lane
 # Attention geometry (see attention.py): absolute key chunks and query tiles.
 QUERY_TILE = 16          # (row, head) query pairs a program carries; fixed for every row count
 SLIDING_CHUNK = 256      # absolute key chunk of sliding layers
