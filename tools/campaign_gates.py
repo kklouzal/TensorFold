@@ -14,13 +14,13 @@ threshold has status "report" and a null verdict. Determinism and identity are "
 required comparison was not exercised: a warm request that resumed no cached prefix, a cold one that did, a greedy
 reply that verified no draft (silence is not coverage). Token ids are required from every reply. The overall status
 is fail > incomplete > pass > report; exit status 1 = fail, 3 = incomplete, 4 = error (a refusal or failure of the
-tool or server, never a verdict: status "error" with the reason, gates already run kept), 0 otherwise.
+tool or server, never a verdict: status "error" with the reason, gates already run kept; when that record cannot be
+written either, the printed summary's "record_error" says why), 0 otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 from pathlib import Path
 import random
@@ -594,9 +594,13 @@ def main() -> int:
     except Exception as error:          # a refusal or a tool/server failure, gates already run kept
         traceback.print_exc()
         result.update(status="error", error=f"{type(error).__name__}: {error}")
-        with contextlib.suppress(OSError):              # the record is best effort; the exit status is the contract
+        summary = {"status": "error", "error": result["error"]}
+        try:                            # the record is best effort; the exit status is the contract
             write_json(args.out, result)
-        print(json.dumps({"status": "error", "error": result["error"]}), flush=True)
+        except Exception as unwritten:  # --out not an ordinary file, a non-finite value (allow_nan=False), I/O
+            traceback.print_exc()
+            summary["record_error"] = f"{type(unwritten).__name__}: {unwritten}"
+        print(json.dumps(summary), flush=True)
         return 4
     print(json.dumps({"status": result["status"], "gates": statuses}), flush=True)
     return {"fail": 1, "incomplete": 3}.get(result["status"], 0)

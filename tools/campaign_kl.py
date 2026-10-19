@@ -214,16 +214,35 @@ def sampler_replaced(replacement):
             module.sample_rows = original
 
 
+def build_plan(args) -> list[dict]:
+    """The items ``--build`` writes, in order, before anything is rendered: name and thinking mode, the prompt text of
+    a short item, and the ask and prompt depth of a corpus-backed one (``mid``: on its own window from --corpus-start
+    on, else a corpus prefix). Short items are the --short sets' prompts numbered across all SHORT_SETS (names stay
+    unique whichever sets are chosen); mid items cycle through MID_ITEMS (a document review or a document-to-code ask,
+    thinking off or on); long items have thinking off."""
+
+    mids, longs = build_depths(args)
+    chosen = [name for name in args.short.split(",") if name]
+    numbered = enumerate((name, prompt) for name, prompts in SHORT_SETS.items() for prompt in prompts)
+    plan = [{"name": f"short-{i}", "thinking": thinking, "text": text}
+            for i, (name, (text, thinking)) in numbered if name in chosen]
+    for k, depth in enumerate(mids):
+        task, thinking = MID_ITEMS[k % len(MID_ITEMS)]
+        plan.append({"name": f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", "thinking": thinking,
+                     "ask": TASKS[task], "depth": depth, "mid": True})
+    plan += [{"name": f"long-{depth}", "thinking": False, "ask": LONG_ASK, "depth": depth, "mid": False}
+             for depth in longs]
+    return plan
+
+
 def build_eval(app, args) -> dict:
     """Prompts rendered by the served template and continuations sampled by this configuration (``args.cards``: card
-    sampling per thinking mode). Items: the --short prompt sets (SHORT_SETS); one per --mid-depths entry, cycling
-    through MID_ITEMS (a document review or a document-to-code ask, thinking off or on), each on its own corpus window
-    from --corpus-start on; one per --long-depths entry (a corpus prefix, thinking off). Every document is the most
-    corpus characters whose rendered prompt stays within its depth; its character range is recorded. The depths are
-    within the long-prefill hold (eval_set checked them)."""
+    sampling per thinking mode) for the items of build_plan; consecutive mid items take consecutive corpus windows.
+    Every document is the most corpus characters whose rendered prompt stays within its depth; its character range is
+    recorded, and a depth the corpus cannot fill is refused, never written short. eval_set checked the plan (depths
+    within the long-prefill hold, unique names, a card per thinking mode)."""
 
     corpus = Path(args.corpus).read_text(encoding="utf-8") if args.corpus else None
-    mids, longs = build_depths(args)
 
     def window(start: int, ask: str, depth: int, thinking: bool) -> tuple[str, list[int]]:
         """The user message (a corpus document from ``start`` on, then ``ask``) and its document's character range."""
@@ -231,31 +250,35 @@ def build_eval(app, args) -> dict:
         def render(chars: int) -> str:
             return "<document>\n" + corpus[start:start + chars] + "\n</document>\n\n" + ask
 
-        lo, hi = 0, min(len(corpus) - start, depth * 8)
+        def tokens(chars: int) -> int:
+            body = {"messages": [{"role": "user", "content": render(chars)}],
+                    "chat_template_kwargs": {"enable_thinking": thinking}}
+            return len(app.prepare(body, True).prompt)
+
+        rest = len(corpus) - start
+        if (empty := tokens(0)) > depth:
+            raise ValueError(f"a {depth}-token item: the empty document already renders {empty} tokens")
+        if rest <= depth * 8 and tokens(rest) <= depth:      # the whole rest fits: the corpus ends before the depth
+            raise ValueError(f"the corpus ({len(corpus)} characters) ends before a {depth}-token document from "
+                             f"character {start}")
+        lo, hi = 0, min(rest, depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
-            body = {"messages": [{"role": "user", "content": render(mid)}],
-                    "chat_template_kwargs": {"enable_thinking": thinking}}
-            lo, hi = (mid, hi) if len(app.prepare(body, True).prompt) <= depth else (lo, mid)
+            lo, hi = (mid, hi) if tokens(mid) <= depth else (lo, mid)
         return render(lo), [start, start + lo]
 
-    def item(name: str, content: str, thinking: bool, **fields) -> dict:
-        return {"name": name, "messages": [{"role": "user", "content": content}], "thinking": thinking, **fields}
-
-    chosen = [name for name in args.short.split(",") if name]
-    numbered = enumerate((name, prompt) for name, prompts in SHORT_SETS.items() for prompt in prompts)
-    items = [item(f"short-{i}", text, thinking)             # numbered across all sets: names stay unique
-             for i, (name, (text, thinking)) in numbered if name in chosen]
-    start = args.corpus_start
-    for k, depth in enumerate(mids):
-        task, thinking = MID_ITEMS[k % len(MID_ITEMS)]
-        content, document = window(start, TASKS[task], depth, thinking)
-        items.append(item(f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", content, thinking,
-                          document=document))
-        start = document[1]                          # the next window starts where this one ends
-    for depth in longs:
-        content, document = window(0, LONG_ASK, depth, False)
-        items.append(item(f"long-{depth}", content, False, document=document))
+    items, start = [], args.corpus_start
+    for planned in build_plan(args):
+        fields = {}
+        if "depth" not in planned:
+            content = planned["text"]
+        else:
+            content, fields["document"] = window(start if planned["mid"] else 0, planned["ask"], planned["depth"],
+                                                 planned["thinking"])
+            if planned["mid"]:
+                start = fields["document"][1]        # the next mid window starts where this one ends
+        items.append({"name": planned["name"], "messages": [{"role": "user", "content": content}],
+                      "thinking": planned["thinking"], **fields})
     engine = app.engine
     for k, it in enumerate(items):
         thinking = it.pop("thinking")
@@ -292,7 +315,8 @@ def eval_set(args) -> tuple[dict, str] | None:
     """The eval set ``dump`` teacher-forces (read_eval), or None when ``--build`` is to write it; checked before the
     engine loads, so a refusal costs no model load. During the campaign's long-prefill hold (lifted by
     --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of mid or long
-    items above it, is refused."""
+    items above it, is refused; so is a build whose item names repeat (names are the items' identities) or whose
+    items use a thinking mode the profile has no card sampling for."""
 
     path = Path(args.eval)
     if not path.exists():
@@ -300,12 +324,22 @@ def eval_set(args) -> tuple[dict, str] | None:
             raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
         if args.mid_depths and not args.corpus:
             raise SystemExit("--mid-depths needs --corpus")
+        if args.corpus_start < 0:
+            raise SystemExit(f"--corpus-start {args.corpus_start} is not a corpus character index")
         if unknown := [n for n in args.short.split(",") if n and n not in SHORT_SETS]:
             raise SystemExit(f"unknown --short sets {unknown} (choose from {', '.join(SHORT_SETS)})")
-        depths = [d for group in build_depths(args) for d in group]
+        plan = build_plan(args)
+        depths = [it["depth"] for it in plan if "depth" in it]
         if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
             raise SystemExit(f"items of {depths} tokens exceed {LONG_PREFILL_TOKENS}: held by the campaign's "
                              "long-prefill hold (pass --allow-long-prefill once it is lifted)")
+        names = [it["name"] for it in plan]
+        if repeated := sorted({n for n in names if names.count(n) > 1}):
+            raise SystemExit(f"the build would repeat item names {repeated}: a --long-depths entry given twice, or a "
+                             f"--mid-depths depth twice at the same step of the {len(MID_ITEMS)}-step mid cycle")
+        if missing := sorted({"think" if it["thinking"] else "nothink" for it in plan} - set(args.cards)):
+            raise SystemExit(f"--profile has no card_sampling for {missing}, a mode of the built items (or pass "
+                             "--card)")
         return None
     data, digest = read_eval(path)
     long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
@@ -651,6 +685,18 @@ def golden_reference(golden_path: str, eval_path: str):
     return data, eval_sha256, golden, meta
 
 
+def writable_out(out_dir: str, *inputs: str) -> Path:
+    """OUT_DIR of subset or append, refused when its eval.json or golden/kl.npz is one of the ``inputs``: the result
+    would replace a file it is made from (the reference other records name by its sha256)."""
+
+    out = Path(out_dir)
+    sources = {Path(path).resolve() for path in inputs}
+    if any(path.resolve() in sources for path in (out / "eval.json", out / "golden" / "kl.npz")):
+        raise ValueError(f"{out_dir} holds an input's own eval.json or golden/kl.npz: the result would replace it "
+                         "(choose another OUT_DIR)")
+    return out
+
+
 def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens: int) -> dict:
     """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
     from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
@@ -660,11 +706,7 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
 
     import numpy as np
 
-    out = Path(out_dir)
-    inputs = {Path(golden_path).resolve(), Path(eval_path).resolve()}
-    if any(path.resolve() in inputs for path in (out / "eval.json", out / "golden" / "kl.npz")):
-        raise ValueError(f"{out_dir} holds the full set's own eval.json or golden/kl.npz: the subset would replace "
-                         "them (choose another OUT_DIR)")
+    out = writable_out(out_dir, golden_path, eval_path)
     data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
     offsets = [*golden["offsets"], len(golden["lp"])]
     keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
@@ -698,11 +740,13 @@ def append(base_golden: str, base_eval: str, new_golden: str, new_eval: str, out
     GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the runner's --kl-from layout. The base rows are copied
     unchanged, never rescored. Both inputs must be full golden references of their eval sets (subset the result,
     not the parts) with the same checkpoint, model config, top-K, logits dtype, library versions, prefill chunk and
-    weight/compute precision, and disjoint item names. ``parts`` lists every scoring session in order (an appended
-    base keeps its own parts) with its hashes, items, tool hash, precision record and eval build record."""
+    weight/compute precision, and disjoint item names; OUT must hold none of them. ``parts`` lists every scoring
+    session in order (an appended base keeps its own parts) with its hashes, items, tool hash, precision record and
+    eval build record."""
 
     import numpy as np
 
+    out = writable_out(out_dir, base_golden, base_eval, new_golden, new_eval)
     loaded = []
     for golden_path, eval_path in ((base_golden, base_eval), (new_golden, new_eval)):
         data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
@@ -725,7 +769,6 @@ def append(base_golden: str, base_eval: str, new_golden: str, new_eval: str, out
         extra = sorted(set(base_rows.files) ^ set(new_rows.files))
         raise ValueError(f"the golden parts hold different arrays: {extra}")
     parts = base_parts + new_parts
-    out = Path(out_dir)
     (out / "golden").mkdir(parents=True, exist_ok=True)
     (out / "eval.json").write_text(json.dumps({**{k: v for k, v in base.items() if k not in ("items", "parts")},
                                                "items": base["items"] + new["items"], "parts": parts}))
@@ -803,9 +846,10 @@ def main() -> int:
             ap.error("dump needs -- serve MODEL [flags]")
         if args.card is not None:                    # --card overrides the profile, which is then not read
             args.cards = {"think": args.card, "nothink": args.card}
+        elif args.profile:                           # a mode it lacks is refused by eval_set if the build uses it
+            args.cards = json.loads(Path(args.profile).read_text())["card_sampling"]
         else:
-            cards = json.loads(Path(args.profile).read_text())["card_sampling"] if args.profile else {}
-            args.cards = {"think": cards.get("think", {}), "nothink": cards.get("nothink", {})}
+            args.cards = {"think": {}, "nothink": {}}
         loaded = eval_set(args)                      # refusals before the engine loads
         with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
     else:
