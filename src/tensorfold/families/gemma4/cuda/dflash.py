@@ -25,12 +25,12 @@ import triton.language as tl
 from tensorfold.cleanup import rollback
 from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
+from tensorfold.cuda.requant import Head, prefix, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
 from . import attention
-from .fp8_rows import Fp8Rows
 from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
@@ -88,6 +88,12 @@ def _project(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     if m > 16:
         return b16.prompt(x, weight)
     return b16.matmul_rows(x, weight, max(2, 1 << (m - 1).bit_length()))
+
+
+def _project8(x: torch.Tensor, linear) -> torch.Tensor:
+    """BF16 rows through a requantized FP8 copy: proposals and accepted taps on the decode kernel, committed prompt
+    chunks on the prompt GEMM (the same row split as the BF16 path)."""
+    return linear.prefill(x) if x.shape[0] > 16 else linear(x)
 
 
 class DraftState:
@@ -186,22 +192,23 @@ class DFlash:
             attn = base + "self_attn."
             loaded[base + "kvq"] = torch.cat([loaded.pop(attn + f"{p}_proj.weight") for p in "kvq"])
             loaded[base + "gate_up"] = torch.cat([loaded.pop(base + f"mlp.{p}_proj.weight") for p in ("gate", "up")])
-        # Projections: BF16 on the row-reuse kernel, or (bits 8) private FP8 row-scaled copies; with FP8 the
-        # borrowed head is an FP8 copy of the target's BF16 head as well (the target keeps its own head).
-        names = ["fc.weight"] + [f"layers.{i}.{p}" for i in range(cfg.layers)
-                                 for p in ("kvq", "self_attn.o_proj.weight", "gate_up", "mlp.down_proj.weight")]
+        # Projections: BF16 on the row-reuse kernel, or (bits 8) private FP8 copies (tensorfold.cuda.requant: E4M3
+        # codes, one FP32 scale an output row); with FP8 the borrowed head is an FP8 copy of the target's BF16 head
+        # as well (the target keeps its own head). Each BF16 source is freed once its copy exists.
+        names = list(cfg.fused_shapes())
         kv_width = 2 * cfg.kv_heads * cfg.head_dim
         self.linears = {}
         for name in names:
             weight = loaded.pop(name) if bits == 8 else loaded[name]
-            self.linears[name] = Fp8Rows(weight) if bits == 8 else partial(_project, weight=weight)
+            copy = requantize(weight, "fp8") if bits == 8 else None
+            self.linears[name] = partial(_project8, linear=copy) if bits == 8 else partial(_project, weight=weight)
             if name.endswith(".kvq"):
                 kv = name[:-3] + "kv"
-                self.linears[kv] = (self.linears[name].prefix(kv_width) if bits == 8
+                self.linears[kv] = (partial(_project8, linear=prefix(copy, kv_width)) if bits == 8
                                     else partial(_project, weight=weight[:kv_width]))
-            del weight
+            del weight, copy
         if bits == 8:
-            self.project_logits = Fp8Rows(head.weight, softcap=target.config.softcap)
+            self.project_logits = Head(head, "fp8", softcap=target.config.softcap)
         self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.
         # Reusing Flash Next's FP64 default construction would change frequencies.

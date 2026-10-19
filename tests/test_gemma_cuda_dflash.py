@@ -19,7 +19,8 @@ import torch.nn.functional as F  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
 
 from tensorfold.families.gemma4.cuda import dflash  # noqa: E402
-from tensorfold.families.gemma4.cuda.fp8_rows import Fp8Rows  # noqa: E402
+from tensorfold.cuda.nvfp4.linear import Fp8Linear  # noqa: E402
+from tensorfold.cuda.requant import Head  # noqa: E402
 from tensorfold.families.gemma4.dflash_metadata import DraftConfig  # noqa: E402
 from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
@@ -347,16 +348,29 @@ def test_fp8_proposals_track_bf16(tmp_path):
     assert clear.any()                      # the id check below must not pass vacuously
     assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
     assert torch.equal(fp8.logits(b, 2, 3), right)
-    assert all(isinstance(fn, Fp8Rows) for fn in (*fp8.linears.values(), fp8.project_logits))
-    # Resident storage (the [k | v] prefixes share their [k | v | q] codes): an E4M3 byte per projection weight, an
-    # FP32 scale per output row, the BF16 norms, and the FP8 copy of the target's tied head.
+    copies = [fn.keywords["linear"] for fn in fp8.linears.values()]
+    assert all(fn.func is dflash._project8 for fn in fp8.linears.values())
+    assert all(isinstance(c, Fp8Linear) for c in copies) and isinstance(fp8.project_logits, Head)
+    # Resident storage (the [k | v] prefixes share their [k | v | q] codes): per fused projection an E4M3 byte per
+    # weight and an FP32 scale per output row over 128-padded rows, the BF16 norms, and the FP8 head copy; exactly
+    # what admission counts for --drafter-bits 8 (test_gemma_cuda_capacity).
     held = {t.untyped_storage().data_ptr(): t.untyped_storage().nbytes()
-            for fn in (*fp8.linears.values(), fp8.project_logits) for t in (fn.codes, fn.scale)}
+            for c in (*copies, fp8.project_logits.linear) for t in (c.w8, c.cols)}
     held.update((t.untyped_storage().data_ptr(), t.untyped_storage().nbytes()) for t in fp8.weights.values())
+
+    def copy(n, k):
+        rows = -(-n // 128) * 128
+        return rows * k + rows * 4
+
     shapes = cfg.shapes().values()
-    assert sum(held.values()) == (sum(r * k + 4 * r for r, k in (s for s in shapes if len(s) == 2))
+    assert sum(held.values()) == (sum(copy(n, k) for n, k in cfg.fused_shapes().values())
                                   + sum(2 * n for (n,) in (s for s in shapes if len(s) == 1))
-                                  + cfg.vocab * (cfg.hidden + 4))
+                                  + copy(cfg.vocab, cfg.hidden))
+    # committed prompt chunks (> 16 rows) take the prompt GEMM, proposals and accepted taps the decode kernel
+    rows = torch.randn(40, cfg.hidden, device=DEV).bfloat16()
+    kvq = fp8.linears["layers.0.kvq"].keywords["linear"]
+    assert torch.equal(fp8.linears["layers.0.kvq"](rows), kvq.prefill(rows))
+    assert torch.equal(fp8.linears["layers.0.kvq"](rows[:5]), kvq(rows[:5]))
 
 
 @cuda

@@ -2,7 +2,7 @@
 
 ## Native CUDA trial
 
-The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights; proposals are verified by the target before publication. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
+The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights by default (`--drafter-bits 16`); `--drafter-bits 8` runs it on private FP8 copies (E4M3, one scale an output row) of its projections and of the borrowed target head, which changes proposals only. Proposals are verified by the target before publication, so replies are the same at either precision. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
 
 For a local complete mixed4/6 snapshot and matching companion:
 

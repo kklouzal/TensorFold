@@ -73,16 +73,22 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         draft, draft_entries = checked_headers(Path(drafter_dir))
         if (draft.hidden, draft.target_layers, draft.vocab) != (cfg.hidden, cfg.layers, cfg.vocab):
             raise ValueError('Gemma DFlash companion dimensions disagree with the target')
-        # Bits 8: private FP8 copies, one byte per projection weight plus an FP32 scale per output row (norms stay
-        # BF16), and an FP8 copy of the target's tied head for proposals.
-        fp8 = drafter_bits == 8
-        resident += sum(math.prod(info['shape']) + 4 * info['shape'][0] if fp8 and len(info['shape']) == 2
-                        else math.prod(info['shape']) * itemsize(info, name)
-                        for name, info in draft_entries.items())
-        if fp8:
-            resident += cfg.vocab * (cfg.hidden + 4)
-        staging = max(staging, 3 * max(math.prod(info['shape']) * itemsize(info, name)
-                                    for name, info in draft_entries.items()))
+        bf16 = {name: math.prod(info['shape']) * itemsize(info, name) for name, info in draft_entries.items()}
+        staging = max(staging, 3 * max(bf16.values()))
+        if drafter_bits == 8:
+            # Private FP8 copies (tensorfold.cuda.requant) of the fused projections ([k|v|q], [gate|up]; norms stay
+            # BF16) and of the target's tied head for proposals. Loading holds every BF16 source on the device
+            # until its copy exists: staging covers them plus the largest copy's own transient.
+            from tensorfold.cuda.requant import resident_bytes, staging_bytes
+            shapes = list(draft.fused_shapes().values())
+            matrices = {name for name, info in draft_entries.items() if len(info['shape']) == 2}
+            resident += sum(size for name, size in bf16.items() if name not in matrices)
+            resident += sum(resident_bytes('fp8', n, k) for n, k in shapes)
+            resident += resident_bytes('fp8', cfg.vocab, cfg.hidden)
+            staging = max(staging, sum(bf16.values())
+                          + max(staging_bytes('fp8', n, k) for n, k in [*shapes, (cfg.vocab, cfg.hidden)]))
+        else:
+            resident += sum(bf16.values())
 
     longest = max(media_geometry.image_soft_tokens, media_geometry.video_soft_tokens) if vision else 0
     rows = widest_forward(max_rows, longest)

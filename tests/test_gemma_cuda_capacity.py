@@ -65,9 +65,10 @@ def test_admission_accounts_for_largest_declared_processor_pool(component, tmp_p
 
 def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypatch):
     """--drafter-bits 16 admits the companion's BF16 bytes; 8 admits what DFlash(bits=8) keeps resident (checked
-    against the loaded tensors in test_gemma_cuda_dflash): an E4M3 byte per projection weight and an FP32 scale per
-    output row, the BF16 norms, and the private FP8 copy of the target's tied [vocab, hidden] head. The companion's
-    K/V geometry does not depend on its weight precision."""
+    against the loaded tensors in test_gemma_cuda_dflash): per fused projection ([k|v|q], o, [gate|up], down, fc) an
+    E4M3 byte per weight and an FP32 scale per output row over rows padded to 128, the BF16 norms, and the private
+    FP8 copy of the target's tied [vocab, hidden] head; its load staging holds every BF16 source. The companion's K/V
+    geometry does not depend on its weight precision."""
     raw = tiny_config()
     text = raw["text_config"]
     _, where = inventory(raw)
@@ -92,7 +93,17 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     fp8, with_fp8 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir, drafter_bits=8)
     shapes = draft.shapes().values()
     assert bf16.resident - alone.resident == sum(2 * math.prod(s) for s in shapes)
-    assert fp8.resident - alone.resident == (sum(r * k + 4 * r for r, k in (s for s in shapes if len(s) == 2))
+
+    def copy(n, k):                         # E4M3 codes and FP32 row scales over 128-padded output rows
+        rows = -(-n // 128) * 128
+        return rows * k + rows * 4
+
+    hidden, width, heads = draft.hidden, draft.width, draft.heads * draft.head_dim
+    kvq = (2 * draft.kv_heads * draft.head_dim + heads, hidden)
+    fused = [(hidden, len(draft.tap_layers) * hidden)] + draft.layers * [kvq, (hidden, heads), (2 * width, hidden),
+                                                                        (hidden, width)]
+    assert fp8.resident - alone.resident == (sum(copy(n, k) for n, k in fused)
                                             + sum(2 * n for (n,) in (s for s in shapes if len(s) == 1))
-                                            + text["vocab_size"] * (text["hidden_size"] + 4))
+                                            + copy(text["vocab_size"], text["hidden_size"]))
+    assert fp8.staging >= sum(2 * math.prod(s) for s in shapes)
     assert with_fp8.needed(128) == with_bf16.needed(128) > plain.needed(128)

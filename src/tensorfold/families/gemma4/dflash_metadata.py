@@ -141,6 +141,18 @@ class DraftConfig:
                 "mlp.down_proj.weight": (self.hidden, self.width)}.items()})
         return out
 
+    def fused_shapes(self):
+        """The companion's projections as it runs them ([N, K]): fc, then per layer the fused [k | v | q], o, the
+        fused [gate | up] and down."""
+        out = {"fc.weight": (self.hidden, len(self.tap_layers) * self.hidden)}
+        for i in range(self.layers):
+            base = f"layers.{i}."
+            out.update({base + "kvq": ((2 * self.kv_heads + self.heads) * self.head_dim, self.hidden),
+                        base + "self_attn.o_proj.weight": (self.hidden, self.heads * self.head_dim),
+                        base + "gate_up": (2 * self.width, self.hidden),
+                        base + "mlp.down_proj.weight": (self.hidden, self.width)})
+        return out
+
 
 def checked_headers(directory):
     from tensorfold.cuda.capacity import headers

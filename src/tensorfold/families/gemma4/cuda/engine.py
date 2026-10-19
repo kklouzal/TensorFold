@@ -137,14 +137,14 @@ class Gemma4Engine:
             media = processor_geometry(model_dir)
             longest = max(media.image_soft_tokens, media.video_soft_tokens)
         forward_rows = widest_forward(self.max_rows, longest)
-        # The single request lane's caches are allocated once for the admitted context.
-        self._state = self.target.make_state(self.context_window, rows=forward_rows)
-        self._draft = None
         if draft_dir is not None:
+            # Before any cache: the companion's load transients (BF16 sources of FP8 copies) are admission staging.
             from .dflash import DFlash
             self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
                                block=self.max_rows, bits=drafter_bits, rows=forward_rows)
-            self._draft = self.head.make_state()
+        # The single request lane's caches are allocated once for the admitted context.
+        self._state = self.target.make_state(self.context_window, rows=forward_rows)
+        self._draft = self.head.make_state() if self.head is not None else None
         # Absent from a tokenizer: only whole-prompt checkpoints are kept.
         self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
         self._prefix = None
