@@ -334,6 +334,48 @@ def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
     assert count_tokens(body["messages"]) + body["max_tokens"] <= 4000
 
 
+LONG = {"id": "long-code-nothink", "depth": "32k", "task": "doc-code", "thinking": False,
+        "messages": [{"role": "user", "content": "y" * 40}], "prompt_tokens": bench.LONG_PREFILL_TOKENS + 1}
+
+
+def test_long_prefill_hold_keeps_long_prompts_out_and_reports_them(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    (tmp_path / "prompts.json").write_text(json.dumps({"items": [*PROMPTS["items"], LONG]}))
+    for allow in (False, True):
+        seen = []
+        with fake_server(seen) as url:
+            bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
+                      meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None, "allow_long": allow})
+        doc = json.loads((tmp_path / "out.json").read_text())
+        asked = {r["messages"][0]["content"] for r in seen if "messages" in r}
+        assert doc["held"] == ([] if allow else ["long-code-nothink"]) and ("y" * 40 in asked) == allow
+    out = tmp_path / "determinism.json"
+    with fake_server() as url:
+        monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "determinism", "--url", url, "--out", str(out),
+                                          "--profile", str(tmp_path / "profile.json"),
+                                          "--prompts", str(tmp_path / "prompts.json"), "--max-tokens", "6",
+                                          "--gate-prompts", "short-code-nothink,long-code-nothink"])
+        assert gates.main() == 3                       # the short prompt passes; the held one is coverage not run
+    gate = json.loads(out.read_text())["gates"]["determinism"]
+    assert gate["status"] == "incomplete" and gate["verdict"] is None and gate["cases"] == 2   # greedy + card
+    assert gate["held"] == [{"prompt": "long-code-nothink", "prompt_tokens": bench.LONG_PREFILL_TOKENS + 1,
+                             "status": "incomplete (hold)"}]
+
+
+def test_needle_holds_depths_beyond_the_long_prefill_limit(tmp_path):
+    import argparse
+
+    (tmp_path / "corpus.txt").write_text("".join(f"line {i} of the haystack\n" for i in range(4000)))
+    args = argparse.Namespace(corpus=str(tmp_path / "corpus.txt"), seed=1, needle_fractions="0.5",
+                              needle_depths=f"512,{bench.LONG_PREFILL_TOKENS + 1}", needle_tokens=16,
+                              needle_thinking="off", min_needle_recall=0.0, allow_long_prefill=False)
+    with fake_server() as url:
+        result = gates.gate_needle(url, {**PROFILE, "context": 40000}, args)
+    assert [r["target"] for r in result["rows"]] == [512] and result["status"] == "incomplete"
+    assert result["held"] == [{"depth": str(bench.LONG_PREFILL_TOKENS + 1), "target": bench.LONG_PREFILL_TOKENS + 1,
+                               "thinking": False, "status": "incomplete (hold)"}] and result["verdict"] is None
+
+
 def test_schema_errors_cover_type_enum_required_extra_and_items():
     schema = gates.EVENT["function"]["parameters"]
     good = {"title": "t", "start": "2026-11-03T14:00", "duration_minutes": 45,

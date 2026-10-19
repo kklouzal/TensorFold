@@ -869,6 +869,12 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   stream's first generated text, reasoning or tool-call delta, then `decode`; `wait` for a non-streamed reply; `idle`
   between requests), the request in flight with its prompt size (and reply budget for `wait`) and the chunk count.
   The tools report facts only; the stall policy belongs to the supervisor.
+- A long-prefill hold covers prompts above 16,384 tokens unless `--allow-long-prefill` is given
+  (`campaign_bench.py run`, `campaign_gates.py`, `campaign_kl.py dump`): `run` records them in its `held` list (and
+  `analyze` names them), a gate with held prompts or needle depths is `incomplete (hold)`, never a pass, and the KL
+  dump refuses an eval set that contains such items. `campaign_kl.py subset GOLDEN EVAL OUT_DIR
+  [--max-prompt-tokens N]` cuts a golden reference and its eval set to the items within N prompt tokens without a GPU;
+  both record the full set's hashes, so a gate names the set it used.
 - `tools/campaign_kl.py` runs `tensorfold serve` with the flags under test in process, teacher-forces a fixed eval
   set through the serial path and compares two dumps: KL(reference || candidate) on the reference's top 1,024 ids
   plus one tail bucket (a lower bound of the true KL, to float32 log-softmax rounding) and top-1 agreement.
