@@ -65,6 +65,16 @@ def test_heads_return_fp32_softcapped_logits_and_share_one_copy():
     assert shared.linear is head.linear and shared.softcap is None
     with pytest.raises(ValueError):
         Head(head.linear, "fp8a8")                         # another kind starts from the BF16 source
+    with pytest.raises(ValueError):
+        Head(head, "int4")                                 # unknown kinds, shared copy or not
     assert Head(Plain(), "fp8a8").linear.token
     with pytest.raises(ValueError):
         Head(Plain(), "fp8", softcap=0)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_non_finite_weights_are_refused_on_cuda(bad):
+    w = torch.ones(300, 64, dtype=torch.bfloat16, device="cuda")
+    w[200, 0], w[200, 3] = 1e4, bad                        # a later chunk, beside a larger finite value
+    with pytest.raises(ValueError):
+        requant_rows(w, chunk=128)

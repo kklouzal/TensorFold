@@ -33,10 +33,12 @@ def test_codes_are_round_to_nearest_of_the_scaled_row():
 
 
 @pytest.mark.parametrize("bad", [torch.zeros(4), torch.zeros(2, 3, dtype=torch.int32),
-                                 torch.tensor([[1.0, float("nan")]])])
+                                 torch.tensor([[1.0, float("nan")]]), torch.tensor([[1.0, 2.0], [float("inf"), 1.0]]),
+                                 torch.tensor([[1.0, 2.0], [-float("inf"), 1.0]]),
+                                 torch.tensor([[1.0, 2.0], [1e4, float("nan")]])])   # NaN beside a larger value
 def test_malformed_weights_are_refused(bad):
     with pytest.raises(ValueError):
-        requant_rows(bad)
+        requant_rows(bad, chunk=1)                             # the non-finite row in the second chunk
 
 
 def test_accounting_matches_the_copy_and_refuses_unknown_kinds():

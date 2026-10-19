@@ -17,9 +17,17 @@ from __future__ import annotations
 
 import torch
 
+from tensorfold.cuda.nvfp4.linear import FRAGMENT_ROWS, Fp8Linear
+
 E4M3_MAX = 448.0
 KINDS = ("fp8", "fp8a8")
 CHUNK_ROWS = 16384
+
+
+def _checked(kind: str) -> str:
+    if kind not in KINDS:
+        raise ValueError(f"requantization kind must be one of {KINDS}")
+    return kind
 
 
 def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.Tensor, torch.Tensor]:
@@ -33,12 +41,15 @@ def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.T
     scales = torch.empty((n,), dtype=torch.float32, device=weight.device)
     for start in range(0, n, chunk):
         w = weight[start:start + chunk].float()
-        if not bool(torch.isfinite(w).all()):
+        # max |w| a row in one pass, as max(hi, -lo); aminmax and maximum propagate NaN (documented) and an infinite
+        # weight makes its row's top infinite, so ``top`` alone shows a non-finite chunk
+        lo, hi = torch.aminmax(w, dim=1)
+        top = torch.maximum(hi, -lo)
+        if not bool(torch.isfinite(top).all()):
             raise ValueError("FP8 requantization needs finite weights")
-        top = w.abs().amax(1)
         scale = torch.where(top > 0, top / E4M3_MAX, torch.ones_like(top))
         # w / scale lies in [-448, 448] up to the division's rounding; clamping keeps that rounding from overflowing
-        codes[start:start + chunk] = (w / scale[:, None]).clamp(-E4M3_MAX, E4M3_MAX).to(torch.float8_e4m3fn)
+        codes[start:start + chunk] = (w / scale[:, None]).clamp_(-E4M3_MAX, E4M3_MAX).to(torch.float8_e4m3fn)
         scales[start:start + chunk] = scale
     return codes, scales
 
@@ -50,12 +61,9 @@ def requantize(weight: torch.Tensor, kind: str):
     prompt rows on the prompt GEMM, ``tiles(t0, t1)`` is a view of output rows [64 t0, 64 t1).
     """
 
-    from tensorfold.cuda.nvfp4.linear import Fp8Linear
-
-    if kind not in KINDS:
-        raise ValueError(f"requantization kind must be one of {KINDS}")
+    token = _checked(kind) == "fp8a8"
     codes, scales = requant_rows(weight)
-    return Fp8Linear.from_checkpoint(codes, scales, token=kind == "fp8a8")
+    return Fp8Linear.from_checkpoint(codes, scales, token=token)
 
 
 def prefix(linear, rows: int):
@@ -75,19 +83,18 @@ class Head:
     """
 
     def __init__(self, source, kind: str, *, softcap: float | None = None):
-        from tensorfold.cuda.nvfp4.linear import Fp8Linear
-
+        token = _checked(kind) == "fp8a8"
         if softcap is not None and not (isinstance(softcap, (int, float)) and softcap > 0):
             raise ValueError("a head softcap must be a positive number")
         if isinstance(source, Head):
             source = source.linear
         if isinstance(source, Fp8Linear):
-            if source.cols is None or source.token != (kind == "fp8a8"):
+            if source.cols is None or source.token != token:
                 raise ValueError("a requantized head is shared as the same kind; other kinds start from BF16")
             self.linear = source
         else:
             self.linear = requantize(source.weight, kind)
-        self.kind, self.softcap, self.n, self.k = kind, softcap, self.linear.n, self.linear.k
+        self.softcap, self.n = softcap, self.linear.n
 
     def nbytes(self) -> int:
         return self.linear.nbytes()
@@ -103,8 +110,7 @@ class Head:
 def resident_bytes(kind: str, n: int, k: int) -> int:
     """Device bytes a ``kind`` copy of an [N, K] weight keeps: codes over 128-padded rows and an FP32 scale a row."""
 
-    if kind not in KINDS:
-        raise ValueError(f"requantization kind must be one of {KINDS}")
+    _checked(kind)
     padded = -(-n // 128) * 128
     return padded * k + padded * 4
 
@@ -113,10 +119,7 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
     """Transient device bytes building a ``kind`` copy: FP32 row chunks (two live), the codes, then the chunked
     fragment-order gather (a padded byte copy and two int64 indices an element)."""
 
-    from tensorfold.cuda.nvfp4.linear import FRAGMENT_ROWS
-
-    if kind not in KINDS:
-        raise ValueError(f"requantization kind must be one of {KINDS}")
+    _checked(kind)
     return min(n, CHUNK_ROWS) * k * 9 + n * k + min(n, FRAGMENT_ROWS) * k * 17
 
 
