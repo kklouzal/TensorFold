@@ -23,6 +23,18 @@ def writer():
     return module
 
 
+def test_shared_e2m1_table_preserves_signed_codes_and_independent_storage():
+    from tensorfold.cuda.nvfp4.format import E2M1
+    from tensorfold.families.qwen4_exp.cuda.nvfp4 import e2m1_table
+
+    expected = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
+                             -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0], dtype=torch.float32)
+    table = e2m1_table()
+    assert torch.equal(table.view(torch.int32), expected.view(torch.int32))
+    table[0] = 99
+    assert E2M1[0] == 0 and torch.equal(e2m1_table().view(torch.int32), expected.view(torch.int32))
+
+
 def test_affine_table_header_and_payload_roundtrip_through_independent_readers(tmp_path, monkeypatch):
     from tensorfold.families.qwen4_exp.host_table import HostTable
     from tensorfold.families.qwen4_exp.ssd_table import SSDTable

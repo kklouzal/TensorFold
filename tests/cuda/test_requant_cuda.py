@@ -31,7 +31,7 @@ def _assert_rounding_bound(got, x, deq):
     assert bool(((got.double() - exact).abs() <= bound).all())
 
 
-@pytest.mark.parametrize("kind", ["fp8", "fp8a8", "nvfp4"])
+@pytest.mark.parametrize("kind", ["fp8", "nvfp4"])
 @pytest.mark.parametrize("rows", [1, 5, 16, 200])
 def test_copies_compute_the_dequantized_product(kind, rows):
     gen = torch.Generator(device="cuda").manual_seed(5)
@@ -41,19 +41,15 @@ def test_copies_compute_the_dequantized_product(kind, rows):
     assert lin.nbytes() == resident_bytes(kind, 1000, 256) and (lin.n, lin.k) == (1000, 256)
     deq = _deq(w, kind)                                    # what the copy holds, exactly
     got = lin(x)
-    if kind == "fp8a8":                                    # e4m3 rows: bf16 output and the rows' own rounding
-        ref = x.float() @ deq.t()
-        assert float(((got.float() - ref).abs().max() / ref.abs().max())) < 0.08
-    else:
-        _assert_rounding_bound(got, x, deq)
+    _assert_rounding_bound(got, x, deq)
     view = prefix(lin, 128)                                # the first 128 output rows, sharing storage
     torch.testing.assert_close(view(x), got[:, :128], rtol=0, atol=0)
-    for rows in (100, 192):                                # 192: decode tiles, but not the prompt GEMM's 128
+    for bad in (100, 192):                                 # 192: decode tiles, but not the prompt GEMM's 128
         with pytest.raises(ValueError):
-            prefix(lin, rows)
+            prefix(lin, bad)
 
 
-@pytest.mark.parametrize("kind", ["fp8", "fp8a8", "nvfp4"])
+@pytest.mark.parametrize("kind", ["fp8", "nvfp4"])
 def test_prompt_rows_run_on_whole_copies_and_row_prefixes(kind):
     """A fused [k|v|q] copy: prompt chunks (up to 1024 rows) through prefill(), on the whole copy and on its [k|v]
     prefix, agree with the dequantized product (Gemma's companion: kv 2048 of 6144 rows, K 2816)."""
@@ -65,11 +61,20 @@ def test_prompt_rows_run_on_whole_copies_and_row_prefixes(kind):
         x = torch.randn(rows, 2816, generator=gen, device="cuda").bfloat16()
         for got, held in ((lin.prefill(x), deq), (prefix(lin, 2048).prefill(x), deq[:2048])):
             assert got.shape == (rows, held.shape[0])
-            if kind == "fp8a8":
-                want = x.float() @ held.t()
-                assert float(((got.float() - want).abs().max() / want.abs().max())) < 0.08
-            else:
-                _assert_rounding_bound(got, x, held)
+            _assert_rounding_bound(got, x, held)
+
+
+def _assert_softcap_bound(got, x, deq, cap):
+    """FP32 logits ``tanh(y / cap) * cap`` of an FP32 sum ``y``: within ``y``'s own bound (``_assert_rounding_bound`` at
+    FP32 output) carried through ``tanh(. / cap) * cap`` (slope at most 1), plus FP32 rounding of ``y / cap`` (2**-24
+    |y|, carried the same way), of CUDA tanhf (2 ulp, CUDA math API maximum error) times ``cap`` and of that product
+    (2**-24 |logit|)."""
+    xd, dd = x.double(), deq.double()
+    exact = xd @ dd.t()
+    sums = (x.shape[1] + 1) * 2.0 ** -23 * (xd.abs() @ dd.abs().t())
+    want = torch.tanh(exact / cap) * cap
+    bound = sums + 2.0 ** -24 * (exact.abs() + sums) + (2 * 2.0 ** -23 + 2.0 ** -24) * (want.abs() + sums)
+    assert bool(((got.double() - want).abs() <= bound).all())
 
 
 def test_heads_return_fp32_softcapped_logits_and_share_one_copy():
@@ -82,17 +87,19 @@ def test_heads_return_fp32_softcapped_logits_and_share_one_copy():
     head = Head(Plain(), "fp8", softcap=30.0)
     x = torch.randn(3, 128, generator=gen, device="cuda").bfloat16()
     logits = head(x)
-    codes, scales = requant_rows(w)
-    ref = torch.tanh((x.float() @ (codes.float() * scales[:, None]).t()) / 30.0) * 30.0
     assert logits.dtype == torch.float32 and logits.shape == (3, 4100)
-    assert float((logits - ref).abs().max()) < 0.05
+    _assert_softcap_bound(logits, x, _deq(w, "fp8"), 30.0)
+    _assert_rounding_bound(Head(head, "fp8")(x), x, _deq(w, "fp8"))     # uncapped: the FP32 sums themselves
     shared = Head(head, "fp8")                             # a drafter reusing the target's copy: no second copy
     assert shared.linear is head.linear and shared.softcap is None
     with pytest.raises(ValueError):
-        Head(head.linear, "fp8a8")                         # another kind starts from the BF16 source
+        Head(head.linear, "nvfp4")                         # another kind starts from the BF16 source
     with pytest.raises(ValueError):
         Head(head, "int4")                                 # unknown kinds, shared copy or not
-    assert Head(Plain(), "fp8a8").linear.token
+    with pytest.raises(ValueError, match="floating head"):           # a head stored quantized is borrowed, not copied
+        Head(type("Packed", (), {"weight": w.view(torch.uint8)})(), "fp8")
+    with pytest.raises(ValueError, match="same kind"):
+        Head(requantize(w, "nvfp4"), "fp8")
     for cap in (0, True, float("inf"), float("nan")):
         with pytest.raises(ValueError):
             Head(Plain(), "fp8", softcap=cap)
@@ -119,9 +126,8 @@ def test_nvfp4_heads_share_one_copy_and_kinds_do_not_mix():
     assert logits.dtype == torch.float32
     _assert_rounding_bound(logits, x, _deq(w, "nvfp4"))
     assert Head(head, "nvfp4").linear is head.linear and head.nbytes() == resident_bytes("nvfp4", 4100, 128)
-    for kind in ("fp8", "fp8a8"):
-        with pytest.raises(ValueError):
-            Head(head, kind)
+    with pytest.raises(ValueError):
+        Head(head, "fp8")
     with pytest.raises(ValueError):
         Head(Head(Plain(), "fp8"), "nvfp4")
 

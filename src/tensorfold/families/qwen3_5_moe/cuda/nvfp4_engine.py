@@ -40,7 +40,15 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         import torch
 
         from tensorfold.cuda import moe, precision, prompt_precision
-        from tensorfold.cuda.capacity import admit, available_bytes, config, cuda_reserve_bytes, total_bytes, unified
+        from tensorfold.cuda.capacity import (
+            admit,
+            available_bytes,
+            config,
+            cuda_reserve_bytes,
+            headers,
+            total_bytes,
+            unified,
+        )
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.cuda.geometry import prompt_row_bytes, prompt_rows
         from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
@@ -84,7 +92,10 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                                         kept=KEEP + 1 if streams > 1 else KEEP_ONE,
                                         block=rows, prompt_rows=chunk) if draft_dir is not None else None)
         resident, host_weight_staging = weight_estimate(model_dir, weight_bytes)
-        draft_held = draft_weights(draft_dir, bits=bits).resident if draft_dir is not None else 0
+        # a requantized drafter copies a floating target head (counted) and borrows one the checkpoint stores quantized
+        head_dtype = headers(model_dir).get("lm_head.weight", {}).get("dtype") if draft_dir is not None else None
+        drafted = partial(draft_weights, bits=bits, private_head=head_dtype in ("BF16", "F16", "F32"))
+        draft_held = drafted(draft_dir).resident if draft_dir is not None else 0
         minimum = runtime.geometry.needed(1) + (draft_runtime.needed(1) if draft_runtime is not None else 0)
         automatic_offload = vram_experts is None and resident.resident + draft_held + minimum > available_bytes(torch)
         plan = layout(model_dir, "auto" if automatic_offload else vram_experts) if (
@@ -120,7 +131,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             weight_estimator=partial(weight_estimate, transform=transform),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
             resident_extra=allocate(plan.gpu_bytes) if plan is not None and not plan.automatic else 0,
-            draft_dir=draft_dir, draft_weights=partial(draft_weights, bits=bits), draft_geometry=draft_runtime)
+            draft_dir=draft_dir, draft_weights=drafted, draft_geometry=draft_runtime)
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
             raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context")

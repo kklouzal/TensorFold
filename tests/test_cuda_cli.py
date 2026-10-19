@@ -747,6 +747,7 @@ def test_the_drafter_precision_flag_reaches_only_the_families_that_declare_it(tm
     monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
     install_cli_server(monkeypatch, request, server)
     declared.package.cuda_engine = lambda *a, **k: made.append(k) or cuda_cli_engine(max_len=8192)
-    for flags, expected in ((["--drafter-bits", "8"], 8), ([], None)):
+    for flags, expected in ((["--drafter-bits", "8"], 8), (["--drafter-bits", "4"], 4),
+                            (["--drafter-bits", "16"], 16), (["--drafter-bits", "0"], 0), ([], None)):
         assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
         assert made[-1].get("drafter_bits") == expected

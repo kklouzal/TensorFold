@@ -9,16 +9,16 @@ import torch
 GS = 16                   # inputs per quantization block (NVFP4's block size)
 BN = 64                   # output columns per stored tile
 
-_E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)      # FP4 magnitudes by code & 7
 BF16_BITS = (0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0)   # their bf16 patterns
 E4M3_BF16_BITS = (0x0000, 0x3B00, 0x3B80, 0x3BC0, 0x3C00, 0x3C20, 0x3C40, 0x3C60)  # the fp8 subnormals m*2**-9 (m 0..7)
 
 
 def e2m1_table(device: str | torch.device = "cpu") -> torch.Tensor:
-    """The 16 FP4 values by code: code = sign (bit 3) * 8 + magnitude (bits 0..2)."""
+    """The 16 FP4 values by code: code = sign (bit 3) * 8 + magnitude (bits 0..2) (``nvfp4.format.E2M1``)."""
 
-    mags = torch.tensor(_E2M1, dtype=torch.float32)
-    return torch.cat([mags, -mags]).to(device)
+    from tensorfold.cuda.nvfp4.format import E2M1
+
+    return torch.from_numpy(E2M1.copy()).to(device)
 
 
 @dataclass

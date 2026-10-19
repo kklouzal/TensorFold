@@ -7,7 +7,6 @@ Both use this module, which builds copies on the existing kernels of ``tensorfol
   ``fp8``    E4M3 codes and one FP32 scale an output row, ``s_n = max_k |W[n, k]| / 448`` (an all-zero row keeps 1),
              codes ``e4m3(W / s_n)`` round to nearest even, saturating: ModelOpt's FP8_PER_CHANNEL layout, run as
              W8A16 (BF16 rows, each channel's scale in the epilogue) by ``Fp8Linear``.
-  ``fp8a8``  the same codes, rows quantized a token at a time onto the E4M3 tensor-core MMA (``Fp8Linear(token)``).
   ``nvfp4``  E2M1 codes with an E4M3 scale per 16 inputs and one FP32 global scale in ModelOpt's NVFP4 layout, run as
              W4A16 by ``Fp4Linear``: global = max|W| / (6 x 448), block scale e4m3(max_block / 6 / global), codes the
              nearest E2M1 magnitude of W / (block scale x global), ties to the smaller. This is the recipe Flash Next's
@@ -29,7 +28,7 @@ import torch
 from tensorfold.cuda.nvfp4.linear import FRAGMENT_ROWS, Fp4Linear, Fp8Linear
 
 E4M3_MAX = 448.0
-KINDS = ("fp8", "fp8a8", "nvfp4")
+KINDS = ("fp8", "nvfp4")     # W8A8 (rows a token at a time on the E4M3 MMA) lost the decode SELECT: not offered
 CHUNK_ROWS = 16384
 NVFP4_CHUNK_ROWS = 4096     # rows nvfp4_rows quantizes at a time (<= 18.4 bytes an element of temporaries; staging)
 
@@ -41,8 +40,13 @@ def _checked(kind: str) -> str:
 
 
 def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.Tensor, torch.Tensor]:
-    """``(codes, scales)`` of a floating [N, K] weight: E4M3 codes [N, K] and FP32 scales [N] (one an output row)."""
+    """``(codes, scales)`` of a floating [N, K] weight: E4M3 codes [N, K] and FP32 scales [N] (one an output row).
 
+    ``chunk`` is a positive integer number of output rows; every allocated row is initialized before return.
+    """
+
+    if type(chunk) is not int or chunk < 1:
+        raise ValueError("FP8 requantization chunk rows must be a positive integer")
     if not isinstance(weight, torch.Tensor) or weight.ndim != 2 or not weight.is_floating_point() \
             or weight.dtype == torch.float8_e4m3fn:
         raise ValueError("FP8 requantization takes a floating [N, K] weight")
@@ -55,9 +59,9 @@ def requant_rows(weight: torch.Tensor, chunk: int = CHUNK_ROWS) -> tuple[torch.T
         # weight makes its row's top infinite, so ``top`` alone shows a non-finite chunk
         lo, hi = torch.aminmax(w, dim=1)
         top = torch.maximum(hi, -lo)
-        if not bool(torch.isfinite(top).all()):
-            raise ValueError("FP8 requantization needs finite weights")
         scale = torch.where(top > 0, top / E4M3_MAX, torch.ones_like(top))
+        if not bool((torch.isfinite(top) & (scale > 0)).all()):
+            raise ValueError("FP8 requantization needs finite weights and positive representable FP32 row scales")
         # w / scale lies in [-448, 448] up to the division's rounding; clamping keeps that rounding from overflowing
         codes[start:start + chunk] = (w / scale[:, None]).clamp_(-E4M3_MAX, E4M3_MAX).to(torch.float8_e4m3fn)
         scales[start:start + chunk] = scale
@@ -69,10 +73,13 @@ def nvfp4_rows(weight: torch.Tensor, chunk: int = NVFP4_CHUNK_ROWS) -> tuple[tor
     first) [N, K/2] uint8, E4M3 block scales [N, K/16] as uint8 bytes, and the FP32 global scale (a 0-d tensor).
 
     Every value is computed in FP32 in the recipe's order (module docstring), so a chunked call equals a whole one.
+    ``chunk`` is a positive integer number of output rows; every allocated row is initialized before return.
     """
 
     from tensorfold.cuda.nvfp4.format import E2M1  # the 16 E2M1 values by code; codes 0..7 are magnitudes
 
+    if type(chunk) is not int or chunk < 1:
+        raise ValueError("NVFP4 requantization chunk rows must be a positive integer")
     if not isinstance(weight, torch.Tensor) or weight.ndim != 2 or not weight.is_floating_point() \
             or weight.dtype == torch.float8_e4m3fn or weight.shape[1] % 16:
         raise ValueError("NVFP4 requantization takes a floating [N, K] weight with K a multiple of 16")
@@ -114,7 +121,7 @@ def requantize(weight: torch.Tensor, kind: str):
         codes, scales, g = nvfp4_rows(weight)
         return Fp4Linear.from_checkpoint(codes, scales, float(g))
     codes, scales = requant_rows(weight)
-    return Fp8Linear.from_checkpoint(codes, scales, token=kind == "fp8a8")
+    return Fp8Linear.from_checkpoint(codes, scales)
 
 
 def prefix(linear, rows: int):
@@ -131,7 +138,8 @@ class Head:
     """A requantized vocabulary head: FP32 logits [M, N] from BF16 rows, softcapped (``tanh(y / c) * c``) if asked.
 
     Built once per model and shared: a drafter's private proposal head and a gated target head are the same object.
-    ``source`` is a BF16 head (anything with ``weight``) or an existing copy of the same kind, which is reused.
+    ``source`` is a floating head (anything with a floating ``weight``) or an existing copy of the same kind, which is
+    reused; a head the checkpoint stores quantized is refused (a caller borrows it as it is instead).
     """
 
     def __init__(self, source, kind: str, *, softcap: float | None = None):
@@ -143,12 +151,15 @@ class Head:
             source = source.linear
         if isinstance(source, (Fp8Linear, Fp4Linear)):
             same = (source.act is None and kind == "nvfp4" if isinstance(source, Fp4Linear) else
-                    source.cols is not None and kind != "nvfp4" and source.token == (kind == "fp8a8"))
+                    source.cols is not None and not source.token and source.act is None and kind == "fp8")
             if not same:
                 raise ValueError("a requantized head is shared as the same kind; other kinds start from BF16")
             self.linear = source
         else:
-            self.linear = requantize(source.weight, kind)
+            weight = getattr(source, "weight", None)
+            if not isinstance(weight, torch.Tensor) or not weight.is_floating_point():
+                raise ValueError(f"a requantized head copies a floating head, not {type(source).__name__}")
+            self.linear = requantize(weight, kind)
         self.softcap, self.n = softcap, self.linear.n
 
     def nbytes(self) -> int:

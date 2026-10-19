@@ -68,9 +68,11 @@ YaRN rotary configuration. It is separate from a native MTP head. TensorFold rea
 its metadata and weights through owned code; checkpoint Python is never imported.
 Default draft linears keep BF16 storage. Explicit `--drafter-bits 8` (FP8, one scale an
 output row) or `--drafter-bits 4` (NVFP4, an E4M3 scale per 16 inputs and one global
-scale) requantizes the draft linears and a private copy of the target head and changes
+scale) requantizes the draft linears and a private copy of a floating target head.
+A checkpoint's quantized target head is borrowed without another copy. These change
 only proposals; the target verifies every committed token. `0` or `16` selects BF16 on
-this CUDA path. With a secondary, `--draft-rows N` overrides the metadata block
+this CUDA path. BF16 remains the default; GB10 precision selection at 32k is pending.
+With a secondary, `--draft-rows N` overrides the metadata block
 width, from 2 through 128 on one stream and at most 16 with `--parallel`.
 Without a secondary, width 1 is also valid. `--mtp-drafts` selects the
 affine model's native MTP path and does not apply to this separate model.

@@ -7,6 +7,7 @@ import torch
 from safetensors.torch import save_file
 
 from tensorfold.cuda.kernels import qmm
+from tensorfold.cuda.requant import requantize
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 from tensorfold.families.qwen3_5_moe.cuda.dflash import DFlash
 from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, draft_weights
@@ -52,6 +53,13 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
     owned += sum(t.numel() * t.element_size() for t in [*draft.weights.values(), draft.inv_freq])
     owned += draft.target_head.nbytes() if bits in (4, 8) else 0  # requantized proposals own a private head copy
     assert owned == draft_weights(tmp_path, bits=bits).resident
+    if bits in (4, 8):                     # a target head stored quantized is borrowed as it is: no copy, none counted
+        stored = Target()
+        stored.head = requantize(Target.head.weight, "fp8")
+        borrowed = DFlash(tmp_path, stored, context_limit=64, bits=bits)
+        assert borrowed.target_head is stored.head
+        assert owned - draft.target_head.nbytes() == draft_weights(tmp_path, bits=bits, private_head=False).resident
+        del borrowed
     empty = draft.snapshot()
     taps = torch.randn((7, len(cfg.tap_layers) * cfg.hidden), generator=generator).bfloat16().cuda()
     draft.add_taps(taps[:3])

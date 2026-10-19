@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
-
-from tensorfold.cuda.requant import E4M3_MAX, requant_rows  # noqa: E402
+requant = pytest.importorskip("tensorfold.cuda.requant")
+E4M3_MAX, requant_rows = requant.E4M3_MAX, requant.requant_rows
 
 MAGS = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)                # E2M1 magnitudes by code (OCP MX), the oracles' own copy
 
@@ -46,10 +46,29 @@ def test_malformed_weights_are_refused(bad):
         requant_rows(bad, chunk=1)                             # the non-finite row in the second chunk
 
 
+def test_a_row_scale_that_underflows_fp32_is_refused_before_dividing_by_zero():
+    smallest = torch.nextafter(torch.tensor(0.0), torch.tensor(1.0))
+    with pytest.raises(ValueError, match="representable FP32 row scales"):
+        requant_rows(smallest.reshape(1, 1))
+
+
+@pytest.mark.parametrize("quantize", [requant_rows, requant.nvfp4_rows])
+@pytest.mark.parametrize("chunk", [-1, 0, True, 1.5, None])
+def test_invalid_chunk_rows_are_refused_instead_of_returning_uninitialized_outputs(quantize, chunk):
+    with pytest.raises(ValueError, match="chunk rows must be a positive integer"):
+        quantize(torch.ones(2, 16, dtype=torch.bfloat16), chunk=chunk)
+
+
+@pytest.mark.parametrize("source", [object(), type("Packed", (), {"weight": torch.zeros(2, 64, dtype=torch.uint8)})()])
+def test_a_head_without_floating_weights_is_refused_before_quantization(source):
+    with pytest.raises(ValueError, match="floating head"):
+        requant.Head(source, "fp8")
+
+
 def test_accounting_matches_the_copy_and_refuses_unknown_kinds():
     from tensorfold.cuda.requant import resident_bytes, staging_bytes
 
-    assert resident_bytes("fp8", 1000, 256) == 1024 * 256 + 1024 * 4 == resident_bytes("fp8a8", 1000, 256)
+    assert resident_bytes("fp8", 1000, 256) == 1024 * 256 + 1024 * 4
     assert staging_bytes("fp8", 262144, 2816) > resident_bytes("fp8", 262144, 2816)
     for call in (resident_bytes, staging_bytes):
         with pytest.raises(ValueError):

@@ -2,9 +2,9 @@
 
 No checkpoint Python is imported. BF16 storage is retained by default. Explicit FP8
 (8: one scale an output row) or NVFP4 (4: an E4M3 scale per 16 inputs and one global
-scale) requantizes the projections and a private copy of the borrowed target head
-(tensorfold.cuda.requant) and changes proposals only; target weights, sampling and
-commits are separate.
+scale) requantizes the projections and a private copy of a floating target head
+(tensorfold.cuda.requant); a checkpoint's quantized target head is borrowed as it
+is. These change proposals only; target weights, sampling and commits are separate.
 Snapshots share immutable K/V tensors and own their per-layer lists.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
-from ..dflash_metadata import KINDS, checked_headers, positive
+from ..dflash_metadata import KINDS, checked_headers, floating_head, positive
 
 
 def _norm(x, weight, eps):
@@ -83,8 +83,8 @@ class DFlash:
                 raise primary from transport
         else:
             reader.close()
-        if bits in KINDS:                   # proposals read a requantized head (the target's own if it is that kind)
-            self.target_head = Head(self.target_head, KINDS[bits])
+        if bits in KINDS and floating_head(self.target_head):    # proposals read a requantized copy of a BF16 head;
+            self.target_head = Head(self.target_head, KINDS[bits])  # a head stored quantized is borrowed as it is
         self.inv_freq = cfg.rope.inverse_frequencies(torch).to(self.device)
         self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
 

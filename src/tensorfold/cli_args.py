@@ -141,7 +141,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits of the draft linears, "
                             "default 4. Qwen MoE DFlash on CUDA: 0 or 16 (default) keep bf16; 8 (FP8) and 4 (NVFP4) "
-                            "requantize the draft linears and a private copy of the target head. The target verifies every draft: "
+                            "requantize draft linears and copy a floating target head; a stored quantized head is borrowed. "
+                            "The target verifies every draft: "
                             "replies do not change")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
