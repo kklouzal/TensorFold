@@ -312,7 +312,7 @@ class Qwen27Engine:
         end = entry_end(prompt) if draft and vision is None and self._ends(prompt, stops) else None
         base = hit[1] if hit else None
         if self.runner is not None:             # every prefill extends the runner's fixed attention buffers in place
-            base = self.runner.begin(self.cache, self.room, base)
+            base = self.runner.begin(self.cache, self.room, base, prompt)
         st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=base, room=self.room,
                                      limit=self.context_window, stops=stops, keep=keep, keep_at=end, vision=encoded,
                                      **grammar)
