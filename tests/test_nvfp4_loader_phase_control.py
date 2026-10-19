@@ -94,7 +94,7 @@ def fixture():
         ),
         namespace,
     )
-    cfg = SimpleNamespace(layers=1, is_linear=lambda index: False, rope_dims=128, rope_theta=10000)
+    cfg = SimpleNamespace(layers=1, is_linear=lambda index: False, rope_dims=128, rope_theta=10000, yarn=None)
     names = [
         "model.layers.0." + name
         for name in (

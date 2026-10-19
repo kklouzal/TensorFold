@@ -144,7 +144,8 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
     )
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+    cfg = Config.read(model_dir, **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope))
+                                    if value is not None})
     block = read_config(model_dir).get("quantization_config") or {}
     metadata = fmt.LinearMetadata(block)
     reciprocal = str(block.get("quant_method", "")).lower() == "compressed-tensors"

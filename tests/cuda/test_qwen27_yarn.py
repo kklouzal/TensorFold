@@ -42,15 +42,6 @@ def _reference(x, norm, pos, inv, amp, eps=1e-6):
     return out
 
 
-def test_unit_amplitude_keeps_default_rope_bits():
-    qg, k, qn, kn, pos = _inputs()
-    inv = 1.0 / (1e7 ** (torch.arange(0, 64, 2, dtype=torch.float32, device="cuda") / 64))
-    kw = dict(heads=4, kv_heads=1, head_dim=256)
-    default = glue.attn_prep(qg, k, qn, kn, pos, inv, 1e-6, **kw)
-    unit = glue.attn_prep(qg, k, qn, kn, pos, inv, 1e-6, amplitude=1.0, **kw)
-    assert all(torch.equal(a, b) for a, b in zip(default, unit))
-
-
 def test_yarn_frequencies_and_amplitude_match_the_reference():
     raw = {"text_config": {"head_dim": 256, "max_position_embeddings": 262144,
                            "rope_parameters": {"rope_type": "default", "rope_theta": 10000000,

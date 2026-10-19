@@ -298,6 +298,8 @@ CUDA_AFFINE_GROUPS = (32, 64, 128)
 # --checkpoint-slots on CUDA: the prompt states the concurrent decoder keeps (--parallel 2 or more)
 CUDA_CHECKPOINT_SLOTS = True
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: MLX 4-bit g64 and NVFP4 checkpoints have FP8 prompt kernels
+ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
+
 
 def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
     """The text RoPE policy without accelerator imports: the checkpoint's default one, or static YaRN (declared, or
@@ -306,16 +308,18 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
     from tensorfold.families import read_config
     from tensorfold.families.qwen4_exp.rope import RopeParameters
 
-    from .config_metadata import declares_yarn, resolve_default_rope
+    from .config_metadata import declared_yarn, resolve_default_rope
 
     raw = read_config(Path(model_dir))
+    policy = declared_yarn(raw) if yarn_factor is None else RopeParameters.from_config(raw, yarn_factor)
+    if policy is not None:
+        return policy
     text = raw.get("text_config") or raw
-    if yarn_factor is None and not declares_yarn(text):
-        head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
-        rope = resolve_default_rope(text, head_dim=head_dim)
-        native = int(text.get("max_position_embeddings", raw.get("max_position_embeddings", 0)))
-        return RopeParameters("default", rope.theta, rope.rotary_dim, native, native, mrope_section=rope.mrope_section)
-    return RopeParameters.from_config(raw, yarn_factor)
+    head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
+    rope = resolve_default_rope(text, head_dim=head_dim)
+    limit = text.get("max_position_embeddings") or raw.get("max_position_embeddings")
+    native = int(limit) if isinstance(limit, int) and limit > 0 else 0      # as cli._model_context reads it
+    return RopeParameters("default", rope.theta, rope.rotary_dim, native, native, mrope_section=rope.mrope_section)
 
 
 def gb10() -> bool:
