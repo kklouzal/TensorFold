@@ -29,19 +29,22 @@ def _model(tmp_path, *, declared=False):
                                                     (None, True, 4.0), (8.0, True, 8.0)])
 def test_the_affine_engine_admits_loads_and_logs_the_yarn_window(tmp_path, monkeypatch, capsys,
                                                               factor, declared, expected):
-    from tensorfold.cuda import capacity, chat_template, markers
+    from tensorfold.cuda import capacity, chat_template, kv_arena, markers
     from tensorfold.families.qwen3_5_moe.cuda import engine, weights
 
     _model(tmp_path, declared=declared)
-    admissions, loads = [], []
-    monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **k: None)
+    admissions, loads, stages = [], [], []
+    monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **k: stages.append("template"))
     monkeypatch.setattr(markers, "resume_points", lambda *a, **k: ())
-    monkeypatch.setattr(torch.cuda, "set_device", lambda device: None)
+    monkeypatch.setattr(torch.cuda, "set_device", lambda device: stages.append(("device", device)))
+    monkeypatch.setattr(kv_arena, "driver", lambda device: stages.append(("driver", device)))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
-    monkeypatch.setattr(capacity, "admit", lambda *a, **options: admissions.append(options) or {
+    monkeypatch.setattr(capacity, "admit", lambda *a, **options: stages.append("admit") or admissions.append(options) or {
         "context_window": 64, "cache_slots": 72})
-    monkeypatch.setattr(weights, "load", lambda path, **options: loads.append(options) or NS(config=NS(eos=(1,))))
+    monkeypatch.setattr(weights, "load", lambda path, **options: stages.append("load") or loads.append(options)
+                        or NS(config=NS(eos=(1,))))
     engine.Qwen36Engine(tmp_path, depth=0, yarn_factor=factor)
+    assert stages == ["template", ("device", 0), ("driver", 0), "admit", "load"]
     log = capsys.readouterr().out
     if expected is None:
         assert "context_limit" not in admissions[0] and loads[0]["rope"] is None and "static YaRN" not in log
@@ -54,23 +57,20 @@ def test_the_affine_engine_admits_loads_and_logs_the_yarn_window(tmp_path, monke
 
 
 @pytest.mark.parametrize("factor", [True, False, 0.0, 0.5, -1.0, float("nan"), float("inf")])
-def test_bad_affine_yarn_factor_is_refused_before_cuda_or_template_preparation(tmp_path, monkeypatch, factor):
-    from tensorfold.cuda import chat_template
+def test_bad_affine_yarn_factor_is_refused_before_cuda_preparation(tmp_path, monkeypatch, factor):
     from tensorfold.families.qwen3_5_moe.cuda.engine import Qwen36Engine
 
     _model(tmp_path)
-    monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **k: pytest.fail("template prepared"))
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a, **k: pytest.fail("CUDA prepared"))
     with pytest.raises(ValueError, match="yarn-factor"):
         Qwen36Engine(tmp_path, depth=0, yarn_factor=factor)
 
 
 def test_an_override_cannot_silently_reduce_a_declared_checkpoint_position_limit(tmp_path, monkeypatch):
-    from tensorfold.cuda import chat_template
     from tensorfold.families.qwen3_5_moe.cuda.engine import Qwen36Engine
 
     _model(tmp_path, declared=True)
-    monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **k: pytest.fail("template prepared"))
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *a, **k: pytest.fail("CUDA prepared"))
     with pytest.raises(ValueError, match="max_position_embeddings 1048576 exceeds YaRN's 524288-token limit"):
         Qwen36Engine(tmp_path, depth=0, yarn_factor=2.0)
 

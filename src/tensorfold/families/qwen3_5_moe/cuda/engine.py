@@ -53,11 +53,11 @@ class Qwen36Engine:
 
         from .. import rope_parameters
 
-        rope = rope_parameters(model_dir, yarn_factor)       # validate the requested policy before CUDA preparation
-        yarn = rope if rope.rope_type == "yarn" else None
         self.depth, self.confidence = int(depth), float(confidence)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
+        rope = rope_parameters(model_dir, yarn_factor)       # after cheap options/templates, before CUDA preparation
+        yarn = rope if rope.rope_type == "yarn" else None
         import torch
 
         from tensorfold.cuda.capacity import admit
