@@ -35,6 +35,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 
 if sys.version_info < (3, 11):
@@ -69,6 +70,11 @@ TASKS = {
 
 WARMUP = "Warm-up request, not measured. " + TASKS["code"]
 
+# The campaign's hold on sustained long prefills (after the 2026-10-18 GB10 hang at the start of a 32k prefill):
+# a prompt above this many tokens runs only with --allow-long-prefill (the "32k" items have ~32,760 tokens, so the
+# boundary sits well below them); held work is reported as held, never dropped silently.
+LONG_PREFILL_TOKENS = 16384
+
 T95 = (12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
        2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042)
 
@@ -98,11 +104,17 @@ def interval(values: list[float]) -> dict:
 
 
 def post_json(url: str, body: dict, *, timeout: float = 600) -> dict:
+    """POST a JSON body; an HTTP error raises with the server's error message (it says why, e.g. a refusal)."""
+
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        if resp.status != 200:
-            raise ValueError(f"HTTP {resp.status} from {url}")
-        return protocol.object_json(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise ValueError(f"HTTP {resp.status} from {url}")
+            return protocol.object_json(resp.read())
+    except urllib.error.HTTPError as error:
+        detail = error.read(4096).decode("utf-8", "replace")
+        raise ValueError(f"HTTP {error.code} from {url}: {detail}") from error
 
 
 def get_json(url: str, *, timeout: float = 30) -> dict:
@@ -460,11 +472,16 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
              if (not select["depths"] or it["depth"] in select["depths"])
              and (not select["tasks"] or it["task"] in select["tasks"])
              and (select["thinking"] is None or it["thinking"] == select["thinking"])]
+    held = [it["id"] for it in items if it["prompt_tokens"] > LONG_PREFILL_TOKENS and not select.get("allow_long")]
+    items = [it for it in items if it["id"] not in held]
+    for name in held:
+        print(json.dumps({"prompt": name, "held": "long-prefill hold"}), flush=True)
     if not items:
-        raise ValueError("the selection leaves no prompts")
+        raise ValueError("the selection leaves no prompts" + (" (all held by the long-prefill hold)" if held else ""))
     eos = set(profile.get("eos_token_ids", ()))
     doc = {"version": VERSION, "label": label, "url": url, "model": profile["model"],
-           "tool_sha256": file_sha256(__file__), "profile": profile, "profile_sha256": file_sha256(profile_path),
+           "tool_sha256": file_sha256(__file__), "held": held, "profile": profile,
+           "profile_sha256": file_sha256(profile_path),
            "prompts_file_sha256": file_sha256(prompts_path),
            "corpus_sha256": prompt_set.get("corpus_sha256"),
            "meta": json.loads(Path(meta).read_text()) if meta else None,
@@ -661,7 +678,8 @@ def analyze(runs_dir: str, prefix: str, base: str | None) -> dict:
     return {"prefix": prefix, "base": base, "variants": variants, "runs": meta, "absolute": absolute,
             "ratios": ratios, "identity": identity(runs), "prompt_token_mismatches": prompt_check,
             "cold_requests_with_cache_hits": cold_hits, "incomplete_runs": incomplete,
-            "replies_off_schedule": off_schedule, "tool_versions": tool_versions}
+            "replies_off_schedule": off_schedule, "tool_versions": tool_versions,
+            "held": sorted({name for r in runs for name in r["doc"].get("held", [])})}
 
 
 def _fmt(summary: dict, digits: int = 2) -> str:
@@ -705,6 +723,8 @@ def markdown(result: dict) -> str:
     if result["incomplete_runs"]:
         lines.append("Incomplete runs (stopped mid-schedule; their cells hold only the requests that finished): "
                      + ", ".join(result["incomplete_runs"]))
+    if result["held"]:
+        lines.append("Prompts held by the long-prefill hold (not measured): " + ", ".join(result["held"]))
     if result["replies_off_schedule"]:
         lines.append(f"Replies with a token count other than the profile's max_tokens: "
                      f"{len(result['replies_off_schedule'])}")
@@ -736,6 +756,9 @@ def main() -> int:
         r.add_argument(name)
     r.add_argument("--meta", help="JSON written by the runner: image id, args, env, cache dir, container")
     r.add_argument("--progress", help="heartbeat file for a watchdog (see Progress)")
+    r.add_argument("--allow-long-prefill", action="store_true",
+                   help=f"run prompts above {LONG_PREFILL_TOKENS} tokens; without it they are held (recorded in the "
+                        "run's 'held' list and listed by analyze)")
     r.add_argument("--label", default="")
     r.add_argument("--depths", default="", help="comma-separated depth names (default: all)")
     r.add_argument("--tasks", default="", help="comma-separated task names (default: all)")
@@ -753,7 +776,8 @@ def main() -> int:
     elif args.command == "run":
         Progress.configure(args.progress)
         select = {"depths": [d for d in args.depths.split(",") if d], "tasks": [t for t in args.tasks.split(",") if t],
-                  "thinking": None if args.thinking == "both" else args.thinking == "on"}
+                  "thinking": None if args.thinking == "both" else args.thinking == "on",
+                  "allow_long": args.allow_long_prefill}
         run(args.url.rstrip("/"), args.profile, args.prompts, args.out, meta=args.meta, label=args.label,
             select=select)
     else:

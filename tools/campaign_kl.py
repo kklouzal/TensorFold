@@ -10,6 +10,7 @@ reference dump, the log-probabilities at the reference's top-K ids.
 
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
+  subset   GOLDEN.npz EVAL.json OUT_DIR [--max-prompt-tokens N]   (a golden reference cut to the shorter items)
   calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
   gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
            (exit 0 pass, 1 fail, 3 incomplete or uncalibrated)
@@ -40,6 +41,11 @@ import os
 from pathlib import Path
 import sys
 import time
+
+if __package__:
+    from .campaign_bench import LONG_PREFILL_TOKENS
+else:
+    from campaign_bench import LONG_PREFILL_TOKENS
 
 PROMPTS = (
     "Write a thread-safe LRU cache in Python with unit tests.",
@@ -172,7 +178,11 @@ def build_eval(app, args) -> dict:
     def long_messages(chars: int) -> list[dict]:
         return [{"role": "user", "content": "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK}]
 
-    for depth in [int(d) for d in args.long_depths.split(",") if d] if corpus else []:
+    depths = [int(d) for d in args.long_depths.split(",") if d] if corpus else []
+    if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
+        raise SystemExit(f"long items {depths} exceed {LONG_PREFILL_TOKENS} tokens: held by the campaign's "
+                         "long-prefill hold (pass --allow-long-prefill once it is lifted)")
+    for depth in depths:
         lo, hi = 0, min(len(corpus), depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
@@ -202,6 +212,11 @@ def dump(app, args) -> None:
             raise SystemExit(f"{eval_path} does not exist (pass --build with the reference configuration)")
         eval_path.write_text(json.dumps(build_eval(app, args)))
     data = json.loads(eval_path.read_text())
+    long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
+    if long_items and not args.allow_long_prefill:
+        raise SystemExit(f"eval items {long_items} exceed {LONG_PREFILL_TOKENS} prompt tokens: held by the campaign's "
+                         "long-prefill hold (use a subset eval set, campaign_kl.py subset, or --allow-long-prefill "
+                         "once the hold is lifted)")
     reference = np.load(args.reference) if args.reference else None
     capture = Capture(torch, args.top_k)
     rows, offsets, started = [], [], time.perf_counter()
@@ -384,7 +399,8 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
     names = ("kl_old", "kl_new", "kl_delta", "agreement_old", "agreement_new", "agreement_delta")
     stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
              for i, name in enumerate(names)}
-    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path), "old": old_path, "new": new_path,
+    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path),
+            "golden_subset_of": golden_meta.get("subset_of"), "old": old_path, "new": new_path,
             "old_sha256": file_sha256(old_path), "new_sha256": file_sha256(new_path),
             "positions": int(len(columns)), "golden_source": golden_meta.get("source"),
             "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
@@ -415,6 +431,7 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
             for name, path in variants.items()}
     first = next(iter(rows.values()))
     return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
+            "golden_subset_of": first["golden_subset_of"],
             "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
             "positions": first["positions"], "bootstrap": first["bootstrap"],
             "delta_kl": max(abs(r["kl_delta"]["mean"]) for r in rows.values()),
@@ -467,6 +484,41 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     return result
 
 
+def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens: int) -> dict:
+    """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
+    from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
+    reads. Both record what they were cut from (sha256 of the full golden reference and eval set, item names), so a
+    gate names the set it used; the dumps of a candidate must use this subset's eval.json."""
+
+    import numpy as np
+
+    data = json.loads(Path(eval_path).read_text())
+    golden = np.load(golden_path)
+    meta = json.loads(str(golden["meta"]))
+    if meta.get("eval_sha256") != file_sha256(eval_path) or not meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+    offsets = list(golden["offsets"]) + [len(golden["lp"])]
+    keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
+    if not keep:
+        raise ValueError(f"no eval item has at most {max_prompt_tokens} prompt tokens")
+    rows = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in keep])
+    out = Path(out_dir)
+    (out / "golden").mkdir(parents=True, exist_ok=True)
+    names = [data["items"][i]["name"] for i in keep]
+    origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": file_sha256(eval_path),
+              "max_prompt_tokens": max_prompt_tokens, "items": names}
+    (out / "eval.json").write_text(json.dumps({**{k: v for k, v in data.items() if k != "items"},
+                                               "items": [data["items"][i] for i in keep], "subset_of": origin}))
+    sizes = [offsets[i + 1] - offsets[i] for i in keep]
+    arrays = {k: golden[k][rows] for k in golden.files if k not in ("meta", "offsets")}
+    arrays["offsets"] = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+    new_meta = {**meta, "eval_sha256": file_sha256(str(out / "eval.json")), "names": names, "subset_of": origin}
+    np.savez(out / "golden" / "kl.npz", meta=json.dumps(new_meta), **arrays)
+    (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": meta.get("model_dir"), "subset_of": origin,
+                                                          "source": meta.get("source")}, indent=1))
+    return {"out": str(out), "items": names, "positions": int(len(rows)), **origin}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -477,6 +529,8 @@ def main() -> int:
     d.add_argument("--build", action="store_true", help="write --eval first when it is missing")
     d.add_argument("--corpus", help="corpus file for the long items (with --build)")
     d.add_argument("--long-depths", default="32768", help="long item prompt lengths (with --build)")
+    d.add_argument("--allow-long-prefill", action="store_true",
+                   help=f"build or dump items above {LONG_PREFILL_TOKENS} prompt tokens (held otherwise)")
     d.add_argument("--answer-tokens", type=int, default=256)
     d.add_argument("--profile", help="bench profile: --build continuations use its non-thinking card sampling")
     d.add_argument("--card", type=json.loads, help="JSON sampling fields for --build (overrides --profile)")
@@ -492,6 +546,11 @@ def main() -> int:
     g.add_argument("old")
     g.add_argument("new")
     g.add_argument("--calibration", help="the model's calibration record (margins); without it: uncalibrated")
+    u = sub.add_parser("subset", help="slice a golden reference + eval set to items of at most N prompt tokens")
+    u.add_argument("golden")
+    u.add_argument("eval")
+    u.add_argument("out_dir")
+    u.add_argument("--max-prompt-tokens", type=int, default=LONG_PREFILL_TOKENS)
     k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
     k.add_argument("golden")
     k.add_argument("base")
@@ -516,6 +575,8 @@ def main() -> int:
     else:
         if args.command == "compare":
             result = compare(args.reference, args.candidate)
+        elif args.command == "subset":
+            result = subset(args.golden, args.eval, args.out_dir, max_prompt_tokens=args.max_prompt_tokens)
         else:
             boot = {"block": args.block, "resamples": args.resamples, "seed": args.seed}
             if args.command == "calibrate":

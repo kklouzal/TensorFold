@@ -148,7 +148,12 @@ def fake_server(seen=None, ids=True, cache=True):
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path.endswith("/v1/tokenize"):
+            if self.path.endswith("/v1/tokenize") and request.get("return_tokens"):
+                # a production image's Harness bridge: ids only up to 16,384 tokens; the gates must not depend on it
+                self.send_response(400)
+                self.end_headers()
+                return
+            if self.path.endswith("/tokenize"):        # /v1/tokenize (counts) and the native /tokenize (ids)
                 return self._json({"count": count_tokens(request["messages"]), "tokens": fake_ids(request["messages"])})
             if seen is not None:
                 seen.append(request)
@@ -743,3 +748,28 @@ def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(
     assert [s["phase"] for s in states] == ["idle", "prefill", "decode", "idle"]
     assert states[2]["request"] == "probe" and states[2]["prompt_tokens"] == 3        # identity kept into decode
     assert "request" not in states[3]                                                  # idle drops it
+
+
+def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tmp_path):
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(5)
+    lp = _log_softmax(np, rng.normal(0, 3, (30, 32)))
+    items = [{"name": "short", "prompt": list(range(10)), "answer": list(range(10))},
+             {"name": "long", "prompt": list(range(100)), "answer": list(range(20))}]
+    (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    order = np.argsort(-lp, axis=-1)[:, :8]
+    meta = {"eval_sha256": kl.file_sha256(str(tmp_path / "eval.json")), "top_k": 8, "logits_dtype": "f32",
+            "names": ["short", "long"], "golden": True, "source": "s@1", "model_dir": "/golden"}
+    np.savez(tmp_path / "golden.npz", meta=json.dumps(meta), ids=order.astype(np.int32),
+             lp=np.take_along_axis(lp, order, -1).astype(np.float32), tail_lp=np.zeros(30), forced=lp[:, 0],
+             entropy=np.zeros(30), offsets=np.array([0, 10]))
+    result = kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path / "out"),
+                       max_prompt_tokens=50)
+    cut = np.load(tmp_path / "out" / "golden" / "kl.npz")
+    cut_meta = json.loads(str(cut["meta"]))
+    assert result["items"] == ["short"] and result["positions"] == 10 and list(cut["offsets"]) == [0]
+    assert np.array_equal(cut["lp"], np.take_along_axis(lp, order, -1).astype(np.float32)[:10])
+    assert cut_meta["eval_sha256"] == kl.file_sha256(str(tmp_path / "out" / "eval.json")) and cut_meta["golden"]
+    assert cut_meta["subset_of"]["golden_sha256"] == kl.file_sha256(str(tmp_path / "golden.npz"))
+    assert json.loads((tmp_path / "out" / "eval.json").read_text())["subset_of"]["items"] == ["short"]
+    assert "golden_dir" in json.loads((tmp_path / "out" / "golden" / "meta.json").read_text())
