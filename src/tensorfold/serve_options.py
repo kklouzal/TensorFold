@@ -201,6 +201,14 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if _cuda_streams(getattr(args, "parallel", "auto")) < 2:
             raise ValueError(f"--checkpoint-slots sets the prompt states {family.title}'s concurrent decoder keeps on "
                              "CUDA (--parallel 2 or more); one stream keeps 4, which share its attention buffer")
+    if getattr(args, "drafter_bits", None) is not None and backend == "cuda" \
+            and not getattr(family.package, "CUDA_DRAFTER_BITS", False):
+        raise ValueError(f"--drafter-bits: {family.title} on CUDA runs its draft model at one fixed precision; drop "
+                         "the flag")
+    head = getattr(args, "head_bits", None)
+    if head is not None and head != 16 and (backend != "cuda" or not getattr(family.package, "CUDA_HEAD_BITS", False)):
+        raise ValueError(f"--head-bits {head}: {family.title} on {'CUDA' if backend == 'cuda' else 'MLX'} runs its "
+                         "checkpoint's own head")
     fp8 = getattr(family.package, "CUDA_PREFILL_FP8", False) and backend == "cuda"
     if getattr(args, "prefill_fp8", None) and not fp8:              # asked for by name, not a default
         raise ValueError(f"--prefill-fp8 picks FP8 prompt kernels on CUDA; {family.title} on "

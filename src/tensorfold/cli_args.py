@@ -139,8 +139,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
     speed.add_argument("--drafter-bits", type=int, default=None,
-                       help="draft linear precision (0: bf16; Qwen MoE DFlash CUDA also accepts 16); "
-                            "default: 4 on MLX, stored precision for Qwen MoE DFlash on CUDA")
+                       help="draft linear precision (0: bf16; Qwen MoE DFlash CUDA also accepts 16, 8: an FP8 "
+                            "E4M3 copy with a scale per output row, and 4); default: 4 on MLX, stored precision for "
+                            "Qwen MoE DFlash on CUDA. Drafts are proposals the target verifies: replies do not change")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
                             "the draft model's block size)")
@@ -230,6 +231,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "layers): faster prompts, lower precision (e4m3 keeps 3 mantissa bits, bf16 keeps 7; "
                            "docs/recipes/cuda.md#prompt-precision has the measured cost). Default: "
                            f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Replies equal this server's own serial "
+                           "decoding either way")
+    cuda.add_argument("--head-bits", type=int, choices=(16, 8), default=None,
+                      help="the output head's (lm_head) weights: 16, the default, runs the checkpoint's BF16 head; 8 "
+                           "runs an FP8 E4M3 copy made at load, with a scale per vocabulary row, which reads half the "
+                           "head's bytes a decode step and changes scores slightly (a lossy option; families that "
+                           "offer it name their quality gate in docs/recipes). Replies equal this server's own serial "
                            "decoding either way")
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "

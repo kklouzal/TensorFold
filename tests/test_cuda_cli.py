@@ -721,3 +721,45 @@ def test_qwen_moe_invalid_mtp_cap_refuses_before_resolving_checkpoint_weights(tm
     ])
     with pytest.raises(ValueError, match="nonnegative integer"):
         cli.cmd_serve(args)
+
+
+def test_the_head_and_drafter_precision_flags_reach_only_the_families_that_declare_them(tmp_path, monkeypatch,
+                                                                                        request):
+    """``--head-bits`` parses 16 or 8; 8 (lossy) is refused unless the family's CUDA engine declares ``CUDA_HEAD_BITS``,
+    and ``--drafter-bits`` unless it declares ``CUDA_DRAFTER_BITS``: neither is silently ignored. Declared, each
+    reaches the engine; 16 (the stored head) is accepted anywhere."""
+
+    import tensorfold.cuda.server as server
+    from tensorfold.serve_options import check
+
+    parser = cli.build_parser()
+    assert parser.parse_args(["serve", "owner/model"]).head_bits is None
+    assert parser.parse_args(["serve", "owner/model", "--head-bits", "8"]).head_bits == 8
+    with pytest.raises(SystemExit):
+        parser.parse_args(["serve", "owner/model", "--head-bits", "4"])
+    plain, declared = _family(), _family(CUDA_HEAD_BITS=True, CUDA_DRAFTER_BITS=True)
+    for family in (plain, declared):
+        family.model_type = "test"
+
+    def args(*flags):
+        return parser.parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
+
+    with pytest.raises(ValueError, match="--head-bits 8: Test family on CUDA"):
+        check(args("--head-bits", "8"), plain, "cuda")
+    with pytest.raises(ValueError, match="--head-bits 8: Test family on MLX"):
+        check(args("--head-bits", "8"), declared, "mlx")
+    with pytest.raises(ValueError, match="--drafter-bits: Test family on CUDA"):
+        check(args("--drafter-bits", "8"), plain, "cuda")
+    check(args("--head-bits", "16"), plain, "cuda")
+    check(args("--head-bits", "16"), plain, "mlx")
+    check(args("--head-bits", "8", "--drafter-bits", "8"), declared, "cuda")
+    check(args("--drafter-bits", "8"), plain, "mlx")                 # MLX families read it in their own loaders
+
+    made = []
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    for family, flags, expected in ((declared, ["--head-bits", "8", "--drafter-bits", "8"], (8, 8)),
+                                    (declared, [], (None, None)), (plain, ["--head-bits", "16"], (None, None))):
+        family.package.cuda_engine = lambda *a, **k: made.append(k) or cuda_cli_engine(max_len=8192)
+        assert cli._serve_cuda(args("--no-drafts", *flags), family, tmp_path, 8192) == 0
+        assert (made[-1].get("head_bits"), made[-1].get("drafter_bits")) == expected
