@@ -528,10 +528,9 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     if any(path.resolve() in inputs for path in (out / "eval.json", out / "golden" / "kl.npz")):
         raise ValueError(f"{out_dir} holds the full set's own eval.json or golden/kl.npz: the subset would replace "
                          "them (choose another OUT_DIR)")
-    data = json.loads(Path(eval_path).read_text())
+    data, eval_sha256 = read_eval(Path(eval_path))
     golden = np.load(golden_path)
     meta = json.loads(str(golden["meta"]))
-    eval_sha256 = file_sha256(eval_path)
     if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
         raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
     offsets = [*golden["offsets"], len(golden["lp"])]
