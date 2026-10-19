@@ -207,3 +207,16 @@ def test_block_fp8_and_bf16_concat_keeps_each_projection():
         st(x, out)
         assert torch.equal(out, torch.cat([a(x), matmul(x, b)], 1))
         assert torch.equal(st.prefill(x), torch.cat([a.prefill(x), matmul(x, b)], 1))
+
+
+def test_fragment_order_in_row_chunks_matches_one_gather(monkeypatch):
+    """The FP8 fragment layout built a chunk of rows at a time equals one gather over every row (rows past N zero)."""
+
+    from tensorfold.cuda.nvfp4 import linear
+
+    codes = torch.randint(0, 256, (450, 128), dtype=torch.uint8)
+    whole = linear._fragment_order(codes, 512)                      # one chunk: 512 <= FRAGMENT_ROWS
+    monkeypatch.setattr(linear, "FRAGMENT_ROWS", 128)
+    assert torch.equal(linear._fragment_order(codes, 512), whole)    # four chunks, the last one past N
+    monkeypatch.setattr(linear, "FRAGMENT_ROWS", 192)
+    assert torch.equal(linear._fragment_order(codes, 512), whole)    # a partial last chunk
