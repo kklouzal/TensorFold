@@ -206,7 +206,7 @@ def _write_inputs(tmp_path):
     (tmp_path / "prompts.json").write_text(json.dumps(PROMPTS))
 
 
-def test_run_records_every_scheduled_request_with_its_metrics(tmp_path):
+def test_run_records_every_scheduled_request_with_its_metrics(tmp_path, monkeypatch):
     _write_inputs(tmp_path)
     seen = []
     phases = []
@@ -218,14 +218,13 @@ def test_run_records_every_scheduled_request_with_its_metrics(tmp_path):
 
     with fake_server(seen) as url:
         bench.Progress.configure(str(tmp_path / "progress.json"))
-        bench.Progress.update = recorded
+        monkeypatch.setattr(bench.Progress, "update", recorded)
         try:
             bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
                       meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None})
         finally:
-            bench.Progress.update = original
-            beat = json.loads((tmp_path / "progress.json").read_text())
             bench.Progress.configure(None)
+    beat = json.loads((tmp_path / "progress.json").read_text())
     # the watchdog heartbeat: each request prefills, then decodes (the role-free text chunks), then is idle
     assert phases[:3] == ["prefill", "decode", "decode"] and phases.count("prefill") == 3 and beat["phase"] == "idle"
     assert bench.expected_tokens({"prompt": [1, 2, 3]}) == 3 and bench.expected_tokens({"prompt": "abcd"}) == 2
@@ -701,3 +700,46 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
     save_file({k: v for k, v in tensors.items() if k != dropped}, str(partial / "model.safetensors"))
     with pytest.raises(ValueError, match="persistent buffers were not in the checkpoint"):
         golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, partial, "cpu")
+
+
+def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(tmp_path, monkeypatch):
+    frames = [b": keepalive\n\n",
+              b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n',
+              b": keepalive\n\n",
+              b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "f"}}]}}]}\n\n',
+              b'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, '
+              b'"completion_tokens": 2}, "tensorfold": {"token_ids": [5, 6]}}\n\ndata: [DONE]\n\n']
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for frame in frames:
+                self.wfile.write(frame)
+                self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    states = []
+    original = bench.Progress.update
+    monkeypatch.setattr(bench.Progress, "update", lambda phase, **fields: (
+        original(phase, **fields), bench.Progress.path and states.append(dict(bench.Progress.state))))
+    try:
+        bench.Progress.configure(str(tmp_path / "beat.json"))
+        reply = bench.stream_chat(f"http://127.0.0.1:{server.server_port}", {"messages": []}, prompt_tokens=3,
+                                  label="probe")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        bench.Progress.configure(None)
+    assert reply["tool_call_deltas"] and reply["first"] is None          # no text: client TTFT stays undefined
+    assert [s["phase"] for s in states] == ["idle", "prefill", "decode", "idle"]
+    assert states[2]["request"] == "probe" and states[2]["prompt_tokens"] == 3        # identity kept into decode
+    assert "request" not in states[3]                                                  # idle drops it

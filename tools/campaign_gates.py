@@ -31,12 +31,12 @@ if sys.version_info < (3, 11):
 
 if __package__:
     from .benchmark_output import write_json
-    from .campaign_bench import (Progress, chat_request, corpus_text, file_sha256, first_difference, get_json,
-                                 post_json, reply_token_ids, stream_chat)
+    from .campaign_bench import (Progress, chat_request, corpus_text, expected_tokens, file_sha256, first_difference,
+                                 get_json, post_json, reply_token_ids, stream_chat)
 else:
     from benchmark_output import write_json
-    from campaign_bench import (Progress, chat_request, corpus_text, file_sha256, first_difference, get_json,
-                                post_json, reply_token_ids, stream_chat)
+    from campaign_bench import (Progress, chat_request, corpus_text, expected_tokens, file_sha256, first_difference,
+                                get_json, post_json, reply_token_ids, stream_chat)
 
 # ---------------------------------------------------------------------------------------------------------------
 # tool-call suite: strict-compatible schemas (every property required, no additional properties)
@@ -219,7 +219,13 @@ def tool_case(url: str, profile: dict, name: str, strict: bool, sampling: dict, 
             "max_tokens": int(profile.get("gate_tool_tokens", 4096 if thinking else 1024)),
             "chat_template_kwargs": {"enable_thinking": thinking}, "return_token_ids": True, **sampling, **extra}
     started = time.perf_counter()
-    reply = post_json(url + "/v1/chat/completions", body, timeout=3600)
+    # a non-streamed reply: the watchdog sizes its wait from the request (prompt estimate and reply budget)
+    Progress.update("wait", request=f"tools {name} strict={strict} thinking={thinking}",
+                    prompt_tokens=expected_tokens(body), max_tokens=body["max_tokens"])
+    try:
+        reply = post_json(url + "/v1/chat/completions", body, timeout=3600)
+    finally:
+        Progress.update("idle", force=True)
     choice = reply["choices"][0]
     message = choice.get("message") or {}
     calls, problems = [], []
@@ -328,7 +334,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             messages = needle_prompt(text, lo, fractions, codes)
             body = {"model": profile["model"], "messages": messages, "temperature": 0, "max_tokens": budget,
                     "chat_template_kwargs": kwargs, "return_token_ids": True}
-            reply = stream_chat(url, body, prompt_tokens=target)
+            reply = stream_chat(url, body, prompt_tokens=target, label=f"needle {depth} thinking={thinking}")
             answer = reply["content"]
             found = {vault: code in answer for vault, code in codes.items()}
             row = {"depth": depth, "target": target, "thinking": thinking,

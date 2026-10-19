@@ -111,16 +111,18 @@ def get_json(url: str, *, timeout: float = 30) -> dict:
 
 
 class Progress:
-    """The heartbeat a supervisor (the GB10 runner's watchdog) reads while a tool streams: one small JSON file,
-    replaced atomically, holding the current phase ("prefill" until the first stream chunk, "decode" after it, "idle"
-    between requests), when that phase started, the last chunk's time, the request's expected prompt tokens and its
-    chunk count. Facts only: the supervisor owns the stall policy. Writes are rate-limited to one per second except
-    at phase changes. One per process: ``configure`` sets the path once (tools here are single-threaded CLIs);
-    without it every call is a no-op."""
+    """The heartbeat a supervisor (the GB10 runner's watchdog) reads while a tool talks to a server: one small JSON
+    file, replaced atomically, holding the current phase ("prefill" until the first generated text, reasoning or
+    tool-call delta of a stream, "decode" after it, "wait" for a non-streamed reply, "idle" between requests), when
+    that phase started, the last event's time, the request in flight (``request``, ``prompt_tokens``, and for "wait"
+    ``max_tokens``; kept across that request's phases) and its chunk count. Facts only: the supervisor owns the
+    stall policy. Writes are rate-limited to one per second except at phase changes. One per process: ``configure``
+    sets the path once (tools here are single-threaded CLIs); without it every call is a no-op."""
 
     path: str | None = None
     state: dict = {}
     written = 0.0
+    CARRIED = ("request", "prompt_tokens", "max_tokens")       # one request's identity, across its phases
 
     @classmethod
     def configure(cls, path: str | None) -> None:
@@ -133,7 +135,8 @@ class Progress:
             return
         now = time.time()
         if phase != cls.state.get("phase"):
-            cls.state = {"phase": phase, "phase_since": now}
+            carried = {k: cls.state[k] for k in cls.CARRIED if k in cls.state and phase != "idle"}
+            cls.state = {"phase": phase, "phase_since": now, **carried}
             force = True
         cls.state.update(fields, last_event=now, pid=os.getpid())
         if force or now - cls.written >= 1.0:
@@ -156,21 +159,31 @@ def expected_tokens(body: dict) -> int:
 
 
 def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, timeout: float = TIMEOUT_S,
-                route: str = "/v1/chat/completions", prompt_tokens: int | None = None) -> dict:
+                route: str = "/v1/chat/completions", prompt_tokens: int | None = None, label: str = "") -> dict:
     """One streamed completion (chat by default; ``route="/v1/completions"`` for a text or token-id ``prompt``):
     client timings, text, reasoning, the final usage and ``tensorfold`` block. Reports its phase to ``Progress``
-    (``prompt_tokens``, when known, sizes the supervisor's prefill allowance; else ``expected_tokens``)."""
+    (``label`` names the request; ``prompt_tokens``, when known, sizes the supervisor's prefill allowance, else
+    ``expected_tokens``); the heartbeat is written before the client clock starts."""
 
     body = {**body, "stream": True, "stream_options": {"include_usage": True}}
     req = urllib.request.Request(base + route, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
+    Progress.update("prefill", request=label or route,
+                    prompt_tokens=prompt_tokens if prompt_tokens is not None else expected_tokens(body), chunks=0)
     sent = time.perf_counter()
+    try:
+        return _read_stream(req, timeout, limits, sent)
+    finally:
+        Progress.update("idle", force=True)
+
+
+def _read_stream(req, timeout: float, limits: protocol.Limits, sent: float) -> dict:
+    """stream_chat's reading and timing of one open request (``sent``: the client clock's start)."""
+
     first = last = None
     usage = runtime = finish = None
     content, reasoning, calls = [], [], []
     pieces = 0
-    Progress.update("prefill", prompt_tokens=prompt_tokens if prompt_tokens is not None else expected_tokens(body),
-                    chunks=0)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         protocol.response_type(resp, "text/event-stream")
         headers = time.perf_counter()
@@ -178,6 +191,7 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
             new_usage, new_runtime, texts = protocol.chunk_fields(chunk)
             usage = new_usage if new_usage is not None else usage
             runtime = new_runtime if new_runtime is not None else runtime
+            called = False
             for choice in chunk.get("choices", []):
                 delta = choice.get("delta") or {}
                 finish = choice.get("finish_reason") or finish
@@ -187,19 +201,17 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
                     reasoning.append(thought)
                 if delta.get("tool_calls"):
                     calls.extend(delta["tool_calls"])
+                    called = True
             if any(texts):
                 now = time.perf_counter()
                 first = now if first is None else first
                 last = now
                 pieces += sum(1 for t in texts if t)
             # progress for the watchdog: generated text, reasoning or call deltas (the role chunk opens the stream
-            # before the prefill and is no progress); a prompt_progress frame refreshes the prefill phase
-            if any(texts) or calls and any((c.get("delta") or {}).get("tool_calls") for c in chunk.get("choices", [])):
+            # before the prefill and is no progress)
+            if any(texts) or called:
                 Progress.update("decode", chunks=Progress.state.get("chunks", 0) + 1)
-            elif chunk.get("prompt_progress"):
-                Progress.update("prefill", prompt_progress=chunk["prompt_progress"])
     done = time.perf_counter()
-    Progress.update("idle", force=True)
     if usage is None or runtime is None:
         raise ValueError("stream ended without usage and the tensorfold block (include_usage)")
     return {"sent": sent, "headers": headers, "first": first, "last": last, "done": done, "pieces": pieces,
@@ -225,6 +237,11 @@ def mem_available_mib() -> int | None:
     return int(match.group(1)) // 1024 if match else None
 
 
+GPU_FIELDS = ("temperature.gpu,power.draw,clocks.sm,clocks.mem,utilization.gpu,clocks_event_reasons.active,"
+              "clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.sw_thermal_slowdown,"
+              "clocks_event_reasons.hw_power_brake_slowdown,clocks_event_reasons.sw_power_cap")
+
+
 def host_snapshot(*, gpu: bool = False) -> dict:
     """Load, memory, thermal zones and (between requests only: it spawns a process) nvidia-smi's GPU state."""
 
@@ -237,10 +254,10 @@ def host_snapshot(*, gpu: bool = False) -> dict:
            "mem_available_mib": mem_available_mib(), "thermal_c": zones}
     if gpu:
         try:
-            query = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu,power.draw,clocks.sm,clocks.mem,"
-                                    "utilization.gpu,clocks_throttle_reasons.active", "--format=csv,noheader"],
+            query = subprocess.run(["nvidia-smi", f"--query-gpu={GPU_FIELDS}", "--format=csv,noheader"],
                                    capture_output=True, text=True, timeout=20, check=False)
             out["nvidia_smi"] = query.stdout.strip() if query.returncode == 0 else f"exit {query.returncode}"
+            out["nvidia_smi_fields"] = GPU_FIELDS
         except (OSError, subprocess.SubprocessError) as error:
             out["nvidia_smi"] = f"unavailable: {type(error).__name__}"
     return out
@@ -464,7 +481,8 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
             body = request_body(profile, item, step)
             before = host_snapshot()
             with MemSampler() as sampler:
-                record = stream_chat(url, body, prompt_tokens=item["prompt_tokens"])
+                record = stream_chat(url, body, prompt_tokens=item["prompt_tokens"],
+                                     label=f"bench {item['id']} step {index}")
             ids = reply_token_ids(record)
             row = {"prompt": item["id"], "depth": item["depth"], "task": item["task"], "thinking": item["thinking"],
                    "step": index, "sampling": step["sampling"], "seed": body.get("seed"),
