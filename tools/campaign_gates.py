@@ -498,7 +498,8 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
             warm = stream_chat(url, request)
             _evict(url, profile, args)
             recold = stream_chat(url, request)
-            extended_ids = list(prompt_ids) + reply_token_ids(cold)
+            cold_ids = reply_token_ids(cold)
+            extended_ids = list(prompt_ids) + cold_ids
             extension = {"model": profile["model"], "prompt": extended_ids, "max_tokens": args.max_tokens,
                          "return_token_ids": True, "ignore_eos": bool(profile.get("ignore_eos", True)), **sampling}
             extended = stream_chat(url, extension, route="/v1/completions")
@@ -527,19 +528,22 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
                 next_turn_cold = stream_chat(url, turn_request)
             ran = next_turn is not None
             n, m = len(prompt_ids), len(extended_ids)
+            response_ids = {"cold": cold_ids, "warm": reply_token_ids(warm), "recold": reply_token_ids(recold),
+                            "extended": reply_token_ids(extended), "extended_cold": reply_token_ids(extended_cold)}
             row = {"prompt": item["id"], "sampling": mode, "prompt_tokens": n,
                    "cached": {"cold": _cached(cold), "warm": _cached(warm), "recold": _cached(recold),
                               "extended": _cached(extended), "extended_cold": _cached(extended_cold),
                               "next_turn": _cached(next_turn) if ran else None,
                               "next_turn_cold": _cached(next_turn_cold) if ran else None},
                    "differences": {
-                       "warm_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(warm)),
-                       "recold_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(recold)),
-                       "extended_warm_vs_cold": first_difference(reply_token_ids(extended),
-                                                                 reply_token_ids(extended_cold)),
+                       "warm_vs_cold": first_difference(cold_ids, response_ids["warm"]),
+                       "recold_vs_cold": first_difference(cold_ids, response_ids["recold"]),
+                       "extended_warm_vs_cold": first_difference(response_ids["extended"],
+                                                                 response_ids["extended_cold"]),
                        "next_turn_warm_vs_cold": first_difference(reply_token_ids(next_turn),
                                                                   reply_token_ids(next_turn_cold)) if ran else None},
-                   "tokens": len(reply_token_ids(cold)), "sha": cold["stats"].get("token_sha")}
+                   "tokens": len(cold_ids), "sha": cold["stats"].get("token_sha"),
+                   "response_tokens": {name: len(ids) for name, ids in response_ids.items()}}
             c = row["cached"]
             row["exercised"] = {"warm": c["cold"] <= 0.1 * n and c["warm"] >= 0.9 * n,
                                 "recold": c["recold"] <= 0.1 * n,
@@ -565,9 +569,11 @@ def gate_identity(url: str, profile: dict, args) -> dict:
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
             drafted = stream_chat(url, chat_request(profile, item, sampling, args.max_tokens))
             serial = stream_chat(url, chat_request(profile, item, sampling, args.max_tokens, draft=False))
+            drafted_ids, serial_ids = reply_token_ids(drafted), reply_token_ids(serial)
             row = {"prompt": item["id"], "sampling": mode,
-                   "first_difference": first_difference(reply_token_ids(drafted), reply_token_ids(serial)),
-                   "tokens": len(reply_token_ids(drafted)), "drafted_sha": drafted["stats"].get("token_sha"),
+                   "first_difference": first_difference(drafted_ids, serial_ids),
+                   "tokens": len(drafted_ids), "drafted_sha": drafted["stats"].get("token_sha"),
+                   "response_tokens": {"drafted": len(drafted_ids), "serial": len(serial_ids)},
                    "serial_sha": serial["stats"].get("token_sha"),
                    "drafted": {k: drafted["stats"].get(k) for k in ("rounds", "drafted", "accepted", "decode_tps")},
                    "serial": {k: serial["stats"].get(k) for k in ("rounds", "decode_tps")}}
