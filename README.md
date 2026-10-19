@@ -880,6 +880,16 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   stream's first generated text, reasoning or tool-call delta, then `decode`; `wait` for a non-streamed reply; `idle`
   between requests), the request in flight with its prompt size (and reply budget for `wait`) and the chunk count.
   The tools report facts only; the stall policy belongs to the supervisor.
+- Each prompting tool also takes `--hot-flag FILE` (default `$TFC_HOT_FLAG`): before every new prompt it waits
+  while the shared guard's hot-state file exists, for at most 600 seconds. This covers streamed benchmark/gate
+  requests, non-streamed tool calls, KL eval construction and scoring, golden scoring and trace requests. A host
+  that stays hot, or whose hot-state reason cannot be read at the deadline, causes an error without issuing the
+  request; a gate exits 4. Streamed request records report `hot_wait_s` separately from request timing. Without
+  a configured file the tools run without this gate. Guarded sessions require the matching guard and runner:
+  they publish the sampled hot state above 85 C in any host zone or above 75 C on the GPU, and while sensors cannot
+  establish the state. Publication runs independently of safety sampling; admission waits for its first update,
+  and an update pending beyond the guard's 10-second sensor allowance stops the session. The guard aborts at
+  93 C in any host zone; this sampled protection does not establish host stability.
 - A long-prefill hold covers prompts above 65,536 tokens (the 128k and full-context items) unless
   `--allow-long-prefill` is given (`campaign_bench.py run`, `campaign_gates.py`, `campaign_kl.py dump`,
   `campaign_golden.py`): `run` records them in its `held` list (and `analyze` names them), a gate with held prompts or

@@ -698,6 +698,74 @@ def test_hot_gate_holds_each_new_prompt_until_the_host_is_cool(tmp_path, monkeyp
         gates.HotGate.configure(None)
 
 
+def test_hot_gate_read_failure_still_obeys_its_deadline(tmp_path, monkeypatch):
+    flag = tmp_path / "hot"
+    flag.write_text("host hot")
+    now, sleeps, phases = [0.0], [], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    def unreadable(path, *args, **kwargs):
+        raise PermissionError("hot-state file is unreadable")
+
+    monkeypatch.setattr(bench, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep))
+    monkeypatch.setattr(bench.Progress, "update", lambda phase: phases.append(phase))
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    monkeypatch.setattr(bench.HotGate, "max_s", 2.5)
+    monkeypatch.setattr(bench.HotGate, "path", flag)
+    with pytest.raises(RuntimeError, match="hot-state reason unreadable: PermissionError.*no new prompt"):
+        bench.HotGate.wait()
+    assert now[0] == 2.5 and sleeps == [1.0, 1.0, 0.5] and phases == ["idle"] * 3
+
+
+def test_hot_gate_stat_failure_cannot_admit_a_prompt(tmp_path, monkeypatch):
+    flag = tmp_path / "hot"
+    flag.write_text("host hot")
+    original_stat = Path.stat
+
+    def unreadable(path, *args, **kwargs):
+        if path == flag:
+            raise PermissionError("state unreadable")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", unreadable)
+    monkeypatch.setattr(bench.HotGate, "path", flag)
+    with pytest.raises(RuntimeError, match="hot-state file unreadable: PermissionError.*no new prompt"):
+        bench.HotGate.wait()
+
+
+def test_hot_gate_deadline_disappearance_is_one_cool_observation(tmp_path, monkeypatch):
+    flag = tmp_path / "hot"
+    flag.write_text("host hot")
+    reads = []
+
+    def disappeared(path, *args, **kwargs):
+        reads.append(path)
+        assert len(reads) == 1                        # no retry beyond the deadline if the flag reappears
+        raise FileNotFoundError("flag disappeared while its reason was read")
+
+    monkeypatch.setattr(Path, "read_text", disappeared)
+    monkeypatch.setattr(bench.HotGate, "path", flag)
+    monkeypatch.setattr(bench.HotGate, "max_s", 0.0)
+    assert bench.HotGate.wait() >= 0.0 and reads == [flag]
+
+
+def test_nonstreamed_tool_call_does_not_submit_a_prompt_while_hot(tmp_path, monkeypatch):
+    flag = tmp_path / "hot"
+    flag.write_text("host hot")
+    monkeypatch.setattr(gates.HotGate, "path", flag)
+    monkeypatch.setattr(gates.HotGate, "max_s", 0.0)
+
+    def unexpected_request(*args, **kwargs):
+        pytest.fail("a hot host received a tool-call request")
+
+    monkeypatch.setattr(gates, "post_json", unexpected_request)
+    with pytest.raises(RuntimeError, match="no new prompt"):
+        gates.tool_case("http://unused", {"model": "m"}, next(iter(gates.TOOL_CASES)), True, {}, False)
+
+
 def test_schema_errors_cover_type_enum_required_extra_and_items():
     schema = gates.EVENT["function"]["parameters"]
     good = {"title": "t", "start": "2026-11-03T14:00", "duration_minutes": 45,
