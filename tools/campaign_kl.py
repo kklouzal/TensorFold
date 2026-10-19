@@ -11,13 +11,16 @@ reference dump, the log-probabilities at the reference's top-K ids.
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
   subset   GOLDEN.npz EVAL.json OUT_DIR [--max-prompt-tokens N]   (a golden reference cut to the shorter items)
+  append   BASE.npz BASE_EVAL.json NEW.npz NEW_EVAL.json OUT_DIR   (a golden reference extended by new items)
   calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
   gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
            (exit 0 pass, 1 fail, 3 incomplete or uncalibrated)
 
 ``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
-prompts plus corpus-backed long ones) and each prompt's continuation sampled by this configuration (model-card
-sampling, fixed seeds). Run it once with the reference configuration; every candidate dumps the same EVAL.json.
+prompts, corpus-backed mid items in both thinking modes and long ones) and each prompt's continuation sampled by this
+configuration (model-card sampling per thinking mode, fixed seeds). Run it once with the reference configuration;
+every candidate dumps the same EVAL.json. New items join an eval set through ``append`` once a golden session scored
+them, never by rebuilding or rescoring the existing ones.
 
 Precision limits (stated with every comparison): KL(ref || cand) is computed exactly on the reference's top-K ids and
 with the remaining mass of both distributions merged into one tail bucket. That coarse-grained KL is a lower bound of
@@ -45,9 +48,9 @@ import sys
 import time
 
 if __package__:
-    from .campaign_bench import LONG_PREFILL_TOKENS
+    from .campaign_bench import LONG_PREFILL_TOKENS, TASKS, file_sha256
 else:
-    from campaign_bench import LONG_PREFILL_TOKENS
+    from campaign_bench import LONG_PREFILL_TOKENS, TASKS, file_sha256
 
 PROMPTS = (
     "Write a thread-safe LRU cache in Python with unit tests.",
@@ -63,16 +66,55 @@ PROMPTS = (
     "Describe how photosynthesis works to a ten-year-old.",
     "Review this Python for bugs: def avg(xs): return sum(xs) / len(xs) if xs else 0 / 0",
 )
+# eval-v2's further short prompts (items are the bootstrap's independent units): (prompt, thinking)
+EXTRA_PROMPTS = (
+    ("Implement Dijkstra's algorithm in Rust with a binary heap and explain its complexity.", False),
+    (("A train leaves at 9:40 at 72 km/h and a second at 10:05 at 90 km/h on the same track. When does the second "
+      "catch up, and how far from the station?"), True),
+    ("Write a bash script that rotates log files older than seven days into a dated tar.gz archive.", False),
+    ("Prove that the square root of 2 is irrational, then explain where the proof uses unique factorization.", True),
+    ("Explain how a B-tree keeps its balance on insertion, with a small worked example.", False),
+    ("Write a haiku sequence of four poems about a city waking up in winter.", False),
+    ("Design a REST API for a library loan system: resources, endpoints, status codes and one example exchange.",
+     True),
+    ("What is the probability that two of 23 people share a birthday? Derive it and give the number.", True),
+    ("Write a Python decorator that retries a function with exponential backoff and jitter, with tests.", False),
+    ("Compare TCP congestion control in Reno and CUBIC for a long fat network.", True),
+    ("Explain to a new employee how to read a balance sheet, using a bakery as the example.", False),
+    (("Write a TypeScript function that deep-merges two JSON objects without mutating either, with type "
+      "definitions."), False),
+    (("Three boxes are labelled apples, oranges and mixed, and every label is wrong. Which single box do you open "
+      "to relabel them all, and why?"), True),
+    ("Write a short dialogue in Spanish between a customer and a pharmacist, then translate it to English.", False),
+    ("Explain the difference between a mutex, a semaphore and a condition variable, with a bug each one prevents.",
+     True),
+    ("Write a C function that parses an IPv4 address string into a 32-bit integer and rejects malformed input.",
+     False),
+    ("Estimate how many piano tuners work in Chicago. Show every assumption.", True),
+    ("Summarize the plot and themes of Mary Shelley's Frankenstein in two paragraphs.", False),
+    ("Write a SQL schema for a multi-tenant invoicing app and explain how it isolates tenants.", True),
+    ("Explain gradient descent with momentum, and why it helps on ill-conditioned problems.", True),
+    ("Write a cover letter for a junior data analyst position at a public transit agency.", False),
+    (("Refactor this into idiomatic Python and explain each change: for i in range(len(xs)): if xs[i] % 2 == 0: "
+      "ys.append(xs[i] * xs[i])"), False),
+    ("A store sells pens at 3 for $2 and 10 for $6. What is the cheapest way to buy 47 pens?", True),
+    ("Describe the water cycle as a story told by a single water molecule.", False),
+    (("Write a Go worker pool that processes jobs from a channel with a bounded number of goroutines and graceful "
+      "shutdown."), False),
+    ("Is it ever rational to vote in a large election? Lay out the strongest arguments on each side.", True),
+    ("Explain how public-key signatures let a browser trust a website, step by step.", True),
+    ("Write a regular expression that matches ISO 8601 dates with optional times, and test it on five strings.",
+     False),
+)
+SHORT_SETS = {"v1": [(text, False) for text in PROMPTS], "extra": list(EXTRA_PROMPTS)}   # --short sets in order
 LONG_ASK = "Summarize the document above file by file, noting anything unusual."
+# --mid-depths items in turn (multi-chunk prefill): (bench task, thinking)
+MID_ITEMS = (("doc-review", False), ("doc-code", True), ("doc-review", True), ("doc-code", False))
 CALIBRATION_VARIANTS = (4, 6)          # reorder-only variants per calibration (campaign decision): min, max
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # in-process capture
-
-
-def file_sha256(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def row_stats(torch, logits, top_k: int, forced: int, reference_ids=None) -> dict:
@@ -172,38 +214,73 @@ def sampler_replaced(replacement):
 
 
 def build_eval(app, args) -> dict:
-    """Prompts rendered by the served template and continuations sampled by this configuration."""
+    """Prompts rendered by the served template and continuations sampled by this configuration (``args.cards``: card
+    sampling per thinking mode). Items: the --short prompt sets (SHORT_SETS); one per --mid-depths entry, cycling
+    through MID_ITEMS (a document review or a document-to-code ask, thinking off or on), each on its own corpus window
+    from --corpus-start on; one per --long-depths entry (a corpus prefix, thinking off). Every document is the most
+    corpus characters whose rendered prompt stays within its depth; its character range is recorded. The depths are
+    within the long-prefill hold (eval_set checked them)."""
 
     corpus = Path(args.corpus).read_text(encoding="utf-8") if args.corpus else None
-    items = [{"name": f"short-{i}", "messages": [{"role": "user", "content": text}]} for i, text in enumerate(PROMPTS)]
+    mids, longs = build_depths(args)
 
-    def long_messages(chars: int) -> list[dict]:
-        return [{"role": "user", "content": "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK}]
-
-    for depth in long_depths(args) if corpus else []:      # within the long-prefill hold: eval_set checked them
-        lo, hi = 0, min(len(corpus), depth * 8)
+    def fit(render, depth: int, thinking: bool, room: int) -> int:
+        lo, hi = 0, min(room, depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
-            body = {"messages": long_messages(mid), "chat_template_kwargs": {"enable_thinking": False}}
+            body = {"messages": [{"role": "user", "content": render(mid)}],
+                    "chat_template_kwargs": {"enable_thinking": thinking}}
             lo, hi = (mid, hi) if len(app.prepare(body, True).prompt) <= depth else (lo, mid)
-        items.append({"name": f"long-{depth}", "messages": long_messages(lo)})
+        return lo
+
+    def item(name: str, content: str, thinking: bool, **fields) -> dict:
+        return {"name": name, "messages": [{"role": "user", "content": content}], "thinking": thinking, **fields}
+
+    chosen = [name for name in args.short.split(",") if name]
+    numbered = enumerate((name, prompt) for name in SHORT_SETS for prompt in SHORT_SETS[name])
+    items = [item(f"short-{i}", text, thinking)             # numbered across all sets: names stay unique
+             for i, (name, (text, thinking)) in numbered if name in chosen]
+    start = args.corpus_start
+    for k, depth in enumerate(mids):
+        task, thinking = MID_ITEMS[k % len(MID_ITEMS)]
+
+        def window(chars: int, start: int = start, task: str = task) -> str:
+            return "<document>\n" + corpus[start:start + chars] + "\n</document>\n\n" + TASKS[task]
+
+        chars = fit(window, depth, thinking, len(corpus) - start)
+        items.append(item(f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", window(chars), thinking,
+                          document=[start, start + chars]))
+        start += chars
+
+    def prefix(chars: int) -> str:
+        return "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK
+
+    for depth in longs:
+        chars = fit(prefix, depth, False, len(corpus))
+        items.append(item(f"long-{depth}", prefix(chars), False, document=[0, chars]))
     engine = app.engine
-    for k, item in enumerate(items):
-        body = {"messages": item["messages"], "chat_template_kwargs": {"enable_thinking": False},
-                **args.card, "seed": 7000 + k}
+    for k, it in enumerate(items):
+        thinking = it.pop("thinking")
+        body = {"messages": it["messages"], "chat_template_kwargs": {"enable_thinking": thinking},
+                **args.cards["think" if thinking else "nothink"], "seed": 7000 + k}
         prepared = app.prepare(body, True)
         out: list[int] = []
         engine.generate(prepared.prompt, args.answer_tokens, prepared.sampling, lambda new: out.extend(new) or False)
-        item.update(prompt=list(prepared.prompt), answer=out[:args.answer_tokens], sampling=body)
-        print(json.dumps({"item": item["name"], "prompt": len(item["prompt"]), "answer": len(item["answer"])}),
-              flush=True)
-    return {"version": 1, "created_unix_s": int(time.time()), "items": items}
+        it.update(prompt=list(prepared.prompt), answer=out[:args.answer_tokens], sampling=body)
+        print(json.dumps({"item": it["name"], "prompt": len(it["prompt"]), "answer": len(it["answer"])}), flush=True)
+    return {"version": 1, "created_unix_s": int(time.time()), "items": items,
+            "built_by": {"serve_args": args.serve, "source_revision": os.environ.get("TENSORFOLD_SOURCE_REVISION"),
+                         "tool_sha256": file_sha256(__file__),
+                         "corpus_sha256": file_sha256(args.corpus) if args.corpus else None}}
 
 
-def long_depths(args) -> list[int]:
-    """The prompt lengths of the long items ``--build`` writes (none without --corpus)."""
+def build_depths(args) -> tuple[list[int], list[int]]:
+    """The prompt lengths of the mid and long items ``--build`` writes (none without --corpus)."""
 
-    return [int(d) for d in args.long_depths.split(",") if d] if args.corpus else []
+    def depths(text: str) -> list[int]:
+        return [int(d) for d in text.split(",") if d] if args.corpus else []
+
+    return depths(args.mid_depths), depths(args.long_depths)
 
 
 def read_eval(path: Path) -> tuple[dict, str]:
@@ -216,16 +293,18 @@ def read_eval(path: Path) -> tuple[dict, str]:
 def eval_set(args) -> tuple[dict, str] | None:
     """The eval set ``dump`` teacher-forces (read_eval), or None when ``--build`` is to write it; checked before the
     engine loads, so a refusal costs no model load. During the campaign's long-prefill hold (lifted by
-    --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of long items
-    above it, is refused."""
+    --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of mid or long
+    items above it, is refused."""
 
     path = Path(args.eval)
     if not path.exists():
         if not args.build:
             raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
-        depths = long_depths(args)
+        if args.mid_depths and not args.corpus:
+            raise SystemExit("--mid-depths needs --corpus")
+        depths = [d for group in build_depths(args) for d in group]
         if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
-            raise SystemExit(f"long items {depths} exceed {LONG_PREFILL_TOKENS} tokens: held by the campaign's "
+            raise SystemExit(f"items of {depths} tokens exceed {LONG_PREFILL_TOKENS}: held by the campaign's "
                              "long-prefill hold (pass --allow-long-prefill once it is lifted)")
         return None
     data, digest = read_eval(path)
@@ -598,6 +677,63 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     return {"out": str(out), "items": names, "positions": len(rows), **origin}
 
 
+# golden meta fields that fix a reference's numbers: the parts of one reference must agree on all of them
+GOLDEN_CONTRACT = ("source", "architecture", "config_sha256", "top_k", "logits_dtype", "versions", "chunk")
+GOLDEN_PRECISION = ("weights", "compute")
+GOLDEN_SESSION = ("tool_sha256", "load_s", "load")       # one scoring session's facts, kept per part
+
+
+def append(base_golden: str, base_eval: str, new_golden: str, new_eval: str, out_dir: str) -> dict:
+    """An eval set and its golden reference extended by new items that another campaign_golden session scored (no
+    GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the runner's --kl-from layout. The base rows are copied
+    unchanged, never rescored. Both inputs must be full golden references of their eval sets (subset the result,
+    not the parts) with the same checkpoint, model config, top-K, logits dtype, library versions, prefill chunk and
+    weight/compute precision, and disjoint item names. ``parts`` lists every scoring session in order (an appended
+    base keeps its own parts) with its hashes, items, tool hash, precision record and eval build record."""
+
+    import numpy as np
+
+    loaded = []
+    for golden_path, eval_path in ((base_golden, base_eval), (new_golden, new_eval)):
+        data = json.loads(Path(eval_path).read_text())
+        golden = np.load(golden_path)
+        meta = json.loads(str(golden["meta"]))
+        eval_sha256 = file_sha256(eval_path)
+        if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
+            raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+        if "subset_of" in meta or "subset_of" in data:
+            raise ValueError(f"{golden_path} is a subset: append extends full references (subset the result)")
+        part = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256, "items": meta["names"],
+                "positions": len(golden["lp"]), "precision": meta.get("precision"), "built_by": data.get("built_by"),
+                **{k: meta.get(k) for k in GOLDEN_SESSION}}
+        loaded.append((data, golden, meta, meta.get("parts") or [part]))
+    (base, base_rows, base_meta, base_parts), (new, new_rows, new_meta, new_parts) = loaded
+    differ = [k for k in GOLDEN_CONTRACT if base_meta.get(k) != new_meta.get(k)]
+    differ += [f"precision.{k}" for k in GOLDEN_PRECISION
+               if (base_meta.get("precision") or {}).get(k) != (new_meta.get("precision") or {}).get(k)]
+    if differ:
+        raise ValueError(f"the golden parts differ in {differ}: they are not one reference")
+    names = base_meta["names"] + new_meta["names"]
+    if len(set(names)) != len(names):
+        raise ValueError(f"item names repeat across the parts: {sorted({n for n in names if names.count(n) > 1})}")
+    if set(base_rows.files) != set(new_rows.files):
+        extra = sorted(set(base_rows.files) ^ set(new_rows.files))
+        raise ValueError(f"the golden parts hold different arrays: {extra}")
+    parts = base_parts + new_parts
+    out = Path(out_dir)
+    (out / "golden").mkdir(parents=True, exist_ok=True)
+    (out / "eval.json").write_text(json.dumps({**{k: v for k, v in base.items() if k not in ("items", "parts")},
+                                               "items": base["items"] + new["items"], "parts": parts}))
+    arrays = {k: np.concatenate([base_rows[k], new_rows[k]]) for k in base_rows.files if k not in ("meta", "offsets")}
+    arrays["offsets"] = np.concatenate([base_rows["offsets"], new_rows["offsets"] + len(base_rows["lp"])])
+    meta = {**{k: v for k, v in base_meta.items() if k not in GOLDEN_SESSION},
+            "eval_sha256": file_sha256(str(out / "eval.json")), "names": names, "parts": parts}
+    np.savez(out / "golden" / "kl.npz", meta=json.dumps(meta), **arrays)
+    (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": base_meta.get("model_dir"), "parts": parts,
+                                                          "source": base_meta.get("source")}, indent=1))
+    return {"out": str(out), "items": names, "positions": len(arrays["lp"]), "parts": parts}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -606,13 +742,20 @@ def main() -> int:
     d.add_argument("--out", required=True)
     d.add_argument("--reference")
     d.add_argument("--build", action="store_true", help="write --eval first when it is missing")
-    d.add_argument("--corpus", help="corpus file for the long items (with --build)")
+    d.add_argument("--corpus", help="corpus file for the mid and long items (with --build)")
+    d.add_argument("--short", default="v1",
+                   help=f"short prompt sets to build, comma-separated from {', '.join(SHORT_SETS)} ('' for none; "
+                        "items are numbered across all sets) (with --build)")
+    d.add_argument("--mid-depths", default="",
+                   help="mid item prompt lengths, e.g. 4096,8192,12288,16384 (with --build and --corpus)")
+    d.add_argument("--corpus-start", type=int, default=0,
+                   help="corpus character where the mid items' consecutive windows start (with --build)")
     d.add_argument("--long-depths", default="32768", help="long item prompt lengths (with --build)")
     d.add_argument("--allow-long-prefill", action="store_true",
                    help=f"build or dump items above {LONG_PREFILL_TOKENS} prompt tokens (held otherwise)")
     d.add_argument("--answer-tokens", type=int, default=256)
-    d.add_argument("--profile", help="bench profile: --build continuations use its non-thinking card sampling")
-    d.add_argument("--card", type=json.loads, help="JSON sampling fields for --build (overrides --profile)")
+    d.add_argument("--profile", help="bench profile: --build continuations use its card sampling per thinking mode")
+    d.add_argument("--card", type=json.loads, help="JSON sampling fields for every --build item (overrides --profile)")
     d.add_argument("--top-k", type=int, default=1024)
     d.add_argument("--port", type=int, default=8899, help="the CLI binds its HTTP socket here (nothing is served)")
     d.add_argument("serve", nargs=argparse.REMAINDER, help="-- serve MODEL [production flags]")
@@ -625,6 +768,11 @@ def main() -> int:
     g.add_argument("old")
     g.add_argument("new")
     g.add_argument("--calibration", help="the model's calibration record (margins); without it: uncalibrated")
+    a = sub.add_parser("append", help="extend a golden reference + eval set by separately scored new items")
+    for name in ("base_golden", "base_eval", "new_golden", "new_eval"):
+        a.add_argument(name)
+    a.add_argument("out_dir", help="writes eval.json and golden/{kl.npz,meta.json}")
+    a.add_argument("--out", help="also write the result summary here")
     u = sub.add_parser("subset", help="slice a golden reference + eval set to items of at most N prompt tokens")
     u.add_argument("golden")
     u.add_argument("eval")
@@ -648,14 +796,16 @@ def main() -> int:
             args.serve = args.serve[1:]
         if not args.serve or args.serve[0] != "serve":
             ap.error("dump needs -- serve MODEL [flags]")
-        if args.card is None:
-            args.card = (json.loads(Path(args.profile).read_text())["card_sampling"]["nothink"] if args.profile
-                         else {})
+        cards = json.loads(Path(args.profile).read_text())["card_sampling"] if args.profile else {}
+        args.cards = ({"think": args.card, "nothink": args.card} if args.card is not None
+                      else {"think": cards.get("think", {}), "nothink": cards.get("nothink", {})})
         loaded = eval_set(args)                      # refusals before the engine loads
         with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
     else:
         if args.command == "compare":
             result = compare(args.reference, args.candidate)
+        elif args.command == "append":
+            result = append(args.base_golden, args.base_eval, args.new_golden, args.new_eval, args.out_dir)
         elif args.command == "subset":
             result = subset(args.golden, args.eval, args.out_dir, max_prompt_tokens=args.max_prompt_tokens)
         else:
