@@ -31,9 +31,9 @@ from pathlib import Path
 import time
 
 if __package__:
-    from .campaign_kl import LONG_PREFILL_TOKENS, file_sha256, read_eval, row_stats, save_dump
+    from .campaign_kl import LONG_PREFILL_TOKENS, HotGate, file_sha256, read_eval, row_stats, save_dump
 else:
-    from campaign_kl import LONG_PREFILL_TOKENS, file_sha256, read_eval, row_stats, save_dump
+    from campaign_kl import LONG_PREFILL_TOKENS, HotGate, file_sha256, read_eval, row_stats, save_dump
 
 
 @contextlib.contextmanager
@@ -193,7 +193,9 @@ def main() -> int:
     ap.add_argument("--allow-long-prefill", action="store_true",
                     help=f"score eval items above {LONG_PREFILL_TOKENS} prompt tokens (refused during the campaign's "
                          "long-prefill hold, before the model loads)")
+    ap.add_argument("--hot-flag", help="the guard's hot-state file (campaign_bench.HotGate; default $TFC_HOT_FLAG)")
     args = ap.parse_args()
+    HotGate.configure(args.hot_flag)
     data, eval_sha256 = read_eval(Path(args.eval))     # the record names the very bytes scored
     long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
     if long_items and not args.allow_long_prefill:
@@ -224,6 +226,7 @@ def main() -> int:
     cuda = torch.cuda.is_available() and args.device.startswith("cuda")
     for item in data["items"]:
         offsets.append(len(rows))
+        HotGate.wait()                                   # a new prompt only from a cool host
         item_rows, dtype = score(torch, model, item["prompt"], item["answer"], args.chunk, args.top_k)
         rows.extend(item_rows)
         if cuda:

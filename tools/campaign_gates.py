@@ -35,11 +35,11 @@ if sys.version_info < (3, 11):
 
 if __package__:
     from .benchmark_output import write_json
-    from .campaign_bench import (LONG_PREFILL_TOKENS, Progress, chat_request, corpus_text, expected_tokens,
+    from .campaign_bench import (LONG_PREFILL_TOKENS, HotGate, Progress, chat_request, corpus_text, expected_tokens,
                                  file_sha256, first_difference, get_json, post_json, reply_token_ids, stream_chat)
 else:
     from benchmark_output import write_json
-    from campaign_bench import (LONG_PREFILL_TOKENS, Progress, chat_request, corpus_text, expected_tokens,
+    from campaign_bench import (LONG_PREFILL_TOKENS, HotGate, Progress, chat_request, corpus_text, expected_tokens,
                                 file_sha256, first_difference, get_json, post_json, reply_token_ids, stream_chat)
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -222,6 +222,7 @@ def tool_case(url: str, profile: dict, name: str, strict: bool, sampling: dict, 
     body = {"model": profile["model"], "messages": messages, "tools": tools,
             "max_tokens": int(profile.get("gate_tool_tokens", 4096 if thinking else 1024)),
             "chat_template_kwargs": {"enable_thinking": thinking}, "return_token_ids": True, **sampling, **extra}
+    HotGate.wait()                                      # a new prompt only from a cool host
     started = time.perf_counter()
     # a non-streamed reply: the watchdog sizes its wait from the request (prompt estimate and reply budget)
     Progress.update("wait", request=f"tools {name} strict={strict} thinking={thinking}",
@@ -562,6 +563,7 @@ def main() -> int:
     ap.add_argument("--evict-requests", type=int, default=6,
                     help="distinct ~600-token prompts sent to displace kept prefix-cache states before a cold request")
     ap.add_argument("--progress", help="heartbeat file for a watchdog (campaign_bench.Progress)")
+    ap.add_argument("--hot-flag", help="the guard's hot-state file (campaign_bench.HotGate; default $TFC_HOT_FLAG)")
     ap.add_argument("--allow-long-prefill", action="store_true",
                     help=f"run prompts above {LONG_PREFILL_TOKENS} tokens (needle depths, gate prompts; determinism "
                          "also counts a prompt plus its reply budget and its next chat turn); without it they are "
@@ -579,6 +581,7 @@ def main() -> int:
     result = {"version": 1, "url": url, "args": vars(args), "gates": {}}
     try:                                # from here on any exception is an error result (exit 4), never a verdict
         Progress.configure(args.progress)
+        HotGate.configure(args.hot_flag)
         profile = json.loads(Path(args.profile).read_text())
         result.update(model=profile["model"], profile_sha256=file_sha256(args.profile),
                       tool_sha256={Path(f).name: file_sha256(f)

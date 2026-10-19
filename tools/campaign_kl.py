@@ -49,9 +49,9 @@ import time
 import traceback
 
 if __package__:
-    from .campaign_bench import LONG_PREFILL_TOKENS, TASKS, file_sha256
+    from .campaign_bench import LONG_PREFILL_TOKENS, TASKS, HotGate, file_sha256
 else:
-    from campaign_bench import LONG_PREFILL_TOKENS, TASKS, file_sha256
+    from campaign_bench import LONG_PREFILL_TOKENS, TASKS, HotGate, file_sha256
 
 PROMPTS = (
     "Write a thread-safe LRU cache in Python with unit tests.",
@@ -286,6 +286,7 @@ def build_eval(app, args) -> dict:
                 **args.cards["think" if thinking else "nothink"], "seed": 7000 + k}
         prepared = app.prepare(body, True)
         out: list[int] = []
+        HotGate.wait()                               # a new prompt only from a cool host
         engine.generate(prepared.prompt, args.answer_tokens, prepared.sampling, lambda new: out.extend(new) or False)
         it.update(prompt=list(prepared.prompt), answer=out[:args.answer_tokens], sampling=body)
         print(json.dumps({"item": it["name"], "prompt": len(it["prompt"]), "answer": len(it["answer"])}), flush=True)
@@ -371,6 +372,7 @@ def dump(app, args, loaded: tuple[dict, str] | None) -> None:
             ref_ids = reference["ids"][position:position + n] if reference is not None else None
             if ref_ids is not None and len(ref_ids) != n:
                 raise ValueError("reference dump does not match this eval set")
+            HotGate.wait()                           # a new prompt only from a cool host
             capture.begin(len(item["prompt"]), item["answer"], ref_ids)
             app.engine.generate(list(item["prompt"]), n, None, lambda new: False, draft=False, stop_eos=False)
             rows.extend(capture.end())
@@ -805,6 +807,7 @@ def main() -> int:
     d.add_argument("--profile", help="bench profile: --build continuations use its card sampling per thinking mode")
     d.add_argument("--card", type=json.loads, help="JSON sampling fields for every --build item (overrides --profile)")
     d.add_argument("--top-k", type=int, default=1024)
+    d.add_argument("--hot-flag", help="the guard's hot-state file (campaign_bench.HotGate; default $TFC_HOT_FLAG)")
     d.add_argument("--port", type=int, default=8899, help="the CLI binds its HTTP socket here (nothing is served)")
     d.add_argument("serve", nargs=argparse.REMAINDER, help="-- serve MODEL [production flags]")
     c = sub.add_parser("compare")
@@ -840,6 +843,7 @@ def main() -> int:
         parser.add_argument("--out")
     args = ap.parse_args()
     if args.command == "dump":
+        HotGate.configure(args.hot_flag)
         if args.serve and args.serve[0] == "--":
             args.serve = args.serve[1:]
         if not args.serve or args.serve[0] != "serve":

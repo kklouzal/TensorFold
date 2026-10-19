@@ -162,6 +162,43 @@ class Progress:
             cls.written = now
 
 
+class HotGate:
+    """The campaign's hot-state gate (after the 2026-10-19 GB10 hang #3, a prefill burst from a hot decode state):
+    before each new prompt a tool waits while the shared guard's hot-state file exists (gpu_guard: any zone above
+    85 C or the GPU above 75 C, or a state it cannot read), at most ``max_s``; a host that stays hot is an error, never
+    a prompt. ``configure`` takes the file (default the TFC_HOT_FLAG the guard exports; none: no gate, for tools run
+    outside a guarded session); ``waited_s`` sums the waits. One per process (single-threaded CLIs), as Progress."""
+
+    path: ClassVar[Path | None] = None
+    max_s: ClassVar[float] = 600.0             # under the runner's 900 s idle allowance
+    waited_s: ClassVar[float] = 0.0
+
+    @classmethod
+    def configure(cls, path: str | None) -> None:
+        path = path or os.environ.get("TFC_HOT_FLAG")
+        cls.path, cls.waited_s = (Path(path) if path else None), 0.0
+
+    @classmethod
+    def wait(cls) -> float:
+        """Block until the host is out of the hot state; the seconds waited (0 without a gate)."""
+
+        if cls.path is None:
+            return 0.0
+        began = time.monotonic()
+        while cls.path.exists():
+            if time.monotonic() - began > cls.max_s:
+                try:
+                    reason = cls.path.read_text().strip()
+                except OSError:                     # cooled (or rewritten) between the check and the read
+                    continue
+                raise RuntimeError(f"the host stayed hot for {cls.max_s:.0f} s ({reason}): no new prompt")
+            Progress.update("idle")
+            time.sleep(1)
+        waited = time.monotonic() - began
+        cls.waited_s += waited
+        return waited
+
+
 def expected_tokens(body: dict) -> int:
     """A request's prompt size for the watchdog's prefill allowance: token ids as given, else a generous estimate of
     one token per two characters of its messages or prompt text."""
@@ -183,11 +220,12 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
     body = {**body, "stream": True, "stream_options": {"include_usage": True}}
     req = urllib.request.Request(base + route, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
+    hot_wait_s = HotGate.wait()                         # a new prompt only from a cool host
     Progress.update("prefill", request=label or route,
                     prompt_tokens=prompt_tokens if prompt_tokens is not None else expected_tokens(body), chunks=0)
     sent = time.perf_counter()
     try:
-        return _read_stream(req, timeout, limits, sent)
+        return {**_read_stream(req, timeout, limits, sent), "hot_wait_s": round(hot_wait_s, 1)}
     finally:
         Progress.update("idle", force=True)
 
@@ -759,6 +797,7 @@ def main() -> int:
         r.add_argument(name)
     r.add_argument("--meta", help="JSON written by the runner: image id, args, env, cache dir, container")
     r.add_argument("--progress", help="heartbeat file for a watchdog (see Progress)")
+    r.add_argument("--hot-flag", help="the guard's hot-state file (see HotGate; default $TFC_HOT_FLAG)")
     r.add_argument("--allow-long-prefill", action="store_true",
                    help=f"run prompts above {LONG_PREFILL_TOKENS} tokens; without it they are held (recorded in the "
                         "run's 'held' list and listed by analyze)")
@@ -778,6 +817,7 @@ def main() -> int:
         prompts(args.url.rstrip("/"), args.profile, args.corpus, args.out)
     elif args.command == "run":
         Progress.configure(args.progress)
+        HotGate.configure(args.hot_flag)
         select = {"depths": [d for d in args.depths.split(",") if d], "tasks": [t for t in args.tasks.split(",") if t],
                   "thinking": None if args.thinking == "both" else args.thinking == "on",
                   "allow_long": args.allow_long_prefill}
