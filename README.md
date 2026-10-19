@@ -884,10 +884,14 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   golden reference, with 95% block bootstrap intervals (circular blocks within eval items) of
   KL(golden || new) - KL(golden || old) and of the top-1 agreement change. `calibrate GOLDEN BASE NAME=DUMP ...`
   derives its margins from 4 to 6 reorder-only variants of the base (the same declared math in another summation
-  order): each margin is the largest absolute mean difference of a variant from the base, and the record keeps every
-  variant's difference, interval and dump hash. The gate fails when an interval lies wholly beyond its margin, is
-  `incomplete` when an interval is wider than its margin, and otherwise passes only when the upper KL bound and the
-  lower agreement bound lie within the margins; without a calibration it reports the intervals as `uncalibrated`.
+  order): each margin is the largest absolute 95% bound of a variant's paired difference from the base (the largest
+  deviation a numerically equivalent build shows at this eval size), reported in nats and as a percentage of the
+  base's KL; the record keeps every variant's difference, interval and dump hash and a leave-one-out check (each
+  variant judged with the others' margins) that counts false alarms. The gate fails when an interval lies wholly
+  beyond its margin (a regression is established), passes when the upper KL bound and the lower agreement bound lie
+  within the margins (improvements never fail), and is otherwise `incomplete` (an interval straddles its margin:
+  more evidence, never a pass); without a calibration it reports the intervals as `uncalibrated`. The margins shrink
+  with the eval set's item count, so eval sets are sized for sensitivity.
   Non-finite KL values (NaN or -inf log-probabilities) stop the comparison. Exit status 1 = fail, 3 = incomplete or
   uncalibrated.
 - `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the

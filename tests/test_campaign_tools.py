@@ -664,8 +664,25 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
 
     variants = {f"r{i}": path(f"reorder{i}") for i in range(4)}
     record = kl.calibrate(path("golden"), path("old"), variants, resamples=300)
-    deltas = [abs(v["kl_delta"]["mean"]) for v in record["variants"].values()]
-    assert record["delta_kl"] == max(deltas) > 0 and len(record["variants"]) == 4
+
+    def largest_bound(rows, key):
+        return max(abs(b) for v in rows.values() for b in v[key]["ci95"])
+
+    # the margins are the largest deviation (95% bound) a reorder-only build shows, fixed before any candidate
+    assert record["margin_method"] == "ci_bound" and len(record["variants"]) == 4
+    assert record["delta_kl"] == largest_bound(record["variants"], "kl_delta") > 0
+    assert record["delta_agreement"] == largest_bound(record["variants"], "agreement_delta")
+    assert record["delta_kl_pct_of_base_kl"] == pytest.approx(100 * record["delta_kl"]
+                                                              / record["base_values"]["kl_old"]["mean"])
+    held_out = record["leave_one_out"]["variants"]               # each variant judged with the others' margins
+    for name, check in held_out.items():
+        others = {k: v for k, v in record["variants"].items() if k != name}
+        assert check["delta_kl"] == largest_bound(others, "kl_delta")
+        row = record["variants"][name]
+        assert (check["status"], check["measures"]) == kl.verdict(row["kl_delta"]["ci95"],
+                                                                  row["agreement_delta"]["ci95"],
+                                                                  check["delta_kl"], check["delta_agreement"])
+    assert record["leave_one_out"]["false_alarms"] == sorted(n for n, c in held_out.items() if c["status"] != "pass")
     assert record["variants"]["r0"]["new_sha256"] == kl.file_sha256(path("reorder0"))
     with pytest.raises(ValueError, match="4 to 6 reorder-only variants, not 3"):
         kl.calibrate(path("golden"), path("old"), dict(list(variants.items())[:3]), resamples=300)
@@ -673,11 +690,12 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     passed = kl.gate(path("golden"), path("old"), path("same"), calibration=record, resamples=300)
     failed = kl.gate(path("golden"), path("old"), path("worse"), calibration=record, resamples=300)
     assert passed["status"] == "pass" and passed["kl_delta"]["ci95"][1] <= record["delta_kl"]
-    assert failed["status"] == "fail" and "kl" in failed["failed"]        # wholly beyond the margin at any width
+    assert passed["margins"]["delta_kl_pct_of_base_kl"] == record["delta_kl_pct_of_base_kl"]
+    assert failed["status"] == "fail" and "kl" in failed["failed"]        # wholly beyond the margin: a regression
     assert failed["kl_delta"]["ci95"][0] > record["delta_kl"]
-    tight = dict(record, delta_kl=passed["ci_width"]["kl_delta"] / 2)         # margin narrower than the interval
-    narrow = kl.gate(path("golden"), path("old"), path("same"), calibration=tight, resamples=300)
-    assert narrow["status"] == "incomplete" and narrow["too_wide"] == ["kl"]
+    old_rule = {k: v for k, v in record.items() if k != "margin_method"}  # a record made under another margin rule
+    with pytest.raises(ValueError, match="recalibrate"):
+        kl.gate(path("golden"), path("old"), path("same"), calibration=old_rule, resamples=300)
     with pytest.raises(ValueError, match="does not match"):
         kl.gate(path("golden"), path("old"), path("same"), calibration=dict(record, eval_sha256="x"), resamples=300)
     with pytest.raises(ValueError, match="bootstrap resamples"):
@@ -693,12 +711,14 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
 
 
 def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
-    """fail when an interval lies wholly beyond its margin (at any width); otherwise incomplete when an interval is
-    wider than its margin; otherwise pass iff both lie within their margins, else fail. No verdict never exits 0."""
+    """fail when an interval lies wholly beyond its margin (a regression is established); pass when the KL upper
+    bound and the agreement lower bound lie within their margins (at any width: improvements never fail); otherwise
+    incomplete (an interval straddles its margin). No verdict never exits 0."""
 
     boot = {"block": 64, "resamples": 4000, "seed": 0}
     record = {"golden_sha256": "g", "eval_sha256": "e", "positions": 10, "bootstrap": boot, "base": "old.npz",
-              "delta_kl": 1.0, "delta_agreement": 0.1, "variants": {f"r{i}": {} for i in range(4)}}
+              "margin_method": "ci_bound", "delta_kl": 1.0, "delta_kl_pct_of_base_kl": 50.0, "delta_agreement": 0.1,
+              "variants": {f"r{i}": {} for i in range(4)}, "leave_one_out": {"false_alarms": []}}
 
     def paired_with(kl_ci, agree_ci):
         return lambda *args, **kwargs: {
@@ -707,20 +727,24 @@ def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
             "agreement_delta": {"mean": sum(agree_ci) / 2, "ci95": list(agree_ci)}}
 
     cases = (((1.2, 1.4), (-0.01, 0.01), "fail", ["kl"]),               # KL wholly beyond its margin
-             ((1.5, 9.0), (-0.01, 0.01), "fail", ["kl"]),               # ... also when wider than the margin
-             ((-0.2, 0.2), (-0.5, -0.2), "fail", ["agreement"]),        # agreement wholly beyond, wide
-             ((-0.5, 0.9), (-0.01, 0.01), "incomplete", []),            # within the margin, wider than it
-             ((-0.2, 0.2), (-0.12, 0.0), "incomplete", []),
-             ((0.5, 1.2), (-0.12, 0.0), "incomplete", []),              # a wide metric outranks a straddle
-             ((0.5, 1.2), (-0.01, 0.01), "fail", ["kl"]),               # narrow, upper bound beyond the margin
-             ((-0.02, 0.02), (-0.11, -0.05), "fail", ["agreement"]),
-             ((-0.4, 0.5), (-0.05, 0.03), "pass", []))
-    for kl_ci, agree_ci, status, failed in cases:
+             ((1.5, 9.0), (-0.01, 0.01), "fail", ["kl"]),               # ... at any width
+             ((-0.2, 0.2), (-0.5, -0.2), "fail", ["agreement"]),        # agreement wholly beyond
+             ((1.2, 1.4), (-0.5, -0.2), "fail", ["kl", "agreement"]),
+             ((-0.5, 0.9), (-0.01, 0.01), "pass", []),                  # within the margins: no width rule
+             ((-9.0, -1.5), (0.2, 0.4), "pass", []),                    # an improvement never fails
+             ((0.2, 1.0), (-0.1, 0.0), "pass", []),                     # bounds on the margins count as within
+             ((-0.4, 0.5), (-0.05, 0.03), "pass", []),
+             ((0.5, 1.2), (-0.01, 0.01), "incomplete", ["kl"]),         # straddles the KL margin: uncertainty
+             ((-0.2, 0.2), (-0.12, 0.0), "incomplete", ["agreement"]),
+             ((-0.02, 0.02), (-0.11, -0.05), "incomplete", ["agreement"]),
+             ((0.5, 1.2), (-0.12, 0.0), "incomplete", ["kl", "agreement"]))
+    for kl_ci, agree_ci, status, measures in cases:
         monkeypatch.setattr(kl, "paired", paired_with(kl_ci, agree_ci))
         result = kl.gate("g", "o", "n", calibration=record)
-        assert (result["status"], result["failed"]) == (status, failed), (kl_ci, agree_ci)
+        assert (result["status"], result["failed"] or result["straddling"]) == (status, measures), (kl_ci, agree_ci)
+        assert result["margins"]["delta_kl_pct_of_base_kl"] == 50.0
     (tmp_path / "calibration.json").write_text(json.dumps(record))
-    for kl_ci, code in (((-0.4, 0.5), 0), ((1.2, 1.4), 1), ((-0.5, 0.9), 3), (None, 3)):   # None: uncalibrated
+    for kl_ci, code in (((-0.4, 0.5), 0), ((1.2, 1.4), 1), ((0.5, 1.2), 3), (None, 3)):    # None: uncalibrated
         monkeypatch.setattr(kl, "paired", paired_with(kl_ci or (0.0, 0.0), (-0.01, 0.01)))
         margins = ["--calibration", str(tmp_path / "calibration.json")] if kl_ci else []
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", *margins])
@@ -819,8 +843,8 @@ def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(
               b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n',
               b": keepalive\n\n",
               b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "f"}}]}}]}\n\n',
-              b'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, '
-              b'"completion_tokens": 2}, "tensorfold": {"token_ids": [5, 6]}}\n\ndata: [DONE]\n\n']
+              (b'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, '
+               b'"completion_tokens": 2}, "tensorfold": {"token_ids": [5, 6]}}\n\ndata: [DONE]\n\n')]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -884,7 +908,8 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     pair = kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "new.npz"),
                      block=64, resamples=50, seed=0)
     assert pair["golden_subset_of"] == cut_meta["subset_of"] and pair["positions"] == 10
-    _dump(tmp_path / "full.npz", lp, 8, reference=tmp_path / "golden.npz", eval_sha256=cut_meta["subset_of"]["eval_sha256"])
+    _dump(tmp_path / "full.npz", lp, 8, reference=tmp_path / "golden.npz",
+          eval_sha256=cut_meta["subset_of"]["eval_sha256"])
     with pytest.raises(ValueError, match="different eval sets"):
         kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "full.npz"),
                   block=64, resamples=50, seed=0)
@@ -892,7 +917,8 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     with pytest.raises(ValueError, match="would replace"):          # never written over the files it is cut from
         kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path), max_prompt_tokens=50)
     assert kl.file_sha256(str(tmp_path / "eval.json")) == full_eval
-    cli = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset", str(tmp_path / "golden.npz"),
-                          str(tmp_path / "eval.json"), str(tmp_path / "cli"), "--max-prompt-tokens", "50"],
-                         capture_output=True)
+    cli = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset",
+                          str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path / "cli"),
+                          "--max-prompt-tokens", "50"],
+                         capture_output=True, check=False)
     assert cli.returncode == 0 and (tmp_path / "cli" / "golden" / "kl.npz").exists(), cli.stderr

@@ -440,17 +440,45 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
                           "kind": "circular blocks within items, equal expected weight per position"}}
 
 
+MARGIN_METHOD = "ci_bound"     # calibration records name their margin rule; a gate refuses any other
+
+
+def margins(rows: dict[str, dict]) -> dict:
+    """Non-inferiority margins from reorder-only variants' paired comparisons with the base: the largest deviation a
+    numerically equivalent build shows at this eval size and confidence, i.e. the largest absolute 95% bound of the
+    KL(golden || x) change (delta_kl) and of the top-1 agreement change (delta_agreement) over the variants."""
+
+    return {"delta_kl": max(abs(b) for r in rows.values() for b in r["kl_delta"]["ci95"]),
+            "delta_agreement": max(abs(b) for r in rows.values() for b in r["agreement_delta"]["ci95"])}
+
+
+def verdict(kl_ci: list[float], agreement_ci: list[float], delta_kl: float, delta_agreement: float) -> tuple[str, list]:
+    """Non-inferiority verdict of one paired comparison: "fail" when an interval lies wholly beyond its margin (lower
+    KL bound > delta_kl, or upper agreement bound < -delta_agreement: a regression is established), "pass" when the
+    upper KL bound <= delta_kl and the lower agreement bound >= -delta_agreement, else "incomplete" (an interval
+    straddles its margin: uncertainty, resolved by more evidence, never a pass). Improvements never fail. Returns the
+    status and the measures that failed or straddled."""
+
+    (kl_low, kl_high), (agree_low, agree_high) = kl_ci, agreement_ci
+    beyond = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agreement)) if bad]
+    if beyond:
+        return "fail", beyond
+    open_ = [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agreement)) if bad]
+    return ("incomplete", open_) if open_ else ("pass", [])
+
+
 def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, block: int = 64,
               resamples: int = 4000, seed: int = 0) -> dict:
-    """Non-inferiority margins from 4 to 6 reorder-only variants (the same declared math, another summation order) of
-    the base build, each dumped against the golden reference: delta_kl / delta_agreement = the largest absolute mean
-    paired difference from the base among the variants. Every variant's differences and intervals are recorded."""
+    """Non-inferiority margins (see ``margins``) from 4 to 6 reorder-only variants (the same declared math, another
+    summation order) of the base build, each dumped against the golden reference, fixed before any candidate is seen.
+    Every variant's differences and intervals are recorded, the margins also as a percentage of the base's KL, and a
+    leave-one-out check (each variant judged with the margins of the others) counts the gate's false alarms."""
 
     import numpy as np
 
     if not CALIBRATION_VARIANTS[0] <= len(variants) <= CALIBRATION_VARIANTS[1]:
         raise ValueError(f"calibration takes {CALIBRATION_VARIANTS[0]} to {CALIBRATION_VARIANTS[1]} reorder-only "
-                         f"variants, not {len(variants)} (the margin is the largest of their differences)")
+                         f"variants, not {len(variants)} (the margins are the largest of their deviations)")
     base = np.load(base_path)
     for name, path in variants.items():
         # positive control: the engine is deterministic, so a bit-identical dump means the patch did not load or
@@ -460,37 +488,48 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
     rows = {name: paired(golden_path, base_path, path, block=block, resamples=resamples, seed=seed)
             for name, path in variants.items()}
     first = next(iter(rows.values()))
+    found = margins(rows)
+    base_kl = first["kl_old"]["mean"]
+    held_out = {}
+    for name, row in rows.items():
+        others = margins({k: r for k, r in rows.items() if k != name})
+        status, measures = verdict(row["kl_delta"]["ci95"], row["agreement_delta"]["ci95"], others["delta_kl"],
+                                   others["delta_agreement"])
+        held_out[name] = {**others, "status": status, "measures": measures}
     return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
             "golden_subset_of": first["golden_subset_of"],
             "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
-            "positions": first["positions"], "bootstrap": first["bootstrap"],
-            "delta_kl": max(abs(r["kl_delta"]["mean"]) for r in rows.values()),
-            "delta_agreement": max(abs(r["agreement_delta"]["mean"]) for r in rows.values()),
+            "positions": first["positions"], "bootstrap": first["bootstrap"], "margin_method": MARGIN_METHOD,
+            **found, "delta_kl_pct_of_base_kl": 100 * found["delta_kl"] / base_kl,
             "variants": {name: {k: r[k] for k in ("new", "new_sha256", "new_source", "kl_new", "kl_delta",
                                                    "agreement_new", "agreement_delta")} for name, r in rows.items()},
             "base_values": {k: first[k] for k in ("kl_old", "agreement_old")},
-            "method": "delta = max over reorder-only variants of |mean paired difference vs base| (KL(golden||x) "
-                      "and golden top-1 agreement); the gate passes a change whose 95% intervals lie within these "
-                      "margins and are no wider than them"}
+            "leave_one_out": {"variants": held_out,
+                              "false_alarms": sorted(n for n, v in held_out.items() if v["status"] != "pass")},
+            "method": "delta = max over reorder-only variants of the absolute 95% bounds of their paired difference "
+                      "from the base (KL(golden||x) change; golden top-1 agreement change); gate: fail when an "
+                      "interval lies wholly beyond its margin, pass when the KL upper bound <= delta_kl and the "
+                      "agreement lower bound >= -delta_agreement, otherwise incomplete"}
 
 
 def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | None = None, block: int = 64,
          resamples: int = 4000, seed: int = 0) -> dict:
-    """Golden-reference non-inferiority gate. With the model's calibration record (margins delta_kl and
-    delta_agreement from reorder-only variants): fail when an interval lies wholly beyond its margin; otherwise
-    incomplete when an interval is wider than its margin (insufficient sensitivity); otherwise pass iff the upper 95%
-    bound of KL(golden||new) - KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement change >=
-    -delta_agreement, fail if not. Without a calibration the status is "uncalibrated" (intervals reported, no verdict;
-    the CLI exits 3 as for incomplete). A calibration belongs to one golden reference (eval set and positions)."""
+    """Golden-reference non-inferiority gate of NEW against OLD under the model's calibration record (margins from
+    reorder-only variants, ``margins``; the verdict rule is ``verdict``). Without a calibration the status is
+    "uncalibrated" (intervals reported, no verdict; the CLI exits 3 as for incomplete). A calibration belongs to one
+    golden reference (eval set and positions) and bootstrap setting; the margins are reported in nats and as a
+    percentage of the calibration base's KL."""
 
     result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
     kl_low, kl_high = result["kl_delta"]["ci95"]
     agree_low, agree_high = result["agreement_delta"]["ci95"]
-    kl_width, agree_width = kl_high - kl_low, agree_high - agree_low
-    result["ci_width"] = {"kl_delta": kl_width, "agreement_delta": agree_width}
+    result["ci_width"] = {"kl_delta": kl_high - kl_low, "agreement_delta": agree_high - agree_low}
     if calibration is None:
         result.update(status="uncalibrated", margins=None)
         return result
+    if calibration.get("margin_method") != MARGIN_METHOD:
+        raise ValueError(f"calibration margin method {calibration.get('margin_method')!r} is not {MARGIN_METHOD!r}: "
+                         "recalibrate (campaign_kl.py calibrate) from the variant dumps")
     for key in ("golden_sha256", "eval_sha256", "positions"):
         if calibration[key] != result[key]:
             raise ValueError(f"calibration {key} does not match this gate's golden reference")
@@ -499,18 +538,17 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
             raise ValueError(f"bootstrap {key} {result['bootstrap'][key]} differs from the calibration's "
                              f"{calibration['bootstrap'][key]}")
     delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
-    result["margins"] = {"delta_kl": delta_kl, "delta_agreement": delta_agree,
-                         "calibration_base": calibration["base"], "variants": sorted(calibration["variants"])}
-    wide = [n for n, bad in (("kl", kl_width > delta_kl), ("agreement", agree_width > delta_agree)) if bad]
-    # worse beyond the margin with the whole interval: a failure at any width
-    clear = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agree)) if bad]
-    failed = clear or [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agree)) if bad]
-    status = "fail" if clear else "incomplete" if wide else "fail" if failed else "pass"
-    result.update(status=status, too_wide=wide, failed=failed if status == "fail" else [],
+    status, measures = verdict([kl_low, kl_high], [agree_low, agree_high], delta_kl, delta_agree)
+    result["margins"] = {"delta_kl": delta_kl, "delta_kl_pct_of_base_kl": calibration["delta_kl_pct_of_base_kl"],
+                         "delta_agreement": delta_agree, "method": calibration["margin_method"],
+                         "calibration_base": calibration["base"], "variants": sorted(calibration["variants"]),
+                         "leave_one_out_false_alarms": calibration["leave_one_out"]["false_alarms"]}
+    result.update(status=status, failed=measures if status == "fail" else [],
+                  straddling=measures if status == "incomplete" else [],
                   method="non-inferiority against the golden reference: fail when an interval lies wholly beyond "
-                         "its margin; otherwise incomplete when an interval is wider than its margin; otherwise pass "
-                         "iff upper 95% bound of KL(golden||new) - KL(golden||old) <= delta_kl and lower bound of the "
-                         "top-1 agreement change >= -delta_agreement (margins from reorder-only variants)")
+                         "its margin (a regression is established); pass iff the upper 95% bound of KL(golden||new) "
+                         "- KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement change >= "
+                         "-delta_agreement; otherwise incomplete (uncertainty, never a pass)")
     return result
 
 

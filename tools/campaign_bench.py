@@ -692,8 +692,8 @@ def _fmt(summary: dict, digits: int = 2) -> str:
 
 def markdown(result: dict) -> str:
     lines = [f"# {result['prefix']} (base {result['base']}; variants {', '.join(result['variants'])})", "",
-             "| cell | variant | decode tok/s (engine) | wall | accept | tok/round | prefill tok/s | TTFT s | "
-             "min MemAvailable GiB |", "|---|---|---|---|---|---|---|---|---|"]
+             ("| cell | variant | decode tok/s (engine) | wall | accept | tok/round | prefill tok/s | TTFT s | "
+              "min MemAvailable GiB |"), "|---|---|---|---|---|---|---|---|---|"]
     for name, by_variant in result["absolute"].items():
         if not name.startswith("decode/"):
             continue
@@ -720,8 +720,8 @@ def markdown(result: dict) -> str:
                                      f"{s['geomean'] and round(s['geomean'], 4)} | {s['below_1']}/{s['n']} | "
                                      f"{s['ratios']} |")
     ident = result["identity"]
-    lines += ["", f"Token identity: {ident['identical']}/{ident['keys']} repeated requests identical across all "
-                  f"positions; {len(ident['differing'])} differ."]
+    lines += ["", (f"Token identity: {ident['identical']}/{ident['keys']} repeated requests identical across all "
+                   f"positions; {len(ident['differing'])} differ.")]
     if result["incomplete_runs"]:
         lines.append("Incomplete runs (stopped mid-schedule; their cells hold only the requests that finished): "
                      + ", ".join(result["incomplete_runs"]))
