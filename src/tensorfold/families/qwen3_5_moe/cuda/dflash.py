@@ -3,6 +3,10 @@
 No checkpoint Python is imported. BF16 storage is retained by default. Explicit
 affine4 changes proposals only; target weights, sampling and commits are separate.
 Snapshots share immutable K/V tensors and own their per-layer lists.
+
+A round's proposals stop where the drafter's own confidence runs out (``stop_score``): every draft row is verified
+by the target at a cost that grows with the window (each row brings its own experts), while a draft rarely holds
+once the drafter's top-path probability has fallen below a few percent. Proposals only; outputs are unchanged.
 """
 from __future__ import annotations
 
@@ -25,6 +29,13 @@ from tensorfold.families.qwen3_5.cuda.weights import Plain
 
 from ..dflash_metadata import checked_headers, positive
 
+# Proposal cut: a round keeps its drafts while sum(logsumexp - max) over their rows (the drafter's -log top-path
+# probability) stays at or under this many nats, and always the first. Selected on the GB10 (Qwen3.6 heretic + 42d3b34,
+# one stream, 64/4096-token contexts, greedy and card sampling, thinking off; runs qwen36-f2s1): 3 gave +27..31%
+# decode tok/s over all 15 drafts, 2 within 3% of it, 5 within 5% (0.5% ahead at 4096 card), 1 and fixed 4..12-row
+# windows below; a partial thinking-on run agrees (+27..29%). Longer contexts and several streams are unmeasured.
+STOP_SCORE = 3.0
+
 
 def _norm(x, weight, eps):
     # Qwen3 RMSNorm casts the normalized activation before its BF16 weight multiply.
@@ -38,12 +49,16 @@ def _rotate(x, cos, sin):
 
 
 class DFlash:
-    """Full-context, noncausal block diffusion behind the shared draft-tree contract."""
+    """Full-context, noncausal block diffusion behind the shared draft-tree contract.
+
+    ``stop_score``: a round's drafts end at the first row whose cumulative drafter score exceeds it (``STOP_SCORE``;
+    None proposes every row of the block).
+    """
 
     world = 1
     fast = True
 
-    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16):
+    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, stop_score=STOP_SCORE):
         if type(bits) is not int or bits not in (4, 16):
             raise ValueError("DFlash bits must be 16 or explicit proposal-only affine4")
         cfg, _ = checked_headers(draft_dir)
@@ -59,6 +74,10 @@ class DFlash:
         padded = max(16, 1 << (self.block - 1).bit_length())
         if max(cfg.heads // cfg.kv_heads * padded * cfg.head_dim, 64 * cfg.head_dim) > TRITON_MAX_TENSOR_NUMEL:
             raise ValueError("DFlash grouped attention tile exceeds installed Triton tensor capacity")
+        if stop_score is not None and (isinstance(stop_score, bool) or not isinstance(stop_score, (int, float))
+                                       or not 0 <= stop_score < float("inf")):
+            raise ValueError("DFlash proposal stop score must be a finite nonnegative number of nats, or None")
+        self.stop_score = stop_score
         self.config, self.device, self.bits = cfg, target.norm.device, bits
         self.hidden, self.layers, self.trained = cfg.hidden, cfg.layers, cfg.block
         self.tap_layers, self.mask_id = cfg.tap_layers, cfg.mask_id
@@ -224,12 +243,16 @@ class DFlash:
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block, [history])[0]
 
     def finish_tree(self, launched, context_length, max_nodes, sampling=None, history=None):
-        """A launched chain. ``context_length`` (its first proposal's absolute position, the anchor's + 1) and
-        ``sampling`` complete the drafter interface; argmax proposals use neither."""
+        """A launched chain, cut at ``stop_score``. ``context_length`` (its first proposal's absolute position, the
+        anchor's + 1) and ``sampling`` complete the drafter interface; argmax proposals use neither."""
         if launched is None:
             return [], [], []
         chains, row = launched
-        return chains.finish(row, max_nodes, history)
+        ids, parents, scores = chains.finish(row, max_nodes, history)
+        if self.stop_score is not None and ids:
+            keep = max(1, next((i for i, score in enumerate(scores) if score > self.stop_score), len(scores)))
+            ids, parents, scores = ids[:keep], parents[:keep], scores[:keep]
+        return ids, parents, scores
 
     def propose_tree(self, pending, context_length, max_nodes, sampling=None, block=None, history=None):
         return self.finish_tree(self.launch_block(pending, max_nodes, block, history), context_length, max_nodes,

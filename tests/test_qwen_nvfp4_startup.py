@@ -236,7 +236,8 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert admission["draft_weights"].func is dflash_metadata.draft_weights
         assert admission["draft_weights"].keywords == {"bits": 4}
         assert admission["draft_dir"] == state.draft_dir
-        assert state.drafts == [(state.draft_dir, engine.w, {"context_limit": 64, "block": 8, "bits": 4})]
+        assert state.drafts == [(state.draft_dir, engine.w, {"context_limit": 64, "block": 8, "bits": 4,
+                                                             "stop_score": dflash.STOP_SCORE if streams == 1 else None})]
         assert state.loads[0][1]["expert_factory"].keywords["cache"] is engine.expert_cache
         assert state.loads[0][1]["eos_token_ids"] == [3, 1]
         if streams > 1:

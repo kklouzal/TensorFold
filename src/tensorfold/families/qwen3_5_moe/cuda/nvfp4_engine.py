@@ -128,9 +128,12 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                       **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
         self.w.prompt_rows = chunk
         if draft_dir is not None:
-            from .dflash import DFlash
+            from .dflash import STOP_SCORE, DFlash
 
-            self.draft = DFlash(draft_dir, self.w, context_limit=self.context_window, block=rows, bits=bits)
+            # The proposal cut was selected for one stream; with --parallel the shared tree allocator already sizes
+            # each stream's window from the same drafter scores and the calibrated verify cost.
+            self.draft = DFlash(draft_dir, self.w, context_limit=self.context_window, block=rows, bits=bits,
+                                stop_score=STOP_SCORE if streams == 1 else None)
         if plan is not None:
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
