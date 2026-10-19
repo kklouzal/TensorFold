@@ -721,3 +721,33 @@ def test_qwen_moe_invalid_mtp_cap_refuses_before_resolving_checkpoint_weights(tm
     ])
     with pytest.raises(ValueError, match="nonnegative integer"):
         cli.cmd_serve(args)
+
+
+def test_the_drafter_precision_flag_reaches_only_the_families_that_declare_it(tmp_path, monkeypatch, request):
+    """``--drafter-bits`` is refused on a CUDA family that does not declare ``CUDA_DRAFTER_BITS`` (never silently
+    ignored) and reaches the engine of one that does; MLX families read it in their own loaders."""
+
+    import tensorfold.cuda.server as server
+    from tensorfold.serve_options import check
+
+    parser = cli.build_parser()
+    plain, declared = _family(), _family(CUDA_DRAFTER_BITS=True)
+    for family in (plain, declared):
+        family.model_type = "test"
+
+    def args(*flags):
+        return parser.parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
+
+    with pytest.raises(ValueError, match="--drafter-bits: Test family on CUDA"):
+        check(args("--drafter-bits", "8"), plain, "cuda")
+    check(args("--drafter-bits", "8"), declared, "cuda")
+    check(args("--drafter-bits", "8"), plain, "mlx")
+
+    made = []
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    declared.package.cuda_engine = lambda *a, **k: made.append(k) or cuda_cli_engine(max_len=8192)
+    for flags, expected in ((["--drafter-bits", "8"], 8), (["--drafter-bits", "4"], 4),
+                            (["--drafter-bits", "16"], 16), (["--drafter-bits", "0"], 0), ([], None)):
+        assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
+        assert made[-1].get("drafter_bits") == expected

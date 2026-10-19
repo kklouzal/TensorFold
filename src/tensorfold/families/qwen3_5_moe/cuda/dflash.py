@@ -1,9 +1,10 @@
 """Owned Qwen DFlash v1 block proposals; every committed token is target-verified.
 
-No checkpoint Python is imported. BF16 storage is retained by default. Explicit
-affine4, or FP8 (projections and a copy of the borrowed target head, one scale an
-output row: tensorfold.cuda.requant), changes proposals only; target weights,
-sampling and commits are separate.
+No checkpoint Python is imported. BF16 storage is retained by default. Explicit FP8
+(8: one scale an output row) or NVFP4 (4: an E4M3 scale per 16 inputs and one global
+scale) requantizes the projections and a private copy of a floating target head
+(tensorfold.cuda.requant); a checkpoint's quantized target head is borrowed as it
+is. These change proposals only; target weights, sampling and commits are separate.
 Snapshots share immutable K/V tensors and own their per-layer lists.
 
 A round's proposals stop where the drafter's own confidence runs out (``stop_score``): every draft row is verified
@@ -23,14 +24,12 @@ from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
-from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
 from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
-from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
-from ..dflash_metadata import checked_headers, positive
+from ..dflash_metadata import KINDS, checked_headers, floating_head, positive
 
 # Proposal cut: a round keeps its drafts while sum(logsumexp - max) over their rows (the drafter's -log top-path
 # probability) stays at or under this many nats, and always the first. Selected on the GB10 (Qwen3.6 heretic + 42d3b34,
@@ -63,7 +62,7 @@ class DFlash:
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, stop_score=STOP_SCORE):
         if type(bits) is not int or bits not in (4, 8, 16):
-            raise ValueError("DFlash bits must be 16, or explicit proposal-only FP8 (8) or affine4 (4)")
+            raise ValueError("DFlash bits must be 16, or explicit proposal-only FP8 (8) or NVFP4 (4)")
         cfg, _ = checked_headers(draft_dir)
         if (target.config.hidden, target.config.layers, target.config.vocab) != (cfg.hidden, cfg.target_layers, cfg.vocab):
             raise ValueError("DFlash hidden width, target layer count and vocabulary must match the target")
@@ -91,8 +90,7 @@ class DFlash:
             for name, shape in cfg.shapes().items():
                 value = reader.get(name).to(self.device).contiguous()
                 if len(shape) == 2:
-                    self.linears[name] = (tile(quantize4(value)) if bits == 4 else requantize(value, "fp8")
-                                          if bits == 8 else Plain(value))
+                    self.linears[name] = requantize(value, KINDS[bits]) if bits in KINDS else Plain(value)
                 else:
                     self.weights[name] = value
         except BaseException as primary:  # noqa: BLE001 - preserve the primary if reader rollback transport fails
@@ -104,8 +102,8 @@ class DFlash:
                 raise primary from transport
         else:
             reader.close()
-        if bits == 8:                       # proposals read an FP8 head (the target's own when it is FP8 already)
-            self.target_head = Head(self.target_head, "fp8")
+        if bits in KINDS and floating_head(self.target_head):    # proposals read a requantized copy of a BF16 head;
+            self.target_head = Head(self.target_head, KINDS[bits])  # a head stored quantized is borrowed as it is
         self.inv_freq = cfg.rope.inverse_frequencies(torch).to(self.device)
         self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
 

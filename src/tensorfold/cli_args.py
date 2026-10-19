@@ -140,9 +140,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
     speed.add_argument("--drafter-bits", type=int, default=None,
-                       help="draft linear precision (0: bf16; Qwen MoE DFlash CUDA also accepts 16; Gemma4 DFlash "
-                            "CUDA: 16 or 8, private FP8 copies changing proposals only); default: 4 on MLX, stored "
-                            "precision for Qwen MoE DFlash on CUDA, 16 for Gemma4 DFlash on CUDA")
+                       help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
+                            "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4). CUDA Gemma4 DFlash: "
+                            "16 (default) or 8 (FP8). Requantized drafters copy a floating target head; "
+                            "a stored quantized head is borrowed. The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
                             "the draft model's block size)")

@@ -153,6 +153,39 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
 
 
+@pytest.mark.parametrize("bits", [4, 8, 16])
+@pytest.mark.parametrize("floating", [False, True])
+def test_drafter_precision_copies_only_a_floating_head_and_accounts_for_its_ownership(fixture, monkeypatch,
+                                                                                  bits, floating):
+    from tensorfold.cuda.requant import resident_bytes
+
+    directory, _raw, cfg, arrays, target = fixture
+    copies, projections = [], []
+    if not floating:
+        target.head = NS(n=cfg.vocab)                          # stored quantized head: borrowed, no floating weight
+    original = target.head
+
+    def copy_head(source, kind):
+        copies.append((source, kind))
+        return NS(n=cfg.vocab)
+
+    def copy_projection(value, kind):
+        projections.append(kind)
+        return CpuLinear(value)
+
+    monkeypatch.setattr(dflash, "Head", copy_head)
+    monkeypatch.setattr(dflash, "requantize", copy_projection)
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=bits)
+    kind = {4: "nvfp4", 8: "fp8"}.get(bits)
+    assert target.head is original                            # proposal precision never replaces the target head
+    assert projections == ([kind] * sum(w.ndim == 2 for w in arrays.values()) if kind else [])
+    assert copies == ([(original, kind)] if floating and kind else [])
+    assert (draft.target_head is original) == (not floating or kind is None)
+    with_head = draft_weights(directory, bits=bits)
+    borrowed = draft_weights(directory, bits=bits, private_head=False)
+    assert with_head.resident - borrowed.resident == (resident_bytes(kind, cfg.vocab, cfg.hidden) if kind else 0)
+
+
 @pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])
 def test_shared_affine_packer_publishes_canonical_single_group_strides(rows, columns):
     from tensorfold.cuda.kernels import qmm

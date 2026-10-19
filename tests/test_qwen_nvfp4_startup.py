@@ -248,7 +248,7 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert (directory, context, explicit, provider) == (state.target, 64, True, torch)
         assert target_geometry is runtime.geometry and admission["draft_geometry"] is draft_runtime
         assert admission["draft_weights"].func is dflash_metadata.draft_weights
-        assert admission["draft_weights"].keywords == {"bits": 4}
+        assert admission["draft_weights"].keywords == {"bits": 4, "private_head": True}   # a BF16 target head
         assert admission["draft_dir"] == state.draft_dir
         assert state.drafts == [(state.draft_dir, engine.w, {"context_limit": 64, "block": 8, "bits": 4,
                                                              "stop_score": dflash.STOP_SCORE if streams == 1 else None})]
@@ -320,6 +320,28 @@ def test_one_row_without_secondary_model_keeps_the_supported_serial_path(startup
         assert engine.runner is not None and engine.runner.capacity == engine.capacity_plan["cache_slots"]
         assert startup.prepared == [([1], False)]      # every chain width captured at startup, no taps (no draft)
         assert not startup.drafts and startup.events.index("admit") < startup.events.index("model-load")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+def test_stored_fp8_target_head_does_not_reserve_a_second_private_draft_head(startup, bits):
+    state = startup
+    stored = state.target.parent / "stored-fp8-head"
+    fields = [(name, info["dtype"], info["shape"]) for name, info in capacity.headers(state.target).items()
+              if name != "lm_head.weight"]
+    fields += [("lm_head.weight", "F8_E4M3", (32, 4096)), ("lm_head.weight_scale", "F32", (1,))]
+    _checkpoint(stored, {"text_config": state.text}, fields)
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (stored / name).write_bytes((state.target / name).read_bytes())
+    state.target = stored
+    engine = QwenNvfp4MoeEngine(stored, state.draft_dir, max_rows=8, drafter_bits=bits,
+                               context=64, context_explicit=True, eos_token_ids=[1])
+    try:
+        admission = state.admissions[0][-1]
+        assert admission["draft_weights"].keywords == {"bits": bits, "private_head": False}
+        assert admission["draft_weights"](state.draft_dir) == dflash_metadata.draft_weights(
+            state.draft_dir, bits=bits, private_head=False)
     finally:
         engine.close()
 
