@@ -14,7 +14,7 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_experts_a4_v5", sources=[str(here / "experts_a4.cpp"),
+    return load(name="tensorfold_nvfp4_experts_a4_v7", sources=[str(here / "experts_a4.cpp"),
                 str(here / "experts_a4.cu")], need=MIN_CAPABILITY,
                 arch_specific=precision.own_math(torch.cuda.get_device_capability())["nvfp4"],
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3", "--ftz=false", "--prec-div=true"], verbose=False)
