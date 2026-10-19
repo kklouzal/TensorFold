@@ -30,7 +30,7 @@ def partitions(total, maximum):
 def test_every_item_owns_a_pair_so_padding_never_needs_exposing():
     # place_items emits ceil(population/16) per used expert. Exhaust all
     # population partitions through32 pairs independently of the Python bound.
-    for tile in (16, 64):
+    for tile in (16, 64, 128):
         for pairs in range(1, 33):
             for populations in partitions(pairs, pairs):
                 used = len(populations)
@@ -41,9 +41,9 @@ def test_every_item_owns_a_pair_so_padding_never_needs_exposing():
                     assert live <= extent <= pairs
 
 
-def test_wide_64_pair_plans_never_expose_fewer_items_than_live():
+def test_wide_64_and_128_pair_plans_never_expose_fewer_items_than_live():
     # ceil(c / T) <= 1 + c // T per used expert, and the floors sum to at most pairs // T.
-    for tile in (16, 64):
+    for tile in (16, 64, 128):
         for used in (1, 3, 129, 257):
             for pairs in (used, 2 * used + 5, 64 * used + 63, 4096 * 9):
                 if pairs < used:

@@ -129,8 +129,8 @@ class ExpertsA4:
 
         rows, slots = x.shape[0], buf.slots
         plan = buf.plan
-        if plan.tile not in (16, 64):
-            raise ValueError("native A4 requires device-plan items of 16 or 64 pairs")
+        if plan.tile not in (16, 64, 128):
+            raise ValueError("native A4 requires device-plan items of 16, 64 or 128 pairs")
         activation = getattr(self.swiglu, "activation", None)
         if activation not in (0, 1):
             raise ValueError("native A4 device plans fuse a declared SiLU or tanh GELU activation")

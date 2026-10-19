@@ -202,7 +202,7 @@ def _route(buf, rows, tile):
 @pytest.mark.parametrize("activation", ["silu", "geglu"])
 @pytest.mark.parametrize("uniform", [False, True])
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 7), (True, 3), (True, 40), (True, 300)])
-def test_16_and_64_pair_items_equal_the_host_window_path(activation, uniform, prefill, rows):
+def test_16_64_and_128_pair_items_equal_the_host_window_path(activation, uniform, prefill, rows):
     from tensorfold.families.gemma4.cuda.nvfp4_experts import geglu
 
     count, width, dims, slots = 12, 192, 1024, 8          # decode gate/up: two K slices (split_k)
@@ -214,7 +214,7 @@ def test_16_and_64_pair_items_equal_the_host_window_path(activation, uniform, pr
     expected = torch.empty((rows, slots, dims), dtype=torch.bfloat16 if prefill else torch.float32, device="cuda")
     for lo in range(0, rows, 16):
         bank.run(x[lo:lo + 16], picks[lo:lo + 16], expected[lo:lo + 16], prefill=prefill)
-    for tile in (16, 64):
+    for tile in (16, 64, 128):
         buf = PlanBuffers(rows + 5, slots, count, dims, "cuda", prefill=prefill)
         buf.y.fill_(3.)
         buf.pick[:rows].copy_(picks)

@@ -78,8 +78,9 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
         tensor(items, x, at::kInt, 2, "items");
         tensor(counts, x, at::kInt, 1, "counts");
         TORCH_CHECK(!paired && slots > 0 && slots <= 1024 && items.size(0) > 0 && items.size(0) <= 65535 &&
-                    items.size(1) == 3 && counts.numel() == 2 && x.size(0) * slots == p && (tile == 16 || tile == 64),
-                    "device plan: row inputs, bounded 16/64-pair items, counts and complete row slots");
+                    items.size(1) == 3 && counts.numel() == 2 && x.size(0) * slots == p &&
+                    (tile == 16 || tile == 64 || tile == 128),
+                    "device plan: row inputs, bounded 16/64/128-pair items, counts and complete row slots");
         expert_a4_quant_plan_cuda(x, items, counts, plan, input, codes, scales, slots, direct, tile);
     } else expert_a4_quant_cuda(x, plan, input, codes, scales, paired, direct);
 }
@@ -155,10 +156,10 @@ static void plan_common(const at::Tensor& blob, const at::Tensor& items, const a
     const auto p = members.size(0), cells = blob.size(0);
     TORCH_CHECK(n > 0 && n < INT32_MAX && n % 64 == 0 && k > 0 && k < INT32_MAX && k % 64 == 0 && sk > 0 && sk <= 8 &&
                 (k / 64) % sk == 0, "native A4 device plan: complete tiles and shape-only slices");
-    TORCH_CHECK((tile == 16 || tile == 64) && slots > 0 && slots <= 1024 && p > 0 && p <= INT32_MAX &&
+    TORCH_CHECK((tile == 16 || tile == 64 || tile == 128) && slots > 0 && slots <= 1024 && p > 0 && p <= INT32_MAX &&
                 p % slots == 0 && cells > 0 && cells <= INT32_MAX && items.size(0) > 0 && items.size(0) <= p &&
                 items.size(1) == 3 && counts.numel() == 2 && blob.size(2) == (n / 16) * k * 9,
-                "native A4 device plan: 16/64-pair items over complete row slots and complete expert payloads");
+                "native A4 device plan: 16/64/128-pair items over complete row slots and complete expert payloads");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(blob.data_ptr()) % 16 == 0 && blob.stride(0) % 16 == 0,
                 "native A4 device plan: 16-byte aligned staged expert payloads");
 }
@@ -208,6 +209,7 @@ void down_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tens
     const auto p = members.size(0), cells = blob.size(0);
     TORCH_CHECK(blob.size(1) == 1 && weight.size(0) == cells && weight.size(1) == 1 && input.sizes() == weight.sizes(),
                 "native A4 down: one projection's blob and calibrations");
+    TORCH_CHECK(tile != 128 || n % 128 == 0, "native A4 down: 128-pair items stage 128-column blocks");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(codes.data_ptr()) % 4 == 0 &&
                 reinterpret_cast<uintptr_t>(scales.data_ptr()) % 4 == 0 && codes.size(0) == 1 &&
                 codes.size(1) == p && codes.size(2) == k / 2 && scales.size(0) == 1 && scales.size(1) == p &&
