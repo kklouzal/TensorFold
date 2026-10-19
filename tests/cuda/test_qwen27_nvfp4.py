@@ -142,29 +142,39 @@ def test_gate_copy_tracks_the_bf16_product():
     assert torch.equal(gate(x[:3]), gate(x)[:3])
 
 
-@pytest.fixture(scope="module", params=["checkpoint", "full", "fp8-only"], ids=lambda mode: "math_" + mode)
+@pytest.fixture(scope="module", params=[(mode, vocab, bits) for mode in ("checkpoint", "full", "fp8-only")
+                                       for vocab, bits in (("truncated", 16), ("full", 16),
+                                                           ("truncated", 8), ("full", 8))],
+                ids=lambda profile: f"math_{profile[0]}-vocab_{profile[1]}-head{profile[2]}")
 def engine(request):
     """The real checkpoint in its own math, at full precision, and as SM 8.9-10.x GPUs choose, one engine at a time."""
 
     if not (MODEL and Path(MODEL).is_dir() and DRAFTER and Path(DRAFTER).is_dir()):
         pytest.skip("needs TENSORFOLD_QWEN27_NVFP4 and TENSORFOLD_QWEN27_DRAFTER")
     from tensorfold.cuda import precision
+    from tensorfold.cuda.capacity import headers
     from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine
 
+    math_mode, draft_vocab, head_bits = request.param
+    if head_bits == 8:
+        head = headers(Path(MODEL)).get("lm_head.weight")
+        if head is not None and head["dtype"] not in ("BF16", "F16", "F32"):
+            pytest.skip("private FP8 proposal copies require a floating checkpoint head")
     own = precision.own_math(torch.cuda.get_device_capability())
-    if request.param == "checkpoint" and not own["nvfp4"]:
+    if math_mode == "checkpoint" and not own["nvfp4"]:
         pytest.skip("the checkpoint's FP4 math needs an SM 12.x GPU")
-    if request.param == "fp8-only" and not own["fp8"]:
+    if math_mode == "fp8-only" and not own["fp8"]:
         pytest.skip("FP8 x FP8 needs SM 8.9 or newer")
-    mode = precision.FULL if request.param == "full" else precision.CHECKPOINT
+    mode = precision.FULL if math_mode == "full" else precision.CHECKPOINT
     with pytest.MonkeyPatch.context() as patch, precision.using(mode, asked=True):
-        if request.param == "fp8-only":
+        if math_mode == "fp8-only":
             patch.setattr(precision, "own_math", lambda capability: {"nvfp4": False, "fp8": True})
         gc.collect()                                   # the previous engine (pytest held it through its teardown)
         torch.cuda.empty_cache()                       # and earlier tests' cached blocks would shrink the budget
-        made = Qwen27Engine(Path(MODEL), Path(DRAFTER), max_rows=12, context=4096, context_explicit=True)
+        made = Qwen27Engine(Path(MODEL), Path(DRAFTER), max_rows=12, context=4096, context_explicit=True,
+                            draft_vocab=draft_vocab, draft_head_bits=head_bits)
     assert made.w.precision == mode
-    assert made.w.own == ({"nvfp4": False, "fp8": True} if request.param == "fp8-only" else
+    assert made.w.own == ({"nvfp4": False, "fp8": True} if math_mode == "fp8-only" else
                           {"nvfp4": mode == precision.CHECKPOINT, "fp8": mode == precision.CHECKPOINT})
     yield made
     del made

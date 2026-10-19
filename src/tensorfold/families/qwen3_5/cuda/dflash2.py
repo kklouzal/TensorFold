@@ -1,4 +1,4 @@
-"""DFlash2 proposals use committed Qwen3.8 target taps and target verification, so draft rounding changes acceptance without changing output."""
+"""DFlash2 proposals use committed Qwen3.8 target taps; target verification preserves its math and sampling law."""
 
 from __future__ import annotations
 
@@ -178,12 +178,25 @@ class DFlash2:
     """Five-layer DFlash2; context is the last 2,047 committed target taps."""
 
     def __init__(self, draft_dir: str | Path, target: Weights, bits: int = 4, block: int = 16,
-                 fast: bool = True, rank: int = 0, world: int = 1):
+                 fast: bool = True, rank: int = 0, world: int = 1, *,
+                 draft_vocab: str = "truncated", head_bits: int = 16):
         path = Path(draft_dir)
         # Two-rank drafting requires both ranks to call propose_tree/add_taps together on the fused path with ordered partial sums.
         if world not in (1, 2) or (world == 2 and not (fast and bits == 4)):
             raise ValueError("a two-rank drafter needs world=2 with the fused 4-bit path")
+        if type(head_bits) is not int or head_bits not in (16, 8):
+            raise ValueError("DFlash2 proposal-head precision is 16 (original) or 8 (private FP8 copy)")
+        spans = draft_spans(target.config.vocab, draft_vocab)
+        if world != 1 and (draft_vocab != "truncated" or head_bits != 16):
+            raise ValueError("full draft vocabulary and a private FP8 proposal head require one CUDA rank")
+        if target.quant != "nvfp4" and (draft_vocab != "truncated" or head_bits != 16):
+            raise ValueError("draft vocabulary/head options currently require an NVFP4 checkpoint")
+        if head_bits == 8 and (target.quant != "nvfp4" or not isinstance(target.head, Plain)):
+            raise ValueError("a private FP8 proposal head requires an NVFP4 checkpoint with a floating target head")
+        if (draft_vocab != "truncated" or head_bits != 16) and target.head.n != target.config.vocab:
+            raise ValueError("the stored head rows must match the declared target vocabulary")
         self.rank, self.world = rank, world
+        self.draft_vocab, self.head_bits = draft_vocab, head_bits
         self.block = block          # masked positions drafted per round (the checkpoint trained with 8)
         cfg = read_metadata_json(checkpoint_path(path, "config.json"))
         self.max_position = draft_limit(cfg)
@@ -226,17 +239,34 @@ class DFlash2:
         self.inv_freq = (1.0 / self.theta **
                          (torch.arange(self.head_dim // 2, device=self.device,
                                        dtype=torch.float32) * 2 / self.head_dim))
-        vocab = target.config.vocab
-        spans = draft_spans(vocab)
+        needed = max(b for _, b in spans)
+        for name in ("candidate_selector.predecessor_codebook", "candidate_selector.successor_codebook"):
+            book = self.weights.get(name)
+            if book is None or book.ndim != 2 or book.shape[0] < needed:
+                raise ValueError(f"{name} does not cover the requested DFlash2 proposal vocabulary")
         self.vocab_spans = spans
-        self.head_ids = torch.cat([torch.arange(a, b, device=self.device) for a, b in spans])
+        self.full_head = None                        # borrowed target head or private FP8 proposal copy
+        self.head_ids = (None if draft_vocab == "full" else
+                         torch.cat([torch.arange(a, b, device=self.device) for a, b in spans]))
         self.head_cols: torch.Tensor | None = None           # an EXL3 head's span columns in its sliced strips
         self.sub_rows: list[QLinear] | None = None           # one GPU, tiled head: its rows as views, no copy
         self.sub_parts: list | None = None                   # an NVFP4 checkpoint's head: tile views and span columns
-        if target.quant == "nvfp4":
+        if draft_vocab == "full":
+            if head_bits == 8:
+                from tensorfold.cuda.requant import Head
+
+                self.full_head = Head(target.head, "fp8")
+            else:
+                self.full_head = target.head
+        elif target.quant == "nvfp4":
             if world != 1:
                 raise ValueError("a two-rank drafter needs the MLX checkpoint's 4-bit head")
             self.sub_parts = _sub_parts(target.head, spans)
+            if head_bits == 8:
+                from tensorfold.cuda.requant import Head
+
+                # Keep only the requested ranges. Each copy has its own padded storage; both arms score FP32 logits.
+                self.sub_parts = [(Head(part, "fp8"), lo, hi) for part, lo, hi in self.sub_parts]
         elif isinstance(target.head, Exl3):
             if world != 1:
                 raise ValueError("a two-rank drafter needs the MLX checkpoint's 4-bit head")
@@ -258,13 +288,16 @@ class DFlash2:
             self.sub_head = QLinear(*[None if t is None else t[lo:hi].contiguous()
                                       for t in (sub.weight, sub.scales, sub.biases)],
                                     layout=sub.layout, gs=sub.gs, bits=sub.bits)
-        if self.head_ids.numel() < 16:
+        head_rows = target.config.vocab if self.head_ids is None else self.head_ids.numel()
+        if head_rows < 16:
             raise ValueError("DFlash2 needs at least16 available proposal-head rows on each rank")
-        self._head_ids_host = self.head_ids.cpu().numpy().copy()
+        self._head_ids_host = (np.arange(head_rows, dtype=np.int64) if self.head_ids is None else
+                               self.head_ids.cpu().numpy().copy())
         self._head_ids_host.flags.writeable = False
-        if isinstance(target.head, QLinear) and target.head.layout == "tiled" and self.sub_rows is None:
+        if (draft_vocab != "full" and isinstance(target.head, QLinear) and target.head.layout == "tiled"
+                and self.sub_rows is None):
             self.sub_head = tile(self.sub_head)
-        # Quantized draft projections can change acceptance but never target output.
+        # Quantized draft projections can change acceptance; target math and its sampling law stay fixed.
         self.q4: dict[str, QLinear] = {}
         # Fused projections, norms, rotary embeddings, and convolutions may round differently and change draft proposals.
         self.fast = fast and bits == 4
@@ -486,6 +519,26 @@ class DFlash2:
 
         return any(a <= token < b for a, b in self.vocab_spans)
 
+    def _head_logits(self, h: torch.Tensor) -> torch.Tensor:
+        """Score only the proposal head/ranges selected during preparation; target storage stays authoritative."""
+
+        if self.full_head is not None:
+            return self.full_head(h.contiguous())
+        if self.sub_parts is not None:
+            h = h.contiguous()
+            return torch.cat([part(h)[:, lo:hi] for part, lo, hi in self.sub_parts], dim=1)
+        if self.head_cols is not None:
+            return self.sub_head(h.contiguous()).index_select(1, self.head_cols)
+        if self.sub_rows is not None:
+            return matmul_rows(h, self.sub_rows)
+        return matmul(h, self.sub_head)
+
+    def _candidates(self, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The unchanged greedy top16 policy over the selected proposal logits, mapped to target IDs."""
+
+        values, local_ids = torch.topk(self._head_logits(h).float(), k=16, dim=-1, sorted=False)
+        return values, local_ids if self.head_ids is None else self.head_ids[local_ids]
+
     def _row(self, x: torch.Tensor, name: str, xs: torch.Tensor | None = None) -> torch.Tensor:
         """A projection whose input is split over the ranks: rank partials summed in rank order."""
 
@@ -562,30 +615,24 @@ class DFlash2:
                 hs.append(_norm(y[1:], self.weights["norm.weight"], self.eps))
             h = torch.cat(hs)
         projected = self._lin(h, "candidate_selector.hidden_projection.weight").float()
-        if self.sub_parts is not None:
-            h = h.contiguous()
-            logits = torch.cat([part(h)[:, lo:hi] for part, lo, hi in self.sub_parts], dim=1)
-        elif self.head_cols is not None:
-            logits = self.sub_head(h.contiguous()).index_select(1, self.head_cols)
-        elif self.sub_rows is not None:
-            logits = matmul_rows(h, self.sub_rows)
-        else:
-            logits = matmul(h, self.sub_head)
         support = None
-        if stable and repair and self.world == 1:
-            from tensorfold.cuda.sampling import candidate_fields
-
-            values, global_ids, flags = candidate_fields(logits, 16, id_map=self.head_ids)
-            support = {"logits": logits, "ids": self._head_ids_host, "width": logits.shape[1],
-                       "columns": values.shape[1], "canonical": False}
-        elif stable:
-            # head_ids is ascending by construction, including each rank's contiguous half. Stable sorting thus
-            # fixes top16 boundary ties by global ID; compact copies do not retain the full sorted planes.
-            ranked, order = torch.sort(logits.float(), dim=-1, descending=True, stable=True)
-            values, global_ids = ranked[:, :16].contiguous(), self.head_ids[order[:, :16]]
+        if not stable:
+            values, global_ids = self._candidates(h)
         else:
-            values, local_ids = torch.topk(logits.float(), k=16, dim=-1, sorted=False)
-            global_ids = self.head_ids[local_ids]
+            logits = self._head_logits(h)
+            if repair and self.world == 1:
+                from tensorfold.cuda.sampling import candidate_fields
+
+                values, global_ids, flags = candidate_fields(logits, 16, id_map=self.head_ids)
+                support = {"logits": logits, "ids": self._head_ids_host, "width": logits.shape[1],
+                           "columns": values.shape[1], "canonical": False}
+            else:
+                # Native columns or head_ids are ascending, including each rank's contiguous half. Stable sorting
+                # fixes top16 boundary ties by global ID; compact copies do not retain the full sorted planes.
+                ranked, order = torch.sort(logits.float(), dim=-1, descending=True, stable=True)
+                local_ids = order[:, :16]
+                values = ranked[:, :16].contiguous()
+                global_ids = local_ids.contiguous() if self.head_ids is None else self.head_ids[local_ids]
         if self.world == 2:
             import torch.distributed as dist
 

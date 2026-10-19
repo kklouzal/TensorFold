@@ -14,8 +14,12 @@ POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False
 HOT_SPANS = ((0, 98304), (248032, 248320))
 
 
-def draft_spans(vocab: int):
-    return tuple((a, min(b, vocab)) for a, b in HOT_SPANS if a < vocab)
+def draft_spans(vocab: int, policy: str = "truncated") -> tuple[tuple[int, int], ...]:
+    """Output-token ranges for the original truncated proposal head or the full vocabulary."""
+
+    if type(vocab) is not int or vocab < 1 or policy not in ("truncated", "full"):
+        raise ValueError("draft vocabulary needs a positive vocabulary size and truncated or full policy")
+    return ((0, vocab),) if policy == "full" else tuple((a, min(b, vocab)) for a, b in HOT_SPANS if a < vocab)
 
 
 class RejectionResult(NamedTuple):
@@ -65,7 +69,6 @@ def chain_probabilities(logits, sampling, rows, *, plan=None):
     if len(result) > rows:
         raise ValueError("target rows exceed their original stochastic chain")
     return [*result, *([None] * (rows - len(result)))]
-
 
 def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
                pred: np.ndarray, succ: np.ndarray, anchor: int, max_nodes: int,

@@ -751,3 +751,37 @@ def test_the_drafter_precision_flag_reaches_only_the_families_that_declare_it(tm
                             (["--drafter-bits", "16"], 16), (["--drafter-bits", "0"], 0), ([], None)):
         assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
         assert made[-1].get("drafter_bits") == expected
+
+
+def test_dflash2_head_options_are_scoped_and_forwarded_without_target_precision_hooks(tmp_path, monkeypatch, request):
+    from tensorfold.cuda import server
+    from tensorfold.serve_options import check
+
+    parser = cli.build_parser()
+    plain, declared = _family(), _family(CUDA_DFLASH2_HEAD=True)
+    for family in (plain, declared):
+        family.model_type = "test"
+
+    def args(*flags):
+        return parser.parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
+
+    flags = ("--draft-vocab", "full", "--draft-head-bits", "8")
+    with pytest.raises(ValueError, match="Qwen3.8 dense CUDA DFlash2"):
+        check(args(*flags), plain, "cuda")
+    with pytest.raises(ValueError, match="Qwen3.8 dense CUDA DFlash2"):
+        check(args(*flags), declared, "mlx")
+    for extra in (("--no-drafts",), ("--drafter", "none"), ("--tp", "2", "--master", "peer")):
+        with pytest.raises(ValueError, match="one CUDA rank"):
+            check(args(*flags, *extra), declared, "cuda")
+    check(args(*flags), declared, "cuda")
+    with pytest.raises(ValueError, match="require an NVFP4 checkpoint"):
+        check(args(*flags), declared, "cuda", tmp_path)
+
+    made = []
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    monkeypatch.setattr(cli, "_drafter", lambda *a, **kw: "secondary")
+    declared.package.cuda_engine = lambda *a, **kw: made.append(kw) or cuda_cli_engine(max_len=8192)
+    assert cli._serve_cuda(args(*flags), declared, tmp_path, 8192) == 0
+    assert made[0]["draft_vocab"] == "full" and made[0]["draft_head_bits"] == 8
+    assert "head_bits" not in made[0] and "gdn_bits" not in made[0]
