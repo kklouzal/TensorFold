@@ -205,7 +205,7 @@ class ConstructorComm:
 def fake_runtime(monkeypatch):
     import sys
     import torch
-    from tensorfold.cuda import capacity
+    from tensorfold.cuda import capacity, kv_arena
 
     original_tensor, original_empty = torch.tensor, torch.empty
     def cpu(fn):
@@ -217,6 +217,7 @@ def fake_runtime(monkeypatch):
     monkeypatch.setattr(torch, "tensor", cpu(original_tensor))
     monkeypatch.setattr(torch, "empty", cpu(original_empty))
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
+    monkeypatch.setattr(kv_arena, "driver", lambda device: None)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 1))
     monkeypatch.setattr(capacity, "available_bytes", lambda t: 16 * capacity.GIB)
     monkeypatch.setattr(capacity, "total_bytes", lambda t: 128 * capacity.GIB)       # a GB10: 4096-row prompt chunks
@@ -302,7 +303,8 @@ def test_real_constructors_shrink_default_and_refuse_explicit_before_loading(tmp
     from tensorfold.cuda.geometry import gdn_geometry, mla_geometry
     text = small_config()
     geometry = (mla_geometry(text, world, 8, latent=LATENT) if family == "mla" else
-                gdn_geometry(text, world, 1 if family == "indexed" else 12, indexed=family == "indexed"))
+                gdn_geometry(text, world, 1, indexed=True) if family == "indexed" else
+                gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1))
     budget = geometry.needed(12000) + 32768
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     obj, start = construct(family, tmp_path, None, None, world)
@@ -401,7 +403,7 @@ def test_actual_distributed_startup_agrees_on_smaller_rank_before_loading(tmp_pa
     calls, capacity = fake_runtime
     geom = (mla_geometry(small_config(), 2, 8, latent=LATENT) if family == "mla" else
             gdn_geometry(small_config(), 2, 1, indexed=True, kept=5) if family == "indexed" else
-            gdn_geometry(small_config(), 2, 12, rows=12, prompt=4096))     # the 27B engine's, prompt chunks on a GB10
+            gdn_geometry(small_config(), 2, 12, rows=12, prompt=4096, kept=4))  # actual 27B retained-prefix policy
     transform = split_weights(rule) if family == "mla" else indexed_weights(2, False) if family == "indexed" else linear_weights
     weights = capacity.estimate_weights(tmp_path, transform)
     if family == "linear":

@@ -131,7 +131,8 @@ class State:
         c = w.config
         device = w.norm.device
         self.pos = 0
-        self.limit = 0                  # attention caches grow to at most this many rows (0: as a commit needs)
+        self.limit = 0                  # attention caches reserve this many rows (0: ``UNBOUNDED``, moved past it)
+        self.kv_owner = object()        # the caches this state and its clones grow in place (``grow``)
         self.conv: list[torch.Tensor | None] = []
         self.rec: list[torch.Tensor | None] = []
         self.kv: list[tuple[torch.Tensor, torch.Tensor] | None] = []
@@ -192,29 +193,45 @@ def stage(w: Weights, st: State, width: int, context: int) -> Staged:
                   tuple(st.kv[i] for i in softmax))
 
 
-def grow(st: State, i: int, need: int, *, exact: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
-    """Layer ``i``'s cache at ``need`` rows (doubled to ``st.limit``, or exact): every row moves, the old ones free."""
+UNBOUNDED = 1 << 21          # rows a cache reserves addresses for when its state has no admitted window (``limit``)
+
+
+def grow(st: State, i: int, need: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Layer ``i``'s cache holding at least ``need`` rows. A state's own caches are arenas (``cuda.kv_arena``, owned
+    by ``st.kv_owner``) reserved for ``st.limit`` rows: growing maps memory at their end and no row moves. A cache the
+    state does not own as an arena's current view (a new state's, a kept state's slice, a copied list's) or one that
+    outgrows its reservation moves into new arenas once. Clones share the list and owner, so a grow reaches every
+    clone; other views keep their rows."""
 
     k, v = st.kv[i]
-    if k.shape[0] < need:
-        cap = need if exact else max(need, 2 * k.shape[0], 1024)
-        if st.limit and not exact:
-            cap = max(need, min(cap, st.limit))
-        if st.room is not None:
-            st.room(st, cap * (k.stride(0) * k.element_size() + v.stride(0) * v.element_size()))
-        grown = k.new_empty((cap, *k.shape[1:])), v.new_empty((cap, *v.shape[1:]))
+    if k.shape[0] >= need:
+        return st.kv[i]
+    from tensorfold.cuda.kv_arena import Arena, owned        # past the no-growth return every commit takes
+
+    arenas = owned(k, st.kv_owner), owned(v, st.kv_owner)
+    move = arenas[0] is None or arenas[1] is None or need > arenas[0].capacity
+    if move:
+        capacity = max(need, st.limit or UNBOUNDED, 2 * k.shape[0])
+        arenas = tuple(Arena(capacity, tuple(t.shape[1:]), t.dtype, t.device, st.kv_owner) for t in (k, v))
+    if st.room is not None:
+        st.room(st, arenas[0].extra(need) + arenas[1].extra(need))
+    arenas[0].ensure(need)
+    arenas[1].ensure(need)
+    grown = arenas[0].view(), arenas[1].view()
+    if move and k.shape[0]:
         grown[0][:k.shape[0]], grown[1][:v.shape[0]] = k, v
-        st.kv[i] = grown
-    return st.kv[i]
+    st.kv[i] = grown
+    return grown
 
 
 def reserve(st: State, rows: int) -> None:
-    """Grow every attention cache to ``rows`` now, so later commits never move a buffer (graphs keep addresses)."""
+    """Grow every attention cache to ``rows`` now (commits within them map nothing more); caches it moves reserve
+    ``st.limit`` rows, raised to ``rows`` first."""
 
+    st.limit = max(st.limit, rows)
     for i, kv in enumerate(st.kv):
         if kv is not None:
-            grow(st, i, rows, exact=True)
-    st.limit = rows
+            grow(st, i, rows)
 
 
 @torch.no_grad()

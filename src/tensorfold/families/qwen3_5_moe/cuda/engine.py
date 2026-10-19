@@ -25,7 +25,8 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     """The 27B's concurrent geometry plus the MTP head's keys and values for each stream and kept end, and the lone stream's graph buffers."""
 
     from tensorfold.cuda.capacity import Geometry
-    from tensorfold.cuda.geometry import layer_counts, stream_geometry as dense
+    from tensorfold.cuda.geometry import arena_kv_bytes, layer_counts
+    from tensorfold.cuda.geometry import stream_geometry as dense
 
     base = dense(text, 1, streams, keep)
     linear, attention = layer_counts(text)
@@ -37,8 +38,8 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     state = linear * (nv * dk * dv * 4 + (int(text["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2)
     if not depth:
         return Geometry(base.bytes_at, 1)
-    return Geometry(lambda slots: base.bytes_at(slots) + (streams + keep + 1) * slots * layer
-                    + state + slots * (attention + 1) * layer, depth + 1)
+    return Geometry(lambda slots: base.bytes_at(slots) + (streams + keep + 2) * slots * layer
+                    + state + arena_kv_bytes(attention, kv_heads, head_dim, slots), depth + 1)
 
 
 class Qwen36Engine:
@@ -68,13 +69,16 @@ class Qwen36Engine:
         from .weights import MTP_FILE, load, load_mtp
 
         torch.cuda.set_device(0)
+        from tensorfold.cuda.kv_arena import driver
+
+        driver(0)                           # refuse unsupported VMM before loading any target or MTP payload
         many = streams > 1
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
             torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         extra = (Path(model_dir) / MTP_FILE,) if self.depth and (Path(model_dir) / MTP_FILE).is_file() else ()
         # one admission for one stream or many (every stream's states and caches, kept prompt ends), before any load
         geometry = ((lambda text: stream_geometry(text, streams, KEEP_MANY, self.depth)) if many else
-                    (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0)))
+                    (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0, kept=KEEP)))
         self.capacity_plan = admit(model_dir, context, context_explicit, torch, geometry,
                                    lambda name, info: (mtp_weights(name, info) if ".mtp." in name
                                                        else linear_weights(name, info)),

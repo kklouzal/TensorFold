@@ -67,11 +67,11 @@ def test_a_prompt_chunk_is_sized_to_the_card(gib, rows):
 
 @pytest.mark.parametrize("slots", [0, 4108, 65536 + 128, 262144 + 128])
 def test_a_gb10_keeps_todays_scratch(slots):
-    """One stream on a GB10 verifies 128 rows and prompts 4096: the scratch and every cache size are today's."""
+    """The 4096-row GB10 prompt shares the 128-row verification scratch; default geometry keeps two prefixes."""
 
     gb10 = geometry.gdn_geometry(TEXT, 1, 128, rows=128, prompt=geometry.prompt_rows(128 * GIB, 360448))
     assert gb10.bytes_at(slots) == geometry.gdn_geometry(TEXT, 1, 128).bytes_at(slots)
-    assert gb10.bytes_at(262144 + 128) == 74040369152
+    assert gb10.bytes_at(262144 + 128) == 56860499968      # three 16 GiB arena lineages, no fourth growth copy
 
 
 def test_twelve_rows_bound_the_scratch_and_a_prompt_chunk_shares_it():

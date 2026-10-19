@@ -12,7 +12,8 @@ import torch
 import torch.distributed as dist
 from tokenizers import Tokenizer, models
 
-from tensorfold.cuda import capacity, geometry, markers, prompt_precision
+from tensorfold.cuda import capacity, geometry, kv_arena, markers, prompt_precision
+from tensorfold.cuda.geometry import live_kv as _live_kv
 from tensorfold.cuda.nvfp4 import format as nv_format
 from tensorfold.families.qwen3_5.cuda import affine_memory, distributed, exl3_load, weights
 from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine
@@ -75,6 +76,7 @@ def startup(tmp_path, monkeypatch):
     monkeypatch.setattr(torch, "tensor", cpu_tensor)
     monkeypatch.setattr(torch, "empty", cpu_empty)
     monkeypatch.setattr(torch.cuda, "set_device", lambda rank: events.append("device"))
+    monkeypatch.setattr(kv_arena, "driver", lambda device: events.append("vmm"))
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     monkeypatch.setattr(prompt_precision, "fp8", lambda: False)
     monkeypatch.setattr(exl3_load, "quant_config", lambda directory: None)
@@ -109,11 +111,51 @@ def test_actual_constructor_completes_after_loading_and_uses_its_actual_transpor
         assert options == [{"prefill_world": 2, "eos_token_ids": [3, 1]} if tp == 2 else
                            {"tiled": True, "eos_token_ids": [3, 1]}]
         assert events[-1] == "resume" and "load" in events
+        assert events.index("device") < events.index("vmm") < events.index("load")
         if tp == 1:
             assert gathers == [] and "process_group" not in events
         else:
             assert len(gathers) == 3 and gathers[1:] == [[1, 2], [1, 3]]
             assert events.index("load") < events.index("split") < events.index("resume")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("format,tp", [("affine", 1), ("nvfp4", 1), ("affine", 2)])
+def test_missing_vmm_refuses_before_payloads_or_rank_transport(startup, monkeypatch, format, tp):
+    directory, state, events, _options, _gathers = startup
+    state.format = format
+    failure = RuntimeError("CUDA device lacks virtual memory management")
+
+    def refused(device):
+        assert device == 0 and events == ["device"]
+        raise failure
+
+    monkeypatch.setattr(kv_arena, "driver", refused)
+    with pytest.raises(RuntimeError) as caught:
+        Qwen27Engine(directory, None, tp=tp, master="host")
+    assert caught.value is failure and events == ["device"]
+
+
+def test_actual_two_rank_admission_counts_every_independent_kept_lineage(startup, monkeypatch):
+    from cuda_27b_headers import TEXT
+
+    directory, _state, _events, _options, _gathers = startup
+    geometries = []
+
+    def admit(_directory, _context, _explicit, _runtime, factory, *_args, **_kwargs):
+        geometries.append(factory(TEXT))
+        return {"context_window": 1024, "cache_slots": 1036}
+
+    monkeypatch.setattr(capacity, "admit", admit)
+    monkeypatch.setattr(geometry, "live_kv", _live_kv)
+    engine = Qwen27Engine(directory, None, tp=2, master="host")
+    try:
+        assert engine.cache.keep == 4
+        plan, = geometries
+        # The constructor's actual plan: four retained conversations plus current; each TP2 side maps 2 MiB.
+        scratch = 12 * 12 * 258 * (((1036 + 511) // 512) - 1) * 4
+        assert plan.bytes_at(1036) - plan.bytes_at(12) - scratch == 5 * 16 * 2 * (2 << 20)
     finally:
         engine.close()
 

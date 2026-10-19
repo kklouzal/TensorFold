@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tensorfold.cuda import capacity, geometry
+from tensorfold.cuda import capacity, geometry, kv_arena
 from tensorfold.cuda.streams import KVRoom, PrefixCache
 from tensorfold.families.qwen3_5.cuda.affine_memory import draft_weights, weight_transform
 
@@ -26,7 +26,7 @@ class Buffer:
         return self.ptr
 
     def untyped_storage(self):
-        return SimpleNamespace(nbytes=lambda: self.bytes)
+        return SimpleNamespace(nbytes=lambda: self.bytes, data_ptr=self.data_ptr)
 
 
 def _state(rows: int) -> SimpleNamespace:
@@ -46,6 +46,22 @@ def test_nothing_goes_while_it_fits():
     cache = _cache(a, b)
     KVRoom(cache, (4096 + 8192 + 1024 + 8192) * ROW)(live, 8192 * ROW)
     assert [e[1] for e in cache.entries] == [a, b]
+
+
+def test_a_non_aligned_limit_charges_the_whole_physical_arena_tail(monkeypatch):
+    def state():
+        return SimpleNamespace(kv=[(Buffer(513 * 1024), Buffer(513 * 1024))])
+
+    live, other = state(), state()
+    mappings = {t.data_ptr(): SimpleNamespace(mapped=2 << 20,
+                                             drv=SimpleNamespace(check_retirement=lambda: None))
+                for st in (live, other) for pair in st.kv for t in pair}
+    monkeypatch.setattr(kv_arena, "_ARENAS", mappings)
+    cache = _cache(other)
+    room = KVRoom(cache, 5 << 20)
+    assert room.held(live) == 8 << 20                  # two K/V pairs; clipped Torch storage would undercount
+    room(live, 1 << 20)
+    assert cache.entries == [] and room.held(live) == 4 << 20
 
 
 def test_other_buffers_go_least_recently_used_first_and_the_resumed_list_stays():
@@ -82,9 +98,10 @@ def test_a_gb10_budget_evicts_nothing_today_keeps(tmp_path):
     assert room.cache.entries == before
 
 
-@pytest.mark.parametrize("gib,window", [(19.16, 39936), (100, 262144)])
+@pytest.mark.parametrize("gib,window", [(19.16, 41984), (100, 262144)])
 def test_one_live_window_is_admitted(gib, window, tmp_path):
-    """An RTX 4090's default budget admits a 40k window with DFlash2 (four copies gave 8,192); a GB10 its native one."""
+    """An RTX 4090's default budget admits a 41k window with DFlash2 (four copies gave 8,192, arenas' missing growth
+    copy adds 2,048 to the 39,936 a doubling cache left); a GB10 its native one."""
 
     folder, draft = target(tmp_path / "target"), drafter(tmp_path / "drafter")
     weights = capacity.estimate_weights(folder, weight_transform(folder, one_gpu=True))

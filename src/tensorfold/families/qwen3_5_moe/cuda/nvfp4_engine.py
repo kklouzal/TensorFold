@@ -85,6 +85,9 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         torch.cuda.set_device(0)
         if torch.cuda.get_device_capability(0)[0] != 12:
             raise ValueError("Qwen CT NVFP4 MoE requires a CUDA SM 12.x GPU for the checkpoint's native A4 math")
+        from tensorfold.cuda.kv_arena import driver
+
+        driver(0)                           # required VMM and granularity, before any expert or payload allocation
         self.torch = torch
         self.tp, self.rank, self.allow_copy = 1, 0, bool(allow_copy)
         self.vision = self.draft = self.room = None

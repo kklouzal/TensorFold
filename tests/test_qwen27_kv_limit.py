@@ -1,4 +1,5 @@
-"""The 27B's one-stream attention caches stay within the admitted window, as its startup estimate assumes."""
+"""The 27B's one-stream attention caches stay within the admitted window, as its startup estimate assumes: each cache
+is one arena reserved for the state's limit (``forward.UNBOUNDED`` without one) that maps only the rows committed."""
 
 import importlib
 from types import SimpleNamespace
@@ -25,13 +26,18 @@ def _weights(pattern):
 
 
 def _host(monkeypatch, pattern=(True, False, True, False)):
-    """The three prefill entries on the host, ``prefill_chunk`` cut to its cache writes, and every buffer size left."""
+    """The three prefill entries on the host (the caches' arenas on host tensors), ``prefill_chunk`` cut to its cache
+    writes, and every key cache's rows and arena after each chunk."""
 
+    from tests.kv_arena_stand_in import install
+
+    install(monkeypatch)
     forward = importlib.import_module(Q + "forward")
     prefill = importlib.import_module(Q + "prefill")
     decode = importlib.import_module(Q + "decode")
     decode_tp = importlib.import_module(Q + "decode_tp")
-    sizes = []
+    kv_arena = importlib.import_module("tensorfold.cuda.kv_arena")
+    sizes, arenas = [], []
 
     def chunk(w, tokens, st, *, tp=False, capture_taps=False, last=True, cut=0, vision=None):  # the kernels need a GPU
         a, b = st.pos, st.pos + int(tokens.shape[0])
@@ -40,6 +46,7 @@ def _host(monkeypatch, pattern=(True, False, True, False)):
                 kbuf, vbuf = prefill._grow(st, i, b)
                 kbuf[a:b], vbuf[a:b] = KEYS[a:b], VALUES[a:b]
                 sizes.append(kbuf.shape[0])
+                arenas.append(kv_arena.owned(kbuf, st.kv_owner))
         st.pos = b
         return (torch.zeros((1, 2), dtype=torch.bfloat16) if last else None), None
 
@@ -52,7 +59,7 @@ def _host(monkeypatch, pattern=(True, False, True, False)):
     entries = {"one": lambda n, **kw: decode.prefill(w, range(1, n + 1), None, **kw)[0],
                "rank 0": lambda n, **kw: decode_tp.prefill_tp(w, range(1, n + 1), None, 0, **kw)[0],
                "rank 1": lambda n, **kw: decode_tp.prefill_tp(w, range(1, n + 1), None, 1, **kw)[0]}
-    return entries, sizes, forward
+    return entries, sizes, arenas, forward
 
 
 def _intact(st, end):
@@ -61,45 +68,54 @@ def _intact(st, end):
             assert torch.equal(kv[0][:end], KEYS[:end]) and torch.equal(kv[1][:end], VALUES[:end])
 
 
+def _reserved(st):
+    """The rows the state's caches reserve (each an arena it owns through its current view)."""
+
+    from tensorfold.cuda.kv_arena import owned
+
+    return {owned(t, st.kv_owner).capacity for kv in st.kv if kv is not None for t in kv}
+
+
 @pytest.mark.parametrize("entry", ["one", "rank 0", "rank 1"])
-@pytest.mark.parametrize("prompt,unbounded", [(29815, 59624), (31015, 62024), (31497, 62992)])
-def test_a_fresh_prompt_stays_within_the_limit(allocations, monkeypatch, entry, prompt, unbounded):  # noqa: F811
-    entries, sizes, _ = _host(monkeypatch)
+@pytest.mark.parametrize("prompt", [29815, 31015, 31497])
+def test_a_fresh_prompt_stays_within_the_limit(allocations, monkeypatch, entry, prompt):  # noqa: F811
+    entries, sizes, _, forward = _host(monkeypatch)
     st = entries[entry](prompt)
-    assert st.limit == 0 and max(sizes) == unbounded                     # without a limit: about twice the window
+    assert st.limit == 0 and max(sizes) == prompt and _reserved(st) == {forward.UNBOUNDED}   # no doubling past it
     sizes.clear()
     st = entries[entry](prompt, limit=WINDOW)
-    assert st.limit == WINDOW and max(sizes) == WINDOW
+    assert st.limit == WINDOW and max(sizes) == prompt and _reserved(st) == {WINDOW}
     _intact(st, prompt)
 
 
-def test_a_31015_token_prompt_doubles_on_its_last_three_rows(allocations, monkeypatch):  # noqa: F811
-    entries, sizes, _ = _host(monkeypatch)
-    entries["one"](31015)
-    assert list(dict.fromkeys(sizes)) == [3876, 7753, 15506, 31012, 62024]
-    sizes.clear()
-    entries["one"](31015, limit=WINDOW)
-    assert list(dict.fromkeys(sizes)) == [3876, 7753, 15506, 31012, 32768]
+def test_a_31015_token_prompt_grows_one_arena_per_cache_a_chunk_at_a_time(allocations, monkeypatch):  # noqa: F811
+    entries, sizes, arenas, _ = _host(monkeypatch)
+    ends = [b for _, b in importlib.import_module(Q + "prefill").chunks(0, 31015)]
+    for limit in (0, WINDOW):
+        sizes.clear()
+        arenas.clear()
+        entries["one"](31015, limit=limit)
+        assert sizes == [b for b in ends for _ in range(2)]               # each chunk's rows, in both caches
+        assert None not in arenas and len(set(arenas)) == 2               # mapped in place: no cache ever moved
 
 
 @pytest.mark.parametrize("entry", ["one", "rank 0", "rank 1"])
 def test_a_resumed_prompt_keeps_its_state_limit(allocations, monkeypatch, entry):  # noqa: F811
-    entries, sizes, _ = _host(monkeypatch)
-    for limit, largest in ((0, 64000), (WINDOW, WINDOW)):
+    entries, sizes, _, forward = _host(monkeypatch)
+    for limit in (0, WINDOW):
         kept = entries[entry](16000, limit=limit)
         sizes.clear()
         st = entries[entry](32100, state=kept)              # the engine's cached prompt ends carry the limit
-        assert st.limit == limit and max(sizes) == largest
+        assert st.limit == limit and max(sizes) == 32100 and _reserved(st) == {limit or forward.UNBOUNDED}
         _intact(st, 32100)
     other = entries[entry](4)
     other.limit = 777
     assert entries[entry](10, state=other, limit=WINDOW).limit == 777 and other.pos == 4
 
 
-@pytest.mark.parametrize("limit,largest", [(0, 64000), (WINDOW, WINDOW)])
-def test_a_reply_committed_to_the_window_end_stays_within_the_limit(allocations, monkeypatch,  # noqa: F811
-                                                                    limit, largest):
-    entries, sizes, forward = _host(monkeypatch, pattern=(False, False))    # commit replays GDN rows on a GPU
+@pytest.mark.parametrize("limit", [0, WINDOW])
+def test_a_reply_committed_to_the_window_end_stays_within_the_limit(allocations, monkeypatch, limit):  # noqa: F811
+    entries, sizes, _, forward = _host(monkeypatch, pattern=(False, False))    # commit replays GDN rows on a GPU
     st = entries["one"](16000, limit=limit)
     width = 12                                        # the one-stream verify window (max_rows)
     while st.pos < END:
@@ -108,7 +124,7 @@ def test_a_reply_committed_to_the_window_end_stays_within_the_limit(allocations,
         rows = torch.arange(n, dtype=torch.int32)
         forward.commit(st, record, list(range(n)), (rows, torch.tensor([n], dtype=torch.int32), rows.long()))
         sizes += [kv[0].shape[0] for kv in st.kv]
-    assert max(sizes) == largest
+    assert max(sizes) == END and _reserved(st) == {limit or forward.UNBOUNDED}
     _intact(st, END)
 
 

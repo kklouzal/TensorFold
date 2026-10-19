@@ -42,12 +42,19 @@ def calibration_rows(streams: int, steps: bool = True) -> list[int]:
     return sorted({r for r in grid if r <= 16 * streams} | {16 * streams})
 
 
-def private(st: State, rows: int) -> State:
-    """A copy of a committed state with its own attention caches of ``rows`` rows (rows below ``pos`` copied in)."""
+def private(st: State, rows: int, most: int | None = None) -> State:
+    """A fresh or kept state on private attention caches, reserved for ``most`` rows (default ``rows``).
+
+    The input is a fresh State, or a kept/viewed entry clipped to its committed ``pos``. Callers request more rows
+    than those views hold (a strictly longer prompt and its reply), so ``reserve`` enters ``grow`` and replaces
+    every cache under the new owner. The first ``rows`` map now, with the committed prefix copied in.
+    """
 
     other = clone_state(st)
-    other.kv = list(st.kv)                            # its own list: the buffers reserved next are this stream's
-    reserve(other, rows)                              # new buffers now: prefill never grows or reallocates them
+    other.kv = list(st.kv)                            # its own list and owner: the caches reserved next are this
+    other.kv_owner = object()                         # stream's (moved into its arenas; prefill never moves them)
+    other.limit = rows if most is None else most
+    reserve(other, rows)
     return other
 
 
@@ -240,7 +247,7 @@ class MultiDecoder:
     def _queue(self, s: Stream, hit) -> None:
         drafter = self.draft if s.draft and self.drafts else None
         rows = self._most(s) if self.memory_gate is None else self._first(s)
-        state = private(hit[1] if hit else State(self.w), rows)
+        state = private(hit[1] if hit else State(self.w), rows, self._most(s))
         s.st = state
         s.snap = None if drafter is None else own(hit[2]) if hit and hit[2] is not None else \
             ([None] * drafter.layers, [None] * drafter.layers, 0, 0)
@@ -264,24 +271,42 @@ class MultiDecoder:
 
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
-        while not self.memory_gate.fits(self._first(s) * self.row_bytes):
+        while not self.memory_gate.fits(self._cache_bytes(self._first(s))):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # physical-fit failure: complete queued releases before evicting more
+                reap()
+                continue
             if not self.cache.evict():
                 if not self.live():
                     return                          # alone: startup fitted one stream's whole window
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
             torch.cuda.empty_cache()
 
-    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
-        """Grow ``st``'s caches from ``have`` to ``size`` rows while the gate has room (a layer's copy at a time)."""
+    def _cache_bytes(self, rows: int) -> int:
+        """What a stream's attention caches map at ``rows`` rows: each layer's keys and values an arena, rounded up
+        to its granule (``geometry.ARENA_GRANULE``)."""
 
-        while not self.memory_gate.fits((size - have) * self.row_bytes + size * self.layer_bytes):
+        from tensorfold.cuda.geometry import ARENA_GRANULE
+
+        tensor = -(-rows * self.layer_bytes // 2 // ARENA_GRANULE) * ARENA_GRANULE
+        return 2 * tensor * (self.row_bytes // self.layer_bytes if self.layer_bytes else 0)
+
+    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
+        """Grow ``st``'s caches from ``have`` mapped rows to ``size`` while the gate has room (mapped in place)."""
+
+        while not self.memory_gate.fits(self._cache_bytes(size) - self._cache_bytes(have)):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # do not end/wait a stream while its required bytes can be reclaimed
+                reap()
+                continue
             if not self.cache.evict():
                 if alone:
                     break                           # startup fitted one stream's whole window
                 return False
             torch.cuda.empty_cache()
-        reserve(st, size)
-        torch.cuda.empty_cache()                    # the old buffers back to the system: MemAvailable stays true
+        reserve(st, size)                           # maps memory at the caches' ends: nothing old to give back
         return True
 
     def _make_room(self, live: list[Stream]) -> list[Stream]:

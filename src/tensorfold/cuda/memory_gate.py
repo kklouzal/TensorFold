@@ -40,25 +40,31 @@ class MemoryGate:
 def torch_live(torch, available: Callable, *, unavailable_spare_bytes: int = 0, owner=None) -> Callable[[], int]:
     """Reusable allocator bytes plus free memory, capped by the budget left after current allocations.
 
+    Attention-cache arenas (``kv_arena``) map memory outside the allocator: all mappings count as allocated until
+    released. Queued releases are not free yet; this shared callable also serves ordinary Torch allocations that
+    do not pass through an arena's reaping boundary. Sampling never forces a stream wait or driver release.
     A prepared immutable graph pool can retain inactive blocks that ordinary
     service allocations cannot reuse. Its owner supplies that constant and
     outlives this callable; default callers retain the original accounting.
     """
 
+    from .kv_arena import mapped_bytes
+
     if not unavailable_spare_bytes and owner is None:
-        # Keep the established zero-exclusion HOT path unchanged for other
-        # decoders; select the owned-pool arithmetic once during preparation.
+        # Select the arithmetic without a private graph-pool exclusion once during preparation.
         def room() -> int:
-            allocated = int(torch.cuda.memory_allocated())
-            free = int(available(torch)) + int(torch.cuda.memory_reserved()) - allocated
+            torch_allocated = int(torch.cuda.memory_allocated())
+            allocated = torch_allocated + mapped_bytes()
+            free = int(available(torch)) + int(torch.cuda.memory_reserved()) - torch_allocated
             limit = cuda_limit_bytes()
             return max(0, min(free, limit - allocated)) if limit is not None else max(0, free)
         return room
 
     def room(_owner=owner) -> int:  # the default retains a prepared pool owner without a HOT lookup/callback
-        allocated = int(torch.cuda.memory_allocated())
-        spare = max(0, int(torch.cuda.memory_reserved()) - allocated - unavailable_spare_bytes)
+        torch_allocated = int(torch.cuda.memory_allocated())
+        spare = max(0, int(torch.cuda.memory_reserved()) - torch_allocated - unavailable_spare_bytes)
         free = int(available(torch)) + spare
+        allocated = torch_allocated + mapped_bytes()
         limit = cuda_limit_bytes()
         return max(0, min(free, limit - allocated)) if limit is not None else max(0, free)
 
