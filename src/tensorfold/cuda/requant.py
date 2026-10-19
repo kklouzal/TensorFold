@@ -183,8 +183,8 @@ def resident_bytes(kind: str, n: int, k: int) -> int:
 
 
 def staging_bytes(kind: str, n: int, k: int) -> int:
-    """Transient device bytes building a ``kind`` copy. fp8: FP32 row chunks (two live), the codes, then the chunked
-    fragment-order gather (a padded byte copy and two int64 indices an element); nvfp4: below."""
+    """Transient device bytes building a ``kind`` copy. fp8: FP32 row chunks, retained codes/scales, and the chunked
+    fragment-order gather, including its original and contiguous index storage; nvfp4: below."""
 
     if _checked(kind) == "nvfp4":
         # nvfp4_rows' codes and scales beside either its chunk temporaries (FP32 blocks, quotients and their where,
@@ -197,7 +197,14 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
                                                                + 2 * padded * k // 16)
     padded = -(-n // 128) * 128
     # Fragment packing visits padded output rows, including when a small projection has fewer than 128 rows.
-    return min(n, CHUNK_ROWS) * k * 9 + n * k + min(padded, FRAGMENT_ROWS) * k * 17
+    rows = min(padded, FRAGMENT_ROWS)
+    # The native allocator rounds the two retained quantized-code/scale allocations to 512-byte blocks. The
+    # fragment's other allocations are already multiples of 512 (R multiple of 128, K multiple of 64).
+    quantized = ((n * k + 511) // 512 + (n * 4 + 511) // 512) * 512
+    # CUDA advanced indexing makes both expanded int64 indices contiguous when their strides differ. The
+    # original fragment_index bases (8K and 4R int64s) remain live beside them, the padded input and byte result.
+    fragment = rows * k * 18 + k * 64 + rows * 32
+    return min(n, CHUNK_ROWS) * k * 9 + quantized + fragment
 
 
 __all__ = ["CHUNK_ROWS", "E4M3_MAX", "KINDS", "NVFP4_CHUNK_ROWS", "Head", "nvfp4_rows", "prefix", "requant_rows",
