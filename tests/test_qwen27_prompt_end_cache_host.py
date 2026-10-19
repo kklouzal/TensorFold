@@ -1203,3 +1203,45 @@ def test_the_two_rank_prefill_keeps_the_point_as_prefill_does(cpu, monkeypatch, 
         assert pending == ref_pending and kept.pos == point and snap is None and _shares_kv(kept, st)
         _assert_same_state(torch, st, ref)
         _assert_same_state(torch, kept, ref_kept)
+
+
+def test_chain_runner_receives_the_resumed_prompt_before_prefill_and_verification(monkeypatch):
+    engine, recorder = _one_gpu(monkeypatch)
+    calls = []
+
+    class Runner:
+        def begin(self, cache, room, base, prompt):
+            assert cache is engine.cache and room is engine.room
+            calls.append((base, list(prompt), len(recorder.prefills)))
+            return base
+
+    engine.runner = Runner()
+    decoder = sys.modules[PKG + ".decode"]
+    eager_decode = decoder.draft_decode
+
+    def decode(*args, runner, **kwargs):
+        assert runner is engine.runner
+        return eager_decode(*args, **kwargs)
+
+    monkeypatch.setattr(decoder, "draft_decode", decode)
+    first = list(range(20, 30))
+    _run(engine, first)
+    kept = engine.cache.entries[0][1]
+    second = first[:-1] + [90, 91]
+    _run(engine, second)
+    _run(engine, second, draft=False)
+    assert calls == [(None, first, 0), (kept, second, 1), (None, second, 2)]
+    assert recorder.prefills[1].start == len(first) - 1
+
+
+def test_chain_runner_invariant_failure_stops_before_prefill(monkeypatch):
+    engine, recorder = _one_gpu(monkeypatch)
+
+    class Runner:
+        def begin(self, cache, room, base, prompt):
+            raise RuntimeError("broken sharing invariant")
+
+    engine.runner = Runner()
+    with pytest.raises(RuntimeError, match="broken sharing invariant"):
+        _run(engine, list(range(20, 30)))
+    assert not recorder.prefills and not engine.cache.entries

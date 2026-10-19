@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 import torch
-
 from test_gemma_cuda_target import target
 
 from tensorfold.families.gemma4.cuda.graphs import Graphs
@@ -47,3 +46,20 @@ def test_graphs_refuse_foreign_states_and_oversized_rounds():
     with pytest.raises(ValueError, match="max_rows"):
         graphs.forward([4] * 5, state, output_taps=False)
     assert state.position == 3 and not state.poisoned
+
+
+def test_startup_prepares_only_smallest_grids_and_larger_grids_capture_on_first_use():
+    model = target()
+    eager, staged = model.make_state(1600, rows=128), model.make_state(1600, rows=128)
+    graphs = Graphs(model, staged, max_rows=3, span=1)
+    assert graphs.prepare() == 6
+    assert staged.position == 0 and {key[1] for key in graphs.graphs} == {1}
+    tokens = [(5 * i + 1) % 128 for i in range(600)]
+    for state in (eager, staged):
+        for start in range(0, len(tokens), 100):
+            model.forward(tokens[start:start + 100], state, output_logits=False, output_taps=False)
+    expected = model.forward([5, 6], eager, output_taps=True, trusted_tokens=True)
+    result = graphs.forward([5, 6], staged, output_taps=True)
+    assert len(graphs.graphs) == 7 and (2, 2, True) in graphs.graphs
+    assert torch.equal(result.logits, expected.logits) and torch.equal(result.hidden, expected.hidden)
+    assert all(torch.equal(result.taps[layer], expected.taps[layer]) for layer in expected.taps)

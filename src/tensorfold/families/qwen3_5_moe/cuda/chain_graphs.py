@@ -80,20 +80,23 @@ class ChainGraphs:
         """The state ``prompt``'s prefill extends in place on the fixed attention buffers.
 
         ``base``: the prefix-cache state the request resumes (None: a fresh prompt); ``cache`` (streams.PrefixCache,
-        whose extensions of ``base`` the engine already dropped) and ``room`` (streams.KVRoom or None) are the
+        holding ``base``, whose extensions the engine already dropped) and ``room`` (streams.KVRoom or None) are the
         stream's. Kept states on the fixed buffers that the request would overwrite (every one, unless it resumes
-        from them) first move to private buffers sized to their rows (while ``room`` admits them; else they are
-        dropped); a resumed state on private buffers is copied in and its kept relatives return to the fixed ones.
-        Every kept state on the fixed buffers must be a prefix of one prompt (at most ``cache.keep`` of them): the
-        rows they share hold only that prompt. Anything else is a broken cache invariant and raises, since a kept
-        state would read another prompt's rows.
+        from them) first move to private buffers sized to their rows while ``room`` admits that copy beside the
+        resumed state's buffers (other conversations' kept states go first, the resumed one's never); else they are
+        dropped. A resumed state on private buffers is copied in and its kept relatives return to the fixed ones.
+        Every kept state sharing the resumed state's buffers must be a prefix of ``prompt``, and the ones moved out
+        prefixes of one prompt (at most ``cache.keep`` of them): the rows they share hold only that prompt. Anything
+        else is a broken cache invariant and raises before those buffers change, since a kept state would read
+        another prompt's rows.
         """
 
         fixed = self.st.kv
-        if base is not None and base.kv is fixed:
-            self._check_chain(cache, prompt)     # prefill writes past base.pos: only prefixes of the prompt stay
-            return base
-        self._move_out(cache, room)
+        if base is not None:
+            self._check_chain(cache, prompt, base.kv)   # prefill writes past base.pos: only prefixes of the prompt stay
+            if base.kv is fixed:
+                return base
+        self._move_out(cache, room, None if base is None else base.kv)
         if base is None:
             st = State(self.w)
             st.kv, st.limit = fixed, self.capacity
@@ -106,25 +109,36 @@ class ChainGraphs:
         base.kv, base.limit = fixed, self.capacity
         return base
 
-    def _check_chain(self, cache, prompt: Sequence[int]) -> list:
-        """The kept entries on the fixed buffers, each verified a prefix of ``prompt`` (at most ``cache.keep``)."""
+    @staticmethod
+    def _check_chain(cache, prompt: Sequence[int], kv) -> None:
+        """V4: every kept entry on the KV list ``kv`` is a prefix of ``prompt`` (at most ``cache.keep`` of them)."""
 
-        held = [entry for entry in cache.entries if entry[1].kv is self.st.kv]
-        if len(held) > cache.keep or any(len(ids) > len(prompt) or list(prompt[:len(ids)]) != list(ids)
-                                         or kept.pos != len(ids) for ids, kept, _ in held):
+        # Entries' ids are lists (PrefixCache.add callers): one slice of a list prompt per entry, no further copies
+        # (this runs per request, over up to the whole context).
+        head = prompt if type(prompt) is list else list(prompt)
+        held = [entry for entry in cache.entries if entry[1].kv is kv]
+        if len(held) > cache.keep or any(kept.pos != len(ids) or len(ids) > len(head) or head[:len(ids)] != ids
+                                         for ids, kept, _ in held):
             raise RuntimeError("chain-graph buffers hold kept prompt states that are not one prompt's prefixes")
-        return held
 
-    def _move_out(self, cache, room) -> None:
+    def _move_out(self, cache, room, resumed) -> None:
+        """The kept states on the fixed buffers, moved to private buffers sized to their rows or dropped.
+
+        ``resumed``: the KV list of the state the request resumes (None: a fresh prompt). It stays live until it is
+        copied in, so making room for the copy never evicts its entries and ``room.held`` counts it.
+        """
+
         fixed = self.st.kv
         held = [entry for entry in cache.entries if entry[1].kv is fixed]
         if not held:
             return
-        self._check_chain(cache, max((ids for ids, _, _ in held), key=len))
+        self._check_chain(cache, max((ids for ids, _, _ in held), key=len), fixed)
         rows = max(kept.pos for _, kept, _ in held)
         size = sum(rows * (t.stride(0) * t.element_size()) for kv in fixed if kv is not None for t in kv)
-        if room is not None:
-            room(self.st, size)                  # evicts kept entries on other private buffers, oldest first
+        if room is not None:                     # other conversations' kept states go (PrefixCache.evict's order)
+            while room.held(self.st) + size > room.budget:
+                if not cache.evict([e for e in cache.entries if e[1].kv is not fixed and e[1].kv is not resumed]):
+                    break
         if rows == 0 or room is not None and room.held(self.st) + size > room.budget:
             cache.entries = [entry for entry in cache.entries if entry[1].kv is not fixed]
             cache.hit &= {tuple(entry[0]) for entry in cache.entries}

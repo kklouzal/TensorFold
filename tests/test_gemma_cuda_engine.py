@@ -392,8 +392,9 @@ def test_turn_boundary_is_the_last_marker_past_the_cached_prefix_outside_visual_
     assert engine._turn_boundary([2, 5, 5], 0, ()) == 0
 
 
-def test_graph_runner_serves_decode_rounds_and_prefill_stays_eager(monkeypatch):
-    engine = _engine(monkeypatch)
+@pytest.mark.parametrize("with_head", [False, True])
+def test_graph_runner_serves_decode_rounds_and_prefill_stays_eager(monkeypatch, with_head):
+    engine = _engine(monkeypatch, with_head=with_head)
     calls = []
 
     class Graphs:
@@ -404,9 +405,10 @@ def test_graph_runner_serves_decode_rounds_and_prefill_stays_eager(monkeypatch):
     engine.graphs = Graphs()
     got = []
     engine.generate(list(range(1, 12)), 24, None, lambda t: got.extend(t) and None, stop_eos=False)
-    reference = _engine(monkeypatch)
+    reference = _engine(monkeypatch, with_head=with_head)
     want = []
     reference.generate(list(range(1, 12)), 24, None, lambda t: want.extend(t) and None, stop_eos=False)
     assert got == want and calls
     # Every replayed round starts at a committed decode position and carries the first token plus drafts.
-    assert all(position >= 11 and 1 <= len(tokens) <= engine.max_rows and taps for tokens, position, taps in calls)
+    assert all(position >= 11 and 1 <= len(tokens) <= engine.max_rows and taps == with_head
+               for tokens, position, taps in calls)
