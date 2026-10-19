@@ -239,7 +239,8 @@ extending a conversation resumes there with a fresh prefill's bits.
 
 ### Context and YaRN
 
-The checkpoints declare 262,144 positions of default RoPE, and `tensorfold serve` admits that by default. On CUDA,
+The checkpoints declare 262,144 positions of default RoPE. `tensorfold serve` targets that native window by default,
+subject to startup memory admission. On CUDA,
 `--yarn-factor F` extends the text RoPE with the same static YaRN policy as Qwen3.8 dense (see the
 [27B recipe](qwen3.8-27b.md#context-and-yarn)): the card's 1,010,000-token reach is `--yarn-factor 4` (1,048,576
 positions), for the CT NVFP4 and MLX checkpoints alike, and a checkpoint that declares YaRN brings its own factor.
