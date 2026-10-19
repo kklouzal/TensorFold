@@ -14,7 +14,8 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --name bench
 
 DFlash2 is used automatically once pulled. On MLX, `--drafter none` disables that draft model;
 `--no-drafts` disables all drafts on either backend. CUDA requires DFlash2 unless `--no-drafts` is set.
-The target verifies every proposed token against its own serial sample.
+The target retains its own math during verification; CUDA sampled requests use its probabilities under standard
+rejection sampling.
 
 Sampling defaults come from the checkpoint's `generation_config.json`, `repetition_penalty` included (as in vLLM).
 Some checkpoints disagree with their model cards: AEON-7's Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED
@@ -143,6 +144,36 @@ also under `full`), and a reply resumed from a cached prompt equals a cold one. 
 about 1,750 / 2,580 / 2,300 tok/s at 4k / 16k / 32k tokens. The tool, needle and KL gates are pending;
 [the validation record](../optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19) has the conditions,
 including the GB10's thermal observations at long prompts.
+
+### Proposal vocabulary and head
+
+On one CUDA rank with an NVFP4 checkpoint and DFlash2, `--draft-vocab truncated|full` selects proposal coverage at
+startup. The default `truncated` keeps the original ranges `[0, 98304)` and `[248032, 248320)`, clipped to the target
+vocabulary. `full` borrows the target's whole stored head, so every target token can be proposed. The target still
+verifies each token; this setting never changes its weights or math.
+
+`--draft-head-bits 16` keeps the original stored head, including a head the checkpoint stores quantized. The optional
+`--draft-head-bits 8` requires a floating head in the NVFP4 checkpoint and creates a private FP8 proposal copy through
+the shared requantizer: E4M3 weights, one FP32 scale per output channel, BF16 inputs and FP32 proposal logits. Only the
+selected proposal ranges are copied, with each range padded as the FP8 kernels require. Both copies and their bounded
+construction scratch are admitted before loading; the target retains its original floating head. A stored quantized
+head, another format/backend, several ranks or disabled drafting is refused for this new private-copy option.
+
+The four comparison arms differ only in these startup options:
+
+| Arm | Vocabulary | Proposal head | Flags |
+| --- | --- | --- | --- |
+| Original reference | Truncated | Original stored head | none |
+| Full reference | Full | Original stored head | `--draft-vocab full` |
+| Truncated FP8 | Truncated | Private FP8 ranges | `--draft-head-bits 8` |
+| Full FP8 | Full | Private FP8 full head | `--draft-vocab full --draft-head-bits 8` |
+
+Use the same target/drafter/tokenizer, precision, context, parallelism, prompts and sampling controls for every arm.
+Compare production HTTP requests with greedy serial identity, repeat/prefix independence and end-to-end decode timing.
+Sampled repeat/cache checks compare the same arm and seed; different proposal policies may produce different seeded
+tokens under standard rejection sampling while retaining the target distribution.
+These options are implemented; final native/model and performance qualification is pending, so neither option replaces
+the original default profile here.
 
 ### EXL3 checkpoints (experimental)
 

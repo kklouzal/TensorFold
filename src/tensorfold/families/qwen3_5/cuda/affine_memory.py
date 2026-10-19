@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 import json
 import math
+from functools import lru_cache
 from pathlib import Path
 
 
 def weight_transform(model_dir, *, one_gpu: bool = False):
     """Tensor bytes; the head counts twice (the drafter's copy), once on ``one_gpu`` where the drafter views it."""
 
-    from tensorfold.cuda.geometry import linear_weights, size
     from tensorfold.cuda.capacity import headers
+    from tensorfold.cuda.geometry import linear_weights, size
     from tensorfold.quantization import resolve_affine
 
     @lru_cache(maxsize=1)
@@ -64,15 +64,45 @@ def packed_draft(name: str, shape) -> bool:
             and shape[0] * shape[1] >= 1 << 20)
 
 
-def draft_weights(draft_dir):
-    """Drafter storage and packing overlap, including retained affine64 group metadata."""
+def draft_weights(draft_dir, *, head_copy: tuple[int, int] = (0, 0)):
+    """Drafter storage and packing overlap, including retained affine64 group metadata, plus ``head_copy``: the
+    resident and staging bytes of the drafter's own copy of the target's head (``draft_head_copy``)."""
 
     from tensorfold.cuda.capacity import Weights, estimate_weights, headers
 
     held = estimate_weights(draft_dir, draft_bytes)
     largest = max((math.prod(info["shape"]) for name, info in headers(draft_dir).items()
                    if packed_draft(name, info["shape"])), default=0)
-    return Weights(held.resident, max(held.staging, 14 * largest + 20 * (largest // 64)), held.mapped)
+    return Weights(held.resident + head_copy[0], max(held.staging, 14 * largest + 20 * (largest // 64), head_copy[1]),
+                   held.mapped)
+
+
+def draft_head_copy(model_dir, *, draft_vocab: str = "truncated", head_bits: int = 16) -> tuple[int, int]:
+    """Private FP8 proposal storage and staging, independent of target math. Original-head mode borrows its storage;
+    FP8 copies only the selected ranges, each padded as the shared requantizer requires."""
+
+    if type(head_bits) is not int or head_bits not in (16, 8) or draft_vocab not in ("truncated", "full"):
+        raise ValueError("DFlash2 needs truncated/full vocabulary and 16/8 proposal-head bits")
+    if head_bits == 16:
+        return 0, 0
+
+    from tensorfold.cuda.capacity import config, headers
+    from tensorfold.cuda.requant import resident_bytes, staging_bytes
+
+    from .draft_tree import draft_spans
+
+    info = headers(Path(model_dir)).get("lm_head.weight")
+    if info is None or info["dtype"] not in ("BF16", "F16", "F32"):
+        raise ValueError("a private FP8 proposal head requires a floating lm_head.weight")
+    if len(info["shape"]) != 2 or min(info["shape"]) < 1 or info["shape"][1] % 64:
+        raise ValueError("a private FP8 proposal head needs positive [N, K] dimensions and K divisible by 64")
+    n, k = (int(x) for x in info["shape"])
+    vocab = config(Path(model_dir)).get("vocab_size")
+    ranges = draft_spans(vocab, draft_vocab)
+    if n != vocab:
+        raise ValueError("the floating head rows must match the declared target vocabulary")
+    return (sum(resident_bytes("fp8", b - a, k) for a, b in ranges),
+            max(staging_bytes("fp8", b - a, k) for a, b in ranges))
 
 
 def draft_bytes(name: str, info: dict) -> tuple[int, int]:

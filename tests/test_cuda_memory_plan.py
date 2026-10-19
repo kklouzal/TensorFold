@@ -3,9 +3,9 @@
 import pytest
 
 from tensorfold.cuda import capacity, geometry
-from tensorfold.families.qwen3_5.cuda.affine_memory import draft_bytes, draft_weights, weight_transform
+from tensorfold.families.qwen3_5.cuda.affine_memory import draft_bytes, draft_head_copy, draft_weights, weight_transform
 
-from cuda_27b_headers import TEXT, drafter, target
+from cuda_27b_headers import TEXT, _write, drafter, target
 
 GIB = capacity.GIB
 HEAD = 248320 * 640 * 4 + 2 * 248320 * 80 * 2          # the 4-bit head: words, scales and biases
@@ -82,3 +82,45 @@ def test_twelve_rows_bound_the_scratch_and_a_prompt_chunk_shares_it():
     replay = 48 * (128 - 12) * (16480 * 2 + 16 * 128 * 4 + 48 * 128 * 4 + 48 * 8) + 32 * (128 - 12) * 2560 * 4
     assert wide.bytes_at(4108) - verify.bytes_at(4108) >= replay + 16 * (128 - 12) * extent * 4
     assert prompt.bytes_at(4108) - verify.bytes_at(4108) == 2048 * 360448 - 16 * 12 * extent * 4
+
+
+@pytest.mark.parametrize("vocab", ["truncated", "full"])
+def test_the_drafter_counts_only_its_selected_private_fp8_head_ranges(model, tmp_path, vocab):
+
+    pytest.importorskip("torch")
+    from tensorfold.cuda import requant
+
+    bf16 = _write(tmp_path / "bf16", TEXT, [("lm_head.weight", "BF16", [248320, 5120])])
+    codes = _write(tmp_path / "codes", TEXT, [("lm_head.weight", "U8", [248320, 2560])])
+    copy = draft_head_copy(bf16, draft_vocab=vocab, head_bits=8)
+    rows = [248320] if vocab == "full" else [98304, 288]
+    assert copy == (sum(requant.resident_bytes("fp8", n, 5120) for n in rows),
+                    max(requant.staging_bytes("fp8", n, 5120) for n in rows))
+    assert copy[0] == (248320 if vocab == "full" else 98304 + 384) * (5120 + 4)
+    assert draft_head_copy(codes) == draft_head_copy(bf16) == (0, 0)
+    with pytest.raises(ValueError, match="floating lm_head"):
+        draft_head_copy(codes, head_bits=8)
+    _, draft = model
+    alone, with_copy = draft_weights(draft), draft_weights(draft, head_copy=copy)
+    assert with_copy.resident == alone.resident + copy[0]
+    assert with_copy.staging == max(alone.staging, copy[1]) and with_copy.mapped == alone.mapped
+
+
+def test_private_head_admission_counts_kernel_padding_and_refuses_mismatched_weight_rows(tmp_path):
+    pytest.importorskip("torch")
+    from tensorfold.cuda import requant
+
+    padded = _write(tmp_path / "padded", {**TEXT, "vocab_size": 500}, [("lm_head.weight", "BF16", [500, 64])])
+    assert draft_head_copy(padded, draft_vocab="full", head_bits=8) == (
+        requant.resident_bytes("fp8", 500, 64), requant.staging_bytes("fp8", 500, 64))
+    for vocab in (500, 600):
+        wrong = _write(tmp_path / str(vocab), {**TEXT, "vocab_size": vocab}, [("lm_head.weight", "BF16", [512, 64])])
+        with pytest.raises(ValueError, match="rows must match"):
+            draft_head_copy(wrong, draft_vocab="full", head_bits=8)
+
+
+@pytest.mark.parametrize("shape", [[0, 64], [512, 63], [512]])
+def test_private_head_admission_refuses_unusable_matrix_shapes_before_quantization(tmp_path, shape):
+    folder = _write(tmp_path, TEXT, [("lm_head.weight", "BF16", shape)])
+    with pytest.raises(ValueError, match="positive.*dimensions"):
+        draft_head_copy(folder, head_bits=8)

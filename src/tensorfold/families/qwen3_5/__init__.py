@@ -298,6 +298,7 @@ CUDA_AFFINE_GROUPS = (32, 64, 128)
 # --checkpoint-slots on CUDA: the prompt states the concurrent decoder keeps (--parallel 2 or more)
 CUDA_CHECKPOINT_SLOTS = True
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: MLX 4-bit g64 and NVFP4 checkpoints have FP8 prompt kernels
+CUDA_DFLASH2_HEAD = True           # explicit NVFP4 one-rank proposal vocabulary and private head-copy choices
 ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
 
 
@@ -358,5 +359,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         vision_urls=bool(options.get("vision_urls", False)),
                         vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
                         yarn_factor=options.get("yarn_factor"),
+                        draft_vocab=options.get("draft_vocab") if options.get("draft_vocab") is not None else "truncated",
+                        draft_head_bits=options.get("draft_head_bits") if options.get("draft_head_bits") is not None else 16,
                         **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
                            if options.get(name) is not None})

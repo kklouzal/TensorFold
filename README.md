@@ -1,5 +1,11 @@
 # TensorFold fork
 
+Qwen3.8 dense NVFP4 DFlash2 on one CUDA rank adds explicit proposal-only choices: `--draft-vocab full` scores every
+target token, and `--draft-head-bits 8` copies a floating target head into private FP8 proposal storage. The original
+truncated vocabulary and original stored head remain the defaults. Target weights, target precision and verification
+are unchanged; final native/model correctness and performance qualification of these options is pending. See the
+[proposal-head comparison](docs/recipes/qwen3.8-27b.md#proposal-vocabulary-and-head).
+
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
 and determinism probes hold a rendered next turn whose reply cannot fit the served
 context. Diagnostic substring recall remains separate from exact answer quality;
