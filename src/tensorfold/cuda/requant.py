@@ -195,7 +195,9 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
         padded, rows = -(-n // 128) * 128, min(n, NVFP4_CHUNK_ROWS)
         return n * k // 2 + n * k // 16 + max(rows * k * 19, min(padded, 4096) * k * 25 + padded * k // 2
                                                                + 2 * padded * k // 16)
-    return min(n, CHUNK_ROWS) * k * 9 + n * k + min(n, FRAGMENT_ROWS) * k * 17
+    padded = -(-n // 128) * 128
+    # Fragment packing visits padded output rows, including when a small projection has fewer than 128 rows.
+    return min(n, CHUNK_ROWS) * k * 9 + n * k + min(padded, FRAGMENT_ROWS) * k * 17
 
 
 __all__ = ["CHUNK_ROWS", "E4M3_MAX", "KINDS", "NVFP4_CHUNK_ROWS", "Head", "nvfp4_rows", "prefix", "requant_rows",
