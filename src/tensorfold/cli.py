@@ -522,10 +522,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     _reply_tokens(args, config_dir)
     _note_untested(family, args.model)
     required_files = getattr(family.package, "REQUIRED_FILES", {}).get(args.model, ())
+    check = getattr(family.package, "check", None)
+    if check is not None:
+        check(config_dir)  # refuse an unsupported checkpoint before downloading its weights
     native_context = _model_context(config_dir)
     context_limit = native_context
     rope_hook = getattr(family.package, "rope_parameters", None)
-    if rope_hook is not None:
+    if rope_hook is not None and backend in getattr(family.package, "ROPE_BACKENDS", (backend,)):
         rope = rope_hook(config_dir, getattr(args, "yarn_factor", None))
         if rope.rope_type != "default" and backend != "cuda":
             raise ValueError("Flash Next YaRN text RoPE is supported on CUDA only")
@@ -535,9 +538,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
         raise ValueError("--context must be 0 or a positive token count")
     if context_limit and context > context_limit:
         raise ValueError(f"--context {context} exceeds this model's {context_limit}-token window")
-    check = getattr(family.package, "check", None)
-    if check is not None:
-        check(config_dir)  # refuse an unsupported checkpoint before downloading its weights
     needs_full_snapshot = hub.is_repo_id(args.model) and not hub._cached_weights_complete(
         config_dir, required_files=required_files
     )
