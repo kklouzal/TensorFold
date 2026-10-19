@@ -167,4 +167,3 @@ def checked_headers(directory):
     if any(tuple(found[k]["shape"]) != shape or found[k]["dtype"] != "BF16" for k, shape in expected.items()):
         raise ValueError("Gemma DFlash weights require declared shapes and BF16 storage")
     return cfg, found
-

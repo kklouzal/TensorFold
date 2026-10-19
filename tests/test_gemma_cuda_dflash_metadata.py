@@ -132,4 +132,3 @@ def test_excessive_layer_declaration_fails_before_shape_materialization(tmp_path
     monkeypatch.setattr(DraftConfig, "shapes", lambda self: pytest.fail("unsafe shape materialization"))
     with pytest.raises(ValueError, match="tensor count"):
         checked_headers(tmp_path)
-

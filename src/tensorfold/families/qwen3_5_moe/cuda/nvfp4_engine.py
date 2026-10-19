@@ -189,7 +189,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                   f"{self.expert_cache.capacity}/{plan.expert_count} cells; "
                   f"{plan.host_bytes / 2**30:.2f} GiB host authority; {vram_experts_pin} pin policy; "
                   f"{self.context_window}-token context", flush=True)
-        self._prepare_serving(model_dir, streams=streams, keep=KEEP, max_rows=self.max_rows)
+        self._prepare_serving(model_dir, streams=streams, keep=KEEP, max_rows=self.max_rows,
+                              kv_capacity=self.capacity_plan["cache_slots"] if graphs else None)
         if graphs:
             if not all(layer.moe is None or getattr(layer.moe.run, "capturable", False) for layer in self.w.layers):
                 raise RuntimeError("resident Qwen CT expert banks must plan routes on the device")

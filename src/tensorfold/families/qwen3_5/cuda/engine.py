@@ -167,7 +167,8 @@ class Qwen27Engine:
                                          offload=vision_offload)
         self._prepare_serving(model_dir, streams=streams, keep=keep)
 
-    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int, max_rows: int | None = None) -> None:
+    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int, max_rows: int | None = None,
+                         kv_capacity: int | None = None) -> None:
         """Prepare request state after loading/admission and optional drafter/vision.
 
         The loader establishes torch, tp/rank, allow_copy, capacity_plan,
@@ -175,6 +176,9 @@ class Qwen27Engine:
         ``keep`` is the normalized retained-prefix count used by admission.
         ``max_rows`` overrides the concurrent decoder's window before calibration;
         omitting it preserves that decoder's default.
+        ``kv_capacity`` is an already-admitted fixed graph cache capacity in rows;
+        ordinary caches use the served context window. Credit the same rounded
+        mapping that admission reserved, including any graph verification suffix.
         Calibration completes before publishing a running scheduler.
         """
         from tensorfold.cuda.capacity import config
@@ -195,7 +199,8 @@ class Qwen27Engine:
 
             plan = self.capacity_plan
             spare = plan["budget_bytes"] - plan["weight_bytes_estimate"] - plan["cache_workspace_bytes_estimate"]
-            self.room = KVRoom(self.cache, spare + live_kv(config(model_dir), 1, self.context_window))
+            cache_rows = self.context_window if kv_capacity is None else kv_capacity
+            self.room = KVRoom(self.cache, spare + live_kv(config(model_dir), 1, cache_rows))
         # ``streams`` > 1: up to that many requests decoded together, their windows verified in one forward
         self.concurrent = many
         self.multi = self.scheduler = None
