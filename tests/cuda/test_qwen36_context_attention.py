@@ -21,20 +21,26 @@ def _store(kv_heads, capacity, gen):
 
 def _reference(q, k, v, stores, lengths, layer, length, scale):
     """Each stream's block over [its committed rows | its own block rows], noncausal, in float64, and each output's
-    error bound. The kernel rounds every softmax weight to BF16 (unit roundoff 2**-8) before the value product while
-    normalising by the FP32 sum, so an output moves by at most 2**-8 * (softmax @ |v|); BF16 output rounding adds at
-    most 2**-8 of its magnitude. 2**-12 * (softmax @ |v|) covers the FP32 terms: logits of 128 BF16 products, exp and
-    the online-softmax accumulation (a few hundred steps here), each under 2**-13 relative."""
+    error bound from the arithmetic the PTX ISA guarantees (bf16 mma: products exact in FP32, accumulation at least
+    single precision in an unspecified order, so a sum of m terms errs by at most about m * 2**-24 of its absolute
+    sum). BF16 softmax weights in the value product and the BF16 output (unit roundoff 2**-8): 2**-8 * (softmax @ |v|
+    + |out|). FP32 terms, relative to softmax @ |v|: each logit (D products, the scale) errs by (D + 1) 2**-24 M,
+    M = scale * max sum_d |q_d k_d| over the stream, which moves its weight and the normaliser (2 (D + 3) M with the
+    max subtraction and exp argument); the row sum and the value accumulation over the stream's n keys and their
+    online rescaling (n each, generously 4 n 2**-24 = n 2**-22 together); exp and the final division (128 2**-22
+    covers them with slack)."""
     group, outs, bounds = q.shape[0] // k.shape[0], [], []
     for j, (st, s) in enumerate(zip(stores, lengths)):
         rows = slice(j * length, (j + 1) * length)
         kk = torch.cat((st.k[layer, :, :s], k[:, rows]), 1).double().repeat_interleave(group, 0)
         vv = torch.cat((st.v[layer, :, :s], v[:, rows]), 1).double().repeat_interleave(group, 0)
-        att = ((q[:, rows].double() @ kk.transpose(1, 2)) * scale).softmax(-1)
+        qq = q[:, rows].double()
+        att = ((qq @ kk.transpose(1, 2)) * scale).softmax(-1)
         out = (att @ vv).transpose(0, 1).reshape(length, -1)
         spread = (att @ vv.abs()).transpose(0, 1).reshape(length, -1)
+        m = scale * (qq.abs() @ kk.abs().transpose(1, 2)).max().item()
         outs.append(out)
-        bounds.append(2**-8 * (spread + out.abs()) + 2**-12 * spread)
+        bounds.append(2**-8 * (spread + out.abs()) + 2**-22 * (s + length + 2 * (D + 3) * m + 128) * spread)
     return torch.cat(outs), torch.cat(bounds)
 
 
@@ -50,7 +56,9 @@ def _run(q, k, v, stores, lengths, layer, length, kv_heads):
     return ca.block_attention(q, k, v, launch, layer, D ** -0.5)
 
 
-@pytest.mark.parametrize("heads,kv_heads,length", [(32, 4, 16), (32, 4, 8), (32, 4, 2), (32, 4, 128), (16, 2, 33)])
+# (8, 4, 16) and (12, 4, 33): group x padded rows not a multiple of the 128-row query tile (dead tile rows).
+@pytest.mark.parametrize("heads,kv_heads,length", [(32, 4, 16), (32, 4, 8), (32, 4, 2), (32, 4, 128), (16, 2, 33),
+                                                  (8, 4, 16), (12, 4, 33)])
 def test_matches_exact_softmax_across_chunk_boundaries(heads, kv_heads, length):
     gen = torch.Generator(device="cuda").manual_seed(heads + length)
     lengths = [1, 63, CH - 1, CH, CH + 1, 3 * CH + 17]
