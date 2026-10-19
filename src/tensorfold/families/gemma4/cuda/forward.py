@@ -17,7 +17,7 @@ import triton.language as tl
 
 from tensorfold.cuda.nvfp4 import checkpoint
 
-from . import attention
+from . import attention, glue
 from .state import State, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
 
@@ -58,10 +58,6 @@ def ct_rms_norm(x: torch.Tensor, weight: torch.Tensor | None, eps: float) -> tor
 
 def _geglu_mlx(gate, up):
     return (torch.nn.functional.gelu(gate.float(), approximate="tanh") * up.float()).to(gate.dtype)
-
-
-def _geglu_ct(gate, up):
-    return torch.nn.functional.gelu(gate, approximate="tanh") * up
 
 
 @triton.jit
@@ -109,7 +105,7 @@ class Gemma4Target:
             self._norm, self._geglu, self._route = rms_norm, _geglu_mlx, self._route_mlx
             self._embedding = weights.embed.embedding
         elif policy == "ct_nvfp4":
-            self._norm, self._geglu, self._route = ct_rms_norm, _geglu_ct, self._route_ct
+            self._norm, self._geglu, self._route = ct_rms_norm, glue.geglu, self._route_ct
             self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
@@ -296,9 +292,10 @@ class Gemma4Target:
             # Block bounds are read only when blocks are present; any int32 device pointer stands in.
             block_starts = block_ends = state.pos
         taps = {}
-        for i, layer in enumerate(self.weights.layers):
+        layers = self.weights.layers
+        normed = self._norm(h, layers[0].input_norm, c.eps)
+        for i, layer in enumerate(layers):
             sliding, index = state.slot[i]
-            normed = self._norm(h, layer.input_norm, c.eps)
             if sliding:
                 q_raw, k_raw, v_raw = self._project(normed, (layer.q, layer.k, layer.v), prompt)
                 keys, values = state.keys[index], state.values[index]
@@ -315,20 +312,20 @@ class Gemma4Target:
                 out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
                                      round_normalized=mlx)
             attended = self._project(out.reshape(rows, -1), (layer.o,), prompt)[0]
-            h = h + self._norm(attended, layer.attention_norm, c.eps)
-            residual = h
-            dense_in = self._norm(h, layer.mlp_norm, c.eps)
+            # Fused glue (glue.py): the same norms, adds and BF16 boundaries as the unfused chain.
+            h, dense_in, expert_in = glue.attention_tail(h, attended, layer.attention_norm, layer.mlp_norm,
+                                                         layer.expert_norm, c.eps, mlx)
             gate, up = self._project(dense_in, (layer.gate, layer.up), prompt)
-            active = self._geglu(gate, up)
-            dense = self._norm(self._project(active, (layer.down,), prompt)[0], layer.dense_output_norm, c.eps)
+            dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
-            expert_in = self._norm(h, layer.expert_norm, c.eps)
             routed = layer.experts.forward(expert_in, picks, routing)
-            routed = self._norm(routed, layer.expert_output_norm, c.eps)
-            h = (residual + self._norm(dense + routed, layer.output_norm, c.eps)) * layer.scalar
+            # The tail also applies the next layer's input norm (the final norm after the last layer).
+            following = layers[i + 1].input_norm if i + 1 < len(layers) else self.weights.norm
+            h, normed = glue.moe_tail(h, dense, routed, layer.dense_output_norm, layer.expert_output_norm,
+                                      layer.output_norm, layer.scalar, following, c.eps, mlx)
             if output_taps and i in self.tap_layers:
                 taps[i] = h
-        hidden = self._norm(h, self.weights.norm, c.eps)
+        hidden = normed
         logits = self.project_logits(hidden) if output_logits else None
         return hidden, logits, taps
 
