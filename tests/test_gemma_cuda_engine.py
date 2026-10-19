@@ -43,6 +43,7 @@ def _engine(monkeypatch, *, with_head=True):
     class State:
         def __init__(self):
             self.tokens = []
+            self.prompt_rows = []       # per position: computed by a prompt (prefill) forward
 
         @property
         def position(self):
@@ -50,15 +51,16 @@ def _engine(monkeypatch, *, with_head=True):
 
         def rollback(self, position):
             del self.tokens[position:]
+            del self.prompt_rows[position:]
 
         def snapshot(self):
-            return tuple(self.tokens)
+            return tuple(self.tokens), tuple(self.prompt_rows)
 
         def restore(self, snap):
-            self.tokens = list(snap)
+            self.tokens, self.prompt_rows = list(snap[0]), list(snap[1])
 
         def reset(self):
-            self.tokens = []
+            self.tokens, self.prompt_rows = [], []
 
     def scores(total):
         # A unique top, multiple plausible sampled choices, no accidental EOS.
@@ -76,10 +78,11 @@ def _engine(monkeypatch, *, with_head=True):
         def project_logits(self, hidden):
             return torch.stack([scores(int(row[1])) for row in hidden])
 
-        def forward(self, tokens, state, *, output_logits=True, **kwargs):
+        def forward(self, tokens, state, *, output_logits=True, prompt=False, **kwargs):
             rows = []
             for token in tokens:
                 state.tokens.append(token)
+                state.prompt_rows.append(prompt)
                 rows.append([token, sum(state.tokens)])
             hidden = torch.tensor(rows, dtype=torch.bfloat16)
             return SimpleNamespace(hidden=hidden, logits=self.project_logits(hidden) if output_logits else None,
@@ -142,6 +145,13 @@ def _engine(monkeypatch, *, with_head=True):
     return engine
 
 
+def _assert_prompt_path(engine, prompt):
+    """Every prompt position, and only those, ran a prompt forward, whatever the prefix cache supplied."""
+    state = engine._state
+    assert state.tokens[:len(prompt)] == list(prompt)
+    assert state.prompt_rows == [True] * len(prompt) + [False] * (state.position - len(prompt))
+
+
 @pytest.mark.parametrize("sampled", [False, True])
 def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
     engine = _engine(monkeypatch)
@@ -168,6 +178,9 @@ def test_dflash_rejections_and_prompt_resume_equal_serial(monkeypatch, sampled):
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
     assert engine._prefix.tokens == (3, 1, 4, 1, 5, 9, 2)
+    for e in (engine, fresh_engine):
+        _assert_prompt_path(e, [3, 1, 4, 1, 5, 9, 2])
+    assert engine._state.tokens == fresh_engine._state.tokens
 
 
 def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch):
@@ -176,7 +189,7 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
     seen = []
     engine.generate(prompt, 35, None, lambda tokens: seen.extend(tokens) or True)
     assert len(seen) == 1
-    assert engine._prefix.checkpoints[-1].state == tuple(prompt)
+    assert engine._prefix.checkpoints[-1].state == (tuple(prompt), (True,) * len(prompt))
     with pytest.raises(RuntimeError, match="callback failed"):
         engine.generate(prompt, 35, None, lambda tokens: (_ for _ in ()).throw(RuntimeError("callback failed")))
     assert engine._owner is None
@@ -188,14 +201,26 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
         engine.generate(prompt, 3, None, lambda tokens: None)
 
 
-def test_cancelled_prefill_does_not_replace_previous_prefix(monkeypatch):
+@pytest.mark.parametrize("turn", [None, 11])
+def test_cancelled_prefill_does_not_replace_previous_prefix(monkeypatch, turn):
+    """Cancelled before or after this prompt's turn-marker checkpoint was taken: the previous entry stays."""
     engine = _engine(monkeypatch)
+    engine._turn = turn
     engine.generate([1, 2], 1, None, lambda tokens: None)
     before = engine._prefix
+    taken, checkpoint = [], engine._checkpoint
+    engine._checkpoint = lambda state, logits=None: taken.append(state.position) or checkpoint(state, logits)
     from tensorfold.server.cancellation import RequestCancelled
-    with pytest.raises(RequestCancelled):
-        engine.generate([3] * 260, 1, None, lambda tokens: None, progress=lambda *args: True)
+    with pytest.raises(RequestCancelled) as cancelled:
+        engine.generate([3] * 5 + [11] + [3] * 254, 1, None, lambda tokens: None,
+                        progress=lambda total, cached, done, ms: done > 5)
+    assert taken == ([] if turn is None else [5])
     assert engine._prefix is before
+    # The live traceback keeps the prefill frame: it must no longer hold the unpublished checkpoint.
+    tb = cancelled.value.__traceback__
+    while tb.tb_frame.f_code.co_name != "_prefill":
+        tb = tb.tb_next
+    assert tb.tb_frame.f_locals["kept"] == []
 
 
 def test_reentrant_callback_is_rejected_without_stranding_engine(monkeypatch):
@@ -263,5 +288,23 @@ def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(mo
     cold = []
     assert cold_engine.generate(second, 9, sampling, lambda t: cold.extend(t), stop_eos=False)["cached"] == 0
     assert warm == cold
+    # Checkpoints hold prompt rows only, at prefill positions; resumed and cold positions ran the same path.
+    assert [c.state for c in engine._prefix.checkpoints] == [(tuple(second[:p]), (True,) * p) for p in (8, 12)]
+    for e in (engine, cold_engine):
+        _assert_prompt_path(e, second)
+    assert engine._state.tokens == cold_engine._state.tokens
     # The whole-prompt checkpoint still serves an exact repeat (with its logits) and extensions.
     assert engine.generate(second, 9, sampling, lambda t: None, stop_eos=False)["cached"] == 12
+
+
+def test_turn_boundary_is_the_last_marker_past_the_cached_prefix_outside_visual_blocks(monkeypatch):
+    engine = _engine(monkeypatch)
+    turn = 11
+    prompt = [2, turn, 5, 5, 5, turn, 7, 7, turn, 3]
+    assert engine._turn_boundary(prompt, 0, ()) == 0            # no marker token: whole-prompt checkpoints only
+    engine._turn = turn
+    assert engine._turn_boundary(prompt, 0, ()) == 8
+    assert engine._turn_boundary(prompt, 8, ()) == 0            # nothing past the cached prefix to keep
+    assert engine._turn_boundary(prompt, 0, ((6, 10),)) == 0    # never inside a bidirectional visual block
+    assert engine._turn_boundary(prompt, 0, ((2, 8),)) == 8     # a block may end at the boundary
+    assert engine._turn_boundary([2, 5, 5], 0, ()) == 0

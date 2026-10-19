@@ -390,8 +390,9 @@ def check_geometry(config) -> None:
         raise ValueError("Gemma4 CUDA attention offsets exceed int32 at the checkpoint's position limit")
 
 
-# Four warps for both head widths: on sm_120/121 eight warps for the 512-wide full-attention tile were
-# slower (dev-01 32k: 425 vs 320 us per layer) despite fewer register spills.
+# Four warps for both head widths, one launch for every row count (row invariance): eight warps for the
+# 512-wide full-attention tile were slower despite fewer register spills (measured on sm_120, dev-01 32k:
+# 425 vs 320 us per layer; sm_121 not yet measured).
 LAUNCH = dict(num_warps=4, num_stages=1, enable_fp_fusion=False)
 
 

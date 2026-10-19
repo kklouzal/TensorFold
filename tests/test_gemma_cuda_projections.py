@@ -26,9 +26,10 @@ def dispatcher(native=True):
     return target
 
 
-def test_grouped_projections_keep_each_projections_bits_on_both_paths():
+@pytest.mark.parametrize("rows", [1, 37])
+def test_grouped_projections_keep_each_projections_bits_on_both_paths(rows):
     q, k, v = linear(512, 256, 1), linear(256, 256, 2), linear(256, 256, 3)
-    x = (torch.randn(37, 256, generator=torch.Generator().manual_seed(4)) * 3).to(torch.bfloat16).to(DEV)
+    x = (torch.randn(rows, 256, generator=torch.Generator().manual_seed(4)) * 3).to(torch.bfloat16).to(DEV)
     target = dispatcher()
     for prompt in (False, True):
         grouped = target._project(x, (q, k, v), prompt)
@@ -37,18 +38,20 @@ def test_grouped_projections_keep_each_projections_bits_on_both_paths():
     # Different original input multipliers cannot share one quantization: each projection runs alone.
     other = linear(256, 256, 5, inverse=50.000004)
     out = target._project(x, (q, other), True)
-    assert torch.equal(out[1], other.prefill(x))
+    assert torch.equal(out[0], q.prefill(x)) and torch.equal(out[1], other.prefill(x))
 
 
-def test_prompt_rows_do_not_depend_on_the_chunk():
-    q = linear(512, 256, 7)
-    x = (torch.randn(300, 256, generator=torch.Generator().manual_seed(8)) * 3).to(torch.bfloat16).to(DEV)
+@pytest.mark.parametrize("n,k", [(512, 256), (2816, 2112)])     # the served dense down: K = 33 blocks of 64
+def test_prompt_rows_do_not_depend_on_the_chunk(n, k):
+    q, p = linear(n, k, 7), linear(n, k, 9)
+    x = (torch.randn(300, k, generator=torch.Generator().manual_seed(8)) * 3).to(torch.bfloat16).to(DEV)
     target = dispatcher()
-    whole = target._project(x, (q,), True)[0]
-    parts = torch.cat([target._project(x[i:i + n], (q,), True)[0] for i, n in ((0, 128), (128, 44), (172, 128))])
-    assert torch.equal(whole, parts)
-    rows = target._project(x, (q,), False)[0]
-    assert torch.equal(rows, torch.cat([target._project(x[i:i + 5], (q,), False)[0] for i in range(0, 300, 5)]))
+    for lins in ((q,), (q, p)):                                  # alone and grouped (one shared quantization)
+        whole = target._project(x, lins, True)
+        parts = [target._project(x[i:i + m], lins, True) for i, m in ((0, 1), (1, 127), (128, 44), (172, 128))]
+        assert all(torch.equal(w, torch.cat([part[j] for part in parts])) for j, w in enumerate(whole))
+    lane = target._project(x, (q,), False)[0]
+    assert torch.equal(lane, torch.cat([target._project(x[i:i + 5], (q,), False)[0] for i in range(0, 300, 5)]))
 
 
 def test_mlx_affine_numerics_keep_one_kernel():

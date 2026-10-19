@@ -251,35 +251,41 @@ class Gemma4Engine:
         boundary = self._turn_boundary(prompt, cached, blocks)
         kept = []
         start = cached
-        while start < len(prompt):
-            self._check_open()
-            end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
-            if start < boundary < end:
-                end = boundary
-            ids = prompt[start:end]
-            embeddings = None
-            if encoded is not None:
-                visual = [(row, i) for i, row in enumerate(encoded.rows) if start <= row < end]
-                if visual:
-                    tokens = torch.tensor(ids, dtype=torch.int64, device=self.target.device)
-                    embeddings = self.target.embed_tokens(tokens)
-                    at = torch.tensor([row - start for row, _ in visual], device=self.target.device)
-                    take = torch.tensor([i for _, i in visual], device=self.target.device)
-                    embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
-            result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
-                                         output_logits=False, output_taps=self.head is not None,
-                                         trusted_tokens=True, prompt=True)
-            if self.head is not None:
-                self.head.append(self._draft, self._taps(result))
-            if end == len(prompt):
-                logits = self.target.project_logits(result.hidden[-1:])
-            elif end == boundary:
-                kept.append(self._checkpoint(state))
-            start = end
-            if progress is not None and progress(len(prompt), cached, start - cached,
-                                                 (time.perf_counter() - started) * 1000):
-                from tensorfold.server.cancellation import RequestCancelled
-                raise RequestCancelled("request cancelled during Gemma4 prefill")
+        try:
+            while start < len(prompt):
+                self._check_open()
+                end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
+                if start < boundary < end:
+                    end = boundary
+                ids = prompt[start:end]
+                embeddings = None
+                if encoded is not None:
+                    visual = [(row, i) for i, row in enumerate(encoded.rows) if start <= row < end]
+                    if visual:
+                        tokens = torch.tensor(ids, dtype=torch.int64, device=self.target.device)
+                        embeddings = self.target.embed_tokens(tokens)
+                        at = torch.tensor([row - start for row, _ in visual], device=self.target.device)
+                        take = torch.tensor([i for _, i in visual], device=self.target.device)
+                        embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
+                result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
+                                             output_logits=False, output_taps=self.head is not None,
+                                             trusted_tokens=True, prompt=True)
+                if self.head is not None:
+                    self.head.append(self._draft, self._taps(result))
+                if end == len(prompt):
+                    logits = self.target.project_logits(result.hidden[-1:])
+                elif end == boundary:
+                    kept.append(self._checkpoint(state))
+                start = end
+                if progress is not None and progress(len(prompt), cached, start - cached,
+                                                     (time.perf_counter() - started) * 1000):
+                    from tensorfold.server.cancellation import RequestCancelled
+                    raise RequestCancelled("request cancelled during Gemma4 prefill")
+        except BaseException:
+            # Nothing is published, and a traceback keeps this frame alive: release the unpublished
+            # checkpoint so it never coexists with the next prefill's beyond PREFIX_SNAPSHOTS.
+            kept.clear()
+            raise
         if logits is None:
             raise RuntimeError("Gemma4 prefill produced no next-token logits")
         if cached < len(prompt):
