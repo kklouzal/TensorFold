@@ -146,8 +146,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
                             "16 (default), or 8 (FP8) only with a BF16 tied target head. The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
-                       help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "
-                            "the draft model's block size)")
+                       help="maximum target tokens verified per draft block. CUDA Gemma4 DFlash: 2-128 "
+                            "(default 16); CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
