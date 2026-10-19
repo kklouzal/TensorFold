@@ -60,10 +60,11 @@ class Qwen27Engine:
         yarn = rope if rope.rope_type == "yarn" else None
         from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
-        from .draft_tree import draft_limit, draft_spans
+        from .draft_tree import draft_block, draft_limit, draft_spans
 
         draft_metadata = read_metadata_json(checkpoint_path(draft_dir, "config.json")) if draft_dir is not None else None
         companion_limit = draft_limit(draft_metadata) if draft_metadata is not None else None
+        trained = draft_block(draft_metadata) if draft_metadata is not None else None
         if companion_limit is not None and context is not None and context > companion_limit:
             raise ValueError(f"DFlash2 declares at most {companion_limit} positions; requested context {context} "
                              "exceeds its limit. Use --drafter none/--no-drafts for extended target-only context")
@@ -82,8 +83,7 @@ class Qwen27Engine:
             text = config(model_dir)
             each = max_rows if streams == 1 else 16
             configured = min(each, self.tree_rows) if streams == 1 and self.tree_rows is not None else each
-            trained = int(draft_metadata["dflash_config"].get("block_size", 8)) if draft_metadata is not None else each
-            sampled_each = max(1, min(configured, trained))
+            sampled_each = max(1, min(configured, trained if trained is not None else each))
             rows = sampled_each * streams
             sharded = tp if split_head else 1
             target = effective_workspace(rows, -(-int(text["vocab_size"]) // sharded), world=sharded)

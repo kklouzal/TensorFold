@@ -649,7 +649,8 @@ class MultiDecoder:
                     continue
                 snaps = [self.streams[sid].snap for sid, _ in group]
                 pendings = [pending for _, pending in group]
-                launched = (self.draft.launch_chains(snaps, pendings, self.max_rows - 1) if sampled else
+                launched = (self.draft.launch_chains(snaps, pendings, self.max_rows - 1,
+                                                    histories=[self.streams[sid].history for sid, _ in group]) if sampled else
                             self.draft.launch_blocks(snaps, pendings, self.max_rows - 1, block,
                                                      histories=[self.streams[sid].history for sid, _ in group]))
                 blocks.update({sid: value for (sid, _), value in zip(group, launched)})
@@ -703,6 +704,7 @@ class MultiDecoder:
                         chain_probabilities(scores, s.sampling, len(chain.tokens) + 1) if self.rank == 0 else None
                     result = verify(chain, p, s.sampling.seed, room=s.count - len(s.out), eos=self._ends(s)) \
                         if self.rank == 0 else None
+                    del p                         # do not overlap one stream's full p rows with the next extraction
                     sampled.append(RejectionResult(*result) if result is not None else None)
                 else:
                     sampled.append(_sample_split(scores, positions[k], samplings[k], self.rank,

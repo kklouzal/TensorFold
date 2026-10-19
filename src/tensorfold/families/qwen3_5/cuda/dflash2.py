@@ -15,7 +15,7 @@ from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from tensorfold.engine.exact_sampling import Sampling
 
 from .affine_memory import packed_draft
-from .draft_tree import POLICY, best_first, draft_limit, draft_spans
+from .draft_tree import POLICY, best_first, draft_block, draft_limit, draft_spans
 from .glue import embedding, swiglu
 from .draft_attention import append, block_attention
 from .qmm import group_sums
@@ -194,7 +194,7 @@ class DFlash2:
         self.eps = float(cfg["rms_norm_eps"])
         self.theta = float(cfg["rope_parameters"]["rope_theta"])
         self.mask_id = int(cfg["dflash_config"]["mask_token_id"])
-        self.trained = int(cfg["dflash_config"].get("block_size", 8))     # its training block: the planner's floor
+        self.trained = draft_block(cfg)     # its training block: the planner's floor
         self.group_size = int(cfg["dflash_config"]["conv_group_size"])
         self.layers = int(cfg["num_hidden_layers"])
         self.window = int(cfg["sliding_window"]) - 1
@@ -512,7 +512,7 @@ class DFlash2:
             if max_nodes > 0 else \
             [None] * len(snaps)
 
-    def launch_chains(self, snaps: list, pendings: list[int], max_nodes: int) -> list:
+    def launch_chains(self, snaps: list, pendings: list[int], max_nodes: int, histories=None) -> list:
         """A fixed logical stochastic block; its shape never depends on output room or another stream's budget."""
 
         return self._launch_bounded(snaps, pendings, min(self.trained, max_nodes + 1), stable=True) \

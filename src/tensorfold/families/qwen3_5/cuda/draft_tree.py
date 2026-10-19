@@ -34,6 +34,15 @@ def draft_limit(metadata: dict) -> int | None:
     return value
 
 
+def draft_block(metadata: dict) -> int:
+    """The declared training width controls stochastic shape/admission; only a positive exact integer is valid."""
+
+    value = metadata["dflash_config"].get("block_size", 8)
+    if type(value) is not int or value < 1:
+        raise ValueError("DFlash2 dflash_config.block_size must be a positive integer when declared")
+    return value
+
+
 def copy_packet(tokens, position):
     """Deterministic copy proposals have point-mass q, not the companion model's distribution."""
 

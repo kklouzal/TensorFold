@@ -58,6 +58,10 @@ class Draft:
         self.taps.append(len(taps))
 
 
+class ProbabilityOwner(list):
+    """Weak-referenceable owner of one extraction's immutable target rows."""
+
+
 def run(decode, count, seed=6, on_tokens=None, constraint=None):
     draft = Draft()
     w = NS(config=NS(eos=(99,)), norm=torch.ones(1))
@@ -82,6 +86,21 @@ def test_output_limit_preserves_the_same_rejection_prefix_and_canonical_q(dense,
         assert stats.drafted_rows >= 0 and draft.calls
         assert all(nodes == 3 for _, _, nodes in draft.calls)
         assert len(draft.taps) == len(draft.calls)
+
+
+def test_one_stream_releases_full_probability_rows_before_the_next_extraction(dense, monkeypatch):
+    policy = importlib.import_module("tensorfold.families.qwen3_5.cuda.draft_tree")
+    original, owners = policy.chain_probabilities, []
+
+    def tracked(*args, **kwargs):
+        assert all(owner() is None for owner in owners)
+        rows = ProbabilityOwner(original(*args, **kwargs))
+        owners.append(weakref.ref(rows))
+        return rows
+
+    monkeypatch.setattr(policy, "chain_probabilities", tracked)
+    run(dense, 17)
+    assert len(owners) > 1 and all(owner() is None for owner in owners)
 
 
 def test_yield_replays_the_original_request_without_resampling_another_logical_schedule(dense):
@@ -262,7 +281,7 @@ def test_sampled_multi_packet_survives_batch_deepest_and_greedy_allocation(dense
             dec.streams[1] = g
         launches = []
 
-        def launch(snaps, pendings, nodes, *, events=launches):
+        def launch(snaps, pendings, nodes, *, histories=None, events=launches):
             events.append((list(snaps), list(pendings), nodes))
             return list(snaps)
 
@@ -293,7 +312,7 @@ def test_sampled_multi_packet_survives_batch_deepest_and_greedy_allocation(dense
 def test_two_rank_split_head_agrees_on_rejection_when_only_rank_zero_has_a_companion(dense, monkeypatch):
     tp = importlib.import_module("tensorfold.families.qwen3_5.cuda.decode_tp")
     policy = importlib.import_module("tensorfold.families.qwen3_5.cuda.draft_tree")
-    broadcasts, sent, extraction = queue.Queue(), [], []
+    broadcasts, sent, extraction, owners = queue.Queue(), [], [], {0: [], 1: []}
     monkeypatch.setattr(tp.dist, "barrier", lambda: None)
     monkeypatch.setattr(tp, "split_sampling_plan", lambda width, device, rank: NS(rank=rank))
     monkeypatch.setattr(tp, "_sample_split", lambda *a, **k: pytest.fail("a sampled rank chose coupled collectives"))
@@ -309,9 +328,12 @@ def test_two_rank_split_head_agrees_on_rejection_when_only_rank_zero_has_a_compa
     monkeypatch.setattr(tp, "_share", share)
 
     def probabilities(logits, sampling, rows, *, plan=None):
+        assert all(owner() is None for owner in owners[plan.rank])
         extraction.append((plan.rank, logits.shape[0]))
         p = ProbabilityRow([100, 101], [.3, .7])
-        return [p] * logits.shape[0] + [None] * (rows - logits.shape[0])
+        result = ProbabilityOwner([p] * logits.shape[0] + [None] * (rows - logits.shape[0]))
+        owners[plan.rank].append(weakref.ref(result))
+        return result
 
     monkeypatch.setattr(policy, "chain_probabilities", probabilities)
 
@@ -352,3 +374,65 @@ def test_two_rank_split_head_agrees_on_rejection_when_only_rank_zero_has_a_compa
     assert len(results[0].tokens) == 11 and set(results[0].tokens) <= {100, 101}
     assert states[0].pos == states[1].pos
     assert sorted(n for rank, n in extraction if rank == 0) == sorted(n for rank, n in extraction if rank == 1)
+    assert all(owner() is None for rank in owners.values() for owner in rank)
+
+
+def test_multi_qwen36_sampled_history_identity_and_probability_owner_lifetimes(dense, monkeypatch):
+    """Actual Q36 launch/finish and shared Chains; only device block/target math is a CPU provider."""
+    multi = importlib.import_module("tensorfold.families.qwen3_5.cuda.multi")
+    qwen36 = importlib.import_module("tensorfold.families.qwen3_5_moe.cuda.dflash")
+    from tensorfold.cuda.speculative import Chains
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.engine.penalties import History, Penalties
+
+    draft = qwen36.DFlash.__new__(qwen36.DFlash)
+    draft.trained, draft.block, draft.window, draft.stop_score = 4, 4, 64, 1e9
+    launched, owners = [], []
+
+    def device_blocks(snaps, pendings, nodes, block=None, histories=None, *, sampled=False):
+        rows = min(block or draft.block, nodes + 1) - 1
+        logits = torch.stack([torch.arange(32).float() / 10 + pending / 100
+                              for pending in pendings for _ in range(rows)])
+        packet = Chains(logits, histories, rows, sampled=sampled)
+        launched.append((sampled, list(histories), list(snaps), packet))
+        return [(packet, i) for i in range(len(snaps))]
+
+    draft.launch_blocks = device_blocks
+    dec = multi.MultiDecoder.__new__(multi.MultiDecoder)
+    dec.w, dec.max_rows, dec.costs, dec.overhead = None, 4, None, (0, 0)
+    dec.rank, dec.world, dec.split, dec.drafts, dec.device, dec.depth = 0, 1, False, True, None, False
+    dec.draft, dec.eos, dec.streams = draft, (99,), {}
+    histories = []
+    for sid, sampling in enumerate((Sampling(6), None, Sampling(1234, .7, 0, .9))):
+        s = Stream([2, 3], 20, sampling, stop_eos=False)
+        s.st, s.snap, s.out = NS(pos=10), (None, None, 3, 10), [1]
+        s.history = History(Penalties(presence=.2 + .4 * sid, frequency=.1, repetition=1.2), s.prompt)
+        s.history.extend(s.out)
+        histories.append(s.history)
+        dec.streams[sid] = s
+
+    def forward(w, windows, **kwargs):
+        starts = [0]
+        for tokens, _, _ in windows:
+            starts.append(starts[-1] + len(tokens))
+        logits = torch.arange(32).float()[None].repeat(starts[-1], 1) / 10
+        return logits, None, None, starts
+
+    monkeypatch.setattr(multi, "multi_tree_forward", forward)
+    original = multi.chain_probabilities
+
+    def probabilities(*args, **kwargs):
+        assert all(owner() is None for owner in owners)
+        result = ProbabilityOwner(original(*args, **kwargs))
+        owners.append(weakref.ref(result))
+        return result
+
+    monkeypatch.setattr(multi, "chain_probabilities", probabilities)
+    plan = [(sid, multi.TREE if sid == 1 else multi.CHAIN, 1, 11) for sid in dec.streams]
+    wins, _, _, _, results = dec._verify(plan, {})
+    assert len(launched) == 2
+    assert launched[0][0] is False and launched[0][1] == [histories[1]]
+    assert launched[1][0] is True and all(a is b for a, b in zip(launched[1][1], (histories[0], histories[2])))
+    assert all(len(tokens) == 4 for tokens, _ in wins)
+    assert isinstance(results[0], multi.RejectionResult) and isinstance(results[2], multi.RejectionResult)
+    assert len(owners) == 2 and all(owner() is None for owner in owners)

@@ -323,6 +323,8 @@ def decode_tp(w: Weights, st: State, prompt: Sequence[int], pending: int, count:
                 path, terminal = _accept(window, parents, sampled, count - len(out), eos, stop_eos)
             stages["sample"] += time.perf_counter() - stage
             stage = time.perf_counter()
+        if rejecting:
+            del probability                    # followers completed their collective; only path/terminal survive
         path = _share(path, rank, device)
         if constraint is not None:                  # rank 1 knows the kept drafts now, the last token next round
             constraint.advance([window[r] for r in path[1:]] + ([terminal] if rank == 0 else []))

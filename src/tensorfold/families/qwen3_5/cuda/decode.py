@@ -335,6 +335,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             probability = chain_probabilities(logits, sampling, len(chain.tokens) + 1)
             path, terminal = verify(chain, probability, sampling.seed, room=count - len(out),
                                     eos=w.config.eos if stop_eos else ())
+            del probability                    # complete host p rows are dead before the next extraction
             stop = "eos" if stop_eos and terminal in w.config.eos else "rejection"
         else:
             sampled = sample_rows(logits, [st.pos + d + 1 for d in depths], sampling)

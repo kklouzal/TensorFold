@@ -72,6 +72,26 @@ def test_target_only_context_does_not_borrow_a_companion_bound(startup):
         made.close()
 
 
+@pytest.mark.parametrize("value", [None, True, False, 0, -1, 1.5, "8"])
+def test_invalid_declared_training_block_refuses_before_device_or_weights(startup, value):
+    directory, _, events, options, _ = startup
+    draft = companion(directory, 32)
+    metadata = json.loads((draft / "config.json").read_text())
+    metadata["dflash_config"]["block_size"] = value
+    (draft / "config.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="dflash_config.block_size.*positive integer"):
+        Qwen27Engine(directory, draft)
+    assert events == options == []
+
+
+@pytest.mark.parametrize("value", [1, 2, 8, 257, 1 << 80])
+def test_training_block_has_no_invented_upper_limit_and_absent_keeps_original_default(value):
+    from tensorfold.families.qwen3_5.cuda.draft_tree import draft_block
+
+    assert draft_block({"dflash_config": {"block_size": value}}) == value
+    assert draft_block({"dflash_config": {}}) == 8
+
+
 @pytest.mark.parametrize("streams", [1, 4])
 def test_workspace_uses_reachable_fixed_stochastic_rows_and_preserves_map_loading_overlap(startup, monkeypatch, streams):
     import torch
