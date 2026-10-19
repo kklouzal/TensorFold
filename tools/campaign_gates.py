@@ -20,6 +20,7 @@ tool or server, never a verdict: status "error" with the reason, gates already r
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 from pathlib import Path
 import random
@@ -28,8 +29,9 @@ import time
 import traceback
 
 if sys.version_info < (3, 11):
-    sys.exit(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
-             "TensorFold's tools use PEP 604 unions. Try: python3.12 tools/campaign_gates.py ...")
+    print(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
+          "TensorFold's tools use PEP 604 unions. Try: python3.12 tools/campaign_gates.py ...", file=sys.stderr)
+    sys.exit(4)                                     # an error, never a gate verdict
 
 if __package__:
     from .benchmark_output import write_json
@@ -568,33 +570,34 @@ def main() -> int:
     ap.add_argument("--allow-greedy-identity-failure", action="store_true",
                     help="report drafted-vs-serial identity without a verdict")
     args = ap.parse_args()
-    Progress.configure(args.progress)
-    url = args.url.rstrip("/")
-    profile = json.loads(Path(args.profile).read_text())
     chosen = list(GATES) if args.gate == "all" else [args.gate]
     if "needle" in chosen and not args.corpus:
         ap.error("needle needs --corpus")
     if any(g in chosen for g in ("determinism", "identity")) and not args.prompts:
         ap.error("determinism and identity need --prompts")
-    result = {"version": 1, "url": url, "model": profile["model"], "profile_sha256": file_sha256(args.profile),
-              "tool_sha256": {Path(f).name: file_sha256(f)
-                              for f in (__file__, str(Path(__file__).with_name("campaign_bench.py")))},
-              "source_revision": None, "args": vars(args), "gates": {}}
-    try:
-        result["source_revision"] = get_json(url + "/v1/stats").get("server", {}).get("source_revision")
+    url = args.url.rstrip("/")
+    result = {"version": 1, "url": url, "args": vars(args), "gates": {}}
+    try:                                # from here on any exception is an error result (exit 4), never a verdict
+        Progress.configure(args.progress)
+        profile = json.loads(Path(args.profile).read_text())
+        result.update(model=profile["model"], profile_sha256=file_sha256(args.profile),
+                      tool_sha256={Path(f).name: file_sha256(f)
+                                   for f in (__file__, str(Path(__file__).with_name("campaign_bench.py")))},
+                      source_revision=get_json(url + "/v1/stats").get("server", {}).get("source_revision"))
         for name in chosen:
             result["gates"][name] = GATES[name](url, profile, args)
             write_json(args.out, result)
-    except Exception as error:          # any refusal or tool/server failure is an error result, not a verdict
+        statuses = {name: g["status"] for name, g in result["gates"].items()}
+        result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()
+                            else "pass" if "pass" in statuses.values() else "report")
+        write_json(args.out, result)
+    except Exception as error:          # a refusal or a tool/server failure, gates already run kept
         traceback.print_exc()
         result.update(status="error", error=f"{type(error).__name__}: {error}")
-        write_json(args.out, result)
+        with contextlib.suppress(OSError):              # the record is best effort; the exit status is the contract
+            write_json(args.out, result)
         print(json.dumps({"status": "error", "error": result["error"]}), flush=True)
         return 4
-    statuses = {name: g["status"] for name, g in result["gates"].items()}
-    result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()
-                        else "pass" if "pass" in statuses.values() else "report")
-    write_json(args.out, result)
     print(json.dumps({"status": result["status"], "gates": statuses}), flush=True)
     return {"fail": 1, "incomplete": 3}.get(result["status"], 0)
 
