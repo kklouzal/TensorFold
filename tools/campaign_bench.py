@@ -185,15 +185,24 @@ class HotGate:
         if cls.path is None:
             return 0.0
         began = time.monotonic()
-        while cls.path.exists():
-            if time.monotonic() - began > cls.max_s:
+        while True:
+            try:
+                cls.path.stat()
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                raise RuntimeError(f"hot-state file unreadable: {type(error).__name__}: no new prompt") from error
+            remaining = cls.max_s - (time.monotonic() - began)
+            if remaining <= 0:
                 try:
                     reason = cls.path.read_text().strip()
-                except OSError:                     # cooled (or rewritten) between the check and the read
-                    continue
+                except FileNotFoundError:            # cooled between the existence check and the read
+                    break
+                except OSError as error:
+                    reason = f"hot-state reason unreadable: {type(error).__name__}"
                 raise RuntimeError(f"the host stayed hot for {cls.max_s:.0f} s ({reason}): no new prompt")
             Progress.update("idle")
-            time.sleep(1)
+            time.sleep(min(1.0, remaining))
         waited = time.monotonic() - began
         cls.waited_s += waited
         return waited
