@@ -18,6 +18,8 @@ The checkpoint's chat template and generation metadata remain authoritative. The
 
 ## Original AEON NVFP4 on CUDA
 
+The current integration candidate captures text decode/verification graphs over persistent KV. Startup prepares the smallest attention grid for each width; larger grids capture on first use. Prefill and visual-block forwards remain eager. Native full-context, quality and HTTP performance qualification of this composition under VBoost 0 is pending; retain the source/image scope of the historical results below.
+
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` stores individually calibrated compressed-tensors NVFP4 projections. TensorFold preserves the original FP4 code/block-scale bytes and input/weight global calibrations. It executes the declared FP4 activation math on SM12.x, with bounded GPU packing during load. The original BF16 tied embedding/head, custom BF16 router weights, vision tower and projector remain unquantized. `--precision full` is refused for this path rather than silently changing the declared activation math.
 
 Use a complete local NVFP4 snapshot and the same BF16 DFlash companion:
