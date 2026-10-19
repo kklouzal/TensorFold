@@ -1,0 +1,129 @@
+{
+  "schema": 1,
+  "date": "2026-10-19",
+  "status": "Stopped at verified checkpoint; qualification incomplete",
+  "source_revision": "808408aae9005e485667cb222fea6b3a33ab2164",
+  "source_uid": "342eab2c94bab32c80275fede08261d708828df56c002dc308bdd8a38a6c84b1",
+  "installed_audits": [
+    {
+      "architecture": "arm64",
+      "target": "runtime",
+      "image_id": "sha256:295e52ec76a926a18e4a53b30982c392c22f39c70ce7017d5fb58000a48f874c",
+      "exit": 0,
+      "matched": 563,
+      "baked_files_matched": 579,
+      "wheel_sha256": "e7b971a995904aa7fc89c950b5ef11705cebfa08b6888717e9bed5fe6fcd77da"
+    },
+    {
+      "architecture": "arm64",
+      "target": "verification",
+      "image_id": "sha256:5390bd1b44f16e23b3c6f9e252e4e5cded4aefb87c8eb176f09c3fd1ab23b428",
+      "exit": 0,
+      "matched": 563,
+      "baked_files_matched": 1414,
+      "wheel_sha256": "e7b971a995904aa7fc89c950b5ef11705cebfa08b6888717e9bed5fe6fcd77da"
+    },
+    {
+      "architecture": "amd64",
+      "target": "runtime",
+      "image_id": "sha256:73a1f042904a65cc5c05a0ee219d22a61815a9f76ebdf74af66c0837e0153bab",
+      "exit": 0,
+      "matched": 563,
+      "baked_files_matched": 579,
+      "wheel_sha256": "48700efa5fc8a78a7721b4e2c31615b2f0ded2c135657c18a56794abfb4d7657"
+    },
+    {
+      "architecture": "amd64",
+      "target": "verification",
+      "image_id": "sha256:509b41351f2fd3ac20260b446d869bc58639d9a21a4101c6176e84f76edeac54",
+      "exit": 0,
+      "matched": 563,
+      "baked_files_matched": 1414,
+      "wheel_sha256": "48700efa5fc8a78a7721b4e2c31615b2f0ded2c135657c18a56794abfb4d7657"
+    }
+  ],
+  "installed_arm64_cpu": {
+    "passed": 10357,
+    "skipped": 206,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_s": 549.52,
+    "source": "808408aae9005e485667cb222fea6b3a33ab2164",
+    "execution": "Baked tests, installed site-packages, GPUvoid, no source overlay"
+  },
+  "gb10_native_component": {
+    "source": "5cc6dbe388895dcd219e1e0de464b3ac3623c60a",
+    "image": "sha256:fab0f23f7988022b76062bc7fc19129b351db01b616f0a2eace174223d49c8cf",
+    "passed": 426,
+    "skipped": 4,
+    "deselected_checkpoint_cases": 13,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_s": 330.652,
+    "skip_reasons": [
+      "Two deliberately disabled device-trap cases",
+      "Real checkpoint not mounted for one server-error test",
+      "Two-process NCCL unavailable in the one-GPU run"
+    ],
+    "source_reuse": "All production/native-test/pin bytes equal808408aa; only tests/test_copy_drafts.py differs. Actual metadata source identity remains5cc6dbe3.",
+    "guard_summary": {
+      "gpu_c_max": 52.0,
+      "zone_c_max": 76.4,
+      "tlimit_c_min": 41.0,
+      "mem_mib_min": 106932,
+      "power_w_max": 21.12,
+      "power_w_mean_loaded": null,
+      "loaded_s": 0.0,
+      "gpu_c_slope_10s": 0.0,
+      "zone_c_slope_10s": -5.3,
+      "zone_minus_gpu_c_loaded": null,
+      "sw_power_cap_s": 1.0,
+      "sw_thermal_s": 0.0,
+      "hot_s": 1.0,
+      "hot_flag_cleanup_error": null,
+      "dropped_lines": {}
+    },
+    "owned_producer_and_container_retired": true,
+    "performance_claim": false
+  },
+  "interrupted_at_user_request": [
+    "AMD64 full CPU:5939 passed/147 skipped before interruption; incomplete",
+    "Desktop native component run: incomplete",
+    "AMD64 candidate build canceled; completed candidate builds remain unqualified"
+  ],
+  "tooling_source": "a896321b5803c2b64855c2f99d7e29299c4b8e5d",
+  "tooling_cpu": {
+    "passed": 490,
+    "explicit_curl_prerequisite_deselections": 51,
+    "skipped": 0
+  },
+  "unselected_source_reviewed_candidates": {
+    "vocabulary": "08748f9b8498b8101d4a429157c5ab7d11a559d0",
+    "common": "634c1f81ba7669ca94b2b359cd113096ece66a78",
+    "affine4_reference": "dfeb3fd8cd00638c70d1722d8c4014b87e9a69d7"
+  },
+  "remaining": [
+    "Complete AMD64 CPU and desktop native gates",
+    "Remaining installed checkpoint/component cases",
+    "Full-model API and proposal-variant quality",
+    "Required full-v2 numerical and long-context quality gates",
+    "Comparative performance selection and fixed statistics study",
+    "Apple native execution; additional hardware where unavailable"
+  ],
+  "release": {
+    "promoted_to_maintained_branch": false,
+    "pushed": false,
+    "new_runtime_deployed": false,
+    "gb10_production_hold_retained": true
+  },
+  "private_evidence_sha256": {
+    "infra/installed-audits/final-808408aa/final-verification.json": "ae464a8dca3df7fab63816a614d2d9213f00d87a46562e707de4e51b00ca686a",
+    "checks/installed-cpu-arm64-final-808408aa/tests.xml": "1ab47aa0fb70182c7c009c99ae1628aa2987b8c89be63f6f1e3cd8d791138da3",
+    "checks/installed-cpu-arm64-final-808408aa/command.json": "25e1cb13933497b534abfdf4f7af78af0c63a557d09be06dbe7535a36caaeca9",
+    "gb10/installed-native-core-5cc6dbe3-02/pytest/tests.xml": "69e6d8ef977f00e82822996f6c87f93da3c4752ec8bf1933c99c244b58327a4c",
+    "gb10/installed-native-core-5cc6dbe3-02/native/report.json": "b324430f053f868d9656234ab4e1916c4ac3b52c06e60c8d23f04bc1b3ec8ae6",
+    "gb10/installed-native-core-5cc6dbe3-02/guard/guard.json": "a65ac163eae093a445b4ef6facbee7ce2531338c27f639180c7821dc971f6076",
+    "infra/final-captures/808408aa/5cc-to-808-comparison.json": "da62e3f8867992d81a5a3e5ff54c24f148d87753bdef0fa1c61ca61c938cfa3c",
+    "infra/canonical-integration/a896-final-verification.json": "23802365070071de0c83ff1c769feeb0e536bd998205bf2a2d2d1f13d7eae6dd"
+  }
+}

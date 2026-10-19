@@ -1,5 +1,7 @@
 # TensorFold fork
 
+**Verification checkpoint (2026-10-19):** source `808408aa` passed all four ARM64/AMD64 installed-image audits and 10,357 installed ARM64 CPU tests (206 documented skips). The GB10 component batch passed 426 tests with four skips on `5cc6dbe3`, whose production and native-test bytes equal `808408aa`. AMD64 CPU and desktop native runs were interrupted when work stopped; full-model API, context, quality and performance qualification remain pending. [Exact checkpoint and limits](docs/verification-rejection-checkpoint-20261019.json).
+
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
 and determinism probes hold a rendered next turn whose reply cannot fit the served
 context. Diagnostic substring recall remains separate from exact answer quality;

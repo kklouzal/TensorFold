@@ -58,6 +58,14 @@ with all token comparisons matching but no demonstrated cold repeat.
 
 ## Evidence and remaining gates
 
+The [2026-10-19 stopping checkpoint](verification-rejection-checkpoint-20261019.json)
+records source `808408aa`: all four installed-image audits passed, and its full
+installed ARM64 CPU suite passed 10,357 tests with 206 documented skips. The GB10
+component run passed 426 tests with four skips on `5cc6dbe3`; only a CPU test
+fixture differs between that source and `808408aa`. AMD64 CPU and desktop native
+execution stopped before completion. These checks do not establish full-model
+API, long-context quality, comparative performance or Apple qualification.
+
 Pre-migration source `cefd26d30b9bc653b0a3a03d44b28747579372e8` passed
 10,164 installed CPU tests on each of ARM64 and AMD64, with 204 documented skips
 per host. Its installed GB10 component batch passed 303 tests, with two deliberate
