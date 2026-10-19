@@ -19,7 +19,7 @@ def _store(kv_heads, capacity, gen):
     return NS(k=k, v=torch.randn(k.shape, generator=gen, device="cuda").bfloat16())
 
 
-def _reference(q, k, v, stores, lengths, layer, length, scale):
+def _reference(q, k, v, stores, lengths, layer, length, scale, window=None):
     """Each stream's block over [its committed rows | its own block rows], noncausal, in float64, and each output's
     error bound from the arithmetic the PTX ISA guarantees (bf16 mma: products exact in FP32, accumulation at least
     single precision in an unspecified order, so a sum of m terms errs by at most about m * 2**-24 of its absolute
@@ -32,15 +32,16 @@ def _reference(q, k, v, stores, lengths, layer, length, scale):
     group, outs, bounds = q.shape[0] // k.shape[0], [], []
     for j, (st, s) in enumerate(zip(stores, lengths)):
         rows = slice(j * length, (j + 1) * length)
-        kk = torch.cat((st.k[layer, :, :s], k[:, rows]), 1).double().repeat_interleave(group, 0)
-        vv = torch.cat((st.v[layer, :, :s], v[:, rows]), 1).double().repeat_interleave(group, 0)
+        lo = 0 if window is None else max(0, s - window) // CH * CH        # the window's first attended key
+        kk = torch.cat((st.k[layer, :, lo:s], k[:, rows]), 1).double().repeat_interleave(group, 0)
+        vv = torch.cat((st.v[layer, :, lo:s], v[:, rows]), 1).double().repeat_interleave(group, 0)
         qq = q[:, rows].double()
         att = ((qq @ kk.transpose(1, 2)) * scale).softmax(-1)
         out = (att @ vv).transpose(0, 1).reshape(length, -1)
         spread = (att @ vv.abs()).transpose(0, 1).reshape(length, -1)
         m = scale * (qq.abs() @ kk.abs().transpose(1, 2)).max().item()
         outs.append(out)
-        bounds.append(2**-8 * (spread + out.abs()) + 2**-22 * (s + length + 2 * (D + 3) * m + 128) * spread)
+        bounds.append(2**-8 * (spread + out.abs()) + 2**-22 * (s - lo + length + 2 * (D + 3) * m + 128) * spread)
     return torch.cat(outs), torch.cat(bounds)
 
 
@@ -51,8 +52,9 @@ def _inputs(heads, kv_heads, length, streams, gen):
     return q, k, v
 
 
-def _run(q, k, v, stores, lengths, layer, length, kv_heads):
-    launch = ca.Round(stores, lengths, heads=q.shape[0], kv_heads=kv_heads, dim=D, length=length, device=q.device)
+def _run(q, k, v, stores, lengths, layer, length, kv_heads, window=None):
+    launch = ca.Round(stores, lengths, heads=q.shape[0], kv_heads=kv_heads, dim=D, length=length, device=q.device,
+                      window=window)
     return ca.block_attention(q, k, v, launch, layer, D ** -0.5)
 
 
@@ -96,3 +98,32 @@ def test_repeated_launches_are_deterministic():
     first = _run(q, k, v, stores, lengths, 2, 16, 4)
     for _ in range(3):
         assert torch.equal(_run(q, k, v, stores, lengths, 2, 16, 4), first)
+
+
+@pytest.mark.parametrize("window", [CH, 2 * CH])
+def test_a_window_attends_the_recent_chunks_exactly_and_by_length_alone(window):
+    """Keys from chunk max(0, n - window) // CH on, within the same float64 bound; a stream's bits depend only on its
+    length and the window (alone, among others, in a larger store)."""
+    gen = torch.Generator(device="cuda").manual_seed(window)
+    heads, kv_heads, length = 32, 4, 16
+    lengths = [5, CH, CH + 1, 2 * CH + 17, 3 * CH + 5]
+    stores = [_store(kv_heads, n + 7, gen) for n in lengths]
+    q, k, v = _inputs(heads, kv_heads, length, len(lengths), gen)
+    out = _run(q, k, v, stores, lengths, 1, length, kv_heads, window)
+    ref, bound = _reference(q, k, v, stores, lengths, 1, length, D ** -0.5, window)
+    assert ((out.double() - ref).abs() <= bound).all()
+    full = _run(q, k, v, stores, lengths, 1, length, kv_heads)
+    rows = slice(4 * length, 5 * length)                    # the longest stream sees fewer keys with the window
+    assert not torch.equal(out[rows], full[rows])
+    for j in range(len(lengths)):
+        rows = slice(j * length, (j + 1) * length)
+        alone = _run(q[:, rows].contiguous(), k[:, rows].contiguous(), v[:, rows].contiguous(), [stores[j]],
+                     lengths[j:j + 1], 1, length, kv_heads, window)
+        assert torch.equal(out[rows], alone), j
+
+
+def test_a_window_must_be_whole_chunks():
+    gen = torch.Generator(device="cuda").manual_seed(1)
+    for bad in (0, CH - 1, CH + 64, 1.5 * CH):
+        with pytest.raises(ValueError, match="window"):
+            ca.Round([_store(4, 8, gen)], [4], heads=32, kv_heads=4, dim=D, length=16, device="cuda", window=bad)

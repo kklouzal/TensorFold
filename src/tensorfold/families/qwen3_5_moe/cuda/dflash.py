@@ -31,7 +31,7 @@ from tensorfold.families.qwen3_5.cuda.glue import embedding
 from tensorfold.families.qwen3_5.cuda.qmm_fast import rows as tiled_rows, tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
-from ..dflash_metadata import QUERY_TILE, checked_headers, padded_block, positive, projection_groups
+from ..dflash_metadata import CONTEXT_CHUNK, QUERY_TILE, checked_headers, padded_block, positive, projection_groups
 from . import context_attention, draft_glue
 
 MIN_ROWS = 1024     # the smallest store capacity; capacities are MIN_ROWS * 2**k, capped at the admitted window
@@ -79,13 +79,14 @@ class DFlash:
     Otherwise an append that does not extend its lineage's latest rows copies the snapshot's rows into a new store,
     so concurrent streams resumed from one cached context never write each other's rows.
     ``stop_score``: a round's drafts end at the first row whose cumulative drafter score exceeds it (``STOP_SCORE``;
-    None proposes every row of the block).
+    None proposes every row of the block). ``context_window``: None attends every committed context key; else a
+    multiple of ``CONTEXT_CHUNK`` keeping the most recent ones (``context_attention``; proposals only).
     """
 
     world = 1
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, exclusive=False,
-                 stop_score=STOP_SCORE):
+                 stop_score=STOP_SCORE, context_window=None):
         if type(bits) is not int or bits not in (4, 16):
             raise ValueError("DFlash bits must be 16 or explicit proposal-only affine4")
         cfg, _ = checked_headers(draft_dir)
@@ -106,6 +107,10 @@ class DFlash:
                                        or not 0 <= stop_score < float("inf")):
             raise ValueError("DFlash proposal stop score must be a finite nonnegative number of nats, or None")
         self.stop_score = stop_score
+        if context_window is not None and (type(context_window) is not int or context_window <= 0
+                                           or context_window % CONTEXT_CHUNK):
+            raise ValueError(f"DFlash context window must be None or a positive multiple of {CONTEXT_CHUNK}")
+        self.context_window = context_window
         self.config, self.device, self.bits, self.exclusive = cfg, target.norm.device, bits, exclusive
         self.hidden, self.layers, self.trained = cfg.hidden, cfg.layers, cfg.block
         self.tap_layers, self.mask_id = cfg.tap_layers, cfg.mask_id
@@ -283,7 +288,7 @@ class DFlash:
         cos, sin = self._rotary(positions)
         launch = context_attention.Round([snap[0][0] for snap in active], [snap[2] for snap in active],
                                          heads=cfg.heads, kv_heads=cfg.kv_heads, dim=cfg.head_dim, length=length,
-                                         device=self.device)
+                                         device=self.device, window=self.context_window)
         mlp = None
         for layer in range(self.layers):
             x, mlp = self._layer(layer, x, mlp, launch, cos, sin)

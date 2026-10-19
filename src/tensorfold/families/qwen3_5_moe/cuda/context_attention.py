@@ -8,6 +8,10 @@ Context keys are split at committed rows ``c * CHUNK``. One kernel reduces each 
 last to (row max, row sum, unnormalised output) partials; a second folds those partials in chunk order, then that
 last chunk's keys and the block's own keys, and normalises. The partition depends only on each key's committed row,
 so a stream's result never depends on how its context was appended, on the other streams, or on its capacity.
+
+A ``window`` (a multiple of CHUNK) limits a stream to its most recent committed chunks: attention starts at chunk
+``max(0, length - window) // CHUNK``, so between ``window`` and ``window + CHUNK - 1`` committed keys stay visible
+(proposals only; still a function of the stream's length alone).
 """
 from __future__ import annotations
 
@@ -40,13 +44,14 @@ def _query_tile(Q, j, g, tile, R, G: tl.constexpr, L: tl.constexpr, LP: tl.const
 
 @triton.jit
 def _context(META, j, g, layer, HKV: tl.constexpr, D: tl.constexpr):
-    """Stream j's layer-``layer`` key/value rows of KV head g, and its committed length."""
-    capacity = tl.load(META + 4 * j + 2)
-    s = tl.load(META + 4 * j + 3)
+    """Stream j's layer-``layer`` key/value rows of KV head g, its committed length and first attended chunk."""
+    capacity = tl.load(META + 5 * j + 2)
+    s = tl.load(META + 5 * j + 3)
+    first = tl.load(META + 5 * j + 4)
     offset = (layer * HKV + g).to(tl.int64) * capacity * D
-    kc = tl.multiple_of(tl.load(META + 4 * j).to(tl.pointer_type(tl.bfloat16)), 16) + offset
-    vc = tl.multiple_of(tl.load(META + 4 * j + 1).to(tl.pointer_type(tl.bfloat16)), 16) + offset
-    return kc, vc, s
+    kc = tl.multiple_of(tl.load(META + 5 * j).to(tl.pointer_type(tl.bfloat16)), 16) + offset
+    vc = tl.multiple_of(tl.load(META + 5 * j + 1).to(tl.pointer_type(tl.bfloat16)), 16) + offset
+    return kc, vc, s, first
 
 
 @triton.jit
@@ -80,13 +85,13 @@ def _keys(q, kc, vc, start, stop, s, m_i, l_i, acc, scale, D: tl.constexpr, BN: 
 def _partials(Q, META, PM, PL, PO, scale, layer, R, PARTS,
               G: tl.constexpr, HKV: tl.constexpr, L: tl.constexpr, LP: tl.constexpr, D: tl.constexpr,
               BN: tl.constexpr, CH: tl.constexpr, BM: tl.constexpr, TILES: tl.constexpr):
-    """Program (stream x chunk, kv head, query tile): one complete chunk that is not the stream's last."""
+    """Program (stream x chunk, kv head, query tile): one attended complete chunk that is not the stream's last."""
     j = tl.program_id(0) // PARTS
     c = tl.program_id(0) % PARTS
     g = tl.program_id(1)
     tile = tl.program_id(2)
-    kc, vc, s = _context(META, j, g, layer, HKV, D)
-    if c >= (s + CH - 1) // CH - 1:
+    kc, vc, s, first = _context(META, j, g, layer, HKV, D)
+    if c < first or c >= (s + CH - 1) // CH - 1:
         return
     q = _query_tile(Q, j, g, tile, R, G, L, LP, D, BM)[0]
     m_i = tl.full((BM,), float("-inf"), tl.float32)
@@ -107,7 +112,7 @@ def _finish(Q, KB, VB, META, PM, PL, PO, O, scale, layer, R, PARTS,
     j = tl.program_id(0)
     g = tl.program_id(1)
     tile = tl.program_id(2)
-    kc, vc, s = _context(META, j, g, layer, HKV, D)
+    kc, vc, s, first = _context(META, j, g, layer, HKV, D)
     q, head, live, qrow = _query_tile(Q, j, g, tile, R, G, L, LP, D, BM)
     d = tl.arange(0, D)
     m_i = tl.full((BM,), float("-inf"), tl.float32)
@@ -115,7 +120,7 @@ def _finish(Q, KB, VB, META, PM, PL, PO, O, scale, layer, R, PARTS,
     acc = tl.zeros((BM, D), tl.float32)
     chunks = (s + CH - 1) // CH
     base = ((j * HKV + g) * PARTS).to(tl.int64) * (TILES * BM) + tile * BM + tl.arange(0, BM)
-    for c in range(0, chunks - 1):
+    for c in range(first, chunks - 1):
         slot = base + c * (TILES * BM)
         m_c = tl.load(PM + slot)
         m_new = tl.maximum(m_i, m_c)
@@ -144,15 +149,19 @@ def _finish(Q, KB, VB, META, PM, PL, PO, O, scale, layer, R, PARTS,
 
 class Round:
     """One proposal round's launch state, shared by every drafter layer: the streams' context table (key store,
-    value store, capacity, committed length) as one int64 device copy, and the partial scratch for the most chunks
-    any stream has (reused layer after layer; each layer's finish has read it before the next writes)."""
+    value store, capacity, committed length, first attended chunk) as one int64 device copy, and the partial scratch
+    for the most chunks any stream has (reused layer after layer; each layer's finish has read it before the next
+    writes). ``window``: None attends every committed key, else a multiple of CHUNK (see the module docstring)."""
 
-    def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device):
+    def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device, window=None):
         if not stores or len(stores) != len(lengths) or heads % kv_heads or length < 1:
             raise ValueError("context attention needs one store and committed length per stream")
+        if window is not None and (type(window) is not int or window <= 0 or window % CHUNK):
+            raise ValueError(f"a context attention window is a positive multiple of {CHUNK} keys")
         flat = []
         for store, n in zip(stores, lengths):
-            flat += [store.k.data_ptr(), store.v.data_ptr(), store.k.shape[2], n]
+            flat += [store.k.data_ptr(), store.v.data_ptr(), store.k.shape[2], n,
+                     0 if window is None else max(0, n - window) // CHUNK]
         self.table = torch.tensor(flat, dtype=torch.int64).pin_memory().to(device, non_blocking=True)
         self.streams, self.heads, self.kv_heads, self.dim, self.length = len(stores), heads, kv_heads, dim, length
         self.group, self.padded = heads // kv_heads, padded_block(length)

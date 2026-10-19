@@ -44,9 +44,9 @@ def rotate(x, positions, cfg, inv):
 
 
 class StoreRound:
-    def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device):
+    def __init__(self, stores, lengths, *, heads, kv_heads, dim, length, device, window=None):
         self.pairs, self.heads, self.kv_heads = list(zip(stores, lengths)), heads, kv_heads
-        self.dim, self.length = dim, length
+        self.dim, self.length, self.window = dim, length, window
 
 
 def store_attend(q, k, v, launch, layer, scale):
@@ -56,8 +56,9 @@ def store_attend(q, k, v, launch, layer, scale):
     result = []
     for i, (st, n) in enumerate(launch.pairs):
         low, high = i * length, (i + 1) * length
-        key = torch.cat([st.k[layer, :, :n], k[:, low:high]], 1)
-        value = torch.cat([st.v[layer, :, :n], v[:, low:high]], 1)
+        first = 0 if launch.window is None else max(0, n - launch.window) // dflash.CONTEXT_CHUNK * dflash.CONTEXT_CHUNK
+        key = torch.cat([st.k[layer, :, first:n], k[:, low:high]], 1)
+        value = torch.cat([st.v[layer, :, first:n], v[:, low:high]], 1)
         group = q.shape[0] // k.shape[0]
         key, value = key.repeat_interleave(group, 0), value.repeat_interleave(group, 0)
         probability = (q[:, low:high].float() @ key.float().transpose(-1, -2) * scale).softmax(-1)
@@ -630,3 +631,24 @@ def test_proposals_stop_where_the_drafters_cumulative_score_exceeds_the_cut(fixt
     for bad in (-1.0, float("inf"), float("nan"), True, "3"):
         with pytest.raises(ValueError, match="stop score"):
             dflash.DFlash(directory, target, context_limit=64, stop_score=bad)
+
+
+def test_the_context_window_reaches_each_round_and_is_validated(fixture, monkeypatch):
+    directory, _raw, _cfg, _arrays, target = fixture
+    rounds = []
+    original = dflash.context_attention.Round
+
+    def record(*a, **k):
+        launch = original(*a, **k)
+        rounds.append(launch.window)
+        return launch
+
+    monkeypatch.setattr(dflash.context_attention, "Round", record)
+    for window in (None, dflash.CONTEXT_CHUNK):
+        draft = dflash.DFlash(directory, target, context_limit=64, context_window=window)
+        draft.add_taps(torch.randn((3, 128), generator=torch.Generator().manual_seed(2)).bfloat16())
+        draft.finish_tree(draft.launch_block(2, 3), 3, 3)
+        assert rounds[-1] == window
+    for bad in (0, dflash.CONTEXT_CHUNK + 1, -dflash.CONTEXT_CHUNK, 4096.0, True):
+        with pytest.raises(ValueError, match="context window"):
+            dflash.DFlash(directory, target, context_limit=64, context_window=bad)
