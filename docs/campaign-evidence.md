@@ -1,5 +1,10 @@
 # Campaign evidence boundaries
 
+`campaign_kl.py dump` propagates the production CLI's nonzero result even after
+the scoring hook completed, and always restores its temporary serving hook.
+A written dump is not success if later CLI cleanup failed. Existing teacher-forced
+token sequences, statistics and numerical gate rules are unchanged.
+
 `campaign_bench.py run` retains the existing excluded warmup's `client` timings:
 `headers`, `first`, `last` and `done`, each in seconds from that request's
 submission, or null when unavailable. These use the existing monotonic timestamps
