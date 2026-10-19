@@ -551,6 +551,7 @@ def main() -> int:
     u.add_argument("eval")
     u.add_argument("out_dir")
     u.add_argument("--max-prompt-tokens", type=int, default=LONG_PREFILL_TOKENS)
+    u.add_argument("--out", help="also write the result summary here")
     k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
     k.add_argument("golden")
     k.add_argument("base")

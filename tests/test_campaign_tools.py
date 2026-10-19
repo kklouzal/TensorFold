@@ -773,3 +773,7 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     assert cut_meta["subset_of"]["golden_sha256"] == kl.file_sha256(str(tmp_path / "golden.npz"))
     assert json.loads((tmp_path / "out" / "eval.json").read_text())["subset_of"]["items"] == ["short"]
     assert "golden_dir" in json.loads((tmp_path / "out" / "golden" / "meta.json").read_text())
+    cli = __import__("subprocess").run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset",
+                                        str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"),
+                                        str(tmp_path / "cli"), "--max-prompt-tokens", "50"], capture_output=True)
+    assert cli.returncode == 0 and (tmp_path / "cli" / "golden" / "kl.npz").exists(), cli.stderr
