@@ -19,7 +19,7 @@ def clone_state(st: State) -> State:
     """Commits replace list entries; the attention list is shared, so a grow reaches every clone and frees the old."""
 
     other = object.__new__(State)
-    other.pos, other.limit = st.pos, st.limit
+    other.pos, other.limit, other.kv_owner = st.pos, st.limit, st.kv_owner
     other.rope_delta, other.room = st.rope_delta, st.room
     other.conv = st.conv.copy()
     other.rec = st.rec.copy()

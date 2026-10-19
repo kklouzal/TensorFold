@@ -82,9 +82,10 @@ def test_a_gb10_budget_evicts_nothing_today_keeps(tmp_path):
     assert room.cache.entries == before
 
 
-@pytest.mark.parametrize("gib,window", [(19.16, 39936), (100, 262144)])
+@pytest.mark.parametrize("gib,window", [(19.16, 41984), (100, 262144)])
 def test_one_live_window_is_admitted(gib, window, tmp_path):
-    """An RTX 4090's default budget admits a 40k window with DFlash2 (four copies gave 8,192); a GB10 its native one."""
+    """An RTX 4090's default budget admits a 41k window with DFlash2 (four copies gave 8,192, arenas' missing growth
+    copy adds 2,048 to the 39,936 a doubling cache left); a GB10 its native one."""
 
     folder, draft = target(tmp_path / "target"), drafter(tmp_path / "drafter")
     weights = capacity.estimate_weights(folder, weight_transform(folder, one_gpu=True))

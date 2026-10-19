@@ -42,12 +42,15 @@ def calibration_rows(streams: int, steps: bool = True) -> list[int]:
     return sorted({r for r in grid if r <= 16 * streams} | {16 * streams})
 
 
-def private(st: State, rows: int) -> State:
-    """A copy of a committed state with its own attention caches of ``rows`` rows (rows below ``pos`` copied in)."""
+def private(st: State, rows: int, most: int | None = None) -> State:
+    """A copy of a committed state with its own attention caches: reserved for ``most`` rows (default ``rows``), the
+    first ``rows`` mapped now (rows below ``pos`` copied in)."""
 
     other = clone_state(st)
-    other.kv = list(st.kv)                            # its own list: the buffers reserved next are this stream's
-    reserve(other, rows)                              # new buffers now: prefill never grows or reallocates them
+    other.kv = list(st.kv)                            # its own list and owner: the caches reserved next are this
+    other.kv_owner = object()                         # stream's (moved into its arenas; prefill never moves them)
+    other.limit = rows if most is None else most
+    reserve(other, rows)
     return other
 
 
@@ -240,7 +243,7 @@ class MultiDecoder:
     def _queue(self, s: Stream, hit) -> None:
         drafter = self.draft if s.draft and self.drafts else None
         rows = self._most(s) if self.memory_gate is None else self._first(s)
-        state = private(hit[1] if hit else State(self.w), rows)
+        state = private(hit[1] if hit else State(self.w), rows, self._most(s))
         s.st = state
         s.snap = None if drafter is None else own(hit[2]) if hit and hit[2] is not None else \
             ([None] * drafter.layers, [None] * drafter.layers, 0, 0)
@@ -280,8 +283,7 @@ class MultiDecoder:
                     break                           # startup fitted one stream's whole window
                 return False
             torch.cuda.empty_cache()
-        reserve(st, size)
-        torch.cuda.empty_cache()                    # the old buffers back to the system: MemAvailable stays true
+        reserve(st, size)                           # maps memory at the caches' ends: nothing old to give back
         return True
 
     def _make_room(self, live: list[Stream]) -> list[Stream]:
