@@ -5,6 +5,11 @@ cache suffixes, so seeded sampled continuations use the same proposal state
 after warm and cold prefill. Decode appends retain their existing lane kernels.
 Native and full-model verification of this correction remains pending.
 
+Campaign identity and determinism rows now retain the typed token count of each
+required response peer. This exposes partial replies without adding requests or
+changing existing gate verdicts; [evidence boundaries](docs/campaign-evidence.md)
+describe the fields and separate qualification consumer requirements.
+
 Teacher-forced KL dumps require successful CLI cleanup as well as completed
 scoring; the temporary serving hook is restored on every outcome. See
 [campaign evidence boundaries](docs/campaign-evidence.md) for the unchanged

@@ -1,5 +1,17 @@
 # Campaign evidence boundaries
 
+`campaign_gates.py` identity rows include `response_tokens` for `drafted` and
+`serial`. Determinism rows include counts for `cold`, `warm`, `recold`, `extended`
+and `extended_cold`. Each count is the length of the already validated typed token
+IDs, which must match that response's `usage.completion_tokens`. Existing `tokens`
+fields retain their drafted/cold meaning. These fields add no request, budget,
+filter or new gate verdict: sampled serial differences remain reported, and two
+equally short extension replies can still satisfy determinism. A fixed-length
+qualification consumer must separately require its declared count for every
+required peer, rather than interpreting a gate PASS or the single `tokens` field
+as proof of complete output. Reported-only next-turn probes keep their existing
+status and applicability. Installed/model qualification remains separate.
+
 `campaign_kl.py dump` propagates the production CLI's nonzero result even after
 the scoring hook completed, and always restores its temporary serving hook.
 A written dump is not success if later CLI cleanup failed. Existing teacher-forced
