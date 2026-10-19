@@ -62,9 +62,10 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str, renames: d
     the whole model (on unified memory a CPU load plus a device move would hold the weights twice; transformers'
     device_map path needs accelerate, absent from the image). Every model parameter must come from the checkpoint
     or be tied to one that did, and every persistent buffer (Gemma4's per-layer ``layer_scalar``) must come from it;
-    checkpoint keys without a model tensor fail. ``renames`` maps a checkpoint key prefix to the model's for
-    checkpoints that store a module under another path (tvall43's Qwen3.6 heretic keeps the vision tower at
-    ``model.language_model.visual.``, transformers builds ``model.visual.``); a prefix matching no key fails."""
+    checkpoint keys without a model tensor, or two keys for one model tensor, fail. ``renames`` maps a checkpoint key
+    prefix to the model's for checkpoints that store a module under another path (tvall43's Qwen3.6 heretic keeps the
+    vision tower at ``model.language_model.visual.``, transformers builds ``model.visual.``); a prefix matching no key
+    fails."""
 
     from safetensors import safe_open
     from transformers.initialization import no_init_weights
@@ -89,6 +90,8 @@ def load_bf16(torch, transformers, cls, model_dir: Path, device: str, renames: d
                 if key not in owners:
                     unexpected.append(stored)
                     continue
+                if key in loaded:                    # a rename onto a stored key: one would silently replace the other
+                    raise ValueError(f"{stored} loads into {key}, which another checkpoint tensor already filled")
                 module, name = owners[key]
                 tensor = f.get_tensor(stored)
                 current = module._parameters.get(name, module._buffers.get(name))

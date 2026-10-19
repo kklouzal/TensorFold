@@ -315,7 +315,7 @@ def test_gates_without_cases_are_incomplete_not_pass(tmp_path, monkeypatch):
             assert result["gates"][gate]["verdict"] is None
 
 
-def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):
+def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch, capsys):
     _write_inputs(tmp_path)
     with fake_server(ids=False) as url:
         monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "identity", "--url", url, "--out", str(tmp_path / "o"),
@@ -337,6 +337,18 @@ def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):
                                           "--prompts", str(tmp_path / "prompts.json"), "--gate-prompts", "x"])
         assert gates.main() == 4
         assert json.loads((tmp_path / "bad").read_text())["status"] == "error"
+    # an error whose record cannot be written (--out a directory; a NaN argument, which strict JSON refuses) keeps
+    # the error status, never the fail code, and says why the record is missing
+    (tmp_path / "out-dir").mkdir()
+    for out, extra in ((tmp_path / "out-dir", []), (tmp_path / "nan.json", ["--min-tool-pass", "nan"])):
+        monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "identity", "--url", "http://127.0.0.1:9", "--out",
+                                          str(out), "--profile", str(tmp_path / "profile.json"),
+                                          "--prompts", str(tmp_path / "prompts.json"), "--gate-prompts", "x", *extra])
+        capsys.readouterr()
+        assert gates.main() == 4
+        summary = json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert summary["status"] == "error" and summary["record_error"].startswith("ValueError"), summary
+    assert not (tmp_path / "nan.json").exists()
 
 
 def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
@@ -452,6 +464,19 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
         dump("--eval", missing, "--build", "--mid-depths", "4096")
     with pytest.raises(SystemExit, match=r"unknown --short sets \['extras'\]"):    # a typo builds nothing silently
         dump("--eval", missing, "--build", "--short", "v1,extras")
+    assert bench.LONG_PREFILL_TOKENS == 65536            # the campaign's hold since 2026-10-19: up to 65,536 run
+    with pytest.raises(SystemExit, match="long-prefill hold"):
+        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "65537")
+    corpus = ("--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "")
+    # item names are identities: a depth repeated at the same step of the mid cycle, or a long depth given twice
+    for depths in (("--mid-depths", "4096,8192,12288,16384,4096"), ("--long-depths", "4096,4096")):
+        with pytest.raises(SystemExit, match=r"would repeat item names \['(mid-4096-doc-review-nothink|long-4096)'\]"):
+            dump("--eval", missing, "--build", *corpus, *depths)
+    with pytest.raises(SystemExit, match="not a corpus character index"):
+        dump("--eval", missing, "--build", *corpus, "--mid-depths", "4096", "--corpus-start", "-1")
+    (tmp_path / "nothink-profile.json").write_text(json.dumps({"card_sampling": {"nothink": {"temperature": 0.7}}}))
+    with pytest.raises(SystemExit, match=r"no card_sampling for \['think'\]"):    # never server defaults silently
+        dump("--eval", missing, "--build", "--short", "extra", "--profile", str(tmp_path / "nothink-profile.json"))
     assert loads == []                                                    # no refusal paid for a model load
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
     dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))     # the default 32k build runs
@@ -459,6 +484,10 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill", "--card", "{}", "--profile",
          str(tmp_path / "no-profile.json"))                     # --card overrides: the profile is not read
     assert len(loads) == 3
+    dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "65536")
+    dump("--eval", missing, "--build", *corpus, "--mid-depths", "4096,4096,8192,8192,12288,12288,16384,16384")
+    dump("--eval", missing, "--build", "--profile", str(tmp_path / "nothink-profile.json"))   # v1 short: no thinking
+    assert len(loads) == 6
 
 
 class FakeApp:
@@ -527,6 +556,18 @@ def test_build_eval_keeps_the_v1_short_and_long_items(tmp_path):
     assert [it["name"] for it in both] == [f"short-{i}" for i in range(first + len(kl.EXTRA_PROMPTS))]
 
 
+def test_build_eval_refuses_a_depth_its_document_cannot_fill(tmp_path):
+    _build_args(tmp_path)                                         # writes the corpus
+    size = len((tmp_path / "corpus.txt").read_text())
+    cases = ((dict(mid_depths="400", corpus_start=size - 100), "ends before a 400-token document"),
+             (dict(mid_depths="400", corpus_start=size + 1), "ends before a 400-token document"),
+             (dict(mid_depths="400,400000"), "ends before a 400000-token document"),    # the second window runs out
+             (dict(long_depths="20"), "empty document already renders"))
+    for fields, message in cases:              # never an item silently shorter (or longer) than its depth
+        with pytest.raises(ValueError, match=message):
+            kl.build_eval(FakeApp(), _build_args(tmp_path, short="", **fields))
+
+
 def _golden_part(tmp_path, name, items, lp, **meta):
     np = pytest.importorskip("numpy")
     path = tmp_path / name
@@ -536,8 +577,9 @@ def _golden_part(tmp_path, name, items, lp, **meta):
     offsets = tuple(int(x) for x in np.concatenate([[0], np.cumsum(sizes)[:-1]]))
     contract = {"source": "s@1", "architecture": "A", "config_sha256": "c", "versions": {"torch": "t"},
                 "chunk": 2048, "precision": {"weights": "bf16", "compute": "fp32"}, "model_dir": "/golden"}
-    _dump(path / "golden.npz", lp, 8, golden=True, offsets=offsets, names=[it["name"] for it in items],
-          eval_sha256=kl.file_sha256(str(path / "eval.json")), **{**contract, **meta})
+    _dump(path / "golden.npz", lp, meta.pop("top_k", 8), golden=True, offsets=offsets,
+          names=[it["name"] for it in items], eval_sha256=kl.file_sha256(str(path / "eval.json")),
+          **{**contract, **meta})
     return str(path / "golden.npz"), str(path / "eval.json")
 
 
@@ -568,9 +610,14 @@ def test_append_extends_a_golden_reference_without_rescoring_and_records_its_par
     cut = kl.subset(str(tmp_path / "v2" / "golden" / "kl.npz"), str(tmp_path / "v2" / "eval.json"),
                     str(tmp_path / "v2s"), max_prompt_tokens=90)
     assert cut["items"] == ["short-0", "mid-400", "mid-800"] and cut["positions"] == 34
-    again = kl.append(str(tmp_path / "v2" / "golden" / "kl.npz"), str(tmp_path / "v2" / "eval.json"),
-                      *_golden_part(tmp_path, "later", [{"name": "long-131072", "prompt": [1] * 9, "answer": [2] * 4}],
-                                    lp[:4], tool_sha256="v3"), str(tmp_path / "v3"))
+    v2 = (str(tmp_path / "v2" / "golden" / "kl.npz"), str(tmp_path / "v2" / "eval.json"))
+    later = _golden_part(tmp_path, "later", [{"name": "long-131072", "prompt": [1] * 9, "answer": [2] * 4}], lp[:4],
+                         tool_sha256="v3")
+    digest = kl.file_sha256(v2[0])
+    with pytest.raises(ValueError, match="would replace"):        # never written over a reference it is made from
+        kl.append(*v2, *later, str(tmp_path / "v2"))
+    assert kl.file_sha256(v2[0]) == digest
+    again = kl.append(*v2, *later, str(tmp_path / "v3"))
     assert [p["items"] for p in again["parts"]] == [["short-0", "long-32768"], ["mid-400", "mid-800"],
                                                     ["long-131072"]]
 
@@ -581,9 +628,14 @@ def test_append_refuses_parts_that_are_not_one_reference(tmp_path):
     item = {"name": "a", "prompt": [1], "answer": [2] * 4}
     other = {**item, "name": "b"}
     base = _golden_part(tmp_path, "base", [item], lp[:4])
-    cases = {"other": (other, {"source": "s@2"}, "differ in \\['source'"),
-             "compute": (other, {"precision": {"weights": "bf16", "compute": "bf16"}}, "precision.compute"),
-             "same": (item, {}, "names repeat")}
+    # the decided contract: checkpoint, model config, top-K, logits dtype, library versions, prefill chunk, weight and
+    # compute precision agree; names are disjoint
+    cases = {key: (other, {key: value}, f"differ in \\['{key}'")
+             for key, value in (("source", "s@2"), ("architecture", "B"), ("config_sha256", "d"), ("top_k", 4),
+                                ("logits_dtype", "torch.bfloat16"), ("versions", {"torch": "u"}), ("chunk", 1024))}
+    cases |= {"weights": (other, {"precision": {"weights": "fp8", "compute": "fp32"}}, "precision.weights"),
+              "compute": (other, {"precision": {"weights": "bf16", "compute": "bf16"}}, "precision.compute"),
+              "same": (item, {}, "names repeat")}
     for name, (new_item, meta, message) in cases.items():
         new = _golden_part(tmp_path, name, [new_item], lp[4:], **meta)
         with pytest.raises(ValueError, match=message):
@@ -1055,6 +1107,16 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
     with pytest.raises(ValueError, match="match no checkpoint tensor"):
         golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, tmp_path, "cpu",
                          {"model.nothing.": "model.vision_tower."})
+    # a rename onto keys the checkpoint also stores: two tensors for one model tensor fail, never the later one wins
+    both = tmp_path / "both"
+    both.mkdir()
+    (both / "config.json").write_text((tmp_path / "config.json").read_text())
+    save_file({**tensors, **{k.replace("model.vision_tower.", "model.language_model.vision_tower.", 1): v.clone()
+                             for k, v in tensors.items() if k.startswith("model.vision_tower.")}},
+              str(both / "model.safetensors"))
+    with pytest.raises(ValueError, match="already filled"):
+        golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, both, "cpu",
+                         {"model.language_model.vision_tower.": "model.vision_tower."})
 
 
 def test_golden_refuses_held_items_before_the_model_loads(tmp_path):
