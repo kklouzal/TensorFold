@@ -217,11 +217,17 @@ def prompt_rows(total: int, row_bytes: int, most: int = 4096) -> int:
     return max(512, min(most, total // PROMPT_SHARE // row_bytes // 512 * 512))
 
 
+ARENA_GRANULE = 2 << 20     # bytes a cache arena maps at a time (``kv_arena``: the CUDA VMM granularity, 2 MiB on
+                            # the qualified GPUs)
+
+
 def live_kv(t: dict, world: int, window: int) -> int:
-    """A dense stream's attention caches at ``window`` rows (1,024 at least) and one layer's buffer mid-grow."""
+    """A dense stream's attention caches at ``window`` rows: each layer's keys and values an arena mapped in place
+    (no growth copy), rounded up to ``ARENA_GRANULE``."""
 
     _, attention = layer_counts(t)
-    return (attention + 1) * max(1024, window) * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 4
+    tensor = window * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 2
+    return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
 
 
 def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mtp: bool = False,

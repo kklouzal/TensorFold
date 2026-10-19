@@ -371,7 +371,9 @@ def cuda_modules(monkeypatch):
         monkeypatch.setitem(sys.modules, "triton", triton)
         monkeypatch.setitem(sys.modules, "triton.language", lang)
     from tensorfold.families.qwen3_5.cuda import decode, decode_tp, forward, multi, prefill
+    from tests.kv_arena_stand_in import install
 
+    install(monkeypatch)                 # the caches' arenas on host tensors (the policy under test is the same)
     try:
         yield SimpleNamespace(torch=torch, decode=decode, decode_tp=decode_tp, forward=forward, multi=multi,
                               prefill=prefill)
@@ -392,7 +394,7 @@ def _ids_state(m, ids):
     """A committed state whose one attention layer's keys hold its ids."""
 
     st = object.__new__(m.forward.State)
-    st.pos, st.limit, st.conv, st.rec = len(ids), 0, [None], [None]
+    st.pos, st.limit, st.conv, st.rec, st.kv_owner = len(ids), 0, [None], [None], object()
     keys = m.torch.tensor(list(ids), dtype=m.torch.float32).view(-1, 1, 1)
     st.kv = [(keys, keys.clone())]
     return st
@@ -807,6 +809,7 @@ def _fake_chunks(m, monkeypatch):
 def _start_state(m, base):
     st = object.__new__(m.forward.State)
     st.pos, st.limit, st.conv, st.rec, st.kv = base, 0, ["conv", None], [("rec at", base), None], [None, ("start",)]
+    st.kv_owner = object()
     return st
 
 
