@@ -1,5 +1,7 @@
 """CT (reciprocal) native A4 on device routing plans versus host windows, independent operators and graph replay."""
 
+import os
+
 import pytest
 import torch
 from nvfp4_a4_inputs import PREFIX, Context, individual_reference, swiglu
@@ -92,6 +94,9 @@ def test_captured_device_plan_replays_new_routes_without_host_reads(prefill):
     torch.cuda.synchronize()
 
 
+# A deliberate device trap: the driver logs it as Xid 43 (an application fault; the GPU stays healthy), which the GB10
+# job guard treats as fatal, so GB10 runs set TF_NO_DEVICE_TRAPS=1 and this check runs on dev-01.
+@pytest.mark.skipif(os.environ.get("TF_NO_DEVICE_TRAPS") == "1", reason="deliberate device trap (Xid 43) disabled")
 @pytest.mark.parametrize("rows,bad", [(1, 4), (129, -1)])
 def test_plan_refuses_out_of_range_expert_ids_on_the_device(rows, bad):
     import subprocess
