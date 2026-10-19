@@ -165,14 +165,15 @@ def test_actual_metadata_and_geometry_are_checked_before_custom_payload_reads(ch
     assert not calls
 
 
-def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_conversion():
+@pytest.mark.parametrize("rope", [None, object()])
+def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_and_rope_without_payload_conversion(rope):
     bank, router, shared, operator = object(), object(), object(), object()
     original_head = object()
     context, cfg = object(), SimpleNamespace(top_k=8)
     calls = []
 
     def backbone(path, device, **options):
-        calls.append((path, device, options["eos_token_ids"]))
+        calls.append((path, device, options["eos_token_ids"], options["rope"]))
         return SimpleNamespace(head=original_head,
                                fields=options["mlp"]("model.language_model.layers.0.mlp.", context, cfg))
 
@@ -187,8 +188,8 @@ def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_co
         assert (actual_context, prefix, actual_cfg) == (context, "model.language_model.layers.0.mlp", cfg)
         return bank
 
-    result = api["load_nvfp4"](Path("opaque"), "cuda:0", expert_factory=factory, eos_token_ids=(7, 9))
-    assert calls == [(Path("opaque"), "cuda:0", (7, 9))]
+    result = api["load_nvfp4"](Path("opaque"), "cuda:0", expert_factory=factory, eos_token_ids=(7, 9), rope=rope)
+    assert calls == [(Path("opaque"), "cuda:0", (7, 9), rope)]
     assert result.fields == {"moe": ((router, bank, 8), {"run": operator})}
     assert result.head is original_head
 
@@ -200,7 +201,8 @@ def test_missing_bank_factory_is_refused_before_reading_checkpoint_metadata():
 
 
 @pytest.mark.parametrize("quantized", [False, True])
-def test_family_weight_dispatch_keeps_affine_and_nvfp4_factories_separate(quantized, monkeypatch):
+@pytest.mark.parametrize("rope", [None, object()])
+def test_family_weight_dispatch_keeps_affine_and_nvfp4_factories_separate(quantized, monkeypatch, rope):
     path = SOURCE.with_name("weights.py")
     node = next(node for node in ast.parse(path.read_text()).body
                 if isinstance(node, ast.FunctionDef) and node.name == "load")
@@ -216,9 +218,10 @@ def test_family_weight_dispatch_keeps_affine_and_nvfp4_factories_separate(quanti
     monkeypatch.setitem(sys.modules, dense.__name__, dense)
     monkeypatch.setitem(sys.modules, native.__name__, native)
     factory = object()
-    assert scope["load"]("opaque", eos_token_ids=(7, 9), expert_factory=factory) == ("nvfp4" if quantized else "affine")
+    assert scope["load"]("opaque", eos_token_ids=(7, 9), expert_factory=factory, rope=rope) == (
+        "nvfp4" if quantized else "affine")
     kind, args, options = calls[0]
-    assert args == ("opaque",) and options["eos_token_ids"] == (7, 9)
+    assert args == ("opaque",) and options["eos_token_ids"] == (7, 9) and options["rope"] is rope
     if quantized:
         assert kind == "nvfp4" and options["expert_factory"] is factory
     else:

@@ -337,27 +337,79 @@ def test_admission_failure_retires_bootstrap_and_preserves_primary(startup, fail
     assert engine._closed and state.caches[0].closed and state.pins[0].closed
 
 
-@pytest.mark.parametrize("factor", [None, 4.0])
-def test_yarn_factor_reaches_admission_loader_and_log(startup, capsys, factor):
-    state = startup
+def _native_rope(state):
+    """The target declares Qwen3.6's 262,144 positions of default RoPE (what --yarn-factor extends)."""
+
     raw = json.loads((state.target / "config.json").read_text())
     raw["text_config"].update(max_position_embeddings=262144, rope_parameters={
         "rope_type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25})
     (state.target / "config.json").write_text(json.dumps(raw))
+
+
+@pytest.mark.parametrize("factor,declared,expected", [(None, False, None), (4.0, False, 4.0),
+                                                    (None, True, 4.0), (8.0, True, 8.0)])
+def test_yarn_factor_reaches_admission_loader_and_log(startup, capsys, factor, declared, expected):
+    state = startup
+    _native_rope(state)
+    if declared:
+        raw = json.loads((state.target / "config.json").read_text())
+        text = raw["text_config"]
+        text["max_position_embeddings"] = 1048576
+        text["rope_parameters"].update(rope_type="yarn", factor=4.0, original_max_position_embeddings=262144)
+        (state.target / "config.json").write_text(json.dumps(raw))
     engine = QwenNvfp4MoeEngine(state.target, None, context=64, context_explicit=True, eos_token_ids=[3, 1],
                                yarn_factor=factor)
     try:
         admission = state.admissions[0][-1]
         loaded = state.loads[0][1]
         log = capsys.readouterr().out
-        if factor is None:
-            assert "context_limit" not in admission and "rope" not in loaded and "static YaRN" not in log
-            assert engine.rope.rope_type == "default"
+        if expected is None:
+            assert "context_limit" not in admission and loaded["rope"] is None and "static YaRN" not in log
         else:
-            assert (admission["context_limit"], admission["original_context"]) == (1048576, 262144)
+            assert (admission["context_limit"], admission["original_context"]) == (int(262144 * expected), 262144)
             rope = loaded["rope"]
             assert (rope.rope_type, rope.factor, rope.native_context, rope.context_limit) == (
-                "yarn", 4.0, 262144, 1048576) and engine.rope is rope
-            assert "static YaRN factor 4, rotary amplitude 1.1386294" in log
+                "yarn", expected, 262144, int(262144 * expected))
+            assert f"static YaRN factor {expected:g}, rotary amplitude" in log
     finally:
         engine.close()
+
+
+def test_a_yarn_window_past_the_drafter_rope_limit_is_refused_before_any_load(startup, monkeypatch):
+    """DFlash v1 keeps its own RoPE limit (128 here): an admitted YaRN window past it is refused right after the
+    admission estimate, before the target or the drafter loads."""
+
+    state = startup
+    _native_rope(state)
+    admitted = capacity.admit
+    monkeypatch.setattr(capacity, "admit", lambda *args, **options: {**admitted(*args, **options),
+                                                                     "context_window": 129})
+    with pytest.raises(ValueError, match=r"declared rotary context \(128\).*--drafter none"):
+        QwenNvfp4MoeEngine(state.target, state.draft_dir, max_rows=8, eos_token_ids=[3, 1], yarn_factor=4.0)
+    assert state.admissions[0][-1]["context_limit"] == 1048576
+    assert not state.loads and not state.drafts
+
+
+def test_a_yarn_window_at_the_drafter_rope_limit_keeps_the_requested_drafter(startup, monkeypatch):
+    state = startup
+    _native_rope(state)
+    admitted = capacity.admit
+    monkeypatch.setattr(capacity, "admit", lambda *args, **options: {**admitted(*args, **options),
+                                                                     "context_window": 128})
+    engine = QwenNvfp4MoeEngine(state.target, state.draft_dir, context=128, context_explicit=True,
+                               max_rows=8, eos_token_ids=[3, 1], yarn_factor=4.0)
+    try:
+        assert engine.context_window == 128 and engine.draft is not None
+        assert state.loads and state.drafts
+        assert state.admissions[0][1:3] == (128, True)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("factor", [True, False, 0.0, 0.5, -1.0, float("nan"), float("inf")])
+def test_bad_nvfp4_yarn_factor_is_refused_before_admission_or_payload(startup, monkeypatch, factor):
+    _native_rope(startup)
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *a, **k: pytest.fail("CUDA prepared"))
+    with pytest.raises(ValueError, match="yarn-factor"):
+        QwenNvfp4MoeEngine(startup.target, None, context=64, yarn_factor=factor)
+    assert not startup.admissions and not startup.loads and not startup.drafts

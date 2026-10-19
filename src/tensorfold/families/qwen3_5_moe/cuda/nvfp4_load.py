@@ -124,6 +124,4 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
         bank = expert_factory(context, prefix.removesuffix("."), cfg)
         return {"moe": Routed(router, bank, cfg.top_k, run=NativeMoE(bank, shared))}
 
-    return load_backbone(model_dir, device, mlp=mlp,
-                         **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope))
-                            if value is not None})
+    return load_backbone(model_dir, device, mlp=mlp, eos_token_ids=eos_token_ids, rope=rope)
