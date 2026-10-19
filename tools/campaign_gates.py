@@ -591,13 +591,13 @@ def main() -> int:
         result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()
                             else "pass" if "pass" in statuses.values() else "report")
         write_json(args.out, result)
-    except Exception as error:          # a refusal or a tool/server failure, gates already run kept
+    except Exception as error:  # noqa: BLE001 - CLI boundary: any failure after parsing is an error (exit 4), never a verdict
         traceback.print_exc()
         result.update(status="error", error=f"{type(error).__name__}: {error}")
         summary = {"status": "error", "error": result["error"]}
         try:                            # the record is best effort; the exit status is the contract
             write_json(args.out, result)
-        except Exception as unwritten:  # --out not an ordinary file, a non-finite value (allow_nan=False), I/O
+        except (OSError, ValueError, TypeError) as unwritten:   # --out not an ordinary file, NaN, I/O, a bad value
             traceback.print_exc()
             summary["record_error"] = f"{type(unwritten).__name__}: {unwritten}"
         print(json.dumps(summary), flush=True)
