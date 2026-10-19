@@ -224,40 +224,37 @@ def build_eval(app, args) -> dict:
     corpus = Path(args.corpus).read_text(encoding="utf-8") if args.corpus else None
     mids, longs = build_depths(args)
 
-    def fit(render, depth: int, thinking: bool, room: int) -> int:
-        lo, hi = 0, min(room, depth * 8)
+    def window(start: int, ask: str, depth: int, thinking: bool) -> tuple[str, list[int]]:
+        """The user message (a corpus document from ``start`` on, then ``ask``) and its document's character range."""
+
+        def render(chars: int) -> str:
+            return "<document>\n" + corpus[start:start + chars] + "\n</document>\n\n" + ask
+
+        lo, hi = 0, min(len(corpus) - start, depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
             body = {"messages": [{"role": "user", "content": render(mid)}],
                     "chat_template_kwargs": {"enable_thinking": thinking}}
             lo, hi = (mid, hi) if len(app.prepare(body, True).prompt) <= depth else (lo, mid)
-        return lo
+        return render(lo), [start, start + lo]
 
     def item(name: str, content: str, thinking: bool, **fields) -> dict:
         return {"name": name, "messages": [{"role": "user", "content": content}], "thinking": thinking, **fields}
 
     chosen = [name for name in args.short.split(",") if name]
-    numbered = enumerate((name, prompt) for name in SHORT_SETS for prompt in SHORT_SETS[name])
+    numbered = enumerate((name, prompt) for name, prompts in SHORT_SETS.items() for prompt in prompts)
     items = [item(f"short-{i}", text, thinking)             # numbered across all sets: names stay unique
              for i, (name, (text, thinking)) in numbered if name in chosen]
     start = args.corpus_start
     for k, depth in enumerate(mids):
         task, thinking = MID_ITEMS[k % len(MID_ITEMS)]
-
-        def window(chars: int, start: int = start, task: str = task) -> str:
-            return "<document>\n" + corpus[start:start + chars] + "\n</document>\n\n" + TASKS[task]
-
-        chars = fit(window, depth, thinking, len(corpus) - start)
-        items.append(item(f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", window(chars), thinking,
-                          document=[start, start + chars]))
-        start += chars
-
-    def prefix(chars: int) -> str:
-        return "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK
-
+        content, document = window(start, TASKS[task], depth, thinking)
+        items.append(item(f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", content, thinking,
+                          document=document))
+        start = document[1]                          # the next window starts where this one ends
     for depth in longs:
-        chars = fit(prefix, depth, False, len(corpus))
-        items.append(item(f"long-{depth}", prefix(chars), False, document=[0, chars]))
+        content, document = window(0, LONG_ASK, depth, False)
+        items.append(item(f"long-{depth}", content, False, document=document))
     engine = app.engine
     for k, it in enumerate(items):
         thinking = it.pop("thinking")
@@ -637,6 +634,20 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     return result
 
 
+def golden_reference(golden_path: str, eval_path: str):
+    """A campaign_golden reference and the eval set it scored: the eval set, the sha256 of the very bytes parsed
+    (read_eval), the dump and its meta; refused unless the reference names exactly that eval set."""
+
+    import numpy as np
+
+    data, eval_sha256 = read_eval(Path(eval_path))
+    golden = np.load(golden_path)
+    meta = json.loads(str(golden["meta"]))
+    if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+    return data, eval_sha256, golden, meta
+
+
 def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens: int) -> dict:
     """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
     from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
@@ -651,11 +662,7 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     if any(path.resolve() in inputs for path in (out / "eval.json", out / "golden" / "kl.npz")):
         raise ValueError(f"{out_dir} holds the full set's own eval.json or golden/kl.npz: the subset would replace "
                          "them (choose another OUT_DIR)")
-    data, eval_sha256 = read_eval(Path(eval_path))
-    golden = np.load(golden_path)
-    meta = json.loads(str(golden["meta"]))
-    if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
-        raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+    data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
     offsets = [*golden["offsets"], len(golden["lp"])]
     keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
     if not keep:
@@ -695,12 +702,7 @@ def append(base_golden: str, base_eval: str, new_golden: str, new_eval: str, out
 
     loaded = []
     for golden_path, eval_path in ((base_golden, base_eval), (new_golden, new_eval)):
-        data = json.loads(Path(eval_path).read_text())
-        golden = np.load(golden_path)
-        meta = json.loads(str(golden["meta"]))
-        eval_sha256 = file_sha256(eval_path)
-        if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
-            raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+        data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
         if "subset_of" in meta or "subset_of" in data:
             raise ValueError(f"{golden_path} is a subset: append extends full references (subset the result)")
         part = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256, "items": meta["names"],
