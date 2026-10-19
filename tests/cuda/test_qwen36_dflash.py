@@ -26,7 +26,7 @@ def test_native_affine_single_group_layout_keeps_exact_dyadic_outputs(rows, colu
     assert torch.equal(actual, torch.full((2, rows), columns / 64, dtype=torch.bfloat16, device="cuda"))
 
 
-@pytest.mark.parametrize("bits", [16, 4])
+@pytest.mark.parametrize("bits", [16, 8, 4])
 def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_path, bits):
     raw = config()
     raw["rope_scaling"] = {"rope_type": "yarn", "factor": 8, "original_max_position_embeddings": 16}
@@ -50,6 +50,7 @@ def test_native_proposals_and_contexts_preserve_stream_partition_and_rewind(tmp_
     draft = DFlash(tmp_path, Target(), context_limit=64, bits=bits)
     owned = sum(linear.nbytes() for linear in draft.linears.values())
     owned += sum(t.numel() * t.element_size() for t in [*draft.weights.values(), draft.inv_freq])
+    owned += draft.target_head.nbytes() if bits == 8 else 0       # FP8 proposals own a private head copy
     assert owned == draft_weights(tmp_path, bits=bits).resident
     empty = draft.snapshot()
     taps = torch.randn((7, len(cfg.tap_layers) * cfg.hidden), generator=generator).bfloat16().cuda()

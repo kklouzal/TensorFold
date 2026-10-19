@@ -16,8 +16,9 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
     def __init__(self, model_dir, draft_dir=None, *, context=None, context_explicit=None, streams=1,
                  vram_experts=None, vram_experts_pin="off", drafter_bits=16, max_rows=None,
                  allow_copy=True, eos_token_ids=None, chat_template_file=None, chat_template_name=None):
-        if type(drafter_bits) is not int or drafter_bits not in (0, 4, 16):
-            raise ValueError("Qwen DFlash draft precision must be 0/16 (BF16) or 4 (proposal-only affine4)")
+        if type(drafter_bits) is not int or drafter_bits not in (0, 4, 8, 16):
+            raise ValueError("Qwen DFlash draft precision must be 0/16 (BF16), 8 (proposal-only FP8) or 4 "
+                             "(proposal-only affine4)")
         if type(allow_copy) is not bool or vram_experts_pin not in ("off", "auto", "on"):
             raise ValueError("copy proposals require a bool; expert pin policy must be off, auto or on")
         self._lifecycle = threading.Condition()
