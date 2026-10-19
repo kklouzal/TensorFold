@@ -14,6 +14,7 @@ pytest.importorskip("jinja2")
 from tensorfold.cuda import server
 from tensorfold.engine.exact_sampling import Sampling, seed_for
 from tests.test_cuda_admission import http_server
+from tests.text_tokenizer_fixture import TextTokenizer as BaseTextTokenizer
 
 # a Qwen checkpoint template's own refusals: an unknown reasoning effort or mode, a history without a user message
 TEMPLATE = (
@@ -31,14 +32,11 @@ HI = [{"role": "user", "content": "Hi"}]
 EOS = 0
 
 
-class TextTokenizer:
+class TextTokenizer(BaseTextTokenizer):
     def encode(self, text, **kwargs):
         if "BOOM" in text:
             raise RuntimeError("tokenizer stand-in failed")
-        return SimpleNamespace(ids=[ord(c) for c in text])
-
-    def decode(self, ids, **kwargs):
-        return "".join(chr(c) for c in ids)
+        return super().encode(text, **kwargs)
 
 
 class Engine:

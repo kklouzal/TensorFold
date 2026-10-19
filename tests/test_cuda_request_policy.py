@@ -1,20 +1,12 @@
 import json
 import threading
-from types import SimpleNamespace
 
 import pytest
 
 from tensorfold.cuda import server
 from tests.test_cuda_admission import http_server, post
 from tests.test_request_policy import CALL, TOOLS, stream_calls
-
-
-class TextTokenizer:
-    def encode(self, text, **kwargs):
-        return SimpleNamespace(ids=[ord(c) for c in text])
-
-    def decode(self, ids, **kwargs):
-        return "".join(chr(c) for c in ids)
+from tests.text_tokenizer_fixture import TextTokenizer
 
 
 class Engine:
