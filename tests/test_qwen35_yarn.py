@@ -86,3 +86,74 @@ def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_refuses_declared_
     qwen3_5_moe.check_metadata(raw, "mlx")
     with pytest.raises(ValueError, match="declares YaRN"):
         qwen3_5_moe.check_metadata(raw, "cuda")
+
+
+def test_qwen36_cuda_engine_refuses_declared_yarn_outside_the_cli(tmp_path):
+    from tensorfold.families import qwen3_5_moe
+
+    text = dict(TEXT, rope_parameters=dict(TEXT["rope_parameters"], rope_type="yarn", factor=4.0,
+                                           original_max_position_embeddings=262144), max_position_embeddings=1048576)
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": text}))
+    with pytest.raises(ValueError, match="declares YaRN"):
+        qwen3_5_moe.cuda_engine(tmp_path)
+
+
+@pytest.mark.parametrize("layout", ["set-without-theta", "no-set"])
+def test_yarn_keeps_a_legacy_text_level_theta(tmp_path, layout):
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    text = json.loads(json.dumps(TEXT))
+    parameters = text.pop("rope_parameters")
+    del parameters["rope_theta"]
+    text["rope_theta"] = 5000000                                  # not the 1e7 fallback: a silent change would show
+    if layout == "set-without-theta":
+        text["rope_parameters"] = parameters
+    default = qwen3_5.rope_parameters(_model(tmp_path, text))
+    extended = qwen3_5.rope_parameters(_model(tmp_path, text), 4.0)
+    assert default.theta == extended.theta == 5e6
+    nested = dict(TEXT, rope_parameters=dict(TEXT["rope_parameters"], rope_theta=5000000))
+    assert extended == RopeParameters.from_config({"text_config": nested}, 4.0)
+    text.update(max_position_embeddings=1048576,
+                rope_scaling={"rope_type": "yarn", "factor": 4.0, "original_max_position_embeddings": 262144})
+    text.pop("rope_parameters", None)
+    declared = qwen3_5.rope_parameters(_model(tmp_path, text))
+    assert declared.rope_type == "yarn" and declared.theta == 5e6
+
+
+def _serve(tmp_path, monkeypatch, text, *tail, resolve=None):
+    from types import SimpleNamespace
+
+    from tensorfold import cli, families, hub
+
+    model = _model(tmp_path, text)
+    family = SimpleNamespace(package=qwen3_5, title=qwen3_5.TITLE, model_type="qwen3_5")
+    monkeypatch.setattr(families, "detect", lambda *a: family)
+    monkeypatch.setattr(families, "require_readable", lambda *a: None)
+    monkeypatch.setattr(cli, "_note_untested", lambda *a: None)
+    monkeypatch.setattr(cli.stacks, "start", lambda: None)
+    seen = []
+    monkeypatch.setattr(hub, "resolve", resolve or (lambda *a, **k: seen.append("resolve") or model))
+    monkeypatch.setattr(cli, "_serve_cuda", lambda args, family, path, context: seen.append(context) or 0)
+    args = cli.build_parser().parse_args(["serve", str(model), "--no-update-check", *tail])
+    return cli.cmd_serve(args), seen
+
+
+@pytest.mark.parametrize("tail,window", [((), 262144), (("--yarn-factor", "4"), 1048576)])
+def test_cuda_serve_admits_the_yarn_window_and_no_more(tmp_path, monkeypatch, tail, window):
+    assert _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail) == (0, ["resolve", window])
+    with pytest.raises(ValueError, match=f"exceeds this model's {window}-token window"):
+        _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail, "--context", str(window + 1))
+
+
+def test_mac_serve_does_not_consult_the_cuda_rope_policy(tmp_path, monkeypatch):
+    class Resolved(Exception):
+        pass
+
+    def resolved(*args, **kwargs):
+        raise Resolved
+
+    text = dict(TEXT, rope_parameters={"rope_type": "linear", "factor": 2.0})       # CUDA's policy refuses this
+    with pytest.raises(ValueError, match="default or static YaRN"):
+        _serve(tmp_path, monkeypatch, text, "--backend", "cuda")
+    with pytest.raises(Resolved):                              # the Mac path reaches weight resolution
+        _serve(tmp_path, monkeypatch, text, "--backend", "mlx", resolve=resolved)

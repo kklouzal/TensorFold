@@ -175,6 +175,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
     if int(tp) != 1:
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
+    from tensorfold.families import read_config
+
+    check_metadata(read_config(Path(model_dir)), "cuda")  # also refused outside the CLI: its MTP head takes no YaRN
     from tensorfold.cuda.nvfp4.format import is_quantized
 
     if is_quantized(Path(model_dir)):

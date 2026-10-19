@@ -103,13 +103,36 @@ def declared_yarn(raw: dict[str, Any]):
         return None
     if "default" in kinds:
         raise ValueError("rope_parameters and rope_scaling disagree: one declares YaRN, the other default RoPE")
-    from tensorfold.families.qwen4_exp.rope import RopeParameters
-
-    rest = {k: v for k, v in text.items() if k not in ("rope_parameters", "rope_scaling")}
-    policies = [RopeParameters.from_config({**rest, "rope_parameters": parameters}) for parameters in sets]
+    policies = [_yarn_policy(raw, parameters) for parameters in sets]
     if len(policies) == 2 and policies[0] != policies[1]:
         raise ValueError("rope_parameters and rope_scaling disagree")
     return policies[0]
+
+
+def requested_yarn(raw: dict[str, Any], yarn_factor: float):
+    """``--yarn-factor`` over the checkpoint's own text RoPE: its ``rope_parameters``, else ``rope_scaling`` (two
+    declared sets must agree, which ``validate_cuda_metadata`` checks)."""
+    text = raw.get("text_config") or raw
+    if not isinstance(text, dict):
+        raise ValueError("text_config must be a JSON object")  # noqa: TRY004
+    sets = _rope_parameter_sets(text)
+    for parameters in sets:
+        _rope_kind(parameters)
+    return _yarn_policy(raw, sets[0], yarn_factor)
+
+
+def _yarn_policy(raw: dict[str, Any], parameters: dict[str, Any], yarn_factor: float | None = None):
+    """One parameter set as the shared ``RopeParameters``. A set without ``rope_theta`` takes the text-level one, as
+    ``resolve_default_rope`` and Transformers' standardized RoPE parameters read a legacy layout; RopeParameters
+    itself reads only the set's own, so the default and the YaRN policy of one checkpoint keep the same theta."""
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    text = raw.get("text_config") or raw
+    rest = {k: v for k, v in text.items() if k not in ("rope_parameters", "rope_scaling")}
+    if "rope_theta" not in parameters and "rope_theta" in text:
+        parameters = {**parameters, "rope_theta": text["rope_theta"]}
+    outer = {"max_position_embeddings": raw["max_position_embeddings"]} if "max_position_embeddings" in raw else {}
+    return RopeParameters.from_config({**outer, "text_config": {**rest, "rope_parameters": parameters}}, yarn_factor)
 
 
 def _default_rope(text: dict[str, Any], parameters: dict[str, Any], head_dim: int) -> DefaultRope:

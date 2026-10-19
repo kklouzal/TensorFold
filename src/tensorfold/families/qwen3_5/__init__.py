@@ -308,10 +308,10 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
     from tensorfold.families import read_config
     from tensorfold.families.qwen4_exp.rope import RopeParameters
 
-    from .config_metadata import declared_yarn, resolve_default_rope
+    from .config_metadata import declared_yarn, requested_yarn, resolve_default_rope
 
     raw = read_config(Path(model_dir))
-    policy = declared_yarn(raw) if yarn_factor is None else RopeParameters.from_config(raw, yarn_factor)
+    policy = declared_yarn(raw) if yarn_factor is None else requested_yarn(raw, yarn_factor)
     if policy is not None:
         return policy
     text = raw.get("text_config") or raw

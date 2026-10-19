@@ -1,4 +1,4 @@
-"""Validated static text RoPE policy shared by Flash Next startup and CUDA weight loaders.
+"""Validated static text RoPE policy shared by Flash Next and Qwen3.8 dense CUDA startup and weight loaders.
 
 YaRN follows Transformers' ``_compute_yarn_parameters``: interpolate low-frequency
 pairs, retain high-frequency pairs, and scale the rotary cos/sin amplitudes. The
@@ -86,7 +86,7 @@ class RopeParameters:
         if "rope_type" in params and "type" in params and params["rope_type"] != params["type"]:
             raise ValueError("rope_type and type disagree")
         if current not in ("default", "yarn"):
-            raise ValueError(f"Flash Next CUDA supports default or yarn text RoPE, not {current!r}")
+            raise ValueError(f"CUDA text RoPE supports default or static YaRN, not {current!r}")
         if yarn_factor is not None:
             params["factor"] = _number(yarn_factor, "--yarn-factor", minimum=1, inclusive=True)
             current = "yarn"
@@ -113,7 +113,7 @@ class RopeParameters:
         if "mrope_section" in params and sum(sections) != int(rotary) // 2:
             raise ValueError("mrope_section must sum to half the rotary dimension")
         if params.get("mrope_interleaved", True) is not True:
-            raise ValueError("Flash Next CUDA supports interleaved text M-RoPE only")
+            raise ValueError("CUDA text RoPE supports interleaved M-RoPE only (mrope_interleaved: true)")
         declared = _integer(text.get("max_position_embeddings", raw.get("max_position_embeddings", 0)),
                             "max_position_embeddings", minimum=0)
         if declared > 2**31 - 1:

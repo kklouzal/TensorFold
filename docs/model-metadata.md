@@ -56,8 +56,9 @@ Checkpoint-controlled patterns never execute a general backtracking regex.
 
 Dense Qwen CUDA also honors an explicit attention-layer layout, including an
 exactly declared auxiliary MTP tail without enabling MTP. Its supported text RoPE
-is the default unscaled algorithm; unsupported scaling, non-SiLU activation or
-attention bias is rejected before loading. Native dtype hints do not implicitly
+is the default unscaled algorithm or static YaRN (declared, or selected with
+`--yarn-factor`); other scaling, non-SiLU activation or attention bias is
+rejected before loading. Native dtype hints do not implicitly
 select lossy activation or KV math.
 
 Tokenizer EOS adds only its specifically declared EOS token, rather than every

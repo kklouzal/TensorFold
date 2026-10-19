@@ -354,3 +354,32 @@ def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup,
             engine.multi._verify([(0, multi.TREE, 2, None)])
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+@pytest.mark.parametrize("factor", [None, 4.0])
+def test_yarn_factor_reaches_admission_loader_rank_agreement_and_log(startup, monkeypatch, capsys, tp, factor):
+    directory, _state, _events, options, gathers = startup
+    (directory / "config.json").write_text(json.dumps({"text_config": {
+        "hidden_size": 64, "intermediate_size": 128, "head_dim": 64, "max_position_embeddings": 262144,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25}}}))
+    admitted, admit = [], capacity.admit
+    monkeypatch.setattr(capacity, "admit", lambda *args, **kwargs: admitted.append(kwargs) or admit(*args, **kwargs))
+    engine = Qwen27Engine(directory, None, tp=tp, master="host", yarn_factor=factor)
+    try:
+        (kwargs,) = admitted
+        (loaded,) = options
+        log = capsys.readouterr().out
+        if factor is None:
+            assert "context_limit" not in kwargs and "original_context" not in kwargs and "rope" not in loaded
+            assert "static YaRN" not in log
+        else:
+            assert (kwargs["context_limit"], kwargs["original_context"]) == (1048576, 262144)
+            rope = loaded["rope"]
+            assert (rope.rope_type, rope.factor, rope.native_context, rope.context_limit) == ("yarn", 4.0, 262144,
+                                                                                            1048576)
+            assert "static YaRN factor 4, rotary amplitude 1.1386294" in log
+        if tp == 2:                     # the factor (millionths) sits before the prompt precision the ranks compare
+            assert gathers[0][-2] == (0 if factor is None else 4_000_000)
+    finally:
+        engine.close()
