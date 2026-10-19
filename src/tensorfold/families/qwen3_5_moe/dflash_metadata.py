@@ -118,7 +118,32 @@ def checked_headers(directory):
     return cfg, found
 
 
-KINDS = {8: "fp8", 4: "nvfp4"}     # proposal-only requantized drafters (``tensorfold.cuda.requant`` kinds) by bits
+KINDS = {8: "fp8"}     # comparison reference:4 uses maintained affine4 projections and a borrowed head
+
+
+def _allocated(*sizes):
+    """Native CUDA512-byte allocation blocks, including small scales/norms (preparation only)."""
+    return sum(-(-size // 512) * 512 for size in sizes)
+
+
+def _affine4_bytes(n, k):
+    """Retained/transient allocations of quantize4 -> tile, excluding the already-resident target head.
+
+    The final copy is admitted separately from each phase's transients. Q4 pack retains its previous chunk's
+    tensors until rebinding; its int64 conversion and shift coexist with both full int32 nibble tensors.
+    """
+    count, padded = n * k, -(-n // 128) * 128
+    block = min(padded, 4096) * k  # qmm.pack's chunk rows; padded rows participate even for n<128
+    resident = _allocated(padded * k // 2, padded * k // 32, padded * k // 32)
+    quantize = _allocated(count * 2, count * 4, count // 16, count // 16, count // 32, count // 32,
+                          count * 4, count * 4, count // 16)
+    original = _allocated(count * 2, count // 2, count // 32, count // 32)
+    indices = _allocated(64 * 8, 8 * 4, 8 * 8)  # _offsets, shifts and wide
+    packing = original + indices + _allocated(block // 2, block * 4, block * 4, block // 2,
+                                               block * 8, block * 8)
+    relayout = original + indices + _allocated(block // 2, block * 4, block * 4, block // 2,
+                                                count // 32, (padded - n) * k // 32)
+    return resident, max(quantize, packing, relayout)
 
 
 def floating_head(head) -> bool:
@@ -129,20 +154,30 @@ def floating_head(head) -> bool:
 
 
 def draft_weights(directory, *, bits=16, private_head=True):
-    """One projection is read/converted at a time; target embedding is borrowed, the head too unless FP8 (8) or NVFP4
-    (4) copies it privately (counted here: proposals only, the target keeps its own head). ``private_head``: whether
+    """One projection is read/converted at a time; target embedding/head are borrowed unless FP8 (8)
+    copies a floating head privately (counted here). The comparison reference's4 restores affine4 projections.
+    ``private_head``: whether
     that copy is made, i.e. the target head is floating (``floating_head``; a quantized head is borrowed)."""
     from tensorfold.cuda.capacity import Weights
     from tensorfold.cuda.requant import resident_bytes, staging_bytes
 
     if type(bits) is not int or bits not in (4, 8, 16):
-        raise ValueError("DFlash draft bits must be 16, or explicit proposal-only FP8 (8) or NVFP4 (4)")
+        raise ValueError("DFlash draft bits must be 16, or explicit proposal-only FP8 (8) or affine4 (4)")
     cfg, _ = checked_headers(directory)
     kind = KINDS.get(bits)
     resident, staging = cfg.head_dim // 2 * 4, 0  # retained FP32 inverse frequencies
+    if bits == 4:
+        resident = _allocated(resident)
     for shape in cfg.shapes().values():
         count = math.prod(shape)
-        if kind is not None and len(shape) == 2:
+        if bits == 4 and len(shape) == 2:
+            held, temporary = _affine4_bytes(*shape)
+            resident += held
+            staging = max(staging, temporary)
+        elif bits == 4:
+            resident += _allocated(count * 2)
+            staging = max(staging, _allocated(count * 2))
+        elif kind is not None and len(shape) == 2:
             resident += resident_bytes(kind, *shape)
             # the BF16 source stays live while its copy is built
             staging = max(staging, count * 2 + staging_bytes(kind, *shape))

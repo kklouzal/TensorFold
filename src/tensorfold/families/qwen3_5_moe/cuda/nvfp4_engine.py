@@ -19,7 +19,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                  yarn_factor=None):
         if type(drafter_bits) is not int or drafter_bits not in (0, 4, 8, 16):
             raise ValueError("Qwen DFlash draft precision must be 0/16 (BF16), 8 (proposal-only FP8) or 4 "
-                             "(proposal-only NVFP4)")
+                             "(proposal-only affine4 comparison reference)")
         if type(allow_copy) is not bool or vram_experts_pin not in ("off", "auto", "on"):
             raise ValueError("copy proposals require a bool; expert pin policy must be off, auto or on")
         self._lifecycle = threading.Condition()

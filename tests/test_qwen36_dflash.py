@@ -175,15 +175,63 @@ def test_drafter_precision_copies_only_a_floating_head_and_accounts_for_its_owne
 
     monkeypatch.setattr(dflash, "Head", copy_head)
     monkeypatch.setattr(dflash, "requantize", copy_projection)
+    affine = []
+    monkeypatch.setattr(dflash, "quantize4", lambda value: affine.append(value) or CpuLinear(value))
+    monkeypatch.setattr(dflash, "tile", lambda value: value)
     draft = dflash.DFlash(directory, target, context_limit=64, bits=bits)
-    kind = {4: "nvfp4", 8: "fp8"}.get(bits)
+    kind = {8: "fp8"}.get(bits)
     assert target.head is original                            # proposal precision never replaces the target head
     assert projections == ([kind] * sum(w.ndim == 2 for w in arrays.values()) if kind else [])
+    assert len(affine) == (sum(w.ndim == 2 for w in arrays.values()) if bits == 4 else 0)
     assert copies == ([(original, kind)] if floating and kind else [])
     assert (draft.target_head is original) == (not floating or kind is None)
     with_head = draft_weights(directory, bits=bits)
     borrowed = draft_weights(directory, bits=bits, private_head=False)
     assert with_head.resident - borrowed.resident == (resident_bytes(kind, cfg.vocab, cfg.hidden) if kind else 0)
+
+
+def test_affine_reference_uses_original_projection_bytes_and_borrows_the_head(fixture):
+    from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
+    from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
+
+    directory, _raw, _cfg, arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=4)
+    assert draft.target_head is target.head
+    allocations = [draft.inv_freq.numel() * draft.inv_freq.element_size()]
+    for name, value in arrays.items():
+        if value.ndim == 2:
+            reference, actual = tile(quantize4(value)), draft.linears[name]
+            assert (actual.n, actual.k, actual.gs, actual.bits, actual.layout) == (
+                reference.n, reference.k, 64, 4, "tiled")
+            for field in ("weight", "scales", "biases"):
+                left, right = getattr(actual, field), getattr(reference, field)
+                assert left.stride() == right.stride() and torch.equal(left.view(torch.uint8), right.view(torch.uint8))
+                allocations.append(left.untyped_storage().nbytes())
+        else:
+            assert torch.equal(draft.weights[name], value)
+            # This CPU fixture can borrow the Reader's larger host ring. The CUDA .to() owns only this payload.
+            allocations.append(draft.weights[name].numel() * draft.weights[name].element_size())
+    assert draft_weights(directory, bits=4).resident == sum(-(-size // 512) * 512 for size in allocations)
+
+
+@pytest.mark.parametrize("n,k", [(64, 64), (128, 64), (192, 128), (4096, 128), (4160, 64)])
+def test_affine_reference_admission_covers_padded_pack_lifetimes(n, k):
+    from tensorfold.cuda.kernels import qmm
+    from tensorfold.families.qwen3_5_moe.dflash_metadata import _affine4_bytes
+
+    # Observe the original owned packer's actual stored layout and the widest chunk, independently of admission.
+    words = torch.zeros((n, k // 8), dtype=torch.int32)
+    scales = torch.ones((n, k // 64), dtype=torch.bfloat16)
+    packed = qmm.pack(words, scales, scales, 64)
+    rounded = lambda size: -(-size // 512) * 512
+    held, staging = _affine4_bytes(n, k)
+    retained = [packed.weight, packed.scales, packed.biases]
+    assert held == sum(rounded(t.untyped_storage().nbytes()) for t in retained)
+    rows = min(packed.weight.shape[0] * 64, 4096)
+    # BF16 source; untiled input; offsets/shifts; block, q, picked, previous packed, and two full int64 temporaries.
+    source = [n * k * 2, words.numel() * 4, scales.numel() * 2, scales.numel() * 2, 512, 32, 64]
+    chunk = [rows * k // 2, rows * k * 4, rows * k * 4, rows * k // 2, rows * k * 8, rows * k * 8]
+    assert sum(map(rounded, source + chunk)) <= staging
 
 
 @pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])

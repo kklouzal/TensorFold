@@ -141,8 +141,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "pulled; none: no draft model")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
-                            "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
-                            "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
+                            "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (affine4 comparison reference); "
+                            "FP8 copies a floating target head; affine4 borrows the target head. CUDA Gemma4 DFlash: "
                             "16 (default), or 8 (FP8) only with a BF16 tied target head. The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block (Qwen MoE NVFP4 CUDA; default: "

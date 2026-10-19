@@ -1,10 +1,10 @@
 """Owned Qwen DFlash v1 block proposals; every committed token is target-verified.
 
-No checkpoint Python is imported. BF16 storage is retained by default. Explicit FP8
-(8: one scale an output row) or NVFP4 (4: an E4M3 scale per 16 inputs and one global
-scale) requantizes the projections and a private copy of a floating target head
-(tensorfold.cuda.requant); a checkpoint's quantized target head is borrowed as it
-is. These change proposals only; target weights, sampling and commits are separate.
+No checkpoint Python is imported. BF16 storage is retained by default. This comparison
+reference restores affine4 projections with the borrowed target head for explicit4.
+Explicit8 retains FP8 projections and a private copy of a floating target head;
+a checkpoint's quantized target head is borrowed. These change proposals only;
+target weights, sampling and commits are separate.
 Snapshots share immutable K/V tensors and own their per-layer lists.
 
 A round's proposals stop where the drafter's own confidence runs out (``stop_score``): every draft row is verified
@@ -24,9 +24,11 @@ from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
 from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
+from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
 from ..dflash_metadata import KINDS, checked_headers, floating_head, positive
@@ -62,7 +64,7 @@ class DFlash:
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, stop_score=STOP_SCORE):
         if type(bits) is not int or bits not in (4, 8, 16):
-            raise ValueError("DFlash bits must be 16, or explicit proposal-only FP8 (8) or NVFP4 (4)")
+            raise ValueError("DFlash bits must be 16, or explicit proposal-only FP8 (8) or affine4 (4)")
         cfg, _ = checked_headers(draft_dir)
         if (target.config.hidden, target.config.layers, target.config.vocab) != (cfg.hidden, cfg.target_layers, cfg.vocab):
             raise ValueError("DFlash hidden width, target layer count and vocabulary must match the target")
@@ -90,7 +92,8 @@ class DFlash:
             for name, shape in cfg.shapes().items():
                 value = reader.get(name).to(self.device).contiguous()
                 if len(shape) == 2:
-                    self.linears[name] = requantize(value, KINDS[bits]) if bits in KINDS else Plain(value)
+                    self.linears[name] = (tile(quantize4(value)) if bits == 4 else
+                                          requantize(value, KINDS[bits]) if bits in KINDS else Plain(value))
                 else:
                     self.weights[name] = value
         except BaseException as primary:  # noqa: BLE001 - preserve the primary if reader rollback transport fails
