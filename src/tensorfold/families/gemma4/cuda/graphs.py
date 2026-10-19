@@ -59,9 +59,10 @@ class Graphs:
         """
         state = self.state
         start = state.position
+        smallest = min(self.limit, self.span)
         for rows in range(1, min(self.max_rows, state.context - start) + 1):
             for tap in taps:
-                if self.chunks(start + rows) == self.span:
+                if self.chunks(start + rows) == smallest:
                     self.forward([0] * rows, state, output_taps=tap)
                     state.rollback(start)
         return len(self.graphs)

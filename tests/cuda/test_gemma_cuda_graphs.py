@@ -48,18 +48,20 @@ def test_graphs_refuse_foreign_states_and_oversized_rounds():
     assert state.position == 3 and not state.poisoned
 
 
-def test_startup_prepares_only_smallest_grids_and_larger_grids_capture_on_first_use():
+@pytest.mark.parametrize("span,smallest,after", [(1, 1, 7), (16, 4, 6)])
+def test_startup_prepares_the_context_clipped_smallest_grid_and_larger_grids_capture_on_first_use(
+        span, smallest, after):
     model = target()
     eager, staged = model.make_state(1600, rows=128), model.make_state(1600, rows=128)
-    graphs = Graphs(model, staged, max_rows=3, span=1)
+    graphs = Graphs(model, staged, max_rows=3, span=span)
     assert graphs.prepare() == 6
-    assert staged.position == 0 and {key[1] for key in graphs.graphs} == {1}
+    assert staged.position == 0 and {key[1] for key in graphs.graphs} == {smallest}
     tokens = [(5 * i + 1) % 128 for i in range(600)]
     for state in (eager, staged):
         for start in range(0, len(tokens), 100):
             model.forward(tokens[start:start + 100], state, output_logits=False, output_taps=False)
     expected = model.forward([5, 6], eager, output_taps=True, trusted_tokens=True)
     result = graphs.forward([5, 6], staged, output_taps=True)
-    assert len(graphs.graphs) == 7 and (2, 2, True) in graphs.graphs
+    assert len(graphs.graphs) == after and (2, max(2, smallest), True) in graphs.graphs
     assert torch.equal(result.logits, expected.logits) and torch.equal(result.hidden, expected.hidden)
     assert all(torch.equal(result.taps[layer], expected.taps[layer]) for layer in expected.taps)
