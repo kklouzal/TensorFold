@@ -199,6 +199,8 @@ def main() -> int:
     pairs = [r.split("=", 1) for r in args.rename]
     if any(len(p) != 2 or not all(p) for p in pairs) or len({p[0] for p in pairs}) != len(pairs):
         ap.error("--rename takes distinct CHECKPOINT_PREFIX=MODEL_PREFIX pairs")
+    if nested := [(a, b) for a, _ in pairs for b, _ in pairs if a != b and b.startswith(a)]:
+        ap.error(f"--rename prefixes {nested[0]} overlap: a key under both would depend on the argument order")
     renames = dict(pairs)
 
     import torch

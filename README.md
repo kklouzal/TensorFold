@@ -863,7 +863,8 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   token-id prompt extension through `/v1/completions`) and drafted-against-serial (`"draft": false`) identity;
   thresholds are arguments. A determinism or identity comparison whose path the server did not exercise (by the
   `cached` count of the stats block, or a greedy reply that verified no draft) makes the gate `incomplete`, never a
-  pass; exit status 1 = fail, 3 = incomplete.
+  pass; exit status 1 = fail, 3 = incomplete, 4 = error (a refusal or a tool/server failure: status `error` with
+  the reason, never a verdict).
 - `campaign_bench.py run` and `campaign_gates.py` take `--progress FILE`: a heartbeat for an external watchdog,
   replaced atomically at each phase change and otherwise at most once a second, naming the phase (`prefill` until a
   stream's first generated text, reasoning or tool-call delta, then `decode`; `wait` for a non-streamed reply; `idle`
@@ -896,7 +897,7 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   intervals as `uncalibrated`. The margins shrink with the eval set's item count, so eval sets are sized for
   sensitivity.
   Non-finite KL values (NaN or -inf log-probabilities) stop the comparison. Exit status 1 = fail, 3 = incomplete or
-  uncalibrated.
+  uncalibrated, 4 = error (any refusal, written as status `error` with the reason; neither pass nor fail).
 - `tools/campaign_golden.py` writes that golden reference: the eval set teacher-forced through the
   pre-quantization BF16 checkpoint with Hugging Face transformers, every decoder layer computed in float32 (TF32
   off for matmuls), in the campaign_kl dump format. `--rename CHECKPOINT_PREFIX=MODEL_PREFIX` loads a checkpoint
