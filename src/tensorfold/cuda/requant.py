@@ -11,11 +11,19 @@ Both use this module, which builds copies on the existing kernels of ``tensorfol
 
 Every copy is quantized in row chunks so its FP32 working set stays bounded (a vocabulary head has 0.25M rows); the
 caller may free the source afterwards. ``resident_bytes`` / ``staging_bytes`` give admission its bytes.
+
+Target layers follow a process policy (``set_targets``): which groups of target weights load requantized. Owner: the
+CUDA ``tensorfold serve`` path, which sets it from --head-bits / --gdn-bits before any weights load. Lifetime: the
+process. Loaders and their byte estimates read it (``target_kind`` / ``target_copy``); the first read fixes it, after
+which ``set_targets`` with other values raises, so every load in the process sees one policy. Reset: only ``using``,
+a scoped override for tests that restores the previous policy, its fixed state and its record of applied groups.
+Loading is single-threaded startup work: nothing here is synchronized.
 """
 
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 
 import torch
 
@@ -111,6 +119,69 @@ class Head:
         return logits
 
 
+GROUPS = ("head", "gdn")    # the vocabulary head; Gated DeltaNet projections a checkpoint stores BF16
+BITS = {8: "fp8"}           # --head-bits / --gdn-bits value -> kind (16: as stored)
+_targets: dict[str, str] = {}
+_fixed = False
+_applied: set[str] = set()
+
+
+def set_targets(**kinds: str) -> None:
+    """``group=kind`` for each target group requantized at load (e.g. ``head="fp8"``); other groups load as stored."""
+
+    global _targets
+    unknown = sorted(set(kinds) - set(GROUPS))
+    if unknown:
+        raise ValueError(f"requantization groups are {GROUPS}, not {unknown}")
+    for kind in kinds.values():
+        _checked(kind)
+    if _fixed and kinds != _targets:
+        raise RuntimeError("the requantization policy is fixed once a weight load has read it")
+    _targets = dict(kinds)
+
+
+def target_kind(group: str) -> str | None:
+    """The kind a loader requantizes ``group`` to (None: as stored); the first read fixes the policy."""
+
+    global _fixed
+    if group not in GROUPS:
+        raise ValueError(f"requantization groups are {GROUPS}, not {group!r}")
+    _fixed = True
+    return _targets.get(group)
+
+
+def target_copy(group: str, weight: torch.Tensor):
+    """``requantize(weight, kind)`` when the policy names ``group`` (recorded as applied), else None."""
+
+    kind = target_kind(group)
+    if kind is None:
+        return None
+    copy = requantize(weight, kind)
+    _applied.add(group)
+    return copy
+
+
+def unapplied() -> list[str]:
+    """Groups the policy names that no load requantized (the checkpoint stores them otherwise, or its loader has no
+    hook): the CLI refuses those rather than serve unchanged weights under a lossy flag."""
+
+    return sorted(set(_targets) - _applied)
+
+
+@contextmanager
+def using(**kinds: str):
+    """A policy inside the block (tests), unfixed and with nothing applied; the previous state after."""
+
+    global _targets, _fixed, _applied
+    was = _targets, _fixed, _applied
+    _targets, _fixed, _applied = {}, False, set()
+    try:
+        set_targets(**kinds)
+        yield
+    finally:
+        _targets, _fixed, _applied = was
+
+
 def resident_bytes(kind: str, n: int, k: int) -> int:
     """Device bytes a ``kind`` copy of an [N, K] weight keeps: codes over 128-padded rows and an FP32 scale a row."""
 
@@ -127,5 +198,5 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
     return min(n, CHUNK_ROWS) * k * 9 + n * k + min(n, FRAGMENT_ROWS) * k * 17
 
 
-__all__ = ["CHUNK_ROWS", "E4M3_MAX", "Head", "KINDS", "prefix", "requant_rows", "requantize", "resident_bytes",
-           "staging_bytes"]
+__all__ = ["BITS", "CHUNK_ROWS", "E4M3_MAX", "GROUPS", "Head", "KINDS", "prefix", "requant_rows", "requantize",
+           "resident_bytes", "set_targets", "staging_bytes", "target_copy", "target_kind", "unapplied", "using"]

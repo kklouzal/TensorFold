@@ -323,6 +323,13 @@ def _backend(choice: str, family: Any) -> str:
     return backend
 
 
+def _requantized(args: argparse.Namespace) -> dict[str, int]:
+    """The target weight groups --head-bits / --gdn-bits ask to requantize, with their bits (16: as stored)."""
+
+    asked = {"head": getattr(args, "head_bits", None), "gdn": getattr(args, "gdn_bits", None)}
+    return {group: bits for group, bits in asked.items() if bits not in (None, 16)}
+
+
 def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context: int | None = None) -> int:
     """Serve a CUDA configuration already validated by ``cmd_serve`` before its weight resolution."""
 
@@ -383,12 +390,14 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     served = args.name or (args.model.rstrip("/").split("/")[-1] if hub.is_repo_id(args.model) else model_dir.name)
     where = f", rank {args.rank} of {args.tp}" if args.tp > 1 else ""
     print(f"[tensorfold] loading {served}: {family.title} ({family.model_type}) on CUDA{where}", flush=True)
-    from tensorfold.cuda import precision, prompt_precision
+    from tensorfold.cuda import precision, prompt_precision, requant
 
     asked = getattr(args, "prefill_fp8", None)
     prompt_precision.set_fp8(prompt_precision.FP8_BY_DEFAULT if asked is None else asked)  # before any weight loads
     chosen = getattr(args, "precision", None)
     precision.set_mode(chosen or precision.CHECKPOINT, asked=chosen is not None)
+    requantized = _requantized(args)
+    requant.set_targets(**{group: requant.BITS[bits] for group, bits in requantized.items()})  # before weight loads
     engine = family.package.cuda_engine(model_dir, **options)
     owners = {"engine": engine}
     primary = None
@@ -412,6 +421,14 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                 "--prefill-fp8: this checkpoint's prompt matmuls have no FP8 kernel (EXL3 packs, MLX formats "
                 "other than Qwen's 4-bit g64, Flash Next without MXFP8 layers); drop the flag"
             )
+        unchanged = requant.unapplied()
+        if unchanged:   # a lossy flag that changed no weight is refused, never served as if it had
+            raise ValueError(", ".join(f"--{group}-bits {requantized[group]}" for group in unchanged)
+                             + ": this checkpoint stores no BF16 weights there (only BF16 heads and GDN projections "
+                               "of NVFP4/FP8 checkpoints are requantized); drop the flag")
+        if requantized:
+            print(f"[tensorfold] requantized at load (lossy): {', '.join(sorted(requantized))} as FP8 E4M3, a scale "
+                  "per output row", flush=True)
         stacks.arm()  # its warmup may have loaded a compiler that took USR1
         if (args.tp > 1 or getattr(args, "expert_ranks", 1) > 1) and args.rank != 0:
             print(f"[tensorfold] rank {args.rank} ready in {time.perf_counter() - started:.1f}s, following rank 0", flush=True)

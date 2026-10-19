@@ -723,30 +723,66 @@ def test_qwen_moe_invalid_mtp_cap_refuses_before_resolving_checkpoint_weights(tm
         cli.cmd_serve(args)
 
 
-def test_the_drafter_precision_flag_reaches_only_the_families_that_declare_it(tmp_path, monkeypatch, request):
-    """``--drafter-bits`` is refused on a CUDA family that does not declare ``CUDA_DRAFTER_BITS`` (never silently
-    ignored) and reaches the engine of one that does; MLX families read it in their own loaders."""
+def test_the_requantization_flags_reach_only_the_families_that_declare_them(tmp_path, monkeypatch, request, capsys):
+    """``--head-bits`` / ``--gdn-bits`` parse 16 or 8; 8 (lossy) is refused unless the family's CUDA engine declares
+    ``CUDA_HEAD_BITS`` / ``CUDA_GDN_BITS`` and runs on one GPU, and ``--drafter-bits`` unless it declares
+    ``CUDA_DRAFTER_BITS``: none is silently ignored. Declared, the requantization policy is set before the engine
+    loads; a flag that changed no weight is refused after loading, and one that did is named at startup."""
 
     import tensorfold.cuda.server as server
+    from tensorfold.cuda import requant
     from tensorfold.serve_options import check
 
     parser = cli.build_parser()
-    plain, declared = _family(), _family(CUDA_DRAFTER_BITS=True)
+    assert parser.parse_args(["serve", "owner/model"]).head_bits is None
+    assert parser.parse_args(["serve", "owner/model", "--gdn-bits", "8"]).gdn_bits == 8
+    for flag in ("--head-bits", "--gdn-bits"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["serve", "owner/model", flag, "4"])
+    plain = _family()
+    declared = _family(CUDA_HEAD_BITS=True, CUDA_GDN_BITS=True, CUDA_DRAFTER_BITS=True)
     for family in (plain, declared):
         family.model_type = "test"
 
     def args(*flags):
         return parser.parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
 
+    with pytest.raises(ValueError, match="--head-bits 8: Test family on CUDA runs its checkpoint's own head"):
+        check(args("--head-bits", "8"), plain, "cuda")
+    with pytest.raises(ValueError, match="--gdn-bits 8: Test family on MLX runs its checkpoint's own GDN"):
+        check(args("--gdn-bits", "8"), declared, "mlx")
+    with pytest.raises(ValueError, match="--head-bits 8 runs on one GPU"):
+        check(args("--head-bits", "8", "--tp", "2", "--master", "192.0.2.11"), declared, "cuda")
     with pytest.raises(ValueError, match="--drafter-bits: Test family on CUDA"):
         check(args("--drafter-bits", "8"), plain, "cuda")
-    check(args("--drafter-bits", "8"), declared, "cuda")
-    check(args("--drafter-bits", "8"), plain, "mlx")
+    check(args("--head-bits", "16", "--gdn-bits", "16"), plain, "cuda")
+    check(args("--head-bits", "16"), plain, "mlx")
+    check(args("--head-bits", "8", "--gdn-bits", "8", "--drafter-bits", "8"), declared, "cuda")
+    check(args("--drafter-bits", "8"), plain, "mlx")                 # MLX families read it in their own loaders
 
-    made = []
     monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
     install_cli_server(monkeypatch, request, server)
-    declared.package.cuda_engine = lambda *a, **k: made.append(k) or cuda_cli_engine(max_len=8192)
-    for flags, expected in ((["--drafter-bits", "8"], 8), ([], None)):
-        assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
-        assert made[-1].get("drafter_bits") == expected
+    monkeypatch.setattr(requant, "requantize", lambda weight, kind: ("copy", kind))   # no GPU: a stand-in copy
+    seen = []
+
+    def engine(applies):
+        def make(*a, **k):                    # a loader: reads the policy, copies the groups it holds BF16
+            seen.append(({g: requant.target_kind(g) for g in requant.GROUPS}, k.get("drafter_bits")))
+            for group in applies:
+                requant.target_copy(group, object())
+            return cuda_cli_engine(max_len=8192)
+        return make
+
+    for flags, applies, policy, drafter in (
+            (["--head-bits", "8", "--drafter-bits", "8"], ["head"], {"head": "fp8", "gdn": None}, 8),
+            (["--head-bits", "8", "--gdn-bits", "8"], ["head", "gdn"], {"head": "fp8", "gdn": "fp8"}, None),
+            ([], [], {"head": None, "gdn": None}, None)):
+        declared.package.cuda_engine = engine(applies)
+        with requant.using():
+            assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
+        assert seen[-1] == (policy, drafter)
+        named = "requantized at load (lossy)" in capsys.readouterr().out
+        assert named == bool(applies)
+    declared.package.cuda_engine = engine([])                              # the checkpoint's head is not BF16
+    with requant.using(), pytest.raises(ValueError, match="--gdn-bits 8: this checkpoint stores no BF16"):
+        cli._serve_cuda(args("--no-drafts", "--gdn-bits", "8"), declared, tmp_path, 8192)

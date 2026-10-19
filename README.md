@@ -395,6 +395,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
 | `--decode-share F` | MLX default `0.25`, leaving replies progressing during chunked prefill. Flash Next CUDA shared rounds default 0; a positive share sizes prompt passes to allow decoding inside them. |
 | `--prefill-fp8`, `--no-prefill-fp8` | CUDA supported prompt kernels; default BF16 activations. FP8 prefill explicitly reduces activation precision. |
+| `--head-bits 16\|8`, `--gdn-bits 16\|8` | CUDA default `16`: the checkpoint's BF16 output head / Gated DeltaNet projections (`in_proj_qkv`, `in_proj_z`, `out_proj`) as stored. `8` is lossy and never a default: FP8 E4M3 copies made at load, a scale per output row, reading half those weights' bytes a decode step. Qwen3.6 MoE and Qwen3.8 dense CT/ModelOpt checkpoints on one GPU accept them; other engines refuse them, and so does a checkpoint that stores no BF16 weights there. |
 | `--precision checkpoint\|full` | CUDA NVFP4 default `checkpoint`: checkpoint-native math when supported, with the documented stored-weight path otherwise. `full` uses BF16 activations against stored weights. |
 | `--tp N` | Default 1; tensor-parallel counts remain family-specific. Matching checkpoint/configuration is required across ranks. |
 | `--expert-ranks 1\|2\|3\|4` | Default 1. Flash Next affine4/NVFP4 RAM experts, same-host NCCL; requires `--tp 1` and `--vram-experts`. Rank zero owns backbone/state; followers own disjoint routed experts. |

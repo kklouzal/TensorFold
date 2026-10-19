@@ -232,6 +232,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "docs/recipes/cuda.md#prompt-precision has the measured cost). Default: "
                            f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Replies equal this server's own serial "
                            "decoding either way")
+    cuda.add_argument("--head-bits", type=int, choices=(16, 8), default=None,
+                      help="the output head's (lm_head) weights: 16, the default, runs the checkpoint's BF16 head; 8 "
+                           "runs an FP8 E4M3 copy made at load, with a scale per vocabulary row, which reads half the "
+                           "head's bytes a decode step and changes scores slightly (lossy; Qwen3.6 MoE and Qwen3.8 "
+                           "dense CT/ModelOpt checkpoints). Replies equal this server's own serial decoding either way")
+    cuda.add_argument("--gdn-bits", type=int, choices=(16, 8), default=None,
+                      help="Gated DeltaNet projections (in_proj_qkv, in_proj_z, out_proj) a checkpoint stores BF16: "
+                           "16, the default, runs them as stored; 8 runs FP8 E4M3 copies made at load, a scale per "
+                           "output row (lossy, as --head-bits 8). Replies equal this server's own serial decoding "
+                           "either way")
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "
                            "default, runs their own math as their runtimes do (FP4 x FP4 in NVFP4 layers on SM 12.x "
