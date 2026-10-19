@@ -65,14 +65,24 @@ def fragment_index(k: int, npad: int, device) -> tuple[torch.Tensor, torch.Tenso
     return kk.expand(shape), nn.expand(shape)
 
 
+FRAGMENT_ROWS = 4096          # rows (a multiple of 64) ``_fragment_order`` gathers at a time
+
+
 def _fragment_order(codes: torch.Tensor, npad: int) -> torch.Tensor:
-    """e4m3 bytes [N, K] -> ``qmm_prefill8w``'s order [npad/64][K/64][8][32][2][8] (fragment lanes, k32 halves)."""
+    """e4m3 bytes [N, K] -> ``qmm_prefill8w``'s order [npad/64][K/64][8][32][2][8] (fragment lanes, k32 halves).
+
+    The order is row-tile major, so it is built ``FRAGMENT_ROWS`` rows at a time: the gather's int64 index tensors stay
+    that many rows wide instead of npad (a 248k-row vocabulary head's would take several GiB). From agent E."""
 
     n, k = codes.shape
-    padded = torch.zeros((npad, k), dtype=torch.uint8, device=codes.device)
-    padded[:n] = codes
-    kk, nn = fragment_index(k, npad, codes.device)
-    return padded.t()[kk, nn].contiguous().view(-1)
+    out = torch.empty((npad * k,), dtype=torch.uint8, device=codes.device)
+    for r0 in range(0, npad, FRAGMENT_ROWS):
+        r1 = min(r0 + FRAGMENT_ROWS, npad)
+        padded = torch.zeros((r1 - r0, k), dtype=torch.uint8, device=codes.device)
+        padded[:max(0, min(r1, n) - r0)] = codes[r0:min(r1, n)]
+        kk, nn = fragment_index(k, r1 - r0, codes.device)
+        out[r0 * k:r1 * k] = padded.t()[kk, nn].reshape(-1)
+    return out
 
 
 _ONES: dict[str, torch.Tensor] = {}
