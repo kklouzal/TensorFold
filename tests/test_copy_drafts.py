@@ -4,12 +4,14 @@ import ast
 from collections.abc import Sequence
 from pathlib import Path
 
+from tensorfold.families.qwen3_5.cuda.draft_tree import COPY_MIN_MATCH
+
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen3_5/cuda/decode.py"
 parsed = ast.parse(SOURCE.read_text())
 definitions = [node for node in parsed.body if isinstance(node, (ast.ClassDef, ast.FunctionDef))
                and node.name in {"CopyIndex", "copy_chain"}]
-namespace = {"Sequence": Sequence}
+namespace = {"Sequence": Sequence, "COPY_MIN_MATCH": COPY_MIN_MATCH}
 exec(compile(ast.Module(body=definitions, type_ignores=[]), str(SOURCE), "exec"), namespace)
 CopyIndex, copy_chain = namespace["CopyIndex"], namespace["copy_chain"]
 COPY_MATCH = 8
