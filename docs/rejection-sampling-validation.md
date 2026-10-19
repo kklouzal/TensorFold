@@ -31,6 +31,15 @@ logical proposal and its actual `q` through grammar pruning, row limits and repl
 The archived core's fallback after an empty residual is not an accepted recovery
 policy.
 
+Probability rows represent categorical laws: the stored nonnegative FP64 values
+are normalized by their represented sum. Acceptance accounts for both row sums.
+An outward-rounded interval resolves ordinary comparisons; ambiguous comparisons
+use exact integer arithmetic on the represented values. A rejected proposal uses
+the exact positive difference between those normalized laws before converting the
+normalized residual back to FP64. An empty residual cannot silently select from
+the original target row. The keyed binary64 uniform grid has 52 midpoint bits,
+so every generated uniform is representable and strictly between zero and one.
+
 The migration also corrects a pre-existing stochastic numerical defect. With
 large finite equal logits such as `[1e30, 1e30]`, adding Gumbel noise to absolute
 scaled scores rounded the noise away and selected the first token every time.
