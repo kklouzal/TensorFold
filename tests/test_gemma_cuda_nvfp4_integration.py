@@ -33,8 +33,10 @@ def test_admission_retains_one_bf16_tied_head_and_original_native_payloads(tmp_p
     monkeypatch.setattr(common, "headers", lambda directory: headers)
     captured = {}
 
-    def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator):
+    def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
+                 device_workspace_bytes, host_workspace_bytes):
         captured["weights"], captured["host_staging"] = weight_estimator(directory)
+        assert device_workspace_bytes == host_workspace_bytes == 0  # no companion: no rejection workspace
         return {"context_window": context}
 
     monkeypatch.setattr(common, "admit", admitted)
