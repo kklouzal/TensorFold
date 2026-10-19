@@ -12,6 +12,7 @@ import torch
 from tensorfold.cuda import moe
 from tensorfold.cuda.kernels import attention as tree_attention
 from tensorfold.cuda.kernels import gdn as deltanet
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from .qmm_fast import matmul, matmul_group
@@ -29,7 +30,7 @@ def _mm_group(x: torch.Tensor, ws: list, xs: torch.Tensor | None = None) -> list
 
     if all(isinstance(w, QLinear) for w in ws):
         return matmul_group(x, ws, xs)
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None]   # checkpoint math: quantize once
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)]   # checkpoint math: quantize once
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint
@@ -291,7 +292,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
-                                    head_dim=c.head_dim)
+                                    head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)
@@ -399,7 +400,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
-                                    head_dim=c.head_dim)
+                                    head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)

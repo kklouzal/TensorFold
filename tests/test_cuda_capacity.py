@@ -56,6 +56,7 @@ def checkpoint(path, config, tensors):
         stream.truncate(8 + len(raw) + offset)  # sparse, valid isolated payload; no model data is loaded
 
 
+@pytest.mark.usefixtures("default_memory_policy")
 @pytest.mark.parametrize("integrated", [False, True])
 def test_explicit_reserve_and_absolute_cap_apply_to_the_same_grant(monkeypatch, integrated):
     from tensorfold.cuda import capacity

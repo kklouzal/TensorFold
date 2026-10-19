@@ -1,4 +1,5 @@
-"""NVFP4 checkpoints in their own math: rows quantized under the static input scales, FP4 x FP4 and FP8 x FP8."""
+"""NVFP4 checkpoints in their own math: rows quantized under the static input scales (or, for per-token FP8, each
+row under its own), FP4 x FP4 and FP8 x FP8."""
 
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_ck_v6",
+    return load(name="tensorfold_nvfp4_ck_v7",
                 sources=[str(here / "checkpoint.cpp"), str(here / "act.cu"), str(here / "lane4.cu"),
                          str(here / "gemm_ck.cu"), str(here / "gemm_ws.cu")],
                 need=MIN_CAPABILITY, arch_specific=precision.own_math(_capability())["nvfp4"],
@@ -89,6 +90,24 @@ def quant8(x: torch.Tensor, act: float, tb: int = 0) -> torch.Tensor:
     return out
 
 
+def quant8_token(x: torch.Tensor, tb: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+    """bf16 rows -> (e4m3(x / s), s) with each row's own scale s = max(amax / 448, 1 / (448 * 512)) (dynamic per-token
+    FP8, vLLM's rule), the bytes laid out as ``quant8``'s; scales (M,) fp32."""
+
+    x = _rows(x)
+    m, k = x.shape
+    out = torch.empty((-(-m // tb) * tb if tb else m, k), dtype=torch.uint8, device=x.device)
+    scales = torch.empty((m,), dtype=torch.float32, device=x.device)
+    _ext().quant8_token(x, out, scales, tb)
+    return out, scales
+
+
+def native(lin) -> bool:
+    """Whether a projection runs in the checkpoint's own math (a static input scale, or per-token FP8 rows)."""
+
+    return getattr(lin, "act", None) is not None or getattr(lin, "token", False)
+
+
 def pack4(weight: torch.Tensor, npad: int) -> torch.Tensor:
     """NVFP4 checkpoint bytes [N, K/2] -> the FP4 lane matmul's words [npad/64, K/64, 8, 32, 2] (int32)."""
 
@@ -104,15 +123,36 @@ def alpha(act: float, scale: float) -> float:
     return float(torch.tensor(act, dtype=torch.float32) * torch.tensor(scale, dtype=torch.float32))
 
 
-def _rowsq(mode: int, x: torch.Tensor, act: float, tb: int = 0, *, inverse: float | None = None):
-    """Rows quantized for ``mode`` under the static input scale ``act`` (``tb``: the prompt GEMM's tiles)."""
+def _rowsq(mode: int, x: torch.Tensor, act: float | None, tb: int = 0, *, inverse: float | None = None,
+           token: bool = False):
+    """Rows quantized for ``mode`` under the static input scale ``act``, or (``token``) FP8 rows each under its own
+    scale, their scales second (``tb``: the prompt GEMM's tiles)."""
 
-    return quant4(x, act, tb, inverse=inverse) if mode == A4 else (quant8(x, act, tb), None)
+    if mode == A4:
+        return quant4(x, act, tb, inverse=inverse)
+    return quant8_token(x, tb) if token else (quant8(x, act, tb), None)
 
 
-def _quantization_key(lin) -> tuple[float, float | None]:
-    """Equal direct scales do not prove equal original CT multipliers."""
+def _rows_of(mode: int, x: torch.Tensor, lin, tb: int = 0):
+    """``_rowsq`` as ``lin`` declares its rows."""
+
+    return _rowsq(mode, x, lin.act, tb, inverse=getattr(lin, "act_inverse", None), token=getattr(lin, "token", False))
+
+
+def _quantization_key(lin) -> tuple:
+    """Rows quantized alike: per-token rows depend on the row alone; equal direct scales do not prove equal original
+    CT multipliers."""
+    if getattr(lin, "token", False):
+        return ("token",)
     return float(lin.act), getattr(lin, "act_inverse", None)
+
+
+def _scales(mode: int, rows, lin) -> tuple[float, torch.Tensor | None, torch.Tensor | None]:
+    """The output factor: the input scale times the weight's, or per-token rows' scales and the channel scales."""
+
+    if mode == A8 and getattr(lin, "token", False):
+        return 1.0, rows[1], lin.cols
+    return alpha(lin.act, lin.scale), None, None
 
 
 def _out(m: int, lin, out: torch.Tensor | None, f32: bool) -> torch.Tensor:
@@ -155,8 +195,9 @@ def _lane(mode: int, rows, lin, y: torch.Tensor, f32: bool) -> None:
     sk = qmm.split_k(lin.n, lin.k)
     part = torch.empty((sk, m, lin.n), dtype=torch.float32, device=y.device) if sk > 8 else None
     w, ws = (lin.words, lin.bs) if mode == A4 else (lin.w8, None)
-    _ext().lane(mode, rows[0], rows[1], w, ws, alpha(lin.act, lin.scale), y, part, lin.n, lin.k, sk, lin.npad,
-                lane_tile(m, lin.n, sk, sm_count()), f32)
+    factor, rs, cs = _scales(mode, rows, lin)
+    _ext().lane(mode, rows[0], rows[1] if mode == A4 else None, w, ws, factor, rs, cs, y, part, lin.n, lin.k, sk,
+                lin.npad, lane_tile(m, lin.n, sk, sm_count()), f32)
 
 
 def _tb(tile: int) -> int:
@@ -168,7 +209,8 @@ def _tb(tile: int) -> int:
 def _gemm(mode: int, rows, lin, y: torch.Tensor, f32: bool, tile: int = 0) -> None:
     w, ws = (lin.words, lin.bs) if mode == A4 else (lin.w8, None)
     run = _ext().gemm_ws if bulk_tile(tile, _capability()) else _ext().gemm
-    run(mode, rows[0], rows[1], w, ws, alpha(lin.act, lin.scale), y, lin.n, lin.k, lin.npad,
+    factor, rs, cs = _scales(mode, rows, lin)
+    run(mode, rows[0], rows[1] if mode == A4 else None, w, ws, factor, rs, cs, y, lin.n, lin.k, lin.npad,
         tile % WS if tile > WS else tile, f32)
 
 
@@ -176,7 +218,7 @@ def matmul(mode: int, x: torch.Tensor, lin, out: torch.Tensor | None = None, f32
     """bf16 rows (M, K) @ an NVFP4 (``A4``) or FP8 (``A8``) linear in checkpoint mode -> (M, n); K slices by shape."""
 
     y = _out(x.shape[0], lin, out, f32)
-    _lane(mode, _rowsq(mode, x, lin.act, inverse=getattr(lin, "act_inverse", None)), lin, y, f32)
+    _lane(mode, _rows_of(mode, x, lin), lin, y, f32)
     if out is not None and y is not out:
         out.copy_(y)
     return y
@@ -187,7 +229,7 @@ def prompt(mode: int, x: torch.Tensor, lin, out: torch.Tensor | None = None, f32
     """Prompt rows (M, K) bf16 @ an NVFP4 or FP8 linear in checkpoint math: one K chain a row (chunk-invariant bits)."""
 
     y = _out(x.shape[0], lin, out, f32)
-    _gemm(mode, _rowsq(mode, x, lin.act, _tb(tile), inverse=getattr(lin, "act_inverse", None)), lin, y, f32, tile)
+    _gemm(mode, _rows_of(mode, x, lin, _tb(tile)), lin, y, f32, tile)
     if out is not None and y is not out:
         out.copy_(y)
     return y
@@ -195,16 +237,15 @@ def prompt(mode: int, x: torch.Tensor, lin, out: torch.Tensor | None = None, f32
 
 def matmul_group(x: torch.Tensor, lins: list, prompt_rows: bool = False, outs: list[torch.Tensor] | None = None,
                  tile: int = 0) -> list[torch.Tensor] | None:
-    """Projections of one input under one input scale: rows quantized once, each its own bits; None if they differ."""
+    """Projections of one input quantized alike: rows quantized once, each its own bits; None if they differ."""
 
-    if len(lins) < 2 or any(getattr(lin, "act", None) is None for lin in lins):
+    if len(lins) < 2 or not all(native(lin) for lin in lins):
         return None
     modes = {A4 if hasattr(lin, "words") else A8 for lin in lins}
     if len(modes) != 1 or len({_quantization_key(lin) for lin in lins}) != 1:
         return None
     mode = modes.pop()
-    rows = _rowsq(mode, x, lins[0].act, _tb(tile) if prompt_rows else 0,
-                  inverse=getattr(lins[0], "act_inverse", None))
+    rows = _rows_of(mode, x, lins[0], _tb(tile) if prompt_rows else 0)
     outs = [_out(x.shape[0], lin, None if outs is None else outs[j], False) for j, lin in enumerate(lins)]
     for lin, y in zip(lins, outs):
         _gemm(mode, rows, lin, y, False, tile) if prompt_rows else _lane(mode, rows, lin, y, False)

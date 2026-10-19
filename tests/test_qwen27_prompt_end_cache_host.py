@@ -915,7 +915,8 @@ def _cpu_kernels(torch, monkeypatch, prefill, forward):
         return rows(lambda a, b: (a.float() * torch.rsqrt(a.float().pow(2).mean(-1, keepdim=True) + eps) * w.float()
                                   * F.silu(b.float())).reshape(-1).bfloat16(), y, z)
 
-    def attn_prep(qg, key, q_norm, k_norm, pos, inv_freq, eps, *, heads, kv_heads, head_dim, mrope_section=None):
+    def attn_prep(qg, key, q_norm, k_norm, pos, inv_freq, eps, *, heads, kv_heads, head_dim, mrope_section=None,
+                  amplitude=1.0):
         q = rows(lambda a, p: (a.float().reshape(heads, 2 * head_dim)[:, :head_dim] * q_norm.float()
                                + 1e-3 * p.float()).bfloat16(), qg, pos)
         k = rows(lambda a, p: (a.float().reshape(kv_heads, head_dim) * k_norm.float() + 1e-3 * p.float()).bfloat16(),

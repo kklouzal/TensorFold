@@ -152,10 +152,11 @@ def swiglu(gate: torch.Tensor, up: torch.Tensor):
 
 
 @triton.jit
-def _attn_prep(QG, KV, QN, KN, POS, INV, QOUT, KOUT, eps,
+def _attn_prep(QG, KV, QN, KN, POS, INV, QOUT, KOUT, eps, AMP,
                H: tl.constexpr, HKV: tl.constexpr, D: tl.constexpr, HALF: tl.constexpr,
                MROPE: tl.constexpr, ROWS: tl.constexpr, HSEC: tl.constexpr, WSEC: tl.constexpr):
-    """Program (row, head): heads 0..H-1 are queries (from [q | gate] rows), H..H+HKV-1 keys."""
+    """Program (row, head): heads 0..H-1 are queries (from [q | gate] rows), H..H+HKV-1 keys; cos/sin times ``AMP``
+    (YaRN's rotary amplitude; 1 multiplies exactly)."""
 
     row = tl.program_id(0)
     head = tl.program_id(1)
@@ -176,8 +177,8 @@ def _attn_prep(QG, KV, QN, KN, POS, INV, QOUT, KOUT, eps,
         pos = tl.load(POS + row).to(tl.float32)
         i = tl.where(d < HALF, d, tl.where(d < 2 * HALF, d - HALF, 0))
     ang = pos * tl.load(INV + i)
-    cos = tl.cos(ang)
-    sin = tl.sin(ang)
+    cos = tl.cos(ang) * AMP
+    sin = tl.sin(ang) * AMP
     # partner element for rotate-half: d < HALF pairs with d + HALF and back
     partner = tl.where(d < HALF, d + HALF, tl.where(d < 2 * HALF, d - HALF, d))
     if is_q:
@@ -196,8 +197,9 @@ def _attn_prep(QG, KV, QN, KN, POS, INV, QOUT, KOUT, eps,
 
 def attn_prep(qg: torch.Tensor, k: torch.Tensor, q_norm: torch.Tensor, k_norm: torch.Tensor,
               pos: torch.Tensor, inv_freq: torch.Tensor, eps: float, *, heads: int, kv_heads: int, head_dim: int,
-              mrope_section: tuple[int, int, int] = (11, 11, 10)):
-    """qg (W, heads*2*D) [q_h | gate_h] rows, k (W, kv_heads*D): normed and rotated q (W, H, D), k (W, HKV, D)."""
+              mrope_section: tuple[int, int, int] = (11, 11, 10), amplitude: float = 1.0):
+    """qg (W, heads*2*D) [q_h | gate_h] rows, k (W, kv_heads*D): normed and rotated q (W, H, D), k (W, HKV, D);
+    ``amplitude`` scales the rotation (YaRN's attention factor; 1 under default RoPE)."""
 
     W = qg.shape[0]
     multi = pos.ndim == 2
@@ -208,9 +210,9 @@ def attn_prep(qg: torch.Tensor, k: torch.Tensor, q_norm: torch.Tensor, k_norm: t
     pos = pos.contiguous()
     qo = torch.empty((W, heads, head_dim), dtype=torch.bfloat16, device=qg.device)
     ko = torch.empty((W, kv_heads, head_dim), dtype=torch.bfloat16, device=qg.device)
-    _attn_prep[(W, heads + kv_heads)](qg, k, q_norm, k_norm, pos, inv_freq, qo, ko, eps, H=heads, HKV=kv_heads,
-                                      D=head_dim, HALF=inv_freq.numel(), MROPE=multi, ROWS=W if multi else 0,
-                                      HSEC=mrope_section[1], WSEC=mrope_section[2], num_warps=2)
+    _attn_prep[(W, heads + kv_heads)](qg, k, q_norm, k_norm, pos, inv_freq, qo, ko, eps, float(amplitude),
+                                      H=heads, HKV=kv_heads, D=head_dim, HALF=inv_freq.numel(), MROPE=multi,
+                                      ROWS=W if multi else 0, HSEC=mrope_section[1], WSEC=mrope_section[2], num_warps=2)
     return qo, ko
 
 

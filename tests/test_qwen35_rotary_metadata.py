@@ -9,7 +9,8 @@ from tensorfold.families.qwen3_5.cuda.weights import _rotary_frequencies
 
 
 def config(theta, pairs, active):
-    return SimpleNamespace(rope_theta=theta, rope_dims=2 * pairs, layers=1, is_linear=lambda index: not active)
+    return SimpleNamespace(rope_theta=theta, rope_dims=2 * pairs, layers=1, is_linear=lambda index: not active,
+                           yarn=None)
 
 
 def legacy(cfg):

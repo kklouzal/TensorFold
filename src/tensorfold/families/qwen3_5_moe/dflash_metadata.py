@@ -119,11 +119,13 @@ def checked_headers(directory):
 
 
 def draft_weights(directory, *, bits=16):
-    """One projection is read/converted at a time; target embedding/head are borrowed."""
+    """One projection is read/converted at a time; target embedding is borrowed, the head too unless FP8 (8) copies
+    it privately (counted here: proposals only, the target keeps its BF16 head)."""
     from tensorfold.cuda.capacity import Weights
+    from tensorfold.cuda.requant import resident_bytes, staging_bytes
 
-    if type(bits) is not int or bits not in (4, 16):
-        raise ValueError("DFlash draft bits must be 16 or explicit proposal-only affine4")
+    if type(bits) is not int or bits not in (4, 8, 16):
+        raise ValueError("DFlash draft bits must be 16, or explicit proposal-only FP8 (8) or affine4 (4)")
     cfg, _ = checked_headers(directory)
     resident, staging = cfg.head_dim // 2 * 4, 0  # retained FP32 inverse frequencies
     for shape in cfg.shapes().values():
@@ -132,10 +134,16 @@ def draft_weights(directory, *, bits=16):
             rows, columns = shape
             rows = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to128
             resident += rows * columns // 2 + rows * (columns // 64) * 4
+        elif bits == 8 and len(shape) == 2:
+            resident += resident_bytes("fp8", *shape)
+            staging = max(staging, staging_bytes("fp8", *shape))
         else:
             resident += count * 2
         # affine4 conversion owns FP32 reductions/codes alongside one BF16 input.
         staging = max(staging, count * (24 if bits == 4 and len(shape) == 2 else 2))
+    if bits == 8:
+        resident += resident_bytes("fp8", cfg.vocab, cfg.hidden)
+        staging = max(staging, staging_bytes("fp8", cfg.vocab, cfg.hidden))
     return Weights(resident, staging, 0)
 
 

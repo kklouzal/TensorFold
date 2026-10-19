@@ -71,7 +71,8 @@ def name_priority(args: argparse.Namespace) -> dict[str, str]:
 
 
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
-    """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
+    """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
+    serve."""
 
     draft_rows = getattr(args, "draft_rows", None)
     if draft_rows is not None:
@@ -130,7 +131,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         check_ram(config_dir, ram, tp=getattr(args, "tp", 1))
     if getattr(args, "yarn_factor", None) is not None:
         if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
-            raise ValueError("--yarn-factor is supported by Flash Next on CUDA only")
+            raise ValueError("--yarn-factor is supported by Flash Next and Qwen3.8 dense on CUDA only")
         family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")
@@ -154,6 +155,15 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("--vision-offload needs --vision")
         if backend != "cuda":
             raise ValueError("--vision-offload is for the CUDA backend; the Mac's image tower already shares host memory")
+    if getattr(args, "tokenizer_file", None) is not None:
+        if backend != "cuda":
+            raise ValueError("--tokenizer is read by the CUDA server; MLX serves the checkpoint's tokenizer")
+        if getattr(args, "vision", False):         # the vision processors encode image prompts with their own tokenizer
+            raise ValueError("--tokenizer encodes text prompts only: image prompts would keep the checkpoint's "
+                             "tokenizer, so it cannot be combined with --vision")
+        if int(getattr(args, "tp", 1) or 1) > 1 or int(getattr(args, "expert_ranks", 1) or 1) > 1:
+            raise ValueError("--tokenizer is admitted in one process: several ranks would each compile grammars from "
+                             "their own tokenizer, unchecked against rank 0's, so it serves one rank only")
     if getattr(args, "vision", False):             # only --vision reads the config here
         if family.model_type == "glm5_next" and backend != "mlx":
             raise ValueError("GLM-5.3-Flash image input is currently MLX-only")

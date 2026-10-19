@@ -111,7 +111,7 @@ class OwnershipControls(unittest.TestCase):
                     raise DrainFailure("drain fault")
 
         self.reader = Reader
-        self.cfg = types.SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000, hidden=2)
+        self.cfg = types.SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000, hidden=2, yarn=None)
         self.modules = {}
 
         def module(name, **kw):

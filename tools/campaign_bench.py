@@ -35,6 +35,8 @@ import subprocess
 import sys
 import threading
 import time
+from typing import ClassVar
+import urllib.error
 import urllib.request
 
 if sys.version_info < (3, 11):
@@ -69,6 +71,11 @@ TASKS = {
 
 WARMUP = "Warm-up request, not measured. " + TASKS["code"]
 
+# The campaign's hold on sustained long prefills (after the 2026-10-18 GB10 hang at the start of a 32k prefill):
+# a prompt above this many tokens runs only with --allow-long-prefill (the "32k" items have ~32,760 tokens, so the
+# boundary sits well below them); held work is reported as held, never dropped silently.
+LONG_PREFILL_TOKENS = 16384
+
 T95 = (12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.160, 2.145, 2.131,
        2.120, 2.110, 2.101, 2.093, 2.086, 2.080, 2.074, 2.069, 2.064, 2.060, 2.056, 2.052, 2.048, 2.045, 2.042)
 
@@ -98,11 +105,17 @@ def interval(values: list[float]) -> dict:
 
 
 def post_json(url: str, body: dict, *, timeout: float = 600) -> dict:
+    """POST a JSON body; an HTTP error raises with the server's error message (it says why, e.g. a refusal)."""
+
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        if resp.status != 200:
-            raise ValueError(f"HTTP {resp.status} from {url}")
-        return protocol.object_json(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                raise ValueError(f"HTTP {resp.status} from {url}")
+            return protocol.object_json(resp.read())
+    except urllib.error.HTTPError as error:
+        detail = error.read(4096).decode("utf-8", "replace")
+        raise ValueError(f"HTTP {error.code} from {url}: {detail}") from error
 
 
 def get_json(url: str, *, timeout: float = 30) -> dict:
@@ -110,15 +123,77 @@ def get_json(url: str, *, timeout: float = 30) -> dict:
         return json.loads(resp.read())
 
 
+class Progress:
+    """The heartbeat a supervisor (the GB10 runner's watchdog) reads while a tool talks to a server: one small JSON
+    file, replaced atomically, holding the current phase ("prefill" until the first generated text, reasoning or
+    tool-call delta of a stream, "decode" after it, "wait" for a non-streamed reply, "idle" between requests), when
+    that phase started, the last event's time, the request in flight (``request``, ``prompt_tokens``, and for "wait"
+    ``max_tokens``; kept across that request's phases) and its chunk count. Facts only: the supervisor owns the
+    stall policy. Writes are rate-limited to one per second except at phase changes. One per process (tools here are
+    single-threaded CLIs): ``configure`` sets the path and resets the state, ``configure(None)`` turns it off again;
+    unconfigured, every call is a no-op."""
+
+    path: ClassVar[str | None] = None
+    state: ClassVar[dict] = {}
+    written: ClassVar[float] = 0.0
+    CARRIED: ClassVar[tuple[str, ...]] = ("request", "prompt_tokens", "max_tokens")   # one request's identity
+
+    @classmethod
+    def configure(cls, path: str | None) -> None:
+        cls.path, cls.state, cls.written = path, {}, 0.0
+        cls.update("idle", force=True)
+
+    @classmethod
+    def update(cls, phase: str, *, force: bool = False, **fields) -> None:
+        if cls.path is None:
+            return
+        now = time.time()
+        if phase != cls.state.get("phase"):
+            carried = {k: cls.state[k] for k in cls.CARRIED if k in cls.state and phase != "idle"}
+            cls.state = {"phase": phase, "phase_since": now, **carried}
+            force = True
+        cls.state.update(fields, last_event=now, pid=os.getpid())
+        if force or now - cls.written >= 1.0:
+            temporary = f"{cls.path}.{os.getpid()}.tmp"
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(cls.state, f)
+            os.replace(temporary, cls.path)
+            cls.written = now
+
+
+def expected_tokens(body: dict) -> int:
+    """A request's prompt size for the watchdog's prefill allowance: token ids as given, else a generous estimate of
+    one token per two characters of its messages or prompt text."""
+
+    prompt = body.get("prompt")
+    if isinstance(prompt, list):
+        return len(prompt)
+    text = prompt if isinstance(prompt, str) else json.dumps(body.get("messages", ""))
+    return len(text) // 2
+
+
 def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, timeout: float = TIMEOUT_S,
-                route: str = "/v1/chat/completions") -> dict:
+                route: str = "/v1/chat/completions", prompt_tokens: int | None = None, label: str = "") -> dict:
     """One streamed completion (chat by default; ``route="/v1/completions"`` for a text or token-id ``prompt``):
-    client timings, text, reasoning, the final usage and ``tensorfold`` block."""
+    client timings, text, reasoning, the final usage and ``tensorfold`` block. Reports its phase to ``Progress``
+    (``label`` names the request; ``prompt_tokens``, when known, sizes the supervisor's prefill allowance, else
+    ``expected_tokens``); the heartbeat is written before the client clock starts."""
 
     body = {**body, "stream": True, "stream_options": {"include_usage": True}}
     req = urllib.request.Request(base + route, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
+    Progress.update("prefill", request=label or route,
+                    prompt_tokens=prompt_tokens if prompt_tokens is not None else expected_tokens(body), chunks=0)
     sent = time.perf_counter()
+    try:
+        return _read_stream(req, timeout, limits, sent)
+    finally:
+        Progress.update("idle", force=True)
+
+
+def _read_stream(req, timeout: float, limits: protocol.Limits, sent: float) -> dict:
+    """stream_chat's reading and timing of one open request (``sent``: the client clock's start)."""
+
     first = last = None
     usage = runtime = finish = None
     content, reasoning, calls = [], [], []
@@ -130,6 +205,7 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
             new_usage, new_runtime, texts = protocol.chunk_fields(chunk)
             usage = new_usage if new_usage is not None else usage
             runtime = new_runtime if new_runtime is not None else runtime
+            called = False
             for choice in chunk.get("choices", []):
                 delta = choice.get("delta") or {}
                 finish = choice.get("finish_reason") or finish
@@ -139,11 +215,16 @@ def stream_chat(base: str, body: dict, *, limits: protocol.Limits = LIMITS, time
                     reasoning.append(thought)
                 if delta.get("tool_calls"):
                     calls.extend(delta["tool_calls"])
+                    called = True
             if any(texts):
                 now = time.perf_counter()
                 first = now if first is None else first
                 last = now
                 pieces += sum(1 for t in texts if t)
+            # progress for the watchdog: generated text, reasoning or call deltas (the role chunk opens the stream
+            # before the prefill and is no progress)
+            if any(texts) or called:
+                Progress.update("decode", chunks=Progress.state.get("chunks", 0) + 1)
     done = time.perf_counter()
     if usage is None or runtime is None:
         raise ValueError("stream ended without usage and the tensorfold block (include_usage)")
@@ -170,6 +251,11 @@ def mem_available_mib() -> int | None:
     return int(match.group(1)) // 1024 if match else None
 
 
+GPU_FIELDS = ("temperature.gpu,power.draw,clocks.sm,clocks.mem,utilization.gpu,clocks_event_reasons.active,"
+              "clocks_event_reasons.hw_thermal_slowdown,clocks_event_reasons.sw_thermal_slowdown,"
+              "clocks_event_reasons.hw_power_brake_slowdown,clocks_event_reasons.sw_power_cap")
+
+
 def host_snapshot(*, gpu: bool = False) -> dict:
     """Load, memory, thermal zones and (between requests only: it spawns a process) nvidia-smi's GPU state."""
 
@@ -182,10 +268,10 @@ def host_snapshot(*, gpu: bool = False) -> dict:
            "mem_available_mib": mem_available_mib(), "thermal_c": zones}
     if gpu:
         try:
-            query = subprocess.run(["nvidia-smi", "--query-gpu=temperature.gpu,power.draw,clocks.sm,clocks.mem,"
-                                    "utilization.gpu,clocks_throttle_reasons.active", "--format=csv,noheader"],
+            query = subprocess.run(["nvidia-smi", f"--query-gpu={GPU_FIELDS}", "--format=csv,noheader"],
                                    capture_output=True, text=True, timeout=20, check=False)
             out["nvidia_smi"] = query.stdout.strip() if query.returncode == 0 else f"exit {query.returncode}"
+            out["nvidia_smi_fields"] = GPU_FIELDS
         except (OSError, subprocess.SubprocessError) as error:
             out["nvidia_smi"] = f"unavailable: {type(error).__name__}"
     return out
@@ -388,11 +474,16 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
              if (not select["depths"] or it["depth"] in select["depths"])
              and (not select["tasks"] or it["task"] in select["tasks"])
              and (select["thinking"] is None or it["thinking"] == select["thinking"])]
+    held = [it["id"] for it in items if it["prompt_tokens"] > LONG_PREFILL_TOKENS and not select.get("allow_long")]
+    items = [it for it in items if it["id"] not in held]
+    for name in held:
+        print(json.dumps({"prompt": name, "held": "long-prefill hold"}), flush=True)
     if not items:
-        raise ValueError("the selection leaves no prompts")
+        raise ValueError("the selection leaves no prompts" + (" (all held by the long-prefill hold)" if held else ""))
     eos = set(profile.get("eos_token_ids", ()))
     doc = {"version": VERSION, "label": label, "url": url, "model": profile["model"],
-           "tool_sha256": file_sha256(__file__), "profile": profile, "profile_sha256": file_sha256(profile_path),
+           "tool_sha256": file_sha256(__file__), "held": held, "profile": profile,
+           "profile_sha256": file_sha256(profile_path),
            "prompts_file_sha256": file_sha256(prompts_path),
            "corpus_sha256": prompt_set.get("corpus_sha256"),
            "meta": json.loads(Path(meta).read_text()) if meta else None,
@@ -409,7 +500,8 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
             body = request_body(profile, item, step)
             before = host_snapshot()
             with MemSampler() as sampler:
-                record = stream_chat(url, body)
+                record = stream_chat(url, body, prompt_tokens=item["prompt_tokens"],
+                                     label=f"bench {item['id']} step {index}")
             ids = reply_token_ids(record)
             row = {"prompt": item["id"], "depth": item["depth"], "task": item["task"], "thinking": item["thinking"],
                    "step": index, "sampling": step["sampling"], "seed": body.get("seed"),
@@ -588,7 +680,8 @@ def analyze(runs_dir: str, prefix: str, base: str | None) -> dict:
     return {"prefix": prefix, "base": base, "variants": variants, "runs": meta, "absolute": absolute,
             "ratios": ratios, "identity": identity(runs), "prompt_token_mismatches": prompt_check,
             "cold_requests_with_cache_hits": cold_hits, "incomplete_runs": incomplete,
-            "replies_off_schedule": off_schedule, "tool_versions": tool_versions}
+            "replies_off_schedule": off_schedule, "tool_versions": tool_versions,
+            "held": sorted({name for r in runs for name in r["doc"].get("held", [])})}
 
 
 def _fmt(summary: dict, digits: int = 2) -> str:
@@ -632,6 +725,8 @@ def markdown(result: dict) -> str:
     if result["incomplete_runs"]:
         lines.append("Incomplete runs (stopped mid-schedule; their cells hold only the requests that finished): "
                      + ", ".join(result["incomplete_runs"]))
+    if result["held"]:
+        lines.append("Prompts held by the long-prefill hold (not measured): " + ", ".join(result["held"]))
     if result["replies_off_schedule"]:
         lines.append(f"Replies with a token count other than the profile's max_tokens: "
                      f"{len(result['replies_off_schedule'])}")
@@ -662,6 +757,10 @@ def main() -> int:
     for name in ("url", "profile", "prompts", "out"):
         r.add_argument(name)
     r.add_argument("--meta", help="JSON written by the runner: image id, args, env, cache dir, container")
+    r.add_argument("--progress", help="heartbeat file for a watchdog (see Progress)")
+    r.add_argument("--allow-long-prefill", action="store_true",
+                   help=f"run prompts above {LONG_PREFILL_TOKENS} tokens; without it they are held (recorded in the "
+                        "run's 'held' list and listed by analyze)")
     r.add_argument("--label", default="")
     r.add_argument("--depths", default="", help="comma-separated depth names (default: all)")
     r.add_argument("--tasks", default="", help="comma-separated task names (default: all)")
@@ -677,8 +776,10 @@ def main() -> int:
     elif args.command == "prompts":
         prompts(args.url.rstrip("/"), args.profile, args.corpus, args.out)
     elif args.command == "run":
+        Progress.configure(args.progress)
         select = {"depths": [d for d in args.depths.split(",") if d], "tasks": [t for t in args.tasks.split(",") if t],
-                  "thinking": None if args.thinking == "both" else args.thinking == "on"}
+                  "thinking": None if args.thinking == "both" else args.thinking == "on",
+                  "allow_long": args.allow_long_prefill}
         run(args.url.rstrip("/"), args.profile, args.prompts, args.out, meta=args.meta, label=args.label,
             select=select)
     else:

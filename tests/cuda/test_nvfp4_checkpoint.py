@@ -42,13 +42,18 @@ def _ref_quant4(x: torch.Tensor, act: float):
     return packed, sf8.view(torch.uint8), sf
 
 
-def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
-    inv = (torch.tensor(1.0, dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)).to(x.device)
-    q = (x.float() * inv).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8)
-    m, k = x.shape
-    m16 = torch.arange(16, device=x.device)
+def _ref_fragment_order(q: torch.Tensor) -> torch.Tensor:
+    """Row-major e4m3 bytes (M, K) in the FP8 weights' fragment order."""
+
+    m, k = q.shape
+    m16 = torch.arange(16, device=q.device)
     src = (m16 // 4) * 2 + (m16 % 4 % 2) + (m16 % 4 // 2) * 8          # byte 4q + j holds input 2q + j%2 + 8(j/2)
     return q.view(m, k // 16, 16)[:, :, src].reshape(m, k)
+
+
+def _ref_quant8(x: torch.Tensor, act: float) -> torch.Tensor:
+    inv = (torch.tensor(1.0, dtype=torch.float32) / torch.tensor(act, dtype=torch.float32)).to(x.device)
+    return _ref_fragment_order((x.float() * inv).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8))
 
 
 def _rows(m, k, seed, spread=1.0):
@@ -195,8 +200,8 @@ def test_slices_meet_in_part_with_the_clusters_bits(mode):
     y = torch.empty_like(clusters)
     part = torch.empty((sk, m, lin.n), dtype=torch.float32, device="cuda")
     w, ws = (lin.words, lin.bs) if mode == checkpoint.A4 else (lin.w8, None)
-    checkpoint._ext().lane(mode, rows[0], rows[1], w, ws, checkpoint.alpha(lin.act, lin.scale), y, part, lin.n, lin.k,
-                           sk, lin.npad, qmm.bucket(m), False)
+    checkpoint._ext().lane(mode, rows[0], rows[1], w, ws, checkpoint.alpha(lin.act, lin.scale), None, None, y, part,
+                           lin.n, lin.k, sk, lin.npad, qmm.bucket(m), False)
     assert torch.equal(y, clusters)
 
 
@@ -299,3 +304,192 @@ def test_fused_mlp_is_swiglu_then_down_and_chunk_invariant(monkeypatch, fp32):
     rel = (y.double() - ref).abs() / (ref.abs() + ref.abs().mean())
     assert (rel < 1e-2).double().mean().item() > 0.999, rel.max().item()   # exp's last ulp can flip a code
     assert ((y.double() - ref).norm() / ref.norm()).item() < 1e-2
+
+
+# Per-channel FP8 weights under dynamic per-token FP8 rows (ModelOpt FP8_PER_CHANNEL_PER_TOKEN): each row's scale
+# s = max(amax / 448, 1 / (448 * 512)), codes e4m3(x / s), out = (sum * the column's scale) * s, all against fp64.
+TOKEN_FLOOR = torch.tensor(1.0 / (448.0 * 512.0), dtype=torch.float32)
+
+
+def _ref_token(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Independent per-token quantizer in torch: (row-major e4m3 bytes, fp32 row scales)."""
+
+    xf = x.float()
+    amax = xf.abs().amax(-1)
+    # tensor / tensor divides correctly rounded on CUDA (torch turns a CPU-scalar divisor into a reciprocal multiply)
+    s = torch.maximum(amax / torch.full_like(amax, 448.0), TOKEN_FLOOR.to(x.device))
+    return (xf / s[:, None]).clamp(-448.0, 448.0).to(torch.float8_e4m3fn).view(torch.uint8), s
+
+
+def _token_rows(m, k, seed):
+    x = _rows(m, k, seed, 0.8)
+    if m > 3:
+        x[1] = 0                                                                # all-zero row: the floor scale
+        x[2] *= 1e-4                                                            # amax below 1/512: the floor too
+        x[3, ::5] *= 300.0                                                      # e4m3's top binade
+    return x
+
+
+@pytest.mark.parametrize("m,k", [(1, 64), (7, 5120), (130, 6144), (5, 17408)])
+def test_token_rows_are_e4m3_under_each_rows_own_scale(m, k):
+    x = _token_rows(m, k, 80 + m)
+    codes, scales = checkpoint.quant8_token(x)
+    want, s = _ref_token(x)
+    assert torch.equal(scales, s)
+    assert torch.equal(codes, _ref_fragment_order(want))
+    t8, ts = checkpoint.quant8_token(x, checkpoint.TB)
+    assert torch.equal(ts, s)
+    assert torch.equal(t8.view(-1), _tiled(codes, 64, lambda r, c: c ^ ((r >> 1) & 3)))
+    one = [checkpoint.quant8_token(x[r:r + 1].contiguous()) for r in range(0, m, max(1, m // 5))]
+    for j, r in enumerate(range(0, m, max(1, m // 5))):
+        assert torch.equal(one[j][0][0], codes[r]) and torch.equal(one[j][1][0], scales[r])
+
+
+def _channel_lin(n, k, seed, token=True):
+    rng = np.random.default_rng(seed)
+    w = rng.integers(0, 256, size=(n, k), dtype=np.uint8)
+    w[(w & 0x7F) >= 0x70] = 0x30
+    cols = torch.from_numpy((np.exp(rng.normal(-6.0, 1.5, size=n))).astype(np.float32))   # AEON-like 1e-7..3e-3
+    lin = Fp8Linear.from_checkpoint(torch.from_numpy(w).cuda().view(torch.float8_e4m3fn), cols.cuda(), token=token)
+    return lin, torch.from_numpy(w).cuda().view(torch.float8_e4m3fn).double(), cols.cuda().double()
+
+
+def _token_ref(x, wq, cols):
+    """fp64 of the declared math: (e4m3 rows x their scales) @ (e4m3 weights x their channel scales)^T, and the sums of
+    the products' magnitudes (fp32 accumulation's error scale)."""
+
+    q, s = _ref_token(x)
+    xq = q.view(torch.float8_e4m3fn).double() * s.double()[:, None]
+    wd = wq * cols[:, None]
+    return xq @ wd.t(), xq.abs() @ wd.abs().t()
+
+
+def _err(got, ref, absum, rounding=0.0):
+    """The worst error over its bound: ``rounding`` of the entry (bf16 output) plus 1e-5 of the sum of its products'
+    magnitudes. Products of e4m3 (or bf16 by e4m3) values are exact in fp32, so the second term bounds only the fp32
+    accumulation, whatever a row's cancellation or a channel's scale (an fp32 sum of K terms stays near
+    sqrt(K) * 2^-24 of it; a narrower accumulator would not). Pass while below 1."""
+
+    bound = rounding * ref.abs() + 1e-5 * absum
+    return ((got.double() - ref).abs() / bound.clamp_min(torch.finfo(torch.float64).tiny)).max().item()
+
+
+@pytest.mark.parametrize("n,k", [(128, 256), (1024, 5120), (640, 17408)])
+def test_token_lane_is_the_declared_product_and_rows_are_independent(n, k):
+    lin, wq, cols = _channel_lin(n, k, n + k)
+    assert lin.token and lin.act is None and lin.cols.shape == (lin.npad,)
+    x = _token_rows(128, k, 9)
+    full = lin(x)
+    for rows in ROWS:
+        assert torch.equal(lin(x[:rows].contiguous()), full[:rows]), rows
+    one = torch.cat([lin(x[r:r + 1].contiguous()) for r in range(0, 128, 9)])
+    assert torch.equal(one, full[0:128:9])
+    ref, absum = _token_ref(x, wq, cols)
+    assert _err(checkpoint.matmul(checkpoint.A8, x, lin, f32=True), ref, absum) < 1     # exact products, fp32 sums
+    assert _err(full, ref, absum, 2 ** -8) < 1                                          # and bf16 out
+    part = lin.tiles(1, 2 if n <= 128 else 5)
+    assert torch.equal(part(x), full[:, 64:64 * (2 if n <= 128 else 5)])             # head-tile views keep the math
+
+
+def test_fp8_mma_accumulates_in_full_fp32():
+    """Partial sums near 2^22 then a +1: exact in an fp32 accumulator, lost in a reduced-precision one."""
+
+    k = 17408
+    x = torch.full((1, k), 448.0, dtype=torch.float32)
+    x[0, k // 2:] = -448.0
+    x[0, -1] = 1.0                                                     # 448 (k/2) - 448 (k/2 - 1) + 1 = 449
+    w = torch.full((64, k), 1.0, dtype=torch.float32).to(torch.float8_e4m3fn)
+    lin = Fp8Linear.from_checkpoint(w.cuda(), torch.ones(64), token=True)
+    got = checkpoint.matmul(checkpoint.A8, x.to(torch.bfloat16).cuda(), lin, f32=True)
+    assert torch.equal(got, torch.full_like(got, 449.0)), got[0, :4]
+    y = checkpoint.prompt(checkpoint.A8, x.to(torch.bfloat16).cuda().expand(130, k).contiguous(), lin, f32=True)
+    assert torch.equal(y, torch.full_like(y, 449.0)), y[0, :4]
+
+
+def test_token_slices_meet_in_part_with_the_clusters_bits():
+    from tensorfold.cuda.kernels import qmm
+
+    lin, _, _ = _channel_lin(5120, 17408, 7)
+    sk = qmm.split_k(lin.n, lin.k)
+    assert 1 < sk <= 8
+    x = _token_rows(37, lin.k, 5)
+    clusters = checkpoint.matmul(checkpoint.A8, x, lin)
+    codes, scales = checkpoint.quant8_token(x)
+    y = torch.empty_like(clusters)
+    part = torch.empty((sk, 37, lin.n), dtype=torch.float32, device="cuda")
+    checkpoint._ext().lane(checkpoint.A8, codes, None, lin.w8, None, 1.0, scales, lin.cols, y, part, lin.n, lin.k,
+                           sk, lin.npad, qmm.bucket(37), False)
+    assert torch.equal(y, clusters)
+
+
+@pytest.mark.parametrize("n,k", [(128, 256), (1024, 5120), (10240, 5120)])
+def test_token_prompt_rows_are_chunk_invariant_and_the_declared_product(n, k):
+    lin, wq, cols = _channel_lin(n, k, 3 * n + k)
+    x = _token_rows(300, k, 6)
+    full = checkpoint.prompt(checkpoint.A8, x, lin)
+    for tile in (0, 11):
+        assert torch.equal(_chunked(lambda c, tile=tile: checkpoint.prompt(checkpoint.A8, c, lin, tile=tile), x),
+                           full), tile
+    for tile in TILES:
+        assert torch.equal(checkpoint.prompt(checkpoint.A8, x, lin, tile=tile), full), tile
+    ref, absum = _token_ref(x, wq, cols)
+    assert _err(checkpoint.prompt(checkpoint.A8, x, lin, f32=True), ref, absum) < 1
+    assert _err(full, ref, absum, 2 ** -8) < 1
+
+
+def test_projections_of_one_input_share_one_quantization():
+    a, _, _ = _channel_lin(640, 5120, 1)
+    b, _, _ = _channel_lin(384, 5120, 2)
+    x = _token_rows(40, 5120, 3)
+    for prompt_rows in (False, True):
+        outs = checkpoint.matmul_group(x, [a, b], prompt_rows=prompt_rows)
+        run = checkpoint.prompt if prompt_rows else checkpoint.matmul
+        assert outs is not None and all(torch.equal(o, run(checkpoint.A8, x, lin)) for o, lin in zip(outs, (a, b)))
+    static = Fp8Linear.from_checkpoint(a.w8.new_zeros((128, 5120)).view(torch.float8_e4m3fn), 0.5, act=0.01)
+    assert checkpoint.matmul_group(x, [a, static]) is None                    # rows quantized differently
+
+
+@pytest.mark.parametrize("n,k", [(128, 256), (1024, 5120), (640, 17408)])
+def test_full_precision_channel_fp8_is_w8a16_exact(n, k):
+    """--precision full: bf16 rows times the stored e4m3 bytes, each channel's scale in the epilogue (decode and
+    prompt kernels), against fp64."""
+
+    lin, wq, cols = _channel_lin(n, k, 5 * n + k, token=False)
+    assert not lin.token and lin.scale == 1.0
+    x = _rows(77, k, 8, 0.6)
+    wd = wq * cols[:, None]
+    ref, absum = x.double() @ wd.t(), x.double().abs() @ wd.abs().t()
+    y32 = torch.empty((77, n), dtype=torch.float32, device="cuda")
+    lin(x, y32)
+    assert _err(y32, ref, absum) < 1
+    full = lin(x)
+    assert _err(full, ref, absum, 2 ** -8) < 1
+    for rows in ROWS[:8]:
+        assert torch.equal(lin(x[:rows].contiguous()), full[:rows]), rows
+    prompt = lin.prefill(x)
+    assert _err(prompt, ref, absum, 2 ** -8) < 1
+    assert torch.equal(_chunked(lin.prefill, x), prompt)
+    with pytest.raises(ValueError, match="--prefill-fp8"):
+        lin.prefill8(None)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1e-3, float("nan"), float("inf")])
+def test_channel_scales_are_finite_positive_checkpoint_values(bad):
+    w = torch.zeros((8, 64), dtype=torch.uint8, device="cuda").view(torch.float8_e4m3fn)
+    scales = torch.full((8,), 1e-3)
+    scales[5] = bad
+    with pytest.raises(ValueError, match="finite and positive"):
+        Fp8Linear.from_checkpoint(w, scales, token=True)
+
+
+def test_channel_scales_are_one_a_channel_and_never_meet_a_static_input_scale():
+    """Static-scale checkpoint math applies one tensor factor alone, and per-token rows need channel scales."""
+
+    w = torch.zeros((8, 64), dtype=torch.uint8, device="cuda").view(torch.float8_e4m3fn)
+    scales = torch.full((8,), 1e-3)
+    with pytest.raises(ValueError, match="7 channel scales"):
+        Fp8Linear.from_checkpoint(w, scales[:7], token=True)
+    with pytest.raises(ValueError, match="not a static input scale"):
+        Fp8Linear.from_checkpoint(w, scales, act=0.01)
+    with pytest.raises(ValueError, match="pair with per-channel"):
+        Fp8Linear.from_checkpoint(w, 1e-3, token=True)

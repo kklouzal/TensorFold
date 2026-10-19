@@ -31,12 +31,12 @@ if sys.version_info < (3, 11):
 
 if __package__:
     from .benchmark_output import write_json
-    from .campaign_bench import (chat_request, corpus_text, file_sha256, first_difference, get_json, post_json,
-                                 reply_token_ids, stream_chat)
+    from .campaign_bench import (LONG_PREFILL_TOKENS, Progress, chat_request, corpus_text, expected_tokens,
+                                 file_sha256, first_difference, get_json, post_json, reply_token_ids, stream_chat)
 else:
     from benchmark_output import write_json
-    from campaign_bench import (chat_request, corpus_text, file_sha256, first_difference, get_json, post_json,
-                                reply_token_ids, stream_chat)
+    from campaign_bench import (LONG_PREFILL_TOKENS, Progress, chat_request, corpus_text, expected_tokens,
+                                file_sha256, first_difference, get_json, post_json, reply_token_ids, stream_chat)
 
 # ---------------------------------------------------------------------------------------------------------------
 # tool-call suite: strict-compatible schemas (every property required, no additional properties)
@@ -219,7 +219,13 @@ def tool_case(url: str, profile: dict, name: str, strict: bool, sampling: dict, 
             "max_tokens": int(profile.get("gate_tool_tokens", 4096 if thinking else 1024)),
             "chat_template_kwargs": {"enable_thinking": thinking}, "return_token_ids": True, **sampling, **extra}
     started = time.perf_counter()
-    reply = post_json(url + "/v1/chat/completions", body, timeout=3600)
+    # a non-streamed reply: the watchdog sizes its wait from the request (prompt estimate and reply budget)
+    Progress.update("wait", request=f"tools {name} strict={strict} thinking={thinking}",
+                    prompt_tokens=expected_tokens(body), max_tokens=body["max_tokens"])
+    try:
+        reply = post_json(url + "/v1/chat/completions", body, timeout=3600)
+    finally:
+        Progress.update("idle", force=True)
     choice = reply["choices"][0]
     message = choice.get("message") or {}
     calls, problems = [], []
@@ -259,6 +265,13 @@ def _thinking(profile: dict, args) -> list[bool]:
 
 def _threshold_status(verdict: bool | None) -> str:
     return "report" if verdict is None else ("pass" if verdict else "fail")
+
+
+def _hold(record: dict) -> dict:
+    """Gate coverage the long-prefill hold kept from running: printed, and returned as a held record."""
+
+    print(json.dumps({**record, "held": "long-prefill hold"}), flush=True)
+    return {**record, "status": "incomplete (hold)"}
 
 
 def gate_tools(url: str, profile: dict, args) -> dict:
@@ -307,7 +320,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
     text, digest = corpus_text(args.corpus)
     rng = random.Random(args.seed)
     fractions = [float(f) for f in args.needle_fractions.split(",")]
-    rows = []
+    rows, held = [], []
     for depth in [d for d in args.needle_depths.split(",") if d]:
         codes = {VAULTS[i]: f"{rng.randrange(10 ** 6):06d}" for i in range(len(fractions))}
         for thinking in ([False, True] if args.needle_thinking == "both" else [args.needle_thinking == "on"]):
@@ -315,6 +328,9 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             budget = int(args.needle_tokens) * (8 if thinking else 1)      # full depth leaves room for this reply
             target = (int(profile["context"]) - budget - int(profile.get("full_margin", 64))
                       if depth == "full" else int(depth))
+            if target > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
+                held.append(_hold({"depth": depth, "target": target, "thinking": thinking}))
+                continue
 
             def count(chars):
                 return post_json(url + "/v1/tokenize", {
@@ -328,7 +344,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             messages = needle_prompt(text, lo, fractions, codes)
             body = {"model": profile["model"], "messages": messages, "temperature": 0, "max_tokens": budget,
                     "chat_template_kwargs": kwargs, "return_token_ids": True}
-            reply = stream_chat(url, body)
+            reply = stream_chat(url, body, prompt_tokens=target, label=f"needle {depth} thinking={thinking}")
             answer = reply["content"]
             found = {vault: code in answer for vault, code in codes.items()}
             row = {"depth": depth, "target": target, "thinking": thinking,
@@ -338,21 +354,45 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             rows.append(row)
             print(json.dumps({k: row[k] for k in ("depth", "thinking", "prompt_tokens", "recall", "ttft_s")}),
                   flush=True)
-    recall = sum(r["recall"] for r in rows) / len(rows)
+    recall = sum(r["recall"] for r in rows) / len(rows) if rows else None
     verdict = None if args.min_needle_recall is None else all(r["recall"] >= args.min_needle_recall for r in rows)
-    return {"gate": "needle", "status": _threshold_status(verdict), "recall": recall,
-            "threshold": args.min_needle_recall, "verdict": verdict,
-            "corpus_sha256": digest, "fractions": fractions, "rows": rows}
+    status = _threshold_status(verdict)
+    if status != "fail" and (held or not rows):            # held depths are coverage not run, never a pass
+        status, verdict = "incomplete", None
+    return {"gate": "needle", "status": status, "recall": recall, "threshold": args.min_needle_recall,
+            "verdict": verdict, "corpus_sha256": digest, "fractions": fractions, "rows": rows, "held": held}
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # determinism and drafted-vs-serial identity over bench prompts
 
 
-def _items(args) -> list[dict]:
+def _items(args, reply_tokens: int = 0) -> tuple[list[dict], list[dict]]:
+    """The gate prompts to run, and those held back by the long-prefill hold (reported as incomplete): a prompt whose
+    tokens plus ``reply_tokens`` exceed LONG_PREFILL_TOKENS (determinism re-sends a prompt with its reply as one
+    prompt)."""
+
     items = {it["id"]: it for it in json.loads(Path(args.prompts).read_text())["items"]}
     chosen = [items[name] for name in args.gate_prompts.split(",") if name]
-    return [it for it in chosen if args.thinking == "both" or it["thinking"] == (args.thinking == "on")]
+    chosen = [it for it in chosen if args.thinking == "both" or it["thinking"] == (args.thinking == "on")]
+    kept, held = [], []
+    for it in chosen:
+        longest = it["prompt_tokens"] + reply_tokens
+        if longest <= LONG_PREFILL_TOKENS or args.allow_long_prefill:
+            kept.append(it)
+        else:
+            held.append(_hold({"prompt": it["id"], "prompt_tokens": it["prompt_tokens"],
+                               "longest_prompt_tokens": longest}))
+    return kept, held
+
+
+def _prompt_ids(url: str, profile: dict, item: dict) -> list[int]:
+    """A chat item's prompt ids from the native /tokenize route: a production image's Harness bridge owns
+    /v1/tokenize and returns ids only up to 16,384 tokens (a 400 beyond), while /tokenize is TensorFold's own on
+    every server."""
+
+    return post_json(url + "/tokenize", {"model": profile["model"], "messages": item["messages"],
+                                         "chat_template_kwargs": {"enable_thinking": item["thinking"]}})["tokens"]
 
 
 def _evictions(count: int) -> list[list[dict]]:
@@ -376,14 +416,14 @@ def _cached(reply: dict) -> int:
     return int(reply["stats"].get("cached") or 0)
 
 
-def _status(rows: list[dict], allow_failure: bool) -> tuple[str, bool | None]:
+def _status(rows: list[dict], allow_failure: bool, held: list[dict]) -> tuple[str, bool | None]:
     """A gate's status from its rows: fail when any compared pair differs (unless reporting only), incomplete when
-    there are no rows or any required comparison was not exercised (silence is not coverage), else pass. verdict
-    mirrors it (null for incomplete or report-only)."""
+    there are no rows, any required comparison was not exercised (silence is not coverage) or items were held back
+    (long-prefill hold), else pass. verdict mirrors it (null for incomplete or report-only)."""
 
     if any(not r["identical"] for r in rows):
         return ("report", None) if allow_failure else ("fail", False)
-    if not rows or any(not all(r["exercised"].values()) for r in rows):
+    if not rows or held or any(not all(r["exercised"].values()) for r in rows):
         return "incomplete", None
     return ("report", None) if allow_failure else ("pass", True)
 
@@ -399,13 +439,13 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
       against cold. A template whose generation prompt is not a prefix of its history rendering (Gemma4 without
       thinking appends an empty thought block) never resumes it, so it is not a required comparison.
     A comparison counts as exercised only when its warm request resumed >= 90% of the shared prefix from the cache
-    and its cold twin resumed <= 10%."""
+    and its cold twin resumed <= 10%. Without --allow-long-prefill, a prompt whose tokens plus the reply budget exceed
+    LONG_PREFILL_TOKENS is held, and so is a next turn whose prompt does; held work makes the gate incomplete."""
 
     rows = []
-    for item in _items(args):
-        prompt_ids = post_json(url + "/v1/tokenize", {"model": profile["model"], "messages": item["messages"],
-                                                      "chat_template_kwargs": {"enable_thinking": item["thinking"]},
-                                                      "return_tokens": True})["tokens"]
+    items, held = _items(args, args.max_tokens)          # the extension prompt is a prompt plus its whole reply
+    for item in items:
+        prompt_ids = _prompt_ids(url, profile, item)
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
             request = chat_request(profile, item, sampling, args.max_tokens)
             _evict(url, profile, args)
@@ -423,33 +463,41 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
                 {"role": "assistant", "content": cold["content"] or cold["reasoning"]},
                 {"role": "user", "content": "Continue."}]}
             turn_request = chat_request(profile, turn, sampling, args.max_tokens)
-            stream_chat(url, request)                                  # the cache holds this prompt again
-            next_turn = stream_chat(url, turn_request)
-            _evict(url, profile, args)
-            next_turn_cold = stream_chat(url, turn_request)
+            turn_tokens = len(_prompt_ids(url, profile, turn))
+            if turn_tokens > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
+                # the reported next turn's cold prefill would exceed the hold: not run, recorded as held
+                held.append(_hold({"prompt": item["id"], "sampling": mode, "next_turn_prompt_tokens": turn_tokens}))
+                next_turn = next_turn_cold = None
+            else:
+                stream_chat(url, request)                              # the cache holds this prompt again
+                next_turn = stream_chat(url, turn_request)
+                _evict(url, profile, args)
+                next_turn_cold = stream_chat(url, turn_request)
+            ran = next_turn is not None
             n, m = len(prompt_ids), len(extended_ids)
             row = {"prompt": item["id"], "sampling": mode, "prompt_tokens": n,
                    "cached": {"cold": _cached(cold), "warm": _cached(warm), "recold": _cached(recold),
                               "extended": _cached(extended), "extended_cold": _cached(extended_cold),
-                              "next_turn": _cached(next_turn), "next_turn_cold": _cached(next_turn_cold)},
+                              "next_turn": _cached(next_turn) if ran else None,
+                              "next_turn_cold": _cached(next_turn_cold) if ran else None},
                    "differences": {
                        "warm_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(warm)),
                        "recold_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(recold)),
                        "extended_warm_vs_cold": first_difference(reply_token_ids(extended),
                                                                  reply_token_ids(extended_cold)),
                        "next_turn_warm_vs_cold": first_difference(reply_token_ids(next_turn),
-                                                                  reply_token_ids(next_turn_cold))},
+                                                                  reply_token_ids(next_turn_cold)) if ran else None},
                    "tokens": len(reply_token_ids(cold)), "sha": cold["stats"].get("token_sha")}
             c = row["cached"]
             row["exercised"] = {"warm": c["cold"] <= 0.1 * n and c["warm"] >= 0.9 * n,
                                 "recold": c["recold"] <= 0.1 * n,
                                 "extended": c["extended"] >= 0.9 * n and c["extended_cold"] <= 0.1 * m}
-            row["next_turn_exercised"] = c["next_turn"] > c["next_turn_cold"]
+            row["next_turn_exercised"] = ran and c["next_turn"] > c["next_turn_cold"]
             row["identical"] = all(v is None for v in row["differences"].values())
             rows.append(row)
             print(json.dumps(row), flush=True)
-    status, verdict = _status(rows, args.allow_nondeterminism)
-    return {"gate": "determinism", "status": status, "verdict": verdict, "cases": len(rows),
+    status, verdict = _status(rows, args.allow_nondeterminism, held)
+    return {"gate": "determinism", "status": status, "verdict": verdict, "cases": len(rows), "held": held,
             "identical": sum(r["identical"] for r in rows),
             "exercised": {k: sum(r["exercised"][k] for r in rows) for k in ("warm", "recold", "extended")},
             "next_turn_exercised": sum(r["next_turn_exercised"] for r in rows), "rows": rows}
@@ -460,7 +508,8 @@ def gate_identity(url: str, profile: dict, args) -> dict:
     only when the drafted reply verified at least one draft; seeded sampling is reported."""
 
     rows = []
-    for item in _items(args):
+    items, held = _items(args)
+    for item in items:
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
             drafted = stream_chat(url, chat_request(profile, item, sampling, args.max_tokens))
             serial = stream_chat(url, chat_request(profile, item, sampling, args.max_tokens, draft=False))
@@ -476,8 +525,8 @@ def gate_identity(url: str, profile: dict, args) -> dict:
             print(json.dumps(row), flush=True)
     greedy = [r for r in rows if r["sampling"] == "greedy"]
     sampled = [r for r in rows if r["sampling"] != "greedy"]
-    status, verdict = _status(greedy, args.allow_greedy_identity_failure)
-    return {"gate": "identity", "status": status, "verdict": verdict,
+    status, verdict = _status(greedy, args.allow_greedy_identity_failure, held)
+    return {"gate": "identity", "status": status, "verdict": verdict, "held": held,
             "greedy_identical": sum(r["identical"] for r in greedy), "greedy_cases": len(greedy),
             "greedy_drafted": sum(r["exercised"]["drafts"] for r in greedy),
             "sampled_identical": sum(r["identical"] for r in sampled), "sampled_cases": len(sampled), "rows": rows}
@@ -508,10 +557,16 @@ def main() -> int:
     ap.add_argument("--min-needle-recall", type=float, help="minimum recall at every depth (unset: report)")
     ap.add_argument("--evict-requests", type=int, default=6,
                     help="distinct ~600-token prompts sent to displace kept prefix-cache states before a cold request")
+    ap.add_argument("--progress", help="heartbeat file for a watchdog (campaign_bench.Progress)")
+    ap.add_argument("--allow-long-prefill", action="store_true",
+                    help=f"run prompts above {LONG_PREFILL_TOKENS} tokens (needle depths, gate prompts; determinism "
+                         "also counts a prompt plus its reply budget and its next chat turn); without it they are "
+                         "held during the campaign's long-prefill hold and reported as incomplete (hold)")
     ap.add_argument("--allow-nondeterminism", action="store_true", help="report determinism without a verdict")
     ap.add_argument("--allow-greedy-identity-failure", action="store_true",
                     help="report drafted-vs-serial identity without a verdict")
     args = ap.parse_args()
+    Progress.configure(args.progress)
     url = args.url.rstrip("/")
     profile = json.loads(Path(args.profile).read_text())
     chosen = list(GATES) if args.gate == "all" else [args.gate]

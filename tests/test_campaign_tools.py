@@ -7,6 +7,7 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
 import threading
 
@@ -102,13 +103,17 @@ def test_analysis_lists_incomplete_runs_and_mixed_tool_versions(tmp_path):
         doc = {"records": [_record("4k-x", 0, "greedy", None, 50.0, 2.0, [1, 2])], "tool_sha256": sha}
         if finished:
             doc["host_after"] = {}
+        if position == 2:
+            doc["held"] = ["32k-x"]                # a prompt the long-prefill hold kept out of this run
         run = tmp_path / f"s-c1-{position}-base"
         run.mkdir()
         (run / "bench.json").write_text(json.dumps(doc))
     result = bench.analyze(str(tmp_path), "s", None)
     assert result["incomplete_runs"] == ["c1-2-base"] and len(result["tool_versions"]) == 2
+    assert result["held"] == ["32k-x"]
     text = bench.markdown(result)
     assert "Incomplete runs" in text and "2 campaign_bench.py versions" in text
+    assert "long-prefill hold (not measured): 32k-x" in text
 
 
 def test_size_prompt_lands_within_tolerance_below_the_target():
@@ -148,7 +153,12 @@ def fake_server(seen=None, ids=True, cache=True):
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            if self.path.endswith("/v1/tokenize"):
+            if self.path.endswith("/v1/tokenize") and request.get("return_tokens"):
+                # a production image's Harness bridge: ids only up to 16,384 tokens; the gates must not depend on it
+                self.send_response(400)
+                self.end_headers()
+                return
+            if self.path.endswith("/tokenize"):        # /v1/tokenize (counts) and the native /tokenize (ids)
                 return self._json({"count": count_tokens(request["messages"]), "tokens": fake_ids(request["messages"])})
             if seen is not None:
                 seen.append(request)
@@ -206,12 +216,28 @@ def _write_inputs(tmp_path):
     (tmp_path / "prompts.json").write_text(json.dumps(PROMPTS))
 
 
-def test_run_records_every_scheduled_request_with_its_metrics(tmp_path):
+def test_run_records_every_scheduled_request_with_its_metrics(tmp_path, monkeypatch):
     _write_inputs(tmp_path)
     seen = []
+    phases = []
+    original = bench.Progress.update
+
+    def recorded(phase, **fields):
+        phases.append(phase)
+        original(phase, **fields)
+
     with fake_server(seen) as url:
-        bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
-                  meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None})
+        bench.Progress.configure(str(tmp_path / "progress.json"))
+        monkeypatch.setattr(bench.Progress, "update", recorded)
+        try:
+            bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
+                      meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None})
+        finally:
+            bench.Progress.configure(None)
+    beat = json.loads((tmp_path / "progress.json").read_text())
+    # the watchdog heartbeat: each request prefills, then decodes (the role-free text chunks), then is idle
+    assert phases[:3] == ["prefill", "decode", "decode"] and phases.count("prefill") == 3 and beat["phase"] == "idle"
+    assert bench.expected_tokens({"prompt": [1, 2, 3]}) == 3 and bench.expected_tokens({"prompt": "abcd"}) == 2
     common = {"model": "m", "messages": [{"role": "user", "content": "x"}], "max_tokens": 8,
               "chat_template_kwargs": {"enable_thinking": False}, "return_token_ids": True, "ignore_eos": True,
               "stream": True, "stream_options": {"include_usage": True}}
@@ -312,6 +338,104 @@ def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
     assert count_tokens(body["messages"]) + body["max_tokens"] <= 4000
 
 
+LONG = {"id": "long-code-nothink", "depth": "32k", "task": "doc-code", "thinking": False,
+        "messages": [{"role": "user", "content": "y" * 40}], "prompt_tokens": bench.LONG_PREFILL_TOKENS + 1}
+
+
+def test_long_prefill_hold_keeps_long_prompts_out_and_reports_them(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    (tmp_path / "prompts.json").write_text(json.dumps({"items": [*PROMPTS["items"], LONG]}))
+    for allow in (False, True):
+        seen = []
+        with fake_server(seen) as url:
+            bench.run(url, str(tmp_path / "profile.json"), str(tmp_path / "prompts.json"), str(tmp_path / "out.json"),
+                      meta=None, label="t", select={"depths": [], "tasks": [], "thinking": None, "allow_long": allow})
+        doc = json.loads((tmp_path / "out.json").read_text())
+        asked = {r["messages"][0]["content"] for r in seen if "messages" in r}
+        assert doc["held"] == ([] if allow else ["long-code-nothink"]) and ("y" * 40 in asked) == allow
+    out = tmp_path / "determinism.json"
+    with fake_server() as url:
+        monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "determinism", "--url", url, "--out", str(out),
+                                          "--profile", str(tmp_path / "profile.json"),
+                                          "--prompts", str(tmp_path / "prompts.json"), "--max-tokens", "6",
+                                          "--gate-prompts", "short-code-nothink,long-code-nothink"])
+        assert gates.main() == 3                       # the short prompt passes; the held one is coverage not run
+    gate = json.loads(out.read_text())["gates"]["determinism"]
+    assert gate["status"] == "incomplete" and gate["verdict"] is None and gate["cases"] == 2   # greedy + card
+    assert gate["held"] == [{"prompt": "long-code-nothink", "prompt_tokens": bench.LONG_PREFILL_TOKENS + 1,
+                             "longest_prompt_tokens": bench.LONG_PREFILL_TOKENS + 7, "status": "incomplete (hold)"}]
+
+
+def test_determinism_holds_a_prompt_whose_extension_or_next_turn_exceeds_the_limit(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    monkeypatch.setattr(gates, "LONG_PREFILL_TOKENS", 30)          # the limit scaled to the fake server's prompts
+    out = tmp_path / "determinism.json"
+
+    def determinism(max_tokens):
+        seen = []
+        with fake_server(seen) as url:
+            monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "determinism", "--url", url, "--out", str(out),
+                                              "--profile", str(tmp_path / "profile.json"),
+                                              "--prompts", str(tmp_path / "prompts.json"),
+                                              "--gate-prompts", "short-code-nothink", "--max-tokens", str(max_tokens)])
+            code = gates.main()
+        return code, json.loads(out.read_text())["gates"]["determinism"], seen
+
+    # 7 prompt tokens plus a 24-token reply, re-sent as one prompt (the extension), exceed 30: held before any request
+    code, gate, seen = determinism(24)
+    assert (code, gate["cases"], seen) == (3, 0, [])
+    assert gate["held"] == [{"prompt": "short-code-nothink", "prompt_tokens": 7, "longest_prompt_tokens": 31,
+                             "status": "incomplete (hold)"}]
+    # 7 + 6 fit, but the next chat turn (the reply's text and "Continue.") renders 31 ids: held, never sent
+    code, gate, seen = determinism(6)
+    assert code == 3 and gate["status"] == "incomplete" and gate["cases"] == gate["identical"] == 2
+    assert gate["exercised"] == {"warm": 2, "recold": 2, "extended": 2}
+    assert gate["held"] == [{"prompt": "short-code-nothink", "sampling": mode, "next_turn_prompt_tokens": 31,
+                             "status": "incomplete (hold)"} for mode in ("greedy", "card")]
+    assert not any("Continue." in json.dumps(r.get("messages")) for r in seen)
+    assert all(r["cached"]["next_turn"] is None and not r["next_turn_exercised"] for r in gate["rows"])
+
+
+def test_needle_holds_depths_beyond_the_long_prefill_limit(tmp_path):
+    import argparse
+
+    (tmp_path / "corpus.txt").write_text("".join(f"line {i} of the haystack\n" for i in range(4000)))
+    args = argparse.Namespace(corpus=str(tmp_path / "corpus.txt"), seed=1, needle_fractions="0.5",
+                              needle_depths=f"512,{bench.LONG_PREFILL_TOKENS + 1}", needle_tokens=16,
+                              needle_thinking="off", min_needle_recall=0.0, allow_long_prefill=False)
+    with fake_server() as url:
+        result = gates.gate_needle(url, {**PROFILE, "context": 40000}, args)
+    assert [r["target"] for r in result["rows"]] == [512] and result["status"] == "incomplete"
+    assert result["held"] == [{"depth": str(bench.LONG_PREFILL_TOKENS + 1), "target": bench.LONG_PREFILL_TOKENS + 1,
+                               "thinking": False, "status": "incomplete (hold)"}] and result["verdict"] is None
+
+
+def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatch):
+    loads = []
+    monkeypatch.setattr(kl, "with_app", lambda serve, port, work: loads.append(serve))
+    items = [{"name": "short", "prompt": [1] * 10, "answer": [2]},
+             {"name": "long", "prompt": [1] * (bench.LONG_PREFILL_TOKENS + 1), "answer": [2]}]
+    (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    (tmp_path / "corpus.txt").write_text("text")
+    serve = ["--", "serve", "m"]
+
+    def dump(*flags):
+        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "dump", "--out", str(tmp_path / "x.npz"), *flags, *serve])
+        return kl.main()
+
+    with pytest.raises(SystemExit, match=r"eval items \['long'\] exceed .*long-prefill hold"):
+        dump("--eval", str(tmp_path / "eval.json"))
+    missing = str(tmp_path / "new-eval.json")
+    with pytest.raises(SystemExit, match="long-prefill hold"):           # --build would write a 32k item
+        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))
+    with pytest.raises(SystemExit, match="does not exist"):
+        dump("--eval", missing)
+    assert loads == []                                                    # no refusal paid for a model load
+    dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
+    dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "8192")
+    assert loads == [["serve", "m"]] * 2
+
+
 def test_schema_errors_cover_type_enum_required_extra_and_items():
     schema = gates.EVENT["function"]["parameters"]
     good = {"title": "t", "start": "2026-11-03T14:00", "duration_minutes": 45,
@@ -356,15 +480,17 @@ def _outside(np, lp_full, ids):
     return np.where(np.isneginf(top), -np.inf, lse).ravel().astype(np.float64)
 
 
-def _dump(path, lp_full, top_k, reference=None, golden=False):
-    """A dump of full log-probability rows; with ``reference`` (a dump's path) a candidate dump against it."""
+def _dump(path, lp_full, top_k, reference=None, golden=False, offsets=(0,), **meta_fields):
+    """A dump of full log-probability rows (items starting at ``offsets``; ``meta_fields`` override the meta); with
+    ``reference`` (a dump's path) a candidate dump against it."""
 
     np = pytest.importorskip("numpy")
     order = np.argsort(-lp_full, axis=-1)[:, :top_k]
     arrays = {"ids": order.astype(np.int32), "lp": np.take_along_axis(lp_full, order, -1).astype(np.float32),
               "tail_lp": _outside(np, lp_full, order), "forced": lp_full[:, 0],
-              "entropy": -(np.exp(lp_full) * lp_full).sum(-1), "offsets": np.array([0])}
-    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"], "golden": golden}
+              "entropy": -(np.exp(lp_full) * lp_full).sum(-1), "offsets": np.array(offsets)}
+    meta = {"eval_sha256": "e", "top_k": top_k, "logits_dtype": "torch.float32", "names": ["all"], "golden": golden,
+            **meta_fields}
     if reference is not None:
         ids = np.load(reference)["ids"].astype(np.int64)
         arrays["at_ref"] = np.take_along_axis(lp_full, ids, -1).astype(np.float32)
@@ -533,7 +659,9 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     _dump(tmp_path / "old-vs-engine.npz", rows["old"], 16, reference=tmp_path / "engine.npz")
     with pytest.raises(ValueError, match="not a campaign_golden reference"):
         kl.gate(str(tmp_path / "engine.npz"), str(tmp_path / "old-vs-engine.npz"), str(tmp_path / "old-vs-engine.npz"))
-    path = lambda name: str(tmp_path / f"{name}.npz")                          # noqa: E731
+    def path(name):
+        return str(tmp_path / f"{name}.npz")
+
     variants = {f"r{i}": path(f"reorder{i}") for i in range(4)}
     record = kl.calibrate(path("golden"), path("old"), variants, resamples=300)
     deltas = [abs(v["kl_delta"]["mean"]) for v in record["variants"].values()]
@@ -684,3 +812,87 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
     save_file({k: v for k, v in tensors.items() if k != dropped}, str(partial / "model.safetensors"))
     with pytest.raises(ValueError, match="persistent buffers were not in the checkpoint"):
         golden.load_bf16(torch, transformers, transformers.Gemma4ForConditionalGeneration, partial, "cpu")
+
+
+def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(tmp_path, monkeypatch):
+    frames = [b": keepalive\n\n",
+              b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n',
+              b": keepalive\n\n",
+              b'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"name": "f"}}]}}]}\n\n',
+              b'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 3, '
+              b'"completion_tokens": 2}, "tensorfold": {"token_ids": [5, 6]}}\n\ndata: [DONE]\n\n']
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for frame in frames:
+                self.wfile.write(frame)
+                self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    states = []
+    original = bench.Progress.update
+    monkeypatch.setattr(bench.Progress, "update", lambda phase, **fields: (
+        original(phase, **fields), bench.Progress.path and states.append(dict(bench.Progress.state))))
+    try:
+        bench.Progress.configure(str(tmp_path / "beat.json"))
+        reply = bench.stream_chat(f"http://127.0.0.1:{server.server_port}", {"messages": []}, prompt_tokens=3,
+                                  label="probe")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        bench.Progress.configure(None)
+    assert reply["tool_call_deltas"] and reply["first"] is None          # no text: client TTFT stays undefined
+    assert [s["phase"] for s in states] == ["idle", "prefill", "decode", "idle"]
+    assert states[2]["request"] == "probe" and states[2]["prompt_tokens"] == 3        # identity kept into decode
+    assert "request" not in states[3]                                                  # idle drops it
+
+
+def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tmp_path):
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(5)
+    lp = _log_softmax(np, rng.normal(0, 3, (30, 32)))
+    items = [{"name": "short", "prompt": list(range(10)), "answer": list(range(10))},
+             {"name": "long", "prompt": list(range(100)), "answer": list(range(20))}]
+    (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    order = _dump(tmp_path / "golden.npz", lp, 8, golden=True, offsets=(0, 10), names=["short", "long"],
+                  eval_sha256=kl.file_sha256(str(tmp_path / "eval.json")), source="s@1", model_dir="/golden")
+    result = kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path / "out"),
+                       max_prompt_tokens=50)
+    cut = np.load(tmp_path / "out" / "golden" / "kl.npz")
+    cut_meta = json.loads(str(cut["meta"]))
+    assert result["items"] == ["short"] and result["positions"] == 10 and list(cut["offsets"]) == [0]
+    assert np.array_equal(cut["lp"], np.take_along_axis(lp, order, -1).astype(np.float32)[:10])
+    assert cut_meta["eval_sha256"] == kl.file_sha256(str(tmp_path / "out" / "eval.json")) and cut_meta["golden"]
+    assert cut_meta["subset_of"]["golden_sha256"] == kl.file_sha256(str(tmp_path / "golden.npz"))
+    assert json.loads((tmp_path / "out" / "eval.json").read_text())["subset_of"]["items"] == ["short"]
+    assert "golden_dir" in json.loads((tmp_path / "out" / "golden" / "meta.json").read_text())
+    # candidates dumped from the subset's eval set are gated with the full set named; full-set dumps do not mix in
+    cut_lp = lp[:10]
+    for name in ("old", "new"):
+        _dump(tmp_path / f"{name}.npz", cut_lp, 8, reference=tmp_path / "out" / "golden" / "kl.npz",
+              eval_sha256=cut_meta["eval_sha256"])
+    pair = kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "new.npz"),
+                     block=64, resamples=50, seed=0)
+    assert pair["golden_subset_of"] == cut_meta["subset_of"] and pair["positions"] == 10
+    _dump(tmp_path / "full.npz", lp, 8, reference=tmp_path / "golden.npz", eval_sha256=cut_meta["subset_of"]["eval_sha256"])
+    with pytest.raises(ValueError, match="different eval sets"):
+        kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "full.npz"),
+                  block=64, resamples=50, seed=0)
+    full_eval = kl.file_sha256(str(tmp_path / "eval.json"))
+    with pytest.raises(ValueError, match="would replace"):          # never written over the files it is cut from
+        kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path), max_prompt_tokens=50)
+    assert kl.file_sha256(str(tmp_path / "eval.json")) == full_eval
+    cli = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset", str(tmp_path / "golden.npz"),
+                          str(tmp_path / "eval.json"), str(tmp_path / "cli"), "--max-prompt-tokens", "50"],
+                         capture_output=True)
+    assert cli.returncode == 0 and (tmp_path / "cli" / "golden" / "kl.npz").exists(), cli.stderr

@@ -11,10 +11,9 @@ GIB = capacity.GIB
 
 
 @pytest.fixture
-def startup(monkeypatch):
+def startup(monkeypatch, default_memory_policy):
     from tensorfold.cuda import build
 
-    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
     memory = {"MemTotal": 16 * GIB, "MemAvailable": 8 * GIB}
     monkeypatch.setattr(capacity, "_meminfo", lambda: memory)
     monkeypatch.setattr(capacity, "unified", lambda torch: False)

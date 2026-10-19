@@ -1,18 +1,19 @@
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
 
-void qmmf_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, double, at::Tensor&, const at::Tensor&, int64_t,
-               int64_t, int64_t, int64_t, int64_t, int64_t, bool);
+void qmmf_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, double, const at::Tensor&, at::Tensor&,
+               const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, bool);
 void stage_fp4_cuda(const at::Tensor&, const at::Tensor&, double, at::Tensor&, at::Tensor&, int64_t, int64_t);
 void nvfp4_experts_cuda(int64_t, const at::Tensor&, int64_t, int64_t, const at::Tensor&, const at::Tensor&, int64_t,
                         int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, int64_t, double,
                         int64_t, int64_t);
 
 // out (M, N) = x (M, K) bf16 @ W: mode 0 NVFP4 (tiled words, e4m3 block scales [npad/64, K/64, 64, 4]), 1 FP8
-// (fragment-order bytes), 2 MXFP8 (those with e8m0 scales [npad/64, K/64, 64, 2]); ``scale`` the per-tensor factor.
-void qmmf(const at::Tensor& x, const at::Tensor& w, const c10::optional<at::Tensor>& bs, double scale, at::Tensor out,
-          const c10::optional<at::Tensor>& part, int64_t mode, int64_t n, int64_t sk, int64_t npad, int64_t bm,
-          bool f32) {
+// (fragment-order bytes), 2 MXFP8 (those with e8m0 scales [npad/64, K/64, 64, 2]); ``scale`` the per-tensor factor,
+// or for FP8 ``cs`` (fp32 [npad]) a factor an output channel in its place.
+void qmmf(const at::Tensor& x, const at::Tensor& w, const c10::optional<at::Tensor>& bs, double scale,
+          const c10::optional<at::Tensor>& cs, at::Tensor out, const c10::optional<at::Tensor>& part, int64_t mode,
+          int64_t n, int64_t sk, int64_t npad, int64_t bm, bool f32) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.stride(1) == 1, "x: (M, K) bf16");
     TORCH_CHECK(mode >= 0 && mode <= 3, "mode 0-3");
     const int64_t m = x.size(0), k = x.size(1);
@@ -25,9 +26,12 @@ void qmmf(const at::Tensor& x, const at::Tensor& w, const c10::optional<at::Tens
     TORCH_CHECK(out.is_cuda() && out.is_contiguous() && out.size(0) == m && out.size(1) == n &&
                 out.scalar_type() == (f32 ? at::kFloat : at::kBFloat16), "out: (M, n)");
     TORCH_CHECK(sk == 1 || (sk <= 8) || (part.has_value() && part->numel() >= sk * m * n), "part: (SK, M, n) fp32");
+    TORCH_CHECK(!cs.has_value() || (mode == 1 && cs->device() == x.device() && cs->is_contiguous() &&
+                                    cs->scalar_type() == at::kFloat && cs->numel() == npad),
+                "cs: FP8's fp32 [npad] column scales");
     c10::cuda::CUDAGuard guard(x.device());
-    qmmf_cuda(x, w, bs.has_value() ? *bs : at::Tensor(), scale, out, part.has_value() ? *part : at::Tensor(), mode, n, k,
-              sk, npad, bm, f32);
+    qmmf_cuda(x, w, bs.has_value() ? *bs : at::Tensor(), scale, cs.has_value() ? *cs : at::Tensor(), out,
+              part.has_value() ? *part : at::Tensor(), mode, n, k, sk, npad, bm, f32);
 }
 
 // NVFP4 tiled words and block scales -> e4m3 bytes in ``qmm_prefill8w``'s order and bf16 scales [K/64, npad].

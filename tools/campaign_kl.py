@@ -10,6 +10,7 @@ reference dump, the log-probabilities at the reference's top-K ids.
 
   dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
   compare  REF.npz CAND.npz [--out RESULT.json]
+  subset   GOLDEN.npz EVAL.json OUT_DIR [--max-prompt-tokens N]   (a golden reference cut to the shorter items)
   calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
   gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
            (exit 0 pass, 1 fail, 3 incomplete or uncalibrated)
@@ -35,11 +36,17 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
 import sys
 import time
+
+if __package__:
+    from .campaign_bench import LONG_PREFILL_TOKENS
+else:
+    from campaign_bench import LONG_PREFILL_TOKENS
 
 PROMPTS = (
     "Write a thread-safe LRU cache in Python with unit tests.",
@@ -172,7 +179,7 @@ def build_eval(app, args) -> dict:
     def long_messages(chars: int) -> list[dict]:
         return [{"role": "user", "content": "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK}]
 
-    for depth in [int(d) for d in args.long_depths.split(",") if d] if corpus else []:
+    for depth in long_depths(args) if corpus else []:      # within the long-prefill hold: eval_set checked them
         lo, hi = 0, min(len(corpus), depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
@@ -192,16 +199,54 @@ def build_eval(app, args) -> dict:
     return {"version": 1, "created_unix_s": int(time.time()), "items": items}
 
 
-def dump(app, args) -> None:
+def long_depths(args) -> list[int]:
+    """The prompt lengths of the long items ``--build`` writes (none without --corpus)."""
+
+    return [int(d) for d in args.long_depths.split(",") if d] if args.corpus else []
+
+
+def read_eval(path: Path) -> tuple[dict, str]:
+    """An eval set and the sha256 of the very bytes it was parsed from (the dump records what it teacher-forced)."""
+
+    raw = path.read_bytes()
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def eval_set(args) -> tuple[dict, str] | None:
+    """The eval set ``dump`` teacher-forces (read_eval), or None when ``--build`` is to write it; checked before the
+    engine loads, so a refusal costs no model load. During the campaign's long-prefill hold (lifted by
+    --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of long items
+    above it, is refused."""
+
+    path = Path(args.eval)
+    if not path.exists():
+        if not args.build:
+            raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
+        depths = long_depths(args)
+        if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
+            raise SystemExit(f"long items {depths} exceed {LONG_PREFILL_TOKENS} tokens: held by the campaign's "
+                             "long-prefill hold (pass --allow-long-prefill once it is lifted)")
+        return None
+    data, digest = read_eval(path)
+    long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
+    if long_items and not args.allow_long_prefill:
+        raise SystemExit(f"eval items {long_items} exceed {LONG_PREFILL_TOKENS} prompt tokens: held by the campaign's "
+                         "long-prefill hold (use a subset eval set, campaign_kl.py subset, or --allow-long-prefill "
+                         "once the hold is lifted)")
+    return data, digest
+
+
+def dump(app, args, loaded: tuple[dict, str] | None) -> None:
+    """Teacher-force eval_set's ``loaded`` set (None: build EVAL.json with this configuration first) and save it."""
+
     import numpy as np
     import torch
 
     eval_path = Path(args.eval)
-    if not eval_path.exists():
-        if not args.build:
-            raise SystemExit(f"{eval_path} does not exist (pass --build with the reference configuration)")
+    if loaded is None:
         eval_path.write_text(json.dumps(build_eval(app, args)))
-    data = json.loads(eval_path.read_text())
+        loaded = read_eval(eval_path)
+    data, eval_sha256 = loaded
     reference = np.load(args.reference) if args.reference else None
     capture = Capture(torch, args.top_k)
     rows, offsets, started = [], [], time.perf_counter()
@@ -219,7 +264,7 @@ def dump(app, args) -> None:
             position += n
             print(json.dumps({"item": item["name"], "positions": n,
                               "elapsed_s": round(time.perf_counter() - started, 1)}), flush=True)
-    meta = {"eval_sha256": file_sha256(str(eval_path)), "serve_args": args.serve,
+    meta = {"eval_sha256": eval_sha256, "serve_args": args.serve,
             "top_k": args.top_k, "logits_dtype": capture.dtype, "names": [it["name"] for it in data["items"]],
             "reference": args.reference,
             "reference_sha256": file_sha256(args.reference) if args.reference else None,
@@ -301,12 +346,12 @@ def compare(ref_path: str, cand_path: str) -> dict:
     kl, p_tail = position_kl(ref, cand)
     agree = ref["ids"][:, 0] == cand["ids"][:, 0]
     in_top5 = (cand["ids"][:, :5] == ref["ids"][:, :1]).any(-1)
-    names, offsets = ref_meta["names"], list(ref["offsets"]) + [len(kl)]
+    names, offsets = ref_meta["names"], [*ref["offsets"], len(kl)]
     per_item = {name: {"positions": int(offsets[i + 1] - offsets[i]),
                        "kl_mean": float(kl[offsets[i]:offsets[i + 1]].mean()),
                        "top1_agreement": float(agree[offsets[i]:offsets[i + 1]].mean())}
                 for i, name in enumerate(names)}
-    return {"reference": ref_path, "candidate": cand_path, "positions": int(len(kl)), "top_k": ref_meta["top_k"],
+    return {"reference": ref_path, "candidate": cand_path, "positions": len(kl), "top_k": ref_meta["top_k"],
             "logits_dtype": {"reference": ref_meta["logits_dtype"], "candidate": cand_meta["logits_dtype"]},
             "kl": {"mean": float(kl.mean()), "median": float(np.median(kl)), "p95": float(np.quantile(kl, 0.95)),
                    "p99": float(np.quantile(kl, 0.99)), "max": float(kl.max()),
@@ -336,9 +381,9 @@ def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
     if block < 1 or resamples < 1:
         raise ValueError("bootstrap block and resamples must be positive")
     values = np.asarray(values, dtype=np.float64)
-    bounds = list(offsets) + [len(values)]
+    bounds = [*offsets, len(values)]
     sums, sizes, weights = [], [], []
-    for first, end in zip(bounds, bounds[1:]):
+    for first, end in itertools.pairwise(bounds):
         item = values[first:end]
         if len(item) == 0:
             continue
@@ -384,9 +429,10 @@ def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamp
     names = ("kl_old", "kl_new", "kl_delta", "agreement_old", "agreement_new", "agreement_delta")
     stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
              for i, name in enumerate(names)}
-    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path), "old": old_path, "new": new_path,
+    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path),
+            "golden_subset_of": golden_meta.get("subset_of"), "old": old_path, "new": new_path,
             "old_sha256": file_sha256(old_path), "new_sha256": file_sha256(new_path),
-            "positions": int(len(columns)), "golden_source": golden_meta.get("source"),
+            "positions": len(columns), "golden_source": golden_meta.get("source"),
             "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
             "new_source": new_meta.get("source_revision"), **stats,
             "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
@@ -415,6 +461,7 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
             for name, path in variants.items()}
     first = next(iter(rows.values()))
     return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
+            "golden_subset_of": first["golden_subset_of"],
             "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
             "positions": first["positions"], "bootstrap": first["bootstrap"],
             "delta_kl": max(abs(r["kl_delta"]["mean"]) for r in rows.values()),
@@ -467,6 +514,47 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     return result
 
 
+def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens: int) -> dict:
+    """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
+    from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
+    reads. Both record what they were cut from (sha256 of the full golden reference and eval set, item names), so a
+    gate names the set it used; the dumps of a candidate must use this subset's eval.json. OUT must not be the full
+    set's own directory: the subset would replace the files it is cut from."""
+
+    import numpy as np
+
+    out = Path(out_dir)
+    inputs = {Path(golden_path).resolve(), Path(eval_path).resolve()}
+    if any(path.resolve() in inputs for path in (out / "eval.json", out / "golden" / "kl.npz")):
+        raise ValueError(f"{out_dir} holds the full set's own eval.json or golden/kl.npz: the subset would replace "
+                         "them (choose another OUT_DIR)")
+    data = json.loads(Path(eval_path).read_text())
+    golden = np.load(golden_path)
+    meta = json.loads(str(golden["meta"]))
+    eval_sha256 = file_sha256(eval_path)
+    if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+    offsets = [*golden["offsets"], len(golden["lp"])]
+    keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
+    if not keep:
+        raise ValueError(f"no eval item has at most {max_prompt_tokens} prompt tokens")
+    rows = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in keep])
+    (out / "golden").mkdir(parents=True, exist_ok=True)
+    names = [data["items"][i]["name"] for i in keep]
+    origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256,
+              "max_prompt_tokens": max_prompt_tokens, "items": names}
+    (out / "eval.json").write_text(json.dumps({**{k: v for k, v in data.items() if k != "items"},
+                                               "items": [data["items"][i] for i in keep], "subset_of": origin}))
+    sizes = [offsets[i + 1] - offsets[i] for i in keep]
+    arrays = {k: golden[k][rows] for k in golden.files if k not in ("meta", "offsets")}
+    arrays["offsets"] = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+    new_meta = {**meta, "eval_sha256": file_sha256(str(out / "eval.json")), "names": names, "subset_of": origin}
+    np.savez(out / "golden" / "kl.npz", meta=json.dumps(new_meta), **arrays)
+    (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": meta.get("model_dir"), "subset_of": origin,
+                                                          "source": meta.get("source")}, indent=1))
+    return {"out": str(out), "items": names, "positions": len(rows), **origin}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -477,6 +565,8 @@ def main() -> int:
     d.add_argument("--build", action="store_true", help="write --eval first when it is missing")
     d.add_argument("--corpus", help="corpus file for the long items (with --build)")
     d.add_argument("--long-depths", default="32768", help="long item prompt lengths (with --build)")
+    d.add_argument("--allow-long-prefill", action="store_true",
+                   help=f"build or dump items above {LONG_PREFILL_TOKENS} prompt tokens (held otherwise)")
     d.add_argument("--answer-tokens", type=int, default=256)
     d.add_argument("--profile", help="bench profile: --build continuations use its non-thinking card sampling")
     d.add_argument("--card", type=json.loads, help="JSON sampling fields for --build (overrides --profile)")
@@ -492,6 +582,12 @@ def main() -> int:
     g.add_argument("old")
     g.add_argument("new")
     g.add_argument("--calibration", help="the model's calibration record (margins); without it: uncalibrated")
+    u = sub.add_parser("subset", help="slice a golden reference + eval set to items of at most N prompt tokens")
+    u.add_argument("golden")
+    u.add_argument("eval")
+    u.add_argument("out_dir", help="writes eval.json and golden/{kl.npz,meta.json}; not the full set's directory")
+    u.add_argument("--max-prompt-tokens", type=int, default=LONG_PREFILL_TOKENS)
+    u.add_argument("--out", help="also write the result summary here")
     k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
     k.add_argument("golden")
     k.add_argument("base")
@@ -512,10 +608,13 @@ def main() -> int:
         if args.card is None:
             args.card = (json.loads(Path(args.profile).read_text())["card_sampling"]["nothink"] if args.profile
                          else {})
-        with_app(args.serve, args.port, lambda app: dump(app, args))
+        loaded = eval_set(args)                      # refusals before the engine loads
+        with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
     else:
         if args.command == "compare":
             result = compare(args.reference, args.candidate)
+        elif args.command == "subset":
+            result = subset(args.golden, args.eval, args.out_dir, max_prompt_tokens=args.max_prompt_tokens)
         else:
             boot = {"block": args.block, "resamples": args.resamples, "seed": args.seed}
             if args.command == "calibrate":
