@@ -276,20 +276,24 @@ def construct(family, path, requested, explicit, world, rank=0):
 
 
 def expected_linear_geometry(text, world):
-    """The tested constructor permits12 verify rows, copy proposals and a replicated1024-token vocabulary.
+    """The tested constructor has12 rows and no companion; only its TP1 route proposes copies.
 
     Shared workspace formulas have independent unit controls. This integration reference deliberately declares
     their dimensions separately from the constructor and retains its real per-rank cache/prompt geometry.
+    Single-request TP2 without a companion takes the serial route, so its geometry has no rejection scratch.
     """
     from tensorfold.cuda.geometry import gdn_geometry, with_fixed
     from tensorfold.cuda.sampling import effective_workspace
     from tensorfold.cuda.speculative import chain_workspace
 
     assert text["vocab_size"] == 1024
+    assert world in (1, 2)
+    geometry = gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1)
+    if world == 2:
+        return geometry
     target = effective_workspace(12, 1024, world=1)
     copies = chain_workspace(11, 16)
     workspace = target["device_bytes"] + copies["device_bytes"]
-    geometry = gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1)
     return with_fixed(geometry, workspace)
 
 
