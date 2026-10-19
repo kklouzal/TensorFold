@@ -101,7 +101,9 @@ def _attention(Q, K, V, BLOCK_START, BLOCK_END, O, BASE, FIRST, KEYS,
     out = tl.zeros((16, D), tl.float32)
     # Absolute 32-key tiles preserve row partition invariance. Single-stage
     # MMA operands must fit GB10 shared memory even for 512-wide global heads.
-    for at in range(earliest // 32 * 32, (last + 31) // 32 * 32, 32):
+    first_tile = earliest // 32 * 32
+    for back in range(0, (last + 31) // 32 * 32 - first_tile, 32):
+        at = (last + 31) // 32 * 32 - 32 - back
         logical = at + tl.arange(0, 32)
         exists = (logical >= FIRST) & (logical < FIRST + KEYS)
         visible = (logical <= pos) | ((logical >= block_start) & (logical < block_end))
