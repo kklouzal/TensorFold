@@ -321,11 +321,23 @@ def needle_prompt(text: str, chars: int, fractions: list[float], codes: dict[str
     return [{"role": "user", "content": "<document>\n" + "".join(pieces) + "</document>\n\n" + ask}]
 
 
-def gate_needle(url: str, profile: dict, args) -> dict:
+def gate_needle(url: str, profile: dict, args, *, evidence_out: str | Path | None = None) -> dict:
+    """Diagnostic substring recall; optional owned directory retains complete request/reply evidence.
+
+    The evidence is not an additional inference or a correctness verdict. It keeps the finite expected code map,
+    full parsed response (including finish/usage/token IDs), and held/error outcomes for a caller's explicit oracle.
+    An existing directory is refused so earlier evidence cannot be overwritten.
+    """
     text, digest = corpus_text(args.corpus)
     rng = random.Random(args.seed)
     fractions = [float(f) for f in args.needle_fractions.split(",")]
     rows, held = [], []
+    evidence = Path(evidence_out) if evidence_out is not None else None
+    manifest = {"version": 1, "corpus_sha256": digest, "seed": args.seed, "fractions": fractions,
+                "cases": [], "held": held}
+    if evidence is not None:
+        evidence.mkdir()
+        write_json(evidence / "index.json", manifest)
     for depth in [d for d in args.needle_depths.split(",") if d]:
         codes = {VAULTS[i]: f"{rng.randrange(10 ** 6):06d}" for i in range(len(fractions))}
         for thinking in ([False, True] if args.needle_thinking == "both" else [args.needle_thinking == "on"]):
@@ -335,6 +347,8 @@ def gate_needle(url: str, profile: dict, args) -> dict:
                       if depth == "full" else int(depth))
             if target > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
                 held.append(_hold({"depth": depth, "target": target, "thinking": thinking}))
+                if evidence is not None:
+                    write_json(evidence / "index.json", manifest)
                 continue
 
             def count(chars):
@@ -349,7 +363,30 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             messages = needle_prompt(text, lo, fractions, codes)
             body = {"model": profile["model"], "messages": messages, "temperature": 0, "max_tokens": budget,
                     "chat_template_kwargs": kwargs, "return_token_ids": True}
-            reply = stream_chat(url, body, prompt_tokens=target, label=f"needle {depth} thinking={thinking}")
+            if evidence is not None:
+                name = f"needle-{len(manifest['cases']):04d}.json"
+                record = {"status": "requested", "depth": depth, "target": target, "thinking": thinking,
+                          "expected_codes": codes, "corpus_sha256": digest,
+                          "sizing": {"chars": lo, "upper_chars": hi, "upper_tokens": count(hi),
+                                     "corpus_chars": len(text)},
+                          "request": {**body, "stream": True, "stream_options": {"include_usage": True}}}
+                manifest["cases"].append(name)
+                write_json(evidence / name, record)
+                write_json(evidence / "index.json", manifest)
+            try:
+                reply = stream_chat(url, body, prompt_tokens=target, label=f"needle {depth} thinking={thinking}")
+            except BaseException as error:
+                if evidence is not None:
+                    record.update(status="error", error=f"{type(error).__name__}: {error}")
+                    try:
+                        write_json(evidence / name, record)
+                    except BaseException as publication:
+                        error.add_note("needle error evidence publication also failed")
+                        raise error from publication
+                raise
+            if evidence is not None:
+                record.update(status="complete", reply=reply)
+                write_json(evidence / name, record)
             answer = reply["content"]
             found = {vault: code in answer for vault, code in codes.items()}
             row = {"depth": depth, "target": target, "thinking": thinking,
@@ -447,7 +484,8 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
       thinking appends an empty thought block) never resumes it, so it is not a required comparison.
     A comparison counts as exercised only when its warm request resumed >= 90% of the shared prefix from the cache
     and its cold twin resumed <= 10%. Without --allow-long-prefill, a prompt whose tokens plus the reply budget exceed
-    LONG_PREFILL_TOKENS is held, and so is a next turn whose prompt does; held work makes the gate incomplete."""
+    LONG_PREFILL_TOKENS is held, and so is a next turn whose prompt does. A rendered next turn plus its reply must
+    also fit the served context. Held work makes the gate incomplete; exact-ID extension checks stay required."""
 
     rows = []
     items, held = _items(args, args.max_tokens)          # the extension prompt is a prompt plus its whole reply
@@ -471,7 +509,14 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
                 {"role": "user", "content": "Continue."}]}
             turn_request = chat_request(profile, turn, sampling, args.max_tokens)
             turn_tokens = len(_prompt_ids(url, profile, turn))
-            if turn_tokens > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
+            turn_over_context = turn_tokens + args.max_tokens > int(profile["context"])
+            if turn_over_context:
+                held.append({"prompt": item["id"], "sampling": mode, "next_turn_prompt_tokens": turn_tokens,
+                             "reply_budget": args.max_tokens, "context": int(profile["context"]),
+                             "reported_only": True, "status": "incomplete (context)",
+                             "reason": "rendered next turn plus its reply exceeds the served context"})
+                next_turn = next_turn_cold = None
+            elif turn_tokens > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
                 # the reported next turn's cold prefill would exceed the hold: not run, recorded as held
                 held.append(_hold({"prompt": item["id"], "sampling": mode, "next_turn_prompt_tokens": turn_tokens}))
                 next_turn = next_turn_cold = None
@@ -560,6 +605,8 @@ def main() -> int:
     ap.add_argument("--needle-fractions", default="0.05,0.3,0.55,0.8,0.95")
     ap.add_argument("--needle-tokens", type=int, default=128, help="reply budget (x8 with thinking)")
     ap.add_argument("--needle-thinking", choices=("on", "off", "both"), default="off")
+    ap.add_argument("--needle-evidence-out",
+                    help="new owned directory retaining full needle requests, parsed replies, codes and holds")
     ap.add_argument("--min-tool-pass", type=float, help="minimum pass rate in every tools group (unset: report)")
     ap.add_argument("--min-needle-recall", type=float, help="minimum recall at every depth (unset: report)")
     ap.add_argument("--evict-requests", type=int, default=6,
@@ -590,7 +637,10 @@ def main() -> int:
                                    for f in (__file__, str(Path(__file__).with_name("campaign_bench.py")))},
                       source_revision=get_json(url + "/v1/stats").get("server", {}).get("source_revision"))
         for name in chosen:
-            result["gates"][name] = GATES[name](url, profile, args)
+            if name == "needle":
+                result["gates"][name] = gate_needle(url, profile, args, evidence_out=args.needle_evidence_out)
+            else:
+                result["gates"][name] = GATES[name](url, profile, args)
             write_json(args.out, result)
         statuses = {name: g["status"] for name, g in result["gates"].items()}
         result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()

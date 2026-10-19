@@ -1,5 +1,11 @@
 # TensorFold fork
 
+Campaign needle gates can optionally retain complete parsed request/reply evidence,
+and determinism probes hold a rendered next turn whose reply cannot fit the served
+context. Diagnostic substring recall remains separate from exact answer quality;
+[evidence boundaries](docs/campaign-evidence.md) describe the source-level change
+and pending installed/model qualification.
+
 **Installed integration checkpoint (2026-10-19):** source `cefd26d3` passed 10,164 installed CPU tests on each of ARM64 and AMD64, and 303 native checks on GB10 (204 documented CPU skips per host; two deliberate-device-trap skips on GB10). All five installed 4k HTTP profiles also completed their identity/mechanics controls: 48 benchmark replies of 512 tokens, 12 greedy and 12 sampled serial/draft comparisons, and 36 repeated pairs. Completed-answer/tool quality, longer context and comparative performance remain pending. Current GB10 runs use VBoost 0 and the host's ten-CPU container partition. Preserve that affinity policy; historical twenty-CPU results keep their recorded conditions.
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
