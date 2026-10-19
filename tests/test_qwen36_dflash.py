@@ -395,3 +395,31 @@ def test_proposals_are_the_argmax_and_penalized_streams_count_their_path(fixture
     assert draft.finish_tree(batch[1], 10, 3, sampling, history)[0] == want != expected_ids
     with pytest.raises(ValueError):
         draft.finish_tree(batch[1], 10, 3, sampling)
+
+
+class FixedChains:
+    """A launched chain stand-in with fixed per-stream proposals and cumulative scores."""
+
+    def __init__(self, ids, scores):
+        self.ids, self.scores = ids, scores
+
+    def finish(self, row, max_nodes, history=None):
+        ids = self.ids[row][:max_nodes]
+        return ids, list(range(-1, len(ids) - 1)), self.scores[row][:max_nodes]
+
+
+def test_proposals_stop_where_the_drafters_cumulative_score_exceeds_the_cut(fixture):
+    directory, _raw, _cfg, _arrays, target = fixture
+    chains = FixedChains([[5, 6, 7, 8], [9, 10, 11, 12]], [[0.5, 2.9, 3.1, 4.0], [3.5, 3.6, 4.0, 9.0]])
+    for stop, first, second in ((3.0, [5, 6], [9]), (2.9, [5, 6], [9]), (None, [5, 6, 7, 8], [9, 10, 11, 12]),
+                                (0.0, [5], [9]), (10.0, [5, 6, 7, 8], [9, 10, 11, 12])):  # at the cut (2.9) stays
+        draft = dflash.DFlash(directory, target, context_limit=64, stop_score=stop)
+        for row, want in ((0, first), (1, second)):
+            ids, parents, kept = draft.finish_tree((chains, row), 0, 4)
+            assert ids == want and parents == list(range(-1, len(want) - 1))
+            assert kept == chains.scores[row][:len(want)]
+        assert draft.finish_tree((chains, 0), 0, 1)[0] == [5]               # the node budget still applies first
+    assert dflash.DFlash(directory, target, context_limit=64).stop_score == dflash.STOP_SCORE
+    for bad in (-1.0, float("inf"), float("nan"), True, "3"):
+        with pytest.raises(ValueError, match="stop score"):
+            dflash.DFlash(directory, target, context_limit=64, stop_score=bad)
