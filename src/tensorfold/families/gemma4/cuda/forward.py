@@ -109,7 +109,8 @@ class Gemma4Target:
             self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
-        self._router_root = torch.tensor(self.config.hidden**-0.5, dtype=torch.bfloat16, device=self.device)
+        # The BF16 root's exact value, for the fused CT router (read once at construction).
+        self._router_root_value = float(torch.tensor(self.config.hidden**-0.5, dtype=torch.bfloat16))
         # Device-resident once: a per-forward scalar upload would be a host copy inside captured graphs.
         self._embed_scale = torch.tensor(self.config.hidden**0.5, dtype=torch.bfloat16, device=self.device)
         self.tap_layers = tuple(i for i in TAP_LAYERS if i < self.config.layers)
@@ -151,18 +152,21 @@ class Gemma4Target:
         return picks, (probabilities * layer.expert_scale[picks]).to(h.dtype)
 
     def _route_ct(self, h, layer):
-        # Publisher GateLinear preprocessing is root_size then learned scale,
-        # each in BF16; its original BF16 matrix emits FP32 logits.
-        normalized = ct_rms_norm(h, None, self.config.eps)
-        router_input = (normalized * self._router_root) * layer.router_scale
-        scores = layer.router(router_input)
-        probabilities = torch.softmax(scores, dim=-1, dtype=torch.float32)
-        picks = torch.argsort(scores, dim=-1, descending=True, stable=True)[:, :self.config.top_k].contiguous()
-        selected = torch.gather(probabilities, 1, picks)
-        routing = selected / selected.sum(-1, keepdim=True)
-        routing = routing * layer.expert_scale[picks].float()
-        # argsort constructs IDs in0..E-1; the native expert ABI uses int32.
-        return picks.to(torch.int32), routing.contiguous()
+        # Publisher GateLinear preprocessing is the unweighted CT RMS norm, root_size then learned scale, each in
+        # BF16; its original BF16 matrix emits FP32 logits. Softmax over every expert, the top-k (stable descending,
+        # IDs in 0..E-1 as INT32), renormalized over the selected probabilities, times the per-expert scale. Two fused
+        # row-invariant kernels; no intermediate leaves the GPU.
+        from tensorfold.cuda import moe
+
+        c = self.config
+        rows = h.shape[0]
+        logits = torch.empty((rows, c.experts), dtype=torch.float32, device=h.device)
+        moe.route_logits(h.contiguous(), layer.router.weight, logits,
+                         prenorm=(c.eps, self._router_root_value, layer.router_scale))
+        picks = layer.experts.picks_for(rows, c.top_k)       # the expert workspace's rows: no copy before the plan
+        routing = torch.empty((rows, c.top_k), dtype=torch.float32, device=h.device)
+        moe.route_select(logits, layer.expert_scale, picks, routing)
+        return picks, routing
 
     def _blocks(self, rows: int, position: int, vision_blocks):
         """Per-row visual block bounds on the device and the longest block in this forward (None, None, 0 without)."""

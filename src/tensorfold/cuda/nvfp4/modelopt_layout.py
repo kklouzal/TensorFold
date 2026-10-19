@@ -1,6 +1,7 @@
 """Preparation-only ModelOpt expert activation selection; no accelerator imports."""
 
 from .format import LinearMetadata
+from .host_layout import plan_scratch_bytes_a4
 
 
 def activation_banks(infos, text, *, native, mtp=True, checkpoint=None):
@@ -86,16 +87,30 @@ def scalar_prefetch_host_bytes(count, *, workers, alignment):
     return 96 * count + 3 * alignment * workers
 
 
-def plan_workspace_bytes(rows, slots, width, dims):
-    """Device peak for one resident-plan buffer, including both SiLU temporaries.
-
-    Persistent: two input code/scale planes, two BF16 gate/up planes and one
-    down code/scale plane. SiLU and its BF16 product add four bytes per width.
-    """
+def _dimensions(rows, slots, width, dims):
     if any(type(n) is not int or n <= 0 for n in (rows, slots, width, dims)):
         raise ValueError("native A4 workspace dimensions must be positive integers")
     if width % 64 or dims % 64:
         raise ValueError("native A4 workspace requires complete64-wide projection tiles")
+
+
+def plan_workspace_bytes(rows, slots, width, dims):
+    """Retained bytes of one resident device-plan buffer (ExpertsA4.run_plan's scratch).
+
+    Two input code/scale planes and one down code/scale plane; the fused gate/up
+    kernel keeps its BF16 gate/up values and activation in registers.
+    """
+    _dimensions(rows, slots, width, dims)
+    return plan_scratch_bytes_a4(rows * slots, width, dims)
+
+
+def window_workspace_bytes(rows, slots, width, dims):
+    """Device peak of one host-window execution, including both SiLU temporaries.
+
+    Two input code/scale planes, two BF16 gate/up planes and one down code/scale
+    plane; the eager SiLU and its BF16 product add four bytes per width.
+    """
+    _dimensions(rows, slots, width, dims)
     return rows * slots * (9 * dims // 8 + 137 * width // 16)
 
 
@@ -109,7 +124,7 @@ def runtime_workspace_bytes(text, *, rows, prompt_rows, mtp_a4=False, cached=Fal
     """
     width, dims = text["moe_intermediate_size"], text["hidden_size"]
     if cached:
-        return 2 * plan_workspace_bytes(128, 1, width, dims)
+        return 2 * window_workspace_bytes(128, 1, width, dims)
     slots = text["num_experts_per_tok"] + 1
     # A reusable [rows,3] row plan has12bytes/row retained; its one-time
     # arange/zero construction overlaps another8bytes/row before publication.

@@ -88,6 +88,13 @@ def authority_fields_a4(count, width, dims):
     return fields
 
 
+def plan_scratch_bytes_a4(pairs, width, dims):
+    """Retained bytes of ExpertsA4.run_plan's per-buffer scratch for ``pairs`` planned pairs: the gate/up activation
+    FP4 codes and E4M3 block scales of two projections, then the down projection's. The fused gate/up kernel keeps
+    its BF16 gate/up values and activation in registers; a shared-input row plan is the caller's to add."""
+    return pairs * (dims + dims // 8 + width // 2 + width // 16)
+
+
 def routed_tensor_a4(name):
     """Main routed CT projection fields only; shared and secondary drafts stay separate."""
     match = _A4_EXPERT.fullmatch(name)

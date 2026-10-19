@@ -10,6 +10,46 @@ import math
 from pathlib import Path
 
 
+GRAPH_SPAN = 16      # graphs.Graphs' smallest full-attention grid (chunks); larger grids double up to the context's
+
+
+def graph_workspace(cfg, max_rows: int, slots: int, taps: int) -> int:
+    """Retained bytes of graphs.Graphs: each (rows, grid, taps) graph's static outputs plus one activation bound.
+
+    Outputs per row: FP32-bounded logits, the final hidden row and ``taps`` tap rows. The graphs share one private
+    pool, so their transient activations need one forward's bound at ``max_rows``.
+    """
+    from .state import GLOBAL_CHUNK
+
+    limit = -(-min(slots, cfg.max_position) // GLOBAL_CHUNK)
+    grids = len({min(limit, max(GRAPH_SPAN, 1 << k)) for k in range(limit.bit_length() + 1)})
+    row = cfg.vocab * 4 + 2 * cfg.hidden * (1 + taps)
+    outputs = grids * 2 * (max_rows * (max_rows + 1) // 2) * row
+    return outputs + max_rows * ((32 * cfg.hidden + 16 * cfg.top_k * cfg.moe_width) * 2 + cfg.vocab * 4)
+
+
+def expert_workspace(cfg, rows: int) -> int:
+    """Retained bytes of nvfp4_experts.Workspace for forwards of at most ``rows`` rows.
+
+    One PlanBuffers (picks, grouped plan, BF16 slot outputs) and the bank's
+    ExpertsA4.run_plan scratch (plan_scratch_bytes_a4) and shared-input
+    [rows, 3] row plan per power-of-two bucket.
+    """
+    from tensorfold.cuda.nvfp4.host_layout import plan_scratch_bytes_a4
+
+    total, bucket = 0, 16
+    maximum = 1 << max(4, (rows - 1).bit_length())
+    d, width, experts = cfg.hidden, cfg.moe_width, cfg.experts
+    while bucket <= maximum:
+        pairs = bucket * cfg.top_k
+        wide = pairs > 1024
+        total += 8 * pairs + 12 * (min(pairs, experts) + pairs // 16) + 8 + 2 * pairs * d
+        total += 4 * (pairs if wide else 1) + 4 * (((pairs + 1023) // 1024) * experts if wide else 1)
+        total += plan_scratch_bytes_a4(pairs, width, d) + 12 * bucket
+        bucket *= 2
+    return total
+
+
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
           max_rows=16, streams=1, keep=1, drafter_bits=16):
     import torch
@@ -103,6 +143,10 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         scratch += rows * cfg.heads * sliding_slots(cfg.window, rows, group, longest) * (cfg.head_dim + 2) * 4
         chunks = -(-min(slots, cfg.max_position) // GLOBAL_CHUNK)
         scratch += (SEQUENTIAL_ROWS - 1) * cfg.heads * chunks * (cfg.global_head_dim + 2) * 4
+        if native:
+            scratch += expert_workspace(cfg, rows)
+        from .weights import TAP_LAYERS
+        scratch += graph_workspace(cfg, max_rows, slots, len([i for i in TAP_LAYERS if i < cfg.layers]))
         if vision:
             v = raw['vision_config']
             patches = max(media_geometry.image_patches, media_geometry.video_patches)

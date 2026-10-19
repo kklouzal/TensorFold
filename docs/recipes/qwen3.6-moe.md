@@ -95,10 +95,19 @@ authority registration. The pool reserves future KV, retained states, draft
 contexts and runtime scratch before choosing its final size. It requires discrete
 VRAM, a fresh native CUDA allocator and stable allocator configuration through
 startup. Reused/unproved allocator state fails explicitly. Resident execution may
-use unified memory. Resident and cached banks use the same grouped native FP4
-activation kernels, executing eagerly; the affine native-MTP graph path remains
-separate. Cached authority stores one 16-byte-aligned U8 record per expert,
-including its three packed projections and four calibration fields. A miss
+use unified memory. Resident banks group each layer's routes on the GPU (no host
+read of the picks) and run staged native FP4 activation kernels that also compute
+the layer's shared expert as the bank's last cell when it has the routed experts'
+A4 storage (otherwise it keeps its own projections); cached banks plan host windows
+from the picks. Tests compare both paths bit for bit. With one resident stream,
+verification rounds that form a chain (serial steps, DFlash v1 and copy proposals)
+replay CUDA graphs over a fixed copy of the request's state, captured at startup
+for the smallest context span (larger spans on first use); grammar-pruned trees,
+image prompts, concurrent streams and RAM-backed experts run eagerly. Admission
+charges the fixed state, the retained graph outputs and the device-plan scratch.
+The affine native-MTP graph path remains separate. Cached authority stores one
+16-byte-aligned U8 record per expert, including its three packed projections and
+four calibration fields. A miss
 uploads that record once. Native field views are prepared before the pool's
 first borrow and rebuilt transactionally when startup sizes the pool. For this
 checkpoint, each record is 1,769,536 bytes, including 40 bytes of initialized

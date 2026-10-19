@@ -267,8 +267,8 @@ the lane matmul's template flag); the other extension kernels execute the two in
 
 ## CT native FP4 routed experts
 
-Qwen MoE native-A4 experts use one grouped execution contract for resident
-six-field storage and cached interleaved records. Per-expert fields have
+Qwen MoE and Gemma4 native-A4 experts use one storage and arithmetic contract for
+resident six-field banks and (Qwen) cached interleaved records. Per-expert fields have
 contiguous inner payloads and an explicit outer expert stride. Native boundary
 checks prove positive shapes, complete inner spans and byte-range arithmetic
 before multiplication or launch; unused singleton strides remain legal.
@@ -279,11 +279,33 @@ retirement; a failed retirement retains all owners.
 Original CT input-global FP32 multipliers drive group-16 activation quantization
 directly. Alpha separately rounds the reciprocal input calibration and its
 product with the prepared weight reciprocal. Each gate/up result rounds to
-BF16, SiLU rounds to BF16, and its product with up rounds again before independent
-down-input quantization. Decode down outputs are FP32; prompt outputs are BF16.
-Out-of-bank picks are inactive slots and write zero without reading authority.
+BF16, the checkpoint's activation (Qwen SiLU, Gemma tanh GELU) rounds to BF16, and
+its product with up rounds again before independent down-input quantization.
+Decode-mode down outputs are FP32 and prompt-mode outputs BF16; Gemma runs every
+call in prompt mode. In host windows (cached banks, expert-parallel local picks)
+out-of-bank picks are inactive slots and write zero without reading authority.
 Stored native block scales admit only unsigned finite E4M3 byte encodings
 `0x00..0x7e`, once at load; the general packing permutation preserves all bits.
+
+Resident banks (`ExpertsA4.run_plan`, also ModelOpt's direct-scale banks) read no
+picks on the host: the device plan groups each layer's pairs into items of 16 or
+64 same-expert pairs (`plan_tile`: 64 once experts average 32 pairs) and traps on
+expert IDs outside [0, plan experts). Three launches follow: activation codes (one
+quantization per row, for up to 65,535 rows, when the loader's complete CPU bit
+proof shows every expert shares the gate/up input global), the gate/up GEMMs with
+the activation and the down quantization in one epilogue, and the down GEMM; each
+CTA stages an item's weights once per 64-column block. Every output element
+keeps the host-window chain (same fragments, input groups ascending, shape-only
+K slices added in order), so a pair's bits never depend on its item size, the
+other pairs or the row count; tests compare both paths bit for bit. An item whose cell equals the
+bank count (a shared expert computed separately) is skipped and its slot left to
+the caller; a Qwen bank that loaded the shared expert as its last cell computes it
+in the same plan. Retained per-buffer scratch is allocated by the first eager call;
+a first call under CUDA graph capture is refused. The resident CT routers are
+row-invariant split-K BF16 tensor-core GEMVs (`route.cu`: eight K slices fixed by
+K, added in slice order); Gemma's fuses the CT RMS/root/scale input and is followed
+by one softmax/top-k/renormalize/per-expert-scale kernel (stable descending order,
+lower ID on ties).
 
 The maintained independent oracle packs original checkpoint projections through
 the individual linear implementation and computes each routed pair separately.

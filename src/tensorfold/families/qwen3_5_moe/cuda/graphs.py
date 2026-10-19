@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import gc
-from typing import Callable, Sequence
+from typing import Sequence
 
 import torch
 
 from tensorfold.families.qwen3_5.cuda.forward import State, reserve, stage, tree_forward
 
+from . import CHAIN_BUCKET as BUCKET
+from .chain_graphs import capture, copy_state
 from .mtp import Cache, Head, Staged as HeadStaged
-
-BUCKET = 8192        # smallest context span a graph covers; larger contexts take the next power of two
 
 
 class Graphs:
@@ -41,32 +41,11 @@ class Graphs:
             self.st = State(self.w)
             reserve(self.st, self.rows)
             self.mc = Cache(self.w, self.rows)
-        dst = self.st
-        for a, b in zip(dst.rec + dst.conv, st.rec + st.conv):
-            if a is not None:
-                a.copy_(b)
-        for kv, src in zip(dst.kv, st.kv):
-            if kv is not None:
-                kv[0][:st.pos].copy_(src[0][:st.pos])
-                kv[1][:st.pos].copy_(src[1][:st.pos])
-        dst.pos = st.pos
+        copy_state(self.st, st)
         self.mc.k[:mc.pos].copy_(mc.k[:mc.pos])
         self.mc.v[:mc.pos].copy_(mc.v[:mc.pos])
         self.mc.pos = mc.pos
-        return dst, self.mc
-
-    def _capture(self, fn: Callable):
-        torch.cuda.synchronize()
-        g = torch.cuda.CUDAGraph()
-        enabled = gc.isenabled()
-        gc.disable()                                    # collecting an old graph mid-capture invalidates it
-        try:
-            with torch.cuda.graph(g, pool=self.pool):
-                out = fn()
-        finally:
-            if enabled:
-                gc.enable()
-        return g, out
+        return self.st, self.mc
 
     @torch.no_grad()
     def verify(self, tokens: Sequence[int]):
@@ -80,7 +59,8 @@ class Graphs:
             staged = stage(self.w, st, width, key[1])
             staged.refresh(tokens, st.pos)
             tree_forward(self.w, staged.ids, parents, st, hidden=True, staged=staged)      # compiles each kernel
-            g, out = self._capture(lambda: tree_forward(self.w, staged.ids, parents, st, hidden=True, staged=staged))
+            g, out = capture(self.pool,
+                             lambda: tree_forward(self.w, staged.ids, parents, st, hidden=True, staged=staged))
             entry = self.target[key] = (g, staged, out)
         g, staged, out = entry
         staged.refresh(tokens, st.pos)
@@ -104,7 +84,7 @@ class Graphs:
                 return normed, self.head.logits(normed[-1:])
 
             run()
-            g, out = self._capture(run)
+            g, out = capture(self.pool, run)
             entry = self.mtp[key] = (g, staged, out)
         g, staged, out = entry
         staged.refresh(states, tokens, p0)

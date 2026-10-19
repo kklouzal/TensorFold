@@ -36,8 +36,8 @@ class Tensor:
 
 
 class Bank:
-    def __init__(self, swiglu, *, direct=False):
-        self.swiglu, self.direct_input = swiglu, direct
+    def __init__(self, swiglu, *, direct=False, capturable=True):
+        self.swiglu, self.direct_input, self.capturable = swiglu, direct, capturable
         self.count, self.width, self.dims, self.device = 128, 704, 2816, 'cuda:0'
 
     def device_tensors(self):
@@ -52,14 +52,14 @@ def _namespace():
         raise AssertionError('invalid Gemma NVFP4 boundary reached an allocation')
 
     torch = SimpleNamespace(Tensor=Tensor, bfloat16='bf16', int32='i32', float32='f32', empty=allocate)
-    ns = _definitions(ROOT / 'families/gemma4/cuda/nvfp4_experts.py', {'Experts'},
-                      {'torch': torch, 'ExpertsA4': Bank, 'geglu': object()})
+    ns = _definitions(ROOT / 'families/gemma4/cuda/nvfp4_experts.py', {'Experts', 'Workspace'},
+                      {'torch': torch, 'ExpertsA4': Bank, 'PlanBuffers': object, 'geglu': object()})
     return ns, calls
 
 
 def test_adapter_rejects_modelopt_direct_scales_and_wrong_activation_contract():
     ns, calls = _namespace()
-    for bank in (Bank(ns['geglu'], direct=True), Bank(object()), object()):
+    for bank in (Bank(ns['geglu'], direct=True), Bank(object()), Bank(ns['geglu'], capturable=False), object()):
         with pytest.raises(ValueError, match='original CT'):
             ns['Experts'](bank)
     assert not calls

@@ -14,7 +14,7 @@ def _ext():
     from tensorfold.cuda.build import MIN_CAPABILITY, load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_experts_a4_v4", sources=[str(here / "experts_a4.cpp"),
+    return load(name="tensorfold_nvfp4_experts_a4_v5", sources=[str(here / "experts_a4.cpp"),
                 str(here / "experts_a4.cu")], need=MIN_CAPABILITY,
                 arch_specific=precision.own_math(torch.cuda.get_device_capability())["nvfp4"],
                 extra_include_paths=[str(here)], extra_cuda_cflags=["-O3", "--ftz=false", "--prec-div=true"], verbose=False)
@@ -43,7 +43,7 @@ def run(bank, x, picks, out, *, prefill, maximum_id=None):
     out.zero_()
     capacity = bank.capacity
     ext = _ext()
-    direct = getattr(bank, "direct_input", False)
+    direct = bank.direct_input
     up_sk = 1 if prefill else qmm.split_k(bank.width, bank.dims)
     down_sk = 1 if prefill else qmm.split_k(bank.dims, bank.width)
     for lo in range(0, x.shape[0], PAIRS):

@@ -101,7 +101,7 @@ def validate_headers(raw: dict, headers: dict, *, vision: bool = False) -> Confi
 
 @dataclass
 class _Router:
-    """Publisher BF16 GateLinear, FP32 output, fixed native tensor-core K order."""
+    """Publisher BF16 GateLinear rows; the target's fused CT router (cuda.moe.route_logits) consumes ``weight``."""
     weight: Any
 
     @property
@@ -114,14 +114,6 @@ class _Router:
 
     def nbytes(self):
         return self.weight.numel() * self.weight.element_size()
-
-    def __post_init__(self):
-        from functools import partial
-        from tensorfold.cuda.moe import router
-        self._run = partial(router, fixed_schedule=True)
-
-    def __call__(self, x):
-        return self._run(x, self.weight)
 
 
 def _calibrations(reader, native: dict) -> dict[str, tuple[float, float, float]]:
@@ -177,7 +169,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
     from tensorfold.cuda.nvfp4.linear import Fp4Linear
     from tensorfold.cuda.tensor_file import checkpoint_path
     from tensorfold.families.qwen3_5.cuda.weights import Plain
-    from .nvfp4_experts import load_experts
+    from .nvfp4_experts import Workspace, load_experts
     from .head import select_head
 
     root = Path(model_dir)
@@ -221,10 +213,11 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
         embed = select_head(Plain(read(CT_PREFIX + "embed_tokens.weight")))
         norm = read(CT_PREFIX + "norm.weight")
         layers = []
+        workspace = Workspace()
         for i in range(c.layers):
             p = f"{CT_PREFIX}layers.{i}."
             experts = load_experts(read, p + "experts", count=c.experts, width=c.moe_width, dims=c.hidden, device=dev,
-                                   calibrated=calibrated)
+                                   calibrated=calibrated, workspace=workspace)
             layers.append(Layer(
                 q=linear(p + "self_attn.q_proj"), k=linear(p + "self_attn.k_proj"),
                 v=linear(p + "self_attn.v_proj") if c.sliding(i) else None,

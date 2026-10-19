@@ -4,7 +4,8 @@ import struct
 
 import pytest
 
-from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank, plan_workspace_bytes, runtime_workspace_bytes
+from tensorfold.cuda.nvfp4.modelopt_layout import (a4_bank, plan_workspace_bytes, runtime_workspace_bytes,
+                                                  window_workspace_bytes)
 
 PREFIX = "model.language_model.layers.0.mlp"
 
@@ -61,12 +62,14 @@ def test_excluded_stacked_higher_precision_mtp_stays_a_separate_bank():
 
 
 def test_actual_projection_workspace_counts_every_live_payload_and_temporary():
-    # D2560/W640: input code+scale planes2880, gate/up2560,
-    # down code+scale360, SiLU+product2560 bytes per pair.
-    assert plan_workspace_bytes(1, 1, 640, 2560) == 8360
+    # D2560/W640: input code+scale planes 2880 and down code+scale 360 bytes per pair for the resident device
+    # plan (the fused gate/up kernel keeps gate/up and the activation in registers); host windows add gate/up
+    # 2560 and SiLU+product 2560.
+    assert plan_workspace_bytes(1, 1, 640, 2560) == 3240
+    assert window_workspace_bytes(1, 1, 640, 2560) == 8360
     text = {"hidden_size": 2560, "moe_intermediate_size": 640, "num_experts_per_tok": 10}
-    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * (11 * 8360 + 20)
-    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * (11 * 8360 + 20)
+    assert runtime_workspace_bytes(text, rows=8, prompt_rows=2048) == (8 + 2048) * (11 * 3240 + 20)
+    assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, mtp_a4=True) == (12 + 2060 + 12) * (11 * 3240 + 20)
     assert runtime_workspace_bytes(text, rows=12, prompt_rows=2060, cached=True) == 2 * 128 * 8360
 
 
@@ -262,7 +265,7 @@ def test_gpu_load_logical_reduction_and_control_peak_is_dominated_by_layer_stagi
 
 def test_common_input_proof_checks_every_expert_and_projection_by_exact_bits():
     torch = pytest.importorskip("torch")
-    from tensorfold.cuda.nvfp4.modelopt_experts import uniform_input_bits
+    from tensorfold.cuda.nvfp4.experts_a4 import uniform_input_bits
 
     values = torch.full((512, 2), .001964750699698925, dtype=torch.float32)
     assert uniform_input_bits(values)
