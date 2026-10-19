@@ -559,10 +559,10 @@ def test_build_eval_keeps_the_v1_short_and_long_items(tmp_path):
 def test_build_eval_refuses_a_depth_its_document_cannot_fill(tmp_path):
     _build_args(tmp_path)                                         # writes the corpus
     size = len((tmp_path / "corpus.txt").read_text())
-    cases = ((dict(mid_depths="400", corpus_start=size - 100), "ends before a 400-token document"),
-             (dict(mid_depths="400", corpus_start=size + 1), "ends before a 400-token document"),
-             (dict(mid_depths="400,400000"), "ends before a 400000-token document"),    # the second window runs out
-             (dict(long_depths="20"), "empty document already renders"))
+    cases = (({"mid_depths": "400", "corpus_start": size - 100}, "ends before a 400-token document"),
+             ({"mid_depths": "400", "corpus_start": size + 1}, "ends before a 400-token document"),
+             ({"mid_depths": "400,400000"}, "ends before a 400000-token document"),     # the second window runs out
+             ({"long_depths": "20"}, "empty document already renders"))
     for fields, message in cases:              # never an item silently shorter (or longer) than its depth
         with pytest.raises(ValueError, match=message):
             kl.build_eval(FakeApp(), _build_args(tmp_path, short="", **fields))
@@ -1052,11 +1052,11 @@ def test_golden_loader_keeps_float32_constants_and_matches_a_float32_model(tmp_p
     if not hasattr(transformers, "Gemma4ForConditionalGeneration"):
         pytest.skip("transformers without Gemma4")
     golden = load("campaign_golden")
-    text = dict(num_hidden_layers=2, hidden_size=72, intermediate_size=96, moe_intermediate_size=32, num_experts=4,
-                top_k_experts=2, num_attention_heads=4, num_key_value_heads=2, num_global_key_value_heads=1,
-                head_dim=16, global_head_dim=32, vocab_size=128, sliding_window=8, enable_moe_block=True,
-                layer_types=["sliding_attention", "full_attention"])
-    vision = dict(num_hidden_layers=1, hidden_size=32, intermediate_size=32, num_attention_heads=2)
+    text = {"num_hidden_layers": 2, "hidden_size": 72, "intermediate_size": 96, "moe_intermediate_size": 32,
+            "num_experts": 4, "top_k_experts": 2, "num_attention_heads": 4, "num_key_value_heads": 2,
+            "num_global_key_value_heads": 1, "head_dim": 16, "global_head_dim": 32, "vocab_size": 128,
+            "sliding_window": 8, "enable_moe_block": True, "layer_types": ["sliding_attention", "full_attention"]}
+    vision = {"num_hidden_layers": 1, "hidden_size": 32, "intermediate_size": 32, "num_attention_heads": 2}
     torch.manual_seed(0)
     model = transformers.Gemma4ForConditionalGeneration(
         transformers.Gemma4Config(text_config=text, vision_config=vision)).to(torch.bfloat16)

@@ -870,7 +870,7 @@ def main() -> int:
                 try:
                     record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
                     result = gate(args.golden, args.old, args.new, calibration=record, **boot)
-                except Exception as error:      # a refusal or a broken input: an error result, never a verdict
+                except Exception as error:  # noqa: BLE001 - CLI boundary: any gate failure is an error (exit 4), not a verdict
                     traceback.print_exc()
                     result = {"status": "error", "error": f"{type(error).__name__}: {error}", "golden": args.golden,
                               "old": args.old, "new": args.new, "calibration": args.calibration}
