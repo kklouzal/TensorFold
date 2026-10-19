@@ -1,5 +1,10 @@
 # TensorFold fork
 
+Gemma DFlash committed prompt projections keep prompt arithmetic through tiny
+cache suffixes, so seeded sampled continuations use the same proposal state
+after warm and cold prefill. Decode appends retain their existing lane kernels.
+Native and full-model verification of this correction remains pending.
+
 Teacher-forced KL dumps require successful CLI cleanup as well as completed
 scoring; the temporary serving hook is restored on every outcome. See
 [campaign evidence boundaries](docs/campaign-evidence.md) for the unchanged

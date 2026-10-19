@@ -10,8 +10,9 @@ The target verifies every proposal (probability-ratio rejection for sampled
 requests), preserving its output law, so
 the companion's arithmetic (BF16 row-reuse projections, or at bits 8 private
 FP8 row-scaled copies of the projections and the borrowed head; kernel
-geometry) only has to be deterministic. One DraftState belongs to one request
-lane; its storage is allocated once for the admitted context.
+geometry) must be deterministic for the same prefix, including when its prompt came from a partial cache hit.
+Committed prompt projections therefore keep prompt arithmetic even for a tiny suffix. One DraftState belongs to
+one request lane; its storage is allocated once for the admitted context.
 """
 
 from __future__ import annotations
@@ -83,18 +84,17 @@ def _draft_prep(SRC, STRIDE, QW, KW, FREQ, POS, QO, KC, VC, RING,
         tl.store(dst + half + d, b)
 
 
-def _project(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-    """BF16 rows @ weight^T sharing weight loads across the rows of a proposal."""
+def _project(x: torch.Tensor, weight: torch.Tensor, *, prompt: bool = False) -> torch.Tensor:
+    """BF16 projection; prompt rows retain the prompt GEMM regardless of a partial cache hit's row count."""
     m = x.shape[0]
-    if m > 16:
+    if prompt or m > 16:
         return b16.prompt(x, weight)
     return b16.matmul_rows(x, weight, max(2, 1 << (m - 1).bit_length()))
 
 
-def _project8(x: torch.Tensor, linear) -> torch.Tensor:
-    """BF16 rows through a requantized FP8 copy: proposals and accepted taps on the decode kernel, committed prompt
-    chunks on the prompt GEMM (the same row split as the BF16 path)."""
-    return linear.prefill(x) if x.shape[0] > 16 else linear(x)
+def _project8(x: torch.Tensor, linear, *, prompt: bool = False) -> torch.Tensor:
+    """FP8-copy projection: explicit prompt rows retain prompt arithmetic even for a one-row cache suffix."""
+    return linear.prefill(x) if prompt or x.shape[0] > 16 else linear(x)
 
 
 class DraftState:
@@ -230,8 +230,13 @@ class DFlash:
             enable_fp_fusion=False)
 
     @torch.no_grad()
-    def append(self, state: DraftState, taps: torch.Tensor) -> None:
-        """Commit target-verified tap rows at positions [length, length + n)."""
+    def append(self, state: DraftState, taps: torch.Tensor, *, prompt: bool = False) -> None:
+        """Commit accepted taps. Prompt rows always use prompt arithmetic, including a tiny cache suffix.
+
+        Cached prompt K/V must equal fresh prefill K/V: sampled rejection depends on the companion's actual q.
+        The lane projection and prompt GEMM have different bits, so row count cannot determine a prompt's role.
+        Decode appends retain the existing fast lane projection for at most16 rows.
+        """
         cfg = self.config
         if (not isinstance(taps, torch.Tensor) or taps.ndim != 2 or taps.shape[1] != len(self.tap_layers) * self.hidden
                 or taps.dtype != torch.bfloat16 or taps.device != self.device
@@ -239,11 +244,12 @@ class DFlash:
             raise ValueError("Gemma DFlash accepted taps must match the target and admitted positions")
         if not taps.shape[0]:
             return
-        context = rms_norm(self.linears["fc.weight"](taps.contiguous()), self.weights["hidden_norm.weight"],
+        context = rms_norm(self.linears["fc.weight"](taps.contiguous(), prompt=prompt),
+                           self.weights["hidden_norm.weight"],
                            cfg.eps)
         state.pos.fill_(state.length)
         for layer in range(cfg.layers):
-            self._publish(self.linears[f"layers.{layer}.kv"](context), state, layer, None)
+            self._publish(self.linears[f"layers.{layer}.kv"](context, prompt=prompt), state, layer, None)
         state.length += taps.shape[0]
 
     @torch.no_grad()

@@ -113,10 +113,14 @@ def _engine(monkeypatch, *, with_head=True):
     class Head:
         tap_layers = (1,)
 
+        def __init__(self):
+            self.append_roles = []
+
         def make_state(self):
             return Draft()
 
-        def append(self, draft, taps):
+        def append(self, draft, taps, *, prompt=False):
+            self.append_roles.append((len(taps), prompt))
             draft.taps.extend(int(v) for v in taps[:, 0])
 
         def propose(self, draft, anchor, limit, history=None, *, sampled=False):
@@ -168,6 +172,18 @@ def _assert_prompt_path(engine, prompt):
     state = engine._state
     assert state.tokens[:len(prompt)] == list(prompt)
     assert state.prompt_rows == [True] * len(prompt) + [False] * (state.position - len(prompt))
+
+
+def test_companion_prompt_role_covers_tiny_turn_suffix_and_cached_extension(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine._turn = 17
+    prompt = [3] * 20 + [17, 1, 2]
+    engine.generate(prompt, 1, None, lambda tokens: None, stop_eos=False)
+    assert engine.head.append_roles == [(20, True), (3, True)]
+    engine.head.append_roles.clear()
+    engine.generate(prompt + [2] * 40, 8, None, lambda tokens: None, stop_eos=False)
+    assert engine.head.append_roles[0] == (40, True)
+    assert all(not role for _, role in engine.head.append_roles[1:])  # accepted decode rows retain their lane role
 
 
 @pytest.mark.parametrize("sampled", [False, True])

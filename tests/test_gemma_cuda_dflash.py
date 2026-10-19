@@ -7,7 +7,9 @@ tolerance, deterministic proposals, and committed context that only target
 """
 
 import dataclasses
+import hashlib
 import json
+from functools import partial
 from types import SimpleNamespace as NS
 
 import pytest
@@ -26,6 +28,87 @@ from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion runs CUDA kernels")
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
+
+
+def test_prompt_append_partition_and_restore_keep_one_projection_arithmetic(monkeypatch):
+    """A sensitive CPU adapter control: distinct lane/prompt results expose the real dispatch boundary, without
+    pretending to emulate either CUDA dot product. The former small-suffix dispatch fails this cache invariant."""
+    monkeypatch.setattr(dflash.b16, "prompt", lambda x, weight: x + 1)
+    monkeypatch.setattr(dflash.b16, "matmul_rows", lambda x, weight, rows: x + 2)
+    monkeypatch.setattr(dflash, "rms_norm", lambda x, weight, eps: x)
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.config, draft.device, draft.window = NS(layers=2, eps=1e-6), torch.device("cpu"), 200
+    draft.hidden, draft.tap_layers = 4, (0,)
+    draft.weights = {"hidden_norm.weight": torch.ones(4)}
+    draft.linears = {name: partial(dflash._project, weight=torch.eye(4))
+                     for name in ("fc.weight", "layers.0.kv", "layers.1.kv")}
+    def publish(fused, state, layer, query):
+        state.held[layer][state.length:state.length + len(fused)].copy_(fused)
+    draft._publish = publish
+    def state():
+        return NS(length=0, rows=128, pos=torch.zeros(1), held=[torch.empty(95, 4) for _ in range(2)])
+    taps = torch.arange(380, dtype=torch.bfloat16).reshape(95, 4)
+    whole, split = state(), state()
+    draft.append(whole, taps, prompt=True)
+    draft.append(split, taps[:29], prompt=True)
+    draft.append(split, taps[29:31], prompt=True)
+    saved = [value[:31].clone() for value in split.held]
+    restored = state()
+    restored.length = 31
+    for target, source in zip(restored.held, saved):
+        target[:31].copy_(source)
+    draft.append(restored, taps[31:], prompt=True)
+    assert all(torch.equal(a, b) for a, b in zip(whole.held, restored.held))
+    lane = state()
+    draft.append(lane, taps[:2])
+    assert not torch.equal(lane.held[0][:2], whole.held[0][:2])  # the test discriminates the two policies
+
+
+def test_fp8_prompt_role_selects_prefill_even_for_one_row():
+    calls = []
+    class Projection:
+        def prefill(self, x):
+            calls.append("prompt")
+            return x
+        def __call__(self, x):
+            calls.append("lane")
+            return x
+    value = torch.zeros((1, 4))
+    dflash._project8(value, Projection(), prompt=True)
+    dflash._project8(value, Projection())
+    assert calls == ["prompt", "lane"]
+
+
+@cuda
+@pytest.mark.parametrize("bits", [16, 8])
+def test_prompt_committed_kv_and_q_are_bit_identical_across_tiny_cached_suffix(tmp_path, bits):
+    cfg, _arrays, target = make_fixture(tmp_path, window=8)
+    target.weights = NS(embed=NS(weight=target.head.to(DEV)))
+    target.config.softcap = 30.0
+    draft = dflash.DFlash(tmp_path, target, context_limit=256, bits=bits, rows=128)
+    taps = taps_for(cfg, 95, 93).to(DEV)
+    whole, split = draft.make_state(), draft.make_state()
+    draft.append(whole, taps, prompt=True)
+    draft.append(split, taps[:29], prompt=True)
+    draft.append(split, taps[29:31], prompt=True)
+    saved = split.snapshot()
+    draft.logits(split, 2, 4)  # discarded proposal noise must not enter the restored committed prefix
+    split.restore(saved)
+    draft.append(split, taps[31:], prompt=True)
+    left, right = whole.snapshot(), split.snapshot()
+    left_q, right_q = draft.logits(whole, 2, 4), draft.logits(split, 2, 4)
+    def sha(value):
+        return hashlib.sha256(value.contiguous().view(torch.uint8).cpu().numpy().tobytes()).hexdigest()
+    features = {"case": "whole95 versus prompt29+tiny2+snapshot+discarded-noise+restore+suffix64",
+                "bits": bits, "torch": torch.__version__, "taps_seed": 93, "taps_sha256": sha(taps),
+                "anchor": 2, "proposal_count": 4, "position": 95,
+                "whole_kv_sha256": [[sha(tensor) for tensor in pair] for pair in left[1]],
+                "split_kv_sha256": [[sha(tensor) for tensor in pair] for pair in right[1]],
+                "whole_proposal_logits": left_q.cpu().tolist(), "split_proposal_logits": right_q.cpu().tolist()}
+    (tmp_path / "cache-role-feature-evidence.json").write_text(json.dumps(features, indent=2) + "\n")
+    assert left[0] == right[0] == 95
+    assert all(torch.equal(a, b) for pairs in zip(left[1], right[1]) for a, b in zip(*pairs))
+    assert torch.equal(left_q, right_q)
 
 
 def test_proposal_factory_owns_sampled_q_packet_and_preserves_greedy_default():

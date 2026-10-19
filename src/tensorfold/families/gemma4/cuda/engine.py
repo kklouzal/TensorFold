@@ -281,7 +281,7 @@ class Gemma4Engine:
                                              output_logits=False, output_taps=self.head is not None,
                                              trusted_tokens=True, prompt=True)
                 if self.head is not None:
-                    self.head.append(self._draft, self._taps(result))
+                    self.head.append(self._draft, self._taps(result), prompt=True)
                 if end == len(prompt):
                     logits = self.target.project_logits(result.hidden[-1:])
                 elif end == boundary:
