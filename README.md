@@ -904,9 +904,9 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
 - The KL eval set (`campaign_kl.py dump --build`) holds the `--short` prompt sets, `--mid-depths` items (multi-chunk
   prefill; document review and document-to-code asks, thinking off and on, each on its own corpus window from
   `--corpus-start`) and `--long-depths` corpus prefixes. `campaign_kl.py append BASE_GOLDEN BASE_EVAL NEW_GOLDEN
-  NEW_EVAL OUT_DIR` adds items scored by a later golden session (built with `--short` naming only the new prompt sets) without rescoring the
-  existing ones; both parts must share the checkpoint, model config, top-K, library versions, prefill chunk and
-  precision, and the result lists every part's hashes.
+  NEW_EVAL OUT_DIR` adds items scored by a later golden session (built with `--short` naming only the new prompt
+  sets) without rescoring the existing ones; both parts must share the checkpoint, model config, top-K, logits dtype,
+  library versions, prefill chunk and precision, and the result lists every part's hashes.
 - `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
   busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
 
