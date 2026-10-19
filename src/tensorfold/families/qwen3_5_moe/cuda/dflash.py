@@ -11,10 +11,10 @@ instead of every round allocating a longer copy.
 """
 from __future__ import annotations
 
+from itertools import accumulate
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from triton.language.core import TRITON_MAX_TENSOR_NUMEL
 
 from tensorfold.cleanup import rollback
@@ -27,20 +27,8 @@ from tensorfold.families.qwen3_5.cuda.glue import embedding
 from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
-from ..dflash_metadata import QUERY_TILE, checked_headers, padded_block, positive
-from . import context_attention
-
-
-def _norm(x, weight, eps):
-    # Qwen3 RMSNorm casts the normalized activation before its BF16 weight multiply.
-    value = x.float()
-    return weight * (value * torch.rsqrt(value.square().mean(-1, keepdim=True) + eps)).to(x.dtype)
-
-
-def _rotate(x, cos, sin):
-    half = x.shape[-1] // 2
-    return x * cos + torch.cat((-x[..., half:], x[..., :half]), -1) * sin
-
+from ..dflash_metadata import QUERY_TILE, checked_headers, padded_block, positive, projection_groups
+from . import context_attention, draft_glue
 
 MIN_ROWS = 1024     # the smallest store capacity; capacities are MIN_ROWS * 2**k, capped at the admitted window
 
@@ -109,11 +97,9 @@ class DFlash:
         reader = SafeTensors([checkpoint_path(Path(draft_dir), "model.safetensors")])
         try:
             for name, shape in cfg.shapes().items():
-                value = reader.get(name).to(self.device).contiguous()
-                if len(shape) == 2:
-                    self.linears[name] = tile(quantize4(value)) if bits == 4 else Plain(value)
-                else:
-                    self.weights[name] = value
+                if len(shape) == 1:
+                    self.weights[name] = reader.get(name).to(self.device).contiguous()
+            self.linears = self._prepare(lambda name: reader.get(name).to(self.device))
         except BaseException as primary:  # noqa: BLE001 - preserve the primary if reader rollback transport fails
             try:
                 rollback(reader, primary, reader.close)
@@ -125,6 +111,25 @@ class DFlash:
             reader.close()
         self.inv_freq = cfg.rope.inverse_frequencies(torch).to(self.device)
         self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
+
+    def _prepare(self, read):
+        """``projection_groups``' projections, each group's parts read one at a time into its rows. The context
+        append reads the k|v rows: a row view of the BF16 q|k|v storage, or its own 4-bit pack."""
+        cfg, shapes, out = self.config, self.config.shapes(), {}
+        for key, names in projection_groups(cfg, self.bits):
+            if len(names) == 1:
+                weight = read(names[0]).contiguous()
+            else:
+                rows = [shapes[name][0] for name in names]
+                weight = torch.empty((sum(rows), shapes[names[0]][1]), dtype=torch.bfloat16, device=self.device)
+                for name, start, count in zip(names, accumulate([0] + rows), rows):
+                    weight[start:start + count].copy_(read(name))
+            out[key] = tile(quantize4(weight)) if self.bits == 4 else Plain(weight)
+            del weight
+        q_rows = cfg.heads * cfg.head_dim
+        self._context_kv = [out[f"layers.{i}.kv"] if self.bits == 4 else Plain(out[f"layers.{i}.qkv"].weight[q_rows:])
+                            for i in range(cfg.layers)]
+        return out
 
     @property
     def context_len(self):
@@ -141,15 +146,7 @@ class DFlash:
         phase = positions.float()[:, None] * self.inv_freq[None]
         phase = torch.cat((phase, phase), -1)
         amplitude = self.config.rope.attention_factor
-        return (phase.cos() * amplitude).to(torch.bfloat16)[None], (phase.sin() * amplitude).to(torch.bfloat16)[None]
-
-    def _qk(self, x, layer, kind, cos, sin):
-        cfg = self.config
-        heads = cfg.heads if kind == "q" else cfg.kv_heads
-        base = f"layers.{layer}.self_attn."
-        out = self._lin(x, base + f"{kind}_proj.weight").view(-1, heads, cfg.head_dim)
-        out = _norm(out, self.weights[base + f"{kind}_norm.weight"], cfg.eps).transpose(0, 1)
-        return _rotate(out, cos, sin).contiguous()
+        return (phase.cos() * amplitude).to(torch.bfloat16), (phase.sin() * amplitude).to(torch.bfloat16)
 
     def snapshot(self):
         keys, values, length, end = self._context
@@ -187,23 +184,15 @@ class DFlash:
         if not sum(sizes):
             return [(list(k), list(v), n, end) for k, v, n, end in snaps]
         stores = [self._claim(snap, n) if n else None for snap, n in zip(snaps, sizes)]
-        context = _norm(self._lin(torch.cat(taps), "fc.weight"), self.weights["hidden_norm.weight"], cfg.eps)
+        _, context = draft_glue.rmsnorm(self._lin(torch.cat(taps), "fc"), self.weights["hidden_norm.weight"], cfg.eps)
         positions = torch.tensor([p for snap, n in zip(snaps, sizes) for p in range(snap[3], snap[3] + n)],
                                  dtype=torch.int64, device=self.device)
         cos, sin = self._rotary(positions)
-        dst, src = [], []
+        dest = draft_glue.destinations(stores, [snap[2] for snap in snaps], sizes, self.device)
         for layer in range(self.layers):
-            k = self._qk(context, layer, "k", cos, sin)
-            v = self._lin(context, f"layers.{layer}.self_attn.v_proj.weight")
-            v = v.view(-1, cfg.kv_heads, cfg.head_dim).transpose(0, 1)
-            start = 0
-            for store, snap, n in zip(stores, snaps, sizes):
-                if n:
-                    rows = slice(snap[2], snap[2] + n)
-                    dst += [store.k[layer, :, rows], store.v[layer, :, rows]]
-                    src += [k[:, start:start + n], v[:, start:start + n]]
-                start += n
-        torch._foreach_copy_(dst, src)
+            draft_glue.kv_append(_mm(context, self._context_kv[layer]),
+                                 self.weights[f"layers.{layer}.self_attn.k_norm.weight"], cos, sin, dest, layer,
+                                 cfg.eps, kv_heads=cfg.kv_heads, head_dim=cfg.head_dim)
         return [(list(snap[0]), list(snap[1]), snap[2], snap[3]) if not n else
                 ([store] * self.layers, [store] * self.layers, snap[2] + n, snap[3] + n)
                 for store, snap, n in zip(stores, snaps, sizes)]
@@ -237,18 +226,20 @@ class DFlash:
     def in_vocab(self, token):
         return 0 <= token < self.config.vocab
 
-    def _layer(self, layer, x, launch, cos, sin):
+    def _layer(self, layer, x, mlp, launch, cos, sin):
+        """One drafter layer; ``mlp`` is the previous layer's MLP output, added here (None in the first layer)."""
         cfg, weights = self.config, self.weights
         base = f"layers.{layer}."
-        h = _norm(x, weights[base + "input_layernorm.weight"], cfg.eps)
-        q, k = (self._qk(h, layer, kind, cos, sin) for kind in ("q", "k"))
-        v = self._lin(h, base + "self_attn.v_proj.weight").view(-1, cfg.kv_heads, cfg.head_dim)
-        out = context_attention.block_attention(q, k, v.transpose(0, 1).contiguous(), launch, layer,
-                                                cfg.head_dim ** -0.5)
-        x = x + self._lin(out, base + "self_attn.o_proj.weight")
-        h = _norm(x, weights[base + "post_attention_layernorm.weight"], cfg.eps)
-        h = F.silu(self._lin(h, base + "mlp.gate_proj.weight")) * self._lin(h, base + "mlp.up_proj.weight")
-        return x + self._lin(h, base + "mlp.down_proj.weight")
+        x, h = draft_glue.rmsnorm(x, weights[base + "input_layernorm.weight"], cfg.eps, residual=mlp)
+        qkv = (self._lin(h, base + "qkv") if self.bits != 4 else
+               torch.cat([self._lin(h, base + "q"), self._lin(h, base + "kv")], 1))
+        q, k, v = draft_glue.qkv_heads(qkv, weights[base + "self_attn.q_norm.weight"],
+                                       weights[base + "self_attn.k_norm.weight"], cos, sin, cfg.eps,
+                                       heads=cfg.heads, kv_heads=cfg.kv_heads, head_dim=cfg.head_dim)
+        out = context_attention.block_attention(q, k, v, launch, layer, cfg.head_dim ** -0.5)
+        x, h = draft_glue.rmsnorm(self._lin(out, base + "o"), weights[base + "post_attention_layernorm.weight"],
+                                  cfg.eps, residual=x)
+        return x, self._lin(draft_glue.silu_mul(self._lin(h, base + "gate_up")), base + "down")
 
     @torch.no_grad()
     def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
@@ -279,10 +270,11 @@ class DFlash:
         launch = context_attention.Round([snap[0][0] for snap in active], [snap[2] for snap in active],
                                          heads=cfg.heads, kv_heads=cfg.kv_heads, dim=cfg.head_dim, length=length,
                                          device=self.device)
+        mlp = None
         for layer in range(self.layers):
-            x = self._layer(layer, x, launch, cos, sin)
-        h = _norm(x.view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden),
-                  self.weights["norm.weight"], cfg.eps)
+            x, mlp = self._layer(layer, x, mlp, launch, cos, sin)
+        rows = (x + mlp).view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden)
+        _, h = draft_glue.rmsnorm(rows, self.weights["norm.weight"], cfg.eps)
         logits = _mm(h, self.target_head).float()
         # The argmax proposals; a penalized stream's rows are penalized as the target's will be.
         chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1)

@@ -127,24 +127,44 @@ def checked_headers(directory):
     return cfg, found
 
 
+def projection_groups(cfg, bits):
+    """The drafter's projections as held on the GPU: (key, checkpoint tensors stacked by output rows). Each layer's
+    q|k|v and gate|up run as one projection apiece (an output column's arithmetic does not depend on the other rows);
+    4-bit packs keep q apart from k|v, which the context append reads alone and packed tiles cannot row-slice."""
+    groups = [("fc", ("fc.weight",))]
+    for i in range(cfg.layers):
+        attn, mlp, key = f"layers.{i}.self_attn.", f"layers.{i}.mlp.", f"layers.{i}."
+        q, k, v = (attn + f"{kind}_proj.weight" for kind in "qkv")
+        groups += [(key + "q", (q,)), (key + "kv", (k, v))] if bits == 4 else [(key + "qkv", (q, k, v))]
+        groups += [(key + "o", (attn + "o_proj.weight",)),
+                   (key + "gate_up", (mlp + "gate_proj.weight", mlp + "up_proj.weight")),
+                   (key + "down", (mlp + "down_proj.weight",))]
+    return groups
+
+
 def draft_weights(directory, *, bits=16):
-    """One projection is read/converted at a time; target embedding/head are borrowed."""
+    """Resident projection groups (``projection_groups``) and norms; target embedding/head are borrowed. BF16 parts
+    are read one at a time into their group; a 4-bit group is converted whole."""
     from tensorfold.cuda.capacity import Weights
 
     if type(bits) is not int or bits not in (4, 16):
         raise ValueError("DFlash draft bits must be 16 or explicit proposal-only affine4")
     cfg, _ = checked_headers(directory)
+    shapes = cfg.shapes()
     resident, staging = cfg.head_dim // 2 * 4, 0  # retained FP32 inverse frequencies
-    for shape in cfg.shapes().values():
-        count = math.prod(shape)
-        if bits == 4 and len(shape) == 2:
-            rows, columns = shape
-            rows = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to128
-            resident += rows * columns // 2 + rows * (columns // 64) * 4
+    for shape in shapes.values():
+        if len(shape) == 1:
+            resident += shape[0] * 2
+    for _, names in projection_groups(cfg, bits):
+        rows, columns = sum(shapes[name][0] for name in names), shapes[names[0]][1]
+        if bits == 4:
+            padded = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to128
+            resident += padded * columns // 2 + padded * (columns // 64) * 4
+            # affine4 conversion owns FP32 reductions/codes alongside the group's BF16 input.
+            staging = max(staging, rows * columns * 24)
         else:
-            resident += count * 2
-        # affine4 conversion owns FP32 reductions/codes alongside one BF16 input.
-        staging = max(staging, count * (24 if bits == 4 and len(shape) == 2 else 2))
+            resident += rows * columns * 2
+            staging = max(staging, max(shapes[name][0] for name in names) * columns * 2)
     return Weights(resident, staging, 0)
 
 

@@ -12,7 +12,8 @@ from safetensors.torch import save_file
 
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen3_5_moe.cuda import dflash
-from tensorfold.families.qwen3_5_moe.dflash_metadata import DraftConfig, checked_headers, draft_geometry, draft_weights
+from tensorfold.families.qwen3_5_moe.dflash_metadata import (DraftConfig, checked_headers, draft_geometry,
+                                                             draft_weights, projection_groups)
 
 
 def config():
@@ -75,6 +76,47 @@ class CpuLinear:
         return F.linear(value, self.weight)
 
 
+def _rot(x, cos, sin):
+    """``rotate`` for draft_glue's per-row cos/sin [rows, head_dim]."""
+    left, right = x.chunk(2, dim=-1)
+    return x * cos[None] + torch.cat([-right, left], dim=-1) * sin[None]
+
+
+class CpuGlue:
+    """draft_glue's contract as eager CPU expressions (its CUDA kernels are bounded in tests/cuda)."""
+
+    @staticmethod
+    def rmsnorm(x, weight, eps, residual=None):
+        h = x + residual if residual is not None else x
+        return h, norm(h, weight, eps)
+
+    @staticmethod
+    def qkv_heads(qkv, q_norm, k_norm, cos, sin, eps, *, heads, kv_heads, head_dim):
+        rows, wq, wk = qkv.shape[0], heads * head_dim, kv_heads * head_dim
+        q = _rot(norm(qkv[:, :wq].view(rows, heads, head_dim), q_norm, eps).transpose(0, 1), cos, sin)
+        k = _rot(norm(qkv[:, wq:wq + wk].view(rows, kv_heads, head_dim), k_norm, eps).transpose(0, 1), cos, sin)
+        v = qkv[:, wq + wk:].view(rows, kv_heads, head_dim).transpose(0, 1)
+        return q.contiguous(), k.contiguous(), v.contiguous()
+
+    @staticmethod
+    def destinations(stores, starts, sizes, device):
+        return [(store, slot) for store, start, n in zip(stores, starts, sizes) if n
+                for slot in range(start, start + n)]
+
+    @staticmethod
+    def kv_append(kv, k_norm, cos, sin, dest, layer, eps, *, kv_heads, head_dim):
+        rows, wk = kv.shape[0], kv_heads * head_dim
+        k = _rot(norm(kv[:, :wk].view(rows, kv_heads, head_dim), k_norm, eps).transpose(0, 1), cos, sin)
+        v = kv[:, wk:].view(rows, kv_heads, head_dim).transpose(0, 1)
+        for r, (store, slot) in enumerate(dest):
+            store.k[layer, :, slot], store.v[layer, :, slot] = k[:, r], v[:, r]
+
+    @staticmethod
+    def silu_mul(gate_up):
+        f = gate_up.shape[1] // 2
+        return F.silu(gate_up[:, :f]) * gate_up[:, f:]
+
+
 @pytest.fixture
 def fixture(tmp_path, monkeypatch):
     raw = config()
@@ -100,6 +142,7 @@ def fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(dflash, "Plain", CpuLinear)
     monkeypatch.setattr(dflash, "embedding", lambda ids, table: F.embedding(ids.long(), table.weight))
     monkeypatch.setattr(dflash, "context_attention", NS(Round=StoreRound, block_attention=store_attend))
+    monkeypatch.setattr(dflash, "draft_glue", CpuGlue)
     target = Target()
     return tmp_path, raw, cfg, arrays, target
 
@@ -162,7 +205,15 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     assert estimate.staging == max(t.numel() * t.element_size() for t in arrays.values())
     draft = dflash.DFlash(directory, target, context_limit=64)
     assert draft.bits == 16 and target.binding == (0, 2)
-    assert all(torch.equal(draft.linears[k].weight if v.ndim == 2 else draft.weights[k], v) for k, v in arrays.items())
+    assert all(torch.equal(draft.weights[k], v) for k, v in arrays.items() if v.ndim == 1)
+    groups = projection_groups(cfg, 16)
+    assert sorted(draft.linears) == sorted(key for key, _ in groups)      # every stored projection, rows stacked
+    assert all(torch.equal(draft.linears[key].weight, torch.cat([arrays[name] for name in names]))
+               for key, names in groups)
+    for layer, kv in enumerate(draft._context_kv):                         # k|v: rows of the q|k|v storage
+        qkv = draft.linears[f"layers.{layer}.qkv"].weight
+        assert kv.weight.data_ptr() == qkv[cfg.heads * cfg.head_dim:].data_ptr()
+        assert kv.weight.shape == (2 * cfg.kv_heads * cfg.head_dim, cfg.hidden)
     geometry = draft_geometry(raw, streams=2, kept=3, prompt_rows=8)
     per_token = 2 * cfg.layers * cfg.kv_heads * cfg.head_dim * 2
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
