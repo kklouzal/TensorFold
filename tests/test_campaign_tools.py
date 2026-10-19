@@ -103,13 +103,17 @@ def test_analysis_lists_incomplete_runs_and_mixed_tool_versions(tmp_path):
         doc = {"records": [_record("4k-x", 0, "greedy", None, 50.0, 2.0, [1, 2])], "tool_sha256": sha}
         if finished:
             doc["host_after"] = {}
+        if position == 2:
+            doc["held"] = ["32k-x"]                # a prompt the long-prefill hold kept out of this run
         run = tmp_path / f"s-c1-{position}-base"
         run.mkdir()
         (run / "bench.json").write_text(json.dumps(doc))
     result = bench.analyze(str(tmp_path), "s", None)
     assert result["incomplete_runs"] == ["c1-2-base"] and len(result["tool_versions"]) == 2
+    assert result["held"] == ["32k-x"]
     text = bench.markdown(result)
     assert "Incomplete runs" in text and "2 campaign_bench.py versions" in text
+    assert "long-prefill hold (not measured): 32k-x" in text
 
 
 def test_size_prompt_lands_within_tolerance_below_the_target():
@@ -359,7 +363,37 @@ def test_long_prefill_hold_keeps_long_prompts_out_and_reports_them(tmp_path, mon
     gate = json.loads(out.read_text())["gates"]["determinism"]
     assert gate["status"] == "incomplete" and gate["verdict"] is None and gate["cases"] == 2   # greedy + card
     assert gate["held"] == [{"prompt": "long-code-nothink", "prompt_tokens": bench.LONG_PREFILL_TOKENS + 1,
+                             "longest_prompt_tokens": bench.LONG_PREFILL_TOKENS + 7, "status": "incomplete (hold)"}]
+
+
+def test_determinism_holds_a_prompt_whose_extension_or_next_turn_exceeds_the_limit(tmp_path, monkeypatch):
+    _write_inputs(tmp_path)
+    monkeypatch.setattr(gates, "LONG_PREFILL_TOKENS", 30)          # the limit scaled to the fake server's prompts
+    out = tmp_path / "determinism.json"
+
+    def determinism(max_tokens):
+        seen = []
+        with fake_server(seen) as url:
+            monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "determinism", "--url", url, "--out", str(out),
+                                              "--profile", str(tmp_path / "profile.json"),
+                                              "--prompts", str(tmp_path / "prompts.json"),
+                                              "--gate-prompts", "short-code-nothink", "--max-tokens", str(max_tokens)])
+            code = gates.main()
+        return code, json.loads(out.read_text())["gates"]["determinism"], seen
+
+    # 7 prompt tokens plus a 24-token reply, re-sent as one prompt (the extension), exceed 30: held before any request
+    code, gate, seen = determinism(24)
+    assert (code, gate["cases"], seen) == (3, 0, [])
+    assert gate["held"] == [{"prompt": "short-code-nothink", "prompt_tokens": 7, "longest_prompt_tokens": 31,
                              "status": "incomplete (hold)"}]
+    # 7 + 6 fit, but the next chat turn (the reply's text and "Continue.") renders 31 ids: held, never sent
+    code, gate, seen = determinism(6)
+    assert code == 3 and gate["status"] == "incomplete" and gate["cases"] == gate["identical"] == 2
+    assert gate["exercised"] == {"warm": 2, "recold": 2, "extended": 2}
+    assert gate["held"] == [{"prompt": "short-code-nothink", "sampling": mode, "next_turn_prompt_tokens": 31,
+                             "status": "incomplete (hold)"} for mode in ("greedy", "card")]
+    assert not any("Continue." in json.dumps(r.get("messages")) for r in seen)
+    assert all(r["cached"]["next_turn"] is None and not r["next_turn_exercised"] for r in gate["rows"])
 
 
 def test_needle_holds_depths_beyond_the_long_prefill_limit(tmp_path):
@@ -374,6 +408,32 @@ def test_needle_holds_depths_beyond_the_long_prefill_limit(tmp_path):
     assert [r["target"] for r in result["rows"]] == [512] and result["status"] == "incomplete"
     assert result["held"] == [{"depth": str(bench.LONG_PREFILL_TOKENS + 1), "target": bench.LONG_PREFILL_TOKENS + 1,
                                "thinking": False, "status": "incomplete (hold)"}] and result["verdict"] is None
+
+
+def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatch):
+    loads = []
+    monkeypatch.setattr(kl, "with_app", lambda serve, port, work: loads.append(serve))
+    items = [{"name": "short", "prompt": [1] * 10, "answer": [2]},
+             {"name": "long", "prompt": [1] * (bench.LONG_PREFILL_TOKENS + 1), "answer": [2]}]
+    (tmp_path / "eval.json").write_text(json.dumps({"version": 1, "items": items}))
+    (tmp_path / "corpus.txt").write_text("text")
+    serve = ["--", "serve", "m"]
+
+    def dump(*flags):
+        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "dump", "--out", str(tmp_path / "x.npz"), *flags, *serve])
+        return kl.main()
+
+    with pytest.raises(SystemExit, match=r"eval items \['long'\] exceed .*long-prefill hold"):
+        dump("--eval", str(tmp_path / "eval.json"))
+    missing = str(tmp_path / "new-eval.json")
+    with pytest.raises(SystemExit, match="long-prefill hold"):           # --build would write a 32k item
+        dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))
+    with pytest.raises(SystemExit, match="does not exist"):
+        dump("--eval", missing)
+    assert loads == []                                                    # no refusal paid for a model load
+    dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
+    dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "8192")
+    assert loads == [["serve", "m"]] * 2
 
 
 def test_schema_errors_cover_type_enum_required_extra_and_items():
@@ -816,6 +876,22 @@ def test_subset_cuts_a_golden_reference_to_short_items_and_records_its_origin(tm
     assert cut_meta["subset_of"]["golden_sha256"] == kl.file_sha256(str(tmp_path / "golden.npz"))
     assert json.loads((tmp_path / "out" / "eval.json").read_text())["subset_of"]["items"] == ["short"]
     assert "golden_dir" in json.loads((tmp_path / "out" / "golden" / "meta.json").read_text())
+    # candidates dumped from the subset's eval set are gated with the full set named; full-set dumps do not mix in
+    cut_lp = lp[:10]
+    for name in ("old", "new"):
+        _dump(tmp_path / f"{name}.npz", cut_lp, 8, reference=tmp_path / "out" / "golden" / "kl.npz",
+              eval_sha256=cut_meta["eval_sha256"])
+    pair = kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "new.npz"),
+                     block=64, resamples=50, seed=0)
+    assert pair["golden_subset_of"] == cut_meta["subset_of"] and pair["positions"] == 10
+    _dump(tmp_path / "full.npz", lp, 8, reference=tmp_path / "golden.npz", eval_sha256=cut_meta["subset_of"]["eval_sha256"])
+    with pytest.raises(ValueError, match="different eval sets"):
+        kl.paired(str(tmp_path / "out" / "golden" / "kl.npz"), str(tmp_path / "old.npz"), str(tmp_path / "full.npz"),
+                  block=64, resamples=50, seed=0)
+    full_eval = kl.file_sha256(str(tmp_path / "eval.json"))
+    with pytest.raises(ValueError, match="would replace"):          # never written over the files it is cut from
+        kl.subset(str(tmp_path / "golden.npz"), str(tmp_path / "eval.json"), str(tmp_path), max_prompt_tokens=50)
+    assert kl.file_sha256(str(tmp_path / "eval.json")) == full_eval
     cli = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_kl.py"), "subset", str(tmp_path / "golden.npz"),
                           str(tmp_path / "eval.json"), str(tmp_path / "cli"), "--max-prompt-tokens", "50"],
                          capture_output=True)

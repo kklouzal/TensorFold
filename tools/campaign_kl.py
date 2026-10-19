@@ -179,11 +179,7 @@ def build_eval(app, args) -> dict:
     def long_messages(chars: int) -> list[dict]:
         return [{"role": "user", "content": "<document>\n" + corpus[:chars] + "\n</document>\n\n" + LONG_ASK}]
 
-    depths = [int(d) for d in args.long_depths.split(",") if d] if corpus else []
-    if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
-        raise SystemExit(f"long items {depths} exceed {LONG_PREFILL_TOKENS} tokens: held by the campaign's "
-                         "long-prefill hold (pass --allow-long-prefill once it is lifted)")
-    for depth in depths:
+    for depth in long_depths(args) if corpus else []:      # within the long-prefill hold: eval_set checked them
         lo, hi = 0, min(len(corpus), depth * 8)
         while hi - lo > 64:                          # bisection on characters: the largest document within depth
             mid = (lo + hi) // 2
@@ -203,21 +199,54 @@ def build_eval(app, args) -> dict:
     return {"version": 1, "created_unix_s": int(time.time()), "items": items}
 
 
-def dump(app, args) -> None:
-    import numpy as np
-    import torch
+def long_depths(args) -> list[int]:
+    """The prompt lengths of the long items ``--build`` writes (none without --corpus)."""
 
-    eval_path = Path(args.eval)
-    if not eval_path.exists():
+    return [int(d) for d in args.long_depths.split(",") if d] if args.corpus else []
+
+
+def read_eval(path: Path) -> tuple[dict, str]:
+    """An eval set and the sha256 of the very bytes it was parsed from (the dump records what it teacher-forced)."""
+
+    raw = path.read_bytes()
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def eval_set(args) -> tuple[dict, str] | None:
+    """The eval set ``dump`` teacher-forces (read_eval), or None when ``--build`` is to write it; checked before the
+    engine loads, so a refusal costs no model load. During the campaign's long-prefill hold (lifted by
+    --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of long items
+    above it, is refused."""
+
+    path = Path(args.eval)
+    if not path.exists():
         if not args.build:
-            raise SystemExit(f"{eval_path} does not exist (pass --build with the reference configuration)")
-        eval_path.write_text(json.dumps(build_eval(app, args)))
-    data = json.loads(eval_path.read_text())
+            raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
+        depths = long_depths(args)
+        if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
+            raise SystemExit(f"long items {depths} exceed {LONG_PREFILL_TOKENS} tokens: held by the campaign's "
+                             "long-prefill hold (pass --allow-long-prefill once it is lifted)")
+        return None
+    data, digest = read_eval(path)
     long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
     if long_items and not args.allow_long_prefill:
         raise SystemExit(f"eval items {long_items} exceed {LONG_PREFILL_TOKENS} prompt tokens: held by the campaign's "
                          "long-prefill hold (use a subset eval set, campaign_kl.py subset, or --allow-long-prefill "
                          "once the hold is lifted)")
+    return data, digest
+
+
+def dump(app, args, loaded: tuple[dict, str] | None) -> None:
+    """Teacher-force eval_set's ``loaded`` set (None: build EVAL.json with this configuration first) and save it."""
+
+    import numpy as np
+    import torch
+
+    eval_path = Path(args.eval)
+    if loaded is None:
+        eval_path.write_text(json.dumps(build_eval(app, args)))
+        loaded = read_eval(eval_path)
+    data, eval_sha256 = loaded
     reference = np.load(args.reference) if args.reference else None
     capture = Capture(torch, args.top_k)
     rows, offsets, started = [], [], time.perf_counter()
@@ -235,7 +264,7 @@ def dump(app, args) -> None:
             position += n
             print(json.dumps({"item": item["name"], "positions": n,
                               "elapsed_s": round(time.perf_counter() - started, 1)}), flush=True)
-    meta = {"eval_sha256": file_sha256(str(eval_path)), "serve_args": args.serve,
+    meta = {"eval_sha256": eval_sha256, "serve_args": args.serve,
             "top_k": args.top_k, "logits_dtype": capture.dtype, "names": [it["name"] for it in data["items"]],
             "reference": args.reference,
             "reference_sha256": file_sha256(args.reference) if args.reference else None,
@@ -489,10 +518,16 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
     from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
     reads. Both record what they were cut from (sha256 of the full golden reference and eval set, item names), so a
-    gate names the set it used; the dumps of a candidate must use this subset's eval.json."""
+    gate names the set it used; the dumps of a candidate must use this subset's eval.json. OUT must not be the full
+    set's own directory: the subset would replace the files it is cut from."""
 
     import numpy as np
 
+    out = Path(out_dir)
+    inputs = {Path(golden_path).resolve(), Path(eval_path).resolve()}
+    if any(path.resolve() in inputs for path in (out / "eval.json", out / "golden" / "kl.npz")):
+        raise ValueError(f"{out_dir} holds the full set's own eval.json or golden/kl.npz: the subset would replace "
+                         "them (choose another OUT_DIR)")
     data = json.loads(Path(eval_path).read_text())
     golden = np.load(golden_path)
     meta = json.loads(str(golden["meta"]))
@@ -504,7 +539,6 @@ def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens:
     if not keep:
         raise ValueError(f"no eval item has at most {max_prompt_tokens} prompt tokens")
     rows = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in keep])
-    out = Path(out_dir)
     (out / "golden").mkdir(parents=True, exist_ok=True)
     names = [data["items"][i]["name"] for i in keep]
     origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256,
@@ -551,7 +585,7 @@ def main() -> int:
     u = sub.add_parser("subset", help="slice a golden reference + eval set to items of at most N prompt tokens")
     u.add_argument("golden")
     u.add_argument("eval")
-    u.add_argument("out_dir")
+    u.add_argument("out_dir", help="writes eval.json and golden/{kl.npz,meta.json}; not the full set's directory")
     u.add_argument("--max-prompt-tokens", type=int, default=LONG_PREFILL_TOKENS)
     u.add_argument("--out", help="also write the result summary here")
     k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
@@ -574,7 +608,8 @@ def main() -> int:
         if args.card is None:
             args.card = (json.loads(Path(args.profile).read_text())["card_sampling"]["nothink"] if args.profile
                          else {})
-        with_app(args.serve, args.port, lambda app: dump(app, args))
+        loaded = eval_set(args)                      # refusals before the engine loads
+        with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
     else:
         if args.command == "compare":
             result = compare(args.reference, args.candidate)

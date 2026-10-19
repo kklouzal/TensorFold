@@ -267,6 +267,13 @@ def _threshold_status(verdict: bool | None) -> str:
     return "report" if verdict is None else ("pass" if verdict else "fail")
 
 
+def _hold(record: dict) -> dict:
+    """Gate coverage the long-prefill hold kept from running: printed, and returned as a held record."""
+
+    print(json.dumps({**record, "held": "long-prefill hold"}), flush=True)
+    return {**record, "status": "incomplete (hold)"}
+
+
 def gate_tools(url: str, profile: dict, args) -> dict:
     rows = []
     for thinking in _thinking(profile, args):
@@ -322,8 +329,7 @@ def gate_needle(url: str, profile: dict, args) -> dict:
             target = (int(profile["context"]) - budget - int(profile.get("full_margin", 64))
                       if depth == "full" else int(depth))
             if target > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
-                held.append({"depth": depth, "target": target, "thinking": thinking, "status": "incomplete (hold)"})
-                print(json.dumps({"depth": depth, "thinking": thinking, "held": "long-prefill hold"}), flush=True)
+                held.append(_hold({"depth": depth, "target": target, "thinking": thinking}))
                 continue
 
             def count(chars):
@@ -361,21 +367,32 @@ def gate_needle(url: str, profile: dict, args) -> dict:
 # determinism and drafted-vs-serial identity over bench prompts
 
 
-def _items(args) -> tuple[list[dict], list[dict]]:
-    """The gate prompts to run, and those held back by the long-prefill hold (reported as incomplete)."""
+def _items(args, reply_tokens: int = 0) -> tuple[list[dict], list[dict]]:
+    """The gate prompts to run, and those held back by the long-prefill hold (reported as incomplete): a prompt whose
+    tokens plus ``reply_tokens`` exceed LONG_PREFILL_TOKENS (determinism re-sends a prompt with its reply as one
+    prompt)."""
 
     items = {it["id"]: it for it in json.loads(Path(args.prompts).read_text())["items"]}
     chosen = [items[name] for name in args.gate_prompts.split(",") if name]
     chosen = [it for it in chosen if args.thinking == "both" or it["thinking"] == (args.thinking == "on")]
     kept, held = [], []
     for it in chosen:
-        if it["prompt_tokens"] <= LONG_PREFILL_TOKENS or args.allow_long_prefill:
+        longest = it["prompt_tokens"] + reply_tokens
+        if longest <= LONG_PREFILL_TOKENS or args.allow_long_prefill:
             kept.append(it)
-            continue
-        hold = {"prompt": it["id"], "prompt_tokens": it["prompt_tokens"]}
-        print(json.dumps({**hold, "held": "long-prefill hold"}), flush=True)
-        held.append({**hold, "status": "incomplete (hold)"})
+        else:
+            held.append(_hold({"prompt": it["id"], "prompt_tokens": it["prompt_tokens"],
+                               "longest_prompt_tokens": longest}))
     return kept, held
+
+
+def _prompt_ids(url: str, profile: dict, item: dict) -> list[int]:
+    """A chat item's prompt ids from the native /tokenize route: a production image's Harness bridge owns
+    /v1/tokenize and returns ids only up to 16,384 tokens (a 400 beyond), while /tokenize is TensorFold's own on
+    every server."""
+
+    return post_json(url + "/tokenize", {"model": profile["model"], "messages": item["messages"],
+                                         "chat_template_kwargs": {"enable_thinking": item["thinking"]}})["tokens"]
 
 
 def _evictions(count: int) -> list[list[dict]]:
@@ -422,16 +439,13 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
       against cold. A template whose generation prompt is not a prefix of its history rendering (Gemma4 without
       thinking appends an empty thought block) never resumes it, so it is not a required comparison.
     A comparison counts as exercised only when its warm request resumed >= 90% of the shared prefix from the cache
-    and its cold twin resumed <= 10%."""
+    and its cold twin resumed <= 10%. Without --allow-long-prefill, a prompt whose tokens plus the reply budget exceed
+    LONG_PREFILL_TOKENS is held, and so is a next turn whose prompt does; held work makes the gate incomplete."""
 
     rows = []
-    items, held = _items(args)
+    items, held = _items(args, args.max_tokens)          # the extension prompt is a prompt plus its whole reply
     for item in items:
-        # the ids from the native /tokenize route: a production image's Harness bridge owns /v1/tokenize and
-        # returns ids only up to 16,384 tokens (a 400 beyond), while /tokenize is TensorFold's own on every server
-        prompt_ids = post_json(url + "/tokenize", {
-            "model": profile["model"], "messages": item["messages"],
-            "chat_template_kwargs": {"enable_thinking": item["thinking"]}})["tokens"]
+        prompt_ids = _prompt_ids(url, profile, item)
         for mode, sampling in sampling_modes(profile, item["thinking"], args.seed).items():
             request = chat_request(profile, item, sampling, args.max_tokens)
             _evict(url, profile, args)
@@ -449,28 +463,36 @@ def gate_determinism(url: str, profile: dict, args) -> dict:
                 {"role": "assistant", "content": cold["content"] or cold["reasoning"]},
                 {"role": "user", "content": "Continue."}]}
             turn_request = chat_request(profile, turn, sampling, args.max_tokens)
-            stream_chat(url, request)                                  # the cache holds this prompt again
-            next_turn = stream_chat(url, turn_request)
-            _evict(url, profile, args)
-            next_turn_cold = stream_chat(url, turn_request)
+            turn_tokens = len(_prompt_ids(url, profile, turn))
+            if turn_tokens > LONG_PREFILL_TOKENS and not args.allow_long_prefill:
+                # the reported next turn's cold prefill would exceed the hold: not run, recorded as held
+                held.append(_hold({"prompt": item["id"], "sampling": mode, "next_turn_prompt_tokens": turn_tokens}))
+                next_turn = next_turn_cold = None
+            else:
+                stream_chat(url, request)                              # the cache holds this prompt again
+                next_turn = stream_chat(url, turn_request)
+                _evict(url, profile, args)
+                next_turn_cold = stream_chat(url, turn_request)
+            ran = next_turn is not None
             n, m = len(prompt_ids), len(extended_ids)
             row = {"prompt": item["id"], "sampling": mode, "prompt_tokens": n,
                    "cached": {"cold": _cached(cold), "warm": _cached(warm), "recold": _cached(recold),
                               "extended": _cached(extended), "extended_cold": _cached(extended_cold),
-                              "next_turn": _cached(next_turn), "next_turn_cold": _cached(next_turn_cold)},
+                              "next_turn": _cached(next_turn) if ran else None,
+                              "next_turn_cold": _cached(next_turn_cold) if ran else None},
                    "differences": {
                        "warm_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(warm)),
                        "recold_vs_cold": first_difference(reply_token_ids(cold), reply_token_ids(recold)),
                        "extended_warm_vs_cold": first_difference(reply_token_ids(extended),
                                                                  reply_token_ids(extended_cold)),
                        "next_turn_warm_vs_cold": first_difference(reply_token_ids(next_turn),
-                                                                  reply_token_ids(next_turn_cold))},
+                                                                  reply_token_ids(next_turn_cold)) if ran else None},
                    "tokens": len(reply_token_ids(cold)), "sha": cold["stats"].get("token_sha")}
             c = row["cached"]
             row["exercised"] = {"warm": c["cold"] <= 0.1 * n and c["warm"] >= 0.9 * n,
                                 "recold": c["recold"] <= 0.1 * n,
                                 "extended": c["extended"] >= 0.9 * n and c["extended_cold"] <= 0.1 * m}
-            row["next_turn_exercised"] = c["next_turn"] > c["next_turn_cold"]
+            row["next_turn_exercised"] = ran and c["next_turn"] > c["next_turn_cold"]
             row["identical"] = all(v is None for v in row["differences"].values())
             rows.append(row)
             print(json.dumps(row), flush=True)
@@ -537,8 +559,9 @@ def main() -> int:
                     help="distinct ~600-token prompts sent to displace kept prefix-cache states before a cold request")
     ap.add_argument("--progress", help="heartbeat file for a watchdog (campaign_bench.Progress)")
     ap.add_argument("--allow-long-prefill", action="store_true",
-                    help=f"run prompts above {LONG_PREFILL_TOKENS} tokens (needle depths, gate prompts); without it "
-                         "they are held during the campaign's long-prefill hold and reported as incomplete (hold)")
+                    help=f"run prompts above {LONG_PREFILL_TOKENS} tokens (needle depths, gate prompts; determinism "
+                         "also counts a prompt plus its reply budget and its next chat turn); without it they are "
+                         "held during the campaign's long-prefill hold and reported as incomplete (hold)")
     ap.add_argument("--allow-nondeterminism", action="store_true", help="report determinism without a verdict")
     ap.add_argument("--allow-greedy-identity-failure", action="store_true",
                     help="report drafted-vs-serial identity without a verdict")
