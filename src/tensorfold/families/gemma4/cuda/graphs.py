@@ -51,6 +51,22 @@ class Graphs:
         return graph, out
 
     @torch.inference_mode()
+    def prepare(self, taps: Sequence[bool] = (False, True)) -> int:
+        """Capture every row count's smallest-grid graphs now (engine startup), leaving the state where it was.
+
+        Captures write KV rows past the state's position, which the rollback releases; the state holds no request
+        yet. Larger grids are still captured on first use. Returns the number of graphs held.
+        """
+        state = self.state
+        start = state.position
+        for rows in range(1, min(self.max_rows, state.context - start) + 1):
+            for tap in taps:
+                if self.chunks(start + rows) == self.span:
+                    self.forward([0] * rows, state, output_taps=tap)
+                    state.rollback(start)
+        return len(self.graphs)
+
+    @torch.inference_mode()
     def forward(self, tokens: Sequence[int], state, *, output_taps: bool) -> ForwardResult:
         """``Gemma4Target.forward(tokens, state, output_taps=...)`` for trusted text tokens, replayed.
 

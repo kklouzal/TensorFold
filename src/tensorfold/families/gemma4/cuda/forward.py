@@ -232,7 +232,7 @@ class Gemma4Target:
         logits = torch.empty((rows, c.experts), dtype=torch.float32, device=h.device)
         moe.route_logits(h.contiguous(), layer.router.weight, logits,
                          prenorm=(c.eps, self._router_root_value, layer.router_scale))
-        picks = torch.empty((rows, c.top_k), dtype=torch.int32, device=h.device)
+        picks = layer.experts.picks_for(rows, c.top_k)       # the expert workspace's rows: no copy before the plan
         routing = torch.empty((rows, c.top_k), dtype=torch.float32, device=h.device)
         moe.route_select(logits, layer.expert_scale, picks, routing)
         return picks, routing

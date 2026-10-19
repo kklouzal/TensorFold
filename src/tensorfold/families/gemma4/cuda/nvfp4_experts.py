@@ -80,6 +80,10 @@ class Experts:
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in self.bank.device_tensors())
 
+    def picks_for(self, rows: int, slots: int) -> torch.Tensor:
+        """The workspace's INT32 [rows, slots] pick rows, for a router to write in place (no copy in forward)."""
+        return self.workspace.buffers(rows, slots, self.count, self.dims, self.device).pick[:rows]
+
     def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """INT32 picks are constructed by the router; FP32 weights stay FP32.
 
@@ -102,7 +106,8 @@ class Experts:
         rows, slots = picks.shape
         weights = weights.contiguous()
         buf = self.workspace.buffers(rows, slots, self.count, self.dims, self.device)
-        buf.pick[:rows].copy_(picks)
+        if picks.data_ptr() != buf.pick.data_ptr() or picks.stride() != buf.pick.stride():
+            buf.pick[:rows].copy_(picks)            # the router wrote elsewhere (picks_for gives the buffer)
         buf.route(rows)
         self.bank.run_plan(x.contiguous(), buf, prefill=True)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)

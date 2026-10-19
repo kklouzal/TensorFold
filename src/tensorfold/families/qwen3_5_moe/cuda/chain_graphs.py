@@ -19,6 +19,36 @@ from tensorfold.families.qwen3_5.cuda.forward import State, reserve, stage, tree
 from . import CHAIN_BUCKET
 
 
+def copy_state(dst: State, st: State) -> None:
+    """``st``'s committed recurrent/conv state and first ``st.pos`` KV rows, copied into ``dst``'s buffers in place."""
+
+    for a, b in zip(dst.rec + dst.conv, st.rec + st.conv):
+        if a is not None:
+            a.copy_(b)
+    for kv, src in zip(dst.kv, st.kv):
+        if kv is not None:
+            kv[0][:st.pos].copy_(src[0][:st.pos])
+            kv[1][:st.pos].copy_(src[1][:st.pos])
+    dst.pos = st.pos
+
+
+def capture(pool, run):
+    """``run()`` captured as a new CUDA graph in the private ``pool``: (graph, run's outputs, static across replays)."""
+
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    enabled = gc.isenabled()
+    gc.disable()                             # collecting an old graph mid-capture invalidates it
+    try:
+        # thread_local: an unrelated CUDA call from another server thread cannot invalidate the capture.
+        with torch.cuda.graph(graph, pool=pool, capture_error_mode="thread_local"):
+            out = run()
+    finally:
+        if enabled:
+            gc.enable()
+    return graph, out
+
+
 class ChainGraphs:
     """Graphs and the fixed state they read; one request at a time (the engine serializes generate)."""
 
@@ -51,36 +81,37 @@ class ChainGraphs:
             self.st = State(self.w)
             reserve(self.st, self.rows)
             self._buffers = self._addresses()
-        dst = self.st
-        for a, b in zip(dst.rec + dst.conv, st.rec + st.conv):
-            if a is not None:
-                a.copy_(b)
-        for kv, src in zip(dst.kv, st.kv):
-            if kv is not None:
-                kv[0][:st.pos].copy_(src[0][:st.pos])
-                kv[1][:st.pos].copy_(src[1][:st.pos])
-        dst.pos = st.pos
-        return dst
+        copy_state(self.st, st)
+        return self.st
 
     def _addresses(self) -> tuple[int, ...]:
         return tuple(t.data_ptr() for kv in self.st.kv if kv is not None for t in kv)
 
-    def _capture(self, run):
+    @torch.no_grad()
+    def prepare(self, widths: Sequence[int], *, taps: bool) -> int:
+        """Capture the smallest context span's chain graphs now (engine startup) instead of inside the first rounds.
+
+        The fixed state is reserved at the full capacity (admission charges exactly that), so no later request
+        grows it and drops graphs; an empty state is loaded and each width's warm-up forward only reads it, so
+        nothing is committed. ``taps``: the drafter's tap form (drafted rounds); the one-row serial form is
+        captured too. Larger spans still capture on first use. Returns the number of graphs held.
+        """
+        self.load(State(self.w), self.capacity)
+        keys = [(width, taps) for width in widths] + ([(1, False)] if taps else [])
+        for width, tap in keys:
+            if width <= self.rows:
+                self.verify([0] * width, list(range(-1, width - 1)), capture_taps=tap)
         torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        enabled = gc.isenabled()
-        gc.disable()                             # collecting an old graph mid-capture invalidates it
-        try:
-            with torch.cuda.graph(graph, pool=self.pool):
-                out = run()
-        finally:
-            if enabled:
-                gc.enable()
-        return graph, out
+        return len(self.graphs)
 
     @torch.no_grad()
     def verify(self, tokens: Sequence[int], parents: Sequence[int], *, capture_taps: bool):
-        """``tree_forward(..., capture_taps)``'s (logits, record[, taps]) on the fixed state: replayed for a chain."""
+        """``tree_forward(..., capture_taps)``'s (logits, record[, taps]) on the fixed state: replayed for a chain.
+
+        A replayed round returns the graph's static outputs, valid until the next verify of the same (width, span,
+        taps) key. Callers finish the round's host read (sampling) before the next verify: that is what lets
+        ``staged.refresh`` rewrite the pinned mirror whose previous copy is then complete (draft_decode synchronizes).
+        """
 
         st, width = self.st, len(tokens)
         if st is None:
@@ -96,13 +127,13 @@ class ChainGraphs:
         if entry is None:
             staged = stage(self.w, st, width, key[1])
             staged.refresh(tokens, st.pos)
+            staged_parents = list(range(-1, width - 1))
 
             def run():
                 return tree_forward(self.w, staged.ids, staged_parents, st, capture_taps=capture_taps, staged=staged)
 
-            staged_parents = list(range(-1, width - 1))
             run()                                # compiles every kernel and retains lazily built buffers
-            graph, out = self._capture(run)
+            graph, out = capture(self.pool, run)
             entry = self.graphs[key] = (graph, staged, out)
         graph, staged, out = entry
         # The pinned mirror is rewritten only after the previous round's host sample, so its copy has completed.

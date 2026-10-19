@@ -45,18 +45,6 @@ def _prepared(ctx):
     return result
 
 
-def _context(count, width, dims, *, uniform):
-    """Real CT checkpoints share one gate/up input global per layer (Gemma4 and Qwen3.6 verified); the default
-    context keeps every projection's multiplier distinct."""
-    ctx = Context(count=count, width=width, dims=dims)
-    if uniform:
-        value = ctx.payload[f'{PREFIX}.experts.0.gate_proj.input_global_scale'].clone()
-        for name, tensor in ctx.payload.items():
-            if name.endswith(('gate_proj.input_global_scale', 'up_proj.input_global_scale')):
-                tensor.copy_(value)
-    return ctx
-
-
 def _reference(ctx, x, picks, weights):
     banks = [linears(ctx, expert) for expert in range(ctx.cfg.experts)]
     out = torch.zeros_like(x)
@@ -78,7 +66,7 @@ def _reference(ctx, x, picks, weights):
 @pytest.mark.parametrize('uniform', [False, True])
 @pytest.mark.parametrize('count,width,dims,slots', [(3, 64, 128, 3), (3, 704, 2816, 3), (128, 64, 128, 8)])
 def test_original_ct_calibrations_geglu_and_hf_combine_are_exact_and_row_invariant(count, width, dims, slots, uniform):
-    source = _context(count, width, dims, uniform=uniform)
+    source = Context(count=count, width=width, dims=dims, uniform=uniform)
     bank = load_experts(source.read, PREFIX + '.experts', count=count, width=width, dims=dims,
                         device='cuda:0', calibrated=_prepared(source))
     # The loader's CPU bit proof selects one activation quantization per row exactly for a shared gate/up global.
@@ -97,9 +85,13 @@ def test_original_ct_calibrations_geglu_and_hf_combine_are_exact_and_row_invaria
     picks = torch.tensor([list(range(count - 1, count - 1 - slots, -1))], device='cuda', dtype=torch.int32)
     picks = picks.expand(len(x), -1).contiguous()
     weights = torch.linspace(.03125, .812345, slots, dtype=torch.float32, device='cuda')[None].expand(len(x), -1)
-    want = _reference(_context(count, width, dims, uniform=uniform), x, picks, weights)
+    want = _reference(Context(count=count, width=width, dims=dims, uniform=uniform), x, picks, weights)
     got = bank.forward(x, picks, weights)
     assert torch.equal(got, want)
+    # Picks routed straight into the workspace's rows take the same plan without a copy.
+    in_place = bank.picks_for(len(x), slots)
+    in_place.copy_(picks)
+    assert torch.equal(bank.forward(x, in_place, weights), want)
     serial = torch.cat([bank.forward(x[r:r + 1], picks[r:r + 1], weights[r:r + 1]) for r in range(len(x))])
     assert torch.equal(got, serial)
     reverse = torch.arange(len(x) - 1, -1, -1, device='cuda')
@@ -182,12 +174,8 @@ def test_retained_workspace_never_exceeds_the_admitted_expert_workspace():
     from tensorfold.families.gemma4.cuda.capacity import expert_workspace
 
     count, width, dims, slots = 128, 64, 128, 8
-    source = Context(count=count, width=width, dims=dims)
     # The real checkpoint shares one gate/up input global per layer: the shared-input row plan is retained too.
-    common = source.payload[PREFIX + '.experts.0.gate_proj.input_global_scale'].clone()
-    for name, value in source.payload.items():
-        if name.endswith(('gate_proj.input_global_scale', 'up_proj.input_global_scale')):
-            value.copy_(common)
+    source = Context(count=count, width=width, dims=dims, uniform=True)
     bank = load_experts(source.read, PREFIX + '.experts', count=count, width=width, dims=dims,
                         device='cuda:0', calibrated=_prepared(source))
     assert bank.bank.shared_input

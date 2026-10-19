@@ -43,11 +43,14 @@ def test_ct_router_root_then_learned_scale_and_fp32_full_softmax():
     model.config = c
     model._router_root_value = float(torch.tensor(c.hidden**-.5,dtype=torch.bfloat16))
     weight = (torch.randn((c.experts,c.hidden),device="cuda") * .2).to(torch.bfloat16)
-    layer = SimpleNamespace(router=_Router(weight),
+    held = torch.full((16, c.top_k), -1, dtype=torch.int32, device="cuda")
+    layer = SimpleNamespace(router=_Router(weight), experts=SimpleNamespace(picks_for=lambda rows, slots: held[:rows]),
         router_scale=(torch.rand((c.hidden,),device="cuda") + .5).to(torch.bfloat16),
         expert_scale=(torch.rand((c.experts,),device="cuda") + .5).to(torch.bfloat16))
     h = torch.randn((9,c.hidden),device="cuda",dtype=torch.bfloat16)
     picks,weights = model._route_ct(h,layer)
+    assert picks.data_ptr() == held.data_ptr()          # written in the expert workspace's rows
+    picks = picks.clone()
     assert picks.dtype == torch.int32 and weights.dtype == torch.float32
     assert picks.shape == weights.shape == (9,c.top_k)
     # Independent float64 RMS with the BF16 root/scale roundings, FP64 logits and FP64 selection; the logit bound and
@@ -73,3 +76,4 @@ def test_ct_router_root_then_learned_scale_and_fp32_full_softmax():
     for row in range(9):
         alone = model._route_ct(h[row:row+1],layer)
         assert torch.equal(alone[0],picks[row:row+1]) and torch.equal(alone[1],weights[row:row+1])
+    del held

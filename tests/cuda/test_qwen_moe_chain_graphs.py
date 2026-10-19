@@ -11,7 +11,7 @@ if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
     pytest.skip("native activation FP4 requires SM12", allow_module_level=True)
 
 from nvfp4_a4_inputs import PREFIX, Context, swiglu  # noqa: E402
-from test_qwen36_moe import WIDTH, D, E, V, _model  # noqa: E402
+from test_qwen36_moe import WIDTH, D, E, _model  # noqa: E402
 from test_qwen_moe_prefill_batch import make_draft  # noqa: E402
 
 from tensorfold.cuda import moe  # noqa: E402
@@ -24,12 +24,7 @@ from tensorfold.families.qwen3_5_moe.cuda.nvfp4_load import NativeMoE  # noqa: E
 
 def _context():
     """E routed experts; expert E doubles as the layer's shared_expert (same geometry, its own globals)."""
-    ctx = Context(count=E + 1, width=WIDTH, dims=D)
-    for name in list(ctx.payload):
-        if f".experts.{E}." in name:
-            alias = name.replace(f".experts.{E}.", ".shared_expert.")
-            ctx.payload[alias], ctx.info[alias] = ctx.payload[name], ctx.info[name]
-    return ctx
+    return Context(count=E + 1, width=WIDTH, dims=D).alias_shared_expert(E)
 
 
 @pytest.fixture(scope="module")
@@ -102,3 +97,15 @@ def test_non_chain_rounds_run_eagerly_on_the_fixed_state(model):
     chain = runner.verify([5, 6], [-1, 0], capture_taps=False)
     eager = decode.tree_forward(w, torch.tensor([5, 6], dtype=torch.int32, device="cuda"), [-1, 0], fixed)
     assert torch.equal(chain[0], eager[0]) and len(runner.graphs) == 1
+
+
+def test_prepare_captures_every_width_and_later_rounds_replay_them(model, tmp_path):
+    w = model
+    draft = make_draft(tmp_path, w)
+    runner = ChainGraphs(w, 512, bucket=64)
+    assert runner.prepare(range(1, 5), taps=True) == 5          # widths 1..4 with taps, plus the one-row serial form
+    held = dict(runner.graphs)
+    eager, _ = _decode(w, draft, PROMPTS[0], None, 24, None, 4)
+    replayed, _ = _decode(w, draft, PROMPTS[0], None, 24, runner, 4)
+    assert replayed == eager
+    assert all(runner.graphs[key] is entry for key, entry in held.items())      # no recapture of prepared keys

@@ -86,9 +86,9 @@ static void quantize_impl(const at::Tensor& x, const at::Tensor& plan, const at:
 
 // Host windows: codes/scales are pair-major; items (cell, first, count <= 16) group same-expert pairs of at most 128;
 // decode K slices match checkpoint.matmul's shape-only policy exactly.
-static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
-           const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
-           const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct) {
+void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+          const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
+          const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct) {
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
     expert_field(blob, blob, at::kByte, 3, "projection blob");
@@ -107,6 +107,9 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
                 projections == (down ? 1 : 2), "nativeA4 bounded plan/projection geometry: pairs=", p,
                 " items=", items.size(0), " cells=", cells, " projections=", projections,
                 " down=", static_cast<int>(down));
+    // grid.x = ceil(items * n/8 / 4) converts to unsigned int: items <= 128 and n < 2^31 alone admit 2^33.
+    TORCH_CHECK(items.size(0) * (n / 8) <= static_cast<int64_t>(INT32_MAX) * 4,
+                "nativeA4 launch exceeds CUDA grid index range");
     TORCH_CHECK(blob.size(2) == (n / 16) * k * 9 && weight.size(0) == cells && weight.size(1) == projections &&
                 input.sizes() == weight.sizes(), "nativeA4 blob/calibration geometry");
     TORCH_CHECK(codes.size(0) == projections && codes.size(2) == k / 2 &&
@@ -133,12 +136,6 @@ static void gemm_impl(const at::Tensor& codes, const at::Tensor& scales, const a
 void quantize(const at::Tensor& x, const at::Tensor& plan, const at::Tensor& input,
     at::Tensor codes, at::Tensor scales, bool paired, bool direct) {
     quantize_impl(x, plan, input, codes, scales, paired, direct);
-}
-
-void gemm(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
-    const at::Tensor& weight, const at::Tensor& input, const at::Tensor& items,
-    const at::Tensor& plan, at::Tensor out, int64_t n, int64_t k, int64_t sk, bool down, bool direct) {
-    gemm_impl(codes, scales, blob, weight, input, items, plan, out, n, k, sk, down, direct);
 }
 
 // Gate/up activation codes of a device plan (per pair and projection); proven shared-input banks quantize rows with

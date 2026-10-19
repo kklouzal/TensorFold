@@ -18,7 +18,7 @@ swiglu.activation = 0       # the declared BF16 SiLU/product that native A4 devi
 
 
 class Context:
-    def __init__(self, *, count=3, width=64, dims=128):
+    def __init__(self, *, count=3, width=64, dims=128, uniform=False):
         self.cfg = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=2)
         self.info, self.payload, self.reads, self.used = {}, {}, [], {}
         self.checkpoint_math, self.own = True, {"nvfp4": True}
@@ -47,6 +47,21 @@ class Context:
                     self.payload[name] = value
                     dtype = {torch.uint8: "U8", torch.float32: "F32", torch.float8_e4m3fn: "F8_E4M3"}[value.dtype]
                     self.info[name] = (dtype, list(value.shape))
+        if uniform:
+            # Real CT MoE checkpoints share one gate/up input global over the bank
+            # (Gemma4 and Qwen3.6 layers 0/1/15 verified); down globals differ.
+            value = self.payload[f"{PREFIX}.experts.0.gate_proj.input_global_scale"].clone()
+            for name, tensor in self.payload.items():
+                if name.endswith(("gate_proj.input_global_scale", "up_proj.input_global_scale")):
+                    tensor.copy_(value)
+
+    def alias_shared_expert(self, expert):
+        """Expert ``expert`` doubles as the layer's ``shared_expert`` (same geometry and payload, its own globals)."""
+        for name in list(self.payload):
+            if f".experts.{expert}." in name:
+                alias = name.replace(f".experts.{expert}.", ".shared_expert.")
+                self.payload[alias], self.info[alias] = self.payload[name], self.info[name]
+        return self
 
     def read(self, name, device="cpu"):
         if name in self.reads:

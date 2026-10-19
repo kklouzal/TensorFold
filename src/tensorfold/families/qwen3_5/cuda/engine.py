@@ -308,7 +308,7 @@ class Qwen27Engine:
         if on_tokens([pending]):
             return {"prefill_s": prefill_s, "cached": hit[1].pos if hit else 0}
         # the cache holds the state before the last prompt token, not ``st``: the decode may commit into it
-        runner = self.runner if vision is None and self.runner is not None else None
+        runner = self.runner if vision is None else None
         result = draft_decode(self.w, st, prompt, pending, max_tokens, sampling, drafter,
                               max_rows=self.max_rows, tree_rows=self.tree_rows,
                               allow_copy=self.allow_copy and draft, stop_eos=stop_eos,

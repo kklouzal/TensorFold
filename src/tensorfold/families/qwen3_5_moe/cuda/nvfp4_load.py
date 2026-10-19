@@ -127,9 +127,10 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
     ``run(x, picks, out, prefill=...)``. Picks/out are strided routed-slot views:
     their row stride includes the final shared slot. A bank declaring
     ``capturable`` instead receives ``run_plan(x, buf, prefill=...)`` over the
-    MoE buffer's 16-pair device plan; a bank of ``experts + 1`` cells consumed
-    the shared expert as its last cell and computes it there (ID ``experts``),
-    otherwise it skips that cell and the shared projections load separately.
+    MoE buffer's device plan (16-pair items; prompt plans take ``plan_tile``'s);
+    a bank of ``experts + 1`` cells consumed the shared expert as its last cell
+    and computes it there (ID ``experts``), otherwise it skips that cell and the
+    shared projections load separately.
     The factory must preserve original packed codes and reciprocal CT scales,
     consume every routed field exactly once through ``context.read``, and own
     its authority until close.

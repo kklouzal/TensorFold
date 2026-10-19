@@ -149,7 +149,8 @@ def startup(tmp_path, monkeypatch):
     def load(directory, **options):
         events.append("model-load")
         state.loads.append((directory, options))
-        return NS(config=NS(eos=tuple(options["eos_token_ids"]), vocab=32), norm=torch.ones(1), head=NS(n=32))
+        return NS(config=NS(eos=tuple(options["eos_token_ids"]), vocab=32), norm=torch.ones(1), head=NS(n=32),
+                  layers=[])
 
     def draft(directory, target_weights, **options):
         events.append("draft-load")
@@ -226,8 +227,15 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert engine.max_rows == engine.tree_rows == 8 and engine.context_window == 64
         assert engine.eos == (3, 1) and engine.model_dir == state.target
         assert state.events.index("admit") < state.events.index("model-load") < state.events.index("draft-load")
-        options, runtime = state.runtimes[0]
-        assert options == {"streams": streams, "keep": 3 if streams > 1 else 4, "max_rows": 8, "prompt_rows": 512}
+        # Residency is decided with the resident banks' device-plan scratch (and one stream's chain graphs);
+        # leased host-pool banks are then admitted without them.
+        offload = budget is not None or automatic
+        options, _ = state.runtimes[0]
+        base = {"streams": streams, "keep": 3 if streams > 1 else 4, "max_rows": 8, "prompt_rows": 512}
+        assert options == {**base, "graphs": streams == 1, "planned": True}
+        assert len(state.runtimes) == (2 if offload else 1)
+        options, runtime = state.runtimes[-1]
+        assert options == (base if offload else {**base, "graphs": streams == 1, "planned": True})
         draft_options, draft_runtime = state.draft_runtimes[0]
         assert draft_options == {"streams": streams, "kept": 4, "block": 8, "prompt_rows": 512}
         directory, context, explicit, provider, target_geometry, transform, admission = state.admissions[0]
@@ -247,7 +255,7 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
             assert state.events.index("draft-load") < state.events.index("calibrate") < state.events.index("scheduler-start")
         else:
             assert engine.multi is engine.scheduler is None and not state.calibrations
-        offload = budget is not None or automatic
+        assert (engine.runner is not None) == (streams == 1 and not offload)
         if offload:
             plan = ram_experts.layout(state.target, "auto" if automatic else budget)
             cache, pins = state.caches[0], state.pins[0]
@@ -301,6 +309,7 @@ def test_one_row_without_secondary_model_keeps_the_supported_serial_path(startup
     try:
         assert engine.max_rows == 1 and engine.draft is None
         assert engine.multi is engine.scheduler is engine.expert_cache is None
+        assert engine.runner is not None and engine.runner.capacity == engine.capacity_plan["cache_slots"]
         assert not startup.drafts and startup.events.index("admit") < startup.events.index("model-load")
     finally:
         engine.close()

@@ -165,11 +165,14 @@ def test_actual_metadata_and_geometry_are_checked_before_custom_payload_reads(ch
     assert not calls
 
 
-def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_conversion():
-    bank, router, shared, operator = object(), object(), object(), object()
+@pytest.mark.parametrize("fused", [False, True])
+def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_conversion(fused):
+    # A resident bank of experts + 1 cells consumed the shared expert as its last cell: no separate shared load.
+    bank = SimpleNamespace(count=257 if fused else 256)
+    router, shared, operator = object(), object(), object()
     original_head = object()
-    context, cfg = object(), SimpleNamespace(top_k=8)
-    calls = []
+    context, cfg = object(), SimpleNamespace(top_k=8, experts=256)
+    calls, operators = [], []
 
     def backbone(path, device, **options):
         calls.append((path, device, options["eos_token_ids"]))
@@ -180,15 +183,23 @@ def test_qwen_loader_delegates_a_full_prefix_and_forwards_eos_without_payload_co
                                                            "shared_expert_intermediate_size": 1024}},
                    load_backbone=backbone, Routed=lambda *args, **kwargs: (args, kwargs),
                    SimpleNamespace=SimpleNamespace)
-    api.update(_router=lambda *args: router, _shared=lambda *args: shared,
-               NativeMoE=lambda actual_bank, actual_shared: operator)
+    def shared_load(*args):
+        calls.append("shared")
+        return shared
+
+    def native(actual_bank, actual_shared):
+        operators.append((actual_bank, actual_shared))
+        return operator
+
+    api.update(_router=lambda *args: router, _shared=shared_load, NativeMoE=native)
 
     def factory(actual_context, prefix, actual_cfg):
         assert (actual_context, prefix, actual_cfg) == (context, "model.language_model.layers.0.mlp", cfg)
         return bank
 
     result = api["load_nvfp4"](Path("opaque"), "cuda:0", expert_factory=factory, eos_token_ids=(7, 9))
-    assert calls == [(Path("opaque"), "cuda:0", (7, 9))]
+    assert calls[0] == (Path("opaque"), "cuda:0", (7, 9)) and calls[1:] == ([] if fused else ["shared"])
+    assert operators == [(bank, None if fused else shared)]
     assert result.fields == {"moe": ((router, bank, 8), {"run": operator})}
     assert result.head is original_head
 

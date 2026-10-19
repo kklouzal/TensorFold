@@ -161,7 +161,7 @@ class ExpertsA4:
         fields, direct = self.fields, self.direct_input
         # Plan backing has conservative spare rows, but every live item owns
         # at least one pair. Never expose more item rows than actual pairs.
-        items = plan.items[:min(pairs, self.count + 1 + pairs // 16)]
+        items = plan.items[:min(pairs, self.count + 1 + pairs // plan.tile)]
         members = plan.members[:pairs]
         common = self.shared_input and rows <= 65535
         if common:

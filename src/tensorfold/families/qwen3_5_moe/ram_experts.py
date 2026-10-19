@@ -297,7 +297,8 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows, graphs=False
             live += attention * active * kv_row
             snapshots += state
             spans = len({min(active, max(BUCKET, 1 << k)) for k in range(max(1, active.bit_length()) + 1)})
-            scratch += spans * max_rows * (max_rows + 1) // 2 * graph_row + graph_pool
+            # widths 1..max_rows with taps (drafted rounds) plus the one-row graph without taps (serial requests)
+            scratch += spans * (max_rows * (max_rows + 1) // 2 + 1) * graph_row + graph_pool
         return {"future_kv_bytes": live, "future_snapshot_bytes": snapshots,
                 "future_target_workspace_bytes": workspace + scratch}
 

@@ -11,18 +11,6 @@ from tensorfold.cuda.nvfp4.experts_a4 import PlanBuffers
 from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
 
 
-def _context(count, width, dims, *, uniform):
-    ctx = Context(count=count, width=width, dims=dims)
-    if uniform:
-        # Real CT MoE checkpoints share one gate/up input global over the bank
-        # (Gemma4 and Qwen3.6 layers 0/1/15 verified); down globals differ.
-        value = ctx.payload[f"{PREFIX}.experts.0.gate_proj.input_global_scale"].clone()
-        for name, tensor in ctx.payload.items():
-            if name.endswith(("gate_proj.input_global_scale", "up_proj.input_global_scale")):
-                tensor.copy_(value)
-    return ctx
-
-
 def _picks(rows, slots, count, seed):
     """Distinct experts per row, deterministic and unordered (like top-k)."""
     generator = torch.Generator().manual_seed(seed)
@@ -34,7 +22,7 @@ def _picks(rows, slots, count, seed):
 @pytest.mark.parametrize("prefill,rows", [(False, 1), (False, 5), (True, 1), (True, 17), (True, 129)])
 def test_device_plan_matches_host_windows_and_independent_reference(uniform, prefill, rows):
     count, width, dims, slots = 9, 128, 256, 8
-    ctx = _context(count, width, dims, uniform=uniform)
+    ctx = Context(count=count, width=width, dims=dims, uniform=uniform)
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
     assert bank.capturable and bank.shared_input == uniform and not bank.direct_input
     x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(77 + rows)) * .4).to("cuda", torch.bfloat16)
@@ -49,13 +37,14 @@ def test_device_plan_matches_host_windows_and_independent_reference(uniform, pre
     assert torch.equal(buf.y[:rows], host)
     # Rows beyond the live count are never written.
     assert torch.equal(buf.y[rows:], torch.full_like(buf.y[rows:], 17.))
-    expected = individual_reference(_context(count, width, dims, uniform=uniform), x, picks, prefill=prefill)
+    expected = individual_reference(Context(count=count, width=width, dims=dims, uniform=uniform), x, picks,
+                                    prefill=prefill)
     assert torch.equal(buf.y[:rows], expected)
 
 
 def test_device_plan_shared_cell_is_skipped_and_slot_left_to_the_caller():
     count, width, dims, slots = 4, 64, 128, 3
-    ctx = _context(count, width, dims, uniform=False)
+    ctx = Context(count=count, width=width, dims=dims, uniform=False)
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
     rows = 6
     x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(3)) * .4).to("cuda", torch.bfloat16)
@@ -73,7 +62,7 @@ def test_device_plan_shared_cell_is_skipped_and_slot_left_to_the_caller():
 @pytest.mark.parametrize("prefill", [False, True])
 def test_captured_device_plan_replays_new_routes_without_host_reads(prefill):
     count, width, dims, slots, rows = 16, 128, 256, 8, 3
-    ctx = _context(count, width, dims, uniform=True)
+    ctx = Context(count=count, width=width, dims=dims, uniform=True)
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
     buf = PlanBuffers(16, slots, count, dims, "cuda", prefill=prefill)
     x = torch.zeros((rows, dims), dtype=torch.bfloat16, device="cuda")
@@ -130,12 +119,12 @@ def test_plan_refuses_out_of_range_expert_ids_on_the_device(rows, bad):
 def test_retained_moe_buffer_and_plan_scratch_match_qwen_admission(prefill, rows):
     from types import SimpleNamespace
 
-    from tensorfold.cuda.experts import TILE
+    from tensorfold.cuda.experts import TILE, route
     from tensorfold.cuda.moe import MoEBuffers
     from tensorfold.families.qwen3_5_moe.ram_experts import _moe_buffers
 
     count, width, dims, top_k = 9, 128, 256, 3
-    ctx = _context(count, width, dims, uniform=True)
+    ctx = Context(count=count, width=width, dims=dims, uniform=True)
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu)
     size = 1 << max(4, (rows - 1).bit_length())
     shape = SimpleNamespace(num_experts_per_tok=top_k, num_experts=count, moe_intermediate_size=width,
@@ -145,7 +134,6 @@ def test_retained_moe_buffer_and_plan_scratch_match_qwen_admission(prefill, rows
     picks = _picks(rows, top_k, count, 4)
     buf.pick[:rows, :top_k].copy_(picks)
     buf.pick[:rows, top_k] = count
-    from tensorfold.cuda.experts import route
     route(buf.pick[:rows], buf.plan, TILE)
     bank.run_plan(x, buf, prefill=prefill)
     tensors = [buf.logits, buf.pick, buf.wts, buf.act, buf.y, buf.plan.members, buf.plan.items, buf.plan.counts,
@@ -169,13 +157,7 @@ def test_shared_expert_cell_matches_the_separate_shared_projections(prefill, row
     count, width, dims, top_k = 6, 128, 256, 3
 
     def context():
-        # Expert ``count`` doubles as the layer's shared_expert (its own globals, same geometry).
-        ctx = _context(count + 1, width, dims, uniform=True)
-        for name in list(ctx.payload):
-            if f".experts.{count}." in name:
-                alias = name.replace(f".experts.{count}.", ".shared_expert.")
-                ctx.payload[alias], ctx.info[alias] = ctx.payload[name], ctx.info[name]
-        return ctx
+        return Context(count=count + 1, width=width, dims=dims, uniform=True).alias_shared_expert(count)
 
     full = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=top_k)
     source = context()
@@ -224,7 +206,7 @@ def test_16_and_64_pair_items_equal_the_host_window_path(activation, uniform, pr
     from tensorfold.families.gemma4.cuda.nvfp4_experts import geglu
 
     count, width, dims, slots = 12, 192, 1024, 8          # decode gate/up: two K slices (split_k)
-    ctx = _context(count, width, dims, uniform=uniform)
+    ctx = Context(count=count, width=width, dims=dims, uniform=uniform)
     bank = load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", swiglu=swiglu if activation == "silu" else geglu)
     x = (torch.randn(rows, dims, generator=torch.Generator().manual_seed(31 + rows)) * .4).to("cuda", torch.bfloat16)
     picks = _picks(rows, slots, count, 41 + rows)

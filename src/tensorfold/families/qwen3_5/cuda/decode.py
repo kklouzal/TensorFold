@@ -339,7 +339,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             trace.append(_round_record(tokens, tree_parents, depths, path, terminal, stop,
                                        "copy" if copied else "tree", draft, spent))
         stage = time.perf_counter()
-        commit(st, record, path, **({"in_place": True} if runner is not None else {}))   # a runner's fixed buffers
+        commit(st, record, path, in_place=runner is not None)       # a runner's fixed buffers
         if draft is not None:
             draft.add_taps(tapped[0][path])
         out.extend(tokens[row] for row in path[1:])
