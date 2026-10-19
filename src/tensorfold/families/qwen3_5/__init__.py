@@ -359,7 +359,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         vision_urls=bool(options.get("vision_urls", False)),
                         vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
                         yarn_factor=options.get("yarn_factor"),
-                        draft_vocab=options.get("draft_vocab") or "truncated",
+                        draft_vocab=options.get("draft_vocab") if options.get("draft_vocab") is not None else "truncated",
                         draft_head_bits=options.get("draft_head_bits") if options.get("draft_head_bits") is not None else 16,
                         **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
                            if options.get(name) is not None})

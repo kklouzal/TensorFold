@@ -134,6 +134,29 @@ def test_family_passes_static_head_options_to_the_actual_cuda_constructor(tmp_pa
     assert seen[0]["draft_vocab"] == "full" and seen[0]["draft_head_bits"] == 8
 
 
+@pytest.mark.parametrize("options,expected", [({}, "truncated"), ({"draft_vocab": None}, "truncated"),
+                                              ({"draft_vocab": False}, False), ({"draft_vocab": 0}, 0),
+                                              ({"draft_vocab": ""}, "")])
+def test_family_defaults_only_absent_or_none_vocabulary_and_preserves_explicit_values(tmp_path, monkeypatch,
+                                                                                    options, expected):
+    seen = []
+    monkeypatch.setattr(qwen3_5, "gb10", lambda: False)
+    monkeypatch.setattr("tensorfold.families.qwen3_5.cuda.exl3_load.quant_config", lambda path: None)
+    monkeypatch.setattr("tensorfold.families.qwen3_5.cuda.engine.Qwen27Engine", lambda *a, **kw: seen.append(kw))
+    qwen3_5.cuda_engine(tmp_path, drafter="secondary", **options)
+    actual = seen[0]["draft_vocab"]
+    assert type(actual) is type(expected) and actual == expected
+
+
+@pytest.mark.parametrize("value", [False, 0, ""])
+def test_family_refuses_explicit_invalid_vocabulary_through_actual_constructor_before_model_io(tmp_path, monkeypatch,
+                                                                                            value):
+    monkeypatch.setattr(qwen3_5, "gb10", lambda: False)
+    monkeypatch.setattr("tensorfold.families.qwen3_5.cuda.exl3_load.quant_config", lambda path: None)
+    with pytest.raises(ValueError, match="truncated/full vocabulary"):
+        qwen3_5.cuda_engine(tmp_path / "missing", drafter="secondary", draft_vocab=value)
+
+
 @pytest.mark.parametrize("vocab", ["truncated", "full"])
 @pytest.mark.parametrize("tied", [False, True])
 def test_sampled_head_support_matches_stable_reference_and_repeats_across_stream_groups(setup, monkeypatch, vocab, tied):
