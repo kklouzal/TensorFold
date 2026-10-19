@@ -35,11 +35,12 @@ SOURCE_REVISION_ENV = "TENSORFOLD_SOURCE_REVISION"      # the container build's 
 ROUTES = ("/stats", "/v1/stats")
 
 
-def snapshot(app: Any, *, server: Any = None, reading: metrics.Metrics | None = None) -> dict[str, Any]:
+def snapshot(app: Any, *, server: Any = None,
+             reading: metrics.Metrics | metrics.StatsReading | None = None) -> dict[str, Any]:
     """The /stats body. ``reading`` is a scrape's copy of the counters (``metrics.counters_now``), else one is taken."""
 
     if reading is None:
-        reading = metrics.counters_now(app)
+        reading = metrics.counters_now(app, stats_only=True)
     fixed = _fixed(app)
     engine = getattr(app, "engine", None)
     sched = getattr(engine, "scheduler", None) if engine is not None else None     # a CUDA concurrent engine's

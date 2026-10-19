@@ -62,13 +62,17 @@ def test_retired_response_stays_only_in_lifetime_total_and_readd_starts_new_seri
     assert metrics.of(app).http_replies == {200: 3}
 
 
-def test_scrape_retires_departed_series_without_a_new_reply(configured):
+@pytest.mark.parametrize("stats_only", [False, True])
+def test_scrape_retires_departed_series_without_a_new_reply(configured, stats_only):
     app, rotate = configured
     metrics.http_request(app, "first", 200)
     rotate("second")
-    body = metrics.render(app)
-    assert 'key="first"' not in body
-    assert 'http_replies_total{status="200"} 1' in body
+    if stats_only:
+        assert metrics.counters_now(app, stats_only=True).requests == 0
+    else:
+        body = metrics.render(app)
+        assert 'key="first"' not in body
+        assert 'http_replies_total{status="200"} 1' in body
     assert metrics.of(app).http_requests == {}
 
 
