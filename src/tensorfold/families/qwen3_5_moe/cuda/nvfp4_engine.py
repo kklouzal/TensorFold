@@ -57,6 +57,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
         from tensorfold.cuda.sampling import effective_workspace
         from tensorfold.cuda.speculative import chain_workspace
+        from tensorfold.families.qwen3_5.cuda.draft_tree import COPY_MIN_MATCH
         from tensorfold.families.qwen3_5.cuda.nvfp4_load import weight_bytes
         from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 
@@ -84,11 +85,12 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         bits = 16 if drafter_bits == 0 else drafter_bits
         # Requests may select top-k off, penalties or copy proposals after startup: admit the complete supported
         # effective-target fallback and each request-local packet, not only the default card-sampling shape.
+        copies_possible = allow_copy and rows > COPY_MIN_MATCH
         target_workspace = (effective_workspace(rows * streams, text["vocab_size"])
-                            if draft_config is not None or allow_copy else {"device_bytes": 0, "host_bytes": 0})
+                            if draft_config is not None or copies_possible else {"device_bytes": 0, "host_bytes": 0})
         proposals = (chain_workspace(min(rows, draft_config.block) - 1, text["vocab_size"], streams=streams)
                      if draft_config is not None else {"device_bytes": 0, "host_bytes": 0})
-        copies = (chain_workspace(rows - 1, 1, streams=streams) if allow_copy and rows > 1
+        copies = (chain_workspace(rows - 1, 1, streams=streams) if copies_possible
                   else {"device_bytes": 0, "host_bytes": 0})
         self.rejection_workspace = {key: target_workspace[key] + max(proposals[key], copies[key])
                                     for key in ("device_bytes", "host_bytes")}

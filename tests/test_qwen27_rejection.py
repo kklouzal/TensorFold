@@ -103,6 +103,62 @@ def test_one_stream_releases_full_probability_rows_before_the_next_extraction(de
     assert len(owners) > 1 and all(owner() is None for owner in owners)
 
 
+@pytest.mark.parametrize("rows", [1, 8, 9])
+@pytest.mark.parametrize("stochastic", [False, True])
+def test_no_companion_copy_boundary_uses_serial_or_real_rejection(dense, monkeypatch, rows, stochastic):
+    policy = importlib.import_module("tensorfold.families.qwen3_5.cuda.draft_tree")
+    multi = importlib.import_module("tensorfold.families.qwen3_5.cuda.multi")
+    # A repeated8-token suffix with a full8-token continuation; every token is in the stand-in target vocabulary.
+    a, b = [0, 1, 0, 0, 1, 1, 0, 1], [1, 0, 1, 1, 0, 0, 1, 0]
+    context = a + b + a
+    assert dense.CopyIndex().n == 8 and dense.copy_chain(context, 7) == []
+    assert dense.CopyIndex().propose(context, 8) == dense.copy_chain(context, 8) == b
+    calls, probabilities, sample = [], policy.chain_probabilities, dense.sample_rows
+
+    def extracted(*args, **kw):
+        calls.append("rejection")
+        return probabilities(*args, **kw)
+
+    def serial(*args, **kw):
+        calls.append("serial")
+        return sample(*args, **kw)
+
+    monkeypatch.setattr(policy, "chain_probabilities", extracted)
+    monkeypatch.setattr(dense, "sample_rows", serial)
+    sampling = Sampling(6, 1., 2, 1.) if stochastic else None
+    w = NS(config=NS(eos=(99,)), norm=torch.ones(1))
+    result = dense.draft_decode(w, NS(pos=len(context) - 1), context[:-1], context[-1], 3, sampling, None,
+                                max_rows=rows, tree_rows=rows, allow_copy=True, stop_eos=False, inplace=True)
+    assert len(result.tokens) == 3
+    assert ("rejection" in calls) == (stochastic and rows == 9)
+    assert (result.drafted_rows > 0) == (rows == 9)
+    stream = NS(draft=True, sampling=sampling, copies=dense.CopyIndex(), context=context, sid=0)
+    decoder = NS(draft=None, max_rows=rows)
+    copied = {}
+    mode = multi.MultiDecoder._mode(decoder, stream, copied)
+    expected = (multi.COPY_CHAIN if stochastic else multi.COPY) if rows == 9 else multi.ONE
+    assert mode == expected
+    assert copied[0] == (b if rows == 9 else [])
+
+
+def test_one_row_companion_still_extracts_effective_target_for_the_empty_chain_bonus(dense, monkeypatch):
+    policy = importlib.import_module("tensorfold.families.qwen3_5.cuda.draft_tree")
+    calls, original = [], policy.chain_probabilities
+
+    def extracted(*args, **kw):
+        calls.append(args[2])
+        return original(*args, **kw)
+
+    monkeypatch.setattr(policy, "chain_probabilities", extracted)
+    companion = Draft()
+    companion.trained = 1
+    w = NS(config=NS(eos=(99,)), norm=torch.ones(1))
+    result = dense.draft_decode(w, NS(pos=2), [0, 1], 1, 3, Sampling(6, 1., 2, 1.), companion,
+                                max_rows=1, allow_copy=False, stop_eos=False, inplace=True)
+    assert len(result.tokens) == 3 and calls == [1, 1]
+    assert all(nodes == 0 for _, _, nodes in companion.calls)
+
+
 def test_yield_replays_the_original_request_without_resampling_another_logical_schedule(dense):
     expected, _, _ = run(dense, 17)
 

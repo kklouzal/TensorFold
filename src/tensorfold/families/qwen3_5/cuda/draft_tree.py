@@ -12,6 +12,7 @@ from tensorfold.engine.exact_sampling import Sampling, uniform_rows
 # the Metal engine's values; the target's keyed Gumbel noise is known ahead, so ``noise`` weighs it into draft scores
 POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False}
 HOT_SPANS = ((0, 98304), (248032, 248320))
+COPY_MIN_MATCH = 8  # CopyIndex requires this many matched AND continued tokens before proposing.
 
 
 def draft_spans(vocab: int):

@@ -10,6 +10,7 @@ import torch
 
 from tensorfold.engine.exact_sampling import Sampling
 
+from .draft_tree import COPY_MIN_MATCH
 from .forward import State, _paths, commit, tree_forward
 from tensorfold.cuda.sampling import sample_rows
 from .weights import Weights
@@ -129,7 +130,7 @@ class CopyIndex:
 
     BULK = 4096
 
-    def __init__(self, min_match: int = 8):
+    def __init__(self, min_match: int = COPY_MIN_MATCH):
         self.n = min_match
         self.hashes = self.starts = None      # the bulk: sorted gram hashes, and their starts (ascending within a hash)
         self.positions: dict[tuple[int, ...], list[int]] = {}
@@ -191,7 +192,7 @@ class CopyIndex:
 
 
 def copy_chain(context: Sequence[int], max_nodes: int = 127,
-               min_match: int = 8) -> list[int]:
+               min_match: int = COPY_MIN_MATCH) -> list[int]:
     """Reuse a repeated suffix's next tokens as a speculative chain."""
 
     if len(context) < 2 * min_match:

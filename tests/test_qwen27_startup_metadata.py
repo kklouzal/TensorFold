@@ -262,6 +262,30 @@ def test_actual_constructor_serving_setup_keeps_serial_and_rank_bookkeeping(serv
     assert owner.scheduler is None
 
 
+@pytest.mark.parametrize("tp,streams,rows,tree_rows,copy,reachable", [
+    (1, 1, 1, None, True, False), (1, 1, 8, None, True, False), (1, 1, 9, None, True, True),
+    (1, 1, 12, 8, True, False), (1, 1, 12, 9, True, True),
+    (2, 1, 8, None, True, False), (2, 1, 12, 8, True, False),
+    (1, 3, 1, None, True, True), (1, 3, 8, None, True, True),
+    (2, 3, 1, None, True, True), (1, 3, 9, None, False, False),
+])
+def test_copy_only_admission_follows_actual_single_tp_and_multi_routes(
+        serving, monkeypatch, tp, streams, rows, tree_rows, copy, reachable):
+    fixture, owner = serving, serving.owner
+    recorded, admit = [], capacity.admit
+    monkeypatch.setattr(capacity, "admit", lambda *a, **kw: recorded.append(kw) or admit(*a, **kw))
+    owner.__init__(fixture.directory, None, max_rows=rows, tree_rows=tree_rows, tp=tp, rank=0, master="host",
+                   allow_copy=copy, streams=streams)
+    try:
+        assert owner.max_rows == rows and owner.draft is None and owner.allow_copy == copy
+        assert (recorded[0]["device_workspace_bytes"] > 0) == reachable
+        assert (recorded[0]["host_workspace_bytes"] > 0) == reachable
+        if streams > 1:
+            assert "max_rows" not in owner.multi.options  # maintained dense Multi uses its own16-row default
+    finally:
+        owner.close()
+
+
 def test_loaded_subclass_prepares_requests_without_running_base_loader(serving, monkeypatch):
     from tensorfold.cuda.chat_template import prepare_chat_template
 
