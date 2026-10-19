@@ -25,8 +25,9 @@ def test_copies_compute_the_dequantized_product(kind, rows):
     assert float(((got - ref).abs().max() / ref.abs().max())) < tol
     view = prefix(lin, 128)                                # the first 128 output rows, sharing storage
     torch.testing.assert_close(view(x).float(), got[:, :128], rtol=0, atol=0)
-    with pytest.raises(ValueError):
-        prefix(lin, 100)
+    for rows in (100, 192):                                # 192: decode tiles, but not the prompt GEMM's 128
+        with pytest.raises(ValueError):
+            prefix(lin, rows)
 
 
 @pytest.mark.parametrize("kind", ["fp8", "fp8a8"])
@@ -68,8 +69,9 @@ def test_heads_return_fp32_softcapped_logits_and_share_one_copy():
     with pytest.raises(ValueError):
         Head(head, "int4")                                 # unknown kinds, shared copy or not
     assert Head(Plain(), "fp8a8").linear.token
-    with pytest.raises(ValueError):
-        Head(Plain(), "fp8", softcap=0)
+    for cap in (0, True, float("inf"), float("nan")):
+        with pytest.raises(ValueError):
+            Head(Plain(), "fp8", softcap=cap)
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])

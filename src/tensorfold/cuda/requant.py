@@ -15,6 +15,8 @@ caller may free the source afterwards. ``resident_bytes`` / ``staging_bytes`` gi
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from tensorfold.cuda.nvfp4.linear import FRAGMENT_ROWS, Fp8Linear
@@ -67,11 +69,12 @@ def requantize(weight: torch.Tensor, kind: str):
 
 
 def prefix(linear, rows: int):
-    """The first ``rows`` output rows of a copy (a multiple of 64: the copy's tile), sharing its storage; e.g. the
-    [k|v] rows of a fused [k|v|q] projection. Decode (``__call__``) and prompt (``prefill``) rows both run on it."""
+    """The first ``rows`` output rows of a copy, sharing its storage; e.g. the [k|v] rows of a fused [k|v|q]
+    projection. Decode (``__call__``) and prompt (``prefill``) rows both run on it: ``rows`` is a multiple of 128, the
+    prompt GEMM's padded output tile (decode's 64-row tiles alone would allow 64)."""
 
-    if type(rows) is not int or not 0 < rows <= linear.n or rows % 64:
-        raise ValueError(f"a requantized row prefix is a positive multiple of 64 up to {linear.n} rows")
+    if type(rows) is not int or not 0 < rows <= linear.n or rows % 128:
+        raise ValueError(f"a requantized row prefix is a positive multiple of 128 up to {linear.n} rows")
     return linear.tiles(0, rows // 64)
 
 
@@ -84,8 +87,9 @@ class Head:
 
     def __init__(self, source, kind: str, *, softcap: float | None = None):
         token = _checked(kind) == "fp8a8"
-        if softcap is not None and not (isinstance(softcap, (int, float)) and softcap > 0):
-            raise ValueError("a head softcap must be a positive number")
+        if softcap is not None and (isinstance(softcap, bool) or not isinstance(softcap, (int, float))
+                                    or not math.isfinite(softcap) or softcap <= 0):
+            raise ValueError("a head softcap must be a positive finite number")
         if isinstance(source, Head):
             source = source.linear
         if isinstance(source, Fp8Linear):
