@@ -597,7 +597,8 @@ def main() -> int:
         summary = {"status": "error", "error": result["error"]}
         try:                            # the record is best effort; the exit status is the contract
             write_json(args.out, result)
-        except (OSError, ValueError, TypeError) as unwritten:   # --out not an ordinary file, NaN, I/O, a bad value
+        # --out not an ordinary file, NaN, I/O, a bad value, exhausted memory: an escape would exit 1, the fail code
+        except Exception as unwritten:  # noqa: BLE001 - best-effort record: exit 4 whatever its write raised
             traceback.print_exc()
             summary["record_error"] = f"{type(unwritten).__name__}: {unwritten}"
         print(json.dumps(summary), flush=True)
