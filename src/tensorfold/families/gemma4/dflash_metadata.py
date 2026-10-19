@@ -141,6 +141,18 @@ class DraftConfig:
                 "mlp.down_proj.weight": (self.hidden, self.width)}.items()})
         return out
 
+    def fused_shapes(self):
+        """The companion's projections as it runs them ([N, K]): fc, then per layer the fused [k | v | q], o, the
+        fused [gate | up] and down."""
+        out = {"fc.weight": (self.hidden, len(self.tap_layers) * self.hidden)}
+        for i in range(self.layers):
+            base = f"layers.{i}."
+            out.update({base + "kvq": ((2 * self.kv_heads + self.heads) * self.head_dim, self.hidden),
+                        base + "self_attn.o_proj.weight": (self.hidden, self.heads * self.head_dim),
+                        base + "gate_up": (2 * self.width, self.hidden),
+                        base + "mlp.down_proj.weight": (self.hidden, self.width)})
+        return out
+
 
 def checked_headers(directory):
     from tensorfold.cuda.capacity import headers
@@ -156,37 +168,3 @@ def checked_headers(directory):
         raise ValueError("Gemma DFlash weights require declared shapes and BF16 storage")
     return cfg, found
 
-
-def draft_weights(directory, *, bits=16):
-    """Borrow target embedding/head; stage at most one original BF16 tensor."""
-    from tensorfold.cuda.capacity import Weights
-
-    if type(bits) is not int or bits != 16:
-        raise ValueError("Gemma DFlash proposal weights must retain BF16 storage")
-    cfg, _ = checked_headers(directory)
-    sizes = [math.prod(shape) * 2 for shape in cfg.shapes().values()]
-    return Weights(sum(sizes) + cfg.head_dim // 2 * 4, max(sizes), 0)
-
-
-def draft_geometry(raw, *, streams=1, kept=0, block=None, prompt_rows=4096):
-    """Bound immutable context replacement overlap and batched projection scratch."""
-    from tensorfold.cuda.capacity import Geometry
-
-    cfg = DraftConfig.from_dict(raw)
-    streams, prompt_rows = positive(streams, "streams"), positive(prompt_rows, "prompt rows")
-    if type(kept) is not int or kept < 0:
-        raise ValueError("Gemma DFlash retained context count must be nonnegative")
-    block = cfg.block if block is None else positive(block, "block")
-    if not 2 <= block <= 128:
-        raise ValueError("Gemma DFlash blocks require 2 through128 rows")
-    if block > cfg.sliding_window:
-        raise ValueError("Gemma DFlash sliding blocks must fit the declared sliding window")
-    rows = max(prompt_rows, streams * block)
-    scratch = rows * (len(cfg.tap_layers) * cfg.hidden * 2 + cfg.hidden * 24
-                      + (cfg.heads + 2 * cfg.kv_heads) * cfg.head_dim * 8 + cfg.width * 16)
-    scratch += streams * block * cfg.vocab * 8
-    per_layer_token = 2 * cfg.kv_heads * cfg.head_dim * 2
-    full = cfg.layer_types.count("full_attention")
-    sliding = cfg.layers - full
-    return Geometry(lambda slots: scratch + (2 * streams + kept + 1) * per_layer_token *
-                    (full * (slots + block) + sliding * min(slots + block, cfg.sliding_window - 1)), block)

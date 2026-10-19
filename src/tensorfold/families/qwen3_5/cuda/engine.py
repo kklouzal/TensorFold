@@ -25,6 +25,8 @@ class Qwen27Engine:
 
     tree_rows: int | None = None       # a lone stream's tree rows on one GPU (None: max_rows, as in 0.5.0)
     room = None                        # one GPU's attention-cache budget (streams.KVRoom), None on two
+    runner = None                      # a lone stream's graph runner: its fixed attention buffers hold the stream's
+                                       # prefills and kept prompt states (None: private buffers, every round eager)
 
     def __init__(self, model_dir: Path, draft_dir: Path | None, *, max_rows: int = 12, tp: int = 1,
                  rank: int = 0, master: str = "", port: int = 29551, split_head: bool = False,
@@ -310,7 +312,10 @@ class Qwen27Engine:
             grammar["history"] = History(penalties, prompt)
         stops, keep = self._stops(prompt, hit, draft) if vision is None else ((), None)
         end = entry_end(prompt) if draft and vision is None and self._ends(prompt, stops) else None
-        st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=hit[1] if hit else None, room=self.room,
+        base = hit[1] if hit else None
+        if self.runner is not None:             # every prefill extends the runner's fixed attention buffers in place
+            base = self.runner.begin(self.cache, self.room, base, prompt)
+        st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=base, room=self.room,
                                      limit=self.context_window, stops=stops, keep=keep, keep_at=end, vision=encoded,
                                      **grammar)
         if end is not None:
@@ -319,10 +324,12 @@ class Qwen27Engine:
         if on_tokens([pending]):
             return {"prefill_s": prefill_s, "cached": hit[1].pos if hit else 0}
         # the cache holds the state before the last prompt token, not ``st``: the decode may commit into it
+        runner = self.runner if vision is None else None        # image positions decode eagerly
         result = draft_decode(self.w, st, prompt, pending, max_tokens, sampling, drafter,
                               max_rows=self.max_rows, tree_rows=self.tree_rows,
                               allow_copy=self.allow_copy and draft, stop_eos=stop_eos,
-                              on_tokens=on_tokens, inplace=True, **grammar)
+                              on_tokens=on_tokens, inplace=True, **grammar,
+                              **({"runner": runner} if runner is not None else {}))
         return {"prefill_s": prefill_s, "decode_s": result.seconds, "rounds": result.rounds,
                 "cached": hit[1].pos if hit else 0, "drafts": draft, "min_rows": min(result.widths, default=0),
                 "drafted": result.drafted_rows, "accepted": result.accepted_drafts}

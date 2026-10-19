@@ -1,8 +1,9 @@
 """Exact native Gemma tool calls, with schema constraints enforced before publication.
 
 The captured profile writes sorted bare keys, raw sentinel strings, true/false
-and Python None recursively. Owned EBNF expresses that representation; native
-xgrammar conversion remains authoritative for numeric constraints and regexes.
+and the template's null word (``template_null``) recursively. Owned EBNF expresses
+that representation; native xgrammar conversion remains authoritative for numeric
+constraints and regexes.
 """
 from __future__ import annotations
 
@@ -11,12 +12,11 @@ import re
 import string
 import uuid
 from copy import deepcopy
-from typing import Any
 
 from tensorfold.engine.grammar import Spec
 from tensorfold.server import strict_tools as xml
 from tensorfold.server.gemma_values import (
-    GEMMA_CLOSE, GEMMA_KEY, GEMMA_OPEN, GEMMA_STRING, GemmaJSONStream, gemma_value,
+    GEMMA_CLOSE, GEMMA_KEY, GEMMA_NULLS, GEMMA_OPEN, GEMMA_STRING, GemmaJSONStream, gemma_value,
 )
 from tensorfold.server.text import _partial_tag
 from tensorfold.server.tools import tool_spec_name
@@ -33,14 +33,20 @@ def false_probe():
     return messages
 
 
-def _probe_text(messages):
-    return "".join(GEMMA_OPEN + "call:" + call["function"]["name"] + gemma_value(call["function"]["arguments"])
+def _probe_text(messages, null):
+    return "".join(GEMMA_OPEN + "call:" + call["function"]["name"]
+                   + gemma_value(call["function"]["arguments"], null=null)
                    + GEMMA_CLOSE for call in messages[1]["tool_calls"])
 
 
-def template_supported(rendered: str, rendered_false: str) -> bool:
-    """Both booleans, recursively typed values, key ordering and adjacent call envelopes must match."""
-    return _probe_text(PROBE) in rendered and _probe_text(false_probe()) in rendered_false
+def template_null(rendered: str, rendered_false: str) -> str | None:
+    """The null word of a template whose probe calls match exactly, else None.
+
+    Both booleans, recursively typed values (nested nulls included), key
+    ordering and adjacent call envelopes must match one ``GEMMA_NULLS`` spelling.
+    """
+    return next((null for null in GEMMA_NULLS
+                 if _probe_text(PROBE, null) in rendered and _probe_text(false_probe(), null) in rendered_false), None)
 
 
 def _q(text):
@@ -49,7 +55,8 @@ def _q(text):
 
 class _Grammar:
     """One checked schema graph, emitted once per node, including recursive local references."""
-    def __init__(self, parameters, where):
+    def __init__(self, parameters, where, null):
+        self.null = null
         self.schema = xml._Schema(parameters, where)
         self.schema.check()
         self.rules, self.nodes, self.pending = {}, {}, []
@@ -123,7 +130,7 @@ class _Grammar:
 
     def literal(self, value, at):
         try:
-            return _q(gemma_value(value))
+            return _q(gemma_value(value, null=self.null))
         except (ValueError, RecursionError) as exc:
             raise xml._refuse(at, str(exc)) from None
 
@@ -140,7 +147,7 @@ class _Grammar:
         alternatives = []
         for kind in sorted(kinds):
             if kind == "null":
-                alternatives.append('"None"')
+                alternatives.append(_q(self.null))
             elif kind == "boolean":
                 alternatives.append('("true" | "false")')
             elif kind in ("number", "integer"):
@@ -252,9 +259,14 @@ class _Grammar:
 
 
 class Plan(xml.Plan):
-    """A native Gemma structural tag with the ordinary strict Plan reader protocol."""
-    def __init__(self, tools, *, required, parallel, offered=None):
-        self.required, self.parallel, self.tools = bool(required), bool(parallel), {}
+    """A native Gemma structural tag with the ordinary strict Plan reader protocol.
+
+    ``null`` is the selected template's null word (``template_null``).
+    """
+    def __init__(self, tools, *, required, parallel, null, offered=None):
+        if null not in GEMMA_NULLS:
+            raise ValueError(f"a Gemma null word is one of {GEMMA_NULLS}")
+        self.required, self.parallel, self.tools, self.null = bool(required), bool(parallel), {}, null
         positions = {id(tool): i for i, tool in reversed(list(enumerate(offered or ())))}
         tags = []
         for i, tool in enumerate(tools):
@@ -273,9 +285,9 @@ class Plan(xml.Plan):
                 if {"anyOf", "$ref", "enum", "const"} & set(parameters) or parameters.get("type", "object") != "object":
                     raise xml._refuse(where + ".parameters", "a strict tool's parameters must be an object schema")
                 top = {"type": "object", **{k: v for k, v in parameters.items() if k != "$schema"}}
-                grammar = _Grammar(top, where + ".parameters")
+                grammar = _Grammar(top, where + ".parameters", null)
             else:
-                grammar = _Grammar({"type": "object"}, where + ".parameters")
+                grammar = _Grammar({"type": "object"}, where + ".parameters", null)
             self.tools[name] = xml.Tool(name, strict)
             tags.append({"type": "tag", "begin": GEMMA_OPEN + "call:" + name,
                          "content": {"type": "grammar", "grammar": grammar.text}, "end": GEMMA_CLOSE})
@@ -352,7 +364,7 @@ class Reader:
                 self._head = {"index": self.index, "id": f"call_{uuid.uuid4().hex[:24]}", "type": "function",
                               "function": {"name": name, "arguments": ""}}
                 self.deltas.append({"tool_calls": [self._head]})
-                self._args, self._codec = [], GemmaJSONStream()
+                self._args, self._codec = [], GemmaJSONStream(null=self.plan.null)
                 self.pos = self._sent = end
                 self._quoted, self._state = False, "value"
             if self._state == "value":

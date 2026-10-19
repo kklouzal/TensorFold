@@ -246,11 +246,19 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
                  *, max_rows: int = 128, tree_rows: int | None = None,
                  allow_copy: bool = True, stop_eos: bool = True,
                  on_tokens: Callable[[list[int]], bool | None] | None = None,
-                 trace: list | None = None, inplace: bool = False, constraint=None, history=None) -> DecodeResult:
+                 trace: list | None = None, inplace: bool = False, constraint=None, history=None,
+                 runner=None) -> DecodeResult:
     """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole.
 
     ``history`` (tensorfold.engine.penalties.History, already holding ``pending``) penalizes each verify row by
-    its path and records the committed tokens; the drafter proposes under the same penalties."""
+    its path and records the committed tokens; the drafter proposes under the same penalties.
+
+    ``runner``: optional graph runner owning every verify round. ``runner.load(st, rows)`` returns the state to
+    decode in (its fixed buffers holding ``st``'s committed state, room for ``rows`` positions; commits update them
+    in place, so graphs keep their addresses);
+    ``runner.verify(tokens, parents, capture_taps=...)`` returns ``tree_forward``'s (logits, record[, taps]) for the
+    round on that state, replaying a graph where it has one and running eagerly otherwise.
+    """
 
     if count < 1 or not 1 <= max_rows <= 128:
         raise ValueError("count >= 1 and 1 <= max_rows <= 128 required")
@@ -258,6 +266,8 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
     if not 1 <= tree_rows <= max_rows:
         raise ValueError("tree_rows must be between 1 and max_rows")
     st = st if inplace else clone_state(st)
+    if runner is not None:
+        st = runner.load(st, st.pos + count + max_rows)
     out = [pending]
     context = list(prompt) + out
     copies = CopyIndex() if allow_copy else None
@@ -288,8 +298,11 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
         spent = {"draft": time.perf_counter() - stage}
         stages["draft"] += spent["draft"]
         stage = time.perf_counter()
-        logits, record, *tapped = tree_forward(
-            w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None)
+        if runner is not None:
+            logits, record, *tapped = runner.verify(tokens, tree_parents, capture_taps=draft is not None)
+        else:
+            logits, record, *tapped = tree_forward(
+                w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None)
         torch.cuda.synchronize()
         spent["verify"] = time.perf_counter() - stage
         stages["verify"] += spent["verify"]
@@ -326,7 +339,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             trace.append(_round_record(tokens, tree_parents, depths, path, terminal, stop,
                                        "copy" if copied else "tree", draft, spent))
         stage = time.perf_counter()
-        commit(st, record, path)
+        commit(st, record, path, in_place=runner is not None)       # a runner's fixed buffers
         if draft is not None:
             draft.add_taps(tapped[0][path])
         out.extend(tokens[row] for row in path[1:])

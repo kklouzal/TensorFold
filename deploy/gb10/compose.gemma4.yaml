@@ -34,6 +34,10 @@ services:
       - --no-thinking
       - --thinking-budget
       - '0'
+      # Google's current Gemma 4 template (google/gemma-4-26B-A4B-it@4d7ae498, sha256 ae53464b...), not the
+      # checkpoint's launch-era copy; provenance in docs/gemma4-cuda-validation.md.
+      - --chat-template
+      - /templates/gemma4-chat-template-google-4d7ae498.jinja
     environment:
       HF_HUB_OFFLINE: '1'
       TENSORFOLD_NO_UPDATE_CHECK: '1'
@@ -54,6 +58,10 @@ services:
       - type: bind
         source: ${TENSORFOLD_CACHE:?Set the writable kernel cache directory}
         target: /cache
+      - type: bind
+        source: ./gemma4-chat-template-google-4d7ae498.jinja
+        target: /templates/gemma4-chat-template-google-4d7ae498.jinja
+        read_only: true
     devices:
       - nvidia.com/gpu=${TENSORFOLD_GPU_UUID:?Set the GB10 GPU UUID}
     cpuset: ${TENSORFOLD_CPUSET:-0-19}
