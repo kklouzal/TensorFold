@@ -6,7 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..qwen3_5.config_metadata import check_metadata as _dense_metadata
+from ..qwen3_5 import rope_parameters as rope_parameters  # the dense family's text RoPE policy, as CUDA reads it
+from ..qwen3_5.config_metadata import check_metadata as check_metadata
 
 MODEL_TYPES = ("qwen3_5_moe",)
 TITLE = "Qwen3.6 MoE"
@@ -27,22 +28,8 @@ CUDA_QUANTIZATION = (4, 64)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet projections' FP8 prompt kernel
 
 
-def check_metadata(raw: dict[str, Any], backend: str) -> None:
-    """The dense family's preflight (CUDA reads default text RoPE or static YaRN, as the dense family does)."""
-
-    _dense_metadata(raw, backend)
-
-
-ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
-
-
-def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
-    """The text RoPE policy, as the dense family resolves it: the checkpoint's default one, or static YaRN (declared,
-    or ``yarn_factor`` over the native positions: the card's 1,010,000-token reach is ``--yarn-factor 4``)."""
-
-    from ..qwen3_5 import rope_parameters as dense
-
-    return dense(model_dir, yarn_factor)
+# CUDA reads static YaRN like the dense family: the card's 1,010,000-token reach is --yarn-factor 4 (1,048,576)
+ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: Mac decoders read RoPE themselves
 
 
 def check(model_dir: str | Path) -> None:
@@ -182,9 +169,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
     if int(tp) != 1:
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
-    from tensorfold.families import read_config
-
-    check_metadata(read_config(Path(model_dir)), "cuda")
     from tensorfold.cuda.nvfp4.format import is_quantized
 
     if is_quantized(Path(model_dir)):

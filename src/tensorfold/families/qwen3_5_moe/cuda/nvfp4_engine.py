@@ -70,8 +70,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         if type(streams) is not int or streams < 1:
             raise ValueError("parallel streams must be a positive integer")
         text = config(model_dir)
-        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
-        yarn = self.rope if self.rope.rope_type == "yarn" else None
+        rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = rope if rope.rope_type == "yarn" else None
         draft_config = DraftConfig.read(draft_dir) if draft_dir is not None else None
         rows = (draft_config.block if draft_config is not None else 16) if max_rows is None else max_rows
         minimum_rows = 2 if draft_config is not None else 1
@@ -149,14 +149,13 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
             raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context "
-                             f"({draft_config.rope.context_limit}): lower --context, or serve without the drafter")
+                             f"({draft_config.rope.context_limit}): lower --context, or serve without the drafter "
+                             "(--drafter none)")
         # Resident banks carry a routed-form A4 shared expert as their last cell (one device plan per layer);
         # any other shared expert loads as separate projections.
         factory = partial(load_host_experts_a4, cache=self.expert_cache, device="cuda", swiglu=moe.swiglu_bf16,
                           shared=self.expert_cache is None)
-        self.w = load(model_dir, expert_factory=factory,
-                      **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
-                         if value is not None})
+        self.w = load(model_dir, expert_factory=factory, eos_token_ids=eos_token_ids, rope=yarn)
         if yarn is not None:
             print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
                   f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)

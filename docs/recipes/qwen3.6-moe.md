@@ -243,13 +243,16 @@ The checkpoints declare 262,144 positions of default RoPE, and `tensorfold serve
 `--yarn-factor F` extends the text RoPE with the same static YaRN policy as Qwen3.8 dense (see the
 [27B recipe](qwen3.8-27b.md#context-and-yarn)): the card's 1,010,000-token reach is `--yarn-factor 4` (1,048,576
 positions), for the CT NVFP4 and MLX checkpoints alike, and a checkpoint that declares YaRN brings its own factor.
-Every target prompt, decode and verify forward and the affine path's MTP layer rotate with YaRN's amplitude
-(1.1386 at F = 4); the startup log prints the factor, amplitude, original context and position limit. Only the ten
-full-attention layers hold KV (20 KiB a token in bf16: 20 GiB for one stream at 1,048,576 tokens). The DFlash v1
-drafter `42d3b34` declares a 262,144-position RoPE limit, so a larger admitted window is refused with it: serve
-past 262,144 without `--drafter` (or with `--context 262144`). The card notes that static YaRN applies at every
-length and can hurt short texts. Checked so far: the shared policy and rotation tests, and the Qwen3.6 wiring
-(admission window, loaders, MTP amplitude); a full-model run at the extended window is pending.
+Every target prompt, decode and verify forward and the affine path's MTP layer rotate with YaRN's frequencies and
+amplitude (1.1386 at F = 4); the startup log prints the factor, amplitude, original context and position limit.
+The ten full-attention layers hold the KV (20 KiB a token in bf16: 20 GiB for one stream at 1,048,576 tokens; the
+affine path's MTP layer adds 2 KiB a token). The DFlash v1 drafter `42d3b34` declares a 262,144-position RoPE limit,
+so a larger admitted window is refused with it: serve past 262,144 with `--drafter none` (an omitted `--drafter`
+uses the DFlash checkpoint when it has been pulled), or keep it with `--context 262144`. The card notes that static
+YaRN applies at every length and can hurt short texts. Checked so far: the shared policy and rotation tests, this
+checkpoint's YaRN frequencies and amplitude against Transformers', the Qwen3.6 wiring (admission window, loaders,
+MTP amplitude), and a small synthetic affine model on which every rotary site takes the amplitude and MTP drafting
+keeps the serial tokens; a full-model run at the extended window is pending.
 
 ### Concurrent requests
 

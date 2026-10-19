@@ -52,6 +52,8 @@ class Qwen36Engine:
 
         from .. import rope_parameters
 
+        rope = rope_parameters(model_dir, yarn_factor)       # validate the requested policy before CUDA preparation
+        yarn = rope if rope.rope_type == "yarn" else None
         self.depth, self.confidence = int(depth), float(confidence)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
@@ -70,8 +72,6 @@ class Qwen36Engine:
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
             torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         extra = (Path(model_dir) / MTP_FILE,) if self.depth and (Path(model_dir) / MTP_FILE).is_file() else ()
-        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
-        yarn = self.rope if self.rope.rope_type == "yarn" else None
         # one admission for one stream or many (every stream's states and caches, kept prompt ends), before any load
         geometry = ((lambda text: stream_geometry(text, streams, KEEP_MANY, self.depth)) if many else
                     (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0)))
@@ -82,8 +82,7 @@ class Qwen36Engine:
                                    **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
                                       if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
-        self.w = load(model_dir, **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
-                                    if value is not None})
+        self.w = load(model_dir, eos_token_ids=eos_token_ids, rope=yarn)
         if yarn is not None:
             print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
                   f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)

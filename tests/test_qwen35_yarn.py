@@ -77,7 +77,7 @@ def test_both_rope_fields_must_declare_the_same_yarn(tmp_path):
         qwen3_5.rope_parameters(_model(tmp_path, text))
 
 
-def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_the_dense_family(tmp_path):
+def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_the_dense_family():
     from tensorfold.families import qwen3_5_moe
 
     assert qwen3_5.ROPE_BACKENDS == qwen3_5_moe.ROPE_BACKENDS == ("cuda",)
@@ -85,12 +85,7 @@ def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_t
     raw = {"model_type": "qwen3_5_moe", "text_config": dict(TEXT, rope_parameters=yarn)}
     qwen3_5_moe.check_metadata(raw, "mlx")
     qwen3_5_moe.check_metadata(raw, "cuda")                      # declared YaRN is read, not refused
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": TEXT}))
-    for factor in (None, 4.0):
-        mine, dense = qwen3_5_moe.rope_parameters(tmp_path, factor), qwen3_5.rope_parameters(tmp_path, factor)
-        assert (mine.rope_type, mine.context_limit, mine.attention_factor) == \
-            (dense.rope_type, dense.context_limit, dense.attention_factor)
-    assert qwen3_5_moe.rope_parameters(tmp_path, 4.0).context_limit == 1048576
+    assert qwen3_5_moe.rope_parameters is qwen3_5.rope_parameters  # one policy: the dense family's tests cover it
 
 
 @pytest.mark.parametrize("quantized", [True, False])
@@ -99,7 +94,6 @@ def test_qwen36_cuda_engines_receive_the_yarn_factor(tmp_path, monkeypatch, quan
     from tensorfold.families import qwen3_5_moe
     from tensorfold.families.qwen3_5_moe.cuda import engine, nvfp4_engine
 
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": TEXT}))
     got = []
     monkeypatch.setattr(fmt, "is_quantized", lambda path: quantized)
     monkeypatch.setattr(qwen3_5_moe, "check_vram_experts", lambda *a, **k: None)
@@ -131,13 +125,16 @@ def test_yarn_keeps_a_legacy_text_level_theta(tmp_path, layout):
     assert declared.rope_type == "yarn" and declared.theta == 5e6
 
 
-def _serve(tmp_path, monkeypatch, text, *tail, resolve=None):
+def _serve(tmp_path, monkeypatch, text, *tail, resolve=None, package=qwen3_5):
     from types import SimpleNamespace
 
     from tensorfold import cli, families, hub
 
     model = _model(tmp_path, text)
-    family = SimpleNamespace(package=qwen3_5, title=qwen3_5.TITLE, model_type="qwen3_5")
+    # The Qwen3.6 family also checks its adopted checkpoint format before serving.
+    (model / "config.json").write_text(json.dumps({"model_type": package.MODEL_TYPES[0], "text_config": text,
+                                                  "quantization": {"bits": 4, "group_size": 64}}))
+    family = SimpleNamespace(package=package, title=package.TITLE, model_type=package.MODEL_TYPES[0])
     monkeypatch.setattr(families, "detect", lambda *a: family)
     monkeypatch.setattr(families, "require_readable", lambda *a: None)
     monkeypatch.setattr(cli, "_note_untested", lambda *a: None)
@@ -150,10 +147,29 @@ def _serve(tmp_path, monkeypatch, text, *tail, resolve=None):
 
 
 @pytest.mark.parametrize("tail,window", [((), 262144), (("--yarn-factor", "4"), 1048576)])
-def test_cuda_serve_admits_the_yarn_window_and_no_more(tmp_path, monkeypatch, tail, window):
-    assert _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail) == (0, ["resolve", window])
+@pytest.mark.parametrize("moe", [False, True])
+def test_cuda_serve_admits_the_yarn_window_and_no_more(tmp_path, monkeypatch, tail, window, moe):
+    from tensorfold.families import qwen3_5_moe
+
+    package = qwen3_5_moe if moe else qwen3_5
+    assert _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail, package=package) == (0, ["resolve", window])
     with pytest.raises(ValueError, match=f"exceeds this model's {window}-token window"):
-        _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail, "--context", str(window + 1))
+        _serve(tmp_path, monkeypatch, TEXT, "--backend", "cuda", *tail, "--context", str(window + 1), package=package)
+
+
+def test_qwen36_cuda_serve_reads_declared_yarn_and_refuses_an_override_below_the_declared_limit(tmp_path, monkeypatch):
+    from tensorfold.families import qwen3_5_moe
+
+    text = dict(TEXT, max_position_embeddings=1048576, rope_parameters=dict(
+        TEXT["rope_parameters"], rope_type="yarn", factor=4.0, original_max_position_embeddings=262144))
+    assert _serve(tmp_path, monkeypatch, text, "--backend", "cuda", package=qwen3_5_moe) == (0, ["resolve", 1048576])
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("weights resolved before the invalid rotary policy was refused")
+
+    with pytest.raises(ValueError, match="max_position_embeddings 1048576 exceeds YaRN's 524288-token limit"):
+        _serve(tmp_path, monkeypatch, text, "--backend", "cuda", "--yarn-factor", "2",
+               package=qwen3_5_moe, resolve=unexpected)
 
 
 def test_mac_serve_does_not_consult_the_cuda_rope_policy(tmp_path, monkeypatch):
