@@ -76,4 +76,3 @@ def test_ct_router_root_then_learned_scale_and_fp32_full_softmax():
     for row in range(9):
         alone = model._route_ct(h[row:row+1],layer)
         assert torch.equal(alone[0],picks[row:row+1]) and torch.equal(alone[1],weights[row:row+1])
-    del held

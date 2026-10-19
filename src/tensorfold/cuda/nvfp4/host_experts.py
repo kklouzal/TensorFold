@@ -156,8 +156,11 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     """Load CT routed native-A4 experts in owned local order.
 
     ``shared`` (resident banks only) appends the layer's ``shared_expert`` as the
-    last cell, so its ID ``len(ids)`` runs in the same grouped device plan; it
-    must have the routed geometry. Without it no shared field is read.
+    last cell, so its ID ``len(ids)`` runs in the same grouped device plan, when
+    its three projections store the routed geometry's native A4 fields with
+    declared four-bit activations (headers only); any other shared expert stays
+    out of the bank (``count == len(ids)``) and its owner loads it separately.
+    Without a shared cell no shared field is read.
 
     Header/declaration validation precedes authority allocation; each projection
     reads its two scalar calibrations before code/scale payload. Packing one
@@ -184,21 +187,28 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
         raise ValueError("a shared-expert cell requires a resident native A4 bank")
     ids = _ids(full.experts, owned_ids)
     width, dims = full.moe_width, full.hidden
+    projections = (("gate_proj", width, dims), ("up_proj", width, dims), ("down_proj", dims, width))
+
+    def mismatch(base, n, k):
+        """Why one projection's headers/declaration differ from the routed native-A4 form, else None."""
+        parts = {suffix: ctx.info.get(f"{base}.{suffix}") for suffix in
+                 ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale")}
+        if parts != {"weight_packed": ("U8", [n, k // 2]), "weight_scale": ("F8_E4M3", [n, k // 16]),
+                     "weight_global_scale": ("F32", [1]), "input_global_scale": ("F32", [1])}:
+            return "incompatible native A4 routed projection storage"
+        if ctx.metadata.validate(base, parts, checkpoint=True) != ("nvfp4", 4):
+            return "native A4 routed experts require declared four-bit activations"
+        return None
+
+    # A shared expert of another width or representation keeps its separate projections (the owner's path).
+    shared = shared and not any(mismatch(f"{name}.shared_expert.{projection}", n, k)
+                                for projection, n, k in projections)
     owners = [f"{name}.experts.{expert}" for expert in ids] + ([f"{name}.shared_expert"] if shared else [])
     geometry = authority_fields_a4(len(owners), width, dims)
-    projections = (("gate_proj", width, dims), ("up_proj", width, dims), ("down_proj", dims, width))
-    for owner in owners:
+    for owner in owners[:len(ids)]:          # an admitted shared cell matched above
         for projection, n, k in projections:
-            base = f"{owner}.{projection}"
-            parts = {suffix: ctx.info.get(f"{base}.{suffix}") for suffix in
-                     ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale")}
-            expected = {"weight_packed": ("U8", [n, k // 2]), "weight_scale": ("F8_E4M3", [n, k // 16]),
-                        "weight_global_scale": ("F32", [1]), "input_global_scale": ("F32", [1])}
-            if parts != expected:
-                raise ValueError(f"{base}: incompatible native A4 routed projection storage")
-            kind, activation = ctx.metadata.validate(base, parts, checkpoint=True)
-            if (kind, activation) != ("nvfp4", 4):
-                raise ValueError(f"{base}: native A4 routed experts require declared four-bit activations")
+            if error := mismatch(f"{owner}.{projection}", n, k):
+                raise ValueError(f"{owner}.{projection}: {error}")
 
     if cache is None:
         fields = tuple(torch.empty(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)

@@ -189,6 +189,22 @@ def test_shared_expert_cell_matches_the_separate_shared_projections(prefill, row
     assert torch.equal(outputs[0][:, top_k], shared)
 
 
+def test_shared_expert_of_another_width_stays_out_of_the_bank():
+    # Qwen MoE configs declare shared_expert_intermediate_size separately: a shared expert that is not in the routed
+    # A4 form keeps its separate projections (load_nvfp4 loads it when the bank has no extra cell) and is not read.
+    from types import SimpleNamespace
+
+    count, width, dims = 4, 64, 128
+    ctx = Context(count=count + 1, width=width, dims=dims).alias_shared_expert(count)
+    for name, (dtype, shape) in list(ctx.info.items()):
+        if ".shared_expert." in name and len(shape) == 2:
+            ctx.info[name] = (dtype, [2 * shape[0], shape[1]] if "down_proj" not in name else [shape[0], 2 * shape[1]])
+    full = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=2)
+    bank = load_host_experts_a4(ctx, PREFIX, full, "cuda:0", swiglu=swiglu, shared=True)
+    assert bank.count == count and bank.capturable
+    assert not any(".shared_expert." in name for name in ctx.reads)
+
+
 def _route(buf, rows, tile):
     from tensorfold.cuda import pdl
     from tensorfold.cuda.experts import _ext as plan_ext

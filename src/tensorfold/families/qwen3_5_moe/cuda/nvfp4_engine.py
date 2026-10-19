@@ -129,7 +129,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         self.context_window = self.capacity_plan["context_window"]
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
             raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context")
-        # Resident banks carry the shared expert as their last cell (one device plan per layer).
+        # Resident banks carry a routed-form A4 shared expert as their last cell (one device plan per layer);
+        # any other shared expert loads as separate projections.
         factory = partial(load_host_experts_a4, cache=self.expert_cache, device="cuda", swiglu=moe.swiglu_bf16,
                           shared=self.expert_cache is None)
         self.w = load(model_dir, expert_factory=factory,

@@ -10,7 +10,7 @@ import torch
 if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12:
     pytest.skip("native activation FP4 requires SM12", allow_module_level=True)
 
-from nvfp4_a4_inputs import PREFIX, Context, swiglu  # noqa: E402
+from nvfp4_a4_inputs import PREFIX, Context, linears, swiglu  # noqa: E402
 from test_qwen36_moe import WIDTH, D, E, _model  # noqa: E402
 from test_qwen_moe_prefill_batch import make_draft  # noqa: E402
 
@@ -19,7 +19,7 @@ from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4  # noqa: E40
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen3_5.cuda import decode  # noqa: E402
 from tensorfold.families.qwen3_5_moe.cuda.chain_graphs import ChainGraphs  # noqa: E402
-from tensorfold.families.qwen3_5_moe.cuda.nvfp4_load import NativeMoE  # noqa: E402
+from tensorfold.families.qwen3_5_moe.cuda.nvfp4_load import NativeMoE, SharedExpert  # noqa: E402
 
 
 def _context():
@@ -27,8 +27,8 @@ def _context():
     return Context(count=E + 1, width=WIDTH, dims=D).alias_shared_expert(E)
 
 
-@pytest.fixture(scope="module")
-def model():
+def _native_model(shared_cell):
+    """The tiny model on resident native A4 banks; the shared expert is the bank's last cell or separate projections."""
     from types import SimpleNamespace
 
     w, _ = _model()
@@ -37,13 +37,24 @@ def model():
     w.__dict__.pop("fast_prefill", None)
     full = SimpleNamespace(experts=E, moe_width=WIDTH, hidden=D, top_k=w.layers[0].moe.top_k)
     for layer in w.layers:
-        bank = load_host_experts_a4(_context(), PREFIX, full, "cuda", swiglu=swiglu, shared=True)
-        assert bank.capturable and bank.count == E + 1
+        bank = load_host_experts_a4(_context(), PREFIX, full, "cuda", swiglu=swiglu, shared=shared_cell)
+        assert bank.capturable and bank.count == (E + 1 if shared_cell else E)
         # Exact power-of-two weight globals keep the random two-layer model's residual stream finite.
         for field in bank.fields[2:4]:
             field.mul_(1 / 64)
-        layer.moe = moe.Routed(layer.moe.router, bank, layer.moe.top_k, run=NativeMoE(bank, None))
+        shared = None
+        if not shared_cell:
+            source = _context()
+            for projection in ("gate_proj", "up_proj", "down_proj"):           # the same 1/64 weight scale
+                source.payload[f"{PREFIX}.experts.{E}.{projection}.weight_global_scale"].mul_(64)
+            shared = SharedExpert(*linears(source, E))
+        layer.moe = moe.Routed(layer.moe.router, bank, layer.moe.top_k, run=NativeMoE(bank, shared))
     return w
+
+
+@pytest.fixture(scope="module")
+def model():
+    return _native_model(True)
 
 
 LONG = [3 + (i * 7) % 50 for i in range(180)]           # repeats itself: copy proposals of several widths
@@ -108,3 +119,15 @@ def test_prepare_captures_every_width_and_later_rounds_replay_them(model, tmp_pa
     replayed, _ = _decode(w, draft, PROMPTS[0], None, 24, runner, 4)
     assert replayed == eager
     assert all(runner.graphs[key] is entry for key, entry in held.items())      # no recapture of prepared keys
+
+
+def test_separate_shared_projections_replay_like_eager(tmp_path):
+    # A shared expert outside the routed A4 form (another width or representation) keeps its own projections beside
+    # the resident bank; chain rounds over that operator replay exactly as eager rounds.
+    w = _native_model(False)
+    draft = make_draft(tmp_path, w)
+    runner = ChainGraphs(w, 512, bucket=64)
+    eager, eager_widths = _decode(w, draft, LONG, SAMPLINGS[1], 24, None, 3)
+    replayed, widths = _decode(w, draft, LONG, SAMPLINGS[1], 24, runner, 3)
+    assert replayed == eager and widths == eager_widths
+    assert runner.graphs and max(eager_widths) > 1                  # drafted chains wider than one row
