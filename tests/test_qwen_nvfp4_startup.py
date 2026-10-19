@@ -312,14 +312,20 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
 
 
 @pytest.mark.parametrize("allow_copy", [False, True])
-def test_no_companion_charges_only_reachable_probability_workspace(startup, allow_copy):
-    engine = QwenNvfp4MoeEngine(startup.target, None, context=64, context_explicit=True, max_rows=8,
-                               allow_copy=allow_copy, eos_token_ids=())
+@pytest.mark.parametrize("rows", [1, 8, 9])
+@pytest.mark.parametrize("streams", [1, 3])
+def test_no_companion_charges_only_reachable_probability_workspace(startup, allow_copy, rows, streams):
+    engine = QwenNvfp4MoeEngine(startup.target, None, context=64, context_explicit=True, max_rows=rows,
+                               allow_copy=allow_copy, eos_token_ids=(), streams=streams)
     try:
         options = startup.admissions[0][-1]
-        assert (options["device_workspace_bytes"] > 0) == allow_copy
-        assert (options["host_workspace_bytes"] > 0) == allow_copy
+        reachable = allow_copy and rows >= 9  # independently proved8-token minimum continuation, plus its anchor
+        assert (options["device_workspace_bytes"] > 0) == reachable
+        assert (options["host_workspace_bytes"] > 0) == reachable
         assert engine.draft is None and engine.allow_copy == allow_copy
+        assert engine.max_rows == engine.tree_rows == rows
+        if streams > 1:
+            assert engine.multi.max_rows == rows
     finally:
         engine.close()
     assert engine._closed

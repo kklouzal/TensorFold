@@ -72,6 +72,26 @@ def test_target_only_context_does_not_borrow_a_companion_bound(startup):
         made.close()
 
 
+@pytest.mark.parametrize("tp,tree_rows,expected_rows", [(1, None, 1), (2, 1, 8)])
+def test_companion_empty_chain_and_tp_width_keep_the_actual_target_workspace(startup, monkeypatch, tp, tree_rows, expected_rows):
+    from tensorfold.cuda import sampling
+    from tensorfold.families.qwen3_5.cuda import dflash2
+
+    directory, _, _, _, _ = startup
+    draft = companion(directory, 32)
+    monkeypatch.setattr(dflash2, "DFlash2", lambda *a, **kw: object())
+    monkeypatch.setattr(Qwen27Engine, "_prepare_serving", lambda self, directory, **kw: setattr(self, "scheduler", None))
+    calls, original = [], sampling.effective_workspace
+    monkeypatch.setattr(sampling, "effective_workspace",
+                        lambda rows, width, **kw: calls.append(rows) or original(rows, width, **kw))
+    made = Qwen27Engine(directory, draft, max_rows=1 if tp == 1 else 12, tree_rows=tree_rows,
+                       tp=tp, master="host", context=32, allow_copy=False)
+    try:
+        assert calls == [expected_rows]  # TP2 ignores the single-GPU tree_rows cap; block8 is still forwarded
+    finally:
+        made.close()
+
+
 @pytest.mark.parametrize("value", [None, True, False, 0, -1, 1.5, "8"])
 def test_invalid_declared_training_block_refuses_before_device_or_weights(startup, value):
     directory, _, events, options, _ = startup

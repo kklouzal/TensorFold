@@ -60,7 +60,7 @@ class Qwen27Engine:
         yarn = rope if rope.rope_type == "yarn" else None
         from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
-        from .draft_tree import draft_block, draft_limit, draft_spans
+        from .draft_tree import COPY_MIN_MATCH, draft_block, draft_limit, draft_spans
 
         draft_metadata = read_metadata_json(checkpoint_path(draft_dir, "config.json")) if draft_dir is not None else None
         companion_limit = draft_limit(draft_metadata) if draft_metadata is not None else None
@@ -76,13 +76,15 @@ class Qwen27Engine:
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
 
         rejection_device = rejection_host = rejection_resident_host = 0
-        if draft_dir is not None or allow_copy:
+        each = max_rows if streams == 1 else 16
+        configured = min(each, self.tree_rows) if streams == 1 and tp == 1 and self.tree_rows is not None else each
+        # Single TP2 only proposes copies when a companion exists; Multi has its own16-row copy route.
+        copies_possible = allow_copy and (tp == 1 or streams > 1) and configured > COPY_MIN_MATCH
+        if draft_dir is not None or copies_possible:
             from tensorfold.cuda.sampling import effective_workspace
             from tensorfold.cuda.speculative import chain_workspace
 
             text = config(model_dir)
-            each = max_rows if streams == 1 else 16
-            configured = min(each, self.tree_rows) if streams == 1 and self.tree_rows is not None else each
             sampled_each = max(1, min(configured, trained if trained is not None else each))
             rows = sampled_each * streams
             sharded = tp if split_head else 1
