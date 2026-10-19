@@ -831,8 +831,15 @@ def main() -> int:
                     result = {"status": "error", "error": f"{type(error).__name__}: {error}", "golden": args.golden,
                               "old": args.old, "new": args.new, "calibration": args.calibration}
         text = json.dumps(result, indent=1)
-        if args.out:
-            Path(args.out).write_text(text + "\n")
+        try:
+            if args.out:
+                Path(args.out).write_text(text + "\n")
+        except OSError as error:
+            if args.command != "gate":
+                raise
+            traceback.print_exc()                    # a verdict that cannot be recorded is an error, not a fail
+            print(json.dumps({"status": "error", "error": f"{type(error).__name__}: {error}"}))
+            return 4
         print(text)
         if args.command == "gate":
             # no verdict (incomplete, uncalibrated) is never a pass; an error (exit 4) is neither pass nor fail (C8)

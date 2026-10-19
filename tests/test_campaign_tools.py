@@ -330,6 +330,13 @@ def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):
                                       "--prompts", str(tmp_path / "prompts.json"), "--gate-prompts", "x"])
     assert gates.main() == 4                           # no server: an error, not a verdict
     assert json.loads((tmp_path / "down").read_text())["status"] == "error"
+    for profile in (tmp_path / "missing.json", tmp_path / "empty.json"):     # an unreadable or empty profile too
+        (tmp_path / "empty.json").write_text("{}")
+        monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "identity", "--url", "http://127.0.0.1:9", "--out",
+                                          str(tmp_path / "bad"), "--profile", str(profile),
+                                          "--prompts", str(tmp_path / "prompts.json"), "--gate-prompts", "x"])
+        assert gates.main() == 4
+        assert json.loads((tmp_path / "bad").read_text())["status"] == "error"
 
 
 def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
@@ -936,6 +943,11 @@ def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
                                       str(tmp_path / "missing.json"), "--out", str(out)])
     assert kl.main() == 4 and "FileNotFoundError" in json.loads(out.read_text())["error"]
+    monkeypatch.setattr(kl, "paired", paired_with((-0.4, 0.5), (-0.01, 0.01)))      # a pass that cannot be recorded
+    (tmp_path / "calibration.json").write_text(json.dumps(record))
+    monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
+                                      str(tmp_path / "calibration.json"), "--out", str(tmp_path / "no-dir" / "g.json")])
+    assert kl.main() == 4
     for bad in (["r0"], ["=x.npz"], ["r0=a.npz", "r0=b.npz"]):            # NAME=DUMP, distinct names
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "calibrate", "g", "b", *bad])
         with pytest.raises(SystemExit) as stop:

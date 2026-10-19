@@ -40,8 +40,9 @@ import urllib.error
 import urllib.request
 
 if sys.version_info < (3, 11):
-    sys.exit(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
-             "TensorFold's tools use PEP 604 unions. Try: python3.12 tools/campaign_bench.py ...")
+    print(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
+          "TensorFold's tools use PEP 604 unions. Try: python3.12 tools/campaign_bench.py ...", file=sys.stderr)
+    sys.exit(4)                     # an error, never a verdict (campaign_gates and campaign_kl import this)
 
 if __package__:
     from . import openai_protocol as protocol
