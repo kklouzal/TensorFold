@@ -11,12 +11,30 @@ from typing import Any
 import torch
 
 from tensorfold.checkpoint_metadata import read_config
-from tensorfold.cuda import prompt_precision
+from tensorfold.cuda import prompt_precision, requant
 
 from .weights import Plain
 
 SUFFIXES = ("weight", "weight_packed", "weight_scale", "weight_scale_2", "weight_global_scale", "input_scale",
             "input_global_scale")
+# BF16 projections a requantization group covers (``tensorfold.cuda.requant``, lossy, set by --head-bits/--gdn-bits):
+# the head and the Gated DeltaNet projections; the router gates and the GDN gates in_proj_a/b stay as stored.
+GDN_PROJECTIONS = ("linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.out_proj")
+
+
+def requant_group(stem: str) -> str | None:
+    """The requantization group of a projection (its tensor name without ``.weight``), or None."""
+
+    return "head" if stem == "lm_head" else "gdn" if stem.endswith(GDN_PROJECTIONS) else None
+
+
+def requant_staging(stem: str, info: dict) -> int | None:
+    """Load-time device bytes building a floating projection's requantized copy (``nvfp4_memory`` loading bounds),
+    or None when it loads as stored."""
+
+    group = requant_group(stem)
+    kind = requant.target_kind(group) if group is not None else None
+    return requant.staging_bytes(kind, *info["shape"]) if kind is not None else None
 
 
 def quantized(model_dir: Path) -> bool:
@@ -82,6 +100,10 @@ def weight_bytes(name: str, info: dict) -> tuple[int, int]:
         return -(-math.prod(shape) // 128) * 128 * 4, 0       # an output channel's scale each (``Fp8Linear.cols``)
     if len(shape) == 2 and dtype in ("U8", "F8_E4M3") and not name.endswith("_scale"):
         shape[0] = -(-shape[0] // 128) * 128
+    group = requant_group(name.removesuffix(".weight")) if dtype in ("BF16", "F16", "F32") and len(shape) == 2 else None
+    kind = requant.target_kind(group) if group is not None else None
+    if kind is not None:
+        return requant.resident_bytes(kind, *shape), 0
     amount = math.prod(shape) * SIZES[dtype]
     if name.endswith(("in_proj_a.weight", "in_proj_b.weight")) and len(shape) == 2 and prompt_precision.fp8():
         npad = -(-shape[0] // 128) * 128
@@ -217,6 +239,11 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 return Fp8Linear.from_checkpoint(weight, scale,
                                                  act=act_scale(name, got, "fp8", activation, scale)[0])
             w = weight.to(torch.bfloat16).contiguous()
+            group = requant_group(name)
+            if group is not None and requant.target_kind(group) is not None:
+                if prompt and prompt_precision.fp8():          # Fp8Linear.prefill8 reads per-tensor scales only
+                    raise ValueError(f"{name}: --{group}-bits 8 runs W8A16 prompts; drop --prefill-fp8")
+                return requant.target_copy(group, w)
             return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
 
         def get(name: str) -> torch.Tensor:

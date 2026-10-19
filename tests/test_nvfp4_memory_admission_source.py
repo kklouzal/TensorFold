@@ -101,6 +101,29 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             memory.scheduled_loading_bytes(layer, transform)
 
+    def test_requantized_projections_count_their_copy_while_the_input_lives(self):
+        copy = {"lm_head": 1000, "m.linear_attn.in_proj_qkv": 3000}
+        requantized = lambda stem, info: copy.get(stem)  # noqa: E731
+        head = {"lm_head.weight": tensor("BF16", 256, 64)}
+        self.assertEqual(memory.projection_loading_bytes(head)["lm_head"], 0)
+        self.assertEqual(memory.projection_loading_bytes(head, requantized)["lm_head"], 256 * 64 * 2 + 1000)
+        qkv = {"m.linear_attn.in_proj_qkv.weight": tensor("F32", 128, 64)}
+        self.assertEqual(memory.projection_loading_bytes(qkv, requantized)["m.linear_attn.in_proj_qkv"],
+                         128 * 64 * 4 + 128 * 64 * 2 + 3000)
+        other = {"m.linear_attn.in_proj_a.weight": tensor("BF16", 32, 64)}
+        self.assertEqual(memory.projection_loading_bytes(other, requantized), memory.projection_loading_bytes(other))
+        def transform(name, info):
+            count = 1
+            for n in info["shape"]:
+                count *= n
+            return count * {"BF16": 2, "F32": 4, "U8": 1, "F8_E4M3": 1}[info["dtype"]], 0
+        dense = {"model.embed_tokens.weight": tensor("BF16", 248320, 4096),
+                 "lm_head.weight": tensor("BF16", 248320, 4096),
+                 "model.norm.weight": tensor("BF16", 4096)}
+        layer = {"model.layers.0." + n: i for n, i in projection(4096, 12288).items()}
+        self.assertEqual(memory.scheduled_loading_bytes(layer | dense, transform, requantized),
+                         248320 * 4096 * 2 + 1000 + (4 << 20))   # the head converts last: nothing late is pending
+
     def test_refuses_unsupported_projection(self):
         for header in ({"m.weight": tensor("U8", 128, 32)},
                        {"m.weight": tensor("I32", 128, 8)}, projection(128, 66),
@@ -114,11 +137,11 @@ class Contracts(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Qwen27Engine')
         constructor = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
         branch = next(n for n in ast.walk(constructor) if isinstance(n, ast.If) and ast.unparse(n.test) == 'nvfp4')
-        transform, geometry = object(), object()
+        transform, geometry, requantized = object(), object(), object()
         ordinary = builtins.__import__
         def imports(name, *args, **kwargs):
             if name == 'nvfp4_load':
-                return NS(admission=lambda value: (value, transform))
+                return NS(admission=lambda value: (value, transform), requant_staging=requantized)
             if name == 'nvfp4_memory':
                 return memory
             return ordinary(name, *args, **kwargs)
@@ -134,6 +157,7 @@ class Contracts(unittest.TestCase):
                     if selected:
                         self.assertIs(scope['weight_estimator'].func, memory.weight_estimate)
                         self.assertIs(scope['weight_estimator'].keywords['transform'], transform)
+                        self.assertIs(scope['weight_estimator'].keywords['requantized'], requantized)
                     else:
                         self.assertIsNone(scope['weight_estimator'])
 

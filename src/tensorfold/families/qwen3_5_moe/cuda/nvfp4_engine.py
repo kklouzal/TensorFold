@@ -44,7 +44,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.cuda.geometry import prompt_row_bytes, prompt_rows
         from tensorfold.cuda.nvfp4.host_experts import load_host_experts_a4
-        from tensorfold.families.qwen3_5.cuda.nvfp4_load import weight_bytes
+        from tensorfold.families.qwen3_5.cuda.nvfp4_load import requant_staging, weight_bytes
         from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 
         from ..dflash_metadata import DraftConfig, draft_geometry, draft_weights
@@ -83,7 +83,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         draft_runtime = (draft_geometry(config(draft_dir), streams=streams,
                                         kept=KEEP + 1 if streams > 1 else KEEP_ONE,
                                         block=rows, prompt_rows=chunk) if draft_dir is not None else None)
-        resident, host_weight_staging = weight_estimate(model_dir, weight_bytes)
+        resident, host_weight_staging = weight_estimate(model_dir, weight_bytes, requant_staging)
         draft_held = draft_weights(draft_dir, bits=bits).resident if draft_dir is not None else 0
         minimum = runtime.geometry.needed(1) + (draft_runtime.needed(1) if draft_runtime is not None else 0)
         automatic_offload = vram_experts is None and resident.resident + draft_held + minimum > available_bytes(torch)
@@ -117,7 +117,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         # replacement; auto chooses its final size after fixed weights load.
         self.capacity_plan = admit(
             model_dir, context, context_explicit, torch, runtime.geometry, transform,
-            weight_estimator=partial(weight_estimate, transform=transform),
+            weight_estimator=partial(weight_estimate, transform=transform, requantized=requant_staging),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
             resident_extra=allocate(plan.gpu_bytes) if plan is not None and not plan.automatic else 0,
             draft_dir=draft_dir, draft_weights=partial(draft_weights, bits=bits), draft_geometry=draft_runtime)

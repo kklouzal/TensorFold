@@ -1,7 +1,8 @@
 """Qwen3.8-27B on an NVFP4 checkpoint: verify rows equal serial steps, prompts ignore chunking, drafted equals serial.
 
 The synthetic part runs anywhere CUDA is: a one-layer model with NVFP4 MLP and head, FP8 GDN projections and bf16
-gates, as a ModelOpt export stores them (per-tensor FP8 at full precision; per-channel FP8 with per-token rows and
+gates, as a ModelOpt export stores them (or, ``requant``, BF16 GDN projections and head as --gdn-bits/--head-bits 8
+load them) (per-tensor FP8 at full precision; per-channel FP8 with per-token rows and
 NVFP4 under their static input scales, the AEON MIXED export's checkpoint math, on SM 12.x). The checkpoint part
 needs ``TENSORFOLD_QWEN27_NVFP4=<dir>`` and ``TENSORFOLD_QWEN27_DRAFTER=<DFlash2 dir>``; skipped otherwise.
 """
@@ -20,6 +21,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear
+from tensorfold.cuda.requant import requantize
 from tensorfold.families.qwen3_5.cuda.dflash2 import _sub_parts
 from tensorfold.families.qwen3_5.cuda.forward import State, commit, tree_forward
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import Plain8
@@ -45,7 +47,7 @@ def _fp8(n: int, k: int, gen: torch.Generator, channel: bool = False) -> Fp8Line
     return Fp8Linear.from_checkpoint(w.cuda().view(torch.float8_e4m3fn), 0.004)
 
 
-MODELS = ["full", "per-token"]
+MODELS = ["full", "per-token", "requant"]
 
 
 def _model(kind: str = "full") -> Weights:
@@ -55,21 +57,27 @@ def _model(kind: str = "full") -> Weights:
     act = 2.0 if channel else None                          # NVFP4 rows under a static input scale
     gen = torch.Generator().manual_seed(9)
 
+    def fp8(n, k):                                          # requant: BF16 weights as --gdn-bits/--head-bits 8 load them
+        if kind != "requant":
+            return _fp8(n, k, gen, channel)
+        return requantize((torch.randn(n, k, generator=gen) * 0.05).to(torch.bfloat16).cuda(), "fp8")
+
     def gate(n, k):
         w = (torch.randn(n, k, generator=gen) * 0.05).to(torch.bfloat16).cuda()
         return Plain8(w, rows8=Fp8Linear.from_bf16(w))
 
     norm = torch.ones(128, device="cuda", dtype=torch.bfloat16)
     conv = (torch.randn(384, 4, generator=gen) * 0.1).to(torch.bfloat16).cuda()
-    gdn = GDN(_fp8(384, 128, gen, channel), _fp8(128, 128, gen, channel), gate(1, 128), gate(1, 128),
-              _fp8(128, 128, gen, channel), conv, torch.zeros(1, device="cuda"), torch.zeros(1, device="cuda"), norm)
+    gdn = GDN(fp8(384, 128), fp8(128, 128), gate(1, 128), gate(1, 128),
+              fp8(128, 128), conv, torch.zeros(1, device="cuda"), torch.zeros(1, device="cuda"), norm)
     layer = Layer(True, norm, norm, gdn, None, _fp4(128, 128, gen, act), _fp4(128, 128, gen, act),
                   _fp4(128, 128, gen, act))
     config = Config(hidden=128, intermediate=128, layers=1, heads=1, kv_heads=1, head_dim=128, vocab=256, k_heads=1,
                     v_heads=1, dk=128, dv=128, conv_kernel=4, interval=4, eps=1e-6, rope_dims=32,
                     rope_theta=10000000.0, eos=(0,))
     embed = Plain((torch.randn(256, 128, generator=gen) * 0.5).to(torch.bfloat16).cuda())
-    return Weights(config, embed, [layer], norm, _fp4(256, 128, gen), torch.ones(16, device="cuda"), quant="nvfp4")
+    head = fp8(256, 128) if kind == "requant" else _fp4(256, 128, gen)
+    return Weights(config, embed, [layer], norm, head, torch.ones(16, device="cuda"), quant="nvfp4")
 
 
 @pytest.mark.parametrize("kind", MODELS)

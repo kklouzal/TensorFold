@@ -106,13 +106,13 @@ class Qwen27Engine:
             if not vision and not unified(torch):
                 weight_estimator = partial(weight_estimate, with_drafter=draft_dir is not None)
         elif nvfp4:
-            from .nvfp4_load import admission as nvfp4_admission
+            from .nvfp4_load import admission as nvfp4_admission, requant_staging
 
             geometry, tensor_bytes = nvfp4_admission(geometry)
             if draft_dir is None and not prompt_precision.fp8() and not unified(torch):
                 from .nvfp4_memory import weight_estimate
 
-                weight_estimator = partial(weight_estimate, transform=tensor_bytes)
+                weight_estimator = partial(weight_estimate, transform=tensor_bytes, requantized=requant_staging)
         # one admission for one stream or many, on every rank, before any weight loads
         self.capacity_plan = admit(model_dir, context, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, offload=vision_offload),

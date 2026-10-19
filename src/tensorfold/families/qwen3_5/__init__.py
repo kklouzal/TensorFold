@@ -298,6 +298,7 @@ CUDA_AFFINE_GROUPS = (32, 64, 128)
 # --checkpoint-slots on CUDA: the prompt states the concurrent decoder keeps (--parallel 2 or more)
 CUDA_CHECKPOINT_SLOTS = True
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: MLX 4-bit g64 and NVFP4 checkpoints have FP8 prompt kernels
+CUDA_HEAD_BITS = CUDA_GDN_BITS = True   # NVFP4/FP8 checkpoints' BF16 head / GDN projections (lossy, gated)
 ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
 
 

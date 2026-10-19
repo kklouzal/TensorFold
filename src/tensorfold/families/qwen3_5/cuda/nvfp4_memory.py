@@ -15,13 +15,15 @@ _DIRECT_WEIGHT_SUFFIXES = (".norm", ".input_layernorm", ".post_attention_layerno
                            ".conv1d")
 
 
-def projection_loading_bytes(entries: dict) -> dict:
+def projection_loading_bytes(entries: dict, requantized=None) -> dict:
     """Transient GPU allocation bound above final weights, for validated headers.
 
     The caller must disable FP8 prompt copies. Metadata must come from the
     capacity header boundary. The 4096-column pack loop remains unmodified.
     Raw parts and final projection outputs are deliberately counted again so
     the estimate also covers expression and prior-iteration lifetimes.
+    ``requantized(stem, weight_info)``: a floating projection's load-time bytes
+    building its requantized copy, or None when it loads as stored.
     """
     from tensorfold.cuda.capacity import SIZES as sizes
 
@@ -81,6 +83,10 @@ def projection_loading_bytes(entries: dict) -> dict:
             # Raw e4m3, padded and indexed order; coordinate arrays expand as
             # views and their allocated sources are bounded by these planes.
             need = raw + 4 * npad * k + (4 << 20)
+        elif dtype in ("BF16", "F16", "F32") and requantized is not None \
+                and (copy := requantized(stem, weight)) is not None:
+            # The contiguous BF16 input stays live while its copy is built.
+            need = raw + (0 if dtype == "BF16" else 2 * math.prod(shape)) + copy
         elif dtype in ("BF16", "F16", "F32"):
             if dtype == "BF16" and stem.endswith(("lm_head", "embed_tokens")):
                 # SafeTensors returns contiguous BF16; .to(BF16) and Plain
@@ -101,7 +107,7 @@ def loading_bytes(entries: dict) -> int:
     return max(projection_loading_bytes(entries).values(), default=0)
 
 
-def scheduled_loading_bytes(entries: dict, transform) -> int:
+def scheduled_loading_bytes(entries: dict, transform, requantized=None) -> int:
     """Extra above final resident using the loader's exact acquisition order.
 
     All layer projections complete before constructing Weights. That expression
@@ -116,7 +122,7 @@ def scheduled_loading_bytes(entries: dict, transform) -> int:
     for name, info in entries.items():
         stem = name.rsplit(".", 1)[0]
         resident[stem] += transform(name, info)[0]
-    needs = projection_loading_bytes(entries)
+    needs = projection_loading_bytes(entries, requantized)
     embeds = [n for n in needs if n.endswith(".embed_tokens")]
     embed = embeds[0] if len(embeds) == 1 else None
     head = "lm_head" if "lm_head" in needs else None
@@ -132,13 +138,14 @@ def scheduled_loading_bytes(entries: dict, transform) -> int:
     return peak + (4 << 20)
 
 
-def weight_estimate(model_dir, transform):
-    """Return the capacity Weights and separate conservative host read budget."""
+def weight_estimate(model_dir, transform, requantized=None):
+    """Return the capacity Weights and separate conservative host read budget (``requantized``: as
+    ``projection_loading_bytes``; ``transform`` gives requantized projections' resident bytes)."""
     from tensorfold.cuda.capacity import Weights, _estimate_weights_from_headers, headers, itemsize
 
     entries = headers(model_dir)
     existing = _estimate_weights_from_headers(entries, transform)
-    staging = scheduled_loading_bytes(entries, transform)
+    staging = scheduled_loading_bytes(entries, transform, requantized)
     # weight_bytes pads packed weight rows, but stored block scales still have
     # their original row count. Full math retains a separately padded bs plane;
     # checkpoint's 64-row padding is covered by this 128-row bound as well.

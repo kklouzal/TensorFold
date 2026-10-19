@@ -49,3 +49,60 @@ def test_accounting_matches_the_copy_and_refuses_unknown_kinds():
     for call in (resident_bytes, staging_bytes):
         with pytest.raises(ValueError):
             call("int4", 10, 64)
+
+
+def test_the_target_policy_is_set_once_and_records_what_it_changed():
+    """The CLI's set-once policy: unnamed groups load as stored; the first read fixes it (a different policy then
+    raises, the same one is accepted); ``unapplied`` names requested groups no load requantized; ``using`` restores
+    the previous state."""
+
+    from tensorfold.cuda import requant
+
+    with requant.using():
+        assert requant.target_kind("head") is None and requant.unapplied() == []
+        requant.set_targets()                                   # the same (empty) policy after a read: accepted
+        with pytest.raises(RuntimeError, match="fixed"):
+            requant.set_targets(head="fp8")
+    with requant.using(head="fp8"):
+        requant.set_targets(gdn="fp8")                          # unread: still open
+        requant.set_targets(head="fp8")
+        assert requant.unapplied() == ["head"]
+        assert requant.target_kind("gdn") is None and requant.target_kind("head") == "fp8"
+        with pytest.raises(RuntimeError, match="fixed"):
+            requant.set_targets(head="fp8", gdn="fp8")
+        with requant.using(gdn="fp8"):                          # nested override, then the outer state again
+            assert requant.target_kind("head") is None
+        assert requant.target_kind("head") == "fp8" and requant.unapplied() == ["head"]
+    with pytest.raises(ValueError, match="groups"):
+        requant.set_targets(embed="fp8")
+    with pytest.raises(ValueError, match="kind"):
+        requant.set_targets(head="int8")
+    with pytest.raises(ValueError, match="groups"):
+        requant.target_kind("embed")
+
+
+def test_qwen_loaders_requantize_only_the_head_and_the_gdn_projections_the_policy_names(monkeypatch):
+    """The Qwen NVFP4 loader's groups (head: lm_head; gdn: in_proj_qkv / in_proj_z / out_proj; never the router or
+    in_proj_a/b), their resident bytes (the FP8 copy, not BF16), their load-time staging, and the copy it makes."""
+
+    from tensorfold.cuda import requant
+    from tensorfold.families.qwen3_5.cuda import nvfp4_load
+
+    root = "model.language_model.layers.3."
+    gdn = [root + "linear_attn." + p for p in ("in_proj_qkv", "in_proj_z", "out_proj")]
+    stored = [root + "linear_attn.in_proj_a", root + "linear_attn.in_proj_b", root + "mlp.gate",
+              root + "mlp.shared_expert_gate", "model.language_model.embed_tokens"]
+    assert [nvfp4_load.requant_group(s) for s in ["lm_head", *gdn, *stored]] == ["head", *["gdn"] * 3, *[None] * 5]
+    info = {"dtype": "BF16", "shape": [8192, 2048]}
+    for policy in ({}, {"head": "fp8"}, {"gdn": "fp8"}, {"head": "fp8", "gdn": "fp8"}):
+        with requant.using(**policy):
+            for stem in ["lm_head", *gdn, *stored]:
+                kind = policy.get(nvfp4_load.requant_group(stem) or "")
+                size = nvfp4_load.weight_bytes(stem + ".weight", dict(info, shape=list(info["shape"])))[0]
+                assert size == (requant.resident_bytes(kind, 8192, 2048) if kind else 8192 * 2048 * 2)
+                assert nvfp4_load.requant_staging(stem, info) == (requant.staging_bytes(kind, 8192, 2048)
+                                                                  if kind else None)
+    monkeypatch.setattr(requant, "requantize", lambda weight, kind: ("copy", kind))   # the GPU copy itself: CUDA tests
+    with requant.using(gdn="fp8"):
+        assert requant.target_copy("head", None) is None and requant.unapplied() == ["gdn"]
+        assert requant.target_copy("gdn", None) == ("copy", "fp8") and requant.unapplied() == []

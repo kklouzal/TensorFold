@@ -25,6 +25,7 @@ MLX_MODEL_FILE = True
 # the CUDA engine's kernels read MLX affine weights of this (bits, group size)
 CUDA_QUANTIZATION = (4, 64)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet projections' FP8 prompt kernel
+CUDA_HEAD_BITS = CUDA_GDN_BITS = True   # CT NVFP4's BF16 head / GDN projections (lossy, gated)
 
 
 def check_metadata(raw: dict[str, Any], backend: str) -> None:
