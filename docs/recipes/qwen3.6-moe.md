@@ -101,10 +101,15 @@ the layer's shared expert as the bank's last cell when it has the routed experts
 A4 storage (otherwise it keeps its own projections); cached banks plan host windows
 from the picks. Tests compare both paths bit for bit. With one resident stream,
 verification rounds that form a chain (serial steps, DFlash v1 and copy proposals)
-replay CUDA graphs over a fixed copy of the request's state, captured at startup
-for the smallest context span (larger spans on first use); grammar-pruned trees,
-image prompts, concurrent streams and RAM-backed experts run eagerly. Admission
-charges the fixed state, the retained graph outputs and the device-plan scratch.
+replay CUDA graphs captured at startup for the smallest context span (larger spans
+on first use). The graphs' attention buffers are reserved at the full context once
+and are the stream's only attention cache: every prefill extends them in place and
+kept prompt states share them; a new conversation moves the previous one's kept
+states to buffers sized to their rows (or drops them when the cache budget has no
+room) and resuming one copies it back. Grammar-pruned trees, image prompts,
+concurrent streams and RAM-backed experts run eagerly. Admission charges one
+attention cache, the graphs' recurrent copy, their retained outputs and the
+device-plan scratch.
 The affine native-MTP graph path remains separate. Cached authority stores one
 16-byte-aligned U8 record per expert, including its three packed projections and
 four calibration fields. A miss

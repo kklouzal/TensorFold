@@ -249,6 +249,20 @@ def test_single_runtime_keeps_all_prefix_states_and_every_retained_moe_shape():
     assert large["future_target_workspace_bytes"] - small["future_target_workspace_bytes"] == 52224
 
 
+def test_chain_graphs_add_no_attention_cache_only_their_recurrent_copy_outputs_and_pool():
+    # The runner's fixed attention buffers are the stream's live cache (prefills extend them in place).
+    plain = ram.runtime_geometry(runtime_text(), streams=1, keep=4, max_rows=3, prompt_rows=512)
+    graphs = ram.runtime_geometry(runtime_text(), streams=1, keep=4, max_rows=3, prompt_rows=512, graphs=True)
+    # Per verified row: FP32 logits 17*4=68, commit record (GDN 2*24*2+16+64+16=192, one KV row 256)=448, draft taps
+    # 2 layers*128*2=512 -> 1028; 7 rows a span (widths 1..3 with taps + the one-row serial form); one pool bound
+    # 16*3*(128+17+3*(64+128)+8+32+4+128)*4=171456. Spans: 1024 rows one (8192-row bucket capped), 65536 rows four.
+    for capacity, spans in ((1024, 1), (65536, 4)):
+        a, b = plain.components(capacity), graphs.components(capacity)
+        assert b["future_kv_bytes"] == a["future_kv_bytes"]
+        assert b["future_snapshot_bytes"] - a["future_snapshot_bytes"] == 352
+        assert b["future_target_workspace_bytes"] - a["future_target_workspace_bytes"] == spans * 7 * 1028 + 171456
+
+
 def test_parallel_runtime_reserves_full_growth_of_private_and_kept_kv():
     plan = ram.runtime_geometry(runtime_text(), streams=4, keep=3, max_rows=3, prompt_rows=512)
     small, large = plan.components(1024), plan.components(4096)

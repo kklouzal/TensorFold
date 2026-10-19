@@ -1,10 +1,13 @@
 """One fixed verification state whose chain rounds replay CUDA graphs per (rows, context bucket).
 
-``draft_decode(runner=...)`` copies a request's committed state in once (``load``), then verifies every chain round
-(DFlash v1 and copy proposals are chains) by replaying the captured ``tree_forward`` of its width. Any other round
-(a grammar-pruned tree) runs the eager forward on the same fixed state. Replay executes exactly the eager kernels on
-the same buffers, so tokens equal eager decoding. The state's KV buffers never move between loads (``reserve``); they
-grow by powers of two up to ``capacity``, dropping every graph, only when a request needs more rows.
+The runner's attention buffers are reserved at ``capacity`` rows once and never move, so captured graphs keep their
+addresses. They are also the one stream's working attention cache: ``begin`` hands the engine a state on them that
+the request's prefill extends in place, and the prefix cache's kept prompt states share them (clones share one KV
+list), so the stream holds one full-capacity attention cache, not a second copy for the graphs. ``draft_decode(
+runner=...)`` then copies only the request's recurrent state in (``load``) and verifies every chain round (DFlash v1
+and copy proposals are chains) by replaying the captured ``tree_forward`` of its width; any other round (a
+grammar-pruned tree) runs the eager forward on the same fixed state. Replay executes exactly the eager kernels on the
+same buffers, so tokens equal eager decoding.
 """
 
 from __future__ import annotations
@@ -56,32 +59,79 @@ class ChainGraphs:
         if type(capacity) is not int or capacity < 1 or type(bucket) is not int or bucket < 1:
             raise ValueError("chain graphs need a positive row capacity and context bucket")
         self.w, self.capacity, self.bucket = w, capacity, bucket
-        self.st: State | None = None
-        self.rows = 0
-        self.pool = None                         # a new private pool each time the state grows
+        self.rows = capacity
+        self.st = State(w)
+        reserve(self.st, capacity)
+        self._buffers = self._addresses()
+        self.pool = None                         # one private pool for every graph, made at the first capture
         self.graphs: dict[tuple[int, int, bool], tuple] = {}
-        self._buffers: tuple[int, ...] = ()
 
     def _span(self, end: int) -> int:
         return min(self.rows, max(self.bucket, 1 << (end - 1).bit_length()))
 
+    def begin(self, cache, room, base: State | None) -> State:
+        """The state a request's prefill extends in place on the fixed attention buffers.
+
+        ``base``: the prefix-cache state the request resumes (None: a fresh prompt); ``cache`` (streams.PrefixCache,
+        whose extensions of ``base`` the engine already dropped) and ``room`` (streams.KVRoom or None) are the
+        stream's. Kept states on the fixed buffers that the request would overwrite (every one, unless it resumes
+        from them) first move to private buffers sized to their rows (while ``room`` admits them; else they are
+        dropped); a resumed state on private buffers is copied in and its kept relatives return to the fixed ones.
+        """
+
+        fixed = self.st.kv
+        if base is not None and base.kv is fixed:
+            return base                          # prefill writes past base.pos: only prefixes of base stay on fixed
+        self._move_out(cache, room)
+        if base is None:
+            st = State(self.w)
+            st.kv, st.limit = fixed, self.capacity
+            return st
+        private = base.kv
+        for dst, src in zip(fixed, private):
+            if dst is not None:
+                dst[0][:base.pos].copy_(src[0][:base.pos])
+                dst[1][:base.pos].copy_(src[1][:base.pos])
+        for _, kept, _ in cache.entries:         # base's chain (its extensions are gone): rows < base.pos
+            if kept.kv is private:
+                kept.kv = fixed
+        base.kv, base.limit = fixed, self.capacity
+        return base
+
+    def _move_out(self, cache, room) -> None:
+        fixed = self.st.kv
+        held = [entry for entry in cache.entries if entry[1].kv is fixed]
+        if not held:
+            return
+        rows = max(kept.pos for _, kept, _ in held)
+        size = sum(rows * (t.stride(0) * t.element_size()) for kv in fixed if kv is not None for t in kv)
+        probe = object.__new__(State)
+        probe.kv = fixed
+        if room is not None:
+            room(probe, size)                    # evicts kept entries on other private buffers, oldest first
+        if rows == 0 or room is not None and room.held(probe) + size > room.budget:
+            cache.entries = [entry for entry in cache.entries if entry[1].kv is not fixed]
+            cache.hit &= {tuple(entry[0]) for entry in cache.entries}
+            return
+        private = [None if kv is None else (kv[0][:rows].clone(), kv[1][:rows].clone()) for kv in fixed]
+        for _, kept, _ in held:                  # one prompt's chain of prefixes: rows < rows hold them all
+            kept.kv = private
+
     def load(self, st: State, need: int) -> State:
-        """``st``'s committed state copied into the fixed buffers (grown, graphs dropped, past ``need`` rows)."""
+        """``st``'s committed state in the fixed state: its recurrent state (and attention rows, unless ``st`` is
+        on the fixed buffers already), room for ``need`` rows."""
 
         if st.rope_delta:
             raise ValueError("chain graphs verify text positions; image prompts decode eagerly")
-        need = min(max(need, st.pos + 1), self.capacity)
-        if need > self.rows:
-            self.graphs.clear()
-            self.st = None
-            gc.collect()
-            self.rows = min(self.capacity, max(self.bucket, 1 << (need - 1).bit_length()))
-            # torch refuses a capture into a pool left registered without a graph: capture into a new one
-            self.pool = torch.cuda.graph_pool_handle()
-            self.st = State(self.w)
-            reserve(self.st, self.rows)
-            self._buffers = self._addresses()
-        copy_state(self.st, st)
+        if max(need, st.pos + 1) > self.capacity:
+            raise ValueError("chain graphs hold at most their capacity's rows")
+        if st.kv is self.st.kv:
+            for a, b in zip(self.st.rec + self.st.conv, st.rec + st.conv):
+                if a is not None:
+                    a.copy_(b)
+            self.st.pos = st.pos
+        else:
+            copy_state(self.st, st)
         return self.st
 
     def _addresses(self) -> tuple[int, ...]:
@@ -91,12 +141,13 @@ class ChainGraphs:
     def prepare(self, widths: Sequence[int], *, taps: bool) -> int:
         """Capture the smallest context span's chain graphs now (engine startup) instead of inside the first rounds.
 
-        The fixed state is reserved at the full capacity (admission charges exactly that), so no later request
-        grows it and drops graphs; an empty state is loaded and each width's warm-up forward only reads it, so
-        nothing is committed. ``taps``: the drafter's tap form (drafted rounds); the one-row serial form is
-        captured too. Larger spans still capture on first use. Returns the number of graphs held.
+        An empty state is loaded and each width's warm-up forward only reads it, so nothing is committed. ``taps``:
+        the drafter's tap form (drafted rounds); the one-row serial form is captured too. Larger spans still capture
+        on first use. Returns the number of graphs held.
         """
-        self.load(State(self.w), self.capacity)
+        empty = State(self.w)
+        empty.kv = self.st.kv
+        self.load(empty, 1)
         keys = [(width, taps) for width in widths] + ([(1, False)] if taps else [])
         for width, tap in keys:
             if width <= self.rows:
@@ -114,8 +165,6 @@ class ChainGraphs:
         """
 
         st, width = self.st, len(tokens)
-        if st is None:
-            raise RuntimeError("chain graphs verify only after load")
         if list(parents) != list(range(-1, width - 1)) or st.pos + width > self.rows:
             ids = torch.tensor(tokens, dtype=torch.int32, device=self.w.norm.device)
             return tree_forward(self.w, ids, parents, st, capture_taps=capture_taps)
@@ -133,6 +182,8 @@ class ChainGraphs:
                 return tree_forward(self.w, staged.ids, staged_parents, st, capture_taps=capture_taps, staged=staged)
 
             run()                                # compiles every kernel and retains lazily built buffers
+            if self.pool is None:
+                self.pool = torch.cuda.graph_pool_handle()
             graph, out = capture(self.pool, run)
             entry = self.graphs[key] = (graph, staged, out)
         graph, staged, out = entry
