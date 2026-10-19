@@ -1,5 +1,13 @@
 # Campaign evidence boundaries
 
+`campaign_bench.py run` retains the existing excluded warmup's `client` timings:
+`headers`, `first`, `last` and `done`, each in seconds from that request's
+submission, or null when unavailable. These use the existing monotonic timestamps
+and match measured reply timing fields. They expose first-use request cost
+separately from the measured schedule; no extra request, warmup, synchronization
+or server-startup timing is introduced. Warmup remains excluded from benchmark
+records and aggregate comparisons.
+
 `campaign_gates.py needle --needle-evidence-out NEW_DIRECTORY` optionally retains
 one full parsed request/reply record for each existing inference. The directory
 must be new. `index.json` records corpus identity, seed, fractions, request files

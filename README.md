@@ -8,6 +8,11 @@ context. Diagnostic substring recall remains separate from exact answer quality;
 [evidence boundaries](docs/campaign-evidence.md) describe the source-level change
 and pending installed/model qualification.
 
+The GB10 Gemma profile defaults to its native 262,144-token context, a 16 GiB
+host-memory reserve, ten build/compute threads and CPUs `5-9,15-19`. Explicit
+environment overrides remain available. The fixed image's full-model release
+gates remain pending; these defaults do not qualify the retired image.
+
 **Installed integration checkpoint (2026-10-19):** source `cefd26d3` passed 10,164 installed CPU tests on each of ARM64 and AMD64, and 303 native checks on GB10 (204 documented CPU skips per host; two deliberate-device-trap skips on GB10). All five installed 4k HTTP profiles also completed their identity/mechanics controls: 48 benchmark replies of 512 tokens, 12 greedy and 12 sampled serial/draft comparisons, and 36 repeated pairs. Completed-answer/tool quality, longer context and comparative performance remain pending. Current GB10 runs use VBoost 0 and the host's ten-CPU container partition. Preserve that affinity policy; historical twenty-CPU results keep their recorded conditions.
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate, including normalized represented probability rows and strictly interior keyed uniforms. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
@@ -885,7 +890,8 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
 - `tools/campaign_bench.py` (standard library) sizes prompts from a fixed text corpus with the server's
   `/v1/tokenize`, runs each prompt cold and then warm with greedy and seeded model-card sampling, and records the
   `tensorfold` stats block per request (engine decode tok/s, prefill tok/s, TTFT, queue time, draft acceptance), host
-  MemAvailable and token ids. `analyze` reports per-cell means with 95% t intervals over server starts and, for
+  MemAvailable and token ids. The excluded warmup separately retains client header, first/last-token and complete
+  response times relative to submission, using the same clock as measured replies. `analyze` reports per-cell means with 95% t intervals over server starts and, for
   interleaved runs (ABBA), per-cycle ratios against a base configuration plus token identity of repeated requests;
   it lists runs that stopped mid-schedule, replies shorter than the reply budget and mixed tool versions.
 - `tools/campaign_gates.py` (standard library) runs a strict and non-strict tool-call suite, multi-key

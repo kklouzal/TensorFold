@@ -542,7 +542,9 @@ def run(url: str, profile_path: str, prompts_path: str, out: str, *, meta: str |
     warm = stream_chat(url, {"model": profile["model"], "messages": [{"role": "user", "content": WARMUP}],
                              "max_tokens": int(profile.get("warmup_tokens", 640)), "temperature": 0,
                              "ignore_eos": True, "chat_template_kwargs": {"enable_thinking": False}})
-    doc["warmup"] = {"stats": warm["stats"], "usage": warm["usage"]}
+    doc["warmup"] = {"stats": warm["stats"], "usage": warm["usage"],
+                     "client": {k: warm[k] - warm["sent"] if warm[k] is not None else None
+                                for k in ("headers", "first", "last", "done")}}
     for item in items:
         for index, step in enumerate(profile["schedule"]):
             body = request_body(profile, item, step)

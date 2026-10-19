@@ -276,6 +276,10 @@ def test_run_records_every_scheduled_request_with_its_metrics(tmp_path, monkeypa
     m = first["metrics"]
     assert m["decode_tps"] == 7.0 and m["prefill_tps"] == 4.0 and m["accept"] == 0.5 and m["tokens_per_round"] == 1.75
     assert "token_ids" not in first["stats"] and doc["warmup"]["usage"]["completion_tokens"] == 4
+    client = doc["warmup"]["client"]
+    assert set(client) == {"headers", "first", "last", "done"}
+    assert all(math.isfinite(client[k]) for k in client)
+    assert 0 <= client["headers"] <= client["first"] <= client["last"] <= client["done"]
 
 
 # --- gates ---------------------------------------------------------------------------------------------------------

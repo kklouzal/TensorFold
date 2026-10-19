@@ -27,7 +27,7 @@ services:
       - --parallel
       - '1'
       - --context
-      - '0'
+      - ${TENSORFOLD_CONTEXT:-262144}
       - --kv-dtype
       - bf16
       - --vision
@@ -41,11 +41,11 @@ services:
     environment:
       HF_HUB_OFFLINE: '1'
       TENSORFOLD_NO_UPDATE_CHECK: '1'
-      TENSORFOLD_MEMORY_RESERVE_GIB: '8'
-      TENSORFOLD_CUDA_MEMORY_RESERVE_GIB: '0'
-      MAX_JOBS: '20'
-      OMP_NUM_THREADS: '20'
-      MKL_NUM_THREADS: '20'
+      TENSORFOLD_MEMORY_RESERVE_GIB: ${TENSORFOLD_MEMORY_RESERVE_GIB:-16}
+      TENSORFOLD_CUDA_MEMORY_RESERVE_GIB: ${TENSORFOLD_CUDA_MEMORY_RESERVE_GIB:-0}
+      MAX_JOBS: ${TENSORFOLD_MAX_JOBS:-10}
+      OMP_NUM_THREADS: ${TENSORFOLD_OMP_NUM_THREADS:-10}
+      MKL_NUM_THREADS: ${TENSORFOLD_MKL_NUM_THREADS:-10}
     volumes:
       - type: bind
         source: ${TENSORFOLD_MODEL_PATH:?Set the complete pinned AEON NVFP4 directory}
@@ -64,7 +64,7 @@ services:
         read_only: true
     devices:
       - nvidia.com/gpu=${TENSORFOLD_GPU_UUID:?Set the GB10 GPU UUID}
-    cpuset: ${TENSORFOLD_CPUSET:-0-19}
+    cpuset: ${TENSORFOLD_CPUSET:-5-9,15-19}
     network_mode: host
     ipc: host
     restart: unless-stopped
