@@ -22,9 +22,9 @@ import statistics
 import time
 
 if __package__:
-    from .campaign_kl import sampler_replaced, with_app
+    from .campaign_kl import HotGate, sampler_replaced, with_app
 else:
-    from campaign_kl import sampler_replaced, with_app
+    from campaign_kl import HotGate, sampler_replaced, with_app
 
 LAUNCH = ("cudaLaunchKernel", "cudaLaunchKernelExC", "cuLaunchKernel", "cuLaunchKernelEx", "cudaGraphLaunch")
 SYNC = ("cudaStreamSynchronize", "cudaDeviceSynchronize", "cudaEventSynchronize", "cudaMemcpy", "cuStreamSynchronize",
@@ -87,6 +87,7 @@ def trace(app, args) -> None:
     prepared = app.prepare(body, True)
     engine = app.engine
     out: list[int] = []
+    HotGate.wait()                                      # a new prompt only from a cool host
     started = time.perf_counter()
     engine.generate(prepared.prompt, args.warm, None, lambda new: out.extend(new) or False, draft=not args.serial)
     warm_s = time.perf_counter() - started
@@ -97,6 +98,7 @@ def trace(app, args) -> None:
             return original(*a, **kw)
 
     out.clear()
+    HotGate.wait()
     activities = [torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
     with sampler_replaced(marked), torch.profiler.profile(activities=activities, record_shapes=False) as prof:
         stats = engine.generate(prepared.prompt, args.tokens, None, lambda new: out.extend(new) or False,
@@ -126,8 +128,10 @@ def main() -> int:
     ap.add_argument("--warm", type=int, default=256)
     ap.add_argument("--serial", action="store_true", help='profile "draft": false')
     ap.add_argument("--port", type=int, default=8899)
+    ap.add_argument("--hot-flag", help="the guard's hot-state file (campaign_bench.HotGate; default $TFC_HOT_FLAG)")
     ap.add_argument("serve", nargs=argparse.REMAINDER)
     args = ap.parse_args()
+    HotGate.configure(args.hot_flag)
     if args.serve and args.serve[0] == "--":
         args.serve = args.serve[1:]
     if not args.serve or args.serve[0] != "serve":

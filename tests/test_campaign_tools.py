@@ -660,6 +660,44 @@ def test_append_refuses_parts_that_are_not_one_reference(tmp_path):
                   str(tmp_path / "out-subset"))
 
 
+def test_hot_gate_holds_each_new_prompt_until_the_host_is_cool(tmp_path, monkeypatch):
+    """Campaign rule after the GB10 hang #3: before a new prompt a tool waits while the shared guard's hot-state file
+    exists, at most max_s; a host that stays hot is an error (gates: exit 4), never a prompt."""
+
+    flag = tmp_path / "hot"
+    monkeypatch.delenv("TFC_HOT_FLAG", raising=False)
+    try:
+        bench.HotGate.configure(None)
+        flag.write_text('{"reason": "zones above 85 C"}')
+        assert bench.HotGate.wait() == 0.0                         # no gate outside a guarded session
+        monkeypatch.setenv("TFC_HOT_FLAG", str(flag))                # the guard exports its file
+        bench.HotGate.configure(None)
+        threading.Timer(1.5, flag.unlink).start()
+        waited = bench.HotGate.wait()
+        assert 1.0 <= waited < 5.0 and bench.HotGate.waited_s == waited
+        _write_inputs(tmp_path)
+        with fake_server() as url:                                   # every streamed prompt records its wait
+            record = bench.stream_chat(url, {"model": "m", "messages": [{"role": "user", "content": "x"}],
+                                             "max_tokens": 2})
+            assert record["hot_wait_s"] == 0.0
+            flag.write_text('{"reason": "GPU at 80 C, above 75 C"}')
+            monkeypatch.setattr(bench.HotGate, "max_s", 1.0)
+            with pytest.raises(RuntimeError, match="stayed hot for 1 s .*GPU at 80 C"):
+                bench.HotGate.wait()
+            out = tmp_path / "identity.json"
+            monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "identity", "--url", url, "--out", str(out),
+                                              "--profile", str(tmp_path / "profile.json"),
+                                              "--prompts", str(tmp_path / "prompts.json"), "--hot-flag", str(flag),
+                                              "--gate-prompts", "short-code-nothink", "--max-tokens", "6"])
+            monkeypatch.setattr(gates.HotGate, "max_s", 1.0)         # gates' own campaign_bench import
+            assert gates.main() == 4                                 # never a prompt into a hot host
+            assert "stayed hot" in json.loads(out.read_text())["error"]
+    finally:
+        monkeypatch.delenv("TFC_HOT_FLAG", raising=False)
+        bench.HotGate.configure(None)
+        gates.HotGate.configure(None)
+
+
 def test_schema_errors_cover_type_enum_required_extra_and_items():
     schema = gates.EVENT["function"]["parameters"]
     good = {"title": "t", "start": "2026-11-03T14:00", "duration_minutes": 45,
