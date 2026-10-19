@@ -5,7 +5,7 @@ import math
 import struct
 from pathlib import Path
 
-SIZES = {"U32": 4, "BF16": 2}
+SIZES = {"U32": 4, "BF16": 2, "U8": 1}
 TEXT = {"hidden_size": 5120, "num_hidden_layers": 64, "full_attention_interval": 4, "num_attention_heads": 24,
         "num_key_value_heads": 4, "head_dim": 256, "linear_num_key_heads": 16, "linear_num_value_heads": 48,
         "linear_key_head_dim": 128, "linear_value_head_dim": 128, "linear_conv_kernel_dim": 4,

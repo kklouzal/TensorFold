@@ -139,6 +139,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
+    speed.add_argument("--draft-vocab", choices=("truncated", "full"), default=None,
+                       help="Qwen3.8 dense NVFP4 DFlash2 on one CUDA rank: original truncated proposal vocabulary "
+                            "(default) or all target tokens; target verification is unchanged")
+    speed.add_argument("--draft-head-bits", type=int, choices=(16, 8), default=None,
+                       help="Qwen3.8 dense NVFP4 DFlash2 proposal head: 16 keeps the original stored head (default); "
+                            "8 makes a private FP8 copy of its floating head over the selected proposal vocabulary. "
+                            "The target head and its math stay unchanged")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "

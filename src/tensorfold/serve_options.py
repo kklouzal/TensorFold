@@ -75,6 +75,22 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     serve."""
 
     draft_rows = getattr(args, "draft_rows", None)
+    vocab = getattr(args, "draft_vocab", None)
+    head = getattr(args, "draft_head_bits", None)
+    if vocab is not None or head is not None:
+        if backend != "cuda" or not getattr(family.package, "CUDA_DFLASH2_HEAD", False):
+            raise ValueError("--draft-vocab/--draft-head-bits require Qwen3.8 dense CUDA DFlash2")
+        if getattr(args, "tp", 1) != 1 or getattr(args, "no_drafts", False) or getattr(args, "drafter", "auto") == "none":
+            raise ValueError("--draft-vocab/--draft-head-bits need a DFlash2 model on one CUDA rank")
+        if vocab is not None and vocab not in ("truncated", "full"):
+            raise ValueError("--draft-vocab must be truncated or full")
+        if head is not None and (type(head) is not int or head not in (16, 8)):
+            raise ValueError("--draft-head-bits must be 16 or 8")
+        if config_dir is not None and (vocab == "full" or head == 8):
+            from tensorfold.cuda.nvfp4.format import is_quantized
+
+            if not is_quantized(config_dir):
+                raise ValueError("--draft-vocab full/--draft-head-bits 8 currently require an NVFP4 checkpoint")
     if draft_rows is not None:
         if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)
                 or type(draft_rows) is not int or not 2 <= draft_rows <= 128):

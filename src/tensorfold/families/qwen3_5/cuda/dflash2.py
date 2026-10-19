@@ -15,7 +15,7 @@ from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from tensorfold.engine.exact_sampling import Sampling
 
 from .affine_memory import packed_draft
-from .draft_tree import best_first
+from .draft_tree import best_first, draft_spans
 from .glue import embedding, swiglu
 from .draft_attention import append, block_attention
 from .qmm import group_sums
@@ -178,12 +178,25 @@ class DFlash2:
     """Five-layer DFlash2; context is the last 2,047 committed target taps."""
 
     def __init__(self, draft_dir: str | Path, target: Weights, bits: int = 4, block: int = 16,
-                 fast: bool = True, rank: int = 0, world: int = 1):
+                 fast: bool = True, rank: int = 0, world: int = 1, *,
+                 draft_vocab: str = "truncated", head_bits: int = 16):
         path = Path(draft_dir)
         # Two-rank drafting requires both ranks to call propose_tree/add_taps together on the fused path with ordered partial sums.
         if world not in (1, 2) or (world == 2 and not (fast and bits == 4)):
             raise ValueError("a two-rank drafter needs world=2 with the fused 4-bit path")
+        if type(head_bits) is not int or head_bits not in (16, 8):
+            raise ValueError("DFlash2 proposal-head precision is 16 (original) or 8 (private FP8 copy)")
+        spans = draft_spans(target.config.vocab, draft_vocab)
+        if world != 1 and (draft_vocab != "truncated" or head_bits != 16):
+            raise ValueError("full draft vocabulary and a private FP8 proposal head require one CUDA rank")
+        if target.quant != "nvfp4" and (draft_vocab != "truncated" or head_bits != 16):
+            raise ValueError("draft vocabulary/head options currently require an NVFP4 checkpoint")
+        if head_bits == 8 and (target.quant != "nvfp4" or not isinstance(target.head, Plain)):
+            raise ValueError("a private FP8 proposal head requires an NVFP4 checkpoint with a floating target head")
+        if (draft_vocab != "truncated" or head_bits != 16) and target.head.n != target.config.vocab:
+            raise ValueError("the stored head rows must match the declared target vocabulary")
         self.rank, self.world = rank, world
+        self.draft_vocab, self.head_bits = draft_vocab, head_bits
         self.block = block          # masked positions drafted per round (the checkpoint trained with 8)
         cfg = read_metadata_json(checkpoint_path(path, "config.json"))
         self.hidden = int(cfg["hidden_size"])
@@ -225,17 +238,34 @@ class DFlash2:
         self.inv_freq = (1.0 / self.theta **
                          (torch.arange(self.head_dim // 2, device=self.device,
                                        dtype=torch.float32) * 2 / self.head_dim))
-        vocab = target.config.vocab
-        spans = tuple((a, min(b, vocab)) for a, b in ((0, 98304), (248032, 248320)) if a < vocab)
+        needed = max(b for _, b in spans)
+        for name in ("candidate_selector.predecessor_codebook", "candidate_selector.successor_codebook"):
+            book = self.weights.get(name)
+            if book is None or book.ndim != 2 or book.shape[0] < needed:
+                raise ValueError(f"{name} does not cover the requested DFlash2 proposal vocabulary")
         self.vocab_spans = spans
-        self.head_ids = torch.cat([torch.arange(a, b, device=self.device) for a, b in spans])
+        self.full_head = None                        # borrowed target head or private FP8 proposal copy
+        self.head_ids = (None if draft_vocab == "full" else
+                         torch.cat([torch.arange(a, b, device=self.device) for a, b in spans]))
         self.head_cols: torch.Tensor | None = None           # an EXL3 head's span columns in its sliced strips
         self.sub_rows: list[QLinear] | None = None           # one GPU, tiled head: its rows as views, no copy
         self.sub_parts: list | None = None                   # an NVFP4 checkpoint's head: tile views and span columns
-        if target.quant == "nvfp4":
+        if draft_vocab == "full":
+            if head_bits == 8:
+                from tensorfold.cuda.requant import Head
+
+                self.full_head = Head(target.head, "fp8")
+            else:
+                self.full_head = target.head
+        elif target.quant == "nvfp4":
             if world != 1:
                 raise ValueError("a two-rank drafter needs the MLX checkpoint's 4-bit head")
             self.sub_parts = _sub_parts(target.head, spans)
+            if head_bits == 8:
+                from tensorfold.cuda.requant import Head
+
+                # Keep only the requested ranges. Each copy has its own padded storage; both arms score FP32 logits.
+                self.sub_parts = [(Head(part, "fp8"), lo, hi) for part, lo, hi in self.sub_parts]
         elif isinstance(target.head, Exl3):
             if world != 1:
                 raise ValueError("a two-rank drafter needs the MLX checkpoint's 4-bit head")
@@ -257,7 +287,8 @@ class DFlash2:
             self.sub_head = QLinear(*[None if t is None else t[lo:hi].contiguous()
                                       for t in (sub.weight, sub.scales, sub.biases)],
                                     layout=sub.layout, gs=sub.gs, bits=sub.bits)
-        if isinstance(target.head, QLinear) and target.head.layout == "tiled" and self.sub_rows is None:
+        if (draft_vocab != "full" and isinstance(target.head, QLinear) and target.head.layout == "tiled"
+                and self.sub_rows is None):
             self.sub_head = tile(self.sub_head)
         # Quantized draft projections can change acceptance but never target output.
         self.q4: dict[str, QLinear] = {}
@@ -481,6 +512,24 @@ class DFlash2:
 
         return any(a <= token < b for a, b in self.vocab_spans)
 
+    def _candidates(self, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Each row's 16 best (logits, token ids) under the proposal head selected at startup."""
+
+        if self.full_head is not None:
+            logits = self.full_head(h.contiguous())
+            return torch.topk(logits.float(), k=16, dim=-1, sorted=False)
+        if self.sub_parts is not None:
+            h = h.contiguous()
+            logits = torch.cat([part(h)[:, lo:hi] for part, lo, hi in self.sub_parts], dim=1)
+        elif self.head_cols is not None:
+            logits = self.sub_head(h.contiguous()).index_select(1, self.head_cols)
+        elif self.sub_rows is not None:
+            logits = matmul_rows(h, self.sub_rows)
+        else:
+            logits = matmul(h, self.sub_head)
+        values, local_ids = torch.topk(logits.float(), k=16, dim=-1, sorted=False)
+        return values, self.head_ids[local_ids]
+
     def _row(self, x: torch.Tensor, name: str, xs: torch.Tensor | None = None) -> torch.Tensor:
         """A projection whose input is split over the ranks: rank partials summed in rank order."""
 
@@ -529,17 +578,7 @@ class DFlash2:
                 hs.append(_norm(y[1:], self.weights["norm.weight"], self.eps))
             h = torch.cat(hs)
         projected = self._lin(h, "candidate_selector.hidden_projection.weight").float()
-        if self.sub_parts is not None:
-            h = h.contiguous()
-            logits = torch.cat([part(h)[:, lo:hi] for part, lo, hi in self.sub_parts], dim=1)
-        elif self.head_cols is not None:
-            logits = self.sub_head(h.contiguous()).index_select(1, self.head_cols)
-        elif self.sub_rows is not None:
-            logits = matmul_rows(h, self.sub_rows)
-        else:
-            logits = matmul(h, self.sub_head)
-        values, local_ids = torch.topk(logits.float(), k=16, dim=-1, sorted=False)
-        global_ids = self.head_ids[local_ids]
+        values, global_ids = self._candidates(h)
         if self.world == 2:
             import torch.distributed as dist
 

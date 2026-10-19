@@ -34,10 +34,15 @@ class Qwen27Engine:
                  context: int | None = None, context_explicit: bool | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, tree_rows: int | None = None,
                  keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
-                 yarn_factor: float | None = None):
+                 yarn_factor: float | None = None, draft_vocab: str = "truncated", draft_head_bits: int = 16):
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.families.qwen3_5 import rope_parameters
 
+        if draft_vocab not in ("truncated", "full") or type(draft_head_bits) is not int or draft_head_bits not in (16, 8):
+            raise ValueError("DFlash2 needs truncated/full vocabulary and 16/8 proposal-head bits")
+        selected_draft = draft_vocab != "truncated" or draft_head_bits != 16
+        if selected_draft and (tp != 1 or draft_dir is None):
+            raise ValueError("draft vocabulary/head options need a DFlash2 model on one CUDA rank")
         self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
         keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
@@ -50,6 +55,8 @@ class Qwen27Engine:
 
         exl3 = quant_config(Path(model_dir)) is not None
         nvfp4 = not exl3 and is_quantized(Path(model_dir))
+        if selected_draft and not nvfp4:
+            raise ValueError("draft vocabulary/head options currently require an NVFP4 checkpoint")
         if (exl3 or nvfp4) and tp != 1:
             raise ValueError(f"{'EXL3 packs' if exl3 else 'NVFP4 checkpoints'} of Qwen3.8-27B run on one GPU: drop "
                              "--tp 2, or serve the MLX checkpoint (TensorFold/Qwen3.8-27B-MLX-4bit) on two")
@@ -62,12 +69,14 @@ class Qwen27Engine:
         from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
-        from .affine_memory import draft_weights, weight_transform
+        from .affine_memory import draft_head_copy, draft_weights, weight_transform
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
 
         self.torch = torch
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
         self.vision = None
+        copy = (draft_head_copy(model_dir, draft_vocab=draft_vocab, head_bits=draft_head_bits)
+                if draft_head_bits == 8 else (0, 0))
         torch.cuda.set_device(0)
         from tensorfold.cuda.kv_arena import driver
 
@@ -128,7 +137,7 @@ class Qwen27Engine:
                                    rank=rank, world=tp, gather=gather,
                                    weight_estimator=weight_estimator,
                                    draft_dir=draft_dir if rank == 0 or tp_draft else None,
-                                   draft_weights=draft_weights,
+                                   draft_weights=partial(draft_weights, head_copy=copy) if copy[0] else draft_weights,
                                    draft_geometry=lambda text: draft_geometry(text, tp if tp_draft else 1, max_rows,
                                                                               bounded=True, streams=streams,
                                                                               kept=keep + 1 if many else 0),
@@ -158,7 +167,13 @@ class Qwen27Engine:
             from .dflash2 import DFlash2
 
             # tp_draft: both ranks hold half the drafter and draft together (rank 1 needs --draft too)
-            self.draft = DFlash2(draft_dir, full, rank=rank, world=2) if tp == 2 and tp_draft else DFlash2(draft_dir, full)
+            choices = {"draft_vocab": draft_vocab, "head_bits": draft_head_bits} if selected_draft else {}
+            self.draft = (DFlash2(draft_dir, full, rank=rank, world=2) if tp == 2 and tp_draft else
+                          DFlash2(draft_dir, full, **choices))
+            if selected_draft:
+                print(f"[tensorfold] DFlash2 {draft_vocab} proposal vocabulary; "
+                      f"{'private FP8 proposal head' if draft_head_bits == 8 else 'original stored head'}; "
+                      "target math unchanged", flush=True)
         del full
         if vision and rank == 0:
             from tensorfold.vision.qwen_cuda import QwenCudaVision
