@@ -454,7 +454,7 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
         dump("--eval", missing, "--build", "--short", "v1,extras")
     assert loads == []                                                    # no refusal paid for a model load
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
-    dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "8192")
+    dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"))     # the default 32k build runs
     assert loads == [["serve", "m"]] * 2
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill", "--card", "{}", "--profile",
          str(tmp_path / "no-profile.json"))                     # --card overrides: the profile is not read
