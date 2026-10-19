@@ -68,7 +68,8 @@ class MLPContext:
 
 
 def weight_bytes(name: str, info: dict) -> tuple[int, int]:
-    """A tensor as loaded: stored bytes with outputs padded to 128, gates' e4m3 copies, A_log and dt_bias in fp32."""
+    """A tensor as loaded: stored bytes with outputs padded to 128 (FP8 channel scales as fp32), gates' e4m3 copies,
+    A_log and dt_bias in fp32."""
 
     if skipped(name):
         return 0, 0
@@ -77,6 +78,8 @@ def weight_bytes(name: str, info: dict) -> tuple[int, int]:
         return math.prod(shape) * 4, 0
     from tensorfold.cuda.capacity import SIZES
 
+    if name.endswith(".weight_scale") and dtype in ("F32", "F16", "BF16") and math.prod(shape) > 1:
+        return -(-math.prod(shape) // 128) * 128 * 4, 0       # an output channel's scale each (``Fp8Linear.cols``)
     if len(shape) == 2 and dtype in ("U8", "F8_E4M3") and not name.endswith("_scale"):
         shape[0] = -(-shape[0] // 128) * 128
     amount = math.prod(shape) * SIZES[dtype]
@@ -120,8 +123,9 @@ def maths() -> tuple[dict[str, bool], str]:
     return own, f"full ({gpu} has neither the block-scaled FP4 nor the FP8 mma): bf16 activations, the stored weights"
 
 
-def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None):
-    """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored."""
+def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None, rope=None):
+    """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored (``rope``:
+    a static YaRN policy for a default-RoPE checkpoint)."""
 
     from tensorfold.cuda.capacity import headers
     from tensorfold.cuda.nvfp4 import format as fmt
@@ -140,7 +144,8 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
     )
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir) if eos_token_ids is None else Config.read(model_dir, eos_token_ids=eos_token_ids)
+    cfg = Config.read(model_dir, **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope))
+                                    if value is not None})
     block = read_config(model_dir).get("quantization_config") or {}
     metadata = fmt.LinearMetadata(block)
     reciprocal = str(block.get("quant_method", "")).lower() == "compressed-tensors"
@@ -151,6 +156,7 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         staging = Staging()                                   # one e4m3 copy at a time, shared by every NVFP4 projection
         own, _ = maths()
         used = {"nvfp4": False, "fp8": False}
+        per_token = {"fp8": False}                           # FP8 layers whose rows take their own scales
         from tensorfold.cuda import precision
 
         checkpoint_math = precision.mode() == precision.CHECKPOINT
@@ -179,8 +185,11 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             if not parts:
                 raise ValueError(f"the checkpoint has no projection {name}")
             kind, activation = metadata.validate(name, parts, checkpoint=checkpoint_math)
-            if kind not in ("nvfp4", "fp8", "bf16"):
+            if kind not in ("nvfp4", "fp8", "fp8channel", "bf16"):
                 raise ValueError(f"{name}: {kind} projections are not read on Qwen3.8-27B yet")
+            if kind == "fp8channel" and prompt_precision.fp8():
+                raise ValueError(f"{name}: --prefill-fp8 reads per-tensor FP8 weights; this checkpoint's "
+                                 "per-channel FP8 projections run FP8 prompts under --precision checkpoint")
             got = {s: t.pop(f"{name}.{s}") for s in parts}
             weight = got["weight"] if "weight" in got else got.get("weight_packed")
             if kind == "nvfp4":
@@ -193,6 +202,13 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], g, act=act, act_inverse=inverse)
                 lin.staging = staging
                 return lin
+            if kind == "fp8channel":
+                # Per-token rows under checkpoint math on an FP8-mma GPU (``activation`` is only returned when the
+                # checkpoint declares them); otherwise W8A16 with each channel's scale in the epilogue.
+                token = activation is not None and own["fp8"]
+                if token:
+                    used["fp8"] = per_token["fp8"] = True
+                return Fp8Linear.from_checkpoint(weight, got["weight_scale"], token=token)
             if kind == "fp8":
                 s = got["weight_scale"].float().reshape(-1)
                 if s.numel() != 1:
@@ -256,8 +272,8 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
         w.precision = "checkpoint" if any(used.values()) else "full"
         w.own = used
         if any(used.values()):
-            native = [label for kind, label in (("nvfp4", "NVFP4 layers FP4 x FP4"), ("fp8", "FP8 layers FP8 x FP8"))
-                      if used[kind]]
+            fp8 = "FP8 layers FP8 x FP8" + (" (rows quantized a token at a time)" if per_token["fp8"] else "")
+            native = [label for kind, label in (("nvfp4", "NVFP4 layers FP4 x FP4"), ("fp8", fp8)) if used[kind]]
             line = "checkpoint (declared " + "; ".join(native) + "; other layers use bf16 activations)"
         else:
             line = FULL_LINE

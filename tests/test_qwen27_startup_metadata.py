@@ -4,6 +4,7 @@ The tests cover preparation/dispatch through successful post-load startup. They
 do not qualify CUDA allocation, native NCCL, model arithmetic or two real GPUs.
 """
 import json
+import struct
 from types import SimpleNamespace as NS
 
 import pytest
@@ -26,10 +27,12 @@ def startup(tmp_path, monkeypatch):
     (tmp_path / "tokenizer_config.json").write_text(json.dumps({
         "chat_template": "{% for m in messages %}{{ m.content }}{% endfor %}", "eos_token": "stop"}))
     text = {"hidden_size": 64, "intermediate_size": 128}
+    # the constructor reads its RoPE policy (default here) from the checkpoint's own config
+    (tmp_path / "config.json").write_text(json.dumps({"text_config": {**text, "head_dim": 64}}))
     plan = {"context_window": 32, "cache_slots": 33, "budget_bytes": 1024,
             "weight_bytes_estimate": 128, "cache_workspace_bytes_estimate": 256}
     events, options, gathers = [], [], []
-    state = NS(format="affine", mismatch=False)
+    state = NS(format="affine", mismatch=False, peer_yarn_factor=None)
     tensor, empty = torch.tensor, torch.empty
 
     def cpu_tensor(*args, **kwargs):
@@ -50,6 +53,8 @@ def startup(tmp_path, monkeypatch):
         values = source.tolist()
         gathers.append(values)
         peer = source.clone()
+        if len(gathers) == 1 and state.peer_yarn_factor is not None:
+            peer[-2] = int.from_bytes(struct.pack("<d", state.peer_yarn_factor), "little", signed=True)
         if "load" in events and len(gathers) == 3 and state.mismatch:
             peer[-1] += 1
         destination.view(-1).copy_(torch.cat((source, peer)))
@@ -352,3 +357,43 @@ def test_serving_row_limit_reaches_real_decoder_before_cold_calibration(startup,
             engine.multi._verify([(0, multi.TREE, 2, None)])
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("tp", [1, 2])
+@pytest.mark.parametrize("factor", [None, 4.0])
+def test_yarn_factor_reaches_admission_loader_rank_agreement_and_log(startup, monkeypatch, capsys, tp, factor):
+    directory, _state, _events, options, gathers = startup
+    (directory / "config.json").write_text(json.dumps({"text_config": {
+        "hidden_size": 64, "intermediate_size": 128, "head_dim": 64, "max_position_embeddings": 262144,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25}}}))
+    admitted, admit = [], capacity.admit
+    monkeypatch.setattr(capacity, "admit", lambda *args, **kwargs: admitted.append(kwargs) or admit(*args, **kwargs))
+    engine = Qwen27Engine(directory, None, tp=tp, master="host", yarn_factor=factor)
+    try:
+        (kwargs,) = admitted
+        (loaded,) = options
+        log = capsys.readouterr().out
+        if factor is None:
+            assert "context_limit" not in kwargs and "original_context" not in kwargs and "rope" not in loaded
+            assert "static YaRN" not in log
+        else:
+            assert (kwargs["context_limit"], kwargs["original_context"]) == (1048576, 262144)
+            rope = loaded["rope"]
+            assert (rope.rope_type, rope.factor, rope.native_context, rope.context_limit) == ("yarn", 4.0, 262144,
+                                                                                            1048576)
+            assert "static YaRN factor 4, rotary amplitude 1.1386294" in log
+        if tp == 2:                     # all binary64 factor bits precede the prompt precision the ranks compare
+            assert gathers[0][-2] == (0 if factor is None else 0x4010000000000000)
+    finally:
+        engine.close()
+
+
+def test_rank_agreement_rejects_distinct_yarn_factors_below_one_millionth(startup):
+    directory, state, events, _options, _gathers = startup
+    (directory / "config.json").write_text(json.dumps({"text_config": {
+        "hidden_size": 64, "intermediate_size": 128, "head_dim": 64, "max_position_embeddings": 262144,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25}}}))
+    state.peer_yarn_factor = 4.0000001
+    with pytest.raises(RuntimeError, match="different settings"):
+        Qwen27Engine(directory, None, tp=2, master="host", yarn_factor=4.0)
+    assert "load" not in events

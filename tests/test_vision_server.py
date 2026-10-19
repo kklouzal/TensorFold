@@ -58,6 +58,9 @@ class Tokenizer:
     def __init__(self):
         self.calls = []
 
+    def token_to_id(self, token):
+        return None
+
     def apply_chat_template(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         return "rendered with image markers"
@@ -77,6 +80,7 @@ def prompt_app(frontend):
 
 def cuda_app(frontend, tmp_path):
     app = App.__new__(App)
+    app.sampling = {}
     app.tok, app.vision = Tokenizer(), frontend
     app.context_window, app.native_context_window = 32, 64
     app.max_tokens, app.default_thinking = 8, False

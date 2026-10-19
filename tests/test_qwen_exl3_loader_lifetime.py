@@ -26,7 +26,7 @@ class Ownership(unittest.TestCase):
                 if cleanup is not None:
                     raise cleanup
         reader = Reader()
-        cfg = SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000)
+        cfg = SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000, yarn=None)
         def plain(*args, **kwargs):
             calls.append('construct')
             return SimpleNamespace()

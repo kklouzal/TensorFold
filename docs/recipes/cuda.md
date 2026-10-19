@@ -102,8 +102,9 @@ separate prefill and decode forms. A shared call must preserve each row's arithm
 Prompt matmuls take bf16 activations by default. `--prefill-fp8` switches the ones that have an FP8 kernel (the
 27B's and Qwen3.6's MLX 4-bit projections, and the FP8, NVFP4 and MXFP8 layers of NVFP4 checkpoints) to e4m3
 activations with one scale a row, the arithmetic of TensorFold 0.5.0's prompts; `--no-prefill-fp8` asks for bf16 by
-name. e4m3 keeps 3 mantissa bits to bf16's 7, and one scale a row loses a row's small values when one of its channels
-is large. Either way a drafted reply equals the same server's serial one and a resumed prompt equals a fresh one;
+name. A checkpoint with per-channel FP8 layers ([NVFP4 precision](#nvfp4-precision)) refuses `--prefill-fp8` at
+startup: its checkpoint math already gives those layers e4m3 prompt rows, one scale a token. e4m3 keeps 3 mantissa
+bits to bf16's 7, and one scale a row loses a row's small values when one of its channels is large. Either way a drafted reply equals the same server's serial one and a resumed prompt equals a fresh one;
 only the prompt's own arithmetic changes.
 
 Quality over 8 sequences of 4,096 tokens (wikitext-2, CPython source, chats), every position scored. The reference
@@ -147,8 +148,13 @@ about 88 TFLOPS, 84% of the GB10's practical bf16 rate, against about 130 for th
 
 An NVFP4 checkpoint names the formats of its activations as well as its weights. `--precision checkpoint`, the
 default, runs that math, as the checkpoint's own runtimes do: each row is quantized under the checkpoint's static
-input scale, to NVFP4 (per-16 e4m3 block scales) in NVFP4 layers and to e4m3 in FP8 layers. `--precision full` runs
-bf16 activations against the stored weights exactly. The weights are the same in both modes; only the math changes.
+input scale, to NVFP4 (per-16 e4m3 block scales) in NVFP4 layers and to e4m3 in FP8 layers. FP8 layers stored with
+a scale per output channel and declared dynamic per-token inputs (ModelOpt `FP8_PER_CHANNEL_PER_TOKEN`; ModelOpt
+0.46.0 records those inputs as static in `config.json`, and the algorithm's declaration governs) quantize each row
+under its own scale instead, vLLM's rule: `s = max(amax / 448, 1 / (448 * 512))`, codes `e4m3(x / s)`, each fp32 sum
+times its channel's scale, then its row's. `--precision full` runs bf16 activations against the stored weights
+exactly (per-channel FP8: each sum times its channel's scale). The weights are the same in both modes; only the math
+changes.
 A drafted reply equals the same server's serial one, and a resumed prompt a fresh one, in either mode. Which math a
 GPU runs under `checkpoint` (its startup line says which; no GPU from 8.9 is refused):
 

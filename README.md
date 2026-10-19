@@ -2,6 +2,8 @@
 
 **Gemma4 CUDA trial (2026-10-18):** Native paths read original MLX affine mixed4/6 weights or the original AEON compressed-tensors NVFP4 export, with BF16 DFlash, BF16 KV, and the model's image/video processor and thinking/tool syntax. The NVFP4 path requires SM12.x and retains its declared FP4 activation calibrations; the tied embedding/head, router and vision weights stay BF16. This initial path serves one request at a time. The installed GB10 image passed **461 CPU and 50 CUDA checks**, full-token serial/DFlash identity, Harness counting, streaming, image/video and strict tools. Its 512-token coding requests observed **64.49–74.41 decode tok/s** with five verification rows, versus **41.16–41.37** serially. [Source/image, conditions and limits](docs/gemma4-cuda-validation.md) distinguish these observations from the separate head comparison and unresolved R8/R16 ranking. See the [Gemma recipe](docs/recipes/gemma-4.md) and [GB10 Gemma profile](deploy/gb10/compose.gemma4.yaml).
 
+**Qwen3.8-27B AEON mixed NVFP4 (2026-10-19):** the CUDA engine reads `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` as it ships: NVFP4 MLPs under their static FP4 activation scales, and FP8 projections with a scale per output channel whose rows are quantized a token at a time onto the FP8 tensor cores (ModelOpt `FP8_PER_CHANNEL_PER_TOKEN`). `--tokenizer` admits the upstream `tokenizer.json` this export altered. On one GB10 with DFlash2, drafted replies equal serial ones token for token, and 512-token replies decoded at **76.4 (code), 30.5 (chat) and 81.1 (JSON) tok/s** greedy on the engine, against 11.2-12.2 serially. The tool, needle and KL gates are pending. [Conditions, prompt rates and GB10 thermal observations](docs/optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19); see the [27B recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export).
+
 Harness connections require the container's compatibility entrypoint, `cuda_entrypoint.py` → `tensorfold_harness.py`, with `--thinking-budget 0`. The native CLI's token-count response lacks Harness's versioned model/context metadata. Gemma count-only image preparation can measure prompts beyond the served context while retaining media safety limits; generation still enforces its context window.
 
 For the qualified Flash Next NVFP4 profile on GB10, use the [dedicated deployment profile](deploy/gb10/nvfp4.md):
@@ -16,6 +18,11 @@ Forty retired TensorFold containers were removed with their logs preserved.
 This fork of [TensorFold](https://github.com/ashhart/TensorFold) serves language models on Apple Silicon and NVIDIA GPUs through an OpenAI-compatible API. It retains the upstream model families, family-specific kernels, exact speculative decoding, prompt reuse, tools, reasoning and vision support, and adds a reproducible NVIDIA container, Flash Next YaRN context extension, RAM-backed expert caching, optional RotorQuant KV formats, and service admission controls.
 
 The maintained fork is [kklouzal/TensorFold](https://github.com/kklouzal/TensorFold), branch **`python-0.6`**. The Python integration joins fork baseline `2f8089a7b59588875d639a7efa860117168a29d0` with upstream Python `ed78d6fc204d89d90b045bf033d6551e7714f3a1`. Record the commit you actually clone: branch heads move. Upstream Python history remains part of the fork so later changes can be reviewed and merged.
+
+Qwen3.8 mixed-FP8 startup compares two-rank YaRN factors exactly, including differences below one
+millionth. Its FP8-only checkpoint tests are admitted on SM 8.9 and newer; native block-scaled FP4 cases still require
+SM 12.x. Numerical regression thresholds retain their original sensitivity and are distinguished from deterministic
+error bounds in the [qualification record](docs/optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19).
 
 The Python branch and an archive of the former `main` tip have been published.
 GitHub's default branch is still `main`: the repository-settings update returned
@@ -314,7 +321,7 @@ The table describes supported integration paths. It is not a promise that every 
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4 | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; CUDA BF16 companion, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
-| Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4` | CUDA, one GPU | DFlash2 and context copies |
+| Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
 | Ternary Bonsai 2 27B | `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` | MLX | `z-lab/Qwen3.8-27B-DFlash2` and context copies |
@@ -370,6 +377,7 @@ sequence, and generation rejects prompts that exceed the served context.
 | `--max-tokens N` | Checkpoint `generation_config.json` `max_new_tokens`, otherwise `4096`, when a request omits its reply limit. |
 | `--eos-token-id ID` | Omitted: reconcile model/generation/tokenizer reply EOS. Repeat to replace the reply EOS set; PLE training EOS is unchanged. |
 | `--chat-template FILE`, `--chat-template-name NAME` | Omitted: checkpoint template, with automatic `default`/`tool_use` selection for named templates. Mutually exclusive explicit source/name overrides. |
+| `--tokenizer FILE` | CUDA only; omitted: the checkpoint's `tokenizer.json`. Encodes and decodes with FILE instead, admitted only when its vocabulary, merges and added tokens equal the checkpoint's (text handling such as the pre-tokenizer may differ); the startup log names the file, its SHA-256 and what differs. Read once at startup. Refused with `--vision` (its image prompts keep the checkpoint's tokenizer) and with several ranks (`--tp`, `--expert-ranks`). For a fine-tune that ships an altered pre-tokenizer, e.g. the AEON Qwen3.8-27B export (see the [27B recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)). |
 | `--temperature`, `--top-p`, `--top-k`, `--min-p` | Checkpoint `generation_config.json`; on both backends temperature falls back to 0, top-k to 0 (off), top-p to 1 (off), min-p to 0. Temperature 0 or top-p 0 is greedy; top-p and min-p outside 0 to 1 are refused at startup. |
 | `--presence-penalty`, `--frequency-penalty`, `--repetition-penalty` | 0, 0 and the checkpoint's `generation_config.json` `repetition_penalty`, else 1 (off). OpenAI/vLLM penalties applied by the CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 engines on one GPU ([API](docs/api.md#penalties)); presence/frequency outside -2 to 2 or repetition at or below 0 are refused at startup; other engines and the Metal backend name defaults they do not apply and refuse requests asking for them. |
 | `--thinking`, `--no-thinking` | Thinking enabled by default when the template supports it. |
@@ -414,7 +422,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
 | `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. |
 | `--kv-key-dtype FORMAT`, `--kv-value-dtype FORMAT` | Unset; independently override their side of `--kv-dtype`. |
-| `--yarn-factor FACTOR` | Flash Next CUDA: checkpoint factor unless overridden; finite factor ≥1. `--context` still governs admission. |
+| `--yarn-factor FACTOR` | Flash Next and Qwen3.8 dense on CUDA: checkpoint factor unless overridden; finite factor ≥1. `--context` still governs admission. Qwen3.8 dense extended-window qualification is pending ([27B recipe](docs/recipes/qwen3.8-27b.md#context-and-yarn)). |
 | `--prompt-cache-gib N` | MLX retained-prefix budget; 0 disables retention. Default is idle room after weights/window/shared round, normally at least an eighth of RAM up to 16 GiB, given back on demand. |
 | `--checkpoint-slots N` | MLX: default 3 prefixes per lane, at least 8. CUDA Qwen dense with parallel ≥2: default 3 retained prompt states, subject to its rank/memory policy. |
 | `--spill-gib N` | MLX, default 0. Disk capacity for evicted conversation prefixes; needs `--snapshot-dir`. |
@@ -480,6 +488,8 @@ Flash Next CUDA supports static YaRN text RoPE extension. For a checkpoint with 
 ```
 
 This requests a 2× RoPE limit and admission window. It is **not a fit guarantee**, and it is unsuitable as the starting configuration for the 16 GB GPU example. YaRN can change short- and long-context quality; validate your intended tasks. The separate-VRAM performance trials below configured only 2,048 tokens with factor 2. A previous GB10 deployment has a bounded 524k retrieval record in its [deployment guide](deploy/gb10/README.md); one retrieval is not a general long-context accuracy guarantee or qualification of the latest image.
+
+Qwen3.8 dense on CUDA reads the same static YaRN policy for its MLX, EXL3 and NVFP4 checkpoints, on one rank or two: `--yarn-factor 4` takes the native 262,144 positions to 1,048,576 (the upstream card's 1,000,000-token reach), and a checkpoint that declares YaRN brings its own factor. Without the flag it serves native RoPE at 262,144 tokens. Only the policy and kernel checks have run; a full-model run at the extended window is **pending**. See the [27B recipe](docs/recipes/qwen3.8-27b.md#context-and-yarn).
 
 CUDA omitted/0 context targets affordable native capacity. GLM's default target is a dense 2,051-token window; Nemotron's is 16,384; admission may lower them. MLX omitted context fits the metadata window to startup estimates, while 0 removes only the metadata cap. Use the **reported effective context** for client compaction.
 

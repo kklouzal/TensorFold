@@ -22,6 +22,9 @@ COUNT = 20
 
 
 class _Tok:
+    def token_to_id(self, token):
+        return None
+
     def decode(self, ids, **kwargs):
         return "".join(chr(0x100 + int(t)) for t in ids)          # one printable character a token
 

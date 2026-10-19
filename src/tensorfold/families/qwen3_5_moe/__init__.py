@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..qwen3_5.config_metadata import check_metadata as check_metadata
+from ..qwen3_5.config_metadata import check_metadata as _dense_metadata
 
 MODEL_TYPES = ("qwen3_5_moe",)
 TITLE = "Qwen3.6 MoE"
@@ -25,6 +25,17 @@ MLX_MODEL_FILE = True
 # the CUDA engine's kernels read MLX affine weights of this (bits, group size)
 CUDA_QUANTIZATION = (4, 64)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet projections' FP8 prompt kernel
+
+
+def check_metadata(raw: dict[str, Any], backend: str) -> None:
+    """The dense family's preflight; CUDA reads default text RoPE only (its MTP head and admission take no YaRN)."""
+
+    _dense_metadata(raw, backend)
+    if backend == "cuda":
+        from ..qwen3_5.config_metadata import declared_yarn
+
+        if declared_yarn(raw) is not None:
+            raise ValueError(f"{TITLE} on CUDA reads default text RoPE; this checkpoint declares YaRN")
 
 
 def check(model_dir: str | Path) -> None:
@@ -164,6 +175,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
     if int(tp) != 1:
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
+    from tensorfold.families import read_config
+
+    check_metadata(read_config(Path(model_dir)), "cuda")  # also refused outside the CLI: its MTP head takes no YaRN
     from tensorfold.cuda.nvfp4.format import is_quantized
 
     if is_quantized(Path(model_dir)):
