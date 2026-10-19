@@ -2,9 +2,10 @@
 
 Each keeps the BF16 rounding points of the Qwen3 expressions it replaces (normalized value before the weight
 multiply; rotation products and their sum; SiLU before the product). The FP32 work between them (a row's mean of
-squares in one program, Triton's exp) may differ from torch's in the last FP32 bit, so the fused drafter is not
-bit-identical to an eager one, but every row's result depends only on that row (no batch-size-dependent reduction).
-Proposals only: the target verifies every committed token.
+squares in one program, Triton's rsqrt and exp) may round differently from torch's in low-order bits, so the fused
+drafter is not bit-identical to an eager one, but every row's result depends only on that row (no batch-size-dependent
+reduction). Proposals only: the target verifies every committed token. Every tensor argument is contiguous (the
+kernels index rows by their declared widths): the drafter's projections, embedding and norms produce such tensors.
 
 - ``rmsnorm``: optional BF16 residual add, then Qwen3 RMSNorm: fp32 mean of squares, the normalized value rounded to
   BF16 before the BF16 weight multiply (rounded again).
@@ -48,13 +49,16 @@ def rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float, residual: torch.T
 
 
 @triton.jit
-def _rope_head(src, wn, inv, cos, sin, D: tl.constexpr):
-    """One normed, rotated head from its row's loaded values (``src`` pointer row, ``wn`` norm weight)."""
+def _rope_head(src, wn, cos_row, sin_row, eps, D: tl.constexpr):
+    """The head at ``src`` RMS-normed (``wn`` weight) and rotated by its row's ``cos_row``/``sin_row``, as BF16."""
     d = tl.arange(0, D)
     half: tl.constexpr = D // 2
     partner = tl.where(d < half, d + half, d - half)
     x = tl.load(src + d).to(tl.float32)
     xp = tl.load(src + partner).to(tl.float32)
+    inv = tl.rsqrt(tl.sum(x * x, 0) / D + eps)
+    cos = tl.load(cos_row + d).to(tl.float32)
+    sin = tl.load(sin_row + d).to(tl.float32)
     n = ((x * inv).to(tl.bfloat16).to(tl.float32) * tl.load(wn + d).to(tl.float32)).to(tl.bfloat16).to(tl.float32)
     m = ((xp * inv).to(tl.bfloat16).to(tl.float32) * tl.load(wn + partner).to(tl.float32))
     m = m.to(tl.bfloat16).to(tl.float32)
@@ -64,21 +68,21 @@ def _rope_head(src, wn, inv, cos, sin, D: tl.constexpr):
     return (a + b).to(tl.bfloat16)
 
 
-@triton.jit
+# ``rows`` (here) and ``layer`` (_kv_append) are not value-specialised: one compiled variant serves every block length
+# and layer instead of one each for 1 / multiples of 16 / other values; addresses keep the constexpr D factor either
+# way (same PTX loads and stores).
+@triton.jit(do_not_specialize=["rows"])
 def _qkv_heads(QKV, QN, KN, COS, SIN, QO, KO, VO, rows, eps, H: tl.constexpr, HKV: tl.constexpr, D: tl.constexpr):
     r = tl.program_id(0).to(tl.int64)
     h = tl.program_id(1)
     d = tl.arange(0, D)
     src = QKV + r * ((H + 2 * HKV) * D) + h * D
-    if h < H + HKV:
-        x = tl.load(src + d).to(tl.float32)
-        inv = tl.rsqrt(tl.sum(x * x, 0) / D + eps)
-        cos = tl.load(COS + r * D + d).to(tl.float32)
-        sin = tl.load(SIN + r * D + d).to(tl.float32)
-        if h < H:
-            tl.store(QO + (h * rows + r) * D + d, _rope_head(src, QN, inv, cos, sin, D))
-        else:
-            tl.store(KO + ((h - H) * rows + r) * D + d, _rope_head(src, KN, inv, cos, sin, D))
+    # q and k each inline _rope_head: on sm_120 one shared inline (branch-selected weight and destination) measured
+    # 0.7% slower at 240 rows, and a norm prologue shared before the branch 7-11% slower at 16-240 rows.
+    if h < H:
+        tl.store(QO + (h * rows + r) * D + d, _rope_head(src, QN, COS + r * D, SIN + r * D, eps, D))
+    elif h < H + HKV:
+        tl.store(KO + ((h - H) * rows + r) * D + d, _rope_head(src, KN, COS + r * D, SIN + r * D, eps, D))
     else:
         tl.store(VO + ((h - H - HKV) * rows + r) * D + d, tl.load(src + d))
 
@@ -95,7 +99,7 @@ def qkv_heads(qkv: torch.Tensor, q_norm: torch.Tensor, k_norm: torch.Tensor, cos
     return q, k, v
 
 
-@triton.jit
+@triton.jit(do_not_specialize=["layer"])
 def _kv_append(KV, KN, COS, SIN, DEST, layer, eps, HKV: tl.constexpr, D: tl.constexpr):
     r = tl.program_id(0).to(tl.int64)
     h = tl.program_id(1)
@@ -108,17 +112,16 @@ def _kv_append(KV, KN, COS, SIN, DEST, layer, eps, HKV: tl.constexpr, D: tl.cons
     offset = ((layer * HKV + kh).to(tl.int64) * capacity + slot) * D
     src = KV + r * (2 * HKV * D) + h * D
     if h < HKV:
-        x = tl.load(src + d).to(tl.float32)
-        inv = tl.rsqrt(tl.sum(x * x, 0) / D + eps)
-        cos = tl.load(COS + r * D + d).to(tl.float32)
-        sin = tl.load(SIN + r * D + d).to(tl.float32)
-        tl.store(kbase + offset + d, _rope_head(src, KN, inv, cos, sin, D))
+        tl.store(kbase + offset + d, _rope_head(src, KN, COS + r * D, SIN + r * D, eps, D))
     else:
         tl.store(vbase + offset + d, tl.load(src + d))
 
 
 def destinations(stores, starts, sizes, device) -> torch.Tensor:
-    """Per appended row (key store, value store, capacity, slot) as one int64 device table."""
+    """Per appended row (key store, value store, capacity, slot) as one int64 device table. Each store's k and v are
+    contiguous BF16 [layers, kv_heads, capacity, head_dim] allocations (16-byte-aligned bases: kv_append's
+    ``multiple_of`` hint) that outlive the launches. The pinned staging tensor is freed to PyTorch's caching host
+    allocator, which reuses it only after the non-blocking copy's stream event."""
     flat = []
     for store, start, n in zip(stores, starts, sizes):
         if n:

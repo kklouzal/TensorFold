@@ -29,13 +29,18 @@ def norm(x, weight, eps):
     return (x.float() * inverse).to(x.dtype) * weight
 
 
+def _rot(x, cos, sin):
+    """Heads x [heads, rows, head_dim] rotated by per-row cos/sin [rows, head_dim]."""
+    left, right = x.chunk(2, dim=-1)
+    return x * cos + torch.cat([-right, left], dim=-1) * sin
+
+
 def rotate(x, positions, cfg, inv):
     frequencies = positions.float().unsqueeze(1) @ inv.float().unsqueeze(0)
     frequencies = torch.cat([frequencies, frequencies], dim=-1)
-    cos = (frequencies.cos() * cfg.rope.attention_factor).to(x.dtype).unsqueeze(0)
-    sin = (frequencies.sin() * cfg.rope.attention_factor).to(x.dtype).unsqueeze(0)
-    left, right = x.chunk(2, dim=-1)
-    return x * cos + torch.cat([-right, left], dim=-1) * sin
+    cos = (frequencies.cos() * cfg.rope.attention_factor).to(x.dtype)
+    sin = (frequencies.sin() * cfg.rope.attention_factor).to(x.dtype)
+    return _rot(x, cos, sin)
 
 
 class StoreRound:
@@ -76,10 +81,9 @@ class CpuLinear:
         return F.linear(value, self.weight)
 
 
-def _rot(x, cos, sin):
-    """``rotate`` for draft_glue's per-row cos/sin [rows, head_dim]."""
-    left, right = x.chunk(2, dim=-1)
-    return x * cos[None] + torch.cat([-right, left], dim=-1) * sin[None]
+def _heads(x, count, head_dim, weight, cos, sin, eps):
+    """Projection columns x [rows, count * head_dim] as RMS-normed, rotated heads [count, rows, head_dim]."""
+    return _rot(norm(x.view(x.shape[0], count, head_dim), weight, eps).transpose(0, 1), cos, sin)
 
 
 class CpuGlue:
@@ -92,10 +96,10 @@ class CpuGlue:
 
     @staticmethod
     def qkv_heads(qkv, q_norm, k_norm, cos, sin, eps, *, heads, kv_heads, head_dim):
-        rows, wq, wk = qkv.shape[0], heads * head_dim, kv_heads * head_dim
-        q = _rot(norm(qkv[:, :wq].view(rows, heads, head_dim), q_norm, eps).transpose(0, 1), cos, sin)
-        k = _rot(norm(qkv[:, wq:wq + wk].view(rows, kv_heads, head_dim), k_norm, eps).transpose(0, 1), cos, sin)
-        v = qkv[:, wq + wk:].view(rows, kv_heads, head_dim).transpose(0, 1)
+        wq, wk = heads * head_dim, kv_heads * head_dim
+        q = _heads(qkv[:, :wq], heads, head_dim, q_norm, cos, sin, eps)
+        k = _heads(qkv[:, wq:wq + wk], kv_heads, head_dim, k_norm, cos, sin, eps)
+        v = qkv[:, wq + wk:].view(-1, kv_heads, head_dim).transpose(0, 1)
         return q.contiguous(), k.contiguous(), v.contiguous()
 
     @staticmethod
@@ -105,9 +109,9 @@ class CpuGlue:
 
     @staticmethod
     def kv_append(kv, k_norm, cos, sin, dest, layer, eps, *, kv_heads, head_dim):
-        rows, wk = kv.shape[0], kv_heads * head_dim
-        k = _rot(norm(kv[:, :wk].view(rows, kv_heads, head_dim), k_norm, eps).transpose(0, 1), cos, sin)
-        v = kv[:, wk:].view(rows, kv_heads, head_dim).transpose(0, 1)
+        wk = kv_heads * head_dim
+        k = _heads(kv[:, :wk], kv_heads, head_dim, k_norm, cos, sin, eps)
+        v = kv[:, wk:].view(-1, kv_heads, head_dim).transpose(0, 1)
         for r, (store, slot) in enumerate(dest):
             store.k[layer, :, slot], store.v[layer, :, slot] = k[:, r], v[:, r]
 
@@ -206,7 +210,7 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     draft = dflash.DFlash(directory, target, context_limit=64)
     assert draft.bits == 16 and target.binding == (0, 2)
     assert all(torch.equal(draft.weights[k], v) for k, v in arrays.items() if v.ndim == 1)
-    groups = projection_groups(cfg, 16)
+    groups = projection_groups(cfg)
     assert sorted(draft.linears) == sorted(key for key, _ in groups)      # every stored projection, rows stacked
     assert all(torch.equal(draft.linears[key].weight, torch.cat([arrays[name] for name in names]))
                for key, names in groups)
@@ -217,6 +221,18 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     geometry = draft_geometry(raw, streams=2, kept=3, prompt_rows=8)
     per_token = 2 * cfg.layers * cfg.kv_heads * cfg.head_dim * 2
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
+
+
+def test_affine4_context_append_reads_the_kv_tiles_of_the_stacked_qkv_pack(fixture):
+    directory, _raw, cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=4)
+    assert sorted(draft.linears) == sorted(key for key, _ in projection_groups(cfg))
+    q, kv_rows = cfg.heads * cfg.head_dim, 2 * cfg.kv_heads * cfg.head_dim
+    for layer, kv in enumerate(draft._context_kv):                         # whole tiles of the pack, not a copy
+        qkv = draft.linears[f"layers.{layer}.qkv"]
+        assert kv.layout == qkv.layout == "tiled" and kv.n == kv_rows and kv.k == qkv.k
+        assert kv.weight.data_ptr() == qkv.weight[q // 64].data_ptr()
+        assert all(getattr(kv, part).data_ptr() == getattr(qkv, part)[:, q].data_ptr() for part in ("scales", "biases"))
 
 
 def test_admission_charges_context_attention_partials_per_complete_chunk(fixture):
@@ -396,6 +412,39 @@ def test_a_failed_append_keeps_every_context_and_later_appends_exact(fixture):
         assert all(torch.equal(x, y) for f in (0, 1) for x, y in zip(committed(got, f), committed(want, f)))
 
 
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_an_append_failing_between_layers_keeps_every_context_and_later_appends_exact(fixture, exclusive):
+    """kv_append writes each layer's rows into the claimed slots as it goes: a failure after layer 0 leaves rows past
+    every published snapshot only (one stream when exclusive, two resumed from one context otherwise)."""
+    directory, _raw, _cfg, _arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, exclusive=exclusive)
+    taps = torch.randn((9, 128), generator=torch.Generator().manual_seed(8)).bfloat16()
+    draft.add_taps(taps[:4])
+    cached = draft.snapshot()
+    kept = [t.clone() for field in (0, 1) for t in committed(cached, field)]
+    parts = [taps[4:6]] if exclusive else [taps[4:6], taps[6:9]]
+    failure, append = MemoryError("context projection of layer 1"), CpuGlue.kv_append
+
+    def failing(kv, k_norm, cos, sin, dest, layer, *args, **kwargs):
+        if layer == 1:
+            raise failure
+        return append(kv, k_norm, cos, sin, dest, layer, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(CpuGlue, "kv_append", staticmethod(failing))
+        with pytest.raises(MemoryError) as caught:
+            draft.add_taps_streams([cached] * len(parts), parts)
+        assert caught.value is failure
+    assert all(torch.equal(x, y) for x, y in zip([t for f in (0, 1) for t in committed(cached, f)], kept))
+    retried = draft.add_taps_streams([cached] * len(parts), parts)
+    for got, part in zip(retried, parts):
+        clean = dflash.DFlash(directory, target, context_limit=64)
+        clean.add_taps(torch.cat((taps[:4], part)))
+        want = clean.snapshot()
+        assert got[2:] == want[2:]
+        assert all(torch.equal(x, y) for f in (0, 1) for x, y in zip(committed(got, f), committed(want, f)))
+
+
 def test_stores_grow_geometrically_within_the_window_and_keep_rows(fixture):
     directory, _raw, _cfg, _arrays, target = fixture
     raw = json.loads((directory / "config.json").read_text())
@@ -569,8 +618,8 @@ class FixedChains:
 def test_proposals_stop_where_the_drafters_cumulative_score_exceeds_the_cut(fixture):
     directory, _raw, _cfg, _arrays, target = fixture
     chains = FixedChains([[5, 6, 7, 8], [9, 10, 11, 12]], [[0.5, 2.9, 3.1, 4.0], [3.5, 3.6, 4.0, 9.0]])
-    for stop, first, second in ((3.0, [5, 6], [9]), (None, [5, 6, 7, 8], [9, 10, 11, 12]), (0.0, [5], [9]),
-                                (10.0, [5, 6, 7, 8], [9, 10, 11, 12])):
+    for stop, first, second in ((3.0, [5, 6], [9]), (2.9, [5, 6], [9]), (None, [5, 6, 7, 8], [9, 10, 11, 12]),
+                                (0.0, [5], [9]), (10.0, [5, 6, 7, 8], [9, 10, 11, 12])):  # at the cut (2.9) stays
         draft = dflash.DFlash(directory, target, context_limit=64, stop_score=stop)
         for row, want in ((0, first), (1, second)):
             ids, parents, kept = draft.finish_tree((chains, row), 0, 4)

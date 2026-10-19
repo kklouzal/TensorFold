@@ -127,16 +127,17 @@ def checked_headers(directory):
     return cfg, found
 
 
-def projection_groups(cfg, bits):
+def projection_groups(cfg):
     """The drafter's projections as held on the GPU: (key, checkpoint tensors stacked by output rows). Each layer's
-    q|k|v and gate|up run as one projection apiece (an output column's arithmetic does not depend on the other rows);
-    4-bit packs keep q apart from k|v, which the context append reads alone and packed tiles cannot row-slice."""
+    q|k|v and gate|up run as one projection apiece (an output column reads only its own weight row; a 4-bit pack's
+    K split follows the stacked shape, ``qmm.split_k``). The context append reads the k|v rows as a view: BF16 rows,
+    or whole 4-bit tiles (``DraftConfig`` keeps H D and Hkv D multiples of 64: k|v starts on a 64-row tile edge and
+    spans whole 128-row blocks, ``qmm_fast.rows``)."""
     groups = [("fc", ("fc.weight",))]
     for i in range(cfg.layers):
         attn, mlp, key = f"layers.{i}.self_attn.", f"layers.{i}.mlp.", f"layers.{i}."
-        q, k, v = (attn + f"{kind}_proj.weight" for kind in "qkv")
-        groups += [(key + "q", (q,)), (key + "kv", (k, v))] if bits == 4 else [(key + "qkv", (q, k, v))]
-        groups += [(key + "o", (attn + "o_proj.weight",)),
+        groups += [(key + "qkv", tuple(attn + f"{kind}_proj.weight" for kind in "qkv")),
+                   (key + "o", (attn + "o_proj.weight",)),
                    (key + "gate_up", (mlp + "gate_proj.weight", mlp + "up_proj.weight")),
                    (key + "down", (mlp + "down_proj.weight",))]
     return groups
@@ -155,10 +156,10 @@ def draft_weights(directory, *, bits=16):
     for shape in shapes.values():
         if len(shape) == 1:
             resident += shape[0] * 2
-    for _, names in projection_groups(cfg, bits):
+    for _, names in projection_groups(cfg):
         rows, columns = sum(shapes[name][0] for name in names), shapes[names[0]][1]
         if bits == 4:
-            padded = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to128
+            padded = -(-rows // 128) * 128  # shared Q4 tile layout pads output rows to 128
             resident += padded * columns // 2 + padded * (columns // 64) * 4
             # affine4 conversion owns FP32 reductions/codes alongside the group's BF16 input.
             staging = max(staging, rows * columns * 24)

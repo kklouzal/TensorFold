@@ -28,7 +28,7 @@ from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
 from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
-from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
+from tensorfold.families.qwen3_5.cuda.qmm_fast import rows as tiled_rows, tile
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
 from ..dflash_metadata import QUERY_TILE, checked_headers, padded_block, positive, projection_groups
@@ -37,8 +37,9 @@ from . import context_attention, draft_glue
 MIN_ROWS = 1024     # the smallest store capacity; capacities are MIN_ROWS * 2**k, capped at the admitted window
 # Proposal cut: a round keeps its drafts while sum(logsumexp - max) over their rows (the drafter's -log top-path
 # probability) stays at or under this many nats, and always the first. Selected on the GB10 (Qwen3.6 heretic + 42d3b34,
-# 64/4096-token contexts, greedy and card sampling, thinking on and off; runs qwen36-f2s1): 3 gave +27..31% decode
-# tok/s over all 15 drafts, 2 and 5 within 3% of it, 1 and fixed 4..12-row windows below.
+# one stream, 64/4096-token contexts, greedy and card sampling, thinking off; runs qwen36-f2s1): 3 gave +27..31%
+# decode tok/s over all 15 drafts, 2 within 3% of it, 5 within 5% (0.5% ahead at 4096 card), 1 and fixed 4..12-row
+# windows below; a partial thinking-on run agrees (+27..29%). Longer contexts and several streams are unmeasured.
 STOP_SCORE = 3.0
 
 
@@ -115,7 +116,7 @@ class DFlash:
             for name, shape in cfg.shapes().items():
                 if len(shape) == 1:
                     self.weights[name] = reader.get(name).to(self.device).contiguous()
-            self.linears = self._prepare(lambda name: reader.get(name).to(self.device))
+            self.linears, self._context_kv = self._prepare(lambda name: reader.get(name).to(self.device))
         except BaseException as primary:  # noqa: BLE001 - preserve the primary if reader rollback transport fails
             try:
                 rollback(reader, primary, reader.close)
@@ -129,10 +130,10 @@ class DFlash:
         self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
 
     def _prepare(self, read):
-        """``projection_groups``' projections, each group's parts read one at a time into its rows. The context
-        append reads the k|v rows: a row view of the BF16 q|k|v storage, or its own 4-bit pack."""
+        """``projection_groups``' projections (each group's parts read one at a time into its rows) and each layer's
+        k|v rows for the context append: views of its q|k|v storage (BF16 rows or whole 4-bit tiles), not owned."""
         cfg, shapes, out = self.config, self.config.shapes(), {}
-        for key, names in projection_groups(cfg, self.bits):
+        for key, names in projection_groups(cfg):
             if len(names) == 1:
                 weight = read(names[0]).contiguous()
             else:
@@ -142,10 +143,9 @@ class DFlash:
                     weight[start:start + count].copy_(read(name))
             out[key] = tile(quantize4(weight)) if self.bits == 4 else Plain(weight)
             del weight
-        q_rows = cfg.heads * cfg.head_dim
-        self._context_kv = [out[f"layers.{i}.kv"] if self.bits == 4 else Plain(out[f"layers.{i}.qkv"].weight[q_rows:])
-                            for i in range(cfg.layers)]
-        return out
+        q, qkv = cfg.heads * cfg.head_dim, (cfg.heads + 2 * cfg.kv_heads) * cfg.head_dim
+        stacked = [out[f"layers.{i}.qkv"] for i in range(cfg.layers)]
+        return out, [tiled_rows(w, q, qkv) if self.bits == 4 else Plain(w.weight[q:]) for w in stacked]
 
     @property
     def context_len(self):
@@ -247,9 +247,7 @@ class DFlash:
         cfg, weights = self.config, self.weights
         base = f"layers.{layer}."
         x, h = draft_glue.rmsnorm(x, weights[base + "input_layernorm.weight"], cfg.eps, residual=mlp)
-        qkv = (self._lin(h, base + "qkv") if self.bits != 4 else
-               torch.cat([self._lin(h, base + "q"), self._lin(h, base + "kv")], 1))
-        q, k, v = draft_glue.qkv_heads(qkv, weights[base + "self_attn.q_norm.weight"],
+        q, k, v = draft_glue.qkv_heads(self._lin(h, base + "qkv"), weights[base + "self_attn.q_norm.weight"],
                                        weights[base + "self_attn.k_norm.weight"], cos, sin, cfg.eps,
                                        heads=cfg.heads, kv_heads=cfg.kv_heads, head_dim=cfg.head_dim)
         out = context_attention.block_attention(q, k, v, launch, layer, cfg.head_dim ** -0.5)
@@ -289,9 +287,9 @@ class DFlash:
         mlp = None
         for layer in range(self.layers):
             x, mlp = self._layer(layer, x, mlp, launch, cos, sin)
-        rows = (x + mlp).view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden)
-        _, h = draft_glue.rmsnorm(rows, self.weights["norm.weight"], cfg.eps)
-        logits = _mm(h, self.target_head).float()
+        # One launch adds the last MLP and norms every row, the anchors' too (a row's norm reads only that row).
+        _, h = draft_glue.rmsnorm(x, self.weights["norm.weight"], cfg.eps, residual=mlp)
+        logits = _mm(h.view(len(live), length, self.hidden)[:, 1:].reshape(-1, self.hidden), self.target_head).float()
         # The argmax proposals; a penalized stream's rows are penalized as the target's will be.
         chains = speculative.Chains(logits, [None if histories is None else histories[i] for i in live], length - 1)
         for row, i in enumerate(live):
