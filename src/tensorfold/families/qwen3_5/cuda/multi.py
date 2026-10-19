@@ -43,8 +43,12 @@ def calibration_rows(streams: int, steps: bool = True) -> list[int]:
 
 
 def private(st: State, rows: int, most: int | None = None) -> State:
-    """A copy of a committed state with its own attention caches: reserved for ``most`` rows (default ``rows``), the
-    first ``rows`` mapped now (rows below ``pos`` copied in)."""
+    """A fresh or kept state on private attention caches, reserved for ``most`` rows (default ``rows``).
+
+    The input is a fresh State, or a kept/viewed entry clipped to its committed ``pos``. Callers request more rows
+    than those views hold (a strictly longer prompt and its reply), so ``reserve`` enters ``grow`` and replaces
+    every cache under the new owner. The first ``rows`` map now, with the committed prefix copied in.
+    """
 
     other = clone_state(st)
     other.kv = list(st.kv)                            # its own list and owner: the caches reserved next are this
@@ -268,6 +272,11 @@ class MultiDecoder:
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
         while not self.memory_gate.fits(self._cache_bytes(self._first(s))):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # physical-fit failure: complete queued releases before evicting more
+                reap()
+                continue
             if not self.cache.evict():
                 if not self.live():
                     return                          # alone: startup fitted one stream's whole window
@@ -287,6 +296,11 @@ class MultiDecoder:
         """Grow ``st``'s caches from ``have`` mapped rows to ``size`` while the gate has room (mapped in place)."""
 
         while not self.memory_gate.fits(self._cache_bytes(size) - self._cache_bytes(have)):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # do not end/wait a stream while its required bytes can be reclaimed
+                reap()
+                continue
             if not self.cache.evict():
                 if alone:
                     break                           # startup fitted one stream's whole window

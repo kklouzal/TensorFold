@@ -10,6 +10,7 @@ on a GPU (``tests/cuda/test_kv_arena.py``).
 from __future__ import annotations
 
 import weakref
+from types import SimpleNamespace
 
 import torch
 
@@ -21,6 +22,7 @@ class HostArena:
         self.row_bytes = int(torch.Size(self.row_shape).numel()) * torch.empty((), dtype=dtype).element_size()
         self.buf = torch.empty((0, *self.row_shape), dtype=dtype, device=self.device)
         self._view = None
+        self.drv = SimpleNamespace(check_retirement=lambda: None)
 
     @property
     def rows(self) -> int:

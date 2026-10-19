@@ -65,6 +65,38 @@ def test_cached_prompt_ends_go_before_a_stream_waits(cuda_modules, monkeypatch):
     assert dec._make_room([live, other]) == [] and not live.waiting and dec.cache.entries == []
 
 
+@pytest.mark.parametrize("phase", ["admit", "grow"])
+def test_queued_releases_are_reclaimed_only_after_a_physical_fit_failure(cuda_modules, monkeypatch, phase):  # noqa: F811
+    from tensorfold.cuda import kv_arena
+
+    m = cuda_modules
+    dec = _gated(m, 1 << 30, monkeypatch)
+    memory = {"free": 0, "pending": 1 << 30, "reaps": 0}
+    dec.memory_gate.live = lambda: memory["free"]
+    monkeypatch.setattr(kv_arena, "pending_bytes", lambda: memory["pending"])
+    monkeypatch.setattr(dec.cache, "evict", lambda: pytest.fail("reclaim queued mappings before evicting another prefix"))
+
+    def reap():
+        memory["free"], memory["pending"] = memory["pending"], 0
+        memory["reaps"] += 1
+
+    monkeypatch.setattr(kv_arena, "reap", reap)
+    live = _stream(m, 0, 8190)
+    dec.streams = {0: live}
+    if phase == "admit":
+        dec._room(SimpleNamespace(prompt=list(range(300)), count=10))
+    else:
+        assert dec._grow(live.st, 8190, 16384, alone=False)
+    assert memory["reaps"] == 1
+    # A fitting request/grow never introduces a driver wait merely because unrelated releases are queued.
+    memory["pending"] = 123
+    if phase == "admit":
+        dec._room(SimpleNamespace(prompt=list(range(300)), count=10))
+    else:
+        assert dec._grow(live.st, 16384, 16384, alone=False)
+    assert memory["reaps"] == 1
+
+
 def test_a_request_waits_for_room_while_others_decode_and_starts_alone_regardless(cuda_modules, monkeypatch):  # noqa: F811
     m = cuda_modules
     dec = _gated(m, 8190 * 8 + 100, monkeypatch)                                   # no room beyond the live stream

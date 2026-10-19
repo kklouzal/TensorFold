@@ -45,6 +45,7 @@ def _driver(failures=None):
     d = object.__new__(kv_arena._Driver)
     d.torch = SimpleNamespace(cuda=_Cuda(log), OutOfMemoryError=_OutOfMemory)
     d.lock, d.pending, d.mapped, d.device, d.granularity = threading.RLock(), [], 0, 0, G
+    d.retirement_error = None
     d.prop, d.access = kv_arena._Prop(), kv_arena._Access()
     handles = iter(range(100, 200))
 
@@ -73,6 +74,44 @@ def _queue(d, name, base, sizes, event=True):
 
 def _released(log):
     return [entry for entry in log if entry[0] in ("cuMemUnmap", "cuMemRelease", "cuMemAddressFree")]
+
+
+@pytest.mark.parametrize("stage", ["capture", "event", "stream", "record"])
+def test_finalizer_completion_failure_retains_identity_and_surfaces_at_owner_operations(monkeypatch, stage):
+    d, log = _driver()
+    failure = RuntimeError(f"{stage} failed")
+
+    def operation(name, result):
+        def invoke(*args):
+            assert d.pending and d.pending[0][1:3] == [1000, G]  # ownership precedes fallible CUDA work
+            if stage == name:
+                raise failure
+            return result
+        return invoke
+
+    event = SimpleNamespace(record=operation("record", None))
+    d.torch.cuda.is_current_stream_capturing = operation("capture", False)
+    d.torch.cuda.Event = operation("event", event)
+    d.torch.cuda.current_stream = operation("stream", object())
+    chunks = [(0, G, 7)]
+    d.mapped = G
+    d.retire(1000, G, chunks)                           # finalizer itself cannot propagate to an owning caller
+    assert d.retirement_error is failure and d.pending[0][3] is chunks and d.mapped == G
+    monkeypatch.setattr(kv_arena, "_DRIVERS", [d])
+    monkeypatch.setattr(kv_arena, "_driver", lambda device: d)
+    for owner_operation in (d.reap, d.pending_bytes, kv_arena.mapped_bytes, lambda: kv_arena.driver(0)):
+        with pytest.raises(RuntimeError, match="completion; mappings retained") as caught:
+            owner_operation()
+        assert caught.value.__cause__ is failure
+    assert _released(log) == [] and d.pending[0][3] is chunks
+
+
+def test_cached_driver_startup_reaps_valid_retirements_before_admission(monkeypatch):
+    d, log = _driver()
+    _queue(d, "completed", 1000, [G])
+    monkeypatch.setattr(kv_arena, "_driver", lambda device: d)
+    assert kv_arena.driver(0) is d
+    assert d.pending == [] and d.mapped == 0 and _released(log)
 
 
 def test_a_failed_release_raises_leaves_the_rest_queued_and_never_releases_twice():

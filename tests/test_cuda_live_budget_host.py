@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from tensorfold.cuda import capacity
+import pytest
+
+from tensorfold.cuda import capacity, kv_arena
 from tensorfold.cuda.memory_gate import MemoryGate, torch_live
 
 GIB = capacity.GIB
@@ -87,6 +89,22 @@ class CudaLiveBudgetTests(unittest.TestCase):
         self.assertEqual(live(), 3 * GIB)
         self.assertTrue(gate.fits(GIB))
         self.assertFalse(gate.fits(2 * GIB))
+
+
+@pytest.mark.parametrize("exclude", [0, 6 * GIB])
+@pytest.mark.parametrize("limited", [False, True])
+def test_unreleased_arena_mappings_cannot_fund_generic_torch_allocations(monkeypatch, exclude, limited):
+    torch, counters = device(free=3, allocated=40, reserved=45)
+    mapped = {"bytes": 10 * GIB}
+    monkeypatch.setattr(kv_arena, "mapped_bytes", lambda: mapped["bytes"])
+    monkeypatch.setattr(kv_arena, "pending_bytes", lambda: pytest.fail("queued bytes are not reusable Torch blocks"))
+    monkeypatch.setattr(kv_arena, "reap", lambda: pytest.fail("sampling live memory must not wait/reap"))
+    monkeypatch.setattr("tensorfold.cuda.memory_gate.cuda_limit_bytes", lambda: 60 * GIB if limited else None)
+    room = torch_live(torch, lambda runtime: counters.free, unavailable_spare_bytes=exclude,
+                      owner=object() if exclude else None)
+    assert room() == (3 if exclude else 8) * GIB
+    mapped["bytes"], counters.free = 0, 13 * GIB       # actual release, observed by both physical/cap accounting
+    assert room() == (13 if exclude else 18) * GIB
 
 
 if __name__ == "__main__":

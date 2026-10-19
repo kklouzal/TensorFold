@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tensorfold.cuda.capacity import Geometry, config, headers
-from tensorfold.cuda.geometry import gdn_geometry, layer_counts, live_kv, stream_geometry
+from tensorfold.cuda.geometry import arena_kv_bytes, gdn_geometry, layer_counts, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, routed_tensor_a4
 from tensorfold.cuda.read_budget import pinned_backing_bytes
 
@@ -247,7 +247,8 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     for count in (rows, prompt_rows):
         if (1 << max(4, (count - 1).bit_length())) * slots > (1 << 31) - 1:
             raise ValueError("MoE row/slot geometry exceeds the signed-int32 grouped-plan boundary")
-    linear, _ = layer_counts(t)
+    linear, attention = layer_counts(t)
+    kv_heads, head_dim = t["num_key_value_heads"], t["head_dim"]
     nk, nv = t["linear_num_key_heads"], t["linear_num_value_heads"]
     dk, dv, conv = t["linear_key_head_dim"], t["linear_value_head_dim"], t["linear_conv_kernel_dim"]
     state = linear * (nv * dk * dv * 4 + (conv - 1) * (2 * nk * dk + nv * dv) * 2)
@@ -265,7 +266,7 @@ def runtime_geometry(text, *, streams, keep, max_rows, prompt_rows) -> RuntimeGe
     def components(capacity):
         # Each live/kept lineage maps each layer's K/V separately. Single-stream KVRoom evicts other lineages;
         # concurrent lanes keep their private caches and up to keep + 1 prefix owners during publication.
-        kv = live_kv(t, 1, capacity)
+        kv = arena_kv_bytes(attention, kv_heads, head_dim, capacity)
         live = streams * kv
         snapshots = copies * state
         if streams > 1:

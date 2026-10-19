@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tensorfold.cuda import capacity, geometry
+from tensorfold.cuda import capacity, geometry, kv_arena
 from tensorfold.cuda.streams import KVRoom, PrefixCache
 from tensorfold.families.qwen3_5.cuda.affine_memory import draft_weights, weight_transform
 
@@ -26,7 +26,7 @@ class Buffer:
         return self.ptr
 
     def untyped_storage(self):
-        return SimpleNamespace(nbytes=lambda: self.bytes)
+        return SimpleNamespace(nbytes=lambda: self.bytes, data_ptr=self.data_ptr)
 
 
 def _state(rows: int) -> SimpleNamespace:
@@ -46,6 +46,22 @@ def test_nothing_goes_while_it_fits():
     cache = _cache(a, b)
     KVRoom(cache, (4096 + 8192 + 1024 + 8192) * ROW)(live, 8192 * ROW)
     assert [e[1] for e in cache.entries] == [a, b]
+
+
+def test_a_non_aligned_limit_charges_the_whole_physical_arena_tail(monkeypatch):
+    def state():
+        return SimpleNamespace(kv=[(Buffer(513 * 1024), Buffer(513 * 1024))])
+
+    live, other = state(), state()
+    mappings = {t.data_ptr(): SimpleNamespace(mapped=2 << 20,
+                                             drv=SimpleNamespace(check_retirement=lambda: None))
+                for st in (live, other) for pair in st.kv for t in pair}
+    monkeypatch.setattr(kv_arena, "_ARENAS", mappings)
+    cache = _cache(other)
+    room = KVRoom(cache, 5 << 20)
+    assert room.held(live) == 8 << 20                  # two K/V pairs; clipped Torch storage would undercount
+    room(live, 1 << 20)
+    assert cache.entries == [] and room.held(live) == 4 << 20
 
 
 def test_other_buffers_go_least_recently_used_first_and_the_resumed_list_stays():

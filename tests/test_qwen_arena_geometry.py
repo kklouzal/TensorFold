@@ -42,6 +42,17 @@ def test_inferred_attention_head_dimension_keeps_the_same_admission():
 
 
 @pytest.mark.parametrize("mtp", [False, True])
+def test_prepared_cache_dimensions_do_not_follow_later_header_mutations(mtp):
+    text = {**TEXT, "layer_types": ["linear_attention"] * 48 + ["full_attention"] * 16}
+    plan = geometry.gdn_geometry(text, 2, 12, kept=4, mtp=mtp)
+    parallel = stream_geometry(text, 3, 4, 2 if mtp else 0)
+    before = [(plan.bytes_at(n), parallel.bytes_at(n)) for n in (0, 1036, 262156)]
+    text["layer_types"].clear()
+    text.update(num_key_value_heads=2, head_dim=128)
+    assert [(plan.bytes_at(n), parallel.bytes_at(n)) for n in (0, 1036, 262156)] == before
+
+
+@pytest.mark.parametrize("mtp", [False, True])
 def test_more_retained_prefixes_count_their_recurrent_state_and_mtp_head(mtp):
     small = geometry.gdn_geometry(TEXT, 1, 12, kept=2, mtp=mtp)
     large = geometry.gdn_geometry(TEXT, 1, 12, kept=4, mtp=mtp)
@@ -59,8 +70,9 @@ def test_single_mtp_graph_has_a_separate_target_arena_and_head_cache(slots):
     serial = geometry.gdn_geometry(TEXT, 1, 12, rows=rows, kept=keep)
     mtp = geometry.gdn_geometry(TEXT, 1, 12, rows=rows, kept=keep, mtp=True)
     state = 48 * (48 * 128 * 128 * 4 + 3 * (2 * 16 * 128 + 48 * 128) * 2)
-    # Existing MTP verify workspace, one graph target state, its arena, and kept/current/graph head tensors.
-    expected = 32 * rows * 2560 * 4 + state + _mapped(slots, 1) + (keep + 2) * slots * 4 * 256 * 4
+    # Existing MTP verify workspace, one graph state/arena, kept/current/graph heads, and Cache.view's cat suffix.
+    head_side = slots * 4 * 256 * 2
+    expected = 32 * rows * 2560 * 4 + state + _mapped(slots, 1) + (keep + 2) * 2 * head_side + head_side
     assert mtp.bytes_at(slots) - serial.bytes_at(slots) == expected
 
 

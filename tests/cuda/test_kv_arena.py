@@ -184,7 +184,7 @@ def test_the_room_is_charged_with_the_bytes_a_grow_maps():
     assert charged == [after - before]                                # nothing to map: no charge
 
 
-def test_the_live_room_counts_arena_bytes_as_allocated_and_queued_ones_as_reusable(monkeypatch):
+def test_the_live_room_keeps_retirements_allocated_until_the_driver_releases_them(monkeypatch):
     _settle()
     limit = torch.cuda.memory_allocated() + kv_arena.mapped_bytes() + (512 << 20)
     monkeypatch.setattr("tensorfold.cuda.memory_gate.cuda_limit_bytes", lambda: limit)
@@ -194,8 +194,9 @@ def test_the_live_room_counts_arena_bytes_as_allocated_and_queued_ones_as_reusab
     a.ensure(100_000)
     v = a.view()
     assert start - live() == a.mapped
+    mapped = a.mapped
     del a, v
-    gc.collect()                                                      # queued: reusable before the next map
-    assert live() == start
+    gc.collect()                                                      # queued mappings are still physically allocated
+    assert live() == start - mapped
     kv_arena.reap()
     assert live() == start

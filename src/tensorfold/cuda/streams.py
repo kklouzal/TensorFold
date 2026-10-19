@@ -192,11 +192,14 @@ class KVRoom:
     def held(self, st: Any) -> int:
         """Bytes of every distinct attention buffer the state and the kept entries hold."""
 
+        from .kv_arena import cache_allocation
+
         seen, total = set(), 0
         for kv in [st.kv, *(e[1].kv for e in self.cache.entries)]:
             for pair in kv:
                 for t in pair or ():
-                    if t.data_ptr() not in seen:
-                        seen.add(t.data_ptr())
-                        total += t.untyped_storage().nbytes()
+                    base, amount = cache_allocation(t)
+                    if base not in seen:
+                        seen.add(base)
+                        total += amount
         return total

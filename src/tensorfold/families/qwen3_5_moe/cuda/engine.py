@@ -25,10 +25,11 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     """The 27B's concurrent geometry plus the MTP head's keys and values for each stream and kept end, and the lone stream's graph buffers."""
 
     from tensorfold.cuda.capacity import Geometry
-    from tensorfold.cuda.geometry import layer_counts, live_kv, stream_geometry as dense
+    from tensorfold.cuda.geometry import arena_kv_bytes, layer_counts
+    from tensorfold.cuda.geometry import stream_geometry as dense
 
     base = dense(text, 1, streams, keep)
-    linear, _ = layer_counts(text)
+    linear, attention = layer_counts(text)
     kv_heads, heads = int(text["num_key_value_heads"]), int(text["num_attention_heads"])
     head_dim = int(text.get("head_dim") or int(text["hidden_size"]) // heads)
     layer = 2 * kv_heads * head_dim * 2               # a layer's keys and values a slot
@@ -38,7 +39,7 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     if not depth:
         return Geometry(base.bytes_at, 1)
     return Geometry(lambda slots: base.bytes_at(slots) + (streams + keep + 2) * slots * layer
-                    + state + live_kv(text, 1, slots), depth + 1)
+                    + state + arena_kv_bytes(attention, kv_heads, head_dim, slots), depth + 1)
 
 
 class Qwen36Engine:

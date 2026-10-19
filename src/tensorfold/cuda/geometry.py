@@ -217,8 +217,15 @@ def prompt_rows(total: int, row_bytes: int, most: int = 4096) -> int:
     return max(512, min(most, total // PROMPT_SHARE // row_bytes // 512 * 512))
 
 
-ARENA_GRANULE = 2 << 20     # bytes a cache arena maps at a time (``kv_arena``: the CUDA VMM granularity, 2 MiB on
-                            # the qualified GPUs)
+ARENA_GRANULE = 2 << 20     # conservative admission granule; the actual VMM mapping granule must divide this
+                            # (``kv_arena``: 2 MiB on the qualified GPUs)
+
+
+def arena_kv_bytes(attention: int, kv_heads: int, head_dim: int, window: int) -> int:
+    """Mapped-cache bound from prepared per-rank dimensions: each layer's BF16 K/V side rounds independently."""
+
+    tensor = max(0, window) * kv_heads * head_dim * 2
+    return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
 
 
 def live_kv(t: dict, world: int, window: int) -> int:
@@ -227,8 +234,7 @@ def live_kv(t: dict, world: int, window: int) -> int:
 
     _, attention = layer_counts(t)
     hd = int(t.get("head_dim") or int(t["hidden_size"]) // int(t["num_attention_heads"]))
-    tensor = max(0, window) * int(t["num_key_value_heads"]) // world * hd * 2   # none below 0 rows
-    return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
+    return arena_kv_bytes(attention, int(t["num_key_value_heads"]) // world, hd, window)
 
 
 def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mtp: bool = False,
@@ -288,9 +294,11 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
         else:
             # Clones share their lineage's arenas. Independent kept prompts retain their own rounded mappings;
             # in-place growth copies nothing. Graph buffers and MTP Cache's ordinary tensors have separate owners.
-            cache = (1 if evicts else kept + 1) * live_kv(t, world, capacity - reserve)
+            cache = (1 if evicts else kept + 1) * arena_kv_bytes(attention, hk, hd, capacity - reserve)
             if mtp:
-                cache += live_kv(t, world, capacity) + (kept + 2) * capacity * hk * hd * 4
+                cache += arena_kv_bytes(attention, hk, hd, capacity) + (kept + 2) * capacity * hk * hd * 4
+                # MTP Cache.view still uses Torch cat: one new K/V-side suffix coexists with its result.
+                cache += capacity * hk * hd * 2
             scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
         return fixed + cache + scratch
     return Geometry(bytes_at, reserve)

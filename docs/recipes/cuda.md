@@ -288,16 +288,21 @@ caches. The CUDA CLI also does not apply `--alias`; use `--name` for the served 
 
 Qwen3.8-27B and Qwen3.6-35B-A3B keep each attention layer's keys and values in an arena of CUDA virtual memory
 ([`kv_arena.py`](../../src/tensorfold/cuda/kv_arena.py): `cuMemAddressReserve`, `cuMemCreate` and `cuMemMap` through
-`libcuda`). An arena reserves addresses once for the rows its cache may hold and maps physical memory at its end, in
-whole 2 MiB granules, as the cache grows: rows never move, so growth copies nothing, and the 27B's admission counts
-each cache's rows rounded up to the granule. A dropped cache's memory goes back to the driver, not to PyTorch's caching allocator, once
+`libcuda`). An arena reserves addresses once for the rows its cache may hold and maps physical memory at its end,
+in the driver's allocation granules, as the cache grows: rows never move, so growth copies nothing. Admission rounds
+each cache's rows up to 2 MiB; a supported driver's actual mapping granule divides that bound. A dropped cache's memory goes back to the driver, not to PyTorch's caching allocator, once
 the work queued before it finishes, so `torch.cuda.memory_allocated` leaves it out while `nvidia-smi` shows it. A GPU
 or driver that does not report virtual memory management, or whose granularity does not divide 2 MiB, is refused at
 startup before weight loading. Admission rounds each independent retained lineage's K/V mappings separately;
 the current lineage and its clones share their arenas, while MoE MTP graphs retain separate buffers. The NVFP4 MoE
 expert-pool reservation uses the same rounded mappings for live lanes and retained prefixes, with no growth-copy
-allowance. The arena implementation was checked on an RTX PRO 2000 Blackwell (2 MiB granules); final composed-source
+allowance. Shared live-memory checks count queued arena releases as allocated until the driver frees them; reading
+the budget does not synchronize or reap caches. The arena implementation was checked on an RTX PRO 2000 Blackwell (2 MiB granules); final composed-source
 GPU checks and GB10 qualification are pending.
+
+If a cache finalizer cannot establish CUDA completion, the driver retains its mappings and reports the original
+failure at the next startup, arena or memory-budget operation. It refuses further ownership operations without
+freeing memory that may still have consumers; restarting the process ends that failed driver's lifetime.
 
 ## Measuring
 

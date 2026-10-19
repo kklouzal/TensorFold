@@ -16,12 +16,15 @@ Contracts:
 - An arena's memory is used on the stream current when its last view goes (the caching allocator ties a block to
   its allocation stream instead; qwen3_5 creates and uses its caches on the default stream, where the two agree).
   Its release is queued with an event on that stream (none during graph capture) and done by the next arena
-  operation (``Arena()``, ``ensure``) or ``reap``, which wait for that work (a capture-time release syncs the
-  device). Until then its bytes count in ``pending_bytes``: reusable, like the allocator's cached blocks.
+  operation (``driver()``, ``Arena()``, ``ensure``) or ``reap``, which wait for that work (a capture-time release syncs
+  the device). Until then its bytes remain physically allocated and count in ``pending_bytes``. A Qwen pressure
+  check reaps only after a physical-fit failure, before evicting more prefixes or ending a stream.
 - Driver failures raise at the operation that meets them; out of memory raises ``torch.OutOfMemoryError`` after the
   queued releases are done. A failed map undoes its partial steps; a failing undo is noted on the primary error. A
   release leaves the queue as it is tried, so a failing one raises with the rest still queued and nothing is ever
-  released twice; memory a failed release kept stays in ``mapped_bytes``.
+  released twice; memory a failed release kept stays in ``mapped_bytes``. If a finalizer cannot establish completion,
+  it retains the mappings and first failure in the driver; subsequent driver/arena/accounting operations raise with
+  that cause. No release is attempted without proved completion; process exit owns this poisoned driver's cleanup.
 - The process-wide ``_Driver`` per device (libcuda binding, granularity, queued releases, mapped total) is created on
   first use, refusing a device without virtual memory management or whose granularity does not divide the
   admission's ``geometry.ARENA_GRANULE``, and lives until exit (the driver frees everything then); its queue and
@@ -108,7 +111,8 @@ class _Driver:
                                "cache (geometry.ARENA_GRANULE)")
         self.device = device
         self.lock = threading.RLock()         # reentrant: ``retire`` may run on a thread that holds it (module doc)
-        self.pending: list[tuple] = []        # (event or None, base, reserved, chunks) of arenas whose last view went
+        self.pending: list = []               # [event or None, base, reserved, chunks] after an arena's last view
+        self.retirement_error: BaseException | None = None  # completion could not be established: retain, never free
         self.mapped = 0                       # bytes mapped by live and queued arenas
 
     def call(self, name: str, *args) -> None:
@@ -131,17 +135,32 @@ class _Driver:
                 primary.add_note(f"attention cache arena cleanup {name} also failed: {cleanup!r}")
 
     def retire(self, base: int, reserved: int, chunks: list) -> None:
-        """An arena's last view went (its finalizer): queue the release behind the current stream's work."""
+        """Own the retirement before fallible completion setup. A finalizer cannot propagate failure to its caller:
+        retain its identity/mappings and surface a failed event setup at the next owning operation, never release
+        memory whose consumers may still run."""
 
         cuda = self.torch.cuda
-        event = None
-        if not cuda.is_current_stream_capturing():
-            event = cuda.Event()
-            event.record(cuda.current_stream(self.device))
         with self.lock:
-            self.pending.append((event, base, reserved, chunks))
+            item = [None, base, reserved, chunks]
+            self.pending.append(item)
+            if self.retirement_error is not None:
+                return
+            try:
+                if not cuda.is_current_stream_capturing():
+                    event = cuda.Event()
+                    event.record(cuda.current_stream(self.device))
+                    item[0] = event
+            except BaseException as error:  # noqa: BLE001 -- deferred to an owning operation, not stderr-only
+                if self.retirement_error is None:
+                    self.retirement_error = error
+
+    def check_retirement(self) -> None:
+        if self.retirement_error is not None:
+            raise RuntimeError("attention-cache retirement could not establish CUDA completion; mappings retained") \
+                from self.retirement_error
 
     def pending_bytes(self) -> int:
+        self.check_retirement()
         with self.lock:
             return sum(nbytes for item in self.pending for _, nbytes, _ in item[3])
 
@@ -152,6 +171,7 @@ class _Driver:
 
         cuda = self.torch.cuda
         with self.lock:
+            self.check_retirement()
             capturing = []
             try:
                 while self.pending:                     # a reentrant ``retire`` appends here: reaped in this pass
@@ -179,16 +199,28 @@ _ARENAS: weakref.WeakValueDictionary[int, Arena] = weakref.WeakValueDictionary()
 
 
 @cache
-def driver(device: int) -> _Driver:
+def _driver(device: int) -> _Driver:
     d = _Driver(device)
     _DRIVERS.append(d)
+    return d
+
+
+def driver(device: int) -> _Driver:
+    d = _driver(device)
+    d.check_retirement()
+    if d.pending:                           # startup admission observes physically reclaimed old mappings
+        d.reap()
     return d
 
 
 def mapped_bytes() -> int:
     """Device memory the arenas map, outside the caching allocator's statistics (queued releases included)."""
 
-    return sum(d.mapped for d in _DRIVERS)
+    total = 0
+    for d in _DRIVERS:
+        d.check_retirement()
+        total += d.mapped
+    return total
 
 
 def pending_bytes() -> int:
@@ -202,6 +234,17 @@ def reap() -> None:
 
     for d in _DRIVERS:
         d.reap()
+
+
+def cache_allocation(t: torch.Tensor) -> tuple[int, int]:
+    """Storage identity and physically retained bytes, including an arena's tail beyond a clipped tensor view."""
+
+    storage = t.untyped_storage()
+    base = storage.data_ptr()
+    arena = _ARENAS.get(base)
+    if arena is not None:
+        arena.drv.check_retirement()
+    return base, int(arena.mapped if arena is not None else storage.nbytes())
 
 
 def owned(t: torch.Tensor, owner: object) -> Arena | None:
@@ -235,8 +278,6 @@ class Arena:
             raise ValueError("an arena needs a CUDA device and a positive row capacity")
         index = device.index if device.index is not None else torch.cuda.current_device()
         self.drv = driver(index)
-        if self.drv.pending:
-            self.drv.reap()
         self.row_shape, self.dtype, self.device = tuple(row_shape), dtype, torch.device("cuda", index)
         self.owner = owner
         self.row_bytes = int(torch.Size(self.row_shape).numel()) * torch.empty((), dtype=dtype).element_size()
@@ -264,6 +305,7 @@ class Arena:
     def extra(self, rows: int) -> int:
         """The bytes ``ensure(rows)`` maps: none when they fit, else up to ``rows`` rounded to the granularity."""
 
+        self.drv.check_retirement()
         if rows <= self.rows:
             return 0
         if rows > self.capacity:
