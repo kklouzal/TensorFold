@@ -61,3 +61,28 @@ def test_cuda_yarn_option_reaches_qwen_dense_and_mlx_refuses(tmp_path):
     with pytest.raises(ValueError, match="Qwen3.8 dense on CUDA only"):
         check(args, family, "mlx", model)
     check(args, family, "cuda", model)
+
+
+def test_both_rope_fields_must_declare_the_same_yarn(tmp_path):
+    yarn = dict(TEXT["rope_parameters"], rope_type="yarn", factor=4.0, original_max_position_embeddings=262144)
+    for scaling, agree in ((dict(yarn), True), (dict(yarn, beta_fast=16.0), False), (TEXT["rope_parameters"], False)):
+        text = dict(TEXT, max_position_embeddings=1048576, rope_parameters=yarn, rope_scaling=scaling)
+        if agree:
+            assert qwen3_5.rope_parameters(_model(tmp_path, text)).factor == 4.0
+        else:
+            with pytest.raises(ValueError, match="disagree"):
+                qwen3_5.rope_parameters(_model(tmp_path, text))
+    text = dict(TEXT, rope_scaling=yarn)                          # default rope_parameters, YaRN rope_scaling
+    with pytest.raises(ValueError, match="disagree"):
+        qwen3_5.rope_parameters(_model(tmp_path, text))
+
+
+def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_refuses_declared_yarn():
+    from tensorfold.families import qwen3_5_moe
+
+    assert qwen3_5.ROPE_BACKENDS == ("cuda",)
+    raw = {"model_type": "qwen3_5_moe", "text_config": dict(TEXT, rope_parameters=dict(
+        TEXT["rope_parameters"], rope_type="yarn", factor=4.0, original_max_position_embeddings=262144))}
+    qwen3_5_moe.check_metadata(raw, "mlx")
+    with pytest.raises(ValueError, match="declares YaRN"):
+        qwen3_5_moe.check_metadata(raw, "cuda")

@@ -91,9 +91,25 @@ def _rope_kind(parameters: dict[str, Any]) -> str:
     return kind
 
 
-def declares_yarn(text: dict[str, Any]) -> bool:
-    """Whether the text config itself declares static YaRN (``--yarn-factor`` can also select it)."""
-    return any(_rope_kind(parameters) == "yarn" for parameters in _rope_parameter_sets(text))
+def declared_yarn(raw: dict[str, Any]):
+    """The config's own static YaRN as the shared ``qwen4_exp.rope.RopeParameters`` (validated there), or None when
+    it declares default RoPE only (``--yarn-factor`` can also select YaRN). When both ``rope_parameters`` and
+    ``rope_scaling`` are declared, each must resolve to the same YaRN policy (as ``resolve_default_rope`` requires of
+    default ones)."""
+    text = raw.get("text_config") or raw
+    sets = _rope_parameter_sets(text)
+    kinds = [_rope_kind(parameters) for parameters in sets]
+    if "yarn" not in kinds:
+        return None
+    if "default" in kinds:
+        raise ValueError("rope_parameters and rope_scaling disagree: one declares YaRN, the other default RoPE")
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    rest = {k: v for k, v in text.items() if k not in ("rope_parameters", "rope_scaling")}
+    policies = [RopeParameters.from_config({**rest, "rope_parameters": parameters}) for parameters in sets]
+    if len(policies) == 2 and policies[0] != policies[1]:
+        raise ValueError("rope_parameters and rope_scaling disagree")
+    return policies[0]
 
 
 def _default_rope(text: dict[str, Any], parameters: dict[str, Any], head_dim: int) -> DefaultRope:
@@ -205,10 +221,7 @@ def validate_cuda_metadata(raw: dict[str, Any]) -> None:
         raise ValueError("layer_types requires num_hidden_layers")
     elif "full_attention_interval" in text:
         _count(text["full_attention_interval"], "full_attention_interval", minimum=1)
-    if declares_yarn(text):
-        from tensorfold.families.qwen4_exp.rope import RopeParameters
-
-        RopeParameters.from_config(raw)            # validates the declaration; its frequencies are finite by build
+    if declared_yarn(raw) is not None:             # validated by its policy; its frequencies are finite by build
         return
     head_dim = text.get("head_dim")
     if head_dim:

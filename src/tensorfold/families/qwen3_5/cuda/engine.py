@@ -53,8 +53,8 @@ class Qwen27Engine:
         if nvfp4 and vision:
             raise ValueError("image input on CUDA is tested on the MLX checkpoint only: drop --vision for an NVFP4 "
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
-        self.rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
-        yarn = self.rope if self.rope.rope_type == "yarn" else None
+        rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = rope if rope.rope_type == "yarn" else None
         from .weights import load
         from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
@@ -85,11 +85,10 @@ class Qwen27Engine:
             prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
             if not torch.equal(both[0], both[1]):
                 raise RuntimeError("the two ranks were started with different settings (two-rank drafter, rows, "
-                                   f"head split, copies, --parallel, --context, --checkpoint-slots, --yarn-factor): "
-                                   "rank 0 "
-                                   f"{both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on both "
-                                   "machines, and pass the same --no-drafts, --parallel, --context and "
-                                   "--checkpoint-slots to both")
+                                   "head split, copies, --parallel, --context, --checkpoint-slots, --yarn-factor): "
+                                   f"rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on "
+                                   "both machines, and pass the same --no-drafts, --parallel, --context, "
+                                   "--checkpoint-slots and --yarn-factor to both")
             def gather(values):
                 return gather_ints(torch, lambda send, recv: dist.all_gather_into_tensor(recv, send), values)
         else:
@@ -129,8 +128,8 @@ class Qwen27Engine:
                                    **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
                                       if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
-        bindings = {**({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
-                    **({"rope": yarn} if yarn is not None else {})}
+        bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
+                    if value is not None}
         if tp == 2:
             full = load(model_dir, prefill_world=tp, **bindings)
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)

@@ -144,7 +144,7 @@ class Config:
         YaRN brings its own."""
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families.qwen3_5.config_metadata import (
-            declares_yarn,
+            declared_yarn,
             resolve_default_rope,
             resolve_layer_types,
             validate_cuda_metadata,
@@ -157,10 +157,8 @@ class Config:
         if not isinstance(t, dict):
             raise ValueError("text_config must be a JSON object")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
-        if rope is None and declares_yarn(t):
-            from tensorfold.families.qwen4_exp.rope import RopeParameters
-
-            rope = RopeParameters.from_config(raw)
+        if rope is None:
+            rope = declared_yarn(raw)
         yarn = rope if rope is not None and rope.rope_type == "yarn" else None
         rope = yarn if yarn is not None else resolve_default_rope(t, head_dim=head_dim)
         kinds = resolve_layer_types(t, layers=int(t["num_hidden_layers"])) if t.get("layer_types") is not None else ()
@@ -528,8 +526,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
             or any(type(name) is not str or name not in ("gate_proj", "up_proj", "down_proj") for name in prefill_mlp)
             or len(set(prefill_mlp)) != len(prefill_mlp))):
         raise ValueError("custom prefill MLP metadata must name its unique gate/up/down projections")
-    bindings = {**({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
-                **({"rope": rope} if rope is not None else {})}
+    bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quant_config(model_dir) is not None:
         return load_exl3(model_dir, device, **bindings)
     if quantized(model_dir):

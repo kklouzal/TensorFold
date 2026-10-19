@@ -210,10 +210,9 @@ def attn_prep(qg: torch.Tensor, k: torch.Tensor, q_norm: torch.Tensor, k_norm: t
     pos = pos.contiguous()
     qo = torch.empty((W, heads, head_dim), dtype=torch.bfloat16, device=qg.device)
     ko = torch.empty((W, kv_heads, head_dim), dtype=torch.bfloat16, device=qg.device)
-    _attn_prep[(W, heads + kv_heads)](qg, k, q_norm, k_norm, pos, inv_freq, qo, ko, eps, float(amplitude), H=heads,
-                                      HKV=kv_heads,
-                                      D=head_dim, HALF=inv_freq.numel(), MROPE=multi, ROWS=W if multi else 0,
-                                      HSEC=mrope_section[1], WSEC=mrope_section[2], num_warps=2)
+    _attn_prep[(W, heads + kv_heads)](qg, k, q_norm, k_norm, pos, inv_freq, qo, ko, eps, float(amplitude),
+                                      H=heads, HKV=kv_heads, D=head_dim, HALF=inv_freq.numel(), MROPE=multi,
+                                      ROWS=W if multi else 0, HSEC=mrope_section[1], WSEC=mrope_section[2], num_warps=2)
     return qo, ko
 
 
