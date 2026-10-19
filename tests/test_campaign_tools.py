@@ -678,6 +678,7 @@ def test_golden_gate_is_non_inferiority_with_margins_calibrated_from_reorder_var
     for name, check in held_out.items():
         others = {k: v for k, v in record["variants"].items() if k != name}
         assert check["delta_kl"] == largest_bound(others, "kl_delta")
+        assert check["delta_agreement"] == largest_bound(others, "agreement_delta")
         row = record["variants"][name]
         assert (check["status"], check["measures"]) == kl.verdict(row["kl_delta"]["ci95"],
                                                                   row["agreement_delta"]["ci95"],

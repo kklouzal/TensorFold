@@ -463,16 +463,17 @@ def verdict(kl_ci: list[float], agreement_ci: list[float], delta_kl: float, delt
     beyond = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agreement)) if bad]
     if beyond:
         return "fail", beyond
-    open_ = [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agreement)) if bad]
-    return ("incomplete", open_) if open_ else ("pass", [])
+    straddling = [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agreement)) if bad]
+    return ("incomplete", straddling) if straddling else ("pass", [])
 
 
 def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, block: int = 64,
               resamples: int = 4000, seed: int = 0) -> dict:
     """Non-inferiority margins (see ``margins``) from 4 to 6 reorder-only variants (the same declared math, another
     summation order) of the base build, each dumped against the golden reference, fixed before any candidate is seen.
-    Every variant's differences and intervals are recorded, the margins also as a percentage of the base's KL, and a
-    leave-one-out check (each variant judged with the margins of the others) counts the gate's false alarms."""
+    Every variant's differences and intervals are recorded, delta_kl also as a percentage of the base's KL (None for
+    a base whose KL is 0), and a leave-one-out check (each variant judged with the margins of the others) counts the
+    gate's false alarms."""
 
     import numpy as np
 
@@ -500,7 +501,7 @@ def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, blo
             "golden_subset_of": first["golden_subset_of"],
             "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
             "positions": first["positions"], "bootstrap": first["bootstrap"], "margin_method": MARGIN_METHOD,
-            **found, "delta_kl_pct_of_base_kl": 100 * found["delta_kl"] / base_kl,
+            **found, "delta_kl_pct_of_base_kl": 100 * found["delta_kl"] / base_kl if base_kl > 0 else None,
             "variants": {name: {k: r[k] for k in ("new", "new_sha256", "new_source", "kl_new", "kl_delta",
                                                    "agreement_new", "agreement_delta")} for name, r in rows.items()},
             "base_values": {k: first[k] for k in ("kl_old", "agreement_old")},
@@ -517,13 +518,11 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
     """Golden-reference non-inferiority gate of NEW against OLD under the model's calibration record (margins from
     reorder-only variants, ``margins``; the verdict rule is ``verdict``). Without a calibration the status is
     "uncalibrated" (intervals reported, no verdict; the CLI exits 3 as for incomplete). A calibration belongs to one
-    golden reference (eval set and positions) and bootstrap setting; the margins are reported in nats and as a
-    percentage of the calibration base's KL."""
+    golden reference (eval set and positions) and bootstrap setting; delta_kl is reported in nats and as a percentage
+    of the calibration base's KL."""
 
     result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
-    kl_low, kl_high = result["kl_delta"]["ci95"]
-    agree_low, agree_high = result["agreement_delta"]["ci95"]
-    result["ci_width"] = {"kl_delta": kl_high - kl_low, "agreement_delta": agree_high - agree_low}
+    result["ci_width"] = {k: result[k]["ci95"][1] - result[k]["ci95"][0] for k in ("kl_delta", "agreement_delta")}
     if calibration is None:
         result.update(status="uncalibrated", margins=None)
         return result
@@ -538,7 +537,7 @@ def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | 
             raise ValueError(f"bootstrap {key} {result['bootstrap'][key]} differs from the calibration's "
                              f"{calibration['bootstrap'][key]}")
     delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
-    status, measures = verdict([kl_low, kl_high], [agree_low, agree_high], delta_kl, delta_agree)
+    status, measures = verdict(result["kl_delta"]["ci95"], result["agreement_delta"]["ci95"], delta_kl, delta_agree)
     result["margins"] = {"delta_kl": delta_kl, "delta_kl_pct_of_base_kl": calibration["delta_kl_pct_of_base_kl"],
                          "delta_agreement": delta_agree, "method": calibration["margin_method"],
                          "calibration_base": calibration["base"], "variants": sorted(calibration["variants"]),
