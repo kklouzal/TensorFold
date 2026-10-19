@@ -101,7 +101,7 @@ def _shared(context, prefix, cfg, width):
 
 
 def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: Callable,
-               eos_token_ids=None):
+               eos_token_ids=None, rope=None):
     """Read the ordinary NVFP4 backbone and delegate each routed bank lazily.
 
     ``expert_factory(context, absolute_mlp_prefix, config)`` returns a bank with
@@ -125,4 +125,5 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, expert_factory: C
         return {"moe": Routed(router, bank, cfg.top_k, run=NativeMoE(bank, shared))}
 
     return load_backbone(model_dir, device, mlp=mlp,
-                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+                         **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope))
+                            if value is not None})

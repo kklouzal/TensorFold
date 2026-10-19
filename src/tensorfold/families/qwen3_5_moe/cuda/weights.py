@@ -52,19 +52,20 @@ def routed(prefix: str, get: Callable, top_k: int) -> Routed:
     return Routed(router.to(torch.bfloat16).contiguous(), experts, int(top_k))
 
 
-def load(model_dir: str | Path, *, eos_token_ids=None, expert_factory=None) -> Weights:
-    """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels."""
+def load(model_dir: str | Path, *, eos_token_ids=None, expert_factory=None, rope=None) -> Weights:
+    """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels
+    (``rope``: a static YaRN policy for a default-RoPE checkpoint)."""
 
     from tensorfold.families.qwen3_5.cuda.nvfp4_load import quantized
 
+    options = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quantized(Path(model_dir)):
         from .nvfp4_load import load_nvfp4
 
-        return load_nvfp4(model_dir, expert_factory=expert_factory,
-                          **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+        return load_nvfp4(model_dir, expert_factory=expert_factory, **options)
     return load_dense(model_dir, tiled=True,
                       mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)},
-                      prefill_mlp=(), **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
+                      prefill_mlp=(), **options)
 
 
 @dataclass
