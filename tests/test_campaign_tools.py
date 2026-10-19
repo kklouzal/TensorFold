@@ -322,8 +322,14 @@ def test_gates_refuse_replies_without_token_ids(tmp_path, monkeypatch):
                                           "--profile", str(tmp_path / "profile.json"),
                                           "--prompts", str(tmp_path / "prompts.json"),
                                           "--gate-prompts", "short-code-nothink", "--max-tokens", "6"])
-        with pytest.raises(ValueError, match="return_token_ids"):
-            gates.main()
+        assert gates.main() == 4                       # a refusal is an error result, never a fail or a pass
+    result = json.loads((tmp_path / "o").read_text())
+    assert result["status"] == "error" and "return_token_ids" in result["error"] and result["gates"] == {}
+    monkeypatch.setattr(sys, "argv", ["campaign_gates.py", "identity", "--url", "http://127.0.0.1:9", "--out",
+                                      str(tmp_path / "down"), "--profile", str(tmp_path / "profile.json"),
+                                      "--prompts", str(tmp_path / "prompts.json"), "--gate-prompts", "x"])
+    assert gates.main() == 4                           # no server: an error, not a verdict
+    assert json.loads((tmp_path / "down").read_text())["status"] == "error"
 
 
 def test_full_depth_needle_leaves_room_for_the_thinking_reply(tmp_path):
@@ -437,10 +443,15 @@ def test_kl_dump_refuses_held_items_before_the_engine_loads(tmp_path, monkeypatc
              "--mid-depths", f"4096,{bench.LONG_PREFILL_TOKENS + 1}")
     with pytest.raises(SystemExit, match="needs --corpus"):
         dump("--eval", missing, "--build", "--mid-depths", "4096")
+    with pytest.raises(SystemExit, match=r"unknown --short sets \['extras'\]"):    # a typo builds nothing silently
+        dump("--eval", missing, "--build", "--short", "v1,extras")
     assert loads == []                                                    # no refusal paid for a model load
     dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill")
     dump("--eval", missing, "--build", "--corpus", str(tmp_path / "corpus.txt"), "--long-depths", "8192")
     assert loads == [["serve", "m"]] * 2
+    dump("--eval", str(tmp_path / "eval.json"), "--allow-long-prefill", "--card", "{}", "--profile",
+         str(tmp_path / "no-profile.json"))                     # --card overrides: the profile is not read
+    assert len(loads) == 3
 
 
 class FakeApp:
@@ -462,13 +473,11 @@ class FakeApp:
 
 
 def _build_args(tmp_path, **overrides):
-    import argparse
-
     (tmp_path / "corpus.txt").write_text("".join(f"line {i:06d} of the corpus\n" for i in range(20000)))
     fields = {"corpus": str(tmp_path / "corpus.txt"), "short": "v1", "mid_depths": "", "long_depths": "",
               "corpus_start": 0, "allow_long_prefill": False, "answer_tokens": 5, "serve": ["serve", "/m"],
               "cards": {"nothink": {"temperature": 0.7}, "think": {"temperature": 1.0}}}
-    return argparse.Namespace(**{**fields, **overrides})
+    return SimpleNamespace(**{**fields, **overrides})
 
 
 def test_build_eval_mid_items_fill_their_depths_on_disjoint_windows_in_both_thinking_modes(tmp_path):
@@ -511,8 +520,6 @@ def test_build_eval_keeps_the_v1_short_and_long_items(tmp_path):
     assert [it["name"] for it in both] == [f"short-{i}" for i in range(first + len(kl.EXTRA_PROMPTS))]
 
 
-
-
 def _golden_part(tmp_path, name, items, lp, **meta):
     np = pytest.importorskip("numpy")
     path = tmp_path / name
@@ -533,10 +540,10 @@ def test_append_extends_a_golden_reference_without_rescoring_and_records_its_par
     lp = _log_softmax(np, rng.normal(0, 3, (40, 32)))
     old = [{"name": "short-0", "prompt": [1] * 10, "answer": [2] * 10},
            {"name": "long-32768", "prompt": [1] * 99, "answer": [2] * 6}]
-    new = [{"name": "mid-400", "prompt": [1] * 40, "answer": [2] * 14}, {"name": "mid-800", "prompt": [1] * 80,
-                                                                          "answer": [2] * 10}]
+    new = [{"name": "mid-400", "prompt": [1] * 40, "answer": [2] * 14},
+           {"name": "mid-800", "prompt": [1] * 80, "answer": [2] * 10}]
     base_golden, base_eval = _golden_part(tmp_path, "base", old, lp[:16], tool_sha256="v1",
-                                                      precision={"weights": "bf16", "compute": "fp32", "tf32": False})
+                                          precision={"weights": "bf16", "compute": "fp32", "tf32": False})
     new_golden, new_eval = _golden_part(tmp_path, "new", new, lp[16:], tool_sha256="v2")
     result = kl.append(base_golden, base_eval, new_golden, new_eval, str(tmp_path / "v2"))
     joined = np.load(tmp_path / "v2" / "golden" / "kl.npz")
@@ -565,19 +572,23 @@ def test_append_refuses_parts_that_are_not_one_reference(tmp_path):
     np = pytest.importorskip("numpy")
     lp = _log_softmax(np, np.random.default_rng(3).normal(0, 3, (8, 32)))
     item = {"name": "a", "prompt": [1], "answer": [2] * 4}
+    other = {**item, "name": "b"}
     base = _golden_part(tmp_path, "base", [item], lp[:4])
-    cases = {"other": ({"name": "b", "prompt": [1], "answer": [2] * 4}, {"source": "s@2"}, "differ in \\['source'"),
-             "compute": ({"name": "b", "prompt": [1], "answer": [2] * 4},
-                         {"precision": {"weights": "bf16", "compute": "bf16"}}, "precision.compute"),
+    cases = {"other": (other, {"source": "s@2"}, "differ in \\['source'"),
+             "compute": (other, {"precision": {"weights": "bf16", "compute": "bf16"}}, "precision.compute"),
              "same": (item, {}, "names repeat")}
     for name, (new_item, meta, message) in cases.items():
         new = _golden_part(tmp_path, name, [new_item], lp[4:], **meta)
         with pytest.raises(ValueError, match=message):
             kl.append(*base, *new, str(tmp_path / f"out-{name}"))
+    np.savez(tmp_path / "bare.npz", **{k: v for k, v in np.load(base[0]).items() if k != "entropy"})
+    with pytest.raises(ValueError, match="hold different arrays"):
+        kl.append(str(tmp_path / "bare.npz"), base[1], *_golden_part(tmp_path, "c", [other], lp[4:]),
+                  str(tmp_path / "out-arrays"))
     kl.subset(*base, str(tmp_path / "cut"), max_prompt_tokens=5)
     with pytest.raises(ValueError, match="subset"):
         kl.append(str(tmp_path / "cut" / "golden" / "kl.npz"), str(tmp_path / "cut" / "eval.json"),
-                  *_golden_part(tmp_path, "b", [{"name": "b", "prompt": [1], "answer": [2] * 4}], lp[4:]),
+                  *_golden_part(tmp_path, "b", [other], lp[4:]),
                   str(tmp_path / "out-subset"))
 
 
@@ -907,8 +918,28 @@ def test_calibrated_gate_verdict_order_and_exit_status(tmp_path, monkeypatch):
                        ("delta_agreement", -0.1), ("delta_kl", None)):
         # json writes and reads NaN and Infinity, margins that would pass any candidate; negative or null: no margin
         (tmp_path / "calibration.json").write_text(json.dumps({**record, field: bad}))
-        with pytest.raises(ValueError, match="not finite non-negative numbers"):
-            kl.main()
+        assert kl.main() == 4                                  # refused: an error result, neither pass nor fail
+    out = tmp_path / "gate.json"
+    refusals = ((dict(record, delta_kl=math.nan), "not finite non-negative numbers"),
+                ({k: v for k, v in record.items() if k != "margin_method"}, "recalibrate"),
+                (dict(record, golden_sha256="other"), "golden_sha256 does not match"),
+                (dict(record, bootstrap=dict(boot, seed=1)), "bootstrap seed"))
+    for calibration, reason in refusals:                       # each refusal kind: status error, exit 4
+        (tmp_path / "calibration.json").write_text(json.dumps(calibration))
+        monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
+                                          str(tmp_path / "calibration.json"), "--out", str(out)])
+        assert kl.main() == 4, reason
+        result = json.loads(out.read_text())
+        assert result["status"] == "error" and reason in result["error"], (reason, result)
+
+    def refuse(*args, **kwargs):
+        raise ValueError("KL(golden || n) is not finite at 2 positions")
+
+    monkeypatch.setattr(kl, "paired", refuse)                   # comparison refusals (non-finite KL, foreign dumps)
+    assert kl.main() == 4 and "not finite" in json.loads(out.read_text())["error"]
+    monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "gate", "g", "o", "n", "--calibration",
+                                      str(tmp_path / "missing.json"), "--out", str(out)])
+    assert kl.main() == 4 and "FileNotFoundError" in json.loads(out.read_text())["error"]
     for bad in (["r0"], ["=x.npz"], ["r0=a.npz", "r0=b.npz"]):            # NAME=DUMP, distinct names
         monkeypatch.setattr(sys, "argv", ["campaign_kl.py", "calibrate", "g", "b", *bad])
         with pytest.raises(SystemExit) as stop:
@@ -1026,6 +1057,12 @@ def test_golden_refuses_held_items_before_the_model_loads(tmp_path):
                           "--eval", str(tmp_path / "eval.json"), "--out", str(tmp_path / "g.npz"), "--source", "s@1"],
                          capture_output=True, text=True, check=False)
     assert run.returncode == 2 and "['long'] exceed" in run.stderr and "long-prefill hold" in run.stderr
+    (tmp_path / "short.json").write_text(json.dumps({"version": 1, "items": items[:1]}))
+    run = subprocess.run([sys.executable, str(ROOT / "tools" / "campaign_golden.py"), "--model", str(tmp_path / "none"),
+                          "--eval", str(tmp_path / "short.json"), "--out", str(tmp_path / "g.npz"), "--source", "s@1",
+                          "--rename", "model.a.=model.x.", "--rename", "model.a.b.=model.y."],
+                         capture_output=True, text=True, check=False)
+    assert run.returncode == 2 and "overlap" in run.stderr       # nested prefixes would depend on argument order
 
 
 def test_heartbeat_ignores_the_role_chunk_and_keepalives_and_counts_call_deltas(tmp_path, monkeypatch):

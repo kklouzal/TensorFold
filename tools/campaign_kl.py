@@ -14,7 +14,7 @@ reference dump, the log-probabilities at the reference's top-K ids.
   append   BASE.npz BASE_EVAL.json NEW.npz NEW_EVAL.json OUT_DIR   (a golden reference extended by new items)
   calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
   gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
-           (exit 0 pass, 1 fail, 3 incomplete or uncalibrated)
+           (exit 0 pass, 1 fail, 3 incomplete or uncalibrated, 4 error: a refusal, never a verdict)
 
 ``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
 prompts, corpus-backed mid items in both thinking modes and long ones) and each prompt's continuation sampled by this
@@ -46,6 +46,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import traceback
 
 if __package__:
     from .campaign_bench import LONG_PREFILL_TOKENS, TASKS, file_sha256
@@ -299,6 +300,8 @@ def eval_set(args) -> tuple[dict, str] | None:
             raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
         if args.mid_depths and not args.corpus:
             raise SystemExit("--mid-depths needs --corpus")
+        if unknown := [n for n in args.short.split(",") if n and n not in SHORT_SETS]:
+            raise SystemExit(f"unknown --short sets {unknown} (choose from {', '.join(SHORT_SETS)})")
         depths = [d for group in build_depths(args) for d in group]
         if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
             raise SystemExit(f"items of {depths} tokens exceed {LONG_PREFILL_TOKENS}: held by the campaign's "
@@ -798,9 +801,11 @@ def main() -> int:
             args.serve = args.serve[1:]
         if not args.serve or args.serve[0] != "serve":
             ap.error("dump needs -- serve MODEL [flags]")
-        cards = json.loads(Path(args.profile).read_text())["card_sampling"] if args.profile else {}
-        args.cards = ({"think": args.card, "nothink": args.card} if args.card is not None
-                      else {"think": cards.get("think", {}), "nothink": cards.get("nothink", {})})
+        if args.card is not None:                    # --card overrides the profile, which is then not read
+            args.cards = {"think": args.card, "nothink": args.card}
+        else:
+            cards = json.loads(Path(args.profile).read_text())["card_sampling"] if args.profile else {}
+            args.cards = {"think": cards.get("think", {}), "nothink": cards.get("nothink", {})}
         loaded = eval_set(args)                      # refusals before the engine loads
         with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
     else:
@@ -818,15 +823,20 @@ def main() -> int:
                     ap.error("calibrate variants must be distinct NAME=DUMP arguments")
                 result = calibrate(args.golden, args.base, dict(pairs), **boot)
             else:
-                record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
-                result = gate(args.golden, args.old, args.new, calibration=record, **boot)
+                try:
+                    record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
+                    result = gate(args.golden, args.old, args.new, calibration=record, **boot)
+                except Exception as error:      # a refusal or a broken input: an error result, never a verdict
+                    traceback.print_exc()
+                    result = {"status": "error", "error": f"{type(error).__name__}: {error}", "golden": args.golden,
+                              "old": args.old, "new": args.new, "calibration": args.calibration}
         text = json.dumps(result, indent=1)
         if args.out:
             Path(args.out).write_text(text + "\n")
         print(text)
         if args.command == "gate":
-            # no verdict (incomplete, uncalibrated) is never a pass
-            return {"pass": 0, "fail": 1}.get(result["status"], 3)
+            # no verdict (incomplete, uncalibrated) is never a pass; an error (exit 4) is neither pass nor fail (C8)
+            return {"pass": 0, "fail": 1, "error": 4}.get(result["status"], 3)
     return 0
 
 

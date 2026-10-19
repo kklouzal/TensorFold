@@ -13,7 +13,8 @@ gates (determinism and greedy drafted == serial must be exact unless --allow-* s
 threshold has status "report" and a null verdict. Determinism and identity are "incomplete" (verdict null) when a
 required comparison was not exercised: a warm request that resumed no cached prefix, a cold one that did, a greedy
 reply that verified no draft (silence is not coverage). Token ids are required from every reply. The overall status
-is fail > incomplete > pass > report; exit status 1 = fail, 3 = incomplete, 0 otherwise.
+is fail > incomplete > pass > report; exit status 1 = fail, 3 = incomplete, 4 = error (a refusal or failure of the
+tool or server, never a verdict: status "error" with the reason, gates already run kept), 0 otherwise.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from pathlib import Path
 import random
 import sys
 import time
+import traceback
 
 if sys.version_info < (3, 11):
     sys.exit(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
@@ -574,14 +576,21 @@ def main() -> int:
         ap.error("needle needs --corpus")
     if any(g in chosen for g in ("determinism", "identity")) and not args.prompts:
         ap.error("determinism and identity need --prompts")
-    stats = get_json(url + "/v1/stats")
     result = {"version": 1, "url": url, "model": profile["model"], "profile_sha256": file_sha256(args.profile),
               "tool_sha256": {Path(f).name: file_sha256(f)
                               for f in (__file__, str(Path(__file__).with_name("campaign_bench.py")))},
-              "source_revision": stats.get("server", {}).get("source_revision"), "args": vars(args), "gates": {}}
-    for name in chosen:
-        result["gates"][name] = GATES[name](url, profile, args)
+              "source_revision": None, "args": vars(args), "gates": {}}
+    try:
+        result["source_revision"] = get_json(url + "/v1/stats").get("server", {}).get("source_revision")
+        for name in chosen:
+            result["gates"][name] = GATES[name](url, profile, args)
+            write_json(args.out, result)
+    except Exception as error:          # any refusal or tool/server failure is an error result, not a verdict
+        traceback.print_exc()
+        result.update(status="error", error=f"{type(error).__name__}: {error}")
         write_json(args.out, result)
+        print(json.dumps({"status": "error", "error": result["error"]}), flush=True)
+        return 4
     statuses = {name: g["status"] for name, g in result["gates"].items()}
     result["status"] = ("fail" if "fail" in statuses.values() else "incomplete" if "incomplete" in statuses.values()
                         else "pass" if "pass" in statuses.values() else "report")
