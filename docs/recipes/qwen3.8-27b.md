@@ -191,6 +191,30 @@ and `--max-num-seqs 16` serves 132.1 tok/s at 51.7 GiB on the same Spark. At 8 a
 serves 147.5 and 112.0 tok/s. `tools/shared_prefix_prompts.py` builds the workload and
 `tools/shared_prefix_load.py` sends it (`--concurrency`, `--mem` for the memory peak).
 
+### Context and YaRN
+
+The checkpoints declare 262,144 positions of default RoPE, and `tensorfold serve` admits that by default. On CUDA,
+`--yarn-factor F` extends the text RoPE with static YaRN to F times the native positions; the upstream card's
+1,000,000-token reach is `--yarn-factor 4` (1,048,576 positions):
+
+```bash
+tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --yarn-factor 4 --context 1048576
+```
+
+YaRN interpolates the low-frequency rotary pairs, keeps the high-frequency ones and scales cos and sin by its
+amplitude (Transformers' formula; 1 + 0.1 ln F, 1.1386 at F = 4) in every prompt, decode, verify and concurrent
+forward, for the MLX, EXL3 and NVFP4 checkpoints and on two ranks, which must be given the same factor. A checkpoint
+that declares YaRN in its config brings its own factor, which `--yarn-factor` overrides. The startup log prints the
+factor, amplitude, original context and position limit. The DFlash2 drafter keeps its own RoPE: it only proposes
+tokens. The card notes that static YaRN applies at every length and can hurt short texts. `--context` still sets
+admission, within the memory estimate: bf16 attention caches take 64 KiB a token (16 attention layers, 4 KV heads of
+256), 64 GiB for one stream at 1,048,576 tokens. Serving on a Mac refuses `--yarn-factor`.
+
+Checked so far: the frequencies come from the shared policy that is tested against Transformers', the q/k rotation
+kernel is tested against a float reference with the amplitude, and a synthetic-model GPU test checks that every forward
+path rotates with it. A full-model run at the extended window (long-context retrieval, the quality gates, memory and
+speed) is pending.
+
 ### Structured output
 
 With `pip install 'tensorfold[grammar]'` (xgrammar), serving on one or two GPUs enforces `response_format` and the
