@@ -7,6 +7,7 @@ actual masked/penalized/filtered sampler; proposal probabilities describe the ac
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,10 +22,11 @@ _MASK = (1 << 64) - 1
 
 @dataclass(frozen=True, slots=True, init=False, eq=False)
 class ProbabilityRow:
-    """Unique global IDs and positive normalized FP64 weights, owned by immutable byte buffers.
+    """Unique global IDs and rounded normalized FP64 weights, owned by immutable byte buffers.
 
     Input weights need not sum to one; zero weights are removed. Their order is retained
-    for deterministic ties. No caller-owned mutable storage survives construction.
+    for deterministic ties. The categorical law divides stored weights by their exact sum,
+    which need not be exactly one. No caller-owned mutable storage survives construction.
     """
 
     ids: np.ndarray
@@ -46,7 +48,10 @@ class ProbabilityRow:
         tokens, weights = tokens[keep], weights[keep] / total
         represented = weights > 0  # division may underflow a positive input to zero
         tokens, weights = tokens[represented], weights[represented]
-        # bytes-backed arrays cannot be made writable again through setflags.
+        self._store(tokens, weights)
+
+    def _store(self, tokens, weights):
+        # Trusted construction only: bytes-backed arrays cannot be made writable again through setflags.
         object.__setattr__(self, "ids", np.frombuffer(tokens.tobytes(), dtype=np.int64))
         object.__setattr__(self, "probs", np.frombuffer(weights.tobytes(), dtype=np.float64))
 
@@ -132,19 +137,121 @@ def node(p: ProbabilityRow, q: ProbabilityRow, children, seed: int, position: in
         qc, pc = proposal.probability(child), residual.probability(child)
         if qc <= 0:
             raise ValueError("a child must lie in the proposal distribution")
-        # Avoid underflow in u*qc falsely accepting p(child)==0 for subnormal q.
-        if pc >= qc or float(uniform((seed ^ ACCEPT) & _MASK, position, np.array([index], dtype=np.int64))[0]) <= pc / qc:
+        u = float(uniform((seed ^ ACCEPT) & _MASK, position, np.array([index], dtype=np.int64))[0])
+        accepted, grid = _accept(residual, proposal, pc, qc, u)
+        if accepted:
             return index, int(child)
-        # Align sparse q once. A per-target-token scan of q would make complete-support fallback O(P*Q).
-        order = np.argsort(proposal.ids)
-        keys = proposal.ids[order]
-        at = np.searchsorted(keys, residual.ids).clip(max=len(keys) - 1)
-        probability = np.where(keys[at] == residual.ids, proposal.probs[order[at]], 0.0)
-        weights = np.maximum(residual.probs - probability, 0.0)
-        residual = ProbabilityRow(residual.ids, weights)
+        residual = _residual(residual, proposal, grid)
         if index + 1 < len(children):
             proposal = ProbabilityRow(proposal.ids, np.where(proposal.ids == child, 0.0, proposal.probs))
     return -1, draw(residual, seed, position, domain=RESIDUAL)
+
+
+def _sum_bounds(weights):
+    """Outward bounds for a positive binary64 sum under any addition tree.
+
+    At most n rounded additions give relative error gamma_n=n*u/(1-n*u), u=2^-53.
+    Adding nonnegative subnormals is exact until the sum is normal. Every bound operation
+    is rounded outward; an unusable gamma sends the decision to exact integer arithmetic.
+    """
+    total = float(weights.sum(dtype=np.float64))
+    nu = math.nextafter(len(weights) * 2.**-53, math.inf)
+    denominator = math.nextafter(1. - nu, -math.inf)
+    if denominator <= 0:
+        return 0., math.inf
+    gamma = math.nextafter(nu / denominator, math.inf)
+    if gamma >= 1:
+        return 0., math.inf
+    lower_denominator = math.nextafter(1. + gamma, math.inf)
+    upper_denominator = math.nextafter(1. - gamma, -math.inf)
+    return (math.nextafter(total / lower_denominator, -math.inf),
+            math.nextafter(total / upper_denominator, math.inf))
+
+
+def _product_bounds(bounds, factor):
+    if factor == 0:
+        return 0., 0.
+    lo, hi = bounds[0] * factor, bounds[1] * factor
+    return (math.nextafter(lo, -math.inf) if lo > 0 else 0., math.nextafter(hi, math.inf))
+
+
+def _units(weight, exponent):
+    numerator, denominator = float(weight).as_integer_ratio()
+    return numerator << (exponent - (denominator.bit_length() - 1))
+
+
+def _grid(p, q):
+    """Exact dyadic integer units/totals; no per-weight Python object list is retained."""
+    exponent = max(float(w).as_integer_ratio()[1].bit_length() - 1 for row in (p, q) for w in row.probs)
+    return exponent, sum(_units(w, exponent) for w in p.probs), sum(_units(w, exponent) for w in q.probs)
+
+
+def _accept(p, q, pc, qc, u):
+    if pc == 0:  # u and qc are strictly positive, including subnormal qc
+        return False, None
+    if p is q:
+        return True, None
+    left = _product_bounds(_product_bounds(_sum_bounds(p.probs), qc), u)
+    right = _product_bounds(_sum_bounds(q.probs), pc)
+    if left[1] <= right[0]:
+        return True, None
+    if left[0] > right[1]:
+        return False, None
+    grid = exponent, pt, qt = _grid(p, q)
+    un, ud = u.as_integer_ratio()
+    return un * _units(qc, exponent) * pt <= ud * _units(pc, exponent) * qt, grid
+
+
+def _residual(p, q, grid=None):
+    """Condition the exact positive crossproduct residual before rounding to binary64.
+
+    Each normalized integer ratio rounds once, with error at most half its binary64 ulp
+    (half the least subnormal for underflow). Tiny coordinates may round to zero, as in
+    ordinary FP64 softmax; the largest coordinate is >=1/support and cannot vanish.
+    No second floating normalization can erase a valid conditioned residual.
+    """
+    exponent, pt, qt = _grid(p, q) if grid is None else grid
+    # Align sparse q once; full-support fallback never scans q separately for every target token.
+    order = np.argsort(q.ids)
+    keys = q.ids[order]
+    at = np.searchsorted(keys, p.ids).clip(max=len(keys) - 1)
+    probability = np.where(keys[at] == p.ids, q.probs[order[at]], 0.0)
+    del order, keys, at  # sorting scratch need not overlap the exact integer residual/conditioning
+    integers = [0] * len(p.ids)
+    for i, (pw, qw) in enumerate(zip(p.probs, probability)):
+        integers[i] = max(_units(pw, exponent) * qt - _units(qw, exponent) * pt, 0)
+    total = sum(integers)
+    if total <= 0:
+        raise ValueError("a rejected categorical proposal must have positive exact residual mass")
+    weights = np.fromiter((value / total for value in integers), dtype=np.float64, count=len(integers))
+    represented = weights > 0
+    result = object.__new__(ProbabilityRow)
+    result._store(p.ids[represented], weights[represented])
+    return result
+
+
+def residual_workspace(support: int, *, proposal_support: int | None = None) -> int:
+    """Additional host bytes for one visited row's exact integer residual, never all packet rows.
+
+    Binary64 weights <=1 use at most2^1074 units. Totals add support.bit_length() bits;
+    a sum of crossproducts uses at most2148+2*support.bit_length()+1 bits. Add53 bits
+    for an exact acceptance numerator and one runtime digit for arithmetic allocation.
+    Sixteen scalar integer slots cover grid/ratio operands, two product chains, subtraction,
+    accumulation and division temporaries; these phases do not stack over nodes/rows.
+    Existing caller charges cover alignment/FP64 arrays; this adds only bigint/list/row metadata.
+    """
+    import sys
+
+    if proposal_support is None:
+        proposal_support = support
+    if any(type(n) is not int or n < 1 for n in (support, proposal_support)):
+        raise ValueError("positive exact residual support required")
+    bits = 2148 + 2 * max(support, proposal_support).bit_length() + 1 + 53 + sys.int_info.bits_per_digit
+    integer = sys.getsizeof((1 << bits) - 1)
+    pointer = sys.getsizeof((None,)) - sys.getsizeof(())
+    row = ProbabilityRow([0], [1.])
+    header = sys.getsizeof(row) + sum(sys.getsizeof(a) + sys.getsizeof(a.base) - a.nbytes for a in (row.ids, row.probs))
+    return sys.getsizeof([]) + support * (pointer + integer) + 16 * integer + header
 
 
 def verify(chain: ChainPacket, p_rows, seed: int, *, room: int | None = None, eos=()) -> tuple[list[int], int]:

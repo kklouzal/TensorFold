@@ -668,7 +668,7 @@ def effective_workspace(rows: int, width: int, *, world: int = 1, top_k: int = 0
     """
     import sys
 
-    from tensorfold.engine.rejection import ProbabilityRow
+    from tensorfold.engine.rejection import ProbabilityRow, residual_workspace
 
     if any(type(v) is not int or v < 1 for v in (rows, width, world)) or type(top_k) is not int or top_k < 0:
         raise ValueError("positive probability geometry and nonnegative top-k required")
@@ -684,7 +684,7 @@ def effective_workspace(rows: int, width: int, *, world: int = 1, top_k: int = 0
         # Ambiguous boundaries copy and sort one complete row at a time, not rows complete vocabularies.
         host = (8 * rows * (2 * candidates + 1) + 4 * rows * candidates + 12 * rows * kept
                 + rows * (16 * kept + row_header) + (4 + 17 * 8 + 3) * width
-                + kept * (7 * 8 + 1))
+                + kept * (7 * 8 + 1) + residual_workspace(kept, proposal_support=width))
         return {"device_bytes": device, "host_bytes": host}
     count = width  # required complete-support or complete-tie fallback, regardless of normal top-k packet width
     # Raw/centered FP64 logits and integer masses, plus centering/exp expression intermediates; candidate
@@ -699,7 +699,7 @@ def effective_workspace(rows: int, width: int, *, world: int = 1, top_k: int = 0
     # CPU word packet, decoded/sorted support, FP64 probability rows and explicit preparation arrays. Sparse-q
     # residual alignment owns at most seven int64/FP64 arrays and one mask for one visited row at a time.
     residual = world * count * (7 * 8 + 1)
-    host = total * (24 + 24 + 16 + 17 * 8 + 3) + rows * row_header + residual
+    host = total * (24 + 24 + 16 + 17 * 8 + 3) + rows * row_header + residual + residual_workspace(world * count)
     return {"device_bytes": device, "host_bytes": host}
 
 
