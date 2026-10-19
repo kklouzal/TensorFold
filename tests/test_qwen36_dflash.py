@@ -90,6 +90,28 @@ def fixture(tmp_path, monkeypatch):
     return tmp_path, raw, cfg, arrays, target
 
 
+
+@pytest.fixture
+def affine_cpu_fixture(fixture, monkeypatch):
+    from tensorfold.families.qwen3_5.cuda.qmm import dequantize
+    from tensorfold.families.qwen3_5.cuda.qmm_fast import untile
+    from tensorfold.families.qwen3_5.cuda.weights import QLinear
+
+    original = dflash._mm
+
+    def controlled(value, linear):
+        if not isinstance(linear, QLinear):
+            return original(value, linear)
+        # Actual quantize4/tile storage, with the existing diagnostic reference replacing CUDA matmul only.
+        # This exercises sampler adapters on CPU; native rounding and kernels retain their separate gates.
+        plain = untile(linear)
+        weight = dequantize(plain.weight, plain.scales, plain.biases, plain.bits, plain.gs).to(value.dtype)
+        return F.linear(value, weight)
+
+    monkeypatch.setattr(dflash, "_mm", controlled)
+    return fixture
+
+
 def test_published_architecture_is_separate_from_mtp_and_dflash2():
     raw = config()
     for architecture in ("DFlash2DraftModel", "Qwen3_5MoeForCausalLM"):
@@ -154,9 +176,10 @@ def test_exact_headers_and_weight_estimator_preserve_bf16_default(fixture):
     assert geometry.bytes_at(33) - geometry.bytes_at(32) == (2 * 2 + 3 + 1) * per_token
 
 
-def test_stochastic_chains_keep_request_width_when_another_context_has_no_proposal_room(fixture):
-    directory, _raw, _cfg, _arrays, target = fixture
-    draft = dflash.DFlash(directory, target, context_limit=64)
+@pytest.mark.parametrize("bits", [4, 16])
+def test_stochastic_chains_keep_request_width_when_another_context_has_no_proposal_room(affine_cpu_fixture, bits):
+    directory, _raw, _cfg, _arrays, target = affine_cpu_fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=bits)
     draft.add_taps(torch.ones((3, 128), dtype=torch.bfloat16))
     snap = draft.snapshot()
     policy = Sampling(seed=71, temperature=.7, top_k=20, top_p=.95)
@@ -194,15 +217,63 @@ def test_drafter_precision_copies_only_a_floating_head_and_accounts_for_its_owne
 
     monkeypatch.setattr(dflash, "Head", copy_head)
     monkeypatch.setattr(dflash, "requantize", copy_projection)
+    affine = []
+    monkeypatch.setattr(dflash, "quantize4", lambda value: affine.append(value) or CpuLinear(value))
+    monkeypatch.setattr(dflash, "tile", lambda value: value)
     draft = dflash.DFlash(directory, target, context_limit=64, bits=bits)
-    kind = {4: "nvfp4", 8: "fp8"}.get(bits)
+    kind = {8: "fp8"}.get(bits)
     assert target.head is original                            # proposal precision never replaces the target head
     assert projections == ([kind] * sum(w.ndim == 2 for w in arrays.values()) if kind else [])
+    assert len(affine) == (sum(w.ndim == 2 for w in arrays.values()) if bits == 4 else 0)
     assert copies == ([(original, kind)] if floating and kind else [])
     assert (draft.target_head is original) == (not floating or kind is None)
     with_head = draft_weights(directory, bits=bits)
     borrowed = draft_weights(directory, bits=bits, private_head=False)
     assert with_head.resident - borrowed.resident == (resident_bytes(kind, cfg.vocab, cfg.hidden) if kind else 0)
+
+
+def test_affine_reference_uses_original_projection_bytes_and_borrows_the_head(fixture):
+    from tensorfold.families.qwen3_5.cuda.dflash2 import quantize4
+    from tensorfold.families.qwen3_5.cuda.qmm_fast import tile
+
+    directory, _raw, _cfg, arrays, target = fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=4)
+    assert draft.target_head is target.head
+    allocations = [draft.inv_freq.numel() * draft.inv_freq.element_size()]
+    for name, value in arrays.items():
+        if value.ndim == 2:
+            reference, actual = tile(quantize4(value)), draft.linears[name]
+            assert (actual.n, actual.k, actual.gs, actual.bits, actual.layout) == (
+                reference.n, reference.k, 64, 4, "tiled")
+            for field in ("weight", "scales", "biases"):
+                left, right = getattr(actual, field), getattr(reference, field)
+                assert left.stride() == right.stride() and torch.equal(left.view(torch.uint8), right.view(torch.uint8))
+                allocations.append(left.untyped_storage().nbytes())
+        else:
+            assert torch.equal(draft.weights[name], value)
+            # This CPU fixture can borrow the Reader's larger host ring. The CUDA .to() owns only this payload.
+            allocations.append(draft.weights[name].numel() * draft.weights[name].element_size())
+    assert draft_weights(directory, bits=4).resident == sum(-(-size // 512) * 512 for size in allocations)
+
+
+@pytest.mark.parametrize("n,k", [(64, 64), (128, 64), (192, 128), (4096, 128), (4160, 64)])
+def test_affine_reference_admission_covers_padded_pack_lifetimes(n, k):
+    from tensorfold.cuda.kernels import qmm
+    from tensorfold.families.qwen3_5_moe.dflash_metadata import _affine4_bytes
+
+    # Observe the original owned packer's actual stored layout and the widest chunk, independently of admission.
+    words = torch.zeros((n, k // 8), dtype=torch.int32)
+    scales = torch.ones((n, k // 64), dtype=torch.bfloat16)
+    packed = qmm.pack(words, scales, scales, 64)
+    rounded = lambda size: -(-size // 512) * 512
+    held, staging = _affine4_bytes(n, k)
+    retained = [packed.weight, packed.scales, packed.biases]
+    assert held == sum(rounded(t.untyped_storage().nbytes()) for t in retained)
+    rows = min(packed.weight.shape[0] * 64, 4096)
+    # BF16 source; untiled input; offsets/shifts; block, q, picked, previous packed, and two full int64 temporaries.
+    source = [n * k * 2, words.numel() * 4, scales.numel() * 2, scales.numel() * 2, 512, 32, 64]
+    chunk = [rows * k // 2, rows * k * 4, rows * k * 4, rows * k // 2, rows * k * 8, rows * k * 8]
+    assert sum(map(rounded, source + chunk)) <= staging
 
 
 @pytest.mark.parametrize("rows,columns", [(64, 64), (128, 64), (192, 64), (128, 128)])
@@ -472,3 +543,35 @@ def test_proposals_stop_where_the_drafters_cumulative_score_exceeds_the_cut(fixt
     for bad in (-1.0, float("inf"), float("nan"), True, "3"):
         with pytest.raises(ValueError, match="stop score"):
             dflash.DFlash(directory, target, context_limit=64, stop_score=bad)
+
+
+def test_affine_reference_sampled_packets_keep_history_identity_and_owned_probability_rows(affine_cpu_fixture):
+    from tensorfold.engine.penalties import History, Penalties
+
+    directory, _raw, _cfg, _arrays, target = affine_cpu_fixture
+    draft = dflash.DFlash(directory, target, context_limit=64, bits=4)
+    draft.add_taps(torch.ones((3, 128), dtype=torch.bfloat16))
+    snap = draft.snapshot()
+    history = History(Penalties(presence=.5, frequency=.25, repetition=1.1), [1, 2, 3])
+    history.extend([1, 1])
+    before = (history._ids.copy(), history._counts.copy(), history._in_prompt.copy())
+    policy = Sampling(seed=71, temperature=.7, top_k=20, top_p=.95)
+    launched = draft.launch_chains([snap, snap], [2, 2], 3, histories=[history, history])
+    first = draft.finish_chain(launched[0], 4, 3, policy, history)
+    second = draft.finish_chain(launched[1], 4, 3, policy, history)
+    assert first.first_position == second.first_position == 4 and len(first.tokens) == 3
+    assert first.tokens == second.tokens
+    assert all(np.array_equal(a.ids, b.ids) and np.array_equal(a.probs, b.probs)
+               for a, b in zip(first.q_rows, second.q_rows))
+    assert all(q.probability(token) > 0 for token, q in zip(first.tokens, first.q_rows))
+    assert all(not q.ids.flags.writeable and not q.probs.flags.writeable for q in first.q_rows)
+    for expected, actual in zip(before, (history._ids, history._counts, history._in_prompt)):
+        assert np.array_equal(actual, expected)
+    other = History(history.penalties, [1, 2, 3])
+    with pytest.raises(ValueError, match="penalties it was launched with"):
+        draft.finish_chain(launched[0], 4, 3, policy, other)
+    # Context restoration changes no packet or q-row ownership after its completed readback.
+    saved = [(q.ids.copy(), q.probs.copy()) for q in first.q_rows]
+    draft.restore(snap)
+    for q, (ids, probs) in zip(first.q_rows, saved):
+        assert np.array_equal(q.ids, ids) and np.array_equal(q.probs, probs)

@@ -1,5 +1,7 @@
 # TensorFold fork
 
+**Isolated Qwen3.6 affine4 comparison reference:** this branch composes the preserved affine4 projection/borrowed-head design onto the current standard-rejection integration. Explicit CUDA Qwen MoE `--drafter-bits 4` selects that old proposal representation here; canonical NVFP4/private-head4 remains a separate comparison input. BF16/FP8 paths and target math are unchanged. Native, full-model and regional selection for this exact composition remain pending; see the [Qwen3.6 recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1).
+
 Campaign needle gates can optionally retain complete parsed request/reply evidence,
 and determinism probes hold a rendered next turn whose reply cannot fit the served
 context. Diagnostic substring recall remains separate from exact answer quality;
@@ -413,7 +415,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--parallel N\|auto` | `auto`: MLX up to 8 while projected memory fits; CUDA 1. Explicit shared-round support is family/rank-specific. |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
-| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` only with a BF16 tied target head: private FP8 copies of its companion projections and head. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
+| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) requantizes draft linears and copies a floating target head. In this isolated reference, `4` restores affine4 draft projections and borrows the unchanged target head. Canonical NVFP4/private-head4 is a separate comparison input. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` only with a BF16 tied target head: private FP8 copies of its companion projections and head. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
 | `--draft-rows N` | CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. 0 disables MTP drafts. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
