@@ -15,7 +15,7 @@ def test_prompt_boundary_rejects_invalid_token_identity(prompt):
         _prompt_ids(prompt, 16)
 
 
-@pytest.mark.parametrize("option", [{"streams": 2}, {"drafter_bits": 8}, {"depth": 0}, {"depth": 2}])
+@pytest.mark.parametrize("option", [{"streams": 2}, {"drafter_bits": 4}, {"depth": 0}, {"depth": 2}])
 def test_unsupported_settings_stop_before_any_torch_or_weight_load(option, tmp_path):
     with pytest.raises(ValueError):
         Gemma4Engine(tmp_path, **option)

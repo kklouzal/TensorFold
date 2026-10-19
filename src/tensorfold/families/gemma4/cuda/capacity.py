@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1):
+          max_rows=16, streams=1, keep=1, drafter_bits=16):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -75,6 +75,13 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             raise ValueError('Gemma DFlash companion dimensions disagree with the target')
         draft_size = sum(math.prod(info['shape']) * itemsize(info, name)
                          for name, info in draft_entries.items())
+        if drafter_bits == 8:
+            # Private FP8 copies: one byte per projection weight plus an FP32 scale per output row (norms stay
+            # BF16), and an FP8 copy of the target's tied head for proposals.
+            draft_size = sum(math.prod(info['shape']) + 4 * info['shape'][0] if len(info['shape']) == 2
+                             else math.prod(info['shape']) * itemsize(info, name)
+                             for name, info in draft_entries.items())
+            draft_size += cfg.vocab * (cfg.hidden + 4)
         resident += draft_size
         staging = max(staging, 3 * max(math.prod(info['shape']) * itemsize(info, name)
                                     for name, info in draft_entries.items()))

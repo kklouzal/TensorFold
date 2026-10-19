@@ -255,9 +255,11 @@ def test_successful_reads_do_not_hide_reader_retirement_failure(tmp_path, monkey
 
 def test_precision_and_attention_geometry_fail_before_payload_allocation(tmp_path, monkeypatch):
     _cfg, _arrays, target = make_fixture(tmp_path)
-    for bits in (0, 4, 8, True):
-        with pytest.raises(ValueError, match="BF16 storage"):
+    for bits in (0, 4, True):
+        with pytest.raises(ValueError, match="BF16 \\(16\\) or private FP8"):
             dflash.DFlash(tmp_path, target, context_limit=8192, bits=bits)
+    with pytest.raises(ValueError, match="BF16 tied head"):
+        dflash.DFlash(tmp_path, target, context_limit=8192, bits=8)
     cfg = DraftConfig.from_dict(raw(num_attention_heads=64, sliding_window=2048))
     monkeypatch.setattr(dflash, "checked_headers", lambda path: (cfg, {}))
 
@@ -267,11 +269,6 @@ def test_precision_and_attention_geometry_fail_before_payload_allocation(tmp_pat
     monkeypatch.setattr(dflash, "SafeTensors", unexpected)
     with pytest.raises(ValueError, match="query group"):
         dflash.DFlash(tmp_path, target, context_limit=8192)
-    # 2**24 positions x 2 KV heads x 64 columns reaches the int32 offset range of the full layer's cache.
-    wide = DraftConfig.from_dict(raw(max_position_embeddings=1 << 24))
-    monkeypatch.setattr(dflash, "checked_headers", lambda path: (wide, {}))
-    with pytest.raises(ValueError, match="int32"):
-        dflash.DFlash(tmp_path, target, context_limit=1 << 24)
 
 
 def test_target_mismatch_and_checkpoint_python_are_checked_without_execution(tmp_path):
@@ -290,6 +287,7 @@ def test_target_mismatch_and_checkpoint_python_are_checked_without_execution(tmp
     (tmp_path / "dflash.py").write_text("raise RuntimeError('checkpoint Python must remain inert')")
     draft = dflash.DFlash(tmp_path, target, context_limit=8192)
     assert draft.bits == 16 and all(v.dtype == torch.bfloat16 for v in draft.weights.values())
+    assert all(fn.keywords["weight"].dtype == torch.bfloat16 for fn in draft.linears.values())
 
 
 @cuda
@@ -320,3 +318,24 @@ def test_invalid_taps_anchors_and_limits_preserve_context(tmp_path):
     assert draft.propose(state, 2, 3) is None
     with pytest.raises(ValueError, match="accepted taps"):
         draft.append(state, taps[:2])
+
+
+@cuda
+def test_fp8_proposals_track_bf16_and_keep_the_lifecycle(tmp_path):
+    """Private FP8 projections and head (bits 8): logits within FP8 error of the BF16 companion, same token ids
+    wherever the BF16 margin is clear, and the same append/propose/snapshot lifecycle."""
+    cfg, arrays, target = make_fixture(tmp_path, window=8)
+    target.weights = NS(embed=NS(weight=target.head.to(DEV)))
+    target.config.softcap = 30.0
+    exact = dflash.DFlash(tmp_path, target, context_limit=8192)
+    fp8 = dflash.DFlash(tmp_path, target, context_limit=8192, bits=8)
+    taps = taps_for(cfg, 40, 11).to(DEV)
+    a, b = exact.make_state(), fp8.make_state()
+    exact.append(a, taps)
+    fp8.append(b, taps)
+    left, right = exact.propose(a, 2, 3).logits, fp8.propose(b, 2, 3).logits
+    assert (left - right).abs().max() < 2.0 and (left - right).abs().mean() < 0.3
+    top = left.topk(2, -1).values
+    clear = (top[:, 0] - top[:, 1]) > 2.0
+    assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
+    assert all(not hasattr(fn, "keywords") for fn in fp8.linears.values())

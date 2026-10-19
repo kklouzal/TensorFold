@@ -15,6 +15,7 @@ is allocated once for the admitted context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -28,6 +29,7 @@ from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
 from . import attention
+from .fp8_rows import Fp8Rows
 from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
@@ -145,8 +147,11 @@ class DFlash:
     """One shared companion; each lane owns a DraftState of accepted K/V only."""
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS):
-        if type(bits) is not int or bits != 16:
-            raise ValueError("Gemma DFlash proposal weights must retain BF16 storage")
+        if type(bits) is not int or bits not in (8, 16):
+            raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
+        head = getattr(getattr(target, "weights", None), "embed", None)
+        if bits == 8 and getattr(getattr(head, "weight", None), "dtype", None) != torch.bfloat16:
+            raise ValueError("Gemma DFlash FP8 proposals need the target's BF16 tied head")
         cfg, _ = checked_headers(draft_dir)
         if ((target.config.hidden, target.config.layers, target.config.vocab)
                 != (cfg.hidden, cfg.target_layers, cfg.vocab)):
@@ -193,12 +198,27 @@ class DFlash:
             attn = base + "self_attn."
             loaded[base + "kvq"] = torch.cat([loaded.pop(attn + f"{p}_proj.weight") for p in "kvq"])
             loaded[base + "gate_up"] = torch.cat([loaded.pop(base + f"mlp.{p}_proj.weight") for p in ("gate", "up")])
+        # Projections: BF16 on the row-reuse kernel, or (bits 8) private FP8 row-scaled copies; with FP8 the
+        # borrowed head is an FP8 copy of the target's BF16 head as well (the target keeps its own head).
+        names = ["fc.weight"] + [f"layers.{i}.{p}" for i in range(cfg.layers)
+                                 for p in ("kvq", "self_attn.o_proj.weight", "gate_up", "mlp.down_proj.weight")]
+        kv_width = 2 * cfg.kv_heads * cfg.head_dim
+        self.linears = {}
+        for name in names:
+            weight = loaded.pop(name) if bits == 8 else loaded[name]
+            self.linears[name] = Fp8Rows(weight) if bits == 8 else partial(_project, weight=weight)
+            if name.endswith(".kvq"):
+                kv = name[:-3] + "kv"
+                self.linears[kv] = (self.linears[name].prefix(kv_width) if bits == 8
+                                    else partial(_project, weight=weight[:kv_width]))
+            del weight
+        if bits == 8:
+            self.project_logits = Fp8Rows(head.weight, softcap=target.config.softcap)
         self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.
         # Reusing Flash Next's FP64 default construction would change frequencies.
         exponent = torch.arange(0, cfg.head_dim, 2, dtype=torch.int64).float() / cfg.head_dim
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(self.device)
-        self._kv_width = 2 * cfg.kv_heads * cfg.head_dim
 
     def make_state(self) -> DraftState:
         return DraftState(self.config, self.device, self.window, self.rows, self.block)
@@ -223,12 +243,11 @@ class DFlash:
             raise ValueError("Gemma DFlash accepted taps must match the target and admitted positions")
         if not taps.shape[0]:
             return
-        context = rms_norm(_project(taps.contiguous(), self.weights["fc.weight"]), self.weights["hidden_norm.weight"],
+        context = rms_norm(self.linears["fc.weight"](taps.contiguous()), self.weights["hidden_norm.weight"],
                            cfg.eps)
         state.pos.fill_(state.length)
         for layer in range(cfg.layers):
-            kv = self.weights[f"layers.{layer}.kvq"][:self._kv_width]
-            self._publish(_project(context, kv), state, layer, None)
+            self._publish(self.linears[f"layers.{layer}.kv"](context), state, layer, None)
         state.length += taps.shape[0]
 
     @torch.no_grad()
@@ -255,7 +274,7 @@ class DFlash:
         for layer, kind in enumerate(cfg.layer_types):
             base = f"layers.{layer}."
             h = rms_norm(x, self.weights[base + "input_layernorm.weight"], cfg.eps)
-            fused = _project(h, self.weights[base + "kvq"])
+            fused = self.linears[base + "kvq"](h)
             q = torch.empty((length, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=self.device)
             self._publish(fused, state, layer, q)
             noncausal = not cfg.causal_layers[layer]
@@ -267,9 +286,9 @@ class DFlash:
                 slots = (start + length - 1) // chunk + 1
             out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, block_start, block_end,
                                     window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk)
-            x = x + _project(out.reshape(length, -1), self.weights[base + "self_attn.o_proj.weight"])
+            x = x + self.linears[base + "self_attn.o_proj.weight"](out.reshape(length, -1))
             h = rms_norm(x, self.weights[base + "post_attention_layernorm.weight"], cfg.eps)
-            gate, up = _project(h, self.weights[base + "gate_up"]).split(cfg.width, dim=-1)
-            x = x + _project(torch.nn.functional.silu(gate) * up, self.weights[base + "mlp.down_proj.weight"])
+            gate, up = self.linears[base + "gate_up"](h).split(cfg.width, dim=-1)
+            x = x + self.linears[base + "mlp.down_proj.weight"](torch.nn.functional.silu(gate) * up)
         h = rms_norm(x[1:], self.weights["norm.weight"], cfg.eps)
         return Proposal(self.project_logits(h).float())

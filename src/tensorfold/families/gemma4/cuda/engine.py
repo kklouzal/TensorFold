@@ -89,8 +89,9 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None) -> None:
         if type(streams) is not int or streams != 1:
             raise ValueError("Gemma4 CUDA currently requires --parallel 1; concurrent lanes are not qualified")
-        if type(drafter_bits) is not int or drafter_bits != 16:
-            raise ValueError("Gemma4 CUDA DFlash retains the companion's BF16 weights; use --drafter-bits 16")
+        if type(drafter_bits) is not int or drafter_bits not in (8, 16):
+            raise ValueError("Gemma4 CUDA DFlash runs BF16 (--drafter-bits 16) or private FP8 copies (8) "
+                             "of the companion and its borrowed head")
         if depth is not None and (type(depth) is not int or not 1 <= depth <= 127):
             raise ValueError("Gemma4 DFlash draft depth must be between 1 and 127")
         if depth is not None and (not drafter or no_drafts):
@@ -111,7 +112,8 @@ class Gemma4Engine:
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         self.max_rows = 16 if depth is None else depth + 1
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
-                                   vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS)
+                                   vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
+                                   drafter_bits=drafter_bits)
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
         raw = read_config(model_dir)
