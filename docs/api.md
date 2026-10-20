@@ -111,7 +111,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `thinking_budget` | Token-count limit inside reasoning | Both |
 | `priority` | `background` yields to foreground requests | Both |
 | `service_tier` | `flex` is `priority: "background"` when the request sends no `priority`; other tiers change nothing | Both |
-| `return_progress` | With `stream`, llama.cpp's `prompt_progress` frames while the prompt prefills (see Responses) | CUDA Flash Next `--parallel` |
+| `return_progress` | With `stream`, llama.cpp's `prompt_progress` frames while the prompt prefills (see Responses) | CUDA Flash Next `--parallel`, Gemma 4 |
 
 `n` must be 1; multiple choices receive HTTP 400.
 
@@ -503,9 +503,10 @@ A streamed request may send `return_progress: true` (llama.cpp's field; on CUDA 
 llama.cpp's `prompt_progress` frames while its prompt prefills: a chunk with no output (`delta` `{"role":
 "assistant", "content": null}`, `finish_reason` null) and `prompt_progress` `{"total", "cache", "processed",
 "time_ms"}`: the prompt's tokens, those its resumed prefix cache held, those its state holds now (cached ones
-included), and milliseconds since a lane took it. One comes when a lane takes the prompt and one after each prefill
-pass, until its first token. Flash Next's concurrent engine (`--parallel N`) sends them; other engines, the Mac
-server and requests that do not ask send none.
+included), and elapsed prefill milliseconds. Flash Next's concurrent engine (`--parallel N`) sends a frame when a
+lane takes the prompt and after each prefill pass. Gemma 4 sends a frame after each prefill pass, including its
+reused prefix in `processed`; a fully cached prompt needs no prefill pass. Frames stop before the first generated
+token. Other engines, the Mac server and requests that do not ask send none.
 
 On CUDA, `GET /health` also carries counters a poller can difference into rates: `busy`, `requests_running`,
 `requests_total`, `completion_tokens_total` (the running replies' tokens included as they stream), and totals that

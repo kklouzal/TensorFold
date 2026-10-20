@@ -1,5 +1,11 @@
 # TensorFold fork
 
+Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
+the documented `cache <= processed <= total` contract during warm prompt reuse.
+CPU checks cover cold, cached, chunked and cancelled prefill. The correction
+changes telemetry only; fresh installed-image and live streaming validation
+remain pending.
+
 Gemma DFlash committed prompt projections keep prompt arithmetic through tiny
 cache suffixes, so seeded sampled continuations use the same proposal state
 after warm and cold prefill. Decode appends retain their existing lane kernels.

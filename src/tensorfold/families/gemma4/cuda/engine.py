@@ -287,7 +287,7 @@ class Gemma4Engine:
                 elif end == boundary:
                     kept.append(self._checkpoint(state))
                 start = end
-                if progress is not None and progress(len(prompt), cached, start - cached,
+                if progress is not None and progress(len(prompt), cached, start,
                                                      (time.perf_counter() - started) * 1000):
                     from tensorfold.server.cancellation import RequestCancelled
                     raise RequestCancelled("request cancelled during Gemma4 prefill")

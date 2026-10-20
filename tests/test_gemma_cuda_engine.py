@@ -1,11 +1,12 @@
 """Engine boundaries and exact accepted-path bookkeeping, without model weights."""
 
-from contextlib import nullcontext
 import threading
+import time
+from contextlib import nullcontext
+from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
-
 from tensorfold.families.gemma4.cuda.engine import Gemma4Engine, _accepted, _prefill_end, _prompt_ids
 
 
@@ -172,6 +173,66 @@ def _assert_prompt_path(engine, prompt):
     state = engine._state
     assert state.tokens[:len(prompt)] == list(prompt)
     assert state.prompt_rows == [True] * len(prompt) + [False] * (state.position - len(prompt))
+
+
+@pytest.mark.parametrize("with_head", [False, True])
+@pytest.mark.parametrize("cached,total,processed", [
+    (0, 10, [4, 8, 10]),
+    (8, 10, [10]),
+    (5, 15, [9, 13, 15]),
+    (10, 10, []),
+])
+def test_prefill_progress_includes_cached_tokens(monkeypatch, with_head, cached, total, processed):
+    engine = _engine(monkeypatch, with_head=with_head)
+    monkeypatch.setattr("tensorfold.families.gemma4.cuda.engine.PREFILL_ROWS", 4)
+    prompt = [3] * total
+    if cached:
+        engine._prefill(prompt[:cached], None, None, time.perf_counter())
+    reports = []
+
+    def progress(length, reused, held, elapsed):
+        reports.append((length, reused, held, elapsed))
+        assert 0 <= reused <= held <= length
+        return False
+
+    _, _, reused = engine._prefill(prompt, None, progress, time.perf_counter())
+
+    assert reused == cached
+    assert [item[2] for item in reports] == processed
+    assert all(item[:2] == (total, cached) and item[3] >= 0 for item in reports)
+    assert all(a[3] <= b[3] for a, b in pairwise(reports))
+    assert engine._state.position == total
+    assert engine._prefix.tokens == tuple(prompt)
+    if reports:
+        assert reports[-1][2] == total
+
+
+@pytest.mark.parametrize("with_head", [False, True])
+def test_cached_prefill_progress_cancellation_keeps_the_published_prefix(monkeypatch, with_head):
+    from tensorfold.server.cancellation import RequestCancelled
+
+    engine = _engine(monkeypatch, with_head=with_head)
+    monkeypatch.setattr("tensorfold.families.gemma4.cuda.engine.PREFILL_ROWS", 4)
+    prefix, prompt = [3] * 5, [3] * 15
+    engine._prefill(prefix, None, None, time.perf_counter())
+    reports = []
+
+    def cancel(length, reused, held, elapsed):
+        reports.append((length, reused, held))
+        return True
+
+    with pytest.raises(RequestCancelled, match="cancelled during Gemma4 prefill"):
+        engine._prefill(prompt, None, cancel, time.perf_counter())
+
+    assert reports == [(15, 5, 9)]
+    assert engine._state.position == 9
+    assert engine._prefix.tokens == tuple(prefix)
+    resumed = []
+    engine._prefill(prompt, None, lambda total, cached, held, elapsed: resumed.append(held),
+                    time.perf_counter())
+    assert resumed == [9, 13, 15]
+    assert engine._state.position == 15
+    assert engine._prefix.tokens == tuple(prompt)
 
 
 def test_companion_prompt_role_covers_tiny_turn_suffix_and_cached_extension(monkeypatch):
