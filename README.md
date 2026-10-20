@@ -6,8 +6,13 @@ Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
 checks. Its GB10 runtime passed cold and warm SSE validation with thinking
 enabled and unlimited thinking budget: the 1,333-token prompt reused 1,316 tokens
 and reported `processed` 1,330 then 1,333. The launch profile and speech services
-were preserved. This validates progress telemetry; the separate tool-cycle
-investigation remains open. [Source, image and evidence](deploy/gb10/deployment-gemma4-progress-20261020.json).
+were preserved. Separate Harness integration verified two declared speech-tool
+cycles, each with two model turns and one TTS call; the positive-reasoning case
+replayed all pre-tool reasoning and kept continuation reasoning separate from
+the answer. The Harness rollout and its final release checks are verified.
+These checks do not establish universal tool coverage or a new numerical or
+performance result.
+[Source, images and evidence](deploy/gb10/deployment-gemma4-progress-20261020.json).
 
 Gemma DFlash committed prompt projections keep prompt arithmetic through tiny
 cache suffixes, so seeded sampled continuations use the same proposal state

@@ -232,11 +232,91 @@
         "description": "Derived old start-cached values from the actual warm states; violates cache<=processed. Not a retained old live payload."
       }
     },
-    "earlier_budget8_probe_disposition": "Preserved as valid cold protocol runs, not first-run warm coverage. Forced thinking-close resumes replaced the single prefix checkpoint; aggregate internal cached differs from first-run usage/progress. Production budget0 warm04 is the decisive live progress gate."
+    "earlier_budget8_probe_disposition": "Preserved as valid cold protocol runs, not first-run warm coverage. Forced thinking-close resumes replaced the single prefix checkpoint; aggregate internal cached differs from first-run usage/progress. Production budget0 warm04 is the decisive live progress gate.",
+    "harness_integration": {
+      "component_verified_utc": "2026-10-20T04:32:50.962910+00:00",
+      "production_source": "a39d3f1e36bb6f47e9618d6ea48dcdd47189e671",
+      "verifier_test_metadata_commit": "5ef0b35042f62308be59202f9d6548064c1e3a21",
+      "verifier_source_sha256": "feb1154ab571c576bb592a6f530120d7a6cb091125e52e947093025465da38df",
+      "scope": "Two declared isolated real speech-tool cases through the reviewed Harness source against the unchanged live GB10 Gemma image; no universal tool or model-trajectory claim.",
+      "cases": {
+        "live-e2e-02": {
+          "passed": true,
+          "natural_completion": true,
+          "model_requests": 2,
+          "tts_requests": 1,
+          "continuation_audited": true,
+          "nonempty_reasoning_replay_audited": false,
+          "fixture_owner_api_host_retired": true,
+          "report_sha256": "f64ae31bfe55bc92d96959d49cd71e29562600c5818c6b181ce38532592ef133"
+        },
+        "live-positive-01": {
+          "passed": true,
+          "natural_completion": true,
+          "model_requests": 2,
+          "tts_requests": 1,
+          "continuation_audited": true,
+          "nonempty_reasoning_replay_audited": true,
+          "fixture_owner_api_host_retired": true,
+          "report_sha256": "55bee568c36a080fd5c85ef0beca63b3145ebc003535f7aff07a68a36b699d5c"
+        }
+      },
+      "positive_case_reasoning_characters": {
+        "pre_tool_replayed_exactly": 413,
+        "post_tool_separate_from_answer": 120
+      },
+      "boundary_controls": {
+        "passed": 18,
+        "failed": 0,
+        "skipped": 0
+      },
+      "independent_reviews": {
+        "D13": "closed verified exactfeb + both actual cases",
+        "D14": "closed verified exactfeb + both actual cases"
+      },
+      "final_seeded_backend": {
+        "passed": 5612,
+        "failed": 0,
+        "skipped": 30,
+        "seed": 20261020,
+        "exit_code": 0,
+        "skips": "Expected opt-ins remain skipped in this full-suite result; real speech and both model cases passed separately."
+      },
+      "harness_rollout": {
+        "status": "VERIFIED_DEPLOYED",
+        "status_source": "Sealed Harness release receipt: final API, UI, Kubernetes, process, storage, routing, provider and settings checks passed.",
+        "final_release_receipt": "/Warehouse/Harness/review/cloak-voice-name-20261020/release-receipt.json",
+        "final_release_receipt_status": "VERIFIED_DEPLOYED",
+        "final_release_receipt_sha256": "cfe319524bcf52c2cacbf01d38ef8adcfc1f8e4074279bfdfbfa0f91ff610f90",
+        "final_release_receipt_verified_utc": "2026-10-20T04:55:32.544616+00:00",
+        "sealed_release_receipt_copy": "/home/kklouzal/audit-artifacts/tensorfold-progress-ed24272a-arm64/harness-integration-follow-up-v2/release-receipt.json",
+        "manifest_audit_commit": "f717eacbfb90a2e7bf528feffd43a5f64603916e",
+        "production_image_source": "a39d3f1e36bb6f47e9618d6ea48dcdd47189e671",
+        "verification_test_commit": "5ef0b35042f62308be59202f9d6548064c1e3a21"
+      },
+      "gb10_post_rollout_confirmation": {
+        "observed_utc": "2026-10-20T04:49:58.572099+00:00",
+        "container_id": "57b5795d811c243f2fe78d2129d89947613e5e2330481bd79bc1d548f177bbf3",
+        "image": "sha256:5be0e0faa5565a36796f6f644a2678c20910cb6fcb0df92d3d57d4ad1bac3c65",
+        "image_source": "ed24272a6fac018517e96600af9e40f310d91f66",
+        "health": "healthy",
+        "restart_count": 0,
+        "original_profile_cmd_entrypoint_mounts_host_unchanged": true,
+        "thinking_default": true,
+        "thinking_budget": 0,
+        "context": 262144,
+        "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+        "speech_container_ids_images_preserved": true,
+        "check_method": "Docker inspect, metadata hash and GET health/stats only; no generation or service/configuration mutation."
+      },
+      "evidence_manifest": "/home/kklouzal/audit-artifacts/tensorfold-progress-ed24272a-arm64/harness-integration-follow-up-v2/manifest.json",
+      "evidence_manifest_sha256": "5cbd7090f95ef3f55cb5805fd2c4abce475f0ef0cb872fbd5104a36367ac0a91",
+      "historical_failure_preservation": "The original failed/cancelled user run and live-e2e-01 observer failure remain unchanged and are not counted as passes."
+    }
   },
   "limitations": [
-    "This closes the absolute prompt-progress producer contract only; the later user-reported tool/reasoning loop and Harness template-profile replay remain separate, pending end-to-end verification.",
-    "No claim that all tools or a complete tool continuation cycle work from this progress result. Preserve the failed/cancelled historical run unchanged.",
+    "The absolute prompt-progress contract and two separately declared Harness speech-tool integration cases were verified under their recorded source/image scopes; see validation.harness_integration for the independent Harness release evidence.",
+    "Only the two declared speech-tool cases were exercised. This is not universal tool coverage or a guarantee that every model trajectory terminates. Preserve the failed/cancelled historical run and the initial observer failure unchanged.",
     "No new numerical, full-context, media-quality or comparative-performance result or winner is claimed.",
     "The unselected multi-thought parser candidate was preserved as investigation evidence and removed from canonical source; this image contains no such parser change."
   ],
