@@ -31,7 +31,7 @@ services:
       - --kv-dtype
       - bf16
       - --vision
-      - --no-thinking
+      - --thinking
       - --thinking-budget
       - '0'
       # Google's current Gemma 4 template (google/gemma-4-26B-A4B-it@4d7ae498, sha256 ae53464b...), not the

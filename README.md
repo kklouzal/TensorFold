@@ -3,7 +3,11 @@
 Gemma DFlash committed prompt projections keep prompt arithmetic through tiny
 cache suffixes, so seeded sampled continuations use the same proposal state
 after warm and cold prefill. Decode appends retain their existing lane kernels.
-Native and full-model verification of this correction remains pending.
+On GB10, runtime source `d19d807a` passed 460 installed CPU checks and 23 native
+DFlash checks, including BF16/FP8 committed K/V and full proposal-logit invariance.
+Eight 512-token identity cases also passed. Remaining numerical, full-context,
+media and comparative performance qualification was waived for the accepted
+deployment; no new performance winner is claimed.
 
 Campaign identity and determinism rows now retain the typed token count of each
 required response peer. This exposes partial replies without adding requests or
@@ -24,9 +28,9 @@ context. Diagnostic substring recall remains separate from exact answer quality;
 and pending installed/model qualification.
 
 The GB10 Gemma profile defaults to its native 262,144-token context, a 16 GiB
-host-memory reserve, ten build/compute threads and CPUs `5-9,15-19`. Explicit
-environment overrides remain available. The fixed image's full-model release
-gates remain pending; these defaults do not qualify the retired image.
+host-memory reserve, ten build/compute threads and CPUs `5-9,15-19`. Thinking is
+enabled by default with no server-side thinking-token limit; Harness controls
+thinking and budgets per request. Explicit environment overrides remain available.
 
 **Installed integration checkpoint (2026-10-19):** source `cefd26d3` passed 10,164 installed CPU tests on each of ARM64 and AMD64, and 303 native checks on GB10 (204 documented CPU skips per host; two deliberate-device-trap skips on GB10). All five installed 4k HTTP profiles also completed their identity/mechanics controls: 48 benchmark replies of 512 tokens, 12 greedy and 12 sampled serial/draft comparisons, and 36 repeated pairs. Completed-answer/tool quality, longer context and comparative performance remain pending. Current GB10 runs use VBoost 0 and the host's ten-CPU container partition. Preserve that affinity policy; historical twenty-CPU results keep their recorded conditions.
 
