@@ -2,9 +2,12 @@
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
-CPU checks cover cold, cached, chunked and cancelled prefill. The correction
-changes telemetry only; fresh installed-image and live streaming validation
-remain pending.
+Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
+checks. Its GB10 runtime passed cold and warm SSE validation with thinking
+enabled and unlimited thinking budget: the 1,333-token prompt reused 1,316 tokens
+and reported `processed` 1,330 then 1,333. The launch profile and speech services
+were preserved. This validates progress telemetry; the separate tool-cycle
+investigation remains open. [Source, image and evidence](deploy/gb10/deployment-gemma4-progress-20261020.json).
 
 Gemma DFlash committed prompt projections keep prompt arithmetic through tiny
 cache suffixes, so seeded sampled continuations use the same proposal state
