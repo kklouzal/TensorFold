@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
 import threading
+from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 
 from tensorfold.cleanup import raise_failures
 
+from .read_budget import READER_PIECE_BYTES
 from .tensor_file import byte_range
 
-PIECE = 64 << 20         # bytes a direct read fills: the size of each pinned staging piece
+PIECE = READER_PIECE_BYTES  # one existing direct-read/filesystem window
 ALIGN = 4096             # O_DIRECT's file offset, length and buffer alignment
 
 DTYPES = {"BOOL": torch.bool, "U8": torch.uint8, "I8": torch.int8, "U16": torch.uint16, "I16": torch.int16,
@@ -159,6 +161,33 @@ def read_header(path: str | Path) -> tuple[int, dict]:
     return validated_header(path, {dtype: SIZES[dtype] for dtype in DTYPES})
 
 
+@dataclass(frozen=True, slots=True)
+class _OwnedCpuRun:
+    """Private fresh Reader backing for complete contiguous equal-byte fields.
+
+    The loader owns this synchronous plan and each returned byte allocation.
+    No result aliases checkpoint tensors, other reads or reusable staging.
+    Borrowed views may live only through the owner's loading interval. Plans
+    retain the reader, not descriptors or payloads, and add no close protocol.
+    """
+
+    reader: Reader
+    path: Path
+    begin: int
+    field_bytes: int
+    count: int
+    max_read_bytes: int
+
+    def read(self, first: int, stop: int) -> torch.Tensor:
+        if (type(first) is not int or type(stop) is not int
+                or not 0 <= first < stop <= self.count):
+            raise ValueError("owned CPU run requires a nonempty in-range field interval")
+        size = (stop - first) * self.field_bytes
+        if size > self.max_read_bytes:
+            raise ValueError("owned CPU run exceeds its admitted read byte bound")
+        return self.reader.read(self.path, self.begin + first * self.field_bytes, size, device="cpu")
+
+
 class SafeTensors:
     """Tensors by name (a later file's name wins), read through one Reader.
 
@@ -200,6 +229,93 @@ class SafeTensors:
         if dtype not in DTYPES:
             raise ValueError(f"{name}: safetensors dtype {dtype} is not supported")
         return self.reader.read(path, begin, n, device).view(DTYPES[dtype]).reshape(shape)
+
+    def prepare_cpu_run(self, names, *, dtype: str, field_bytes: int, max_read_bytes: int):
+        """Prepare an exclusive CPU byte-run capability, or explicit ineligibility.
+
+        This specialization requires the canonical Reader, eight-aligned starts
+        and equal-size one-byte fields in exact requested physical order. Other
+        reader implementations/topologies retain ordinary per-tensor reads.
+        Names/dtypes/ranges/budgets are validated before any I/O. A result owns
+        fresh CPU bytes on each bounded read; it never exposes shared fixture or
+        callback storage. The complete checkpoint and metadata stay immutable
+        through the synchronous caller-owned loading interval.
+        """
+        if (dtype not in ("U8", "F8_E4M3") or type(field_bytes) is not int or field_bytes <= 0
+                or type(max_read_bytes) is not int or max_read_bytes < field_bytes):
+            raise ValueError("owned CPU run requires a supported byte dtype and positive admitted sizes")
+        if isinstance(names, (str, bytes)):
+            raise TypeError("owned CPU run requires a sequence of tensor names")
+        names = tuple(names)
+        if not names or len(set(names)) != len(names):
+            raise ValueError("owned CPU run requires distinct nonempty tensor names")
+        path = begin = None
+        contiguous = True
+        for index, name in enumerate(names):
+            file, offset, size, stored, _shape = self.where[name]
+            if (stored != dtype or type(size) is not int or size != field_bytes
+                    or type(offset) is not int or offset < 0):
+                raise ValueError(f"{name}: owned CPU run field differs from its validated byte geometry")
+            if index == 0:
+                path, begin = file, offset
+            elif file != path or offset != begin + index * field_bytes:
+                contiguous = False
+        if type(self.reader) is not Reader or not contiguous or begin % 8:
+            return None
+        return _OwnedCpuRun(self.reader, path, begin, field_bytes, len(names), max_read_bytes)
+
+    def get_f32_scalars(self, names, *, max_bytes: int) -> torch.Tensor:
+        """One owned CPU F32 vector in requested order, from F32[1] fields only.
+
+        Names and checkpoint contents stay immutable through this synchronous
+        call. All field/budget checks precede I/O. The plan holds N offset/index
+        tuples grouped by path; its name set retires before tensor allocation.
+        Each contiguous K-field run adds raw bytes, an int64[K] index, and a
+        temporary K-position list. Tensor payload peaks below 4*N + 12*K +
+        3*ALIGN bytes; callers also admit the bounded Python plan/sort/name
+        metadata. Byte-row copies preserve the original F32 representations.
+        No per-field Tensor/Storage records remain in the result. This operation
+        adds no pinned/upload/descriptor owner; prior Reader staging is unchanged.
+        """
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("checkpoint batch byte bound must be a nonnegative integer")
+        if isinstance(names, (str, bytes)):
+            raise TypeError("checkpoint batch requires a sequence of tensor names")
+        groups, seen, count = {}, set(), 0
+        for index, name in enumerate(names):
+            if name in seen:
+                raise ValueError("checkpoint batch tensor names must be distinct")
+            seen.add(name)
+            path, begin, n, dtype, shape = self.where[name]
+            if dtype != "F32" or shape != [1] or type(n) is not int or n != 4:
+                raise ValueError(f"{name}: checkpoint scalar batch requires F32[1] fields")
+            if type(begin) is not int or begin < 0:
+                raise ValueError("checkpoint byte offsets and lengths must be nonnegative integers")
+            count += 1
+            if 4 * count > max_bytes:
+                raise ValueError("checkpoint batch exceeds its admitted byte bound")
+            group = groups.get(path)
+            if group is None:
+                group = groups[path] = []
+            group.append((begin, index))
+        del seen
+        out = torch.empty((count,), dtype=torch.float32, device="cpu")
+        for path, items in groups.items():
+            items.sort(key=lambda item: item[0])
+            start = 0
+            while start < len(items):
+                begin, stop = items[start][0], start + 1
+                end = begin + 4
+                while stop < len(items) and items[stop][0] == end:
+                    end += 4
+                    stop += 1
+                raw = self.reader.read(path, begin, end - begin)
+                positions = torch.tensor([items[at][1] for at in range(start, stop)],
+                                         dtype=torch.int64, device="cpu")
+                out.view(torch.uint8).reshape(-1, 4).index_copy_(0, positions, raw.reshape(-1, 4))
+                del raw, positions
+                start = stop
+        return out
 
 
 class ReadAhead:

@@ -13,11 +13,14 @@ from .grouped_a4 import _ext, run
 from .host_layout import authority_fields_a4
 
 
-def pack_projection_a4(weight, scale):
+def pack_projection_a4(weight, scale, *, out=None):
     """Exact CPU/CUDA bit permutation into words followed by E4M3 block scales.
 
     No floating conversion is performed. Both output dimensions are multiples
-    of64, so native tiles contain no absent/padded output rows.
+    of64, so native tiles contain no absent/padded output rows. CPU callers
+    can provide one disjoint, aligned final U8 row; both permuted views copy
+    directly into it. The default CPU result owns its final storage. CUDA
+    retains its existing native packing path and does not accept ``out``.
     """
     if (weight.device.type not in ("cpu", "cuda") or scale.device != weight.device or weight.dtype != torch.uint8
             or weight.ndim != 2 or scale.dtype != torch.float8_e4m3fn):
@@ -26,14 +29,82 @@ def pack_projection_a4(weight, scale):
     if n <= 0 or k <= 0 or n % 64 or k % 64 or tuple(scale.shape) != (n, k // 16):
         raise ValueError("native A4 projection dimensions/scales must form complete64-wide tiles")
     if weight.device.type == "cuda":
+        if out is not None:
+            raise ValueError("native A4 destination packing requires CPU payloads")
         from .checkpoint import pack4
 
         words = pack4(weight, n)
-    else:
-        words = (weight.contiguous().view(torch.int32).view(n // 64, 8, 8, k // 64, 2, 4)
-                 .permute(0, 3, 1, 2, 5, 4).contiguous())
-    bs = scale.contiguous().view(torch.uint8).view(n // 64, 64, k // 64, 4).permute(0, 2, 1, 3).contiguous()
-    return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
+        bs = scale.contiguous().view(torch.uint8).view(n // 64, 64, k // 64, 4).permute(0, 2, 1, 3).contiguous()
+        return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
+    word_bytes = n * k // 2
+    blob_bytes = word_bytes + n * k // 16
+    if out is None:
+        out = torch.empty((blob_bytes,), dtype=torch.uint8, device="cpu")
+    if (not isinstance(out, torch.Tensor) or out.device != weight.device or out.dtype != torch.uint8
+            or out.ndim != 1 or out.numel() != blob_bytes or not out.is_contiguous()
+            or out.storage_offset() % 4 or out.data_ptr() % 4 or out.is_conj() or out.is_neg()):
+        raise ValueError("native A4 CPU destination must be one aligned contiguous U8 projection row")
+    if _overlap(out, weight) or _overlap(out, scale):
+        raise ValueError("native A4 CPU destination must not overlap codes or block scales")
+    # Construct all typed views before touching caller-owned storage. Integer
+    # cells move original four-byte groups; neither codes nor F8 bytes convert.
+    words = weight.contiguous().view(torch.int32).view(n // 64, 8, 8, k // 64, 2, 4).permute(0, 3, 1, 2, 5, 4)
+    bs = scale.contiguous().view(torch.uint8).view(n // 64, 64, k // 64, 4).permute(0, 2, 1, 3)
+    target_words = out[:word_bytes].view(torch.int32).view(n // 64, k // 64, 8, 8, 4, 2)
+    target_scales = out[word_bytes:].view(n // 64, k // 64, 64, 4)
+    target_words.copy_(words)
+    target_scales.copy_(bs)
+    return out
+
+
+def pack_bank_a4(codes, scales, up, down, indices, width, dims):
+    """Copy one physical down/gate/up chunk into admitted logical bank cells.
+
+    ``indices`` comes from the loader's validated distinct local expert map.
+    Complete64-row projection boundaries make the existing permutation
+    separable. Keep per-projection word prefixes and SF tails separate: folding
+    projections into N would put all words before all scales and change bytes.
+    Source owners remain live through all four synchronous indexed copies.
+    """
+    count = indices.numel()
+    geometry = authority_fields_a4(up.shape[0], width, dims)
+    blob, word_bytes, scale_bytes = geometry[0][0][-1], width * dims // 2, width * dims // 16
+    if (count <= 0 or indices.device.type != "cpu" or indices.dtype != torch.int64 or indices.ndim != 1
+            or not indices.is_contiguous()
+            or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.ndim != 1 or not t.is_contiguous()
+                   for t in (codes, scales))
+            or codes.numel() != count * 3 * word_bytes or scales.numel() != count * 3 * scale_bytes):
+        raise ValueError("native A4 chunk requires owned CPU byte runs and distinct admitted local indices")
+    if (tuple(up.shape) != geometry[0][0] or tuple(down.shape) != geometry[1][0]
+            or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.stride(-1) != 1
+                   or t.storage_offset() % 4 or t.data_ptr() % 4 or t.is_conj() or t.is_neg()
+                   for t in (up, down))
+            or up.stride(1) != blob or up.stride(0) < 2 * blob or down.stride(0) < blob):
+        raise ValueError("native A4 chunk destinations differ from admitted bank rows")
+    if _overlap(up, down):
+        # Offload rows share one entry authority, but their actual byte cells
+        # are disjoint despite intersecting conservative whole-bank spans.
+        delta = down.data_ptr() - up.data_ptr()
+        if not (up.stride(0) == down.stride(0) and 2 * blob <= delta
+                and delta + blob <= up.stride(0)):
+            raise ValueError("native A4 chunk destinations must have disjoint bank cells")
+    if any(_overlap(target, source) for target in (up, down) for source in (codes, scales)):
+        raise ValueError("native A4 chunk destinations must not overlap source owners")
+    w, d, experts = width // 64, dims // 64, up.shape[0]
+    original_words = codes.view(torch.int32).view(count, 3, word_bytes // 4)
+    original_scales = scales.view(count, 3, scale_bytes)
+    pairs = (
+        (up[..., :word_bytes].view(torch.int32).view(experts, 2, w, d, 8, 8, 4, 2),
+         original_words[:, 1:].view(count, 2, w, 8, 8, d, 2, 4).permute(0, 1, 2, 5, 3, 4, 7, 6)),
+        (up[..., word_bytes:].view(experts, 2, w, d, 64, 4),
+         original_scales[:, 1:].view(count, 2, w, 64, d, 4).permute(0, 1, 2, 4, 3, 5)),
+        (down[..., :word_bytes].view(torch.int32).view(experts, d, w, 8, 8, 4, 2),
+         original_words[:, 0].view(count, d, 8, 8, w, 2, 4).permute(0, 1, 4, 2, 3, 6, 5)),
+        (down[..., word_bytes:].view(experts, d, w, 64, 4),
+         original_scales[:, 0].view(count, d, 64, w, 4).permute(0, 1, 3, 2, 4)),
+    )
+    for target, source in pairs:
+        target.index_copy_(0, indices, source)
 
 
 def _span(t):

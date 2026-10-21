@@ -55,12 +55,20 @@ class MLPContext:
     on the requested device; an expert factory can therefore build its final
     CPU authority without first placing expert payload on the GPU. The callback
     must finish before returning and retain tensors, not this reader context.
+    ``read_f32_scalars`` consumes a bounded CPU F32[1] batch once after its complete read;
+    names already consumed by either callback fail before any batch I/O.
+    ``prepare_cpu_run`` checks a complete equal-byte physical run without I/O.
+    Its optional loading-only callable owns fresh CPU backing per bounded field
+    interval and consumes that interval only after a successful synchronous read.
+    Unsupported reader/topology returns None; metadata/resource errors propagate.
     ``used`` records actual native activation math for the startup declaration.
     """
 
     info: dict[str, tuple[str, list[int]]]
     metadata: Any
     read: Callable
+    read_f32_scalars: Callable
+    prepare_cpu_run: Callable
     linear: Callable
     checkpoint_math: bool
     own: dict[str, bool]
@@ -228,7 +236,42 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             del t.where[name]
             return t.files.get(name, device)
 
-        context = (MLPContext(info, metadata, read, linear, checkpoint_math, own, used)
+        def read_f32_scalars(names, *, max_bytes: int) -> torch.Tensor:
+            names = tuple(names)
+            for name in names:
+                if name not in t.where:
+                    raise KeyError(name)
+            values = t.files.get_f32_scalars(names, max_bytes=max_bytes)
+            for name in names:
+                del t.where[name]
+            return values
+
+        def prepare_cpu_run(names, *, dtype: str, field_bytes: int, max_read_bytes: int):
+            names = tuple(names)
+            for name in names:
+                if name not in t.where:
+                    raise KeyError(name)
+            run = t.files.prepare_cpu_run(names, dtype=dtype, field_bytes=field_bytes,
+                                          max_read_bytes=max_read_bytes)
+            if run is None:
+                return None
+
+            def read_run(first: int, stop: int):
+                if (type(first) is not int or type(stop) is not int
+                        or not 0 <= first < stop <= len(names)):
+                    raise ValueError("owned CPU run requires a nonempty in-range field interval")
+                selected = names[first:stop]
+                for name in selected:
+                    if name not in t.where:
+                        raise KeyError(name)
+                value = run.read(first, stop)
+                for name in selected:
+                    del t.where[name]
+                return value
+
+            return read_run
+
+        context = (MLPContext(info, metadata, read, read_f32_scalars, prepare_cpu_run, linear, checkpoint_math, own, used)
                    if mlp is not None else None)
 
         def norm(name: str) -> torch.Tensor:

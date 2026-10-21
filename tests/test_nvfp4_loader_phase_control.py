@@ -50,7 +50,7 @@ class Value:
 
 
 def fixture():
-    events, state = [], {"closes": 0, "releases": 0}
+    events, state = [], {"closes": 0, "releases": 0, "device_reads": []}
 
     def release():
         events.append("release")
@@ -116,6 +116,12 @@ def fixture():
     class Reader:
         def __init__(self, *args, **kwargs):
             events.append("reader")
+            self.where = {name: None for name in capacity.headers(Path("opaque"))}
+            self.files = SimpleNamespace(get=self.get)
+
+        def get(self, name, device):
+            state["device_reads"].append((name, device))
+            return self.pop(name)
 
         def pop(self, name):
             events.append(name)
@@ -226,7 +232,7 @@ class MetadataSelection(unittest.TestCase):
         from tensorfold.cuda import precision
 
         path = SOURCE.parents[3] / "cuda/nvfp4/format.py"
-        selected = {"scheme", "LinearMetadata", "calibration"}
+        selected = {"scheme", "LinearMetadata", "_calibration_result", "calibration"}
         nodes = [n for n in ast.parse(path.read_text()).body
                  if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in selected]
         api = {"LinearQuantization": LinearQuantization}

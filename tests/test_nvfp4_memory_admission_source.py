@@ -3,6 +3,7 @@ import ast
 import builtins
 import importlib.util
 import re
+import sys
 import unittest
 from functools import partial
 from pathlib import Path
@@ -12,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("memory_candidate", ROOT / "src/tensorfold/families/qwen3_5/cuda/nvfp4_memory.py")
 memory = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = memory
 spec.loader.exec_module(memory)
 capacity_tree = ast.parse((ROOT / 'src/tensorfold/cuda/capacity.py').read_bytes())
 SIZES = ast.literal_eval(next(n.value for n in capacity_tree.body if isinstance(n, ast.Assign)

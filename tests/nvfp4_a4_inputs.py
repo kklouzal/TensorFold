@@ -20,7 +20,7 @@ swiglu.activation = 0       # the declared BF16 SiLU/product that native A4 devi
 class Context:
     def __init__(self, *, count=3, width=64, dims=128, uniform=False):
         self.cfg = SimpleNamespace(experts=count, moe_width=width, hidden=dims, top_k=2)
-        self.info, self.payload, self.reads, self.used = {}, {}, [], {}
+        self.info, self.payload, self.reads, self.used, self.batches = {}, {}, [], {}, []
         self.checkpoint_math, self.own = True, {"nvfp4": True}
         self.metadata = LinearMetadata({"quant_method": "compressed-tensors", "config_groups": {"nv": {
             "targets": ["Linear"],
@@ -68,6 +68,21 @@ class Context:
             raise AssertionError("duplicate checkpoint consumption: " + name)
         self.reads.append(name)
         return self.payload[name].to(device)
+
+    def read_f32_scalars(self, names, *, max_bytes):
+        names = tuple(names)
+        if len(set(names)) != len(names) or any(name in self.reads for name in names):
+            raise AssertionError("duplicate checkpoint consumption")
+        if sum(self.payload[name].numel() * self.payload[name].element_size() for name in names) > max_bytes:
+            raise ValueError("checkpoint batch exceeds its byte cap")
+        self.batches.append((names, max_bytes))
+        return torch.cat([self.read(name).reshape(1) for name in names])
+
+    def prepare_cpu_run(self, names, **_geometry):
+        # This fixture intentionally retains/aliases its source tensors. It
+        # offers no fresh-reader ownership capability; canonical loading stays
+        # covered independently from the file-backed eligible-path controls.
+        return None
 
 
 def ct_quant_reference(x, raw_multiplier):

@@ -174,13 +174,18 @@ class LinearMetadata:
             raise ValueError(f"{name}: {field} must be one floating-point calibration value")
 
 
-def calibration(value, *, name, reciprocal=False):
-    """A finite positive FP32 scalar, taking a reciprocal only when requested."""
+def _calibration_result(value, *, reciprocal=False):
+    """The unchanged scalar arithmetic, with an explicit invalid-input reason.
+
+    Loading may test a complete private bank before reading its payload. Only
+    these represented calibration-invalid outcomes select ordered validation;
+    conversion, helper and resource exceptions continue to propagate.
+    """
     import math
 
     value = float(value)
     if not math.isfinite(value) or value <= 0:
-        raise ValueError(f"{name}: calibration must be finite and positive")
+        return None, "calibration must be finite and positive"
     scale = 1.0 / value if reciprocal else value
     import struct
 
@@ -189,8 +194,17 @@ def calibration(value, *, name, reciprocal=False):
     except OverflowError:
         narrowed = float("inf")
     if not math.isfinite(narrowed) or narrowed <= 0:
-        raise ValueError(f"{name}: calibration must remain finite and positive in FP32")
+        return None, "calibration must remain finite and positive in FP32"
+    return scale, None
+
+
+def calibration(value, *, name, reciprocal=False):
+    """A finite positive FP32 scalar, taking a reciprocal only when requested."""
+    scale, error = _calibration_result(value, reciprocal=reciprocal)
+    if error is not None:
+        raise ValueError(f"{name}: {error}")
     return scale
+
 
 
 def e4m3(bits: np.ndarray) -> np.ndarray:
@@ -251,21 +265,28 @@ def validate_native_a4_scales(scales, *, name: str) -> None:
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
 
 
-def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
-    """Admit the exact FP32 inverse/product used by checkpoint native math.
-
-    Called only for an actually selected native projection. Reuse the owned
-    arithmetic helpers so validation and subsequent native preparation share
-    their rounding and subnormal contract. An explicit CT input multiplier is
-    admitted directly instead of introducing a reciprocal roundtrip. Return
-    the original dequantization scale unchanged.
-    """
+def _native_factors_result(act: float, weight_scale: float, *, name: str,
+                           act_inverse: float | None = None):
+    """Native admission result; unexpected helper failures are never eligibility."""
     import math
 
     from .checkpoint import _inv, alpha
 
-    inverse = _inv(act) if act_inverse is None else calibration(act_inverse, name=name + ".input_global_scale")
+    if act_inverse is None:
+        inverse = _inv(act)
+    else:
+        inverse, error = _calibration_result(act_inverse)
+        if error is not None:
+            return None, f"{name}.input_global_scale: {error}"
     product = alpha(act, weight_scale)
     if not (math.isfinite(inverse) and inverse > 0 and math.isfinite(product) and product > 0):
-        raise ValueError(f"{name}: native FP32 inverse and joint calibration must remain finite and positive")
+        return None, f"{name}: native FP32 inverse and joint calibration must remain finite and positive"
+    return (inverse, product), None
+
+
+def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
+    """Admit native FP32 factors and return act; banks consume their own device fields."""
+    _, error = _native_factors_result(act, weight_scale, name=name, act_inverse=act_inverse)
+    if error is not None:
+        raise ValueError(error)
     return act

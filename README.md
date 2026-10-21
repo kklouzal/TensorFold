@@ -103,6 +103,13 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 qualification (2026-10-17):** the original `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` export now runs with RAM-backed experts and its separate DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell. Installed source `099eb4d0` completed serial/drafted identity, strict tools/JSON, streaming, cancellation and four concurrent 512-token replies. The eight-row BF16 draft profile reached about **37 tok/s** in the balanced single-request comparison; four concurrent requests completed at **57.70 aggregate client tok/s** in a separate profile. [Conditions, immutable images and limits](docs/qwen36-ct-nvfp4-validation.md) retain the numerical contracts and conditional performance analysis. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
+A separate native CT bank-loading candidate batches owned calibration and
+block-scale reads, streams bounded code chunks, and packs directly into final
+CPU authority. It preserves original error order and native arithmetic. The
+isolated candidate retains the accepted runtime's kernels and other loading
+paths; source, resource, installed/native and full-model qualification remain
+pending. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
+
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU

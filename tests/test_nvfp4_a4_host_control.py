@@ -160,10 +160,11 @@ def test_invalid_routed_scale_payload_stops_before_pack_or_publication(monkeypat
     ctx, cache = Context(), Cache()
     name = PREFIX + ".experts.0.gate_proj.weight_scale"
     ctx.payload[name].view(torch.uint8).reshape(-1)[-1] = byte
-    monkeypatch.setattr(experts_a4, "pack_projection_a4", lambda *args: pytest.fail("packed invalid native scales"))
+    monkeypatch.setattr(experts_a4, "pack_projection_a4", lambda *args, **kwargs:
+                        pytest.fail("packed invalid native scales"))
     with pytest.raises(ValueError, match=r"gate_proj.weight_scale: native A4 block scales"):
         load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, swiglu=swiglu)
-    assert len(ctx.reads) == 4 and ctx.reads[-1] == name
+    assert len(ctx.reads) == 6 * ctx.cfg.experts + 2 and ctx.reads[-1] == name
     assert not cache._layers and not ctx.used
 
 
