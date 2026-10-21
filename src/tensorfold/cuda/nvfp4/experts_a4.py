@@ -57,6 +57,56 @@ def pack_projection_a4(weight, scale, *, out=None):
     return out
 
 
+def pack_bank_a4(codes, scales, up, down, indices, width, dims):
+    """Copy one physical down/gate/up chunk into admitted logical bank cells.
+
+    ``indices`` comes from the loader's validated distinct local expert map.
+    Complete64-row projection boundaries make the existing permutation
+    separable. Keep per-projection word prefixes and SF tails separate: folding
+    projections into N would put all words before all scales and change bytes.
+    Source owners remain live through all four synchronous indexed copies.
+    """
+    count = indices.numel()
+    geometry = authority_fields_a4(up.shape[0], width, dims)
+    blob, word_bytes, scale_bytes = geometry[0][0][-1], width * dims // 2, width * dims // 16
+    if (count <= 0 or indices.device.type != "cpu" or indices.dtype != torch.int64 or indices.ndim != 1
+            or not indices.is_contiguous()
+            or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.ndim != 1 or not t.is_contiguous()
+                   for t in (codes, scales))
+            or codes.numel() != count * 3 * word_bytes or scales.numel() != count * 3 * scale_bytes):
+        raise ValueError("native A4 chunk requires owned CPU byte runs and distinct admitted local indices")
+    if (tuple(up.shape) != geometry[0][0] or tuple(down.shape) != geometry[1][0]
+            or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.stride(-1) != 1
+                   or t.storage_offset() % 4 or t.data_ptr() % 4 or t.is_conj() or t.is_neg()
+                   for t in (up, down))
+            or up.stride(1) != blob or up.stride(0) < 2 * blob or down.stride(0) < blob):
+        raise ValueError("native A4 chunk destinations differ from admitted bank rows")
+    if _overlap(up, down):
+        # Offload rows share one entry authority, but their actual byte cells
+        # are disjoint despite intersecting conservative whole-bank spans.
+        delta = down.data_ptr() - up.data_ptr()
+        if not (up.stride(0) == down.stride(0) and 2 * blob <= delta
+                and delta + blob <= up.stride(0)):
+            raise ValueError("native A4 chunk destinations must have disjoint bank cells")
+    if any(_overlap(target, source) for target in (up, down) for source in (codes, scales)):
+        raise ValueError("native A4 chunk destinations must not overlap source owners")
+    w, d, experts = width // 64, dims // 64, up.shape[0]
+    original_words = codes.view(torch.int32).view(count, 3, word_bytes // 4)
+    original_scales = scales.view(count, 3, scale_bytes)
+    pairs = (
+        (up[..., :word_bytes].view(torch.int32).view(experts, 2, w, d, 8, 8, 4, 2),
+         original_words[:, 1:].view(count, 2, w, 8, 8, d, 2, 4).permute(0, 1, 2, 5, 3, 4, 7, 6)),
+        (up[..., word_bytes:].view(experts, 2, w, d, 64, 4),
+         original_scales[:, 1:].view(count, 2, w, 64, d, 4).permute(0, 1, 2, 4, 3, 5)),
+        (down[..., :word_bytes].view(torch.int32).view(experts, d, w, 8, 8, 4, 2),
+         original_words[:, 0].view(count, d, 8, 8, w, 2, 4).permute(0, 1, 4, 2, 3, 6, 5)),
+        (down[..., word_bytes:].view(experts, d, w, 64, 4),
+         original_scales[:, 0].view(count, d, 64, w, 4).permute(0, 1, 3, 2, 4)),
+    )
+    for target, source in pairs:
+        target.index_copy_(0, indices, source)
+
+
 def _span(t):
     if not t.numel():
         return 0, 0

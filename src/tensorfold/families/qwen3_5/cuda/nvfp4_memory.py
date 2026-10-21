@@ -8,6 +8,7 @@ they do not change the loaded precision, scales, tensor order, or kernels.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from tensorfold.cuda.read_budget import reader_host_bytes
 
@@ -132,8 +133,23 @@ def scheduled_loading_bytes(entries: dict, transform) -> int:
     return peak + (4 << 20)
 
 
-def weight_estimate(model_dir, transform, *, scalar_batches: bool = False):
-    """Capacity weights and host reads; native MoE opts into ordered scalars."""
+@dataclass(frozen=True, slots=True)
+class LoadingEstimate:
+    weights: object
+    host_bytes: int
+    bulk_host_increment: int
+
+
+def weight_estimate(model_dir, transform, *, scalar_batches: bool = False,
+                    bulk_resident: bool = True, details: bool = False):
+    """Capacity weights/host reads, optionally with the exact resident bulk delta.
+
+    Offload's existing loading window already admits the bounded raw bank
+    phase; its shared estimator adds only planning metadata. The initial
+    resident estimate exposes its exact additional raw-owner charge so the
+    preliminary pin admission can remove that same overlap, before taking its
+    existing maximum with the rejection workspace. No header is parsed again.
+    """
     from tensorfold.cuda.capacity import Weights, _estimate_weights_from_headers, headers, itemsize
 
     entries = headers(model_dir)
@@ -166,11 +182,22 @@ def weight_estimate(model_dir, transform, *, scalar_batches: bool = False):
     # original CPU allowance and add those physical backings exactly once;
     # offload's additional authority allowance deliberately excludes the rings.
     host = reader_host_bytes(largest, max(existing.staging, largest))
+    bulk_increment = 0
     if scalar_batches:
-        from tensorfold.cuda.nvfp4.host_layout import scalar_batch_host_bytes_a4
+        from tensorfold.cuda.nvfp4.host_layout import bulk_host_bytes_a4, scalar_batch_host_bytes_a4
 
         # The MoE engine opts in for both resident and transformed offload
         # estimates. Charge the same plan once, without consuming old packing
         # slack; dense engines perform no scalar-plan import or header scan.
         host += scalar_batch_host_bytes_a4(entries)
-    return Weights(existing.resident + padding, staging, existing.mapped), host
+        raw, resident_phase, planning = bulk_host_bytes_a4(entries)
+        if bulk_resident and raw:
+            # Private CPU authority coexists with its raw SF/code owners.
+            # Raw owners retire before publication; CPU authority survives its
+            # synchronous transfers. Reader rings and publication keep the
+            # existing add/maximum structure, now covering the complete phase.
+            bulk_increment = (reader_host_bytes(largest, max(existing.staging, largest, resident_phase))
+                              - reader_host_bytes(largest, max(existing.staging, largest)))
+        host += planning + bulk_increment
+    weights = Weights(existing.resident + padding, staging, existing.mapped)
+    return LoadingEstimate(weights, host, bulk_increment) if details else (weights, host)

@@ -151,6 +151,39 @@ class CachedExperts4:
             yield nvx.Experts4(*payloads, self.width, self.dims, self.limit), mapping
 
 
+def _preflight_a4_calibrations(calibrations, owners, projections, fields):
+    """Prepare private fields once, or explicitly select ordered input errors.
+
+    Only shared validators' represented invalid calibration results return
+    False. No exception, helper defect or resource failure becomes eligibility.
+    A later invalid global must not supersede an earlier invalid block scale;
+    the canonical ordered path reports that failure using the original APIs.
+    """
+    from . import format as fmt
+
+    for local, owner in enumerate(owners):
+        for p, (projection, _, _) in enumerate(projections):
+            base = f"{owner}.{projection}"
+            offset = 6 * local + 2 * p
+            scale, error = fmt._calibration_result(float(calibrations[offset]), reciprocal=True)
+            if error is not None:
+                return False
+            inverse, error = fmt._calibration_result(float(calibrations[offset + 1]))
+            if error is not None:
+                return False
+            act, error = fmt._calibration_result(inverse, reciprocal=True)
+            if error is not None:
+                return False
+            _, error = fmt._native_factors_result(act, scale, name=base, act_inverse=inverse)
+            if error is not None:
+                return False
+            if p < 2:
+                fields[2][local, p], fields[4][local, p] = scale, inverse
+            else:
+                fields[3][local, 0], fields[5][local, 0] = scale, inverse
+    return True
+
+
 def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_ids=None, layer_id=None,
                          swiglu, shared=False):
     """Load CT routed native-A4 experts in owned local order.
@@ -163,17 +196,20 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     Without a shared cell no shared field is read.
 
     Header/declaration validation precedes authority allocation. One bounded
-    CPU scalar batch contains exactly the validated owners' F32 calibrations;
-    each projection validates its scalars before code/scale payload. Packing one
-    projection at a time writes directly into final authority; raw code/scale
-    payloads and any source-contiguity copies remain inside the existing bound.
+    CPU scalar batch contains exactly the validated owners' F32 calibrations.
+    Canonical Reader runs can prepare all globals without changing arithmetic,
+    own one SF run and bounded code chunks, and write exact tiled bytes into
+    final authority. Invalid globals/unsupported topology retain ordered reads;
+    invalid SF retains original projection error order using private SF views.
+    All raw owners/alignment stay inside the admitted reader window, with
+    planning metadata charged separately for resident and offloaded loading.
     Resident loading releases CPU code/scale authority after synchronous device
     transfer. Serving retains no CPU calibration metadata for either residency.
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4, uniform_input_bits
-    from .host_layout import authority_fields_a4, entry_layout_a4
+    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_bank_a4, pack_projection_a4, uniform_input_bits
+    from .host_layout import authority_fields_a4, bulk_layout_a4, entry_layout_a4
 
     device = torch.device(device)
     if device.type != "cuda":
@@ -227,27 +263,67 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     # Every selected header was proved F32[1] above. Derive the exact cap,
     # including a possible resident shared cell, before any batched I/O.
     calibrations = ctx.read_f32_scalars(scalar_names, max_bytes=len(scalar_names) * 4)
-    for local, owner in enumerate(owners):
-        for p, (projection, _, _) in enumerate(projections):
-            base = f"{owner}.{projection}"
-            # One ordered owner; float(Tensor) keeps the original CPU scalar
-            # conversion, with only the current scalar view alive at a time.
-            offset = 6 * local + 2 * p
-            scale = fmt.calibration(float(calibrations[offset]), name=base + ".weight_global_scale",
-                                    reciprocal=True)
-            inverse = fmt.calibration(float(calibrations[offset + 1]), name=base + ".input_global_scale")
-            act = fmt.calibration(inverse, name=base + ".input_global_scale", reciprocal=True)
-            fmt.native_calibration(act, scale, name=base, act_inverse=inverse)
-            if p < 2:
-                fields[2][local, p], fields[4][local, p] = scale, inverse
-            else:
-                fields[3][local, 0], fields[5][local, 0] = scale, inverse
-            codes = ctx.read(base + ".weight_packed", device="cpu")
-            blocks = ctx.read(base + ".weight_scale", device="cpu")
-            fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
-            target = fields[0][local, p] if p < 2 else fields[1][local]
-            pack_projection_a4(codes, blocks, out=target)
-            del codes, blocks
+    bulk = bulk_layout_a4(len(owners), width, dims)
+    code_run = scale_run = physical = physical_at = all_scales = None
+    prepared = packed = False
+    if bulk is not None:
+        physical = sorted(range(len(owners)), key=lambda local: owners[local])
+        code_names = tuple(f"{owners[local]}.{projection}.weight_packed" for local in physical
+                           for projection in ("down_proj", "gate_proj", "up_proj"))
+        scale_names = tuple(f"{owners[local]}.{projection}.weight_scale" for local in physical
+                            for projection in ("down_proj", "gate_proj", "up_proj"))
+        code_run = ctx.prepare_cpu_run(code_names, dtype="U8", field_bytes=bulk.code_field_bytes,
+                                       max_read_bytes=bulk.chunk_experts * 3 * bulk.code_field_bytes)
+        scale_run = ctx.prepare_cpu_run(scale_names, dtype="F8_E4M3", field_bytes=bulk.scale_field_bytes,
+                                        max_read_bytes=bulk.scale_bytes)
+        del code_names, scale_names
+        if code_run is not None and scale_run is not None:
+            prepared = _preflight_a4_calibrations(calibrations, owners, projections, fields)
+            if prepared:
+                all_scales = scale_run(0, 3 * len(owners))
+                # Canonical owned plain CPU U8, no floating reduction or bridge.
+                # Invalid runs retain projection-ordered names/errors below.
+                if int(all_scales.amax().item()) <= 0x7e:
+                    for first in range(0, len(owners), bulk.chunk_experts):
+                        stop = min(first + bulk.chunk_experts, len(owners))
+                        codes = code_run(3 * first, 3 * stop)
+                        blocks = all_scales[first * 3 * bulk.scale_field_bytes:stop * 3 * bulk.scale_field_bytes]
+                        indices = torch.tensor(physical[first:stop], dtype=torch.int64, device="cpu")
+                        pack_bank_a4(codes, blocks, fields[0], fields[1], indices, width, dims)
+                        del codes, blocks, indices
+                    packed = True
+                else:
+                    physical_at = [0] * len(owners)
+                    for at, local in enumerate(physical):
+                        physical_at[local] = at
+    if not packed:
+        for local, owner in enumerate(owners):
+            for p, (projection, n, k) in enumerate(projections):
+                base = f"{owner}.{projection}"
+                if not prepared:
+                    # One ordered owner; retain the original scalar conversion,
+                    # validation/error order and CT multiplier without a roundtrip.
+                    offset = 6 * local + 2 * p
+                    scale = fmt.calibration(float(calibrations[offset]), name=base + ".weight_global_scale",
+                                            reciprocal=True)
+                    inverse = fmt.calibration(float(calibrations[offset + 1]), name=base + ".input_global_scale")
+                    act = fmt.calibration(inverse, name=base + ".input_global_scale", reciprocal=True)
+                    fmt.native_calibration(act, scale, name=base, act_inverse=inverse)
+                    if p < 2:
+                        fields[2][local, p], fields[4][local, p] = scale, inverse
+                    else:
+                        fields[3][local, 0], fields[5][local, 0] = scale, inverse
+                codes = ctx.read(base + ".weight_packed", device="cpu")
+                if all_scales is None:
+                    blocks = ctx.read(base + ".weight_scale", device="cpu")
+                else:
+                    at = (physical_at[local] * 3 + (p + 1) % 3) * bulk.scale_field_bytes
+                    blocks = all_scales[at:at + bulk.scale_field_bytes].view(torch.float8_e4m3fn).view(n, k // 16)
+                fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
+                target = fields[0][local, p] if p < 2 else fields[1][local]
+                pack_projection_a4(codes, blocks, out=target)
+                del codes, blocks
+    del calibrations, scalar_names, code_run, scale_run, physical, physical_at, all_scales
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
         bank = CachedExpertsA4(len(ids), width, dims, cache=cache, layer_id=key, swiglu=swiglu)

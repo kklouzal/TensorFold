@@ -127,3 +127,60 @@ def test_batch_read_failure_preserves_primary_and_reader_close_error(tmp_path, m
     assert caught.value is primary and state["closes"] == 1
     assert set(state["reader"].where) == {"expert.a", "expert.b"}
     assert primary.__cause__ is cleanup
+
+
+def test_owned_run_preparation_is_read_free_and_each_successful_interval_consumes_once(tmp_path, monkeypatch):
+    load, _, state, modules, _, original = loader(tmp_path)
+    calls = []
+
+    def mlp(_prefix, context, _cfg):
+        def plan(names, **geometry):
+            assert names == ("expert.b", "expert.a")
+            assert geometry == {"dtype": "U8", "field_bytes": 4, "max_read_bytes": 8}
+            return SimpleNamespace(read=lambda first, stop: calls.append((first, stop)) or original)
+
+        state["reader"].files.prepare_cpu_run = plan
+        run = context.prepare_cpu_run(["expert.b", "expert.a"], dtype="U8", field_bytes=4, max_read_bytes=8)
+        assert calls == [] and set(state["reader"].where) == {"expert.a", "expert.b"}
+        assert run(0, 1) is original and set(state["reader"].where) == {"expert.a"}
+        with pytest.raises(KeyError, match="expert.b"):
+            run(0, 2)
+        assert calls == [(0, 1)]
+        assert run(1, 2) is original and not state["reader"].where
+        return {}
+
+    invoke(monkeypatch, load, modules, mlp)
+    assert state["closes"] == 1 and calls == [(0, 1), (1, 2)]
+
+
+def test_owned_run_read_failure_retains_all_names_and_primary_cleanup_chain(tmp_path, monkeypatch):
+    load, _, state, modules, _, _ = loader(tmp_path)
+    primary, cleanup = OSError("owned run failed"), RuntimeError("reader close failed")
+    state["close_failure"] = cleanup
+
+    def fail(*_args):
+        raise primary
+
+    def mlp(_prefix, context, _cfg):
+        state["reader"].files.prepare_cpu_run = lambda *_a, **_k: SimpleNamespace(read=fail)
+        run = context.prepare_cpu_run(["expert.a", "expert.b"], dtype="U8", field_bytes=4, max_read_bytes=8)
+        run(0, 2)
+
+    with pytest.raises(OSError) as caught:
+        invoke(monkeypatch, load, modules, mlp)
+    assert caught.value is primary and primary.__cause__ is cleanup
+    assert set(state["reader"].where) == {"expert.a", "expert.b"} and state["closes"] == 1
+
+
+def test_unsupported_run_does_not_consume_names_and_retains_the_ordinary_callback(tmp_path, monkeypatch):
+    load, events, state, modules, _, original = loader(tmp_path)
+
+    def mlp(_prefix, context, _cfg):
+        state["reader"].files.prepare_cpu_run = lambda *_a, **_k: None
+        assert context.prepare_cpu_run(["expert.a"], dtype="U8", field_bytes=4, max_read_bytes=4) is None
+        assert set(state["reader"].where) == {"expert.a", "expert.b"}
+        assert context.read("expert.a", device="cpu") is original
+        return {}
+
+    invoke(monkeypatch, load, modules, mlp)
+    assert events.count(("expert.a", "cpu")) == 1 and state["closes"] == 1

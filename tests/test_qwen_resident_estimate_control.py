@@ -19,10 +19,10 @@ def selection(monkeypatch, *, offload=False, available=1 << 30, headers=None):
     tree = ast.parse(ENGINE.read_bytes())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "QwenNvfp4MoeEngine")
     start = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_start")
-    targets = {"resident_estimate", "(resident, host_weight_staging)", "transform", "self.capacity_plan"}
+    targets = {"resident_report", "resident_estimate", "(resident, host_weight_staging)", "transform", "self.capacity_plan"}
     selected = [node for node in start.body if isinstance(node, ast.Assign)
                 and any(ast.unparse(left) in targets for left in node.targets)]
-    assert len(selected) == 4
+    assert len(selected) == 5
     source = ROOT / "src/tensorfold/families/qwen3_5/cuda/nvfp4_load.py"
     functions = [node for node in ast.parse(source.read_bytes()).body
                  if isinstance(node, ast.FunctionDef) and node.name in {"skipped", "weight_bytes"}]
@@ -48,9 +48,10 @@ def selection(monkeypatch, *, offload=False, available=1 << 30, headers=None):
     monkeypatch.setattr(capacity, "page_room", lambda _runtime: None)
     monkeypatch.setattr(capacity, "available_bytes", lambda _runtime: available)
 
-    def estimate(directory, transform, *, scalar_batches):
+    def estimate(directory, transform, *, scalar_batches, details=False, bulk_resident=True):
         assert directory == model_dir and scalar_batches is True
-        value = nvfp4_memory.weight_estimate(directory, transform, scalar_batches=scalar_batches)
+        value = nvfp4_memory.weight_estimate(directory, transform, scalar_batches=scalar_batches,
+                                            details=details, bulk_resident=bulk_resident)
         calls.append((directory, transform, value))
         return value
 
@@ -87,9 +88,10 @@ def test_admission_uses_same_frozen_resident_result_or_new_offload_transform(mon
     if offload:
         assert len(calls) == 2 and calls[1][1] is scope["transform"]
         assert admitted[0] is calls[1][2]
-        assert admitted[0][0].resident < original[0].resident
+        assert admitted[0][0].resident < original.weights.resident
     else:
-        assert len(calls) == 1 and admitted[0] is original
+        assert len(calls) == 1 and admitted[0] is scope["resident_estimate"]
+        assert admitted[0] == (original.weights, original.host_bytes)
         assert scope["transform"] is weight_bytes
     selected, host = admitted[0]
     assert type(host) is int and host >= 0
@@ -108,5 +110,5 @@ def test_independent_construction_recomputes_its_own_changed_inputs(monkeypatch)
                "lm_head.weight": {"dtype": "BF16", "shape": [8, 64]},
                "model.norm.weight": {"dtype": "BF16", "shape": [64]}}
     second, calls, admitted, _ = selection(monkeypatch, headers=changed)
-    assert len(calls) == 1 and admitted[0] is calls[0][2]
+    assert len(calls) == 1 and admitted[0] == (calls[0][2].weights, calls[0][2].host_bytes)
     assert first["resident_estimate"][0].resident != second["resident_estimate"][0].resident

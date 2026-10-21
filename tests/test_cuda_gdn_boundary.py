@@ -110,6 +110,21 @@ def replay_inputs(*, layers=2, streams=2):
 
 
 class GDNBoundary(unittest.TestCase):
+    def assert_parent_states(self, parents, entries, slots, *, order=None):
+        previous, saved, visited = None, {}, []
+        for offset in range(0, len(entries), 3):
+            row, source, destination = entries[offset:offset + 3]
+            actual = -1 if source == -1 else previous if source == -2 else saved[source]
+            self.assertEqual(actual, parents[row])
+            self.assertLess(max(source, destination), slots)
+            if destination >= 0:
+                saved[destination] = row
+            previous = row
+            visited.append(row)
+        self.assertEqual(sorted(visited), list(range(len(parents))))
+        if order is not None:
+            self.assertEqual(visited, order)
+
     def test_schedule_rejects_lossy_parent_coercions_and_invalid_trees(self):
         ns, _ = namespace()
         for parents in ([], [0], [-1, -1], [-1, 1], [-1, .9], [-1, '0'], [-1, False]):
@@ -119,28 +134,151 @@ class GDNBoundary(unittest.TestCase):
             with self.subTest(streams=streams), self.assertRaises(ValueError):
                 ns['plan_host'](streams)
 
+    def test_natural_chain_entries_are_exact_and_results_do_not_alias_input_or_each_other(self):
+        ns, _ = namespace()
+        for rows in (1, 5, 128, 1025, 2048):
+            parents = list(range(-1, rows - 1))
+            original = parents.copy()
+            entries, slots = ns['schedule'](parents)
+            expected = [0, -1, -1]
+            for node in range(1, rows):
+                expected.extend((node, -2, -1))
+            with self.subTest(rows=rows):
+                self.assertEqual((entries, slots), (expected, 0))
+                self.assertEqual(parents, original)
+                entries[0] = -10
+                self.assertEqual(ns['schedule'](tuple(parents)), (expected, 0))
+
+    def test_complete_integer_conversion_precedes_bool_and_tree_validation(self):
+        ns, _ = namespace()
+        observed = []
+        primary = TypeError('later parent conversion failed')
+
+        class Indexed:
+            def __init__(self, value):
+                self.value = value
+
+            def __index__(self):
+                observed.append(self.value)
+                return self.value
+
+        class Failing:
+            def __index__(self):
+                observed.append('failure')
+                raise primary
+
+        with self.assertRaisesRegex(ValueError, 'tree parents must be integers') as caught:
+            ns['schedule']([False, Indexed(0), Failing()])
+        self.assertIs(caught.exception.__cause__, primary)
+        self.assertEqual(observed, [0, 'failure'])
+        observed.clear()
+        with self.assertRaisesRegex(ValueError, 'tree parents must be integers') as caught:
+            ns['schedule']([False, Indexed(0)])
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(observed, [0])
+        observed.clear()
+        with self.assertRaisesRegex(ValueError, 'a tree needs one root at row zero'):
+            ns['schedule']([Indexed(0), Indexed(-1)])
+        self.assertEqual(observed, [0, -1])
+        self.assertEqual(ns['schedule']([Indexed(-1), Indexed(0)]), ([0, -1, -1, 1, -2, -1], 0))
+
+    def test_unequal_chain_streams_keep_complete_global_entries_and_existing_row_limits(self):
+        ns, _ = namespace()
+        sizes = (1, 5, 128, 1025, 2048)
+        streams = [list(range(-1, rows - 1)) for rows in sizes]
+        entries, starts, slots, maximum = ns['plan_host'](streams)
+        expected, offsets = [], [0]
+        for rows in sizes:
+            for local in range(rows):
+                expected.extend((offsets[-1] + local, -1 if local == 0 else -2, -1))
+            offsets.append(offsets[-1] + rows)
+        self.assertEqual((entries, starts, slots, maximum), (expected, offsets, 0, max(sizes)))
+        for mixed in ([streams[-1], [-1, 0, 0]], [[-1, 0, 0], streams[-1]]):
+            with self.subTest(mixed_first_rows=len(mixed[0])), self.assertRaisesRegex(ValueError, 'at most 1024'):
+                ns['plan_host'](mixed)
+
+    def test_natural_prefix_does_not_admit_a_later_invalid_parent(self):
+        ns, _ = namespace()
+        for rows in (2, 5, 128, 2048):
+            for invalid in (-2, -1, rows - 1, rows, 2**100):
+                parents = list(range(-1, rows - 1))
+                parents[-1] = invalid
+                with self.subTest(rows=rows, invalid=invalid), self.assertRaisesRegex(
+                        ValueError, 'a tree needs one root at row zero') as caught:
+                    ns['schedule'](parents)
+                self.assertIsNone(caught.exception.__cause__)
+
     def test_independent_parent_state_oracle_and_plan_row_ranges(self):
         ns, _ = namespace()
         rng = random.Random(713)
         for _ in range(500):
             parents = [-1] + [rng.randrange(row) for row in range(1, rng.randrange(2, 80))]
             entries, slots = ns['schedule'](parents)
-            previous, saved, visited = None, {}, []
-            for offset in range(0, len(entries), 3):
-                row, source, destination = entries[offset:offset + 3]
-                actual = -1 if source == -1 else previous if source == -2 else saved[source]
-                self.assertEqual(actual, parents[row])
-                self.assertLess(max(source, destination), slots)
-                if destination >= 0:
-                    saved[destination] = row
-                previous = row
-                visited.append(row)
-            self.assertEqual(sorted(visited), list(range(len(parents))))
+            self.assert_parent_states(parents, entries, slots)
         entries, starts, slots, maximum = ns['plan_host']([[-1, 0, 0], [-1, 0]])
         self.assertEqual(starts, [0, 3, 5])
         self.assertEqual(maximum, 3)
         self.assertEqual(sorted(entries[::3]), list(range(5)))
         self.assertGreaterEqual(slots, 1)
+
+    def test_arbitrary_topological_orders_preserve_parent_states_and_input_ownership(self):
+        ns, _ = namespace()
+        rng = random.Random(413)
+        for rows in (2, 8, 41, 128):
+            parents = [-1] + [rng.randrange(row) for row in range(1, rows)]
+            children = [[] for _ in parents]
+            for node, parent in enumerate(parents[1:], 1):
+                children[parent].append(node)
+            ready, order = [0], []
+            while ready:
+                node = ready.pop(rng.randrange(len(ready)))
+                order.append(node)
+                ready.extend(children[node])
+            original_parents, original_order = parents.copy(), order.copy()
+            entries, slots = ns['_order_slots'](parents, order)
+            with self.subTest(rows=rows):
+                self.assert_parent_states(parents, entries, slots, order=order)
+                self.assertEqual((parents, order), (original_parents, original_order))
+                repeat, repeat_slots = ns['_order_slots'](parents, order)
+                self.assertEqual((repeat, repeat_slots), (entries, slots))
+                self.assertIsNot(repeat, entries)
+                entries[0] = -10
+                self.assertEqual(repeat[0], 0)
+
+    def test_last_child_follows_visiting_order_and_long_stars_need_one_slot(self):
+        ns, _ = namespace()
+        for rows in (3, 512, 1024, 2048):
+            parents = [-1] + [0] * (rows - 1)
+            order = [0, *range(rows - 1, 0, -1)]
+            entries, slots = ns['_order_slots'](parents, order)
+            with self.subTest(rows=rows):
+                self.assertEqual(slots, 1)
+                self.assertEqual(entries[:3], [0, -1, 0])
+                self.assertEqual(entries[3:6], [rows - 1, -2, -1])
+                self.assertEqual(entries[-3:], [1, 0, -1])
+                self.assert_parent_states(parents, entries, slots, order=order)
+
+    def test_last_child_releases_before_lowest_free_slot_is_reused(self):
+        ns, _ = namespace()
+        parents = [-1, 0, 0, 1, 1, 2, 2, 0, 7, 7, 0, 10, 10]
+        order = list(range(len(parents)))
+        entries, slots = ns['_order_slots'](parents, order)
+        self.assertEqual(slots, 3)
+        self.assertEqual(entries[21:24], [7, 0, 1])
+        self.assertEqual(entries[30:33], [10, 0, 0])
+        self.assert_parent_states(parents, entries, slots, order=order)
+
+    def test_late_first_and_last_visits_preserve_interleaved_state_handoffs(self):
+        ns, _ = namespace()
+        parents = [*range(-1, 299), 299, 299, 300, 300, 301, 301]
+        order = [*range(300), 301, 300, 305, 304, 303, 302]
+        entries, slots = ns['_order_slots'](parents, order)
+        self.assertEqual(slots, 2)
+        self.assertEqual(entries[897:900], [299, -2, 0])
+        self.assertEqual(entries[900:903], [301, -2, 1])
+        self.assertEqual(entries[903:906], [300, 0, 0])
+        self.assertEqual(entries[-3:], [302, 0, -1])
+        self.assert_parent_states(parents, entries, slots, order=order)
 
     def test_pointer_values_keep_owners_and_consumers_record_their_stream(self):
         ns, calls = namespace()

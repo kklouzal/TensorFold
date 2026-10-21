@@ -295,7 +295,7 @@ class MetadataSelection(unittest.TestCase):
         from tensorfold.cuda import precision
 
         path = SOURCE.parents[3] / "cuda/nvfp4/format.py"
-        selected = {"scheme", "LinearMetadata", "calibration"}
+        selected = {"scheme", "LinearMetadata", "_calibration_result", "calibration"}
         nodes = [n for n in ast.parse(path.read_text()).body
                  if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in selected]
         api = {"LinearQuantization": LinearQuantization}

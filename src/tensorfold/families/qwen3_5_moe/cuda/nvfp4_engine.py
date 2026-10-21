@@ -117,8 +117,9 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         draft_runtime = (draft_geometry(config(draft_dir), streams=streams,
                                         kept=KEEP + 1 if streams > 1 else KEEP_ONE,
                                         block=rows, prompt_rows=chunk) if draft_dir is not None else None)
-        resident_estimate = weight_estimate(model_dir, weight_bytes, scalar_batches=True)
-        resident, host_weight_staging = resident_estimate
+        resident_report = weight_estimate(model_dir, weight_bytes, scalar_batches=True, details=True)
+        resident, host_weight_staging = resident_report.weights, resident_report.host_bytes
+        resident_estimate = resident, host_weight_staging
         # a requantized drafter copies a floating target head (counted) and borrows one the checkpoint stores quantized
         head_dtype = headers(model_dir).get("lm_head.weight", {}).get("dtype") if draft_dir is not None else None
         drafted = partial(draft_weights, bits=bits, private_head=head_dtype in ("BF16", "F16", "F32"))
@@ -146,7 +147,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
 
             before_pool = torch.cuda.memory._snapshot()
             pins = ExpertPinPolicy(plan.host_bytes, mode=vram_experts_pin,
-                                   future_bytes=host_extra + max(host_weight_staging, self.rejection_workspace["host_bytes"]),
+                                   future_bytes=host_extra + max(host_weight_staging - resident_report.bulk_host_increment,
+                                                                 self.rejection_workspace["host_bytes"]),
                                    allocation_bytes=plan.authority_allocations)
             try:
                 self.expert_cache = A4ExpertCache(plan.entry_bytes, plan.entry_bytes, "cuda", pin_policy=pins,
@@ -163,7 +165,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
         # estimated above; an offload plan changes the transform and recomputes.
         self.capacity_plan = admit(
             model_dir, context, context_explicit, torch, runtime.geometry, transform,
-            weight_estimator=(partial(weight_estimate, transform=transform, scalar_batches=True) if plan is not None
+            weight_estimator=(partial(weight_estimate, transform=transform, scalar_batches=True,
+                                      bulk_resident=False) if plan is not None
                               else lambda _directory: resident_estimate),
             host_resident=plan.host_bytes if plan is not None else 0, host_extra_staging=host_extra,
             device_workspace_bytes=self.rejection_workspace["device_bytes"],

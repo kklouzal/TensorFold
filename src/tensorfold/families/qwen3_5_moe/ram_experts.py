@@ -10,10 +10,10 @@ from pathlib import Path
 from tensorfold.cuda.capacity import Geometry, config, headers
 from tensorfold.cuda.geometry import arena_kv_bytes, gdn_geometry, layer_counts, stream_geometry
 from tensorfold.cuda.nvfp4.host_layout import bank_bases_a4, entry_layout_a4, plan_scratch_bytes_a4, routed_tensor_a4
-from tensorfold.cuda.read_budget import pinned_backing_bytes
+from tensorfold.cuda.read_budget import READER_PIECE_BYTES, pinned_backing_bytes
 
 GIB = 1 << 30
-_READ_PIECE = 64 << 20
+_READ_PIECE = READER_PIECE_BYTES
 _PAIR_WINDOW = 128
 
 
@@ -141,7 +141,7 @@ def layout(model_dir: str | Path, gib: float | str, *, tp=1) -> Layout:
     # CPU projection authority/packing allowance is additional to the shared
     # nvfp4_memory estimator's Reader rings. Charge that physical ring once.
     # The separate filesystem window does not retain the whole checkpoint.
-    loading = max(64 << 20, 8 * entry)
+    loading = max(READER_PIECE_BYTES, 8 * entry)
     # Decoded raw, normalized capacity and loader dictionaries can coexist.
     # Three complete decoded inventories conservatively also cover parser
     # object-pair lists and span-sort work (their objects/keys are recounted).

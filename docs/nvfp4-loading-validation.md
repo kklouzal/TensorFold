@@ -28,6 +28,32 @@ RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CO
 
 Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first, then the active interpreter's NVIDIA namespace package, Torch's bundle, and system discovery. The managed foundation binds its selected physical NCCL provider and refuses a conflicting override. A broken selected override or environment library fails explicitly. The loaded library remains owned through native communicator retirement. POSIX rendezvous sets `SO_REUSEADDR` before binding to reuse retired sessions while preserving active-listener exclusivity; it does not enable `SO_REUSEPORT`. Older sessions created without reuse may still need their kernel timeout. The collective/numerical/retirement bodies are unchanged by these discovery and bind edits.
 
+## Native CT bank loading candidate — qualification pending
+
+Native A4 banks can prepare their immutable calibration fields once and use a
+canonical Reader-owned, eight-byte-aligned contiguous SF run plus bounded code
+chunks. Explicit invalid-calibration results retain the original ordered path;
+unexpected helper, resource and I/O failures propagate. An invalid SF run is
+checked in original logical projection order before publication, preserving its
+first error and original code-read order. Required arbitrary ownership/topology
+cases keep per-projection loading when that run capability does not apply.
+
+The batched CPU pack copies integer word prefixes and unsigned SF tails into
+their separate final projection regions. Physical lexical order maps explicitly
+to caller local expert order, including strided host-authority cells. Raw source
+owners survive synchronous packing and retire before CUDA publication; serving
+retains no batch plans, CPU scalar metadata or raw SF/code backing.
+
+The raw-owner/alignment envelope uses the existing64MiB reader/filesystem
+window. Resident admission includes the simultaneous private CPU authority and
+raw owners; offload keeps its existing loading window because host authority is
+already charged separately. Both charge new bounded plan metadata. Exact
+host-estimate breakdown prevents counting the raw-owner increment again in the
+preliminary pin admission. Fixed Python/native-record proof, focused CPU/native
+controls and paired complete-model warm/cold startup/request qualification are
+still pending for this candidate. Fewer reads or copies are not a performance
+result, and no new qualified hardware/model performance is claimed here.
+
 ## Historical ABB67 artifacts — audited and affected gates closed
 
 | Artifact | Immutable identity |

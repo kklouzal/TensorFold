@@ -10,7 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from tensorfold.cuda import capacity
-from tensorfold.cuda.read_budget import READER_HOST_RING_BYTES, pinned_backing_bytes, reader_host_bytes
+from tensorfold.cuda.read_budget import (
+    READER_HOST_RING_BYTES,
+    READER_PIECE_BYTES,
+    pinned_backing_bytes,
+    reader_host_bytes,
+)
 from tensorfold.families.qwen3_5.cuda import nvfp4_memory
 from tensorfold.families.qwen4_exp import ram_experts
 
@@ -20,7 +25,14 @@ def test_physical_reader_bound_matches_existing_owned_allocation_geometry():
     tree = ast.parse(path.read_text())
     values = {node.targets[0].id: node.value for node in tree.body if isinstance(node, ast.Assign)
               and isinstance(node.targets[0], ast.Name) and node.targets[0].id in ("PIECE", "ALIGN")}
-    assert ast.unparse(values["PIECE"]) == "64 << 20"
+    assert ast.unparse(values["PIECE"]) == "READER_PIECE_BYTES"
+    assert any(isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "read_budget"
+               and any(alias.name == "READER_PIECE_BYTES" and alias.asname is None for alias in node.names)
+               for node in tree.body)
+    budget_tree = ast.parse((path.parent / "read_budget.py").read_bytes())
+    piece = next(node.value for node in budget_tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "READER_PIECE_BYTES" for target in node.targets))
+    assert ast.unparse(piece) == "64 << 20" and READER_PIECE_BYTES == 64 << 20
     assert ast.literal_eval(values["ALIGN"]) == 4096
     reader = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Reader")
     construction = next(node for node in reader.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")

@@ -17,7 +17,8 @@ def pinned_backing_bytes(payload_bytes: int) -> int:
     return 0 if payload_bytes == 0 else 1 << (payload_bytes - 1).bit_length()
 
 
-READER_HOST_RING_BYTES = 2 * pinned_backing_bytes((64 << 20) + 3 * 4096)
+READER_PIECE_BYTES = 64 << 20
+READER_HOST_RING_BYTES = 2 * pinned_backing_bytes(READER_PIECE_BYTES + 3 * 4096)
 
 
 def f32_scalar_batch_host_bytes(count: int, name_bytes: int) -> int:
@@ -51,12 +52,13 @@ def f32_scalar_batch_host_bytes(count: int, name_bytes: int) -> int:
 
 
 def reader_host_bytes(buffered_bytes: int, publication_bytes: int = 0, *, staged: bool | None = None) -> int:
-    """Rings coexist with either a buffered read or later D2H publication.
+    """Rings coexist with a read or caller-owned CPU preparation/publication.
 
-    Native direct/buffered reads and later D2H payloads are successive phases.
+    Native reads and later CPU preparation/publication are successive phases.
     On Windows, blocking GPU uploads use pinned buffered reads instead: their
     cached power-of-two size classes sum to less than twice the largest bucket
-    and remain resident alongside publication. Authority/read-ahead is separate.
+    and remain resident alongside CPU temporaries. Authority/read-ahead is
+    otherwise separate; callers include overlapping authority in a phase bound.
     """
     if any(type(n) is not int or n < 0 for n in (buffered_bytes, publication_bytes)):
         raise ValueError("reader host payload bounds must be nonnegative integer bytes")

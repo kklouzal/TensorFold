@@ -78,6 +78,12 @@ class Context:
         self.batches.append((names, max_bytes))
         return torch.cat([self.read(name).reshape(1) for name in names])
 
+    def prepare_cpu_run(self, names, **_geometry):
+        # This fixture intentionally retains/aliases its source tensors. It
+        # offers no fresh-reader ownership capability; canonical loading stays
+        # covered independently from the file-backed eligible-path controls.
+        return None
+
 
 def ct_quant_reference(x, raw_multiplier):
     """Independent CPU FP32/per16 reference consuming original CT globals.

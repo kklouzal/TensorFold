@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from math import prod
 
-from tensorfold.cuda.read_budget import f32_scalar_batch_host_bytes
+from tensorfold.cuda.read_budget import READER_PIECE_BYTES, f32_scalar_batch_host_bytes
 
 
 def routed_tensor(name):
@@ -89,6 +89,119 @@ def authority_fields_a4(count, width, dims):
     if count * 2 * blob > 2**63 - 1:
         raise ValueError("native A4 authority exceeds tensor storage size limits")
     return fields
+
+
+@dataclass(frozen=True, slots=True)
+class A4BulkLayout:
+    count: int
+    chunk_experts: int
+    code_field_bytes: int
+    scale_field_bytes: int
+    scale_bytes: int
+    payload_bytes: int
+
+
+def bulk_layout_a4(count, width, dims):
+    """Optional whole-SF/chunked-code plan inside the existing reader window.
+
+    Both eight-aligned direct-read owners can retain at most three extra pages
+    apiece. The caller admits Python planning/index/native-view metadata
+    separately. Larger banks retain the existing projection-ordered path.
+    """
+    authority_fields_a4(count, width, dims)
+    code, scale = width * dims // 2, width * dims // 16
+    scales = count * 3 * scale
+    room = READER_PIECE_BYTES - scales - 6 * 4096
+    chunk = min(count, room // (3 * code))
+    if chunk < 1:
+        return None
+    return A4BulkLayout(count, chunk, code, scale, scales, scales + chunk * 3 * code + 6 * 4096)
+
+
+def bulk_plan_host_bytes_a4(count, name_bytes):
+    """Variable Python/index envelope for two immutable contiguous run plans.
+
+    Six field names per cell, their tuples, preparation's duplicate-name set,
+    physical-order indices and sort/key/merge pointer planes, one chunk slice,
+    and the CPU int64 transfer index are explicit. Singleton containers per
+    entry conservatively cover the associated CPython growth slack. Native
+    fixed records remain at the adopted-library boundary, independently of
+    this variable charge and the bounded raw payload.
+    """
+    if any(type(n) is not int or n < 0 for n in (count, name_bytes)):
+        raise ValueError("native A4 bulk plan sizes must be nonnegative integers")
+    if not count:
+        return 0
+    pointer = sys.getsizeof((None,)) - sys.getsizeof(())
+    appended = []
+    appended.append(None)
+    fields = count * 6
+    per_field = sys.getsizeof({None}) + sys.getsizeof(appended) + 4 * pointer
+    return (name_bytes + 4 * sys.getsizeof(()) + fields * (pointer + per_field)
+            + count * (sys.getsizeof(count) + 8 * pointer + 8))
+
+
+def bulk_host_bytes_a4(infos):
+    """(Raw-owner, resident-authority+raw, plan) peaks for eligible subsets.
+
+    Whole-bank metadata is a conservative envelope for any selected IDs/shared
+    subset. Geometry search is bounded by the existing1023-cell authority cap;
+    identical geometries are evaluated once within this estimate. Scan maps
+    retire before loading, and their actual Python tables/records are charged
+    as a separate peak rather than silently omitted from the returned bound.
+    """
+    banks = {}
+    for name, info in infos.items():
+        if not name.endswith(".gate_proj.weight_packed"):
+            continue
+        match = _A4_EXPERT.fullmatch(name.replace(".shared_expert.", ".experts.0.", 1))
+        shape = info.get("shape", ())
+        if (match is None or info.get("dtype") != "U8" or len(shape) != 2
+                or not all(type(n) is int and 0 < n < 2**30 for n in shape)):
+            continue
+        width, dims = shape[0], shape[1] * 2
+        if width % 64 or dims % 64 or 27 * width * dims // 16 + 6 * 4096 > READER_PIECE_BYTES:
+            continue  # even one cell is outside the bulk capability
+        key = match["bank"], width, dims
+        count, names = banks.get(key, (0, 0))
+        # Validated bank names use this ASCII grammar. gate/down have equal
+        # length, up is shorter, and weight_scale is shorter than weight_packed;
+        # six copies of this actual gate name bound every generated field name.
+        banks[key] = count + 1, names + 6 * sys.getsizeof(name)
+    payload = resident = planning = 0
+    geometries = {}
+    for (_bank, width, dims), (count, names) in banks.items():
+        key = min(count, 1023), width, dims
+        if key not in geometries:
+            raw_peak = resident_peak = 0
+            for n in range(1, key[0] + 1):
+                layout = bulk_layout_a4(n, width, dims)
+                if layout is not None:
+                    raw_peak = max(raw_peak, layout.payload_bytes)
+                    # Resident's private CPU bank coexists with the raw owners;
+                    # offload already charges its complete host authority.
+                    authority = n * (27 * width * dims // 16 + 24)
+                    resident_peak = max(resident_peak, authority + layout.payload_bytes)
+            geometries[key] = raw_peak, resident_peak
+        raw_peak, resident_peak = geometries[key]
+        if raw_peak:
+            payload = max(payload, raw_peak)
+            resident = max(resident, resident_peak)
+            planning = max(planning, bulk_plan_host_bytes_a4(count, names))
+    if not payload:
+        return 0, 0, 0
+    objects = largest = 0
+    for table in (banks, geometries):
+        for key, value in table.items():
+            size = sys.getsizeof(key) + sys.getsizeof(value)
+            if isinstance(key, tuple):
+                size += sum(map(sys.getsizeof, key))
+            if isinstance(value, tuple):
+                size += sum(map(sys.getsizeof, value))
+            objects += size
+            largest = max(largest, size)
+    scan = 2 * (sys.getsizeof(banks) + sys.getsizeof(geometries)) + objects + largest
+    return payload, resident, max(planning, scan)
 
 
 def plan_scratch_bytes_a4(pairs, width, dims):

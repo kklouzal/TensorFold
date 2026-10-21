@@ -6,7 +6,7 @@ from math import prod
 import pytest
 
 from tensorfold.cuda import capacity
-from tensorfold.cuda.nvfp4.host_layout import scalar_batch_host_bytes_a4
+from tensorfold.cuda.nvfp4.host_layout import bulk_host_bytes_a4, scalar_batch_host_bytes_a4
 from tensorfold.cuda.read_budget import f32_scalar_batch_host_bytes, reader_host_bytes
 from tensorfold.families.qwen3_5.cuda.nvfp4_memory import weight_estimate
 from tensorfold.families.qwen3_5_moe.ram_experts import Layout
@@ -94,8 +94,13 @@ def test_real_resident_and_offload_estimators_charge_same_batch_once(monkeypatch
         largest = max(prod(info["shape"]) * capacity.itemsize(info, name)
                       for name, info in entries.items() if transform(name, info)[0])
         prior = reader_host_bytes(largest, max(generic.staging, largest))
-        _, host = weight_estimate("validated-header-fixture", transform, scalar_batches=True)
-        assert host == prior + charge
+        ordinary_host = prior
+        _raw, resident_phase, planning = bulk_host_bytes_a4(entries)
+        _, host = weight_estimate("validated-header-fixture", transform, scalar_batches=True,
+                                  bulk_resident=transform is resident)
+        if transform is resident:
+            prior = reader_host_bytes(largest, max(generic.staging, largest, resident_phase))
+        assert host == prior + charge + planning
         # Default dense admission remains outside this capability: no native
         # scalar-plan helper call or full additional header scan is performed.
         def imports(name, *args, **kwargs):
@@ -106,4 +111,4 @@ def test_real_resident_and_offload_estimators_charge_same_batch_once(monkeypatch
         with monkeypatch.context() as scoped:
             scoped.setattr(builtins, "__import__", imports)
             _, dense_host = weight_estimate("validated-header-fixture", transform)
-            assert dense_host == prior
+            assert dense_host == ordinary_host

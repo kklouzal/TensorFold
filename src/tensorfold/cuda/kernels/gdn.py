@@ -26,13 +26,19 @@ def _ext():
 
 
 def _order_slots(parents: Sequence[int], order: list[int]) -> tuple[list[int], int]:
-    """Plan entries (node, source, destination) for one visiting order, and the slots it needs."""
+    """Plan a complete parent-before-child order of a validated tree, and the slots it needs."""
 
-    pos = {node: i for i, node in enumerate(order)}
+    # A parent's first and last child visits differ exactly when it has multiple
+    # children; the last visit determines release without assuming sibling order.
     children: dict[int, list[int]] = {}
-    for node, parent in enumerate(parents):
+    for i, node in enumerate(order):
+        parent = parents[node]
         if parent >= 0:
-            children.setdefault(parent, []).append(node)
+            seen = children.get(parent)
+            if seen is None:
+                children[parent] = [i, i]
+            else:
+                seen[1] = i
     slot_of: dict[int, int] = {}
     free: list[int] = []
     used = 0
@@ -45,10 +51,11 @@ def _order_slots(parents: Sequence[int], order: list[int]) -> tuple[list[int], i
             source = -2
         else:
             source = slot_of[parent]
-        if parent >= 0 and parent in slot_of and pos[max(children[parent], key=pos.__getitem__)] == i:
+        if parent >= 0 and parent in slot_of and children[parent][1] == i:
             free.append(slot_of.pop(parent))        # its last child reads it now; the slot may be reused
         dest = -1
-        if any(pos[c] != i + 1 for c in children.get(node, ())):
+        following = children.get(node)
+        if following is not None and (following[0] != following[1] or following[1] != i + 1):
             if free:
                 free.sort()
                 dest = free.pop(0)
@@ -68,8 +75,22 @@ def schedule(parents: Sequence[int]) -> tuple[list[int], int]:
         raise ValueError("tree parents must be integers") from exc
     if any(p is None for p in parents):
         raise ValueError("tree parents must be integers")
-    if not parents or parents[0] != -1 or any(not -1 <= p < i or (p == -1) != (i == 0) for i, p in enumerate(parents)):
+    if not parents:
         raise ValueError("a tree needs one root at row zero and parents before their children")
+    chain = True
+    for node, parent in enumerate(parents):
+        # Normalization produced built-in ints. Equality proves this row's root
+        # and parent-before-child constraints, including row zero's parent -1.
+        if parent == node - 1:
+            continue
+        chain = False
+        if not -1 <= parent < node or (parent == -1) != (node == 0):
+            raise ValueError("a tree needs one root at row zero and parents before their children")
+    if chain:
+        # Both visiting orders are natural; each sole child consumes the current
+        # state immediately, so no parent state needs a saved slot.
+        return [value for node in range(len(parents))
+                for value in (node, -1 if node == 0 else -2, -1)], 0
     children: dict[int, list[int]] = {}
     depth = [0] * len(parents)
     for node, parent in enumerate(parents[1:], start=1):
