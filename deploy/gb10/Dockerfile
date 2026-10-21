@@ -47,7 +47,7 @@ ENV TF_FOUNDATION_STATE=/opt/tensorfold-pins/foundation-state.json \
     PIP_CONSTRAINT=/opt/tensorfold-pins/foundation-constraints.txt \
     CUDA_HOME=/usr/local/cuda
 
-FROM dependencies AS application
+FROM dependencies AS application-wheel
 ARG TARGETARCH
 ARG MAX_JOBS=8
 ENV MAX_JOBS=${MAX_JOBS}
@@ -66,7 +66,12 @@ COPY LICENSES /opt/TensorFold/LICENSES
 COPY src /opt/TensorFold/src
 RUN python3 /opt/tensorfold-pins/foundation_guard.py audit \
     && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/fork-wheel /opt/TensorFold \
-    && python3 /opt/tensorfold-pins/foundation_guard.py application --wheel /opt/fork-wheel/*.whl \
+    && python3 /opt/tensorfold-pins/foundation_guard.py application --wheel /opt/fork-wheel/*.whl
+
+# A completed, audited wheel layer survives a later native-preparation failure.
+FROM application-wheel AS application
+COPY deploy/gb10/prepare_native.py /opt/tensorfold-pins/prepare_native.py
+RUN python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 /opt/tensorfold-pins/prepare_native.py \
     && python3 -m pip check \
     && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -c "from pathlib import Path; import tensorfold, xgrammar; import tensorfold.families.qwen4_exp.native_ssd as reader; assert Path(reader.__file__).with_name('ssd_read.cpp').is_file()"
 COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py

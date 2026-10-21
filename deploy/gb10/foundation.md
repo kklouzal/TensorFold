@@ -249,3 +249,80 @@ ARM64 hardware qualification remain separate gates until recorded.
 `tensorfold update` refuses in-place mutation in a managed image. Rebuild with
 the selected audited foundation inputs to update the application; unmanaged
 editable/developer installations retain their existing update behavior.
+
+
+## Prepared native bundle
+
+The managed image implements a two-provider preparation candidate: the original
+checkpoint packing/GEMM module and plain BF16/FP16 projection. The candidate
+passed 342 focused source/API/packaging CPU checks in 16.22 seconds on the pinned
+AMD64 foundation, using four CPUs, 16 GiB of memory and no GPU. The source was
+mounted read-only; imported project sources and their before/after identities
+were verified. These controls include scratch same-version pip installation and
+controlled compiler/import callbacks, not actual AOT compilation or real native
+binding import. Those checks, new installed images, ARM64, native GPU execution
+and model performance qualification remain pending. No numerical C++/CUDA
+source or serving flag is changed. This does not precompile every extension,
+Triton kernel, graph or model plan, and it does not select the experimental Gemma
+head epilogue.
+
+The `application-wheel` Docker stage builds and installs the exact owned wheel
+under the existing full foundation audits. Its completed immutable layer can be
+reused if later preparation fails. The `application` stage runs
+`prepare_native.py` through CPU admission using the runtime owners' canonical
+recipes, explicit SM12.1/SM12.1a targets and the selected Torch/toolchain without
+a visible GPU. Ordinary wheel builds retain their Stable-ABI C owner and gain
+no CUDA compiler requirement. AMD64 compilation does not qualify ARM64 imports
+or actual SM12.1 execution.
+
+One provider registry governs preparation, sealing, loading and audit. Final
+owned binding sources determine required exports; preparation and audit compare
+real imported symbols and callability. Unknown binding forms require a coherent
+producer update rather than guessed exports. The bundle under
+`/opt/tensorfold-native` binds the installed wheel, foundation/toolchain,
+host/Python/Torch/CUDA ABI, exact target/flags/sources/owned headers and binary
+size/hash. Foundation seals these inputs and publishes a compact build-owned
+activation. Operators cannot choose arbitrary bundles.
+
+Runtime GPU/minimum-capability checks precede artifact selection. Declared
+canonical recipe or artifact mismatches fail explicitly. Ordinary unprepared or
+custom calls, explicit build directories, other supported targets and separate
+development workspaces retain their valid JIT path. Modules load once under a
+process preparation lock and remain strongly owned through process exit. The
+sealed file/stat lifetime covers sources and binaries; inference does not
+repeatedly hash them.
+
+Application installation uses `--no-deps --force-reinstall`, including same-version
+wheels. Replacing an application after its bundle is sealed is refused before
+opening the wheel or invoking pip: rebuild the image, install its wheel, then
+prepare the bundle. Full audits retain both primary and audit failures. Partial
+preparation invalidates the image and is not resumed from a leftover library or
+lock file.
+JSON publication closes before rename and preserves write and close failures;
+if diagnostic grouping cannot allocate, the primary traceback retains both raw
+failure roots rather than replacing the write error.
+
+Fresh owned CPP/header inputs are prepared for whole-second image timestamps
+before compilation and their first seal, preserving bytes and modes. Preparation
+refuses an already sealed bundle. Strict post-seal file/stat validation remains
+active; a later timestamp mutation is not normalized away.
+
+For a prepared image, run the GPU-free consumer audit through the managed CPU
+boundary:
+
+```bash
+python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+  python3 /opt/tensorfold-pins/prepare_native.py --audit
+```
+
+This checks installed recipes, input closure, exports, activation and provider
+mapping without executing a GPU kernel. Target numerical, graph and lifetime
+controls and complete model comparisons remain separate. AOT work directories
+are image-owned and deleted after publication; runtime `/cache` is not a
+resumable AOT object cache. Reuse only completed immutable layers or separately
+proved compatible artifacts.
+
+Report compiler-cache-cold and compiler-cache-warm process/model startup
+separately, including build/preparation/import/storage, first graph/request and
+steady request/resource/quality costs. Historical CPU tests, timed-out prototype
+preparation and prewarmed model campaigns do not qualify this source.

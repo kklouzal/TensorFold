@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The managed GB10 image has a candidate build-time preparation path for its
+original checkpoint and plain BF16/FP16 projection providers. It prepares exactly
+two providers without a visible GPU and checks their final binding exports.
+Numerical C++/CUDA sources and serving flags are unchanged. This candidate passed
+342 focused source/API/packaging CPU checks on the pinned AMD64 foundation, with
+no GPU. Actual AOT compilation/import, new installed images, ARM64, native GPU
+and full-model performance gates remain pending; no speedup is claimed.
+[Preparation and cache contracts](deploy/gb10/foundation.md#prepared-native-bundle).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

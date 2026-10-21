@@ -32,17 +32,25 @@ def _capability() -> tuple[int, int]:
     return tuple(torch.cuda.get_device_capability())
 
 
-@lru_cache(maxsize=1)
-def _ext():
+def _build_options(capability: tuple[int, int]) -> dict:
+    """One recipe for actual-device JIT and GPU-free managed preparation."""
     from tensorfold.cuda import precision
-    from tensorfold.cuda.build import MIN_CAPABILITY, load
+    from tensorfold.cuda.build import MIN_CAPABILITY
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_ck_v7",
-                sources=[str(here / "checkpoint.cpp"), str(here / "act.cu"), str(here / "lane4.cu"),
-                         str(here / "gemm_ck.cu"), str(here / "gemm_ws.cu")],
-                need=MIN_CAPABILITY, arch_specific=precision.own_math(_capability())["nvfp4"],
-                extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
+    return {"name": "tensorfold_nvfp4_ck_v7",
+            "sources": [str(here / "checkpoint.cpp"), str(here / "act.cu"), str(here / "lane4.cu"),
+                        str(here / "gemm_ck.cu"), str(here / "gemm_ws.cu")],
+            "need": MIN_CAPABILITY, "arch_specific": precision.own_math(capability)["nvfp4"],
+            "extra_include_paths": [str(here)], "extra_cuda_cflags": ["-O3"], "verbose": False,
+            "prepared": True}
+
+
+@lru_cache(maxsize=1)
+def _ext():
+    from tensorfold.cuda.build import load
+
+    return load(**_build_options(_capability()))
 
 
 class Rows4(NamedTuple):

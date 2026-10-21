@@ -151,6 +151,67 @@ def test_owned_json_publication_has_image_stable_timestamp(guard, tmp_path):
     assert json.loads(path.read_text()) == {"sealed": True}
 
 
+@pytest.mark.parametrize("write_fails,close_fails,group_fails", [
+    (True, True, False), (True, False, False), (False, True, False), (True, True, True)])
+def test_json_publication_preserves_write_and_close_outcomes(guard, tmp_path, monkeypatch,
+                                                            write_fails, close_fails, group_fails):
+    path = tmp_path / "state.json"
+    path.write_text("old published state")
+    temporary = path.with_name(path.name + ".new")
+    primary, close_error, allocation_error = OSError("write"), OSError("close"), MemoryError("group allocation")
+    native_cause = LookupError("original native cause")
+    primary.__cause__ = native_cause
+
+    class ControlledFile:
+        closes = 0
+
+        def write(self, text):
+            if write_fails:
+                raise primary
+            return len(text)
+
+        def close(self):
+            self.closes += 1
+            if close_fails:
+                raise close_error
+
+        # Also represents the old context-manager protocol for this preserved
+        # regression: its close error would otherwise replace the write root.
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    stream = ControlledFile()
+    original_open = guard.Path.open
+    monkeypatch.setattr(guard.Path, "open", lambda current, *a, **kw:
+                        stream if current == temporary else original_open(current, *a, **kw))
+    if group_fails:
+        def failed_group(*args):
+            raise allocation_error
+
+        monkeypatch.setattr(guard, "BaseExceptionGroup", failed_group, raising=False)
+    with pytest.raises(BaseException) as caught:
+        guard.write_json(path, {"owned": "publication"})
+    assert stream.closes == 1 and path.read_text() == "old published state"
+    if write_fails and close_fails and not group_fails:
+        assert isinstance(caught.value, BaseExceptionGroup)
+        assert caught.value.exceptions == (primary, close_error)
+    else:
+        assert caught.value is (primary if write_fails else close_error)
+    if write_fails:
+        assert primary.__cause__ is native_cause
+    if group_fails:
+        frame = caught.value.__traceback__
+        retained = []
+        while frame:
+            retained.append(frame.tb_frame.f_locals)
+            frame = frame.tb_next
+        assert any(scope.get("retained_close") is close_error
+                   and scope.get("diagnostic_failure") is allocation_error for scope in retained)
+
+
 @pytest.mark.parametrize("name,version,message", [("torch", "1.0", "shadows"),
                                                    ("nvidia_cublas_cu12", "1", "unapproved accelerator"),
                                                    ("demo", "2.0", "unapproved application")])
@@ -218,13 +279,26 @@ def test_failed_install_preserves_unmodified_primary(guard, sealed, monkeypatch)
     assert caught.value is primary
 
 
-def wheel(path, name, version, *, payload=None):
+def wheel(path, name, version, *, payload=None, body=None):
+    import base64
+    import csv
+    import hashlib
+    import io
+
     info = f"{name}-{version}.dist-info"
+    files = {f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n".encode(),
+             f"{info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+             payload or f"{name}/__init__.py": (f"__version__ = {version!r}\n" if body is None else body).encode()}
+    record = io.StringIO(newline="")
+    writer = csv.writer(record, lineterminator="\n")
+    for member, raw in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+        writer.writerow([member, "sha256=" + digest, len(raw)])
+    writer.writerow([f"{info}/RECORD", "", ""])
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
-        archive.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
-        archive.writestr(f"{info}/RECORD", "")
-        archive.writestr(payload or f"{name}/__init__.py", f"__version__ = {version!r}\n")
+        for member, raw in files.items():
+            archive.writestr(member, raw)
+        archive.writestr(f"{info}/RECORD", record.getvalue())
 
 
 @pytest.mark.parametrize("name,payload", [("torch", None), ("tensorfold", "nvidia/bad.py"),
@@ -781,3 +855,351 @@ def test_bootstrap_preloads_only_final_consumer_interpreter(tmp_path, script, ar
     result = subprocess.run([str(application / "bin/python"), str(target), *arguments], env=env,
                             check=True, capture_output=True, text=True)
     assert result.stdout.splitlines() == (["1", "2"] if activated else ["no", "0"])
+
+
+def test_same_version_owned_wheel_replaces_real_payload_before_recording_identity(guard, sealed, tmp_path, monkeypatch):
+    foundation, application = Path(sealed["foundation"]), Path(sealed["application"])
+    venv.EnvBuilder(with_pip=True).create(foundation)
+    venv.EnvBuilder(with_pip=False).create(application)
+    fs, site = guard.site_directory(foundation), guard.site_directory(application)
+    (site / "00_fixture_foundation.pth").write_text(f"import sys; sys.path.insert(0, {str(fs)!r})\n")
+    sealed["files"].update({str(path): guard.identity(path, full=True) for path in guard.tree_files(foundation)})
+    sealed.update(cache_key="c" * 64, state_path=str(tmp_path / "state.json"))
+    sealed["state_digest"] = guard.state_digest(sealed)
+    # Provider publication has separate controls; preserve the actual audited
+    # pip boundary here while keeping this scratch venv's toolchain synthetic.
+    monkeypatch.setattr(guard, "publish_state", lambda state, path: state.update(state_digest=guard.state_digest(state)))
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.delenv("PIP_CONSTRAINT", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    protected = (fs / "torch.py").read_bytes()
+    old_identity = None
+    for label in ("old", "new"):
+        directory = tmp_path / label
+        directory.mkdir()
+        path = directory / "tensorfold-1.0-py3-none-any.whl"
+        body = f"__version__ = '1.0'\nTOKEN = {label!r}\n"
+        wheel(path, "tensorfold", "1.0", body=body)
+        guard.install_application(sealed, path)
+        assert (site / "tensorfold/__init__.py").read_text() == body
+        result = subprocess.run([str(application / "bin/python"), "-c", "import tensorfold; print(tensorfold.TOKEN)"],
+                                check=True, capture_output=True, text=True)
+        assert result.stdout.strip() == label
+        assert sealed["application_wheel_sha256"] == guard.digest(path)
+        if old_identity is None:
+            old_identity = sealed["application_wheel_sha256"]
+        else:
+            assert sealed["application_wheel_sha256"] != old_identity
+        assert sealed["foundation_cache_key"] == "c" * 64 and (fs / "torch.py").read_bytes() == protected
+        guard.verify(sealed, full=True)
+
+
+def test_prepared_application_refuses_replacement_before_pip_or_state_mutation(guard, sealed, tmp_path, monkeypatch):
+    import copy
+
+    sealed["native_artifacts"] = {"manifest": "sealed immutable image bundle"}
+    sealed["state_digest"] = guard.state_digest(sealed)
+    before = copy.deepcopy(sealed)
+    monkeypatch.setattr(guard, "run_install", lambda *args: pytest.fail("mutated a prepared application"))
+    # Even wheel opening is deferred until this build-lifetime precondition.
+    with pytest.raises(ValueError, match="rebuild the image"):
+        guard.install_application(sealed, tmp_path / "not-opened.whl")
+    assert sealed == before
+
+
+@pytest.fixture
+def native_contract(guard, sealed, tmp_path, monkeypatch):
+    import hashlib
+
+    from tensorfold.cuda import native_artifact as native
+
+    sealed.update(foundation_cache_key="f" * 64, application_wheel_sha256="a" * 64,
+                  state_path=str(tmp_path / "state.json"))
+    sealed["state_digest"] = guard.state_digest(sealed)
+    package = guard.site_directory(Path(sealed["application"])) / "tensorfold"
+    package.mkdir()
+    header = package / "owned.h"
+    header.write_text("// transitive owned input\n")
+    directory = tmp_path / "native"
+    directory.mkdir()
+    recipes = []
+    for base in ("first", "second"):
+        source = package / (base + ".cpp")
+        source.write_text('#include "owned.h"\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n'
+                          '    m.def("execute", &execute);\n}\n')
+        recipes.append({"name": base, "sources": [str(source)], "prepared": True,
+                        "extra_cuda_cflags": ["-O3"], "verbose": False})
+    monkeypatch.setattr(native, "recipes", lambda: tuple(recipes))
+    monkeypatch.setattr(native, "abi", lambda: {"host_machine": "controlled ABI"})
+    identity = {"foundation_cache_key": "f" * 64, "application_wheel_sha256": "a" * 64,
+                "toolchain_sha256": hashlib.sha256(native.canonical(sealed["toolchain"])).hexdigest()}
+    value = {"schema_version": 1, "kind": "tensorfold-native-artifacts", "identity": identity,
+             "abi": native.abi(), "target_capability": [12, 1], "package_root": str(package), "entries": {}}
+    for recipe in recipes:
+        name, sources, options = native.compilation(recipe)
+        binary = directory / (name + ".so")
+        binary.write_bytes(b"controlled binary " + name.encode())
+        request, owned = native.request(package, sources, options), native.inputs(package, sources)
+        exports = native.binding_exports(sources)
+        value["entries"][name] = {"module_name": name, "binary": binary.name,
+            "binary_sha256": guard.digest(binary), "binary_bytes": binary.stat().st_size,
+            "request": request, "inputs": owned, "exports": exports,
+            "recipe_sha256": hashlib.sha256(native.canonical({"request": request, "inputs": owned,
+                "exports": exports, "identity": identity, "abi": value["abi"]})).hexdigest()}
+    path = directory / "manifest.json"
+    guard.write_json(directory / "preparation.json", {"scope": "controlled fixture"})
+    monkeypatch.setattr(guard, "publish_state", lambda state, path:
+                        state.update(state_digest=guard.state_digest(state)))
+    return native, sealed, value, path, header
+
+
+@pytest.mark.parametrize("fault", [None, "third", "exports", "request", "missing-header", "header",
+                                      "binary", "wheel", "abi", "extra-file", "extra-directory"])
+def test_two_provider_seal_checks_final_canonical_contract(native_contract, guard, fault):
+    native, state, value, path, header = native_contract
+    entry = next(iter(value["entries"].values()))
+    if fault == "third":
+        value["entries"]["stale_third_sm_121"] = dict(entry)
+    elif fault == "exports":
+        entry["exports"] = ["stale"]
+    elif fault == "request":
+        entry["request"]["options"]["extra_cuda_cflags"].append("--use_fast_math")
+    elif fault == "missing-header":
+        entry["inputs"].pop(header.name)
+    elif fault == "header":
+        header.write_text("// changed header\n")
+    elif fault == "binary":
+        (path.parent / entry["binary"]).write_bytes(b"changed binary")
+    elif fault == "wheel":
+        value["identity"]["application_wheel_sha256"] = "b" * 64
+    elif fault == "abi":
+        value["abi"] = {"host_machine": "foreign"}
+    elif fault == "extra-file":
+        (path.parent / "stale.so").write_bytes(b"unsealed extra library")
+    elif fault == "extra-directory":
+        nested = path.parent / "stale.build"
+        nested.mkdir()
+        (nested / "object.o").write_bytes(b"unpublished compiler intermediate")
+    guard.write_json(path, value)
+    if fault is not None:
+        with pytest.raises(ValueError):
+            guard.seal_native_artifacts(state, path)
+        assert "native_artifacts" not in state
+    else:
+        guard.seal_native_artifacts(state, path)
+        assert state["native_artifacts"]["sha256"] == guard.digest(path)
+        assert json.loads(guard.native_activation(state)[native.ACTIVATION]) == state["native_artifacts"]
+        assert str(header) in state["files"] and str(path.parent / "preparation.json") in state["files"]
+        guard.verify(state, full=True)
+
+
+def test_native_preparation_preserves_primary_and_failed_audit(guard, monkeypatch, tmp_path):
+    import prepare_native
+
+    primary, audit_error = RuntimeError("native compile failed"), ValueError("provider changed")
+    checks = []
+
+    def verify(state, *, full):
+        checks.append(full)
+        if len(checks) > 1:
+            raise audit_error
+
+    def failed(*args):
+        raise primary
+
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setattr(guard, "verify", verify)
+    monkeypatch.setattr(prepare_native, "_prepare", failed)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        prepare_native.prepare({}, tmp_path / "unused")
+    assert caught.value.exceptions == (primary, audit_error) and checks == [True, True]
+
+
+@pytest.mark.torch
+@pytest.mark.skipif(any(Path('/dev').glob('nvidia[0-9]*')), reason="requires GPU-free preparation profile")
+@pytest.mark.parametrize("fault", [None, "exports", "existing-destination", "already-sealed"])
+def test_preparer_compiles_only_two_original_recipes_without_gpu_discovery(guard, monkeypatch, tmp_path, fault):
+    from types import SimpleNamespace
+
+    import prepare_native
+
+    import tensorfold
+
+    torch = pytest.importorskip("torch")
+    from torch.utils import cpp_extension
+
+    from tensorfold.cuda import native_artifact as native
+
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setenv("TF_FOUNDATION_RUNTIME_PHASE", "cpu")
+    monkeypatch.setattr(guard, "verify", lambda *args, **kwargs: None)
+    monkeypatch.setattr(guard, "site_directory", lambda prefix: Path(tensorfold.__file__).resolve().parent.parent)
+    sealed, compiled, normalized = [], [], []
+    monkeypatch.setattr(guard, "seal_native_artifacts", lambda state, path: sealed.append(path))
+    # This control reads original recipe inputs through the RO source mount.
+    # Real metadata preparation/export is covered by the owned-install fixture below.
+    monkeypatch.setattr(guard, "normalize_image_mtime", lambda path: normalized.append(path))
+
+    def no_gpu(*args, **kwargs):
+        pytest.fail("GPU-free preparation queried a runtime GPU")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", no_gpu)
+    monkeypatch.setattr(torch.cuda, "device_count", no_gpu)
+
+    def compile_recipe(**options):
+        package = Path(tensorfold.__file__).resolve().parent
+        required = {package / relative for relative in native.inputs(package, options["sources"])}
+        assert required.issubset(normalized)
+        compiled.append(options)
+        binary = Path(options["build_directory"]) / (options["name"] + ".so")
+        binary.write_bytes(b"controlled compiler output")
+        exports = native.binding_exports(options["sources"])
+        values = {name: lambda: None for name in exports}
+        if fault == "exports":
+            values.pop(exports[0])
+        return SimpleNamespace(__file__=str(binary), **values)
+
+    monkeypatch.setattr(cpp_extension, "load", compile_recipe)
+    destination = tmp_path / "native"
+    state = {"foundation_cache_key": "f" * 64, "application_wheel_sha256": "a" * 64,
+             "application": "/controlled", "toolchain": {}}
+    if fault == "already-sealed":
+        state["native_artifacts"] = {"existing": "immutable application"}
+        with pytest.raises(ValueError, match="already sealed"):
+            prepare_native.prepare(state, destination)
+        assert not compiled and not normalized and not destination.exists()
+    elif fault == "existing-destination":
+        destination.mkdir()
+        with pytest.raises(FileExistsError):
+            prepare_native.prepare(state, destination)
+        assert not compiled and not sealed
+    elif fault == "exports":
+        with pytest.raises(ValueError, match="exports differ"):
+            prepare_native.prepare(state, destination)
+        assert not sealed and not (destination / "manifest.json").exists()
+    else:
+        result = prepare_native.prepare(state, destination)
+        assert sealed == [destination / "manifest.json"] and len(compiled) == 2
+        assert [row["name"] for row in compiled] == ["tensorfold_nvfp4_ck_v7_sm_121a", "tensorfold_qwen_b16_v6_sm_121"]
+        assert [row["extra_cuda_cflags"][-1] for row in compiled] == [
+            "-gencode=arch=compute_121a,code=sm_121a", "-gencode=arch=compute_121,code=sm_121"]
+        assert all("prepared" not in row for row in compiled)
+        assert not any(destination.glob("*.build"))
+        assert set(result["entries"]) == {row["name"] for row in compiled}
+
+
+@pytest.mark.torch
+@pytest.mark.skipif(any(Path('/dev').glob('nvidia[0-9]*')), reason="requires CPU load-only audit profile")
+@pytest.mark.parametrize("fault", [None, "exports", "providers"])
+def test_cpu_auditor_checks_exports_and_providers_without_resealing(native_contract, guard, monkeypatch, fault):
+    from types import SimpleNamespace
+
+    import foundation_runtime
+    import prepare_native
+
+    torch = pytest.importorskip("torch")
+    native, state, value, path, _header = native_contract
+    # capture_runtime and actual sealed images supply this profile. The
+    # provider-mapping callback is controlled here; its input/flag forwarding is
+    # the auditor's integration responsibility, not a substitute runtime proof.
+    profile = {"schema_version": 1, "foundation": state["foundation"], "index": {},
+               "torch": {"objects": [], "required": [], "order": []},
+               "vision": {"providers": []}, "cupti_dir": None}
+    state["runtime"] = profile
+    state["state_digest"] = guard.state_digest(state)
+    guard.write_json(path, value)
+    guard.seal_native_artifacts(state, path)
+    before = json.dumps(state, sort_keys=True)
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setenv("TF_FOUNDATION_RUNTIME_PHASE", "cpu")
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: False)
+    monkeypatch.setattr(guard, "native_proof", lambda state: {"providers": ["owned"]})
+    observed = []
+
+    def mapped_runtime(contract, *, allow_vision):
+        assert contract is profile and allow_vision is True
+        observed.append(contract)
+        return ["foreign" if fault == "providers" else "owned"]
+
+    monkeypatch.setattr(foundation_runtime, "mapped_runtime", mapped_runtime)
+    monkeypatch.setattr(guard, "publish_state", lambda *args: pytest.fail("audit modified the sealed state"))
+    monkeypatch.setattr(native, "_import", lambda *args:
+                        SimpleNamespace(execute=0 if fault == "exports" else lambda: None))
+    if fault:
+        with pytest.raises(ValueError, match=r"exports differ|protected providers"):
+            prepare_native.audit(state, path.parent)
+    else:
+        result = prepare_native.audit(state, path.parent)
+        assert len(result["entries"]) == 2 and result["providers_unchanged"] is True
+    assert observed == ([] if fault == "exports" else [profile])
+    assert json.dumps(state, sort_keys=True) == before
+
+
+@pytest.mark.torch
+@pytest.mark.skipif(any(Path('/dev').glob('nvidia[0-9]*')), reason="requires GPU-free preparation profile")
+def test_fresh_native_inputs_survive_whole_second_image_boundary(native_contract, guard, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    import prepare_native
+
+    import tensorfold
+
+    pytest.importorskip("torch")
+    from torch.utils import cpp_extension
+
+    native, state, value, _old_path, _header = native_contract
+    package = Path(value["package_root"])
+    initializer = package / "__init__.py"
+    initializer.write_text("# installed-package identity fixture; never executed\n")
+    monkeypatch.setattr(tensorfold, "__file__", str(initializer))
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setenv("TF_FOUNDATION_RUNTIME_PHASE", "cpu")
+    paths = {package / relative for entry in value["entries"].values() for relative in entry["inputs"]}
+    before = {}
+    for path in paths:
+        path.chmod(0o444)
+        os.utime(path, ns=(1700000000123456789, 1700000000987654321))
+        before[path] = guard.identity(path, full=True)
+    compiled = []
+
+    def compile_recipe(**options):
+        required = {package / relative for relative in native.inputs(package, options["sources"])}
+        assert all(path.stat().st_mtime_ns % 10**9 == 0 for path in required)
+        compiled.append(options["name"])
+        binary = Path(options["build_directory"]) / (options["name"] + ".so")
+        binary.write_bytes(b"controlled output; no compiler or GPU")
+        return SimpleNamespace(__file__=str(binary), execute=lambda: None)
+
+    monkeypatch.setattr(cpp_extension, "load", compile_recipe)
+    prepare_native.prepare(state, tmp_path / "prepared")
+    assert len(compiled) == 2
+    for path in paths:
+        assert guard.identity(path, full=True) == {
+            **before[path], "mtime_ns": before[path]["mtime_ns"] // 10**9 * 10**9}
+    # Exercise the observed image-export contract, not relaxed post-seal checks.
+    archive_path = tmp_path / "image-inputs.tar"
+    with tarfile.open(archive_path, "w", format=tarfile.USTAR_FORMAT) as archive:
+        for path in sorted(paths):
+            archive.add(path, arcname=str(path.relative_to(package)))
+    for path in paths:
+        path.unlink()
+    with tarfile.open(archive_path) as archive:
+        for member in archive.getmembers():
+            with archive.extractfile(member) as stream:
+                path = package / member.name
+                path.write_bytes(stream.read())
+            path.chmod(member.mode)
+            os.utime(path, ns=(0, member.mtime * 10**9))
+    guard.verify(state, full=True)
+    changed = min(paths)
+    stamp = changed.stat()
+    os.utime(changed, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1))
+    for full in (False, True):
+        with pytest.raises(ValueError, match="protected foundation file changed"):
+            guard.verify(state, full=full)
+    with pytest.raises(ValueError, match="protected foundation file changed"):
+        prepare_native.prepare(state, tmp_path / "must-not-repair")
+    assert len(compiled) == 2 and changed.stat().st_mtime_ns == stamp.st_mtime_ns + 1

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
 import json
 import os
-from pathlib import Path
 import shutil
 import sys
 import threading
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 MIN_CAPABILITY = (8, 9)         # FP8 MMA and e4m3 conversions (Ada); kernels with clusters use them from 9.0
@@ -18,21 +18,31 @@ HINT = "if no other build is running, a killed build left it: stop this start, d
 LOCK_WAIT_SECONDS = 60.0        # a start still waiting on the same lock this long says so again
 
 
+def minimum(need: tuple[int, int], arch_specific: bool) -> tuple[int, int]:
+    """Shared instruction eligibility for device builds and explicit preparation."""
+    return max(need, CLUSTERS) if arch_specific else need
+
+
+def target_flags(capability: tuple[int, int], arch_specific: bool) -> list[str]:
+    """Generate flags after the caller validates its actual or declared target."""
+    major, minor = capability
+    a = "a" if arch_specific else ""
+    return [f"-gencode=arch=compute_{major}{minor}{a},code=sm_{major}{minor}{a}"]
+
+
 def arch_flags(need: tuple[int, int] = MIN_CAPABILITY, arch_specific: bool = False) -> list[str]:
     """nvcc flags for this GPU alone (``arch_specific``: its ``a`` target); a GPU under ``need`` is refused by name."""
 
     import torch
 
-    if arch_specific and need < CLUSTERS:
-        need = CLUSTERS  # The architecture-specific target requires the cluster-generation toolchain contract.
+    need = minimum(need, arch_specific)
     major, minor = torch.cuda.get_device_capability()
     if (major, minor) < need:
         why = "thread-block clusters" if need >= CLUSTERS else "FP8 MMA"
         raise RuntimeError(f"TensorFold's CUDA kernels need compute capability {need[0]}.{need[1]} or newer ({why}"
                            f"{' for these weights' if need > MIN_CAPABILITY else ''}); this GPU "
                            f"({torch.cuda.get_device_name()}) is {major}.{minor}")
-    a = "a" if arch_specific else ""
-    return [f"-gencode=arch=compute_{major}{minor}{a},code=sm_{major}{minor}{a}"]
+    return target_flags((major, minor), arch_specific)
 
 
 def refuse_old_gpu(need: tuple[int, int] = MIN_CAPABILITY) -> None:
@@ -50,6 +60,7 @@ def refuse_old_gpu(need: tuple[int, int] = MIN_CAPABILITY) -> None:
 
 
 def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABILITY, *, arch_specific: bool = False,
+         prepared: bool = False,
          **kwargs: Any) -> Any:
     """Build for this GPU only, with a target-qualified JIT module and lock identity.
 
@@ -59,12 +70,21 @@ def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABI
     beneath which each module/actual target gets its own build and lock files.
     """
 
-    from torch.utils import cpp_extension
-
     flags = arch_flags(need, arch_specific)
     # arch_flags constructs this single target from one current-device query;
     # the `a` suffix also distinguishes architecture-specific instructions.
     name = name + "_" + flags[0].split(",code=", 1)[1]
+    if prepared and os.environ.get("TF_NATIVE_ARTIFACTS") and "build_directory" not in kwargs:
+        # Only canonical recipe owners opt into the sealed artifact contract.
+        # Existing custom build requests retain their independent JIT policy.
+        from .native_artifact import load_prepared
+
+        prepared_options = dict(kwargs, extra_cuda_cflags=[*kwargs.get("extra_cuda_cflags", []), *flags])
+        module = load_prepared(name, sources, prepared_options)
+        if module is not None:
+            return module
+    from torch.utils import cpp_extension
+
     directory = kwargs.get("build_directory")
     if directory is not None:
         directory = Path(directory) / name

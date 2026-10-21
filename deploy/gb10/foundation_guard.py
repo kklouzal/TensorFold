@@ -146,9 +146,38 @@ def check_packages(manifest: dict, foundation: Path, application: Path) -> None:
 def write_json(path: Path, value: dict) -> None:
     # Build-owned destination; atomic publication does not leave partial state.
     temporary = path.with_name(path.name + ".new")
-    with temporary.open("x", encoding="utf-8") as stream:
+    retained_primary = retained_close = diagnostic_failure = combined = None
+    prior = [None, None, None]
+    stream = temporary.open("x", encoding="utf-8")
+    try:
         json.dump(value, stream, sort_keys=True, allow_nan=False)
         stream.write("\n")
+    except BaseException as error:  # noqa: BLE001 - Close still owns its independently reportable outcome.
+        retained_primary = error
+        prior[0] = BaseException.__cause__.__get__(error)
+        prior[1] = BaseException.__context__.__get__(error)
+        prior[2] = BaseException.__suppress_context__.__get__(error)
+    try:
+        stream.close()
+    except BaseException as error:  # noqa: BLE001 - A failed close must not replace the write failure.
+        retained_close = error
+    if retained_primary is not None:
+        if retained_close is not None:
+            try:
+                combined = BaseExceptionGroup("JSON publication and close failed", [retained_primary, retained_close])
+            except BaseException as error:  # noqa: BLE001 - Retain raw roots if diagnostic allocation fails.
+                diagnostic_failure = error
+            if diagnostic_failure is not None:
+                # The primary traceback retains the close/grouping roots in this
+                # frame, even when allocating a grouped outcome is impossible.
+                BaseException.__cause__.__set__(retained_primary, prior[0])
+                BaseException.__context__.__set__(retained_primary, prior[1])
+                BaseException.__suppress_context__.__set__(retained_primary, prior[2])
+                raise retained_primary
+            raise combined from None
+        raise retained_primary
+    if retained_close is not None:
+        raise retained_close
     temporary.chmod(0o644)
     normalize_image_mtime(temporary)
     temporary.replace(path)
@@ -301,6 +330,7 @@ def publish_state(state: dict, path: Path) -> None:
                   TF_FOUNDATION_RUNTIME_PROFILE=state["runtime_profile_path"], TF_FOUNDATION_CPU_DRIVER=state["cpu_driver"],
                   TORCH_USE_RTLD_GLOBAL="1", CUDA_PATH=state["toolchain"]["cuda_home"],
                   PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    values.update(native_activation(state))
     environment_file = site_directory(Path(state["application"])) / "tensorfold-foundation-environment.json"
     write_json(environment_file, values)
     state["files"][str(environment_file)] = identity(environment_file, full=True)
@@ -311,6 +341,76 @@ def publish_state(state: dict, path: Path) -> None:
 def state_digest(state: dict) -> str:
     body = {key: value for key, value in state.items() if key != "state_digest"}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def native_activation(state: dict) -> dict[str, str]:
+    """Overwrite external selectors with the build-owned compact artifact seal."""
+    return {"TF_NATIVE_ARTIFACTS": json.dumps(state["native_artifacts"], sort_keys=True, separators=(",", ":"))
+            if "native_artifacts" in state else ""}
+
+
+def validate_native_artifacts(state: dict, manifest: Path) -> tuple[dict, set[Path]]:
+    """Check the complete canonical bundle without modifying its sealed state."""
+    from tensorfold.cuda import native_artifact
+
+    verify(state, full=True)
+    value = read_json(manifest, 2**20)
+    contracts = {name: (sources, options)
+                for name, sources, options in map(native_artifact.compilation, native_artifact.recipes())}
+    if (type(value.get("schema_version")) is not int or value["schema_version"] != 1
+            or value.get("kind") != "tensorfold-native-artifacts"
+            or value.get("target_capability") != list(native_artifact.TARGET)
+            or not isinstance(value.get("entries"), dict) or set(value["entries"]) != set(contracts)
+            or value["identity"]["foundation_cache_key"] != state["foundation_cache_key"]
+            or value["identity"]["application_wheel_sha256"] != state["application_wheel_sha256"]
+            or value["identity"]["toolchain_sha256"] != hashlib.sha256(json.dumps(state["toolchain"],
+                sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()):
+        raise ValueError("native artifacts differ from their installed foundation/wheel")
+    package = Path(value["package_root"]).resolve(strict=True)
+    if not package.is_relative_to(site_directory(Path(state["application"])).resolve(strict=True)):
+        raise ValueError("native artifacts must borrow the installed application package")
+    files = {manifest.resolve(strict=True), manifest.with_name("preparation.json").resolve(strict=True)}
+    for name, entry in value["entries"].items():
+        if not isinstance(entry, dict) or entry.get("module_name") != name or not isinstance(entry.get("inputs"), dict):
+            raise ValueError("invalid native artifact entry")
+        sources, options = contracts[name]
+        exports = native_artifact.binding_exports(sources)
+        request = native_artifact.request(package, sources, options)
+        if (entry.get("request") != request or entry.get("exports") != exports
+                or entry["inputs"] != native_artifact.inputs(package, sources)
+                or entry.get("recipe_sha256") != hashlib.sha256(native_artifact.canonical({
+                    "request": request, "inputs": entry["inputs"], "exports": exports,
+                    "identity": value["identity"], "abi": value["abi"]})).hexdigest()
+                or value.get("abi") != native_artifact.abi()):
+            raise ValueError("native artifact differs from its canonical recipe/ABI/exports")
+        binary = (manifest.parent / entry["binary"]).resolve(strict=True)
+        if (Path(entry["binary"]).is_absolute() or not binary.is_relative_to(manifest.parent.resolve(strict=True))
+                or binary.stat().st_size != entry["binary_bytes"] or digest(binary) != entry["binary_sha256"]):
+            raise ValueError("native artifact binary differs from its manifest")
+        files.add(binary)
+        for relative, expected_hash in entry["inputs"].items():
+            source = (package / relative).resolve(strict=True)
+            if Path(relative).is_absolute() or not source.is_relative_to(package) or digest(source) != expected_hash:
+                raise ValueError("native artifact input differs from its manifest")
+            files.add(source)
+    expected_members = {"manifest.json", "preparation.json", *(entry["binary"] for entry in value["entries"].values())}
+    actual_members = set()
+    for member in manifest.parent.iterdir():
+        if member.name not in expected_members or member.is_symlink() or not member.is_file():
+            raise ValueError("native bundle member closure differs")
+        actual_members.add(member.name)
+    if actual_members != expected_members:
+        raise ValueError("native bundle member closure differs")
+    return value, files
+
+
+def seal_native_artifacts(state: dict, manifest: Path) -> None:
+    """Build-exclusive publication into the existing immutable foundation seal."""
+    value, files = validate_native_artifacts(state, manifest)
+    state["files"].update({str(path): identity(path, full=True) for path in sorted(files)})
+    state["native_artifacts"] = {"manifest": str(manifest.resolve(strict=True)), "sha256": digest(manifest),
+                                 "identity": value["identity"]}
+    publish_state(state, Path(state["state_path"]))
 
 
 def verify(state: dict, *, full: bool = False) -> None:
@@ -346,6 +446,7 @@ def environment(state: dict) -> dict[str, str]:
     values.update(TF_NCCL_LIB=state["nccl_library"], TF_FOUNDATION_RUNTIME_PROFILE=state["runtime_profile_path"],
                   TF_FOUNDATION_CPU_DRIVER=state["cpu_driver"], TORCH_USE_RTLD_GLOBAL="1",
                   CUDA_PATH=state["toolchain"]["cuda_home"], PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    values.update(native_activation(state))
     cupti = Path(state["toolchain"]["cupti"]["path"]).resolve(strict=True)
     requested_nvtx = os.environ.get("NVTX_INJECTION64_PATH")
     if requested_nvtx:
@@ -425,31 +526,37 @@ def role_lines(manifest: dict, role: str) -> list[str]:
                   for name, pin in manifest["roles"][role].items())
 
 
-def run_install(state: dict, argv: list[str]) -> None:
+def audited_operation(state: dict, operation, label: str):
+    """Retain an external build/install outcome and its required full audit."""
     retained_primary = retained_audit = diagnostic_failure = combined = None
     prior_cause = prior_context = None
     prior_suppress = False
     try:
-        subprocess.run(argv, check=True)
+        result = operation()
     except BaseException as primary:
         retained_primary = primary
         prior_cause, prior_context, prior_suppress = primary.__cause__, primary.__context__, primary.__suppress_context__
         try:
             verify(state, full=True)
-        except BaseException as audit_error:
+        except BaseException as audit_error:  # noqa: BLE001 - Retain every audit failure.
             retained_audit = audit_error
             try:
-                combined = BaseExceptionGroup("installation failed and foundation audit failed", [retained_primary, retained_audit])
-            except BaseException as error:
+                combined = BaseExceptionGroup(f"{label} failed and foundation audit failed", [retained_primary, retained_audit])
+            except BaseException as error:  # noqa: BLE001 - Diagnostics cannot replace the primary.
                 diagnostic_failure = error
             if diagnostic_failure is not None:
                 retained_primary.__cause__ = prior_cause
                 retained_primary.__context__ = prior_context
                 retained_primary.__suppress_context__ = prior_suppress
-                raise retained_primary  # noqa: B904 - retain the primary native cause exactly.
+                raise retained_primary  # Retain the primary native cause exactly.
             raise combined from None
         raise
     verify(state, full=True)
+    return result
+
+
+def run_install(state: dict, argv: list[str]) -> None:
+    audited_operation(state, lambda: subprocess.run(argv, check=True), "installation")
 
 
 def install_role(state: dict, *, role: str, lock: Path) -> None:
@@ -463,6 +570,10 @@ def install_role(state: dict, *, role: str, lock: Path) -> None:
 
 def install_application(state: dict, wheel: Path) -> None:
     verify(state, full=True)
+    # Native bundles bind their installed wheel and owned input file lifetimes.
+    # A new image installs its wheel first, then prepares/seals the bundle.
+    if "native_artifacts" in state:
+        raise ValueError("native artifacts seal the application; rebuild the image before replacing its wheel")
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
         candidates = [name for name in names if name.endswith(".dist-info/METADATA")]
@@ -475,7 +586,7 @@ def install_application(state: dict, wheel: Path) -> None:
                or ".." in Path(name).parts for name in names):
             raise ValueError("application wheel contains a protected or escaping payload")
     run_install(state, [str(Path(state["application"]) / "bin/python"), "-m", "pip", "install",
-                        "--no-deps", str(wheel)])
+                        "--no-deps", "--force-reinstall", str(wheel)])
     state["foundation_cache_key"] = state.get("foundation_cache_key", state["cache_key"])
     state["application_wheel_sha256"] = digest(wheel)
     state["cache_key"] = hashlib.sha256(json.dumps({"foundation": state["foundation_cache_key"],
