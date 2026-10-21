@@ -183,8 +183,8 @@ def resident_bytes(kind: str, n: int, k: int) -> int:
 
 
 def staging_bytes(kind: str, n: int, k: int) -> int:
-    """Transient device bytes building a ``kind`` copy. fp8: FP32 row chunks, retained codes/scales, and the chunked
-    fragment-order gather, including its original and contiguous index storage; nvfp4: below."""
+    """Transient device bytes building a ``kind`` copy. fp8 retains the conservative historical gather bound,
+    covering FP32 row chunks, retained codes/scales and fragment packing; nvfp4: below."""
 
     if _checked(kind) == "nvfp4":
         # nvfp4_rows' codes and scales beside either its chunk temporaries (FP32 blocks, quotients and their where,
@@ -201,8 +201,9 @@ def staging_bytes(kind: str, n: int, k: int) -> int:
     # The native allocator rounds the two retained quantized-code/scale allocations to 512-byte blocks. The
     # fragment's other allocations are already multiples of 512 (R multiple of 128, K multiple of 64).
     quantized = ((n * k + 511) // 512 + (n * 4 + 511) // 512) * 512
-    # CUDA advanced indexing makes both expanded int64 indices contiguous when their strides differ. The
-    # original fragment_index bases (8K and 4R int64s) remain live beside them, the padded input and byte result.
+    # Retain the earlier gather's upper bound: its expanded contiguous int64 indices, original fragment_index
+    # bases (8K and 4R int64s), padded input and byte result. Current fragment packing only copies a permuted
+    # view; lowering admission requires separate integrated resource evidence.
     fragment = rows * k * 18 + k * 64 + rows * 32
     return min(n, CHUNK_ROWS) * k * 9 + quantized + fragment
 

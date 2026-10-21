@@ -1,5 +1,19 @@
 # TensorFold fork
 
+FP8 fragment packing now copies a bounded byte permutation directly into its
+final layout. In the fixed GB10 Qwen3.8 comparison, CLI entry-to-ready latency
+fell from 11.48 s to 10.79 s; all six blocks favored the candidate and complete
+output IDs matched. The comparison used warm compiler/file caches. Request
+latency effects were inconclusive. This isolated release still requires its
+final installed-source checks; [conditions and evidence](docs/fp8-packing-validation-20261021.md)
+distinguish that gate from the completed experiment.
+
+`python tools/model_phase_bench.py --plan PLAN.json --out NEW_DIRECTORY`
+measures production CLI entry-to-ready and complete prepared engine requests
+from a sealed plan. It retains full token IDs, cache/speculation counters,
+native settlement and failures. Its scope excludes interpreter/guard startup,
+HTTP/stream handling and concurrent service load.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
