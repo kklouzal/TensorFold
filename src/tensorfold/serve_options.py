@@ -74,6 +74,22 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    allocator = getattr(args, "native_allocator", None)
+    if allocator is not None:
+        if (type(allocator) is not str or allocator != "expandable" or backend != "cuda"
+                or getattr(family, "model_type", "") != "qwen3_5"
+                or getattr(args, "tp", 1) != 1 or getattr(args, "rank", 0) != 0
+                or _cuda_streams(getattr(args, "parallel", "auto")) != 1
+                or getattr(args, "precision", "checkpoint") != "checkpoint" or getattr(args, "prefill_fp8", False)
+                or getattr(args, "vision", False)):
+            raise ValueError("--native-expandable-segments requires Qwen dense CUDA native checkpoint math, SM12.1, "
+                             "--tp 1 and one stream in a caller-owned fresh process")
+        from tensorfold.cuda.native_allocator import check_environment
+        from tensorfold.cuda.nvfp4.format import is_quantized
+
+        check_environment()
+        if config_dir is None or not is_quantized(config_dir):
+            raise ValueError("--native-expandable-segments requires a native ModelOpt/compressed-tensors checkpoint")
     draft_rows = getattr(args, "draft_rows", None)
     if draft_rows is not None:
         if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)

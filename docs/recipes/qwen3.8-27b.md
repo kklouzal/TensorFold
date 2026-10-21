@@ -86,6 +86,14 @@ alone. One GPU: `--tp 2` stops at startup (two ranks read the MLX checkpoint), a
 input is qualified on this checkpoint. The default `--precision checkpoint` selects the checkpoint activation math
 described in [NVFP4 precision](cuda.md#nvfp4-precision).
 
+The optional `--native-expandable-segments` allocator policy requires bf16 prefill and is restricted to
+checkpoint math on SM12.1 with one rank/stream and a caller-owned fresh process.
+Omission preserves existing allocator configuration. Its API/CLI passed 198 pinned
+CPU checks with GPUs hidden. The new immutable image, native integration and model
+performance remain pending; the separate installed `c8e2d0eb` smoke's 24 MiB mapping
+observation is not a model result. Read the [ownership, conflict and failure contract](../native-expandable-allocator.md)
+before enabling it. The isolated packing performance rejection remains in force.
+
 ```bash
 tensorfold pull nvidia/Qwen3.8-27B-NVFP4 z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve nvidia/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8080

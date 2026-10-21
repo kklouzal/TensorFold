@@ -58,6 +58,28 @@ def test_serve_parses_the_cuda_flags():
     assert (args.backend, args.tp, args.rank, args.master, args.master_port) == ("auto", 2, 1, "192.0.2.11", 29551)
 
 
+@pytest.mark.parametrize('enabled', [False, True])
+def test_explicit_native_allocator_reaches_actual_cli_factory_only_when_requested(tmp_path, monkeypatch, request, enabled):
+    from tensorfold.cuda import server
+
+    calls = []
+    engine = cuda_cli_engine(w=SimpleNamespace(precision='checkpoint', fast_prefill=False))
+    family = _family(cuda_engine=lambda *args, **kwargs: calls.append(kwargs) or engine)
+    family.model_type = 'qwen3_5'
+    monkeypatch.setattr(server, 'App', lambda *args, **kwargs:
+                        cuda_cli_app(effective_context_window=kwargs['context_window']))
+    install_cli_server(monkeypatch, request, server)
+    command = ['serve', str(tmp_path), '--backend', 'cuda', '--no-drafts']
+    if enabled:
+        command.append('--native-expandable-segments')
+    args = cli.build_parser().parse_args(command)
+    assert cli._serve_cuda(args, family, tmp_path, 2048) == 0
+    if enabled:
+        assert calls[0]['native_allocator'] == 'expandable'
+    else:
+        assert 'native_allocator' not in calls[0]
+
+
 @pytest.mark.parametrize("override, expected", [(None, 128), (0, 0), (64, 64)])
 def test_cuda_dispatch_keeps_the_resolved_context(tmp_path, monkeypatch, override, expected):
     import json

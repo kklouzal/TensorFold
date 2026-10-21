@@ -333,7 +333,7 @@ def gb10() -> bool:
 
 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
-                master_port: int = 29551, no_drafts: bool = False, **options: Any):
+                master_port: int = 29551, no_drafts: bool = False, native_allocator: str | None = None, **options: Any):
     """The CUDA engine for ``tensorfold serve``; tp=2 adds fp32 partials in rank order and needs the drafter on both."""
 
     from .cuda.engine import Qwen27Engine
@@ -350,6 +350,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     streams = max(1, int(options.get("parallel") or 1))
     # one stream on one GB10 takes the width it affords (16-row trees, widening to 128); other shapes keep 12 rows
     wide = tp == 1 and streams == 1 and gb10()
+    metadata = {name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+                if options.get(name) is not None}
+    if native_allocator is not None:
+        metadata["native_allocator"] = native_allocator
     return Qwen27Engine(Path(model_dir), draft, max_rows=128 if wide else 12, tree_rows=16 if wide else None,
                         tp=tp, rank=rank, master=master, port=master_port,
                         split_head=tp == 2, tp_draft=tp == 2 and draft is not None, allow_copy=not no_drafts,
@@ -358,5 +362,4 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         vision_urls=bool(options.get("vision_urls", False)),
                         vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
                         yarn_factor=options.get("yarn_factor"),
-                        **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
-                           if options.get(name) is not None})
+                        **metadata)

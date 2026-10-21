@@ -1,5 +1,16 @@
 # TensorFold fork
 
+`--native-expandable-segments` is an explicit allocator option for Qwen dense
+native checkpoint math on SM12.1 with one rank, one stream and bf16 prefill. Its caller owns
+a fresh process with no previous allocator configuration or consumers; conflicting
+environment/settings/storage fail before configuration or weight payloads.
+Omitting it preserves the existing allocator policy. The source API/CLI passed
+198 checks in the pinned AMD64 CPU runtime with GPUs hidden. A separate installed
+`c8e2d0eb` GB10 capability smoke passed byte/view/graph replay and retirement checks,
+using at most 24 MiB of observed allocator mappings. The new immutable image,
+native integration, full-model behavior and performance remain unverified.
+See the [allocator contract and pending gates](docs/native-expandable-allocator.md).
+
 The isolated FP8 packing candidate failed its final GB10 Qwen3.8 publication
 gate. Source `c8e2d0eb` passed 150 installed CPU/native checks; all 26 model
 positions matched their output/counter controls. CLI entry-to-ready improved
