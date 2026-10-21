@@ -1,5 +1,13 @@
 #include <torch/extension.h>
 
+#ifdef TENSORFOLD_B16_CAP30
+// A separate Gemma-only module: the default raw head API remains unchanged.
+at::Tensor b16_linear_cap30(const at::Tensor& x, const at::Tensor& w, int64_t rows);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("b16_linear_cap30", &b16_linear_cap30, "fresh BF16 head result with exact BF16 softcap30 epilogue");
+}
+#else
 // A plain fp16/bf16 linear, row-invariant by construction (one warp an output, fixed fp32 order); see b16.cu.
 at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bias);
 at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t rows);
@@ -14,3 +22,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("b16_linear_pair", &b16_linear_pair, "two weights of the same rows in one launch, each b16_linear's bits");
     m.def("b16_prompt_pair", &b16_prompt_pair, "two weights of the same prompt rows in one launch");
 }
+#endif

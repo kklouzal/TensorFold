@@ -56,13 +56,14 @@ def test_ct_original_input_global_scale_is_the_selected_native_quantizer_multipl
 
     def admit(act, scale, **options):
         checked.append((act, scale, options.get("act_inverse")))
+        return SimpleNamespace(act_inverse=options.get("act_inverse"))
 
     def packed(*args, **options):
         constructed.append((args[2], options["act"], options["act_inverse"]))
         return SimpleNamespace()
 
     modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(
-        LinearMetadata=format.LinearMetadata, calibration=format.calibration, native_calibration=admit)
+        LinearMetadata=format.LinearMetadata, calibration=format.calibration, prepare_native_calibration=admit)
     modules["tensorfold.cuda.nvfp4.linear"].Fp4Linear = SimpleNamespace(from_checkpoint=packed)
     config = {"quantization_config": {"quant_method": "compressed-tensors", "config_groups": {
         "nv4": {"targets": ["Linear"], "weights": {"num_bits": 4, "type": "float", "group_size": 16},

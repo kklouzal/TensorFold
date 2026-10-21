@@ -254,9 +254,14 @@ class MetadataSelection(unittest.TestCase):
                         return Scalar()
 
                 modules["tensorfold.families.qwen3_5.cuda.weights"]._Tensors = Reader
+                prepared = []
+                def prepare(act, scale, prepared=prepared, **options):
+                    value = SimpleNamespace(act_inverse=options.get("act_inverse"))
+                    prepared.append(value)
+                    return value
                 modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(
                     LinearMetadata=format.LinearMetadata, calibration=format.calibration,
-                    native_calibration=lambda *args, **kwargs: None)
+                    prepare_native_calibration=prepare)
                 built = []
                 modules["tensorfold.cuda.nvfp4.linear"].Fp8Linear = SimpleNamespace(
                     from_checkpoint=lambda weight, scale, built=built, **kw: built.append((scale, kw)) or SimpleNamespace())
@@ -277,7 +282,8 @@ class MetadataSelection(unittest.TestCase):
                         self.assertEqual(built, [])
                     else:
                         result = load(Path("opaque"))
-                        self.assertEqual(built, [(1.0, {"act": 1.0})] * 8)
+                        self.assertEqual(built, [(1.0, {"act": 1.0, "prepared": value}) for value in prepared])
+                        self.assertEqual(len(built), 8)
                         self.assertEqual(result.own, {"nvfp4": False, "fp8": True})
                 scalar_reads = [name for name in events if name.endswith((".weight_scale", ".input_scale"))]
                 self.assertTrue(scalar_reads)
@@ -315,9 +321,9 @@ class MetadataSelection(unittest.TestCase):
                     native_checks = []
                     def admit(act, weight_scale, native_checks=native_checks, **kwargs):
                         native_checks.append(act)
-                        return act
+                        return SimpleNamespace(act_inverse=kwargs.get("act_inverse"))
                     modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(
-                        **{n: api[n] for n in ("LinearMetadata", "calibration")}, native_calibration=admit)
+                        **{n: api[n] for n in ("LinearMetadata", "calibration")}, prepare_native_calibration=admit)
                     def packed(*args, native=native, **kwargs):
                         native.append(kwargs["act"])
                         return SimpleNamespace()

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 
 from tensorfold.cuda import prompt_precision
+
+if TYPE_CHECKING:
+    from .format import NativeCalibration
 
 FP4, FP8, MXFP8, FP8G = 0, 1, 2, 3
 
@@ -140,6 +144,7 @@ class Fp4Linear:
     staging: Staging | None = None   # shared by the model's NVFP4 projections (prompts)
     act: float | None = None         # checkpoint math: the static input scale; words in the FP4 mma's order
     act_inverse: float | None = None  # original CT input multiplier; None keeps ModelOpt's reciprocal path
+    _native_calibration: NativeCalibration | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def npad(self) -> int:
@@ -147,13 +152,16 @@ class Fp4Linear:
 
     @classmethod
     def from_checkpoint(cls, weight: torch.Tensor, weight_scale: torch.Tensor, global_scale: float,
-                        act: float | None = None, *, act_inverse: float | None = None) -> "Fp4Linear":
+                        act: float | None = None, *, act_inverse: float | None = None,
+                        prepared: NativeCalibration | None = None) -> "Fp4Linear":
         """Original uint8 [N,K/2] codes and e4m3 [N,K/16] block scales.
 
         ``act`` is the native input scale used in the final joint factor.
         ``act_inverse`` preserves CT's original FP32 quantization multiplier;
         None retains the legacy reciprocal of ``act``. Native metadata is
         admitted before packing, with no repair of the original scale bytes.
+        ``prepared`` is explicit owning-loader metadata for a fixed serving
+        numerical context; ordinary factories retain dynamic scalar helpers.
         """
 
         from tensorfold.cuda.kernels import qmm
@@ -167,7 +175,12 @@ class Fp4Linear:
             from . import checkpoint
             from .format import calibration, validate_native_a4_scales
 
-            if act_inverse is not None:
+            if prepared is not None:
+                prepared = prepared.bind(float(act), float(global_scale), act_inverse)
+                if prepared is None:
+                    raise ValueError("prepared native calibration requires immutable float projection scalars")
+                act, global_scale, act_inverse = prepared.act, prepared.weight_scale, prepared.act_inverse
+            elif act_inverse is not None:
                 inverse = calibration(act_inverse, name="NVFP4 native activation inverse")
                 act_inverse = float(torch.tensor(inverse, dtype=torch.float32))
             # MMA consumes unsigned UE4M3, unlike W4A16's signed E4M3 reads.
@@ -176,6 +189,8 @@ class Fp4Linear:
             npad = -(-n // 64) * 64
             packed = checkpoint.pack4(weight, npad)
         else:
+            if prepared is not None:
+                raise ValueError("prepared native calibration requires native activation math")
             words = weight.contiguous().view(torch.int32)
             dummy = torch.zeros((n, k // 64), dtype=torch.bfloat16, device=weight.device)
             packed = qmm.pack(words, dummy, dummy, 64).weight
@@ -183,8 +198,11 @@ class Fp4Linear:
         bs = torch.zeros((npad, k // 16), dtype=torch.uint8, device=weight.device)
         bs[:n] = weight_scale.contiguous().view(torch.uint8)
         bs = bs.view(npad // 64, 64, k // 64, 4).permute(0, 2, 1, 3).contiguous()
-        return cls(packed, bs, float(global_scale), n, k, act=None if act is None else float(act),
-                   act_inverse=act_inverse)
+        result = cls(packed, bs, float(global_scale), n, k, act=None if act is None else float(act),
+                     act_inverse=act_inverse)
+        if prepared is not None:
+            result._native_calibration = prepared.bind(result.act, result.scale, result.act_inverse)
+        return result
 
     def nbytes(self) -> int:
         return self.words.numel() * 4 + self.bs.numel()
@@ -192,8 +210,12 @@ class Fp4Linear:
     def tiles(self, t0: int, t1: int) -> "Fp4Linear":
         """Outputs [64 t0, 64 t1) as views, no copy (decode only: the prompt GEMM wants 128-column multiples)."""
 
-        return Fp4Linear(self.words[t0:t1], self.bs[t0:t1], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
-                         act=self.act, act_inverse=self.act_inverse)
+        result = Fp4Linear(self.words[t0:t1], self.bs[t0:t1], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
+                           act=self.act, act_inverse=self.act_inverse)
+        from .checkpoint import _prepared_calibration
+
+        result._native_calibration = _prepared_calibration(self)
+        return result
 
     def __call__(self, x: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
         if self.act is not None:
@@ -240,12 +262,15 @@ class Fp8Linear:
     act: float | None = None             # checkpoint math: the static input scale (rows in e4m3, the FP8 mma)
     cols: torch.Tensor | None = None     # fp32 [npad]: each output channel's scale (ModelOpt FP8_PER_CHANNEL_...)
     token: bool = False                  # checkpoint math with rows in e4m3 under each row's own (per-token) scale
+    _native_calibration: NativeCalibration | None = field(default=None, init=False, repr=False, compare=False)
 
     @classmethod
     def from_checkpoint(cls, weight: torch.Tensor, scale: float | torch.Tensor, act: float | None = None, *,
-                        token: bool = False) -> "Fp8Linear":
+                        token: bool = False, prepared: NativeCalibration | None = None) -> "Fp8Linear":
         """``weight`` e4m3 [N, K] with one fp32 scale (ModelOpt's per-tensor FP8) or ``scale`` [N] (its per-channel
-        FP8); ``act``: the static input scale of per-tensor checkpoint math, ``token``: per-token checkpoint math."""
+        FP8); ``act``: the static input scale of per-tensor checkpoint math, ``token``: per-token checkpoint math.
+        ``prepared`` belongs only to an owning engine's fixed static serving context.
+        """
 
         n, k = weight.shape
         if k % 64:
@@ -265,8 +290,18 @@ class Fp8Linear:
             raise ValueError("per-token FP8 rows pair with per-channel weight scales")
         if cols is not None and act is not None:     # static-scale checkpoint math applies one tensor factor alone
             raise ValueError("per-channel FP8 weight scales take per-token or bf16 rows, not a static input scale")
-        return cls(_fragment_order(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
-                   act=None if act is None else float(act), cols=cols, token=token)
+        if prepared is not None:
+            if act is None or token or cols is not None:
+                raise ValueError("prepared native calibration requires static per-tensor FP8 activation math")
+            prepared = prepared.bind(float(act), float(scale), None)
+            if prepared is None:
+                raise ValueError("prepared native calibration requires immutable float projection scalars")
+            act, scale = prepared.act, prepared.weight_scale
+        result = cls(_fragment_order(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
+                     act=None if act is None else float(act), cols=cols, token=token)
+        if prepared is not None:
+            result._native_calibration = prepared.bind(result.act, result.scale, None)
+        return result
 
     @classmethod
     def from_bf16(cls, weight: torch.Tensor) -> "Fp8Linear":
@@ -292,9 +327,13 @@ class Fp8Linear:
         """Outputs [64 t0, 64 t1) as views, no copy (decode only)."""
 
         per = 64 * self.k
-        return Fp8Linear(self.w8[t0 * per:t1 * per], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
-                         64 * (t1 - t0), act=self.act, token=self.token,
-                         cols=None if self.cols is None else self.cols[64 * t0:64 * t1])
+        result = Fp8Linear(self.w8[t0 * per:t1 * per], self.scale, min(self.n, 64 * t1) - 64 * t0, self.k,
+                           64 * (t1 - t0), act=self.act, token=self.token,
+                           cols=None if self.cols is None else self.cols[64 * t0:64 * t1])
+        from .checkpoint import _prepared_calibration
+
+        result._native_calibration = _prepared_calibration(self)
+        return result
 
     def __call__(self, x: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
         if self.act is not None or self.token:

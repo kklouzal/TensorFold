@@ -8,13 +8,18 @@ from pathlib import Path
 import torch
 
 
+def _build_options() -> dict:
+    """Canonical recipe shared by actual-device JIT and managed preparation."""
+    here = Path(__file__).parent
+    return {"name": "tensorfold_qwen_b16_v6", "sources": [str(here / "b16.cpp"), str(here / "b16.cu")],
+            "extra_cuda_cflags": ["-O3"], "verbose": False, "prepared": True}
+
+
 @lru_cache(maxsize=1)
 def _ext():
     from tensorfold.cuda.build import load
 
-    here = Path(__file__).parent
-    return load(name="tensorfold_qwen_b16_v6", sources=[str(here / "b16.cpp"), str(here / "b16.cu")],
-                extra_cuda_cflags=["-O3"], verbose=False)
+    return load(**_build_options())
 
 
 def matmul(x: torch.Tensor, w: torch.Tensor, bias: torch.Tensor | None = None) -> torch.Tensor:

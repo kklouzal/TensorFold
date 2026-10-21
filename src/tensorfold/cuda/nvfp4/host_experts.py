@@ -162,9 +162,11 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     out of the bank (``count == len(ids)``) and its owner loads it separately.
     Without a shared cell no shared field is read.
 
-    Header/declaration validation precedes authority allocation; each projection
-    reads its two scalar calibrations before code/scale payload. Packing one
-    projection at a time bounds CPU temporary storage by three projection blobs.
+    Header/declaration validation precedes authority allocation. One bounded
+    CPU scalar batch contains exactly the validated owners' F32 calibrations;
+    each projection validates its scalars before code/scale payload. Packing one
+    projection at a time writes directly into final authority; raw code/scale
+    payloads and any source-contiguity copies remain inside the existing bound.
     Resident loading releases CPU code/scale authority after synchronous device
     transfer. Serving retains no CPU calibration metadata for either residency.
     The model owns cache rollback/close if later model construction fails.
@@ -219,14 +221,21 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
         source = cache.allocate_authority((len(ids), cache.entry_bytes), dtype=torch.uint8, tag=name)
         fields = cache.source_views(source)
         cache.zero_padding(source)
+    scalar_names = tuple(f"{owner}.{projection}.{suffix}" for owner in owners
+                         for projection, _, _ in projections
+                         for suffix in ("weight_global_scale", "input_global_scale"))
+    # Every selected header was proved F32[1] above. Derive the exact cap,
+    # including a possible resident shared cell, before any batched I/O.
+    calibrations = ctx.read_f32_scalars(scalar_names, max_bytes=len(scalar_names) * 4)
     for local, owner in enumerate(owners):
         for p, (projection, _, _) in enumerate(projections):
             base = f"{owner}.{projection}"
-            weight_global = ctx.read(base + ".weight_global_scale", device="cpu")
-            input_global = ctx.read(base + ".input_global_scale", device="cpu")
-            scale = fmt.calibration(float(weight_global.reshape(-1)[0]), name=base + ".weight_global_scale",
+            # One ordered owner; float(Tensor) keeps the original CPU scalar
+            # conversion, with only the current scalar view alive at a time.
+            offset = 6 * local + 2 * p
+            scale = fmt.calibration(float(calibrations[offset]), name=base + ".weight_global_scale",
                                     reciprocal=True)
-            inverse = fmt.calibration(float(input_global.reshape(-1)[0]), name=base + ".input_global_scale")
+            inverse = fmt.calibration(float(calibrations[offset + 1]), name=base + ".input_global_scale")
             act = fmt.calibration(inverse, name=base + ".input_global_scale", reciprocal=True)
             fmt.native_calibration(act, scale, name=base, act_inverse=inverse)
             if p < 2:
@@ -236,9 +245,9 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
             codes = ctx.read(base + ".weight_packed", device="cpu")
             blocks = ctx.read(base + ".weight_scale", device="cpu")
             fmt.validate_native_a4_scales(blocks, name=base + ".weight_scale")
-            packed = pack_projection_a4(codes, blocks)
-            (fields[0][local, p] if p < 2 else fields[1][local]).copy_(packed)
-            del codes, blocks, packed
+            target = fields[0][local, p] if p < 2 else fields[1][local]
+            pack_projection_a4(codes, blocks, out=target)
+            del codes, blocks
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
         bank = CachedExpertsA4(len(ids), width, dims, cache=cache, layer_id=key, swiglu=swiglu)

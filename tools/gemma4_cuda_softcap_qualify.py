@@ -34,6 +34,7 @@ SOURCES = (*launch.SOURCES, "tensorfold.families.gemma4.cuda.glue")
 SOURCE_KEYS = launch.SOURCE_KEYS | {"launch_helper", "phase_helper", SOURCES[-1]}
 SEEDS = (13, 31, 47, 83, 101, 127)
 ARMS = ("torch", "fused")
+OWNED_ARMS = ("torch_owned", "triton_owned")  # prototypes; historical schema1 holdout remains unchanged
 BASELINE_COMMIT = "3b8cee825b21b2c88197cc811efa2544858d7ad7"
 BASELINE_FORWARD_SHA256 = "de88c303fb302e7b2ff6350a5f2ffa893623186783de9037e7e1eb1518196aad"
 BASELINE_METHOD = """def project_logits(self, hidden: torch.Tensor) -> torch.Tensor:
@@ -144,16 +145,30 @@ def sources(modules):
     return actual
 
 
+def torch_softcap30_owned(logits):
+    """Test-tool alternative consuming the same proven fresh BF16 intermediate."""
+    return logits.div_(30.0).tanh_().mul_(30.0)
+
+
 def bind(engine, arm, modules, reference):
     """A fresh exact wrapper forces the reviewed helper to retire stale graphs."""
     head = modules["tensorfold.families.gemma4.cuda.head"]
     forward = modules["tensorfold.families.gemma4.cuda.forward"]
     engine.drain()
     incumbent = engine.w.embed.incumbent
-    method = reference if arm == "torch" else forward.Gemma4Target.project_logits
-    engine.target.project_logits = method.__get__(engine.target, forward.Gemma4Target)
+    fresh = head.prepare_head(incumbent, reuse_rows=16)
+    if arm == "native_epilogue":
+        engine.target.project_logits = engine.target.prepare_epilogue_logits(fresh)
+    elif arm in OWNED_ARMS:
+        operation = (torch_softcap30_owned if arm == "torch_owned" else
+                     modules["tensorfold.families.gemma4.cuda.glue"].softcap30_owned)
+        engine.target.project_logits = engine.target.prepare_owned_logits(fresh, operation)
+    else:
+        launch._require(arm in ARMS, "unknown softcap operation")
+        method = reference if arm == "torch" else forward.Gemma4Target.project_logits
+        engine.target.project_logits = method.__get__(engine.target, forward.Gemma4Target)
     engine.head.project_logits = engine.target.project_logits
-    return head_bench._bind_head(engine, head.prepare_head(incumbent, reuse_rows=16))
+    return head_bench._bind_head(engine, fresh)
 
 
 def request(app, row, item):

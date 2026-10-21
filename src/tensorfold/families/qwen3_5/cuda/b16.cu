@@ -26,6 +26,16 @@ __device__ __forceinline__ half f_from<half>(float v) { return __float2half_rn(v
 template <>
 __device__ __forceinline__ __nv_bfloat16 f_from<__nv_bfloat16>(float v) { return __float2bfloat16_rn(v); }
 
+#ifdef TENSORFOLD_B16_CAP30
+// The raw head's BF16 store/load is a numerical boundary, even when elided.
+// Keep every subsequent eager Torch BF16 boundary and gradual underflow.
+__device__ __forceinline__ __nv_bfloat16 cap30(__nv_bfloat16 raw) {
+    const auto divided = __float2bfloat16_rn(__fmul_rn(__bfloat162float(raw), 0x1.111112p-5f));
+    const auto bounded = __float2bfloat16_rn(tanhf(__bfloat162float(divided)));
+    return __float2bfloat16_rn(__fmul_rn(__bfloat162float(bounded), 30.f));
+}
+#endif
+
 // Eight elements (16 bytes) as fp32.
 template <typename T>
 __device__ __forceinline__ void ld8(const T* __restrict__ p, float (&v)[8]) {
@@ -81,7 +91,11 @@ __global__ void __launch_bounds__(WARPS * 32) b16_kernel(const T* __restrict__ x
         for (int m = 16; m >= 1; m >>= 1) v += __shfl_xor_sync(0xffffffffu, v, m);
         if (lane == 0) {
             if (bias != nullptr) v += f2f(__ldg(bias + col));
+#ifdef TENSORFOLD_B16_CAP30
+            y[(size_t)(row0 + r) * N + col] = cap30(f_from<T>(v));
+#else
             y[(size_t)(row0 + r) * N + col] = f_from<T>(v);
+#endif
         }
     }
 }
@@ -132,6 +146,7 @@ void by_rows(RowBlock b, const at::Tensor& x, const at::Tensor& w, const void* b
 }
 
 
+#ifndef TENSORFOLD_B16_CAP30
 // Prompt rows on the bf16 mma: BM x 64 tiles of 2 x 2 warps, 64 inputs a stage, one fp32 chain over K a row, so a
 // row's bits never depend on its chunk or the tile height (they differ from the one-row kernel's, as prompts' do).
 constexpr int PBN = 64, PST = 3, PROW = 128;
@@ -236,6 +251,7 @@ void prompt_launch(const at::Tensor& x, const at::Tensor& w, at::Tensor& y, int 
         w1 ? reinterpret_cast<const __nv_bfloat16*>(w1->data_ptr()) : nullptr,
         y1 ? reinterpret_cast<__nv_bfloat16*>(y1->data_ptr()) : nullptr, N1);
 }
+#endif
 
 }  // namespace
 
@@ -274,6 +290,29 @@ static void pair_in(const at::Tensor& x, const at::Tensor& w) {
                 "w: contiguous 16-byte aligned (N, K) of x's dtype");
 }
 
+#ifdef TENSORFOLD_B16_CAP30
+// rows == 0 retains Plain's policy. An explicit reuse policy preserves its
+// Plain singleton path and changes only the multi-row launch geometry.
+at::Tensor b16_linear_cap30(const at::Tensor& x, const at::Tensor& w, int64_t rows) {
+    TORCH_CHECK(rows == 0 || rows == 2 || rows == 4 || rows == 8 || rows == 16,
+                "Gemma cap30 reused rows must be0,2,4,8 or16");
+    TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2 && x.scalar_type() == at::kBFloat16,
+                "Gemma cap30 x must be contiguous 2-d CUDA BF16");
+    pair_in(x, w);
+    dimensions(x, w, false);
+    TORCH_CHECK(x.size(1) % 8 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
+                "K must be a multiple of8 and x16-byte aligned");
+    const RowBlock b = rows == 0 ? linear_grid(x, w.size(0), w.size(0), false)
+                               : RowBlock{x.size(0) == 1 ? 1 : (int)rows, 4};
+    if (rows != 0) grid_dimensions(x, w.size(0), b.rows, b.warps, false);
+    at::cuda::CUDAGuard guard(x.device());
+    const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
+    auto y = at::empty({M, N}, x.options());
+    by_rows<__nv_bfloat16>(b, x, w, nullptr, y, M, K, N);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return y;
+}
+#else
 at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bias) {
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
     TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.is_contiguous() && w.dim() == 2,
@@ -394,3 +433,4 @@ std::vector<at::Tensor> b16_prompt_pair(const at::Tensor& x, const at::Tensor& w
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return {y0, y1};
 }
+#endif

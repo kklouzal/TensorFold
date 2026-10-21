@@ -18,7 +18,7 @@ import triton.language as tl
 from tensorfold.cuda.nvfp4 import checkpoint
 
 from . import attention, glue
-from .head import original_bf16_region
+from .head import original_bf16_region, owns_logits_result
 from .state import State, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
 
@@ -148,6 +148,33 @@ class Gemma4Target:
     def _softcap_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """Other numerical regions retain their original positive-finite cap."""
         return torch.tanh(logits / self.config.softcap) * self.config.softcap
+
+    def prepare_owned_logits(self, head, operation):
+        """Prepare an unselected cap experiment over a proven fresh head result.
+
+        The projector and operation stay bound for this callable's lifetime;
+        the experiment must bind this same head before capturing a graph bank.
+        Only its fresh uncapped result is consumed. Hidden inputs, parameters,
+        capped prefix snapshots and public raw-head outputs remain separate.
+        This does not change the target's shipping project_logits operation.
+        """
+        if (not self._native or self.config.softcap != 30.0 or not owns_logits_result(head)
+                or head.weight is not self.weights.embed.weight or not original_bf16_region(head.weight)):
+            raise ValueError("owned Gemma softcap needs its original fresh BF16 head on GB10SM12.1")
+
+        def project(hidden):
+            return operation(head(hidden))
+
+        return project
+
+    def prepare_epilogue_logits(self, head):
+        """Prepare an investigation-only capped projector; retain raw embed API."""
+        if (not self._native or self.config.softcap != 30.0 or not owns_logits_result(head)
+                or head.weight is not self.weights.embed.weight or not original_bf16_region(head.weight)):
+            raise ValueError("Gemma cap30 epilogue needs its original fresh BF16 head on GB10SM12.1")
+        from .head import prepare_cap30
+
+        return prepare_cap30(head)
 
     def _route_mlx(self, h, layer):
         c = self.config

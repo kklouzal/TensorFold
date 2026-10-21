@@ -32,17 +32,25 @@ def _capability() -> tuple[int, int]:
     return tuple(torch.cuda.get_device_capability())
 
 
-@lru_cache(maxsize=1)
-def _ext():
+def _build_options(capability: tuple[int, int]) -> dict:
+    """One recipe for actual-device JIT and GPU-free managed preparation."""
     from tensorfold.cuda import precision
-    from tensorfold.cuda.build import MIN_CAPABILITY, load
+    from tensorfold.cuda.build import MIN_CAPABILITY
 
     here = Path(__file__).parent
-    return load(name="tensorfold_nvfp4_ck_v7",
-                sources=[str(here / "checkpoint.cpp"), str(here / "act.cu"), str(here / "lane4.cu"),
-                         str(here / "gemm_ck.cu"), str(here / "gemm_ws.cu")],
-                need=MIN_CAPABILITY, arch_specific=precision.own_math(_capability())["nvfp4"],
-                extra_include_paths=[str(here)], extra_cuda_cflags=["-O3"], verbose=False)
+    return {"name": "tensorfold_nvfp4_ck_v7",
+            "sources": [str(here / "checkpoint.cpp"), str(here / "act.cu"), str(here / "lane4.cu"),
+                        str(here / "gemm_ck.cu"), str(here / "gemm_ws.cu")],
+            "need": MIN_CAPABILITY, "arch_specific": precision.own_math(capability)["nvfp4"],
+            "extra_include_paths": [str(here)], "extra_cuda_cflags": ["-O3"], "verbose": False,
+            "prepared": True}
+
+
+@lru_cache(maxsize=1)
+def _ext():
+    from tensorfold.cuda.build import load
+
+    return load(**_build_options(_capability()))
 
 
 class Rows4(NamedTuple):
@@ -80,13 +88,18 @@ def quant4(x: torch.Tensor, act: float, tb: int = 0, *, inverse: float | None = 
     return Rows4(codes, scales)
 
 
-def quant8(x: torch.Tensor, act: float, tb: int = 0) -> torch.Tensor:
-    """bf16 rows -> e4m3(x / act), saturating, in the FP8 weights' fragment order (``tb``: the GEMM's tiled rows)."""
+def quant8(x: torch.Tensor, act: float, tb: int = 0, *, inverse: float | None = None) -> torch.Tensor:
+    """bf16 rows -> e4m3(x / act), saturating, in the FP8 weights' fragment order.
+
+    ``tb`` selects tiled GEMM rows. An explicit inverse is an owning engine's
+    prepared FP32 reciprocal; ordinary calls retain their context-sensitive
+    scalar calculation.
+    """
 
     x = _rows(x)
     m, k = x.shape
     out = torch.empty((-(-m // tb) * tb if tb else m, k), dtype=torch.uint8, device=x.device)
-    _ext().quant8(x, _inv(act), out, tb)
+    _ext().quant8(x, _inv(act) if inverse is None else inverse, out, tb)
     return out
 
 
@@ -130,13 +143,44 @@ def _rowsq(mode: int, x: torch.Tensor, act: float | None, tb: int = 0, *, invers
 
     if mode == A4:
         return quant4(x, act, tb, inverse=inverse)
-    return quant8_token(x, tb) if token else (quant8(x, act, tb), None)
+    return quant8_token(x, tb) if token else (quant8(x, act, tb, inverse=inverse), None)
+
+
+def _prepared_calibration(lin):
+    """One engine-owned scalar snapshot, invalidated by any different binding.
+
+    Only explicit loader preparation installs this record. General projection
+    construction and mutable/nonfloat scalars retain their original helpers.
+    The owning engine keeps its preparation numerical context for the serving
+    interval, as required by scalar constants already embedded in its graphs.
+    """
+    prepared = getattr(lin, "_native_calibration", None)
+    if prepared is not None and not prepared.matches(lin.act, lin.scale, getattr(lin, "act_inverse", None)):
+        lin._native_calibration = None
+        return None
+    return prepared
+
+
+def _input_inverse(lin):
+    inverse = getattr(lin, "act_inverse", None)
+    if inverse is None:
+        prepared = _prepared_calibration(lin)
+        if prepared is not None:
+            inverse = prepared.inverse
+    return inverse
+
+
+def _alpha_of(lin) -> float:
+    prepared = _prepared_calibration(lin)
+    return prepared.alpha if prepared is not None else alpha(lin.act, lin.scale)
 
 
 def _rows_of(mode: int, x: torch.Tensor, lin, tb: int = 0):
     """``_rowsq`` as ``lin`` declares its rows."""
 
-    return _rowsq(mode, x, lin.act, tb, inverse=getattr(lin, "act_inverse", None), token=getattr(lin, "token", False))
+    token = getattr(lin, "token", False)
+    inverse = getattr(lin, "act_inverse", None) if token else _input_inverse(lin)
+    return _rowsq(mode, x, lin.act, tb, inverse=inverse, token=token)
 
 
 def _quantization_key(lin) -> tuple:
@@ -152,7 +196,7 @@ def _scales(mode: int, rows, lin) -> tuple[float, torch.Tensor | None, torch.Ten
 
     if mode == A8 and getattr(lin, "token", False):
         return 1.0, rows[1], lin.cols
-    return alpha(lin.act, lin.scale), None, None
+    return _alpha_of(lin), None, None
 
 
 def _out(m: int, lin, out: torch.Tensor | None, f32: bool) -> torch.Tensor:
@@ -261,13 +305,13 @@ def mlp_prompt(x: torch.Tensor, gate, up, down, out: torch.Tensor | None = None)
         return None
     if gate.k % 128 or down.k % 128:
         return None
-    rows = quant4(x, gate.act, inverse=getattr(gate, "act_inverse", None))
+    rows = _rows_of(A4, x, gate)
     m, mpad = x.shape[0], rows.scales.shape[1]
     codes = torch.empty((m, down.k // 2), dtype=torch.uint8, device=x.device)
     scales = torch.empty((down.k // 64, mpad, 4), dtype=torch.uint8, device=x.device)
-    down_inverse = getattr(down, "act_inverse", None)
-    _ext().gemm_gu_ck(rows.codes, rows.scales, gate.words, gate.bs, up.words, up.bs, alpha(gate.act, gate.scale),
-                      alpha(up.act, up.scale), gate.npad, gate.k,
+    down_inverse = _input_inverse(down)
+    _ext().gemm_gu_ck(rows.codes, rows.scales, gate.words, gate.bs, up.words, up.bs, _alpha_of(gate),
+                      _alpha_of(up), gate.npad, gate.k,
                       _inv(down.act) if down_inverse is None else down_inverse, codes, scales, SWIGLU_FP32)
     y = _out(m, down, out, False)
     _gemm(A4, Rows4(codes, scales), down, y, False, 0)

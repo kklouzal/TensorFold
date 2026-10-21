@@ -185,6 +185,61 @@ continues to validate genuine upstream dependency metadata.
 The C++ runtimes come from the protected compiler-package inventory; private
 copies bundled with SDK tools remain protected but cannot supply that runtime.
 
+## Prepared native bundle
+
+The current source implements a GB10 native preparation path. Source review and
+pinned AMD64 CPU controls have passed, including real same-version owned-wheel
+replacement, artifact admission and lifetime, input sealing and failure audits.
+Actual GPU-free CUDA compilation/import, target native execution, the composed
+ARM64 image, and model loading/request performance are still pending. These CPU
+results do not qualify the prepared binaries or establish a performance gain.
+
+After installing the owned wheel, the managed image build runs
+`prepare_native.py` through the CPU guard. It uses the same canonical recipes as
+the runtime for the checkpoint packing/GEMM module, plain BF16/FP16 projection,
+and the investigation-only Gemma cap30 epilogue module. The explicit GB10 target
+is SM12.1, including the architecture-specific target where the existing recipe
+requires it. Preparation uses the selected Torch extension builder, compiler and
+toolkit without a visible GPU. It neither simulates device admission nor executes
+model kernels. Preparing the Gemma epilogue artifact does not select it for
+serving; its numerical, startup and integrated performance gates remain separate.
+
+The generated manifest and libraries live under `/opt/tensorfold-native`, outside
+the mounted `/cache` namespace. The manifest binds the installed wheel and sealed
+foundation/toolchain identities, host architecture, CPython SOABI, Torch
+version/git/C++ ABI, CUDA runtime, ordered source files and transitive owned
+headers, exact compilation flags/include paths, declared instruction target, and
+binary SHA256/size. The existing foundation seal includes the manifest, binaries
+and owned inputs. Its compact activation mapping supplies the build-owned
+manifest identity; there is no serving option for selecting another bundle.
+
+The runtime build boundary checks the actual GPU and its required minimum
+capability before selecting an artifact. Only canonical recipe owners opt into
+this prepared contract. A matching installed-source recipe with changed flags
+or an invalid declared artifact fails explicitly. Other supported GPU targets,
+unprepared recipes, ordinary custom build requests, explicit build directories
+and separate canonical development workspaces retain their existing JIT path.
+Module import and bounded ownership are resolved during preparation; loaded
+modules remain strongly owned for the process lifetime. The existing immutable
+file/stat interval covers their inputs and binaries, so inference does not
+repeat source or library hashes.
+
+Owned application installation uses `--no-deps --force-reinstall`: a supplied
+wheel must replace the actual application bytes even when its version matches
+the previous wheel. The original foundation/provider audits remain active.
+Once native artifacts have been sealed, application replacement is refused
+before opening the wheel or invoking pip. Rebuild the immutable image, install
+its wheel, and then prepare its bundle. Test/verification role installation
+continues through its existing separate audited boundary.
+
+This preparation step belongs to the managed GB10 image. Ordinary wheel builds
+retain their existing CPython Stable-ABI C owner and acquire no CUDA compiler or
+GPU requirement. Record cold preparation/import, artifact size/residency, warm
+loading, first inference and full-request measurements before selecting this
+path as an optimization.
+
+## Runtime providers and validation
+
 `nccl_provider` explicitly selects `native` (default) or protected
 `nvidia-nccl-cu13`. The image binds `TF_NCCL_LIB` to that physical library,
 refuses a conflicting override, verifies its native version against the exact

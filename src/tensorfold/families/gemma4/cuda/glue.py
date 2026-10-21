@@ -104,6 +104,31 @@ def softcap30(logits: torch.Tensor) -> torch.Tensor:
     return out
 
 
+@triton.jit
+def _softcap30_owned(X, N, BLOCK: tl.constexpr):
+    i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(X + i, mask=i < N, other=0.0).to(tl.float32)
+    divided = (x * (1.0 / 30.0)).to(tl.bfloat16).to(tl.float32)
+    activated = libdevice.tanh(divided).to(tl.bfloat16).to(tl.float32)
+    tl.store(X + i, (activated * 30.0).to(tl.bfloat16), mask=i < N)
+
+
+def softcap30_owned(logits: torch.Tensor) -> torch.Tensor:
+    """Consume a fresh contiguous BF16 head result and return its capped storage.
+
+    Investigation only: prepare_owned_logits proves the projector before this
+    operation can be bound. No consumer may require the uncapped intermediate.
+    Each element is loaded before its sole store; different programs own
+    disjoint elements. The one-pointer kernel makes no cross-pointer alias
+    assumption. A graph replay's head producer rewrites every element first.
+    The caller owns stream ordering, lifetime and inference-only use.
+    """
+    n = logits.numel()
+    _softcap30_owned[(triton.cdiv(n, 1024),)](logits, n, BLOCK=1024, num_warps=4,
+                                            enable_fp_fusion=False, enable_reflect_ftz=False)
+    return logits
+
+
 def attention_tail(h, o, w_attn, w_mlp, w_expert, eps: float, round_normalized: bool):
     """(new residual h, dense MLP input, expert input), each BF16 [R, D]."""
     rows, d = h.shape

@@ -46,16 +46,21 @@ def test_ct_cpu_packing_failure_preserves_primary_and_never_publishes_partial_ba
     primary = KeyboardInterrupt("packing interrupted")
     calls = []
 
-    def fail(codes, scales):
+    def fail(codes, scales, *, out):
         calls.append((codes.device.type, scales.device.type))
+        assert out.device.type == "cpu" and out.dtype == torch.uint8
         raise primary
 
     monkeypatch.setattr(experts_a4, "pack_projection_a4", fail)
     with pytest.raises(KeyboardInterrupt) as caught:
         load_host_experts_a4(ctx, PREFIX, ctx.cfg, "cuda:0", cache=cache, swiglu=swiglu)
     assert caught.value is primary and calls == [("cpu", "cpu")]
-    assert ctx.reads == [f"{PREFIX}.experts.0.gate_proj.{suffix}" for suffix in
-                         ("weight_global_scale", "input_global_scale", "weight_packed", "weight_scale")]
+    scalars = [f"{PREFIX}.experts.{expert}.{projection}.{suffix}" for expert in range(ctx.cfg.experts)
+               for projection in ("gate_proj", "up_proj", "down_proj")
+               for suffix in ("weight_global_scale", "input_global_scale")]
+    assert ctx.reads == scalars + [f"{PREFIX}.experts.0.gate_proj.{suffix}" for suffix in
+                                 ("weight_packed", "weight_scale")]
+    assert ctx.batches == [(tuple(scalars), len(scalars) * 4)]
     assert not cache._layers and not ctx.used
     raw = float(ctx.payload[PREFIX + ".experts.0.gate_proj.input_global_scale"][0])
     assert struct.unpack("I", struct.pack("f", raw))[0] == 0x3e63ffff

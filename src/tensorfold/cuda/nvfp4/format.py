@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -251,15 +252,49 @@ def validate_native_a4_scales(scales, *, name: str) -> None:
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
 
 
-def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
-    """Admit the exact FP32 inverse/product used by checkpoint native math.
+@dataclass(frozen=True, slots=True)
+class NativeCalibration:
+    """One prepared projection's scalar snapshot and exact native FP32 factors.
 
-    Called only for an actually selected native projection. Reuse the owned
-    arithmetic helpers so validation and subsequent native preparation share
-    their rounding and subnormal contract. An explicit CT input multiplier is
-    admitted directly instead of introducing a reciprocal roundtrip. Return
-    the original dequantization scale unchanged.
+    ``prepare_native_calibration`` establishes the factors in the owning
+    engine's numerical context before publication/capture. Strong references
+    to immutable built-in floats make identity checks safe against ID reuse.
+    A different scalar binding invalidates the snapshot; changing the engine's
+    numerical context requires quiescence and explicit preparation, as for
+    scalar constants already embedded in captured graphs.
     """
+
+    act: float
+    weight_scale: float
+    act_inverse: float | None
+    inverse: float
+    alpha: float
+
+    def __post_init__(self):
+        if (any(type(value) is not float for value in (self.act, self.weight_scale, self.inverse, self.alpha))
+                or self.act_inverse is not None and type(self.act_inverse) is not float):
+            raise TypeError("native calibration snapshots require immutable built-in float scalars")
+
+    def matches(self, act, weight_scale, act_inverse) -> bool:
+        return self.act is act and self.weight_scale is weight_scale and self.act_inverse is act_inverse
+
+    def bind(self, act, weight_scale, act_inverse) -> NativeCalibration | None:
+        """Bind equal normalized projection scalars without repeating FP32 work."""
+        if (type(act) is not float or type(weight_scale) is not float
+                or act_inverse is not None and type(act_inverse) is not float):
+            return None
+        if (act != self.act or weight_scale != self.weight_scale
+                or (act_inverse is None) != (self.act_inverse is None) or act_inverse != self.act_inverse):
+            raise ValueError("prepared native calibration differs from the projection scalars")
+        if self.matches(act, weight_scale, act_inverse):
+            return self
+        return NativeCalibration(act, weight_scale, act_inverse,
+                                 self.inverse if act_inverse is None else act_inverse, self.alpha)
+
+
+def _native_factors(act: float, weight_scale: float, *, name: str,
+                    act_inverse: float | None = None) -> tuple[float, float]:
+    """Shared admission calculation; validate-only banks retain no factor object."""
     import math
 
     from .checkpoint import _inv, alpha
@@ -268,4 +303,28 @@ def native_calibration(act: float, weight_scale: float, *, name: str, act_invers
     product = alpha(act, weight_scale)
     if not (math.isfinite(inverse) and inverse > 0 and math.isfinite(product) and product > 0):
         raise ValueError(f"{name}: native FP32 inverse and joint calibration must remain finite and positive")
+    return inverse, product
+
+
+def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
+    """Admit native FP32 factors and return act; banks consume their own device fields."""
+    _native_factors(act, weight_scale, name=name, act_inverse=act_inverse)
     return act
+
+
+def prepare_native_calibration(act: float, weight_scale: float, *, name: str,
+                               act_inverse: float | None = None) -> NativeCalibration:
+    """Prepare a static linear in its engine's fixed serving numerical context.
+
+    Preserve the original factory's FP32 narrowing of CT's multiplier here;
+    its factory can then publish this record without another scalar cast.
+    General helpers and unprepared projection factories remain context-sensitive.
+    """
+    if act_inverse is not None:
+        import torch
+
+        original = calibration(act_inverse, name=name + ".input_global_scale")
+        act_inverse = float(torch.tensor(original, dtype=torch.float32))
+    act, weight_scale = float(act), float(weight_scale)
+    inverse, product = _native_factors(act, weight_scale, name=name, act_inverse=act_inverse)
+    return NativeCalibration(act, weight_scale, act_inverse, inverse, product)

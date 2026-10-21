@@ -7,7 +7,7 @@ from typing import Sequence
 import torch
 
 from . import glue
-from .forward import _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
+from .forward import _embed, _final_readout, _kv_begin, _kv_check, _mm, candidates, finish, layer_forward
 from .state import Buffers, State
 from .weights import Weights
 
@@ -37,7 +37,7 @@ def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Te
 def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = True, logits: bool = True,
                 context: int | None = None, check: bool = True) -> torch.Tensor | None:
     """The MTP head's GPU work (capturable); ``last_only``: the draft head's logits of each stream's last row.
-    ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection. ``check=False``
+    ``logits=False`` absorbs into the MTP cache and skips the unused final mixer and vocabulary projection. ``check=False``
     (a draft step's logits): the codec status stays pending for the caller's check before its rows are used."""
 
     _kv_begin(segs)
@@ -55,6 +55,7 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     if not logits:
         _kv_check(segs, comm=w.comm)
         return None
+    _final_readout(m.mixer, b, n, c)
     if not last_only:
         result = _mm(b.mixed[:n], w.head, b.xs_mixed[:n], b.logits[:n], b)
         _kv_check(segs, comm=w.comm)
@@ -79,6 +80,6 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
 @torch.no_grad()
 def mtp_forward(w: Weights, st: State, b: Buffers, next_tokens: Sequence[int], streams: torch.Tensor,
                 *, last_only: bool = True, logits: bool = True) -> torch.Tensor | None:
-    """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``. ``logits=False`` skips the unused draft-vocabulary projection."""
+    """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``. ``logits=False`` skips the unused final mixer and vocabulary projection."""
 
     return mtp_compute(w, mtp_stage(b, [(st, next_tokens, streams)]), b, last_only=last_only, logits=logits)

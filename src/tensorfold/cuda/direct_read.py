@@ -201,6 +201,59 @@ class SafeTensors:
             raise ValueError(f"{name}: safetensors dtype {dtype} is not supported")
         return self.reader.read(path, begin, n, device).view(DTYPES[dtype]).reshape(shape)
 
+    def get_f32_scalars(self, names, *, max_bytes: int) -> torch.Tensor:
+        """One owned CPU F32 vector in requested order, from F32[1] fields only.
+
+        Names and checkpoint contents stay immutable through this synchronous
+        call. All field/budget checks precede I/O. The plan holds N offset/index
+        tuples grouped by path; its name set retires before tensor allocation.
+        Each contiguous K-field run adds raw bytes, an int64[K] index, and a
+        temporary K-position list. Tensor payload peaks below 4*N + 12*K +
+        3*ALIGN bytes; callers also admit the bounded Python plan/sort/name
+        metadata. Byte-row copies preserve the original F32 representations.
+        No per-field Tensor/Storage records remain in the result. This operation
+        adds no pinned/upload/descriptor owner; prior Reader staging is unchanged.
+        """
+        if type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("checkpoint batch byte bound must be a nonnegative integer")
+        if isinstance(names, (str, bytes)):
+            raise TypeError("checkpoint batch requires a sequence of tensor names")
+        groups, seen, count = {}, set(), 0
+        for index, name in enumerate(names):
+            if name in seen:
+                raise ValueError("checkpoint batch tensor names must be distinct")
+            seen.add(name)
+            path, begin, n, dtype, shape = self.where[name]
+            if dtype != "F32" or shape != [1] or type(n) is not int or n != 4:
+                raise ValueError(f"{name}: checkpoint scalar batch requires F32[1] fields")
+            if type(begin) is not int or begin < 0:
+                raise ValueError("checkpoint byte offsets and lengths must be nonnegative integers")
+            count += 1
+            if 4 * count > max_bytes:
+                raise ValueError("checkpoint batch exceeds its admitted byte bound")
+            group = groups.get(path)
+            if group is None:
+                group = groups[path] = []
+            group.append((begin, index))
+        del seen
+        out = torch.empty((count,), dtype=torch.float32, device="cpu")
+        for path, items in groups.items():
+            items.sort(key=lambda item: item[0])
+            start = 0
+            while start < len(items):
+                begin, stop = items[start][0], start + 1
+                end = begin + 4
+                while stop < len(items) and items[stop][0] == end:
+                    end += 4
+                    stop += 1
+                raw = self.reader.read(path, begin, end - begin)
+                positions = torch.tensor([items[at][1] for at in range(start, stop)],
+                                         dtype=torch.int64, device="cpu")
+                out.view(torch.uint8).reshape(-1, 4).index_copy_(0, positions, raw.reshape(-1, 4))
+                del raw, positions
+                start = stop
+        return out
+
 
 class ReadAhead:
     """Operation-owned reads and uploads; reusable after a completed close.

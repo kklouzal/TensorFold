@@ -903,3 +903,71 @@ timed out, and a concurrent-edit run mixed two prefill revisions; both failed
 attempts remain excluded and preserved. Complete GB10 startup, final installed
 images and same-region integrated performance selection remain pending. This
 candidate has not established a universal or whole-model speedup.
+
+The immutable ARM64 `f1a8d5d66a4f72e8b40c5302b78339e4d95f21b6` build
+subsequently passed both installed-image audits and 241 native GB10 tests.
+Nine checkpoint-dependent cases were explicitly skipped, so this does not
+establish their full-model behavior. All 13 checked installed module identities
+matched before and after execution. The runtime and verification images share
+wheel `e37e9ee4cbf43719c28066257a806f3424366446a8499b6a53f5217ce0a09704`.
+The first excluded packing prewarm was then interrupted by a guard-observed
+driver allocation failure during startup. No completed packing-call proof,
+second arm or timed comparison resulted. The original failure is preserved;
+restoration of the original production container and peer configurations passed.
+The allocation's cause remains unproved. Complete-model superiority is pending.
+
+## Qwen host loading candidates (2026-10-21)
+
+CPU native-A4 expert packing copies the existing word and block-scale byte
+permutations directly into a disjoint final authority row. It removes temporary
+packed payloads, concatenation and the subsequent authority copy. Input shape,
+alignment, overlap, calibration and UE4M3 checks remain. The default CUDA packer
+retains its existing path. Failed banks stay unpublished under the existing
+cache/model cleanup owner.
+
+The loader reads exactly its selected F32[1] calibrations into one owned F32
+vector in logical order. Contiguous file runs use the existing synchronous
+reader; byte-row copies preserve all F32 representations. Existing
+`float(Tensor)` conversions and CT reciprocal/grouping behavior remain.
+The callback preflights every name and cumulative byte bound before I/O and
+consumes names only after complete success. It introduces no asynchronous,
+pinned-buffer or descriptor owner. The earlier per-field Tensor dictionary
+candidate was superseded before selection, with its source/failure evidence
+retained.
+
+The shared estimator explicitly charges the larger of the scalar loading peak
+and its metadata-scan peak. The MoE constructor enables this accounting for
+both resident and transformed offload estimates, once each; dense callers do
+not import or execute the scalar scan. A resident construction reuses its
+already-computed immutable weight estimate; offload still recomputes with its
+different transform. Live-memory, draft, context and reserve checks remain.
+
+The final coherent pinned AMD64 CPU gate passed 149 tests without skips, with
+92 imported project/test/native dependencies unchanged. Four independent
+geometry comparisons preserved complete authority bytes. The fixed native
+record comparison used 27 TensorImpl and five StorageImpl identities in the
+candidate versus 27–28 and seven–eight in the reference; these counts support
+the bounded-record reasoning and do not measure allocator bytes or startup
+speed. Both source/resource reviews are clean. Actual ARM64 native consumers,
+full model loading/serving, capacity and performance gates remain pending.
+
+Separately, the scalar CPU-placement study completed all 26 fixed positions
+for Qwen3.8: two excluded prewarms and six ABBA/BAAB blocks of fresh processes.
+All complete 64-token cold/warm outputs, cache/speculation counts and installed
+package identities matched. CLI-entry-to-ready means were 11.40369456916475
+seconds for the reference and 11.330708989662526 for the candidate. Four of six
+blocks favored the candidate; the geometric latency ratio was
+1.0064490540181523 with a paired 95% t interval
+[0.9977814785247597, 1.015191923417626]. This is inconclusive, not a selected
+gain or equivalence. Shared setup/imports precede that timer; the result does
+not describe whole-process cold startup, HTTP or concurrent service. Secondary
+intervals are exploratory and unadjusted. Qwen3.6's fixed comparison remains
+unrun.
+
+Loader-owned native coefficient snapshots retain exact built-in float
+identities and previously computed FP32 factors under the engine's fixed
+numerical context. Mutation invalidates a snapshot; ordinary factories and
+uncached helpers preserve their existing context-sensitive operations. CPU
+controls and five local SM120 native cases pass. Actual ARM64 serving-thread
+context and integrated performance remain required before selecting this
+candidate.

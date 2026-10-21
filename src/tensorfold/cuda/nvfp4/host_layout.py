@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 from math import prod
+
+from tensorfold.cuda.read_budget import f32_scalar_batch_host_bytes
 
 
 def routed_tensor(name):
@@ -99,6 +102,39 @@ def routed_tensor_a4(name):
     """Main routed CT projection fields only; shared and secondary drafts stay separate."""
     match = _A4_EXPERT.fullmatch(name)
     return bool(match and match["projection"] in _A4_PROJECTIONS and match["field"] in _A4_FIELDS)
+
+
+def scalar_batch_host_bytes_a4(infos):
+    """Peak scalar-plan preparation/loading, including potential shared cells.
+
+    Count all header-qualified scalar owners, even when precision metadata or
+    shared geometry later keeps an owner outside the native bank. A selected
+    subset cannot exceed this full-bank envelope. Only bank counts/string
+    sizes survive the header scan; no second tensor-name inventory is retained.
+    The scan map retires before loading, so their separate peaks do not add.
+    """
+    batches = {}
+    for name, info in infos.items():
+        if (not name.endswith((".weight_global_scale", ".input_global_scale"))
+                or info.get("dtype") != "F32" or list(info.get("shape", ())) != [1]):
+            continue
+        # Reuse the canonical bank grammar for a potential shared owner.
+        match = _A4_EXPERT.fullmatch(name.replace(".shared_expert.", ".experts.0.", 1))
+        if match is not None and match["projection"] in _A4_PROJECTIONS:
+            count, names = batches.get(match["bank"], (0, 0))
+            batches[match["bank"]] = count + 1, names + sys.getsizeof(name)
+    if not batches:
+        return 0
+    loading = max(f32_scalar_batch_host_bytes(count, names) for count, names in batches.values())
+    objects = largest = 0
+    for bank, value in batches.items():
+        size = sys.getsizeof(bank) + sys.getsizeof(value) + sum(map(sys.getsizeof, value))
+        objects += size
+        largest = max(largest, size)
+    # A growing dict may hold its old and new tables together. The current
+    # iteration can also retain a previous counter tuple and a bank substring.
+    scan = 2 * sys.getsizeof(batches) + objects + largest
+    return max(loading, scan)
 
 
 def bank_bases_a4(infos, text):

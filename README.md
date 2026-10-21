@@ -30,8 +30,23 @@ and further candidate qualification remain pending.
 Loading development now keeps Qwen NVFP4 calibration scalars on CPU instead of
 uploading them before immediately reading them back. Payloads and block/channel
 scales retain their existing device path and calibration arithmetic is unchanged.
-CPU and real-file native calibration controls pass. Complete-startup performance
-qualification is pending. This candidate is not a measured loading-speed claim.
+CPU and real-file native calibration controls pass. The fixed Qwen3.8 startup
+comparison was inconclusive; Qwen3.6 qualification remains pending. This
+candidate is not a measured loading-speed claim.
+
+Qwen CT native-A4 host loading now packs directly into final authority and reads
+calibrations into one ordered F32 buffer. Explicit admission covers its payload
+and metadata; dense callers avoid the bank scan. The coherent CPU gate passed
+149 tests with exact authority bytes. Native factors can also be prepared once
+by loaders under their fixed numerical context; ordinary unprepared operations
+retain their context-sensitive behavior. ARM64 model qualification and complete
+startup/prefill/decode performance selection remain pending.
+[Current evidence and boundaries](docs/optimization-validation.md#qwen-host-loading-candidates-2026-10-21).
+
+The managed image has a candidate build-time CUDA-extension preparation path,
+bound to its exact wheel, foundation, recipes and target. Source/CPU checks pass;
+actual compilation, installed target execution and model startup qualification
+remain pending. [Managed build contracts](deploy/gb10/foundation.md).
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

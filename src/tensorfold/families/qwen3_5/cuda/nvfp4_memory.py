@@ -132,8 +132,8 @@ def scheduled_loading_bytes(entries: dict, transform) -> int:
     return peak + (4 << 20)
 
 
-def weight_estimate(model_dir, transform):
-    """Return the capacity Weights and separate conservative host read budget."""
+def weight_estimate(model_dir, transform, *, scalar_batches: bool = False):
+    """Capacity weights and host reads; native MoE opts into ordered scalars."""
     from tensorfold.cuda.capacity import Weights, _estimate_weights_from_headers, headers, itemsize
 
     entries = headers(model_dir)
@@ -166,4 +166,11 @@ def weight_estimate(model_dir, transform):
     # original CPU allowance and add those physical backings exactly once;
     # offload's additional authority allowance deliberately excludes the rings.
     host = reader_host_bytes(largest, max(existing.staging, largest))
+    if scalar_batches:
+        from tensorfold.cuda.nvfp4.host_layout import scalar_batch_host_bytes_a4
+
+        # The MoE engine opts in for both resident and transformed offload
+        # estimates. Charge the same plan once, without consuming old packing
+        # slack; dense engines perform no scalar-plan import or header scan.
+        host += scalar_batch_host_bytes_a4(entries)
     return Weights(existing.resident + padding, staging, existing.mapped), host

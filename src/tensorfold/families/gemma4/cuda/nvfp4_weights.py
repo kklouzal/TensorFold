@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .weights import Config, Gemma4Weights, Layer, PREFIX, tensor_contract
+from .weights import PREFIX, Config, Gemma4Weights, Layer, tensor_contract
+
+if TYPE_CHECKING:
+    from tensorfold.cuda.nvfp4.format import NativeCalibration
 
 CT_PREFIX = "model.language_model."
 CT_PARTS = ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale")
@@ -116,16 +119,19 @@ class _Router:
         return self.weight.numel() * self.weight.element_size()
 
 
-def _calibrations(reader, native: dict) -> dict[str, tuple[float, float, float]]:
+def _calibrations(reader, native: dict) -> tuple[dict[str, tuple[float, float, float]],
+                                               dict[str, NativeCalibration]]:
     """Read original scalar multipliers on CPU, once, before native packing.
 
     The publisher stores the complete small scalar table contiguously. Coalesce
     adjacent scalar ranges into bounded reads; retain neither the full checkpoint
-    nor per-projection CUDA scalar tensors. Result is (weight dequant scale,
-    activation dequant scale, original activation quantization multiplier).
+    nor per-projection CUDA scalar tensors. Expert banks keep their existing
+    (weight dequant, activation dequant, original multiplier) table. Static
+    dense projections retain prepared factors in their fixed serving context.
     """
     import torch
-    from tensorfold.cuda.nvfp4.format import calibration, native_calibration
+
+    from tensorfold.cuda.nvfp4.format import calibration, native_calibration, prepare_native_calibration
 
     entries = []
     for name in native:
@@ -149,14 +155,17 @@ def _calibrations(reader, native: dict) -> dict[str, tuple[float, float, float]]
         batch.append(entry)
     if batch:
         consume(batch)
-    result = {}
+    experts, linears = {}, {}
     for name in native:
         weight = calibration(values[name + ".weight_global_scale"], name=name + ".weight_global_scale", reciprocal=True)
         inverse = values[name + ".input_global_scale"]
         act = calibration(inverse, name=name + ".input_global_scale", reciprocal=True)
-        native_calibration(act, weight, name=name, act_inverse=inverse)
-        result[name] = weight, act, inverse
-    return result
+        if ".experts." in name:
+            native_calibration(act, weight, name=name, act_inverse=inverse)
+            experts[name] = weight, act, inverse
+        else:
+            linears[name] = prepare_native_calibration(act, weight, name=name, act_inverse=inverse)
+    return experts, linears
 
 
 def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -> Gemma4Weights:
@@ -203,13 +212,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
         if torch.cuda.get_device_capability(dev)[0] != 12:
             raise ValueError("Gemma4 NVFP4 requires native calibrated activation math on the selected SM12.x device")
         native, _ = ct_tensor_contract(c)
-        calibrated = _calibrations(reader, native)
+        calibrated, prepared_linears = _calibrations(reader, native)
         def read(name, device=dev):
             return reader.get(name, device)
         def linear(name):
-            weight, act, inverse = calibrated[name]
+            prepared = prepared_linears[name]
             return Fp4Linear.from_checkpoint(read(name + ".weight_packed"), read(name + ".weight_scale"),
-                                             weight, act=act, act_inverse=inverse)
+                                             prepared.weight_scale, act=prepared.act, act_inverse=prepared.act_inverse,
+                                             prepared=prepared)
         embed = select_head(Plain(read(CT_PREFIX + "embed_tokens.weight")))
         norm = read(CT_PREFIX + "norm.weight")
         layers = []

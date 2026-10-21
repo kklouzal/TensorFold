@@ -34,6 +34,149 @@ def distribution(site, name, version):
     return info
 
 
+def test_native_preparation_closes_owned_transitive_includes_and_refuses_escape(guard, tmp_path):
+    import prepare_native
+
+    package = tmp_path / "package"
+    package.mkdir()
+    source, header, leaf = package / "source.cu", package / "header.cuh", package / "leaf.cuh"
+    source.write_text('#include "header.cuh"\n')
+    header.write_text('#include "leaf.cuh"\n')
+    leaf.write_text('// independent leaf\n')
+    result = prepare_native.inputs(package, [str(source)])
+    assert result == {path.name: guard.digest(path) for path in (source, header, leaf)}
+    foreign = tmp_path / "foreign.cuh"
+    foreign.write_text('// foreign\n')
+    leaf.write_text('#include "../foreign.cuh"\n')
+    with pytest.raises(ValueError):
+        prepare_native.inputs(package, [str(source)])
+
+
+def test_native_preparation_preserves_primary_and_failed_audit(guard, monkeypatch, tmp_path):
+    import prepare_native
+
+    primary, audit = RuntimeError("native compilation failed"), ValueError("provider changed")
+    checks = []
+
+    def verify(state, *, full):
+        checks.append(full)
+        if len(checks) > 1:
+            raise audit
+
+    def failed(*args):
+        raise primary
+
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setattr(guard, "verify", verify)
+    monkeypatch.setattr(prepare_native, "_prepare", failed)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        prepare_native.prepare({}, tmp_path / "unused")
+    assert caught.value.exceptions == (primary, audit) and checks == [True, True]
+
+
+@pytest.mark.torch
+@pytest.mark.skipif(any(Path('/dev').glob('nvidia[0-9]*')), reason="preparation control requires actual GPU-free execution")
+def test_native_preparation_uses_canonical_explicit_targets_without_gpu_discovery(guard, monkeypatch, tmp_path):
+    import prepare_native
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from torch.utils import cpp_extension
+
+    monkeypatch.setattr(prepare_native, "guard", guard)
+    monkeypatch.setenv("TF_FOUNDATION_RUNTIME_PHASE", "cpu")
+    monkeypatch.setattr(guard, "verify", lambda *args, **kwargs: None)
+    sealed, compiled = [], []
+    monkeypatch.setattr(guard, "seal_native_artifacts", lambda state, path: sealed.append(path))
+
+    def no_gpu(*args, **kwargs):
+        pytest.fail("GPU-free preparation discovered a runtime GPU")
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", no_gpu)
+    monkeypatch.setattr(torch.cuda, "device_count", no_gpu)
+
+    def compile_recipe(**options):
+        from types import SimpleNamespace
+
+        compiled.append(options)
+        path = Path(options["build_directory"]) / (options["name"] + ".so")
+        path.write_bytes(b"generated fixture output " + options["name"].encode())
+        return SimpleNamespace(__file__=str(path))
+
+    monkeypatch.setattr(cpp_extension, "load", compile_recipe)
+    destination = tmp_path / "native"
+    state = {"foundation_cache_key": "f" * 64, "application_wheel_sha256": "a" * 64, "toolchain": {}}
+    result = prepare_native.prepare(state, destination)
+    assert sealed == [destination / "manifest.json"] and len(compiled) == 3
+    assert [options["name"] for options in compiled] == ["tensorfold_nvfp4_ck_v7_sm_121a",
+        "tensorfold_qwen_b16_v6_sm_121", "tensorfold_gemma_b16_cap30_v1_sm_121"]
+    for options in compiled:
+        target = "121a" if options["name"].endswith("121a") else "121"
+        assert options["extra_cuda_cflags"][-1] == f"-gencode=arch=compute_{target},code=sm_{target}"
+        assert "prepared" not in options  # Public Torch receives only supported compilation arguments.
+    assert all((destination / row["binary"]).is_file() for row in result["entries"].values())
+    assert not any(destination.glob("*.build"))
+
+
+@pytest.mark.parametrize("fault", [None, "wheel", "toolchain", "header", "binary", "escape"])
+def test_native_bundle_seals_generated_outputs_and_owned_inputs(guard, sealed, tmp_path, monkeypatch, fault):
+    import hashlib
+
+    sealed.update(foundation_cache_key="f" * 64, application_wheel_sha256="a" * 64,
+                  state_path=str(tmp_path / "state.json"))
+    sealed["state_digest"] = guard.state_digest(sealed)
+    package = guard.site_directory(Path(sealed["application"])) / "tensorfold"
+    package.mkdir()
+    header = package / "header.cuh"
+    header.write_text("// owned transitive dependency\n")
+    directory = tmp_path / "native"
+    directory.mkdir()
+    identity = {"foundation_cache_key": "f" * 64, "application_wheel_sha256": "a" * 64,
+                "toolchain_sha256": hashlib.sha256(json.dumps(sealed["toolchain"], sort_keys=True,
+                    separators=(",", ":"), allow_nan=False).encode()).hexdigest()}
+    value = {"schema_version": 1, "kind": "tensorfold-native-artifacts", "identity": identity,
+             "target_capability": [12, 1], "package_root": str(package), "entries": {}}
+    for name in ("first", "second", "third"):
+        binary = directory / (name + ".so")
+        binary.write_bytes(b"generated owned binary")
+        value["entries"][name] = {"module_name": name, "binary": binary.name,
+            "binary_sha256": guard.digest(binary), "binary_bytes": binary.stat().st_size,
+            "inputs": {"header.cuh": guard.digest(header)}}
+    if fault == "wheel":
+        identity["application_wheel_sha256"] = "b" * 64
+    elif fault == "toolchain":
+        identity["toolchain_sha256"] = "b" * 64
+    elif fault == "header":
+        header.write_text("// changed header\n")
+    elif fault == "binary":
+        (directory / "first.so").write_bytes(b"changed native binary")
+    elif fault == "escape":
+        value["entries"]["first"]["binary"] = str(directory / "first.so")
+    path = directory / "manifest.json"
+    guard.write_json(path, value)
+    published = []
+
+    def publish(state, destination):
+        published.append(destination)
+        state["state_digest"] = guard.state_digest(state)
+
+    monkeypatch.setattr(guard, "publish_state", publish)
+    if fault:
+        with pytest.raises(ValueError):
+            guard.seal_native_artifacts(sealed, path)
+        assert not published and "native_artifacts" not in sealed
+    else:
+        guard.seal_native_artifacts(sealed, path)
+        assert published == [Path(sealed["state_path"])]
+        assert str(header) in sealed["files"] and str(directory / "first.so") in sealed["files"]
+        activation = json.loads(guard.native_activation(sealed)["TF_NATIVE_ARTIFACTS"])
+        assert activation["sha256"] == guard.digest(path) and activation["identity"] == identity
+        guard.verify(sealed)
+        header.write_text("// changed after seal\n")
+        with pytest.raises(ValueError, match="file changed"):
+            guard.verify(sealed)
+
+
 @pytest.fixture
 def sealed(guard, tmp_path, monkeypatch):
     foundation, application = tmp_path / "foundation", tmp_path / "application"
@@ -218,13 +361,79 @@ def test_failed_install_preserves_unmodified_primary(guard, sealed, monkeypatch)
     assert caught.value is primary
 
 
-def wheel(path, name, version, *, payload=None):
+def wheel(path, name, version, *, payload=None, body=None):
+    import base64
+    import csv
+    import hashlib
+    import io
+
     info = f"{name}-{version}.dist-info"
+    files = {f"{info}/METADATA": f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n".encode(),
+             f"{info}/WHEEL": b"Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+             payload or f"{name}/__init__.py": (f"__version__ = {version!r}\n" if body is None else body).encode()}
+    record = io.StringIO(newline="")
+    writer = csv.writer(record, lineterminator="\n")
+    for member, raw in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+        writer.writerow([member, "sha256=" + digest, len(raw)])
+    writer.writerow([f"{info}/RECORD", "", ""])
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
-        archive.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
-        archive.writestr(f"{info}/RECORD", "")
-        archive.writestr(payload or f"{name}/__init__.py", f"__version__ = {version!r}\n")
+        for member, raw in files.items():
+            archive.writestr(member, raw)
+        archive.writestr(f"{info}/RECORD", record.getvalue())
+
+
+def test_same_version_owned_wheel_replaces_real_payload_before_recording_identity(guard, sealed, tmp_path, monkeypatch):
+    foundation, application = Path(sealed["foundation"]), Path(sealed["application"])
+    venv.EnvBuilder(with_pip=True).create(foundation)
+    venv.EnvBuilder(with_pip=False).create(application)
+    fs, site = guard.site_directory(foundation), guard.site_directory(application)
+    (site / "00_fixture_foundation.pth").write_text(f"import sys; sys.path.insert(0, {str(fs)!r})\n")
+    sealed["files"].update({str(path): guard.identity(path, full=True) for path in guard.tree_files(foundation)})
+    sealed.update(cache_key="c" * 64, state_path=str(tmp_path / "state.json"))
+    sealed["state_digest"] = guard.state_digest(sealed)
+    # Provider publication has separate controls; preserve the actual audited
+    # pip boundary here while keeping this scratch venv's toolchain synthetic.
+    monkeypatch.setattr(guard, "publish_state", lambda state, path: state.update(state_digest=guard.state_digest(state)))
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.delenv("PIP_CONSTRAINT", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    protected = (fs / "torch.py").read_bytes()
+    old_identity = None
+    for label in ("old", "new"):
+        directory = tmp_path / label
+        directory.mkdir()
+        path = directory / "tensorfold-1.0-py3-none-any.whl"
+        body = f"__version__ = '1.0'\nTOKEN = {label!r}\n"
+        wheel(path, "tensorfold", "1.0", body=body)
+        guard.install_application(sealed, path)
+        assert (site / "tensorfold/__init__.py").read_text() == body
+        result = subprocess.run([str(application / "bin/python"), "-c", "import tensorfold; print(tensorfold.TOKEN)"],
+                                check=True, capture_output=True, text=True)
+        assert result.stdout.strip() == label
+        assert sealed["application_wheel_sha256"] == guard.digest(path)
+        if old_identity is None:
+            old_identity = sealed["application_wheel_sha256"]
+        else:
+            assert sealed["application_wheel_sha256"] != old_identity
+        assert sealed["foundation_cache_key"] == "c" * 64 and (fs / "torch.py").read_bytes() == protected
+        guard.verify(sealed, full=True)
+
+
+def test_prepared_application_refuses_replacement_before_pip_or_state_mutation(guard, sealed, tmp_path, monkeypatch):
+    import copy
+
+    sealed["native_artifacts"] = {"manifest": "sealed immutable image bundle"}
+    sealed["state_digest"] = guard.state_digest(sealed)
+    before = copy.deepcopy(sealed)
+    monkeypatch.setattr(guard, "run_install", lambda *args: pytest.fail("mutated a prepared application"))
+    # Even wheel opening is deferred until this build-lifetime precondition.
+    with pytest.raises(ValueError, match="rebuild the image"):
+        guard.install_application(sealed, tmp_path / "not-opened.whl")
+    assert sealed == before
 
 
 @pytest.mark.parametrize("name,payload", [("torch", None), ("tensorfold", "nvidia/bad.py"),

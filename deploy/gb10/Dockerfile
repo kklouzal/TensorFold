@@ -64,9 +64,11 @@ ENV TENSORFOLD_SOURCE_REVISION=${SOURCE_REVISION} \
 COPY pyproject.toml setup.py README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md /opt/TensorFold/
 COPY LICENSES /opt/TensorFold/LICENSES
 COPY src /opt/TensorFold/src
+COPY deploy/gb10/prepare_native.py /opt/tensorfold-pins/prepare_native.py
 RUN python3 /opt/tensorfold-pins/foundation_guard.py audit \
     && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/fork-wheel /opt/TensorFold \
     && python3 /opt/tensorfold-pins/foundation_guard.py application --wheel /opt/fork-wheel/*.whl \
+    && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 /opt/tensorfold-pins/prepare_native.py \
     && python3 -m pip check \
     && python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -c "from pathlib import Path; import tensorfold, xgrammar; import tensorfold.families.qwen4_exp.native_ssd as reader; assert Path(reader.__file__).with_name('ssd_read.cpp').is_file()"
 COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py

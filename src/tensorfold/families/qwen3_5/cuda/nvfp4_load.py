@@ -55,12 +55,15 @@ class MLPContext:
     on the requested device; an expert factory can therefore build its final
     CPU authority without first placing expert payload on the GPU. The callback
     must finish before returning and retain tensors, not this reader context.
+    ``read_f32_scalars`` consumes a bounded CPU F32[1] batch once after its complete read;
+    names already consumed by either callback fail before any batch I/O.
     ``used`` records actual native activation math for the startup declaration.
     """
 
     info: dict[str, tuple[str, list[int]]]
     metadata: Any
     read: Callable
+    read_f32_scalars: Callable
     linear: Callable
     checkpoint_math: bool
     own: dict[str, bool]
@@ -164,10 +167,10 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             _validate_fp8_prefill(cfg, 1)
 
         def act_scale(name: str, got: dict, kind: str, activation: int | None,
-                      weight_scale: float) -> tuple[float | None, float | None]:
+                      weight_scale: float) -> tuple[float | None, float | None, fmt.NativeCalibration | None]:
             """Only declared, supported activation math consumes a static calibration."""
             if activation is None or not own[kind]:
-                return None, None
+                return None, None, None
             field = "input_scale" if "input_scale" in got else "input_global_scale"
             original = float(got[field].float().reshape(-1)[0])
             scale = fmt.calibration(original, name=name + "." + field,
@@ -175,10 +178,10 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             # CT's quantizer consumes this stored multiplier directly. Taking
             # two FP32 reciprocals can change its bits; alpha still uses scale.
             inverse = original if reciprocal and kind == "nvfp4" and field == "input_global_scale" else None
-            fmt.native_calibration(scale, weight_scale, name=name,
-                                   **({"act_inverse": inverse} if inverse is not None else {}))
+            prepared = fmt.prepare_native_calibration(scale, weight_scale, name=name,
+                                                      **({"act_inverse": inverse} if inverse is not None else {}))
             used[kind] = True
-            return scale, inverse
+            return scale, prepared.act_inverse, prepared
 
         def linear(name: str, prompt: bool = True):
             parts = {s: info[f"{name}.{s}"] for s in SUFFIXES if f"{name}.{s}" in info}
@@ -205,8 +208,9 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                     raise ValueError(f"{name}: an NVFP4 weight without its global scale")
                 g = fmt.calibration(float(g.float().reshape(-1)[0]), name=name + ".weight_global_scale",
                                     reciprocal=reciprocal)
-                act, inverse = act_scale(name, got, "nvfp4", activation, g)
-                lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], g, act=act, act_inverse=inverse)
+                act, inverse, prepared = act_scale(name, got, "nvfp4", activation, g)
+                lin = Fp4Linear.from_checkpoint(weight, got["weight_scale"], g, act=act, act_inverse=inverse,
+                                                prepared=prepared)
                 lin.staging = staging
                 return lin
             if kind == "fp8channel":
@@ -221,8 +225,8 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 if s.numel() != 1:
                     raise ValueError(f"{name}: FP8 with {s.numel()} scales; the CUDA engine reads one scale a tensor")
                 scale = fmt.calibration(float(s[0]), name=name + ".weight_scale")
-                return Fp8Linear.from_checkpoint(weight, scale,
-                                                 act=act_scale(name, got, "fp8", activation, scale)[0])
+                act, _, prepared = act_scale(name, got, "fp8", activation, scale)
+                return Fp8Linear.from_checkpoint(weight, scale, act=act, prepared=prepared)
             w = weight.to(torch.bfloat16).contiguous()
             return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
 
@@ -235,7 +239,17 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             del t.where[name]
             return t.files.get(name, device)
 
-        context = (MLPContext(info, metadata, read, linear, checkpoint_math, own, used)
+        def read_f32_scalars(names, *, max_bytes: int) -> torch.Tensor:
+            names = tuple(names)
+            for name in names:
+                if name not in t.where:
+                    raise KeyError(name)
+            values = t.files.get_f32_scalars(names, max_bytes=max_bytes)
+            for name in names:
+                del t.where[name]
+            return values
+
+        context = (MLPContext(info, metadata, read, read_f32_scalars, linear, checkpoint_math, own, used)
                    if mlp is not None else None)
 
         def norm(name: str) -> torch.Tensor:

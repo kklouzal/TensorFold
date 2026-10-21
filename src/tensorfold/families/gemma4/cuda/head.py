@@ -7,10 +7,12 @@ there is no new weight authority, quantization, scratch cache or runtime flag.
 
 from __future__ import annotations
 
-from functools import partial
+from functools import lru_cache, partial
+from pathlib import Path
 
 import torch
 
+from tensorfold.families.qwen3_5.cuda import b16
 from tensorfold.families.qwen3_5.cuda.b16 import matmul_rows
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
@@ -37,6 +39,66 @@ def original_bf16_region(weight: torch.Tensor) -> bool:
     return (weight.dtype == torch.bfloat16 and tuple(weight.shape) == (262144, 2816)
             and weight.device.type == "cuda" and weight.is_contiguous()
             and torch.cuda.get_device_capability(weight.device) == (12, 1))
+
+
+def owns_logits_result(head: Plain) -> bool:
+    """Prove this immutable projector returns fresh storage, at preparation.
+
+    Both native b16 entry points allocate their result with at::empty. A
+    weight's shape/device alone does not establish that contract for a foreign
+    projector. The row-reuse owner must retain its original Plain singleton
+    projector, shared weight and constructor's native matmul binding.
+    """
+    if type(head) is Plain:
+        return True
+    return (type(head) is _RowsHead and type(head.incumbent) is Plain
+            and head.weight is head.incumbent.weight and head.reuse_rows in (2, 4, 8, 16)
+            and isinstance(head._multiply, partial) and head._multiply.func is matmul_rows
+            and not head._multiply.args and head._multiply.keywords == {"rows": head.reuse_rows})
+
+
+def _cap30_build_options() -> dict:
+    """Canonical recipe for the separate unselected Gemma epilogue module."""
+    here = Path(b16.__file__).parent
+    return {"name": "tensorfold_gemma_b16_cap30_v1", "sources": [str(here / "b16.cpp"), str(here / "b16.cu")],
+            "extra_cflags": ["-DTENSORFOLD_B16_CAP30=1"],
+            "extra_cuda_cflags": ["-O3", "-DTENSORFOLD_B16_CAP30=1", "--ftz=false"], "verbose": False,
+            "prepared": True}
+
+
+@lru_cache(maxsize=1)
+def _cap30_extension():
+    """Bind through the managed build boundary; raw module code stays unchanged.
+
+    A distinct module adds cold compilation/loading unless compatible prepared
+    artifacts are present. All loading/residency costs remain selection gates.
+    """
+    from tensorfold.cuda.build import load
+
+    return load(**_cap30_build_options())
+
+
+def prepare_cap30(head: Plain):
+    """Prepare a capped projector without changing the public raw head.
+
+    Accept only the proved native ownership/arithmetic policies. Bind the
+    authoritative parameter, reuse policy and loaded native entry once; there
+    is no HOT capability discovery or extra softcap launch. The caller owns
+    model authority, cap/region qualification and graph-bank replacement.
+    """
+    if not owns_logits_result(head):
+        raise ValueError("Gemma cap30 epilogue requires its exact Plain or prepared row head")
+    weight = head.weight
+    rows = 0 if type(head) is Plain else head.reuse_rows
+    native = _cap30_extension().b16_linear_cap30
+
+    def project(hidden):
+        # Plain casts to its weight and makes input contiguous at this boundary.
+        if hidden.dtype != weight.dtype:
+            hidden = hidden.to(weight.dtype)
+        return native(hidden.contiguous(), weight, rows)
+
+    return project
 
 
 def _qualified(incumbent: Plain) -> bool:
