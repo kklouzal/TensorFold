@@ -1,5 +1,11 @@
 # TensorFold fork
 
+Loading development now keeps Qwen NVFP4 calibration scalars on CPU instead of
+uploading them before immediately reading them back. Payloads and block/channel
+scales retain their existing device path and calibration arithmetic is unchanged.
+Affected CPU controls pass; native and complete-startup performance qualification
+is pending. This candidate is not a new measured loading-speed claim.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

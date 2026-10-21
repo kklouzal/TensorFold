@@ -46,6 +46,85 @@ def _fp8(n: int, k: int, gen: torch.Generator, channel: bool = False) -> Fp8Line
 MODELS = ["full", "per-token"]
 
 
+@pytest.mark.parametrize("scalar_dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("scheme", ["modelopt", "ct", "fp8"])
+@pytest.mark.parametrize("magnitude", ["subnormal", "tiny", "ordinary", "large"])
+def test_loader_scalar_cpu_reads_preserve_cuda_calibrations(tmp_path, monkeypatch, scalar_dtype, scheme, magnitude):
+    """Real file/device payloads and native packers, isolating scalar placement with a zero-layer model."""
+    import json
+    import struct
+    from types import SimpleNamespace
+
+    from safetensors.torch import save_file
+
+    from tensorfold.checkpoint_quantization import effective_config
+    from tensorfold.cuda import precision
+    from tensorfold.cuda.direct_read import SafeTensors
+    from tensorfold.cuda.nvfp4 import checkpoint, format
+    from tensorfold.families.qwen3_5.cuda.nvfp4_load import load_nvfp4
+
+    if scheme != "fp8" and torch.cuda.get_device_capability()[0] != 12:
+        pytest.skip("native NVFP4 checkpoint packing requires SM12.x")
+    limits = torch.finfo(scalar_dtype)
+    source = {"subnormal": limits.tiny / 2, "tiny": limits.tiny * 2,
+              "ordinary": 1.4370495080947876, "large": limits.max / 4}[magnitude]
+    inp = torch.tensor([source], dtype=scalar_dtype)
+    global_scale = torch.tensor(1.5, dtype=scalar_dtype)
+    payload = {"model.embed_tokens.weight": torch.zeros((64, 64), dtype=torch.bfloat16),
+               "model.norm.weight": torch.zeros((64,), dtype=torch.bfloat16)}
+    if scheme == "ct":
+        weight_key, global_key, input_key = "weight_packed", "weight_global_scale", "input_global_scale"
+        config = {"quantization_config": {"quant_method": "compressed-tensors", "config_groups": {"g": {
+            "targets": ["Linear"], "weights": {"num_bits": 4, "type": "float", "group_size": 16},
+            "input_activations": {"num_bits": 4, "type": "float", "group_size": 16,
+                                  "strategy": "tensor_group", "dynamic": "local"}}}}}
+    else:
+        weight_key, global_key, input_key = "weight", "weight_scale" if scheme == "fp8" else "weight_scale_2", "input_scale"
+        config = effective_config({"quantization_config": {"quant_method": "modelopt",
+                                  "quant_algo": "FP8" if scheme == "fp8" else "NVFP4"}}, None, where="fixture")
+    if scheme == "fp8":
+        payload["lm_head." + weight_key] = torch.zeros((64, 64), dtype=torch.float8_e4m3fn)
+    else:
+        payload["lm_head." + weight_key] = torch.full((64, 32), 0x12, dtype=torch.uint8)
+        payload["lm_head.weight_scale"] = torch.full((64, 4), 0x38, dtype=torch.uint8).view(torch.float8_e4m3fn)
+    payload["lm_head." + global_key] = global_scale
+    payload["lm_head." + input_key] = inp
+    path = tmp_path / "model.safetensors"
+    save_file(payload, str(path))
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    reference = SafeTensors([path])
+    try:
+        original_weight = float(reference.get("lm_head." + global_key, "cuda").float().reshape(-1)[0])
+        original_input = float(reference.get("lm_head." + input_key, "cuda").float().reshape(-1)[0])
+    finally:
+        reference.close()
+    expected_weight = format.calibration(original_weight, name="weight", reciprocal=scheme == "ct")
+    expected_input = format.calibration(original_input, name="input", reciprocal=scheme == "ct")
+    cfg = SimpleNamespace(layers=0, rope_dims=64, rope_theta=10000., yarn=None)
+    monkeypatch.setattr(Config, "read", staticmethod(lambda *args, **kwargs: cfg))
+    original_get, reads = SafeTensors.get, []
+
+    def get(reader, name, device="cpu"):
+        value = original_get(reader, name, device)
+        reads.append((name, value.device.type))
+        return value
+
+    monkeypatch.setattr(SafeTensors, "get", get)
+    with precision.using(precision.CHECKPOINT):
+        result = load_nvfp4(tmp_path)
+    scalar_keys = {"lm_head." + key for key in (global_key, input_key)}
+    assert {name for name, device in reads if device == "cpu"} == scalar_keys
+    assert all(device == ("cpu" if name in scalar_keys else "cuda") for name, device in reads)
+    assert struct.pack("<d", result.head.scale) == struct.pack("<d", expected_weight)
+    assert struct.pack("<d", result.head.act) == struct.pack("<d", expected_input)
+    assert struct.pack("<f", checkpoint.alpha(result.head.act, result.head.scale)) == struct.pack(
+        "<f", checkpoint.alpha(expected_input, expected_weight))
+    if scheme == "ct":
+        assert struct.pack("<f", result.head.act_inverse) == struct.pack("<f", original_input)
+    else:
+        assert struct.pack("<f", checkpoint._inv(result.head.act)) == struct.pack("<f", checkpoint._inv(expected_input))
+
+
 def _model(kind: str = "full") -> Weights:
     if kind == "per-token" and torch.cuda.get_device_capability()[0] != 12:
         pytest.skip("the checkpoint's FP4 math needs an SM 12.x GPU")

@@ -19,7 +19,7 @@ from tensorfold.cuda.nvfp4 import format
 def test_ct_original_input_global_scale_is_the_selected_native_quantizer_multiplier(mode, capable, monkeypatch):
     original = struct.unpack("f", struct.pack("I", 0x3FB7F13D))[0]
     raw_weight = 1.5
-    load, _, _, modules = fixture()
+    load, events, state, modules = fixture()
     headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
     for name in list(headers):
         if not ("_proj.weight" in name or name == "lm_head.weight"):
@@ -82,3 +82,5 @@ def test_ct_original_input_global_scale_is_the_selected_native_quantizer_multipl
     expected_checks = [(1.0 / original, 1.0 / raw_weight, original)] * len(constructed) if native else []
     assert checked == expected_checks
     assert result.precision == ("checkpoint" if native else "full")
+    scalars = [name for name in events if name.endswith((".weight_global_scale", ".input_global_scale"))]
+    assert state["device_reads"] == [(name, "cpu") for name in scalars]

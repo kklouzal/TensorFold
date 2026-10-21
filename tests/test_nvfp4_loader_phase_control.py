@@ -50,7 +50,7 @@ class Value:
 
 
 def fixture():
-    events, state = [], {"closes": 0, "releases": 0}
+    events, state = [], {"closes": 0, "releases": 0, "device_reads": []}
 
     def release():
         events.append("release")
@@ -116,6 +116,12 @@ def fixture():
     class Reader:
         def __init__(self, *args, **kwargs):
             events.append("reader")
+            self.where = {name: None for name in capacity.headers(Path("opaque"))}
+            self.files = SimpleNamespace(get=self.get)
+
+        def get(self, name, device):
+            state["device_reads"].append((name, device))
+            return self.pop(name)
 
         def pop(self, name):
             events.append(name)
@@ -221,6 +227,63 @@ if __name__ == "__main__":
 
 
 class MetadataSelection(unittest.TestCase):
+    def test_per_tensor_fp8_calibrations_stay_cpu_and_read_failure_closes(self):
+        from tensorfold.checkpoint_quantization import effective_config
+        from tensorfold.cuda import precision
+        from tensorfold.cuda.nvfp4 import format
+
+        for failed_read in (False, True):
+            with self.subTest(failed_read=failed_read):
+                load, events, state, modules = fixture()
+                headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
+                for name in list(headers):
+                    if "_proj.weight" in name or name == "lm_head.weight":
+                        headers[name] = {"dtype": "F8_E4M3", "shape": [8, 64]}
+                        headers[name[:-7] + ".weight_scale"] = {"dtype": "F16", "shape": []}
+                        headers[name[:-7] + ".input_scale"] = {"dtype": "BF16", "shape": [1]}
+                modules["tensorfold.cuda.capacity"].headers = lambda path: headers
+                reader_type = modules["tensorfold.families.qwen3_5.cuda.weights"]._Tensors
+
+                class Scalar(Value):
+                    def numel(self):
+                        return 1
+
+                class Reader(reader_type):
+                    def pop(self, name):
+                        super().pop(name)
+                        return Scalar()
+
+                modules["tensorfold.families.qwen3_5.cuda.weights"]._Tensors = Reader
+                modules["tensorfold.cuda.nvfp4"].format = SimpleNamespace(
+                    LinearMetadata=format.LinearMetadata, calibration=format.calibration,
+                    native_calibration=lambda *args, **kwargs: None)
+                built = []
+                modules["tensorfold.cuda.nvfp4.linear"].Fp8Linear = SimpleNamespace(
+                    from_checkpoint=lambda weight, scale, **kw: built.append((scale, kw)) or SimpleNamespace())
+                config = effective_config({"quantization_config": {"quant_method": "modelopt", "quant_algo": "FP8"}},
+                                          None, where="fixture")
+                load.__globals__.update(read_config=lambda path: config,
+                                        SUFFIXES=("weight", "weight_scale", "input_scale"),
+                                        maths=lambda: ({"nvfp4": False, "fp8": True}, "fixture"))
+                primary = OSError("scalar checkpoint read failed")
+                if failed_read:
+                    state.update(failed_key="model.layers.0.self_attn.q_proj.weight_scale", read_failure=primary)
+                with (patch.dict(sys.modules, modules), precision.using(precision.CHECKPOINT),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    if failed_read:
+                        with self.assertRaises(OSError) as caught:
+                            load(Path("opaque"))
+                        self.assertIs(caught.exception, primary)
+                        self.assertEqual(built, [])
+                    else:
+                        result = load(Path("opaque"))
+                        self.assertEqual(built, [(1.0, {"act": 1.0})] * 8)
+                        self.assertEqual(result.own, {"nvfp4": False, "fp8": True})
+                scalar_reads = [name for name in events if name.endswith((".weight_scale", ".input_scale"))]
+                self.assertTrue(scalar_reads)
+                self.assertEqual(state["device_reads"], [(name, "cpu") for name in scalar_reads])
+                self.assertEqual(state["closes"], 1)
+
     def test_declared_weight_only_and_native_policies_survive_the_actual_loader(self):
         from tensorfold.checkpoint_quantization import LinearQuantization, effective_config
         from tensorfold.cuda import precision
@@ -236,7 +299,7 @@ class MetadataSelection(unittest.TestCase):
         for algorithm in ("NVFP4", "W4A16_NVFP4"):
             for mode in (precision.CHECKPOINT, precision.FULL):
                 with self.subTest(algorithm=algorithm, mode=mode):
-                    load, _, _, modules = fixture()
+                    load, events, state, modules = fixture()
                     headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
                     native = []
                     for name in list(headers):
@@ -279,6 +342,8 @@ class MetadataSelection(unittest.TestCase):
                     self.assertEqual(result.own, {"nvfp4": expected is not None, "fp8": False})
                     self.assertEqual(result.precision, "checkpoint" if expected is not None else "full")
                     self.assertEqual(overrides, [{"eos_token_ids": (7, 9)}])
+                    scalars = [name for name in events if name.endswith((".weight_scale_2", ".input_scale"))]
+                    self.assertEqual(state["device_reads"], [(name, "cpu") for name in scalars])
 
     def test_per_channel_fp8_rows_follow_the_precision_and_refuse_fp8_prompts(self):
         """ModelOpt FP8_PER_CHANNEL_PER_TOKEN projections (0.46.0's static activation record) through the actual
@@ -301,7 +366,7 @@ class MetadataSelection(unittest.TestCase):
                 "input_activations": {"dynamic": False, "num_bits": 8, "type": "float"}}}}}, None, where="fixture")
         for mode, fp8_prompts in ((precision.CHECKPOINT, False), (precision.FULL, False), (precision.CHECKPOINT, True)):
             with self.subTest(mode=mode, fp8_prompts=fp8_prompts):
-                load, events, _, modules = fixture()
+                load, events, state, modules = fixture()
                 headers = modules["tensorfold.cuda.capacity"].headers(Path("opaque"))
                 for name in list(headers):
                     if "_proj.weight" in name or name == "lm_head.weight":
@@ -331,6 +396,7 @@ class MetadataSelection(unittest.TestCase):
                 self.assertEqual(result.own, {"nvfp4": False, "fp8": own})
                 self.assertEqual(result.precision, "checkpoint" if own else "full")
                 self.assertEqual("rows quantized a token at a time" in stdout.getvalue(), own)
+                self.assertEqual(state["device_reads"], [])
 
 
 def test_channel_scales_are_admitted_as_the_padded_fp32_columns_they_load_into():

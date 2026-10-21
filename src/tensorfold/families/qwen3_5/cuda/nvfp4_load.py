@@ -190,7 +190,14 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
             if kind == "fp8channel" and prompt_precision.fp8():
                 raise ValueError(f"{name}: --prefill-fp8 reads per-tensor FP8 weights; this checkpoint's "
                                  "per-channel FP8 projections run FP8 prompts under --precision checkpoint")
-            got = {s: t.pop(f"{name}.{s}") for s in parts}
+            # Calibrations become Python scalars below. Read their original
+            # F32/F16/BF16 storage on CPU, avoiding a CUDA upload and immediate
+            # device wait for every projection. Block/channel scales stay with
+            # their device payload; their native layout and arithmetic differ.
+            scalars = ("weight_scale_2", "weight_global_scale", "input_scale", "input_global_scale")
+            got = {s: (read(f"{name}.{s}", device="cpu")
+                       if s in scalars or kind == "fp8" and s == "weight_scale"
+                       else t.pop(f"{name}.{s}")) for s in parts}
             weight = got["weight"] if "weight" in got else got.get("weight_packed")
             if kind == "nvfp4":
                 g = got.get("weight_global_scale" if reciprocal else "weight_scale_2")
