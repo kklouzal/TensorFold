@@ -1,5 +1,10 @@
 # TensorFold fork
 
+The BF16 Qwen prompt path omits group sums that its consumers discard, retaining
+the original BF16 arithmetic and default sum-producing operations. Exact-bit
+native controls pass for dense Qwen3.8 and Qwen3.6 MoE; complete-model prefill,
+loading and decode comparisons remain pending. Flash Next has a separate path.
+
 FP8 fragment packing now copies a bounded strided permutation directly into its
 final byte layout. The source candidate passes independent CPU/CUDA layout and
 consumer checks. On the local SM120 component workload, packing was 5.50–7.93×

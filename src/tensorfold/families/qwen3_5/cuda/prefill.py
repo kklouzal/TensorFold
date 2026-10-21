@@ -149,7 +149,7 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
             out = attention(q.view(W, c.heads, c.head_dim), kbuf, vbuf, p0, scale=c.head_dim ** -0.5)
             r = _row_mm(pg.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim), attn.o, tp)
         if layer.moe is not None:                          # routed experts read bf16 rows (their prefill form)
-            x, h, _ = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
+            x, h = prefill_bf16.add_rmsnorm(x, r, layer.post_norm, c.eps)
             pending = moe.run(h, layer.moe, prefill=True)
         else:
             x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
@@ -159,9 +159,9 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
     st.pos = p0 + W
     normed = None
     if every:
-        _, normed, _ = glue.add_rmsnorm(x, pending, w.norm, c.eps)
+        _, normed = prefill_bf16.add_rmsnorm(x, pending, w.norm, c.eps)
     elif last:
-        _, normed, _ = glue.add_rmsnorm(x[-1:].contiguous(), pending[-1:].contiguous(), w.norm, c.eps)
+        _, normed = prefill_bf16.add_rmsnorm(x[-1:].contiguous(), pending[-1:].contiguous(), w.norm, c.eps)
     taps_out = torch.cat(taps, dim=-1) if capture_taps else None
     if part is None:
         return normed, taps_out
@@ -322,7 +322,7 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                 outs.append(attention(q[o:o + n], kbuf, vbuf, p0, scale=c.head_dim ** -0.5))
             r = _row_mm(pg.gate_mul(torch.cat(outs), qg, heads=c.heads, head_dim=c.head_dim), attn.o, tp)
         if layer.moe is not None:                          # the same bf16 expert input and slot order as one stream
-            x, h, _ = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
+            x, h = prefill_bf16.add_rmsnorm(x, r, layer.post_norm, c.eps)
             pending = moe.run(h, layer.moe, prefill=True)
         else:
             x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
@@ -333,8 +333,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
     out = []
     for st, part, p0, (_, _, cut), (o, n) in zip(sts, parts, p0s, items, spans):
         st.pos = p0 + n
-        _, normed, _ = glue.add_rmsnorm(x[o + n - 1:o + n].contiguous(), pending[o + n - 1:o + n].contiguous(),
-                                        w.norm, c.eps)
+        _, normed = prefill_bf16.add_rmsnorm(x[o + n - 1:o + n].contiguous(), pending[o + n - 1:o + n].contiguous(),
+                                            w.norm, c.eps)
         if part is not None:
             part.pos = p0 + cut                     # the piece's buffers: their rows below part.pos stay as committed
         out.append((normed, None if every is None else every[o:o + n], part))
