@@ -53,9 +53,10 @@ thinking and budgets per request. Explicit environment overrides remain availabl
 **Gemma sampled-proposal qualification (2026-10-21):** unpenalized requests with positive `top_k` through 256
 bind proposal extraction to that request's top-k support before probability normalization. Boundary ties retain
 complete-row repair and deterministic token-ID ordering. Other proposal regions retain their 256-candidate
-support. Exact partial selection for complete-row repair is also under qualification. CPU oracle checks pass;
-native probability-byte, complete-sequence and integrated GB10 performance comparisons remain pending. These
-changes do not alter target precision or the request's sampling and thinking settings.
+support. Exact partial selection for complete-row repair is also under qualification. The candidate passed
+495 installed ARM64/CUDA checks on GB10, including probability bytes, ties, cache state and workspace limits;
+complete full-model sequences and integrated performance comparisons remain pending. These changes do not
+alter target precision or the request's sampling and thinking settings.
 
 Startup admission reserves rejection-sampling scratch for the configured proposal routes and serving geometry. Serial-only configurations do not reserve unreachable copy-proposal storage; companion verification retains its required target-distribution workspace.
 
@@ -1010,6 +1011,10 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   sequence at the same sampling mode and proposal geometry. Serial sequences also remain equal across proposal
   widths. Greedy serial/drafted identity and direct head-score bit checks remain required; sampled serial and
   drafted sequences, or sampled drafted sequences at different widths, may differ under rejection sampling.
+- `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
+  policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
+  inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
+  every failed, partial and unrun outcome remains in the report. A screen does not select a production winner.
 
 ### Logs, metrics, shutdown and restart
 
