@@ -32,13 +32,32 @@ def _source_addresses(n, k, npad):
 
 SHAPES = [(0, 64, 0), (0, 64, 128), (17, 0, 128), (1, 64, 128), (63, 128, 128), (64, 64, 128),
           (65, 192, 128), (127, 256, 128), (128, 64, 128), (129, 128, 256), (257, 192, 384),
-          (4095, 64, 4096), (4096, 128, 4096), (4097, 64, 4224), (8193, 64, 8320)]
+          (4095, 64, 4096), (4096, 128, 4096), (4097, 64, 4224), (8192, 64, 8192),
+          (8256, 128, 8256), (12288, 64, 12288), (8193, 64, 8320)]
+
+
+def _layout(codes, layout):
+    n, k = codes.shape
+    if layout == "contiguous":
+        return codes
+    if layout == "column":
+        view = torch.empty((n, k * 2), dtype=torch.uint8, device=codes.device)[:, ::2]
+    elif layout == "row":
+        view = torch.empty((n * 2, k), dtype=torch.uint8, device=codes.device)[::2]
+    elif layout == "transpose":
+        view = torch.empty((k, n), dtype=torch.uint8, device=codes.device).t()
+    elif layout == "offset":
+        view = torch.empty((n + 2, k + 2), dtype=torch.uint8, device=codes.device)[1:n + 1, 1:k + 1]
+    else:
+        raise ValueError(layout)
+    view.copy_(codes)
+    return view
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-@pytest.mark.parametrize("strided", [False, True])
+@pytest.mark.parametrize("layout", ["contiguous", "column", "row", "transpose", "offset"])
 @pytest.mark.parametrize("n,k,npad", SHAPES)
-def test_fragment_bytes_encode_every_original_address(n, k, npad, strided, device):
+def test_fragment_bytes_encode_every_original_address(n, k, npad, layout, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA unavailable")
     expected = _source_addresses(n, k, npad)
@@ -47,11 +66,7 @@ def test_fragment_bytes_encode_every_original_address(n, k, npad, strided, devic
     # Encode distinct source addresses across byte planes. A periodic byte
     # pattern alone could conceal swapped rows or 256-byte source offsets.
     for plane in range(planes):
-        codes = ((source >> (plane * 8)) & 255).to(torch.uint8)
-        if strided:
-            backing = torch.empty((n, k * 2), dtype=torch.uint8, device=device)
-            backing[:, ::2] = codes
-            codes = backing[:, ::2]
+        codes = _layout(((source >> (plane * 8)) & 255).to(torch.uint8), layout)
         before = codes.clone()
         actual = linear._fragment_order(codes, npad)
         want = torch.from_numpy(((expected >> (plane * 8)) & 255).astype(np.uint8)).to(device)
@@ -61,6 +76,38 @@ def test_fragment_bytes_encode_every_original_address(n, k, npad, strided, devic
         assert torch.equal(codes, before)
         codes.zero_()
         assert torch.equal(actual, want)  # output owns its bytes after the source changes
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("n,k,npad", [(128, 192, 128), (129, 128, 256), (4097, 64, 4224), (8192, 64, 8192)])
+@pytest.mark.parametrize("layout", ["overlap", "broadcast_rows", "broadcast_columns"])
+def test_fragment_reads_overlapping_and_broadcast_views_without_writing_them(n, k, npad, layout, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    if layout == "overlap":
+        values = np.arange(1, n + k, dtype=np.int64)
+        logical = np.arange(n)[:, None] + np.arange(k)[None, :] + 1
+        strides = (1, 1)
+    elif layout == "broadcast_rows":
+        values = np.arange(1, k + 1, dtype=np.int64)
+        logical = np.broadcast_to(values[None, :], (n, k))
+        strides = (0, 1)
+    else:
+        values = np.arange(1, n + 1, dtype=np.int64)
+        logical = np.broadcast_to(values[:, None], (n, k))
+        strides = (1, 0)
+    addresses = _source_addresses(n, k, npad)
+    lookup = np.concatenate((np.zeros(1, dtype=np.int64), logical.reshape(-1)))
+    for plane in range(max(1, math.ceil(int(values[-1]).bit_length() / 8))):
+        backing = torch.from_numpy(((values >> (plane * 8)) & 255).astype(np.uint8)).to(device)
+        codes = backing.as_strided((n, k), strides)
+        before = backing.clone()
+        want = torch.from_numpy(((lookup[addresses] >> (plane * 8)) & 255).astype(np.uint8)).to(device)
+        actual = linear._fragment_order(codes, npad)
+        assert torch.equal(actual, want)
+        assert torch.equal(backing, before)
+        backing.zero_()
+        assert torch.equal(actual, want)
 
 
 @pytest.mark.parametrize("rows", [64, 128, 192, 4096])

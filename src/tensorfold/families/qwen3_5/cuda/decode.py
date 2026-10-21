@@ -248,7 +248,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
                  allow_copy: bool = True, stop_eos: bool = True,
                  on_tokens: Callable[[list[int]], bool | None] | None = None,
                  trace: list | None = None, inplace: bool = False, constraint=None, history=None,
-                 runner=None) -> DecodeResult:
+                 runner=None, _staging=None) -> DecodeResult:
     """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole.
 
     ``history`` (tensorfold.engine.penalties.History, already holding ``pending``) penalizes each verify row by
@@ -266,6 +266,8 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
     tree_rows = max_rows if tree_rows is None else tree_rows
     if not 1 <= tree_rows <= max_rows:
         raise ValueError("tree_rows must be between 1 and max_rows")
+    if runner is not None and _staging is not None:
+        raise ValueError("graph and request staging are mutually exclusive")
     st = st if inplace else clone_state(st)
     if runner is not None:
         st = runner.load(st, st.pos + count + max_rows)
@@ -318,8 +320,11 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
             logits, record, *tapped = runner.verify(tokens, tree_parents, capture_taps=draft is not None)
         else:
             logits, record, *tapped = tree_forward(
-                w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None)
+                w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None,
+                _request_staging=_staging)
         torch.cuda.synchronize()
+        if _staging is not None:
+            _staging.completed()
         spent["verify"] = time.perf_counter() - stage
         stages["verify"] += spent["verify"]
         stage = time.perf_counter()

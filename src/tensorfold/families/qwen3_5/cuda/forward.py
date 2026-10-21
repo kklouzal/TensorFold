@@ -239,7 +239,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
                  *, full_logits: bool = True, tp: bool = False,
                  initial: tuple[torch.Tensor, torch.Tensor] | None = None,
                  finish: bool = True, capture_taps: bool = False, hidden: bool = False,
-                 staged: Staged | None = None):
+                 staged: Staged | None = None, _request_staging=None):
     """Return uncommitted node logits and layer data for topologically sorted parents, with each node seeing only its ancestors and committed prefix."""
 
     c = w.config
@@ -254,6 +254,8 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
         raise ValueError("tokens must be a 1-D int tensor matching parents")
     if tokens.device != w.norm.device:
         raise ValueError("tokens and weights must share a device")
+    if staged is not None and _request_staging is not None:
+        raise ValueError("graph and request staging are mutually exclusive")
     if staged is not None:                          # a graph replay's inputs, refreshed in place
         ids, pos, plan, aplan = staged.ids, staged.pos, staged.plan, staged.aplan
         aoffs, windows = staged.aoffs, staged.windows
@@ -262,12 +264,24 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
         ids = tokens.to(torch.int32)
         pos = torch.tensor([st.pos + st.rope_delta + d for d in depths], device=tokens.device,
                            dtype=torch.int32)
-        plan = deltanet.plan([parents], tokens.device)
-        softmax = [i for i, layer in enumerate(w.layers) if not layer.linear]
-        aplan = tree_attention.plan([parents], [st.pos], c.heads // c.kv_heads, tokens.device)
+        softmax = tuple(i for i, layer in enumerate(w.layers) if not layer.linear)
         origin = w.attention_origin if softmax else None
-        aoffs = _cache_offsets([st], softmax, origin)
-        windows = _conv_windows(parents, c.conv_kernel - 1).to(tokens.device)
+        entry = (_request_staging.begin(w, st, parents, chain, softmax, origin)
+                 if _request_staging is not None else None)
+        if entry is None:
+            plan = deltanet.plan([parents], tokens.device)
+            aplan = tree_attention.plan([parents], [st.pos], c.heads // c.kv_heads, tokens.device)
+            aoffs = _cache_offsets([st], softmax, origin)
+            windows = _conv_windows(parents, c.conv_kernel - 1).to(tokens.device)
+            if _request_staging is not None:
+                _request_staging.capture(w, st, parents, softmax, origin, plan, aplan, aoffs, windows)
+        else:
+            plan, aplan, aoffs, windows = entry.plan, entry.aplan, entry.aoffs, entry.windows
+            # Items/chunks are unchanged inside the exact boundary key. The
+            # stream's committed prefix changes; no reusable pinned input is
+            # mutated, and token/rotary transfers remain the ordinary path's.
+            aplan.streams = torch.tensor([[0, W, st.pos, aplan.chunks]], dtype=torch.int32,
+                                         device=tokens.device)
     if initial is None:
         x = glue.embedding(ids, w.embed)
         pending: torch.Tensor | None = None

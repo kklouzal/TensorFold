@@ -10,6 +10,18 @@ ModelOpt original routed codes and FP8 block-scale bytes are packed on the selec
 
 CT native-A4 keeps its original CPU byte permutation. The proposed Torch GPU permutation and private `checkpoint.pack4` alternative were not selected. The selected-source proof preserves the relevant099 numerical source bytes and CT loader body; it does not assert whole-runtime or startup equivalence.
 
+Native-A4 block-scale admission checks the original unsigned byte encoding:
+`0x00..0x7e` is accepted, including zero; `0x7f` and every set sign bit are
+rejected before native packing. Plain CPU tensors reduce a private contiguous
+U8 copy through NumPy, flattening its owned view to preserve Torch input ranks
+beyond NumPy's rank limit. The copy isolates Torch's NumPy bridge, which marks
+the bridged storage non-resizable, so validation preserves the caller's bytes, shape,
+strides, offset, storage capacity and version. At most one scale-payload-sized
+private byte buffer is live during the synchronous reduction. Empty payloads
+perform no reduction. Non-CPU and tensor-subclass dispatch retains the Torch
+reduction. This does not extend the unsigned contract to W4A16's signed E4M3
+storage, or promote historical startup timings to the new implementation.
+
 Host admission now counts physical pinned Reader backing separately from GPU packing scratch and temporary CPU publication payloads. On the pinned allocator, each64MiB+3page Reader block uses a128MiB bucket, so its two-block ring is256MiB. Linux read and later D2H publication phases add the larger temporary allowance once. Authority, metadata and read-ahead are accounted separately. An expert-parallel leader with distinct backbone and expert Readers must account for each live ring; the follower accounts for its own Reader. Pure staged-platform resource controls do not constitute Windows execution qualification.
 
 RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CODEC >= 1 and CODEC <= 8`. The inclusive1–8 check, codec formats and numerical function bodies remain unchanged. The historical ordinary container used Torch2.16/Triton3.9 pins; the reported2.14/Triton3.8 combination is a separate compatibility region, now intentionally stopped before native completion.

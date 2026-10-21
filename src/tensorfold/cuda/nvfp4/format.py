@@ -248,8 +248,18 @@ def validate_native_a4_scales(scales, *, name: str) -> None:
 
     if scales.dtype not in (torch.uint8, torch.float8_e4m3fn):
         raise ValueError(f"{name}: native A4 block scales require U8 bytes or E4M3 checkpoint values")
-    if scales.numel() and int(scales.view(torch.uint8).amax()) > 0x7e:
-        raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
+    if scales.numel():
+        raw = scales.view(torch.uint8)
+        # Tensor.numpy marks its storage non-resizable. Keep that bridge's
+        # metadata effect on private bytes, preserving the caller's storage.
+        if type(raw) is torch.Tensor and raw.device.type == "cpu":
+            # NumPy has a rank limit. Flatten private contiguous bytes so
+            # supported Torch input ranks and strides keep the same contract.
+            maximum = int(raw.clone(memory_format=torch.contiguous_format).view(-1).numpy(force=True).max())
+        else:
+            maximum = int(raw.amax())  # preserve non-CPU and tensor-subclass dispatch
+        if maximum > 0x7e:
+            raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
 
 
 @dataclass(frozen=True, slots=True)
