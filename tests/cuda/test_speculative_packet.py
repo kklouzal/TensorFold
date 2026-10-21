@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from tensorfold.cuda import speculative
+from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.engine.penalties import History, Penalties
 
 if not torch.cuda.is_available():
@@ -65,3 +66,61 @@ def test_a_successful_readback_finishes_packet_work_before_releasing_source_owne
         assert len(chains.finish(0, 3)[0]) == 3
         assert done.query() and chains.words is chains.owners is None
         assert len(chains.finish(1, 3)[0]) == 3
+
+
+@pytest.mark.parametrize("top_k", [1, 20, 64, 256])
+@pytest.mark.parametrize("kind", ["random", "all_tied", "boundary", "masked", "extreme"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("guard", [1, 8, 32])
+def test_bound_native_q_bytes_and_same_config_replay_match_full256(monkeypatch, top_k, kind, dtype, guard):
+    from tensorfold.engine.rejection import proposal_row
+
+    monkeypatch.setattr(speculative, "_PROPOSAL_GUARD", guard)
+    logits = torch.randn((6, 4099), generator=torch.Generator(device="cuda").manual_seed(91),
+                         device="cuda", dtype=dtype)
+    if kind == "all_tied":
+        logits.zero_()
+    elif kind == "boundary":
+        logits.zero_()
+        logits[:, :top_k - 1] = 3
+        logits[:, top_k - 1:top_k + 400] = 2
+    elif kind == "masked":
+        logits[:, 150:] = -float("inf")
+    elif kind == "extreme":
+        logits.fill_(1e30)
+    policy = Sampling(31, .7, top_k, .95, .02)
+    owner = object()
+    bounded = speculative.Chains(logits, [None, None], 3, owners=owner, sampled=True, sampling=policy)
+    reference = speculative.Chains(logits, [None, None], 3, sampled=True)
+    assert bounded.words.shape == (6, 1 + 2 * (top_k + guard))
+    raw = logits.float().cpu().numpy()
+    for stream in (1, 0):
+        first = 17 + 100 * stream
+        packet = bounded.sample(stream, 3, policy, first)
+        assert packet == reference.sample(stream, 3, policy, first)
+        assert packet == bounded.sample(stream, 3, Sampling(31, .7, top_k, .95, .02), first)
+        for row, actual in enumerate(packet.q_rows):
+            scores = raw[stream * 3 + row]
+            ids = np.lexsort((np.arange(len(scores)), -scores))[:256]
+            expected = proposal_row(scores[ids], ids, policy)
+            assert actual.ids.tobytes() == expected.ids.tobytes()
+            assert actual.probs.tobytes() == expected.probs.tobytes()
+    assert bounded._source is bounded.words is bounded.owners is None
+
+
+@pytest.mark.parametrize("guard", [1, 8, 32])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_guard_packet_and_full_tie_repair_fit_the_matching_workspace(monkeypatch, guard, dtype):
+    monkeypatch.setattr(speculative, "_PROPOSAL_GUARD", guard)
+    logits = torch.zeros((4, 8192), dtype=dtype, device="cuda")
+    charge = speculative.chain_workspace(4, 8192)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    before = torch.cuda.memory_allocated()
+    packet = speculative.Chains(logits, [None], 4, sampled=True)
+    q = packet.sample(0, 4, Sampling(17, top_k=0), 19)
+    torch.cuda.synchronize()
+    assert torch.cuda.max_memory_allocated() - before <= charge["device_bytes"]
+    assert sum(row.ids.nbytes + row.probs.nbytes for row in q.q_rows) <= charge["host_bytes"]
+    assert packet._proposal_width == 256 + guard
+    assert packet._source is packet.words is packet.owners is None

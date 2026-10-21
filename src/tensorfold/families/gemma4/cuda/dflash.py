@@ -253,13 +253,14 @@ class DFlash:
         state.length += taps.shape[0]
 
     @torch.no_grad()
-    def propose(self, state: DraftState, anchor: int, count: int, history=None, *, sampled=False
+    def propose(self, state: DraftState, anchor: int, count: int, history=None, *, sampled=False, sampling=None
                 ) -> speculative.Chains | None:
         """Up to ``count`` proposals after the anchor from committed context only: the shared chain utility's
         argmax for greedy requests or actual sampled q candidates. Both use the preceding proposal path's
         penalties; sampled packets retain their real distribution for target rejection verification."""
         logits = self.logits(state, anchor, count)
-        return None if logits is None else speculative.Chains(logits, [history], logits.shape[0], sampled=sampled)
+        return None if logits is None else speculative.Chains(logits, [history], logits.shape[0], sampled=sampled,
+                                                             sampling=sampling)
 
     @torch.no_grad()
     def logits(self, state: DraftState, anchor: int, count: int) -> torch.Tensor | None:

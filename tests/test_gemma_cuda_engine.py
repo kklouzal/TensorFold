@@ -124,7 +124,7 @@ def _engine(monkeypatch, *, with_head=True):
             self.append_roles.append((len(taps), prompt))
             draft.taps.extend(int(v) for v in taps[:, 0])
 
-        def propose(self, draft, anchor, limit, history=None, *, sampled=False):
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
             if not draft.taps:
                 return None
             total = sum(draft.taps) + anchor
@@ -314,11 +314,11 @@ def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypat
     seen = []
 
     class Exact(type(engine.head)):
-        def propose(self, draft, anchor, limit, history=None, *, sampled=False):
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
             first = len(draft.taps) + 1             # the committed context ends at the anchor
             seen.append(first == engine._state.position + 1)
             logits = torch.stack([scores(first + j) for j in range(limit)])
-            return speculative.Chains(logits, [history], limit, sampled=sampled)
+            return speculative.Chains(logits, [history], limit, sampled=sampled, sampling=sampling)
 
     engine.head = Exact()
 
@@ -491,9 +491,9 @@ def test_sampled_logical_packets_keep_prefix_across_reply_budgets_and_cache(monk
     launch = engine.head.propose
     widths = []
 
-    def propose(state, anchor, limit, history=None, *, sampled=False):
+    def propose(state, anchor, limit, history=None, *, sampled=False, sampling=None):
         widths.append((limit, sampled))
-        return launch(state, anchor, limit, history, sampled=sampled)
+        return launch(state, anchor, limit, history, sampled=sampled, sampling=sampling)
 
     engine.head.propose = propose
 
@@ -526,7 +526,7 @@ def test_sampled_terminal_eos_or_residual_stays_pending_outside_committed_taps(m
         logits[:, 1 if engine._state.position == len(prompt) else 6] = 0
         return logits
 
-    def propose(state, anchor, limit, history=None, *, sampled=False):
+    def propose(state, anchor, limit, history=None, *, sampled=False, sampling=None):
         assert sampled and limit == 7
         token = 6 if sampled_eos else 9  # actual q accepts EOS or is surely rejected into the target's EOS
         return SimpleNamespace(sample=lambda row, count, policy, position, history=None:

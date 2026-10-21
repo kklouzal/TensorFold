@@ -50,6 +50,13 @@ thinking and budgets per request. Explicit environment overrides remain availabl
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate, including normalized represented probability rows and strictly interior keyed uniforms. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
 
+**Gemma sampled-proposal qualification (2026-10-21):** unpenalized requests with positive `top_k` through 256
+bind proposal extraction to that request's top-k support before probability normalization. Boundary ties retain
+complete-row repair and deterministic token-ID ordering. Other proposal regions retain their 256-candidate
+support. Exact partial selection for complete-row repair is also under qualification. CPU oracle checks pass;
+native probability-byte, complete-sequence and integrated GB10 performance comparisons remain pending. These
+changes do not alter target precision or the request's sampling and thinking settings.
+
 Startup admission reserves rejection-sampling scratch for the configured proposal routes and serving geometry. Serial-only configurations do not reserve unreachable copy-proposal storage; companion verification retains its required target-distribution workspace.
 
 **Gemma4/MoE integration candidate (2026-10-19):** Gemma text decode and DFlash verification now use CUDA graphs over the lane's persistent KV state; prefill and visual blocks remain eager. Startup captures each verification width at the smallest attention grid; larger grids capture on first use and retain their outputs until engine retirement. The accompanying Qwen CT graph path shares its fixed attention buffers with prefill and retained prompt states, with separately owned copies when conversations switch. These changes remain pending final integrated native GB10, full-context, quality and HTTP performance qualification under VBoost 0. Historical results below keep their original source, image and host configuration. See [the candidate's validation scope](docs/gemma4-cuda-validation.md#integration-candidate-2026-10-19).
@@ -992,7 +999,17 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   dtype, library versions, prefill chunk and precision, item names must be disjoint, and the result lists every
   part's hashes.
 - `tools/campaign_trace.py` records one decode request under `torch.profiler` (Perfetto trace plus per-round GPU
-  busy time, launches and host synchronizations); profiled timings diagnose, they are not speed claims.
+  busy time, launches and host synchronizations). Set `--temperature`, `--top-k`, `--top-p` and `--seed` to
+  profile the request's sampling policy; the default remains greedy. Warmup and capture use the same prepared
+  policy, and sampled traces mark target probability extraction as well as sampling. A trace without actual
+  CUDA kernels is an error. CPU stage durations and round boundaries use CPU annotations; `gpu_stages` reports
+  separate inclusive GPU annotation ranges, which may overlap and are distinct from kernel busy time.
+  Use a fresh `--out` directory. Profiled timings diagnose execution costs; compare unprofiled requests to measure
+  performance.
+- `tools/gemma4_cuda_head_bench.py --sampled` compares exact head variants against the incumbent's complete
+  sequence at the same sampling mode and proposal geometry. Serial sequences also remain equal across proposal
+  widths. Greedy serial/drafted identity and direct head-score bit checks remain required; sampled serial and
+  drafted sequences, or sampled drafted sequences at different widths, may differ under rejection sampling.
 
 ### Logs, metrics, shutdown and restart
 

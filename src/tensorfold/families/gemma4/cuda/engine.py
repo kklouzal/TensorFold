@@ -362,7 +362,8 @@ class Gemma4Engine:
                     # remaining output room. Even the final emitted slot tests the same full q packet.
                     limit = self.max_rows - 1 if stochastic else min(self.max_rows - 1, room - 1)
                     if stochastic:
-                        chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True)
+                        chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True,
+                                                   sampling=sampling)
                         first_position = state.position + 1
                         packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
                                   else ChainPacket((), (), first_position))

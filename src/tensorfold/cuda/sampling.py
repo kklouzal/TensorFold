@@ -159,6 +159,34 @@ def candidate_fields(logits: torch.Tensor, count: int, *, id_map=None):
     return values.float(), ids, flags
 
 
+def _canonical_repair_order(values: np.ndarray, ids: np.ndarray, kept: int) -> np.ndarray:
+    """Exact legacy lexsort prefix of one validated immutable complete row.
+
+    Partition only obtains thresholds; its unstable ordering never selects a
+    tied token. Gather from the original arrays to retain every score bit,
+    including signed zeros. Equal score/ID pairs keep original index order.
+    Small rows and near-complete prefixes retain the full-sort policy.
+    """
+    width = len(values)
+    if width < 4096 or kept * 4 >= width:
+        return np.lexsort((ids, -values))[:kept]
+    cutoff = np.partition(values, width - kept)[width - kept]
+    higher = np.flatnonzero(values > cutoff)
+    tied = np.flatnonzero(values == cutoff)
+    need = kept - len(higher)
+    if need < len(tied):
+        tied_ids = ids[tied]
+        boundary = np.partition(tied_ids, need - 1)[need - 1]
+        smaller = tied[tied_ids < boundary]
+        # Source indices are ascending: even duplicate IDs retain lexsort's
+        # stable order, rather than relying on partition's unspecified ties.
+        last = tied[tied_ids == boundary][:need - len(smaller)]
+        chosen = np.concatenate((higher, smaller, last))
+    else:
+        chosen = np.concatenate((higher, tied))
+    return chosen[np.lexsort((ids[chosen], -values[chosen]))]
+
+
 def canonical_candidates(values: np.ndarray, ids: np.ndarray, count: int, full_width: int, full_row: Callable):
     """Canonical [rows,min(count,V)] support; tied retained edges repair from the immutable complete row.
 
@@ -179,7 +207,9 @@ def canonical_candidates(values: np.ndarray, ids: np.ndarray, count: int, full_w
             if v.shape != (full_width,) or tokens.shape != v.shape:
                 raise ValueError("tie repair must return the complete immutable row/global IDs")
             valid_scores(v[None])
-        order = np.lexsort((tokens, -v))[:kept]
+            order = _canonical_repair_order(v, tokens, kept)
+        else:
+            order = np.lexsort((tokens, -v))[:kept]
         out_values[row], out_ids[row] = v[order], tokens[order]
     return out_values, out_ids
 

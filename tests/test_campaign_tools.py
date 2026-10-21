@@ -2,15 +2,15 @@
 checks, needle placement and the teacher-forced KL bound. No model or GPU."""
 
 import contextlib
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import itertools
 import json
 import math
-from pathlib import Path
 import subprocess
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -945,11 +945,10 @@ def test_sampler_replaced_swaps_every_tensorfold_reference_and_restores_it(monke
     user.sample_rows, unrelated.sample_rows, outside.sample_rows = original, other, original
     for module in (root, cuda, sampling, user, unrelated, outside):
         monkeypatch.setitem(sys.modules, module.__name__, module)
-    with pytest.raises(KeyError):
-        with kl.sampler_replaced("capture"):
-            assert sampling.sample_rows == user.sample_rows == "capture"
-            assert unrelated.sample_rows is other and outside.sample_rows is original
-            raise KeyError("restored on failure too")
+    with pytest.raises(KeyError), kl.sampler_replaced("capture"):
+        assert sampling.sample_rows == user.sample_rows == "capture"
+        assert unrelated.sample_rows is other and outside.sample_rows is original
+        raise KeyError("restored on failure too")
     assert sampling.sample_rows is user.sample_rows is outside.sample_rows is original
     assert unrelated.sample_rows is other
 
@@ -960,7 +959,8 @@ def test_trace_summary_counts_kernel_union_launches_and_syncs_per_round():
     def x(name, ts, dur=0, cat="cpu_op"):
         return {"ph": "X", "name": name, "ts": ts, "dur": dur, "cat": cat}
 
-    events = [x("tf.sample", 0), x("tf.sample", 30), x("tf.sample", 60),
+    events = [x("tf.sample", 0, cat="user_annotation"), x("tf.sample", 30, cat="user_annotation"),
+              x("tf.sample", 60, cat="user_annotation"),
               # round 1: overlapping kernels (0-10, 5-15), one nested (2-8) and one past the round end (25-35)
               x("k1", 0, 10, "kernel"), x("k2", 5, 10, "kernel"), x("k3", 2, 6, "kernel"), x("k1", 25, 10, "kernel"),
               x("cudaLaunchKernel", 1, cat="cuda_runtime"), x("cudaGraphLaunch", 3, cat="cuda_runtime"),

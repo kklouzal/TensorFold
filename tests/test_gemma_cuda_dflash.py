@@ -109,6 +109,13 @@ def test_prompt_committed_kv_and_q_are_bit_identical_across_tiny_cached_suffix(t
     assert left[0] == right[0] == 95
     assert all(torch.equal(a, b) for pairs in zip(left[1], right[1]) for a, b in zip(*pairs))
     assert torch.equal(left_q, right_q)
+    from tensorfold.engine.exact_sampling import Sampling
+
+    policy = Sampling(71, .7, 20, .95)
+    cold = draft.propose(whole, 2, 4, sampled=True, sampling=policy).sample(0, 4, policy, 96)
+    cached = draft.propose(split, 2, 4, sampled=True, sampling=policy).sample(0, 4, policy, 96)
+    full256 = draft.propose(whole, 2, 4, sampled=True).sample(0, 4, policy, 96)
+    assert cold == cached == full256
 
 
 def test_proposal_factory_owns_sampled_q_packet_and_preserves_greedy_default():
@@ -128,6 +135,18 @@ def test_proposal_factory_owns_sampled_q_packet_and_preserves_greedy_default():
         assert row.ids.tolist() == list(range(5)) and row.probs.tolist() == [.2] * 5
         assert 0 <= token < 5 and not row.ids.flags.writeable and not row.probs.flags.writeable
     assert launched.words is None and launched.owners is None
+
+
+def test_proposal_factory_binds_request_top_k_before_shared_packet_extraction():
+    from tensorfold.engine.exact_sampling import Sampling
+
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    logits = torch.arange(3 * 2049, dtype=torch.float32).reshape(3, 2049)
+    draft.logits = lambda state, anchor, count: logits[:count]
+    policy = Sampling(43, .7, 64, .95)
+    launched = draft.propose(object(), 2, 3, sampled=True, sampling=policy)
+    assert launched._proposal_count == 64 and launched.words.shape == (3, 131)
+    assert launched.sample(0, 3, policy, 37) == draft.propose(object(), 2, 3, sampled=True).sample(0, 3, policy, 37)
 
 
 def norm(x, weight, eps):

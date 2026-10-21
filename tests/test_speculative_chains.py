@@ -6,6 +6,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from tensorfold.cuda import speculative
+from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.engine.penalties import History, Penalties
 
 
@@ -121,3 +122,126 @@ def test_newly_computed_penalty_confidences_are_refused_if_nonfinite():
     values, ids = np.array([[1.0, 0.0]], dtype=np.float32), np.array([[0, 1]], dtype=np.int64)
     with pytest.raises(ValueError, match="draft confidence scores must be finite"):
         speculative.penalized(values, ids, BrokenHistory())
+
+
+@pytest.mark.parametrize("top_k", [1, 20, 64, 255, 256])
+@pytest.mark.parametrize("kind", ["distinct", "all_tied", "boundary", "old_boundary", "masked", "positive", "negative"])
+def test_policy_bound_q_is_byte_identical_to_full256_support(top_k, kind):
+    """Independent full-row ranking also checks both packet paths, not only their token choices."""
+    from tensorfold.engine.rejection import proposal_row
+
+    logits = torch.randn(4, 2049, generator=torch.Generator().manual_seed(62))
+    if kind == "all_tied":
+        logits.zero_()
+    elif kind == "boundary":
+        logits.zero_()
+        logits[:, :top_k - 1] = 3
+        logits[:, top_k - 1:top_k + 333] = 2
+    elif kind == "old_boundary":
+        logits.zero_()
+        logits[:, :64] = 3
+        logits[:, 64:1500] = 2
+    elif kind == "masked":
+        logits[:, 100:] = -float("inf")
+    elif kind in ("positive", "negative"):
+        logits.fill_(1e30 if kind == "positive" else -1e30)
+    policy = Sampling(19, .7, top_k, .95, .03)
+    bounded = speculative.Chains(logits, [None, None], 2, sampled=True, sampling=policy)
+    reference = speculative.Chains(logits, [None, None], 2, sampled=True)
+    assert bounded.words.shape == (4, 1 + 2 * (top_k + 1))
+    assert reference.words.shape == (4, 1 + 2 * 257)
+    raw = logits.numpy()
+    for stream in (1, 0):
+        packet = bounded.sample(stream, 2, policy, 17 + stream * 100)
+        assert packet == reference.sample(stream, 2, policy, 17 + stream * 100)
+        assert packet == bounded.sample(stream, 2, Sampling(19, .7, top_k, .95, .03), 17 + stream * 100)
+        for j, q in enumerate(packet.q_rows):
+            row = raw[stream * 2 + j]
+            ids = np.lexsort((np.arange(len(row)), -row))[:256]
+            expected = proposal_row(row[ids], ids, policy)
+            assert q.ids.tobytes() == expected.ids.tobytes()
+            assert q.probs.tobytes() == expected.probs.tobytes()
+            assert not q.ids.flags.writeable and not q.probs.flags.writeable
+    assert bounded._source is bounded.words is bounded.owners is None
+
+
+@pytest.mark.parametrize("top_k", [0, 257, 1024])
+def test_unselected_top_k_policies_retain_full256_packet(top_k):
+    chains = speculative.Chains(torch.zeros(2, 1024), [None], 2, sampled=True,
+                                sampling=Sampling(1, top_k=top_k))
+    assert chains._proposal_count == 256 and chains._bound_top_k is None
+    assert chains.words.shape == (2, 515)
+
+
+def test_any_active_history_keeps_full256_for_all_streams():
+    history = History(Penalties(presence=1.0), [0])
+    logits = torch.arange(2048, dtype=torch.float32).reshape(2, 1024)
+    policy = Sampling(31, top_k=20)
+    bounded = speculative.Chains(logits, [None, history], 1, sampled=True, sampling=policy)
+    reference = speculative.Chains(logits, [None, history], 1, sampled=True)
+    assert bounded._proposal_count == 256 and bounded._bound_top_k is None
+    assert bounded.words.shape == reference.words.shape == (2, 515)
+    for row, penalties in enumerate((None, history)):
+        assert bounded.sample(row, 1, policy, 29, penalties) == reference.sample(row, 1, policy, 29, penalties)
+
+
+@pytest.mark.parametrize("changed", [0, 1, 21, 256, 512])
+def test_changed_bound_top_k_refuses_before_any_readback(changed):
+    owner = object()
+    policy = Sampling(3, top_k=20)
+    chains = speculative.Chains(torch.zeros(2, 1024), [None], 2, owners=owner, sampled=True, sampling=policy)
+    readback = Readback(chains, fail=True)
+    with pytest.raises(ValueError, match="construction top_k"):
+        chains.sample(0, 2, Sampling(3, top_k=changed), 19)
+    assert readback.calls == 0 and chains.host is None and chains.owners is owner
+
+
+def test_other_sampling_fields_can_change_after_identical_top_k_filtering():
+    logits = torch.randn(3, 1024, generator=torch.Generator().manual_seed(3))
+    packet = speculative.Chains(logits, [None], 3, sampled=True, sampling=Sampling(4, top_k=20))
+    for policy in (Sampling(4, .7, 20, .95), Sampling(67, 1.3, 20, .6, .1)):
+        reference = speculative.Chains(logits, [None], 3, sampled=True).sample(0, 3, policy, 29)
+        assert packet.sample(0, 3, policy, 29) == reference
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_bound_packet_preserves_whole_source_domain_failure_and_owners(bad):
+    owner = object()
+    logits = torch.ones(3, 1024)
+    logits[-1, -1] = bad
+    if bad == -float("inf"):
+        logits[-1] = bad
+    policy = Sampling(3, top_k=20)
+    packet = speculative.Chains(logits, [None], 3, owners=owner, sampled=True, sampling=policy)
+    with pytest.raises(ValueError):
+        packet.sample(0, 0, policy, 19)
+    assert packet.host is None and packet.owners is owner and packet._source is logits
+
+
+def test_construction_policy_is_not_accepted_by_greedy_or_foreign_sampling():
+    logits = torch.zeros(2, 1024)
+    with pytest.raises(ValueError, match="sampled-only packet"):
+        speculative.Chains(logits, [None], 2, sampling=Sampling(1))
+    with pytest.raises(ValueError, match="sampled-only packet"):
+        speculative.Chains(logits, [None], 2, sampled=True, sampling=object())
+
+
+def test_bound_tie_repair_holds_source_and_foreign_owners_until_real_readback(monkeypatch):
+    logits, owner = torch.zeros(3, 2049), object()
+    policy = Sampling(5, top_k=20)
+    chains = speculative.Chains(logits, [None], 3, owners=owner, sampled=True, sampling=policy)
+    transfer = Readback(chains)
+    canonical, repaired = speculative.canonical_candidates, []
+
+    def checked(values, ids, count, width, full_row):
+        def complete(row):
+            assert chains._source is logits and chains.owners is owner
+            repaired.append(row)
+            return full_row(row)
+        return canonical(values, ids, count, width, complete)
+
+    monkeypatch.setattr(speculative, "canonical_candidates", checked)
+    packet = chains.sample(0, 3, policy, 17)
+    assert repaired == [0, 1, 2] and transfer.calls == 1
+    assert chains._source is chains.owners is chains.words is None
+    assert len(packet.tokens) == 3

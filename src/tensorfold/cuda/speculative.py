@@ -16,11 +16,15 @@ import numpy as np
 import torch
 
 from tensorfold.cuda.sampling import candidate_fields, canonical_candidates, valid_scores
-from tensorfold.engine.exact_sampling import MARGIN
+from tensorfold.engine.exact_sampling import MARGIN, Sampling
 
 # candidates a penalized stream reads per row: the top plus MARGIN, plus room for the tokens penalties push past it
 PENALIZED_CANDIDATES = 1 + MARGIN + 32
 PROPOSAL_CANDIDATES = 256  # explicit sparse proposal support; target probabilities keep complete-support fallback
+# Total extra provisional scores, including candidate_fields' implicit one. Keep one selected source policy.
+# Qualification may admit the largest guard, then bind smaller guards only at quiescent request boundaries;
+# each binding owns its complete packet lifetime. Serving never mutates this preparation constant.
+_PROPOSAL_GUARD = 1
 
 
 def chain_workspace(rows: int, vocab: int, *, streams: int = 1, penalized: bool = True) -> dict[str, int]:
@@ -30,6 +34,8 @@ def chain_workspace(rows: int, vocab: int, *, streams: int = 1, penalized: bool 
     packet beside all candidate extraction/conversion inputs; host includes immutable q, decoded readback, Python
     headers and the sum of one row's normalization/sort/draw intermediates. Runtime/library reserves remain owned
     by the caller's admission policy; native peak checks validate that integration.
+    The preparation guard charges provisional columns, not a wider desired q pool. Qualification can admit the
+    largest guard before using smaller guards at quiescent request boundaries within that same owned engine.
     """
     import sys
 
@@ -37,7 +43,7 @@ def chain_workspace(rows: int, vocab: int, *, streams: int = 1, penalized: bool 
 
     if any(type(v) is not int or v < 1 for v in (rows, vocab, streams)):
         raise ValueError("positive row, vocabulary and stream counts required")
-    n, s = rows * streams, min(vocab, PROPOSAL_CANDIDATES + 1)
+    n, s = rows * streams, min(vocab, PROPOSAL_CANDIDATES + _PROPOSAL_GUARD)
     kept = min(vocab, PROPOSAL_CANDIDATES)
     words = n * (1 + 2 * s) * 8
     allocated = lambda size: -(-size // 512) * 512
@@ -65,16 +71,32 @@ class Chains:
     the launch's kernels read through pointers) stay alive until the readback completes. Fresh readback confidences
     are checked before publication; cached host data remains immutable for this launch's lifetime. Producer and
     readback use the current CUDA stream; callers crossing streams must establish their execution dependency.
+    An optional construction ``sampling`` policy narrows unpenalized sampled support to its positive top_k
+    through256. Such a packet must retain that top_k at sample(); seed/temperature/p/min_p remain independent
+    because they act after the identical canonical top-k filter. Other regions retain256 candidates.
     """
 
-    def __init__(self, logits: torch.Tensor, histories: Sequence, rows: int, owners=None, *, sampled: bool = False):
+    def __init__(self, logits: torch.Tensor, histories: Sequence, rows: int, owners=None, *, sampled: bool = False,
+                 sampling: Sampling | None = None):
         if logits.ndim != 2 or logits.shape[0] != len(histories) * rows:
             raise ValueError("draft rows must be stream-major, one block of rows per stream")
+        if sampling is not None and (not sampled or not isinstance(sampling, Sampling)):
+            raise ValueError("a construction sampling policy requires a sampled-only packet")
         self._sampled = sampled
         self._penalty_width = self._proposal_width = 0
         self._source = None
         if sampled:
-            values, cols, flags = candidate_fields(logits, PROPOSAL_CANDIDATES)
+            self._proposal_count = PROPOSAL_CANDIDATES
+            self._bound_top_k = None
+            # Without penalties, proposal_row keeps top_k BEFORE any FP64 normalization. Its canonical
+            # prefix is therefore identical whether read from256 candidates or directly with this guard.
+            # Binding the policy, rather than accepting an arbitrary cap, prevents a later wider q.
+            if (sampling is not None and not any(h is not None for h in histories)
+                    and 0 < sampling.top_k <= PROPOSAL_CANDIDATES):
+                self._proposal_count = self._bound_top_k = sampling.top_k
+            # A wider guard can contain an entire cutoff plateau. Canonical support below stays D, so guard
+            # candidates never reach penalties or q normalization; all-tied edges still use full-row repair.
+            values, cols, flags = candidate_fields(logits, self._proposal_count + _PROPOSAL_GUARD - 1)
             self._proposal_width = values.shape[1]
             self._source = logits
             self.words = torch.cat([flags[:, None], values.contiguous().view(torch.int32).to(torch.int64),
@@ -127,7 +149,7 @@ class Chains:
             def full_row(row):
                 return self._source[row].float().cpu().numpy(), np.arange(self._source.shape[1], dtype=np.int64)
 
-            proposal = canonical_candidates(*proposal, PROPOSAL_CANDIDATES, self._source.shape[1], full_row)
+            proposal = canonical_candidates(*proposal, self._proposal_count, self._source.shape[1], full_row)
             self.host = None, None, None, proposal
             self.owners = self.words = self._source = None
             return
@@ -149,6 +171,9 @@ class Chains:
             raise ValueError("a stochastic chain must be prepared with sampled=True")
         if type(max_nodes) is not int or max_nodes < 0:
             raise ValueError("proposal node count must be a nonnegative integer")
+        if self._bound_top_k is not None and (history is not None or not isinstance(sampling, Sampling)
+                                              or sampling.top_k != self._bound_top_k):
+            raise ValueError("a bounded proposal packet must sample under its construction top_k without penalties")
         self._readback()
         values, ids = self.host[3]
         start = row * self.rows
