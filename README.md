@@ -19,17 +19,19 @@ counts. It retains complete token IDs, preprocessing and native settlement, and
 failed outcomes. This direct-engine procedure excludes HTTP/stream processing
 and concurrent service load; those require the existing campaign HTTP controls.
 
-The original GB10 Gemma CT/BF16 region has a preparation-selected softcap
-candidate that retains all three BF16 storage boundaries in one CUDA kernel.
-Its independent local SM120 check matches all 65,536 BF16 input bit patterns,
-including subnormals. Installed SM121 and full-model performance qualification
-remain pending; other numerical and hardware regions retain their existing math.
+The original GB10 Gemma CT/BF16 softcap candidate retains all three BF16 storage
+boundaries in one CUDA kernel. Installed SM121 checks match all 65,536 BF16 bit
+patterns, and its 96-request model comparison preserved complete output IDs,
+proposal hashes and acceptance counts. Warm complete-request latency remained
+inconclusive on both workloads, so no performance winner is selected. Cold-start
+and further candidate qualification remain pending.
+[Comparison and limits](docs/gemma4-cuda-validation.md#exact-softcap-candidate-2026-10-21).
 
 Loading development now keeps Qwen NVFP4 calibration scalars on CPU instead of
 uploading them before immediately reading them back. Payloads and block/channel
 scales retain their existing device path and calibration arithmetic is unchanged.
-Affected CPU controls pass; native and complete-startup performance qualification
-is pending. This candidate is not a new measured loading-speed claim.
+CPU and real-file native calibration controls pass. Complete-startup performance
+qualification is pending. This candidate is not a measured loading-speed claim.
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

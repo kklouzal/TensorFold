@@ -7,10 +7,9 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from tensorfold.families.gemma4.cuda import glue  # noqa: E402
-from tensorfold.families.gemma4.cuda.forward import Gemma4Target  # noqa: E402
-from tensorfold.families.gemma4.cuda.weights import Config  # noqa: E402
-
+from tensorfold.families.gemma4.cuda import glue
+from tensorfold.families.gemma4.cuda.forward import Gemma4Target
+from tensorfold.families.gemma4.cuda.weights import Config
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="softcap runs CUDA kernels")
 

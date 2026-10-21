@@ -26,10 +26,10 @@ import importlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sys
 import time
+from pathlib import Path
 
 if __package__:
     from .benchmark_output import write_json
@@ -207,7 +207,7 @@ def _attempt(app, case, row, report, output, torch):
             raise
         row["stats"] = stats
         if not isinstance(stats, dict):
-            raise ValueError("engine statistics must be an object")
+            raise TypeError("engine statistics must be an object")
         for key in ("cached", "rounds", "drafted", "accepted", "min_rows"):
             if key in stats and (type(stats[key]) is not int or stats[key] < 0):
                 raise ValueError(f"engine {key} must be a nonnegative integer")

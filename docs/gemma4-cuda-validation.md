@@ -119,3 +119,51 @@ The current source combines persistent Gemma KV, sliding/global attention and pr
 The shared Qwen CT chain runner uses its fixed attention buffers for prefill and decoding. Switching conversations moves still-kept prefixes to private buffers only when the stream's memory budget admits the copy beside a resumed conversation's buffers; otherwise those other prefixes are evicted. Resumed prefixes remain live through copy-in, and the runner refuses inconsistent sharing before changing buffers. This eliminates a duplicate full attention cache without weakening prefix-cache independence.
 
 Final integration qualification is pending. Earlier native tests, golden v1s comparisons and engine timings apply to their recorded source revisions and host configuration; they do not qualify this composition or the GB10's new VBoost 0 setting. Required remaining gates include native ARM64/SM12.1 tests, multi-chunk calibrated quality comparisons, deterministic/cache-independent model checks, greedy drafted/serial identity, full-context prefill and decode with admission/peak-memory traces, and repeated HTTP comparisons at the declared sampling settings. The existing production image's known long-prompt KV-growth failure is retained as historical evidence and does not qualify long-context serving.
+
+
+## Exact softcap candidate (2026-10-21)
+
+Source `d9bc2bc2a84aac64f602a722b56860806a111e34` contains a preparation-selected
+BF16 cap30 specialization for the original CT head on GB10 SM121. It retains
+both intermediate BF16 roundings and disables libdevice flush-to-zero. An
+independent exhaustive raw-bit oracle initially exposed1,472 subnormal
+mismatches; the corrected kernel matches all65,536 representations on actual
+SM120 and SM121. The installed ARM64 candidate image passed148 affected checks
+without skips, covering exact values, tails, graph replay, head ownership and
+Qwen calibration integration. Its verification image is
+`sha256:f4ab7a21da1d43b34534c5a4485d899bab115a103c47a06e3d9ffdc7f219834b`;
+the corresponding runtime image is
+`sha256:aec32a04442186e273741ffc0fbf1e749367b786a90fef648ace8035681d8973`.
+Both use wheel SHA256
+`36b389f0d6ab9010c1d014a706cc3994f928bc81517a70e1804bdb46ddb89c74`.
+
+The model comparison used the exact historical inline `project_logits` method
+from `3b8cee825b21b2c88197cc811efa2544858d7ad7` versus the installed method,
+with fresh R16 graph-bank binding at policy transitions. Same-image remaining
+runtime, original AEON target/drafter/template, BF16 KV and drafter, five rows,
+native262144 context, resident vision, ten CPUs5-9/15-19 and VBoost0 stayed fixed.
+Requests used T1/k64/p0.95/minp0 with thinking explicitly off while the global
+thinking default remained enabled/unlimited. Six seeds13/31/47/83/101/127,
+alternating ABBA/BAAB, covered48- and8451-token prompts. All96 complete256-token
+requests passed;48 were timed after separate proof/warm requests. Complete token
+IDs, proposal hashes and acceptance counters matched at each fixed seed/input.
+The original production CID and speech peers were restored unchanged.
+
+This run did not establish a complete-request performance winner. On code,
+mean prepare-inclusive warm wall times were2.9229406949s for the historical
+method and2.9168797412s for the candidate; only4of6 block effects favored the
+candidate. The geometric historical/candidate ratio was1.0021557293 with paired
+95% Student t interval[0.9992056082,1.0051145606]. On history, the means were
+4.7715686607s and4.7716451079s, with3of6 strict wins and ratio1.0000163341,
+interval[0.9978728418,1.0021644308]. The predeclared all-six-positive/positive-lower-
+interval gate failed on both workloads. These intervals assume appropriate
+block dependence/distribution; the results are inconclusive, not equivalence.
+Raw report SHA256 is
+`a7d3029466327c66bb0add7b9c55a1f77f41b31ab31157edf9b8f5f261e49254`.
+
+The candidate remains unselected. Completely cached first-token generation
+returns stored capped logits and does not execute this cap, so those first-token
+timings cannot establish a cap gain. Empty compiler-cache loading, fresh profile
+attribution and stronger alternatives remain separate checks. The maintained
+`tools/gemma4_cuda_softcap_qualify.py` binds this fixed protocol through `--plan`
+and `--out`; it is test orchestration, not a serving investigation flag.

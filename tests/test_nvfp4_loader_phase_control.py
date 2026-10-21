@@ -241,7 +241,7 @@ class MetadataSelection(unittest.TestCase):
                         headers[name] = {"dtype": "F8_E4M3", "shape": [8, 64]}
                         headers[name[:-7] + ".weight_scale"] = {"dtype": "F16", "shape": []}
                         headers[name[:-7] + ".input_scale"] = {"dtype": "BF16", "shape": [1]}
-                modules["tensorfold.cuda.capacity"].headers = lambda path: headers
+                modules["tensorfold.cuda.capacity"].headers = lambda path, headers=headers: headers
                 reader_type = modules["tensorfold.families.qwen3_5.cuda.weights"]._Tensors
 
                 class Scalar(Value):
@@ -259,10 +259,10 @@ class MetadataSelection(unittest.TestCase):
                     native_calibration=lambda *args, **kwargs: None)
                 built = []
                 modules["tensorfold.cuda.nvfp4.linear"].Fp8Linear = SimpleNamespace(
-                    from_checkpoint=lambda weight, scale, **kw: built.append((scale, kw)) or SimpleNamespace())
+                    from_checkpoint=lambda weight, scale, built=built, **kw: built.append((scale, kw)) or SimpleNamespace())
                 config = effective_config({"quantization_config": {"quant_method": "modelopt", "quant_algo": "FP8"}},
                                           None, where="fixture")
-                load.__globals__.update(read_config=lambda path: config,
+                load.__globals__.update(read_config=lambda path, config=config: config,
                                         SUFFIXES=("weight", "weight_scale", "input_scale"),
                                         maths=lambda: ({"nvfp4": False, "fp8": True}, "fixture"))
                 primary = OSError("scalar checkpoint read failed")

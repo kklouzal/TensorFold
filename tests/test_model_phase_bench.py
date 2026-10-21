@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 try:
@@ -57,6 +56,8 @@ def install_runtime(monkeypatch, tmp_path, *, warm=4, fault=None):
             if fault == "partial":
                 raise native_error
             receive([22, 23] if fault != "short" else [22])
+            if fault == "stats-list":
+                return ["invalid statistics type"]
             return {"cached": (0 if state["calls"] == 1 else warm) if fault != "cached" else True,
                     "prefill_s": .1, "decode_s": float("nan") if fault == "nan" else .2,
                     "rounds": 2, "drafted": 2, "accepted": 1}
@@ -165,6 +166,17 @@ def test_partial_native_failure_preserves_exact_primary_and_ids(monkeypatch, tmp
     assert caught.value is native and state["closed"]
     row = json.loads((tmp_path / "out/report.json").read_text())["records"][0]
     assert row["token_ids"] == [20, 21] and row["response_tokens"] == 2 and row["native_settled"]
+
+
+def test_nonobject_stats_raise_type_error_and_retain_complete_consumed_output(monkeypatch, tmp_path):
+    plan = fixture_plan(tmp_path)
+    state, _, _ = install_runtime(monkeypatch, tmp_path, fault="stats-list")
+    with pytest.raises(TypeError, match="statistics must be an object"):
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert state["closed"]
+    row = json.loads((tmp_path / "out/report.json").read_text())["records"][0]
+    assert row["stats"] == ["invalid statistics type"] and row["token_ids"] == [20, 21, 22, 23]
+    assert row["status"] == "FAILED" and row["native_settled"]
 
 
 @pytest.mark.parametrize("fault", ["settle", "close"])
