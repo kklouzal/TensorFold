@@ -50,6 +50,8 @@ thinking and budgets per request. Explicit environment overrides remain availabl
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate, including normalized represented probability rows and strictly interior keyed uniforms. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
 
+**Performance development paused (2026-10-21):** the GB10 container was verified healthy on the latest validated runtime, including a live HTTP generation. No new optimization from the resumed campaign completed all model/performance gates. Experimental work is checkpointed separately. [Current runtime verification and resume status](docs/performance-pause-20261021.md).
+
 **Gemma sampled-proposal optimization (2026-10-21):** unpenalized requests with positive `top_k` through 256
 bind proposal extraction to that request's top-k support before probability normalization. Boundary ties retain
 complete-row repair and deterministic token-ID ordering. Other proposal regions retain their 256-candidate

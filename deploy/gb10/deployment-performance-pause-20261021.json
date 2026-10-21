@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "status": "latest_validated_runtime_verified_running",
+  "verified_utc": "2026-10-21T23:26:47.372019+00:00",
+  "optimization_development": "paused_by_user",
+  "validated_source_reference": "3b8cee825b21b2c88197cc811efa2544858d7ad7",
+  "image_source": "259b4238ae16d8019c106603f104b18cbffb385a",
+  "runtime_source_tree": "6cafc18328c5237f0470d0805c424b23b5b0ed6c",
+  "production": {
+    "cid": "8d0e0c52e408b8a9ce86fb7c46a92941eaaf8437ecbeb2dc9f6838e5a84e4967",
+    "fingerprint": "ea802cd456b75965f05bda79d7ce10e4bad5ea861bad5255db76f5a676e6b33f",
+    "image": "sha256:244312373625cacc8bd82af1372b058eec8af5d19ee217a6bc628b62b027896d"
+  },
+  "healthy_idle_before_and_after_smoke": true,
+  "voice_peers_unchanged": true,
+  "live_generation": {
+    "http_status": 200,
+    "reply": "OK",
+    "prompt_tokens": 20,
+    "completion_tokens": 2,
+    "total_tokens": 22,
+    "scope": "HTTP smoke; not a new performance benchmark"
+  },
+  "runtime_update": {
+    "required": false,
+    "reason": "Accepted source reference and running image have identical runtime sources and unchanged launch/foundation configuration. Subsequent optimization candidates remain unselected.",
+    "container_recreated": false
+  },
+  "new_performance_gains_selected": 0,
+  "rejected_candidate": {
+    "source": "c8e2d0eb20b4d11b86b11ef85632388e1044294e",
+    "reason": "Established required history-cold request regression; loading gain does not override it.",
+    "analysis_sha256": "d24cc36c506838f95531abf7031eaa232e4c7ec45aeb0168c0570bc866f92f57"
+  },
+  "raw_evidence_sha256": {
+    "baseline-before.json": "94e03b2ee900d32d70fceaf46ad626f881855db6d3f2882ae399be803a3db2b6",
+    "baseline-after.json": "bc5ccd08fe6f0cb3eaa4c98a517fe30578d4092f30b78b8dddf17c137f7e61fc",
+    "live-smoke.py": "dd567087cc190e6c079374df006a1e9ffc96d9d14fd273580a29f784580e0a9e",
+    "live-smoke.json": "381f5fa08a4ed537fdeb9ec4220be0ce3f2248cc4d5294bad9b5dd6774b5bd12",
+    "live-smoke-command.json": "d4129f2ccc98d0f6860116229b7e34e91b13534d58b5784ec7f04cb910be1aea"
+  },
+  "previous_full_release_receipt": "deploy/gb10/deployment-gemma4-throughput-20261021.json"
+}
