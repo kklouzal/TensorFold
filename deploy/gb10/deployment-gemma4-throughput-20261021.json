@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "status": "verified_and_deployed",
+  "date": "2026-10-21",
+  "scope": "GB10 Gemma4 exact sampled-proposal CPU repair; image-only rollout with existing launch parameters. Further tuning canceled by user.",
+  "source": {
+    "image_commit": "259b4238ae16d8019c106603f104b18cbffb385a",
+    "source_uid": "db475a8f7ec86658cfeb941e4dda0513fbe59415ecfe0270d6d57806413c6ec8",
+    "build_input_uid": "b230b6582ef9a16ddfe3722e9f157f2ab5c41b00b9ed874631847b4e791c9128",
+    "receipt_commit_separate_from_image_commit": true
+  },
+  "images": {
+    "runtime": "sha256:244312373625cacc8bd82af1372b058eec8af5d19ee217a6bc628b62b027896d",
+    "verification": "sha256:97d6defcbdd69f3e38a9a142d9514c23f6cf46d7176ee56d35f8d2785578a0f7",
+    "wheel_sha256": "f9698ea342689b422b5008e23b4e575cb8ac8a48aa58eb949cf8aa688f685c14"
+  },
+  "foundation": {
+    "cuda": "13.4.3",
+    "torch": "2.16.0.dev20261014+cu134",
+    "triton": "3.9.0",
+    "python": "3.12",
+    "architecture": "arm64",
+    "device": "NVIDIA GB10 SM12.1",
+    "runtime_and_verification_audits": "PASS",
+    "protected_pins_and_native_provider_unchanged": true
+  },
+  "optimization": {
+    "root_cause": "BF16 draft-score ties repeatedly forced full-vocabulary CPU readback and ordering.",
+    "selected_policy": "Exact request top-k proposal support where unpenalized and1<=top_k<=256;32 extra candidate scores; exact partial complete-row repair. Existing remaining regions and fallback semantics preserved.",
+    "target_numerics": "Original AEON calibrated NVFP4 target with BF16 head/router/vision/KV unchanged.",
+    "no_public_investigation_knob": true
+  },
+  "validation": {
+    "native_component_tests": {
+      "source": "cda5d48e0f8f589bf8dbf28b50c8fea752684b89",
+      "passed": 495,
+      "failed": 0,
+      "skipped": 0,
+      "selected_source_carry": "Selected default1\u219232 is the sole subsequent executable delta, plus adjusted default geometry tests; actual selected-image holdout verifies it."
+    },
+    "pilot": {
+      "requests": 146,
+      "status": "PASS",
+      "output_tokens": 64,
+      "policies": 12,
+      "purpose": "Screen only; same full IDs, q bytes and acceptance counts."
+    },
+    "selected_image_holdout": {
+      "status": "PASS",
+      "requests": 60,
+      "timed": 48,
+      "output_tokens": 256,
+      "seeds": [
+        13,
+        31,
+        47,
+        83,
+        101,
+        127
+      ],
+      "workload_prompt_tokens": [
+        48,
+        8451
+      ],
+      "temperature": 1,
+      "top_k": 64,
+      "top_p": 0.95,
+      "thinking_per_request": false,
+      "ignore_eos": true,
+      "warm_state": "Warm prefix and compiled kernels; no identical-completion prewarm between timed positions.",
+      "order": "Three ABBA and three BAAB blocks per region, two positions per arm per seed.",
+      "complete_output_ids_and_acceptance_counts": "Identical between policies within each fixed seed/workload; q-byte proof at seed7.",
+      "code": {
+        "mean_complete_wall_seconds_before": 6.6220052050800104,
+        "mean_complete_wall_seconds_after": 2.9124878965012613,
+        "pooled_decode_tokens_per_second_before": 38.515,
+        "pooled_decode_tokens_per_second_after": 87.596,
+        "strict_block_wins": 6
+      },
+      "history_chat": {
+        "mean_complete_wall_seconds_before": 10.939155542585164,
+        "mean_complete_wall_seconds_after": 4.7434661341637065,
+        "pooled_decode_tokens_per_second_before": 23.325,
+        "pooled_decode_tokens_per_second_after": 53.833,
+        "strict_block_wins": 6
+      },
+      "sign_gate": "Predeclared all-six strict wins per region; conditional regional null win probability at most1/2 given prior blocks gives two-region bound2/64. Sequential measurements do not establish this assumption; correlated drift can invalidate it.",
+      "effect_intervals": "Postcollection descriptive paired-logratio df5 unadjusted95percent t intervals; method frozen before analyst access, after root preliminary outcomes; not a selection gate.",
+      "scope_limits": "Bounded workload results, not universal rates or a200tokens/s claim.",
+      "analysis_sha256": "82903edbea49bac8fd0a58c0a5876e4c35680a0bf198e19033f51c2d99cb0820",
+      "evidence_archive_sha256": "6fe97161026b3f8f2e2957bdb5f51b8d0248b9c1fac3bfd46da5431b8b819bc2"
+    },
+    "live_http": {
+      "status": "PASS",
+      "requests": 12,
+      "sse_requests": 9,
+      "sse_output_tokens": 256,
+      "checks": [
+        "Count/template/context for48and8451-token prompts",
+        "Complete cold/warm greedy and sampled SSE, typed usage, terminal events and full native-reference output IDs",
+        "Prefill progress when work occurs; fully cached absence accepted per documented contract",
+        "Default thinking enabled with separate reasoning and answer",
+        "Named tool call and followup consumption of synthetic tool result"
+      ],
+      "no_external_tool_side_effects": true,
+      "all_request_outcomes_retained": true
+    },
+    "source_reviews": "Distinct D13/D14 source, exact packet and selected-image acceptance reviews retained; failed attempts stay failed."
+  },
+  "preserved_launch": {
+    "context": 262144,
+    "parallel": 1,
+    "drafter_bits": 16,
+    "draft_rows": 5,
+    "target_head_reuse_rows": 16,
+    "kv_dtype": "bf16",
+    "vision": true,
+    "thinking_enabled": true,
+    "thinking_budget": 0,
+    "cpuset_cpus": "5-9,15-19",
+    "vboost": 0,
+    "model_revision": "90c8601b1a439497bc15d8fba9e52990b45ea0cb",
+    "drafter_revision": "77d4202772dfe50b2396ec7bac9cfffc7b9e7057",
+    "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4"
+  },
+  "deployment_attempts": [
+    {
+      "attempt": 1,
+      "status": "FAIL_PRESERVED_RECOVERED",
+      "model_build_failure": false,
+      "reason": "Operator expected predecessor CID in Compose replace label and ordered Env/Binds across recreation. Pinned Compose5.2 metadata source and actual inspection justified correction.",
+      "original_image_restored_healthy": true,
+      "voice_peers_preserved": true,
+      "old_queue_actors_retired": true,
+      "evidence_archive_sha256": "e80bf4a5cc6dffabe514c0f93eeee5ad07dfe4ba33bf260fc09ddec07dfacd3a"
+    },
+    {
+      "attempt": 2,
+      "status": "ROLLED_BACK",
+      "model_build_failure": false,
+      "reason": "Acceptance caller incorrectly demanded progress frames for entirelycached prompt; native documented no-prefill contract and complete256IDs witness justified correction.",
+      "old_image_restored_healthy": true,
+      "evidence_archive_sha256": "03ef994dc14288bbd8f41de4cb613417dfbbbfbf3753b3383efdbef33b812b58"
+    },
+    {
+      "attempt": 3,
+      "status": "COMMITTED",
+      "operator_source_sha256": "0223793cbb6d20bd43f3049f531510e6e8487705d7c955ce2df8bdbfd7ecd2d0",
+      "api_acceptance_source_sha256": "a2fbf17c6f1c8ddaa93f8aec0af70015dc43a668dbed1b89b82ca26b16f4fca2",
+      "evidence_archive_sha256": "c20e9d158a8fa9d3cd9162552fbed8699e88aed4608eec34fb3e84b6673e2fbf",
+      "guard_exit": 0
+    }
+  ],
+  "further_launch_tuning": "Canceled by direct user request; prepared packets remain unexecuted, no additional winner claimed.",
+  "verified_utc": "2026-10-21T03:09:35.941200+00:00",
+  "deployment": {
+    "cid": "8d0e0c52e408b8a9ce86fb7c46a92941eaaf8437ecbeb2dc9f6838e5a84e4967",
+    "image": "sha256:244312373625cacc8bd82af1372b058eec8af5d19ee217a6bc628b62b027896d",
+    "rawFingerprint": "ea802cd456b75965f05bda79d7ce10e4bad5ea861bad5255db76f5a676e6b33f",
+    "healthy": true,
+    "restartCount": 0,
+    "context": 262144,
+    "thinkingEnabled": true,
+    "thinkingBudget": 0,
+    "voiceContainersPreserved": true,
+    "oldModelContainersRetired": true,
+    "queueReleased": true,
+    "environmentSha256": "1756ed5cc0a3286ce2c499b0eed2a9534a18d5699f6df17f02c85559a1e23dcd",
+    "only_image_environment_key_changed": true,
+    "previous_environment_sha256": "f56ebb6c4fd6ffb1336bd1c83bb540b25a21bb1587a495cc58900f6a3199eddf",
+    "source_commit": "259b4238ae16d8019c106603f104b18cbffb385a"
+  }
+}

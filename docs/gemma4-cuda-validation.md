@@ -32,8 +32,45 @@ hardware rate. The selected arm required no draft full-row repairs across248 pro
 repairs with the incumbent; two
 target repairs remained in the history request. Partial selection's synthetic all-tied contiguous-ID rows
 can cost more than lexsort; this screen qualifies the stated model/workloads and makes no universal repair
-speed claim. Longer holdouts, launch-setting comparisons, and final-image HTTP checks are recorded separately
-as they complete. Raw traces, complete reports, source freezes and failures remain in the task evidence ledger.
+speed claim.
+
+The selected source `259b4238` and verification image
+`sha256:97d6defcbdd69f3e38a9a142d9514c23f6cf46d7176ee56d35f8d2785578a0f7`
+passed the subsequent 256-token holdout: two cold, eight proof, two warm and 48 timed requests, with no failures.
+Each workload used six seeds (13/31/47/83/101/127), two observations per policy per seed, and alternating
+ABBA/BAAB orders. Prompt prefixes and compiled kernels were warm; identical completions were not prewarmed
+between timed positions. Both policies retained the same full output IDs and acceptance counts in each
+block. Probability-byte proof remained the separate seed7 check. The original container was restored and
+the owned test container retired; both voice containers were preserved.
+
+| Workload | Original mean complete wall, seconds | Selected mean complete wall, seconds | Pooled decode tok/s, original → selected |
+| --- | --- | --- | --- |
+| Code, 48-token prompt | 6.622005 | 2.912488 | 38.515 → 87.596 |
+| Chat history, 8,451-token prompt | 10.939156 | 4.743466 | 23.325 → 53.833 |
+
+All six paired-block mean latencies improved in each region. The predeclared sign gate's familywise bound
+is 2/64, conditional on each regional null assigning at most one-half win probability given prior blocks;
+sequential measurements do not establish that assumption, and correlated drift can invalidate the bound.
+Diagnostic geometric selected/original wall ratios were 0.439975 and 0.433653. Unadjusted 95% paired-log
+t intervals were [0.430454, 0.449707] and [0.431091, 0.436231], assuming independent identically normal block
+log effects. This reporting method was specified after collection but before the analyzer owner accessed
+the results; it did not alter the predeclared selection gate. Rates use 255 decode steps per request;
+the objective uses all 256 tokens and settled complete-request wall time. No universal rate or 200 tok/s
+claim follows. Runtime image
+`sha256:244312373625cacc8bd82af1372b058eec8af5d19ee217a6bc628b62b027896d`
+is deployed and passed all 12 live checks: nine complete 256-token cold/warm SSE requests with native-reference
+IDs, counting/template/context parity, default reasoning and answer separation, and a named tool call with
+synthetic-result continuation. Prefill progress is validated when emitted; a fully cached prompt needs no
+prefill pass or progress frame. Global thinking remains enabled with unlimited server thinking budget,
+both speech containers are unchanged, and old model containers were retired. Two earlier rollout attempts
+were restored after defective deployment-check assumptions; their failures and the independently justified
+metadata/full-cache corrections remain preserved in the
+[deployment receipt](../deploy/gb10/deployment-gemma4-throughput-20261021.json).
+The user canceled further launch tuning;
+the existing five-row, BF16 drafter and R16 head launch remains selected. Prepared launch-comparison
+packets were not executed and establish no additional performance or correctness result.
+
+Raw traces, complete reports, source freezes and failures remain in the task evidence ledger.
 
 ## Original deployment, 2026-10-18
 

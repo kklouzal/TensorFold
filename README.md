@@ -56,8 +56,14 @@ complete-row repair and deterministic token-ID ordering. Other proposal regions 
 support. A 32-score guard avoids unnecessary full-vocabulary repairs; remaining complete-row repairs use exact
 partial selection. The candidate passed 495 installed ARM64/CUDA checks and a 146-request full-model comparison
 on GB10 with identical probabilities, complete token sequences and acceptance counts. The 64-token screen
-observed about 35 to 70 decode tok/s on code and 20 to 45 on an 8,451-token chat prompt; these are bounded
-screening results, with final-image HTTP validation and launch tuning pending. Target precision and the
+observed about 35 to 70 decode tok/s on code and 20 to 45 on an 8,451-token chat prompt. The selected image
+then passed all 60 checks in a six-seed, 256-token holdout: warm complete-request latency fell from
+6.622 to 2.912 seconds on code and 10.939 to 4.743 seconds on chat, with identical output IDs at fixed seed
+and configuration. Pooled decode rates were about 39 to 88 and 23 to 54 tok/s, respectively. These results
+cover the stated workloads. The deployed runtime passed all 12 live checks, including complete SSE replies,
+counting, default thinking, and a tool-call/result cycle. Further launch tuning was canceled at the user's
+request, preserving the existing launch parameters. [Deployment receipt](deploy/gb10/deployment-gemma4-throughput-20261021.json).
+Target precision and the
 request's sampling and thinking settings are unchanged. [Conditions and limits](docs/gemma4-cuda-validation.md#sampled-proposal-cpu-repair-2026-10-21).
 
 Startup admission reserves rejection-sampling scratch for the configured proposal routes and serving geometry. Serial-only configurations do not reserve unreachable copy-proposal storage; companion verification retains its required target-distribution workspace.
