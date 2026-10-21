@@ -50,13 +50,15 @@ thinking and budgets per request. Explicit environment overrides remain availabl
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate, including normalized represented probability rows and strictly interior keyed uniforms. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
 
-**Gemma sampled-proposal qualification (2026-10-21):** unpenalized requests with positive `top_k` through 256
+**Gemma sampled-proposal optimization (2026-10-21):** unpenalized requests with positive `top_k` through 256
 bind proposal extraction to that request's top-k support before probability normalization. Boundary ties retain
 complete-row repair and deterministic token-ID ordering. Other proposal regions retain their 256-candidate
-support. Exact partial selection for complete-row repair is also under qualification. The candidate passed
-495 installed ARM64/CUDA checks on GB10, including probability bytes, ties, cache state and workspace limits;
-complete full-model sequences and integrated performance comparisons remain pending. These changes do not
-alter target precision or the request's sampling and thinking settings.
+support. A 32-score guard avoids unnecessary full-vocabulary repairs; remaining complete-row repairs use exact
+partial selection. The candidate passed 495 installed ARM64/CUDA checks and a 146-request full-model comparison
+on GB10 with identical probabilities, complete token sequences and acceptance counts. The 64-token screen
+observed about 35 to 70 decode tok/s on code and 20 to 45 on an 8,451-token chat prompt; these are bounded
+screening results, with final-image HTTP validation and launch tuning pending. Target precision and the
+request's sampling and thinking settings are unchanged. [Conditions and limits](docs/gemma4-cuda-validation.md#sampled-proposal-cpu-repair-2026-10-21).
 
 Startup admission reserves rejection-sampling scratch for the configured proposal routes and serving geometry. Serial-only configurations do not reserve unreachable copy-proposal storage; companion verification retains its required target-distribution workspace.
 

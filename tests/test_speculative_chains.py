@@ -148,8 +148,8 @@ def test_policy_bound_q_is_byte_identical_to_full256_support(top_k, kind):
     policy = Sampling(19, .7, top_k, .95, .03)
     bounded = speculative.Chains(logits, [None, None], 2, sampled=True, sampling=policy)
     reference = speculative.Chains(logits, [None, None], 2, sampled=True)
-    assert bounded.words.shape == (4, 1 + 2 * (top_k + 1))
-    assert reference.words.shape == (4, 1 + 2 * 257)
+    assert bounded.words.shape == (4, 1 + 2 * (top_k + 32))
+    assert reference.words.shape == (4, 1 + 2 * 288)
     raw = logits.numpy()
     for stream in (1, 0):
         packet = bounded.sample(stream, 2, policy, 17 + stream * 100)
@@ -170,7 +170,7 @@ def test_unselected_top_k_policies_retain_full256_packet(top_k):
     chains = speculative.Chains(torch.zeros(2, 1024), [None], 2, sampled=True,
                                 sampling=Sampling(1, top_k=top_k))
     assert chains._proposal_count == 256 and chains._bound_top_k is None
-    assert chains.words.shape == (2, 515)
+    assert chains.words.shape == (2, 577)
 
 
 def test_any_active_history_keeps_full256_for_all_streams():
@@ -180,7 +180,7 @@ def test_any_active_history_keeps_full256_for_all_streams():
     bounded = speculative.Chains(logits, [None, history], 1, sampled=True, sampling=policy)
     reference = speculative.Chains(logits, [None, history], 1, sampled=True)
     assert bounded._proposal_count == 256 and bounded._bound_top_k is None
-    assert bounded.words.shape == reference.words.shape == (2, 515)
+    assert bounded.words.shape == reference.words.shape == (2, 577)
     for row, penalties in enumerate((None, history)):
         assert bounded.sample(row, 1, policy, 29, penalties) == reference.sample(row, 1, policy, 29, penalties)
 

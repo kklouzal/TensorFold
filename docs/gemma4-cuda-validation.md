@@ -1,5 +1,42 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Sampled proposal CPU repair, 2026-10-21
+
+The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft
+scores on the CPU. A profile of that immutable image observed 591 full-vocabulary proposal repairs out of
+644 possible rows; canonical candidate ordering consumed 6.75 seconds of CPU self time across warmup and
+the profiled request. Profiler timings diagnose execution and do not establish throughput.
+
+Candidate source `cda5d48e`, verification image `sha256:16bf28a03ea568c63334b551696a9d4707a1727a6d17e58a5b7b48e74bf44599`,
+passed 495 installed ARM64/CUDA tests without skips. Qualification tool source `e2abb4eb` then compared twelve
+combinations of canonical proposal support (256 or request top-k64), extra candidate guard (1/8/32), and
+complete-row repair (full lexsort or exact partial selection). The selected source policy uses bounded
+support, 32 extra scores, and partial repair. Every combination retained the same normalized q bytes,
+complete generated sequences, and round/acceptance counts. A plateau wider than the guard still repairs
+from the complete immutable row; validation and probability normalization remain intact.
+
+The screen used the original AEON NVFP4 and BF16 DFlash revisions recorded below, CUDA13.4.3/Torch nightly cu134,
+ten fast GB10 CPU cores, VBoost0, context262144, BF16 target head/KV, vision loaded, five verification rows,
+one lane, and the pinned Google template. Global thinking stayed enabled; these requests explicitly disabled
+thinking and used T1/top-k64/top-p0.95/seed7, 64 output tokens, and ignored EOS. Prompt lengths were48 and8451.
+Both voice containers remained resident. All146 cold/proof/warm/timed requests passed. Each of two mirrored
+timing positions per policy followed a full warm request; proof observers were removed during timing.
+
+| Workload | Original q256/G1/full-sort decode tok/s | q64/G32/partial decode tok/s |
+| --- | --- | --- |
+| Code, 48-token prompt | 34.84 | 70.23 |
+| Chat history, 8,451-token prompt | 20.42 | 44.85 |
+
+These are arithmetic means of two observations in a finite screen, not confidence bounds or a universal
+hardware rate. The selected arm required no draft full-row repairs across248 proposal rows, versus217
+repairs with the incumbent; two
+target repairs remained in the history request. Partial selection's synthetic all-tied contiguous-ID rows
+can cost more than lexsort; this screen qualifies the stated model/workloads and makes no universal repair
+speed claim. Longer holdouts, launch-setting comparisons, and final-image HTTP checks are recorded separately
+as they complete. Raw traces, complete reports, source freezes and failures remain in the task evidence ledger.
+
+## Original deployment, 2026-10-18
+
 The installed TensorFold runtime serves the original `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` revision `90c8601b1a439497bc15d8fba9e52990b45ea0cb`, with BF16 `z-lab/gemma-4-26B-A4B-it-DFlash` revision `77d4202772dfe50b2396ec7bac9cfffc7b9e7057`. All fourteen target files passed their publisher hash checks. Checkpoint Python was not executed. Original FP4 codes, block scales and global calibrations remain authoritative; BF16 embedding/head, router and vision weights are retained. CUDA loading packs projections on the GPU.
 
 Runtime image `sha256:2b6a6d7cc496d518553d824eec7fb5cd955e20f8b87a8f2861952de79dc072b6` and verification image `sha256:ff43aee142f4d885395a69f4213ffa0945c2fddea61ef83ee5ea6abfe3069e6b` share application source capture `0752d5a6+aeon.22d1450991182980` and wheel SHA256 `863d7a5e48e7e91d31566012c377f72a3ff7246f5f5de5acaf4867dd28372f28`. All 27 affected installed package files matched that capture. Later README/recipe and receipt publication updates leave execution unchanged. An excess EOF blank line in Gemma value parsing was also removed; module bytecode matched the image capture at all three Python optimization levels. The [machine-readable receipt](../deploy/gb10/deployment-gemma4-nvfp4-20261018.json) retains the source hashes, pinned foundation, raw evidence identities and limitations.

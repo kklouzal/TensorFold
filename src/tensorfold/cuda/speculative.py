@@ -24,7 +24,7 @@ PROPOSAL_CANDIDATES = 256  # explicit sparse proposal support; target probabilit
 # Total extra provisional scores, including candidate_fields' implicit one. Keep one selected source policy.
 # Qualification may admit the largest guard, then bind smaller guards only at quiescent request boundaries;
 # each binding owns its complete packet lifetime. Serving never mutates this preparation constant.
-_PROPOSAL_GUARD = 1
+_PROPOSAL_GUARD = 32
 
 
 def chain_workspace(rows: int, vocab: int, *, streams: int = 1, penalized: bool = True) -> dict[str, int]:

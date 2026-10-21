@@ -145,7 +145,7 @@ def test_proposal_factory_binds_request_top_k_before_shared_packet_extraction():
     draft.logits = lambda state, anchor, count: logits[:count]
     policy = Sampling(43, .7, 64, .95)
     launched = draft.propose(object(), 2, 3, sampled=True, sampling=policy)
-    assert launched._proposal_count == 64 and launched.words.shape == (3, 131)
+    assert launched._proposal_count == 64 and launched.words.shape == (3, 193)
     assert launched.sample(0, 3, policy, 37) == draft.propose(object(), 2, 3, sampled=True).sample(0, 3, policy, 37)
 
 
