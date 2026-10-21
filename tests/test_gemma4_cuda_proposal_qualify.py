@@ -46,7 +46,7 @@ def save_plan(tmp_path, plan):
     return path
 
 
-@pytest.mark.parametrize("kind,expected", [("screen", 146), ("holdout", 106)])
+@pytest.mark.parametrize("kind,expected", [("screen", 146), ("holdout", 60)])
 def test_finite_plan_builds_complete_explicit_matrix_and_snapshots_consumed_bytes(tmp_path, kind, expected):
     plan = plan_fixture(tmp_path, kind=kind)
     loaded, items, raw, prompt_raw = tool.load_plan(save_plan(tmp_path, plan))
@@ -95,8 +95,8 @@ def test_policy_controls_only_exact_selected_library_boundaries_and_restores_on_
         assert sampling._canonical_repair_order is partial
 
 
-def runtime_fixture(monkeypatch, tmp_path, *, fault=None):
-    plan = plan_fixture(tmp_path)
+def runtime_fixture(monkeypatch, tmp_path, *, fault=None, kind="screen"):
+    plan = plan_fixture(tmp_path, kind=kind)
     states = {"engine": None, "constructed": 0}
     speculative = SimpleNamespace(_PROPOSAL_GUARD=1)
     sampling = SimpleNamespace()
@@ -129,7 +129,8 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None):
         def __init__(self):
             assert speculative._PROPOSAL_GUARD == 32
             intent = json.loads(report_path.read_text())
-            assert len(intent["records"]) == 146 and all(row["status"] == "NOT_RUN" for row in intent["records"])
+            assert len(intent["records"]) == (146 if kind == "screen" else 60)
+            assert all(row["status"] == "NOT_RUN" for row in intent["records"])
             states["constructed"] += 1
             self.w, self.max_rows, self.graphs, self.head = SimpleNamespace(numerics="ct_nvfp4"), 5, object(), object()
             self.context_window = 262144
@@ -144,6 +145,8 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None):
                 assert speculative.canonical_candidates is canonical and sampling.canonical_candidates is canonical
             cached = len(prompt) if self._prefix == tuple(prompt) else 0
             self._prefix = tuple(prompt)
+            if fault == "timed-cache" and current["phase"] == "timed" and current["seed"] == 31:
+                cached = 0
             if draft:
                 packet = speculative.Chains(None, [None], 4, sampled=policy is not None, sampling=policy)
                 if policy is not None:
@@ -341,3 +344,70 @@ def test_distinct_holdout_seed_does_not_claim_seed7_proof_coverage():
     timing = [dict(proof[0], case=2, phase="timed", seed=13, token_ids=[2])]
     tool._anchor_phases(proof, timing)
     assert timing[0]["proof_anchor"]["status"] == "NOT_COVERED"
+
+
+def test_holdout_has_full_proofs_one_warm_and_all_48_timed_positions(tmp_path):
+    plan = plan_fixture(tmp_path, kind="holdout")
+    rows = tool._matrix(plan)
+    assert len(rows) == 60 and plan["tokens"] == 256
+    proof = [row for row in rows if row["phase"] in {"cold", "proof"}]
+    assert len(proof) == 10 and rows[:10] == proof
+    for workload in tool.WORKLOADS:
+        group = [row for row in rows if row["workload"] == workload]
+        assert len([row for row in group if row["phase"] == "cold"]) == 1
+        assert {(row["policy"], row["mode"]) for row in group if row["phase"] == "proof"} == {
+            (policy, mode) for policy in plan["policies"] for mode in ("greedy-draft", "sampled-draft")}
+        warm = [row for row in group if row["phase"] == "warm"]
+        assert len(warm) == 1 and (warm[0]["policy"], warm[0]["seed"], warm[0]["position"]) == (
+            tool.BASELINE, 13, -1)
+        timed = [row for row in group if row["phase"] == "timed"]
+        assert warm[0]["case"] < timed[0]["case"] and len(timed) == 24
+        assert [(row["seed"], row["position"], row["policy"]) for row in timed] == [
+            (block["seed"], position, policy) for block in plan["blocks"]
+            for position, policy in enumerate(block["order"])]
+        assert [row["seed"] for row in timed[::4]] == [13, 31, 47, 83, 101, 127]
+
+
+@pytest.mark.parametrize("start_candidate", [False, True])
+def test_holdout_accepts_both_predeclared_alternating_starts(tmp_path, start_candidate):
+    plan = plan_fixture(tmp_path, kind="holdout")
+    if start_candidate:
+        for block in plan["blocks"]:
+            block["order"] = [plan["policies"][1] if p == tool.BASELINE else tool.BASELINE for p in block["order"]]
+    loaded, *_ = tool.load_plan(save_plan(tmp_path, plan))
+    assert loaded == plan
+
+
+@pytest.mark.parametrize("orders", ["all-ABBA", "balanced-not-alternating"])
+def test_holdout_rejects_unbalanced_or_non_alternating_blocks(tmp_path, orders):
+    plan = plan_fixture(tmp_path, kind="holdout")
+    a, b = plan["policies"]
+    abba, baab = [a, b, b, a], [b, a, a, b]
+    for index, block in enumerate(plan["blocks"]):
+        block["order"] = abba if orders == "all-ABBA" or index < 3 else baab
+    with pytest.raises(ValueError, match="alternating"):
+        tool.load_plan(save_plan(tmp_path, plan))
+
+
+def test_fast_holdout_keeps_every_complete_cached_timing_and_honest_proof_scope(monkeypatch, tmp_path):
+    path, report_path, state, speculative, *_ = runtime_fixture(monkeypatch, tmp_path, kind="holdout")
+    assert tool.main(["--plan", str(path), "--out", str(tmp_path / "out")]) == 0
+    report = json.loads(report_path.read_text())
+    assert report["status"] == "PASS" and len(report["records"]) == 60
+    assert all(row["status"] == "PASS" and len(row["token_ids"]) == 256 for row in report["records"])
+    assert len([row for row in report["records"] if row["phase"] == "warm"]) == 2
+    timed = [row for row in report["records"] if row["phase"] == "timed"]
+    assert len(timed) == 48 and all(row["stats"]["cached"] == tool.WORKLOADS[row["workload"]] for row in timed)
+    assert all(row["proof_anchor"]["status"] == "NOT_COVERED" for row in timed)
+    assert "without per-position same-completion" in report["cache_condition"]
+    assert state["constructed"] == 1 and state["closed"] and speculative._PROPOSAL_GUARD == 1
+
+
+def test_fast_holdout_still_refuses_a_timed_prefix_cache_miss(monkeypatch, tmp_path):
+    path, report_path, state, *_ = runtime_fixture(monkeypatch, tmp_path, kind="holdout", fault="timed-cache")
+    with pytest.raises(RuntimeError, match="declared prefix-cache"):
+        tool.main(["--plan", str(path), "--out", str(tmp_path / "out")])
+    report = json.loads(report_path.read_text())
+    failed = next(row for row in report["records"] if row["status"] == "ERROR")
+    assert failed["phase"] == "timed" and failed["seed"] == 31 and len(failed["token_ids"]) == 256
+    assert any(row["status"] == "NOT_RUN" for row in report["records"]) and state["closed"]

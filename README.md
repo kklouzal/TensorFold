@@ -1017,6 +1017,9 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
   inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
   every failed, partial and unrun outcome remains in the report. A screen does not select a production winner.
+  Its six-seed, 256-token holdout prepares both policies in full proof requests, warms each prompt once, then
+  times balanced ABBA/BAAB blocks with the complete prompt cached. It does not precondition every position by
+  generating the identical completion first; timed sample counts and correctness gates remain unchanged.
 
 ### Logs, metrics, shutdown and restart
 

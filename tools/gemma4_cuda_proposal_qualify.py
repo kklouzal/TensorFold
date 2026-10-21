@@ -6,6 +6,9 @@ Proof instrumentation is removed before timing. This tool reports observations;
 statistical selection and protected GPU admission belong to the operator.
 Native wall timing spans generate through drain, after App.prepare/hot waits;
 it is not an HTTP/client TTFT measurement. Prefix warmups have separate rows.
+The screen warms each timed position. The holdout instead uses one baseline
+warm per workload after both policies' full proofs, then six alternating
+ABBA/BAAB blocks under warm-prompt/proof-prepared-kernel conditions.
 """
 from __future__ import annotations
 
@@ -82,9 +85,10 @@ def load_plan(path):
     elif plan["kind"] == "holdout":
         other = [p for p in policies if p != BASELINE]
         if (len(other) != 1 or plan["tokens"] != 256 or [b["seed"] for b in blocks] != [13, 31, 47, 83, 101, 127]
-                or any(b["order"] not in ([BASELINE, other[0], other[0], BASELINE],
-                                         [other[0], BASELINE, BASELINE, other[0]]) for b in blocks)):
-            raise ValueError("holdout requires one challenger and six declared256-token seeded ABBA/BAAB blocks")
+                or [b["order"] for b in blocks] not in (
+                    [[BASELINE, other[0], other[0], BASELINE], [other[0], BASELINE, BASELINE, other[0]]] * 3,
+                    [[other[0], BASELINE, BASELINE, other[0]], [BASELINE, other[0], other[0], BASELINE]] * 3)):
+            raise ValueError("holdout requires256 tokens and six seeded alternating ABBA/BAAB blocks")
     else:
         raise ValueError("kind must be screen or holdout")
     identity = plan["artifact_id"]
@@ -221,9 +225,14 @@ def _matrix(plan):
             for mode in ("greedy-draft", "sampled-draft"):
                 add(phase="proof", workload=workload, policy=name, mode=mode, seed=7)
     for workload in WORKLOADS:
+        if plan["kind"] == "holdout":
+            # This prepares the workload's complete prefix. Both policies and
+            # fixed request shapes were already exercised by the full proofs.
+            add(phase="warm", workload=workload, policy=BASELINE, mode="sampled-draft",
+                seed=13, block=0, position=-1)
         for block, entry in enumerate(plan["blocks"]):
             for position, name in enumerate(entry["order"]):
-                for phase in ("warm", "timed"):
+                for phase in ("warm", "timed") if plan["kind"] == "screen" else ("timed",):
                     add(phase=phase, workload=workload, policy=name, mode="sampled-draft",
                         seed=entry["seed"], block=block, position=position)
     return rows
@@ -435,6 +444,9 @@ def main(argv=None):
               "instrumentation": "timing retains finite policy factory/binding shims and stats; q/repair observers "
                                  "are proof-only; selected shipping source still requires its final recheck",
               "cold_scope": "one deliberate prefix-cold preparation/workload; kernel/grid first use retained in proof",
+              "cache_condition": ("warm complete prompt and proof-prepared kernels; one baseline seed13 warm/workload, "
+                                  "without per-position same-completion warming" if plan["kind"] == "holdout"
+                                  else "per-position complete-request warmup before each timed request"),
               "reserved_guard": 32}
     destination = args.out / "report.json"
     write_json(destination, report)
