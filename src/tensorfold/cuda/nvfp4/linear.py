@@ -65,14 +65,17 @@ def fragment_index(k: int, npad: int, device) -> tuple[torch.Tensor, torch.Tenso
     return kk.expand(shape), nn.expand(shape)
 
 
-FRAGMENT_ROWS = 4096          # rows (a multiple of 64) ``_fragment_order`` gathers at a time
+FRAGMENT_ROWS = 4096          # rows (a multiple of 64) ``_fragment_order`` packs at a time
 
 
 def _fragment_order(codes: torch.Tensor, npad: int) -> torch.Tensor:
     """e4m3 bytes [N, K] -> ``qmm_prefill8w``'s order [npad/64][K/64][8][32][2][8] (fragment lanes, k32 halves).
 
-    The order is row-tile major, so it is built ``FRAGMENT_ROWS`` rows at a time: the gather's int64 index tensors stay
-    that many rows wide instead of npad (a 248k-row vocabulary head's would take several GiB). From agent E."""
+    Build row tiles in bounded chunks. Split the original row into [tile,8,8]
+    and K into [tile,2,2,2,4,2]; their permutation is exactly fragment_index's
+    lane/byte mapping. Copy that view directly into the final output, without
+    materializing gather indices or an intermediate packed payload.
+    """
 
     n, k = codes.shape
     out = torch.empty((npad * k,), dtype=torch.uint8, device=codes.device)
@@ -80,8 +83,9 @@ def _fragment_order(codes: torch.Tensor, npad: int) -> torch.Tensor:
         r1 = min(r0 + FRAGMENT_ROWS, npad)
         padded = torch.zeros((r1 - r0, k), dtype=torch.uint8, device=codes.device)
         padded[:max(0, min(r1, n) - r0)] = codes[r0:min(r1, n)]
-        kk, nn = fragment_index(k, r1 - r0, codes.device)
-        out[r0 * k:r1 * k] = padded.t()[kk, nn].reshape(-1)
+        tiles = padded.view((r1 - r0) // 64, 8, 8, k // 64, 2, 2, 2, 4, 2)
+        fragment = tiles.permute(0, 3, 1, 2, 7, 4, 5, 6, 8)
+        out[r0 * k:r1 * k].view((r1 - r0) // 64, k // 64, 8, 8, 4, 2, 2, 2, 2).copy_(fragment)
     return out
 
 

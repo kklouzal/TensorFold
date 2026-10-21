@@ -871,3 +871,35 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+
+
+## FP8 fragment packing candidate (2026-10-21)
+
+The source candidate replaces `_fragment_order`'s expanded integer indices and
+advanced-index gather with an exact mixed-radix view copied directly to the
+final byte output. It retains 4,096-row chunks, output ownership, padding and
+the earlier conservative admission bound. The inverse `fragment_index` remains
+required by MXFP8 reconstruction and independent tests.
+
+This is component evidence, not a complete-model loading claim. The comparison
+used the original `d9bc2bc2` function and candidate module SHA256
+`a19888976e496dc2f782b08e4d870f9485b05681c58e72001492092c0c1e913c`,
+a local RTX PRO 2000 Blackwell SM120, pinned CUDA13.4.3/Torch
+2.16.0.dev20261017+cu134/Triton3.9, two CPU workers and an8GiB container limit.
+Twelve alternating paired blocks per shape measured synchronized complete calls
+on128x64,128x5120,5120x5120,13696x5120 and248320x5120 byte matrices. Each pair
+retained exact bytes; every block favored the candidate. Geometric component
+latency ratios ranged5.50–7.93. At248320x5120, mean call time changed from
+135.650 to24.584ms; additional peak allocated storage changed from1,649,344,512
+to1,313,341,440bytes, including the1,271,398,400-byte output, with zero retained
+allocation after release. An untimed5120x5120 profile observed74 versus2 GPU
+kernels. Before/after source hashes were identical during measurement.
+
+The focused layout/accounting gate passed76 cases. A frozen integrated source
+consumer gate subsequently passed204 cases with9 explicit missing-checkpoint
+skips, including the new exact-bit prompt controls; this is local source-mounted
+execution, not a new installed ARM64 result. An earlier serial cold compile
+timed out, and a concurrent-edit run mixed two prefill revisions; both failed
+attempts remain excluded and preserved. Complete GB10 startup, final installed
+images and same-region integrated performance selection remain pending. This
+candidate has not established a universal or whole-model speedup.

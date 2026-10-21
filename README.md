@@ -1,5 +1,12 @@
 # TensorFold fork
 
+FP8 fragment packing now copies a bounded strided permutation directly into its
+final byte layout. The source candidate passes independent CPU/CUDA layout and
+consumer checks. On the local SM120 component workload, packing was 5.50–7.93×
+faster with identical bytes and lower allocation peaks. Complete-model loading
+qualification on GB10 remains pending; these are component results.
+[Conditions and candidate status](docs/optimization-validation.md#fp8-fragment-packing-candidate-2026-10-21).
+
 For a sealed production-CLI startup and plain-text cold/warm engine measurement,
 run `python tools/model_phase_bench.py --plan PLAN.json --out NEW_DIRECTORY`.
 The plan binds immutable image/source/input identities and exact request/cache
