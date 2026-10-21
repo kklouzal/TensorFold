@@ -1,5 +1,12 @@
 # TensorFold fork
 
+For a sealed production-CLI startup and plain-text cold/warm engine measurement,
+run `python tools/model_phase_bench.py --plan PLAN.json --out NEW_DIRECTORY`.
+The plan binds immutable image/source/input identities and exact request/cache
+counts. It retains complete token IDs, preprocessing and native settlement, and
+failed outcomes. This direct-engine procedure excludes HTTP/stream processing
+and concurrent service load; those require the existing campaign HTTP controls.
+
 The original GB10 Gemma CT/BF16 region has a preparation-selected softcap
 candidate that retains all three BF16 storage boundaries in one CUDA kernel.
 Its independent local SM120 check matches all 65,536 BF16 input bit patterns,
