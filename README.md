@@ -1,12 +1,14 @@
 # TensorFold fork
 
-FP8 fragment packing now copies a bounded byte permutation directly into its
-final layout. In the fixed GB10 Qwen3.8 comparison, CLI entry-to-ready latency
-fell from 11.48 s to 10.79 s; all six blocks favored the candidate and complete
-output IDs matched. The comparison used warm compiler/file caches. Request
-latency effects were inconclusive. This isolated release still requires its
-final installed-source checks; [conditions and evidence](docs/fp8-packing-validation-20261021.md)
-distinguish that gate from the completed experiment.
+The isolated FP8 packing candidate failed its final GB10 Qwen3.8 publication
+gate. Source `c8e2d0eb` passed 150 installed CPU/native checks; all 26 model
+positions matched their output/counter controls. CLI entry-to-ready improved
+from 11.50 s to 10.77 s,
+but uncached history request wall time increased from 5.53814 s to 5.54893 s
+in all six blocks. This required-region loss blocks publication. The earlier
+f1 loading result remains recorded with its own source and image;
+[conditions and both results](docs/fp8-packing-validation-20261021.md)
+keep that historical experiment separate from the rejected final candidate.
 
 `python tools/model_phase_bench.py --plan PLAN.json --out NEW_DIRECTORY`
 measures production CLI entry-to-ready and complete prepared engine requests
