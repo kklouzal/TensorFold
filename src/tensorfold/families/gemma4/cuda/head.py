@@ -32,14 +32,16 @@ class _RowsHead(Plain):
         return self._multiply(x, self.weight)
 
 
-def _qualified(incumbent: Plain) -> bool:
-    """Stable selection discriminants, resolved once during preparation."""
-    if type(incumbent) is not Plain:
-        return False
-    weight = incumbent.weight
+def original_bf16_region(weight: torch.Tensor) -> bool:
+    """The original contiguous BF16 Gemma vocabulary weight on GB10SM12.1."""
     return (weight.dtype == torch.bfloat16 and tuple(weight.shape) == (262144, 2816)
             and weight.device.type == "cuda" and weight.is_contiguous()
             and torch.cuda.get_device_capability(weight.device) == (12, 1))
+
+
+def _qualified(incumbent: Plain) -> bool:
+    """Stable selection discriminants, resolved once during preparation."""
+    return type(incumbent) is Plain and original_bf16_region(incumbent.weight)
 
 
 def select_head(incumbent: Plain) -> Plain:

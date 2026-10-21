@@ -76,6 +76,34 @@ def _geglu(G, U, OUT, N, BLOCK: tl.constexpr):
     tl.store(OUT + i, (gelu * up).to(tl.bfloat16), mask=mask)
 
 
+@triton.jit
+def _softcap30(X, OUT, N, BLOCK: tl.constexpr):
+    i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    x = tl.load(X + i, mask=i < N, other=0.0).to(tl.float32)
+    # Torch's CUDA scalar division uses float32(double(1) / scalar).
+    # Its BF16 TensorIterator outputs round after division and tanh, before
+    # the separate multiplication. Keep both boundaries in this one kernel.
+    divided = (x * (1.0 / 30.0)).to(tl.bfloat16).to(tl.float32)
+    activated = libdevice.tanh(divided).to(tl.bfloat16).to(tl.float32)
+    tl.store(OUT + i, (activated * 30.0).to(tl.bfloat16), mask=i < N)
+
+
+def softcap30(logits: torch.Tensor) -> torch.Tensor:
+    """BF16 ``tanh(logits / 30) * 30`` with every Torch storage boundary.
+
+    The CT target owns this operation; BF16 DFlash borrows project_logits.
+    The private FP8 companion's FP32 head retains its separate operation.
+    Inputs are the target's fresh contiguous BF16 head outputs. The output
+    owns separate storage, including during CUDA graph capture and replay.
+    """
+    out = torch.empty_like(logits)
+    n = logits.numel()
+    # Torch preserves subnormal tanh results; libdevice's default FTZ would not.
+    _softcap30[(triton.cdiv(n, 1024),)](logits, out, n, BLOCK=1024, num_warps=4,
+                                      enable_fp_fusion=False, enable_reflect_ftz=False)
+    return out
+
+
 def attention_tail(h, o, w_attn, w_mlp, w_expert, eps: float, round_normalized: bool):
     """(new residual h, dense MLP input, expert input), each BF16 [R, D]."""
     rows, d = h.shape

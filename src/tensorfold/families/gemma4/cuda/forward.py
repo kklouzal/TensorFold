@@ -18,6 +18,7 @@ import triton.language as tl
 from tensorfold.cuda.nvfp4 import checkpoint
 
 from . import attention, glue
+from .head import original_bf16_region
 from .state import State, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
 
@@ -107,6 +108,8 @@ class Gemma4Target:
         elif policy == "ct_nvfp4":
             self._norm, self._geglu, self._route = ct_rms_norm, glue.geglu, self._route_ct
             self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
+            if self.config.softcap == 30.0 and original_bf16_region(weights.embed.weight):
+                self._softcap_logits = glue.softcap30
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
         # The BF16 root's exact value, for the fused CT router (read once at construction).
@@ -140,6 +143,10 @@ class Gemma4Target:
 
     def project_logits(self, hidden: torch.Tensor) -> torch.Tensor:
         logits = self.weights.embed(hidden)
+        return self._softcap_logits(logits)
+
+    def _softcap_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        """Other numerical regions retain their original positive-finite cap."""
         return torch.tanh(logits / self.config.softcap) * self.config.softcap
 
     def _route_mlx(self, h, layer):
