@@ -18,6 +18,15 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Native CT bank loading candidate — qualification pending
 
+This checkout is a separate loop variant of frozen native reference `9734f82a`.
+It copies each four-byte logical word directly to its final interleaved location
+and consumes two adjacent source tiles per row, with a singleton final tile
+when needed. It retains the reference's ABI, validation, owner lifetime and
+publication behavior. It passed55 focused CPU controls and a separate warmed
+bank comparison described below. Historical reference results retain their
+source-specific scope. Required ARM64/installed, total resource admission and
+whole-model qualification remain pending for both sources.
+
 Native A4 loading can read a bank's validated F32 calibration fields into one
 owned CPU vector, prepare the unchanged FP32 factors, and read an eligible
 canonical Reader-owned contiguous SF run plus bounded code chunks. Physical
@@ -42,9 +51,9 @@ scalar/bank planning metadata, and preliminary pin admission removes only the
 known resident-only increment. Fixed Python/native-record accounting remains an
 open admission gate. The fused primitive additionally retains five borrowed
 ndarray/managed-DLPack owner chains and their buffer descriptors, two whole-storage
-Tensor views, a fixed1023-entry int64 stack map (8184 bytes), and constant row
-scratch. Its byte loop is serial and synchronous; portable compiler vectorization
-is enabled with `-O3`, without architecture-specific intrinsics or floating math.
+Tensor views, a fixed1023-entry int64 stack map (8184 bytes), and bounded
+byte-copy call state. Its byte loop is serial and synchronous; portable compiler
+optimization is enabled with `-O3`, without architecture-specific intrinsics or floating math.
 Parallel packing remains a separate candidate. No fixed-record dominance or total
 admission result is inferred from removing indexed copies. Dense loading does not
 enable or scan these bank plans.
@@ -66,7 +75,7 @@ targets before raw mutation. Any failed call leaves authority unpublished; exact
 historical version-counter increments are not promised. Checkpoint bytes, input
 versions, storage capacities, unselected cells and padding remain unchanged.
 
-This isolated candidate builds on the indexed loading reference `dcfc448a`
+The frozen fused reference builds on the indexed loading reference `dcfc448a`
 (7359 source composition), which is itself composed on accepted source
 `3b8cee82`. Its first six-file source passed68 CPU controls in8.64s, including
 actual source-owned CPU compilation with `-O3 -std=c++17 -Wall -Wextra -Werror`,
@@ -80,7 +89,7 @@ and NumPy2.1 with GPUs hidden. The complete bank controls below used the
 RTX PRO 2000 Blackwell SM120. Neither is installed ARM64 or whole-model
 qualification.
 
-The corrected seven-file source (manifest3a0742cf) completed the local warmed
+The corrected fused seven-file source (manifest3a0742cf) completed the local warmed
 resident257-cell bank comparison against the indexed reference. It used the
 original AEON-7 Qwen3.6 CT export, width512/dims2048, checkpoint math,8 intra-op
 and1 inter-op threads,6 mirrored AFFA/FAAF blocks (24 measured positions plus4
@@ -102,7 +111,7 @@ Foundation/input identities, CUDA settlement and exact actor retirement passed.
 The original CPU shared object was253960 bytes; its loaded-file hash matched the retained
 CPU build product. Both independent reviews closed this bounded result.
 
-The metric excludes header/context preparation and first-use compilation,
+The reference metric excludes header/context preparation and first-use compilation,
 which initial correctness warmed before timing. A subsequent diagnostic profile
 used one unprofiled warm bank and two fresh instrumented bank passes with the
 same source and provider checks. Its cProfile attributes roughly0.217s to26
@@ -110,11 +119,48 @@ native pack calls,0.159s to28 reads,0.066s to six transfers and0.075s to771
 metadata resolutions. Instrumented timings are attribution only. ATen CPU
 events do not observe the raw CPP byte loop or total NumPy/native/Python memory.
 
-The earlier packet preparation failure before container launch and a separate
+The separate direct-copy/paired-tile variant passed55 CPU checks in8.88s on
+the same pinned AMD64 checkout runtime, including an actual source-owned CPP
+build, independent byte oracles over singleton, paired and odd-tail tiles,
+multiple N tiles, strided authority, unaligned input and output margins, plus
+the existing native-buffer, ownership, source-read and FD controls. Its generated
+CPU shared object was254008 bytes. These checks do not establish ARM64 or
+installed-package behavior.
+
+Its separate local warm resident257-cell comparison retained the same Qwen3.6
+checkpoint, width512/dims2048,8 intra-op and1 inter-op threads, full-bank
+transaction boundary,24 measured positions plus4 warmups, and6 mirrored
+FGGF/GFFG blocks. Here F is frozen native reference `9734f82a` and G is the
+direct-copy/paired-tile variant. Mean transaction time was0.5541440385s for F
+and0.49185965075s for G. G minus F was−0.06228438775s, with the predeclared
+10,000-resample paired-block95% pointwise interval
+[−0.068787578583,−0.055258490583]s. All6 paired blocks were faster. The same
+six-block independence and representativeness limits apply; these values are
+not whole-model startup estimates.
+
+Complete six-field authority and native decode/prefill outputs matched before
+and after that cohort. All1323 source/test files and39 actual project origins
+were coherent. Seven actual mapped-file FD records covered both exact CPU
+build products, the grouped consumer and FD owner, including their mapped
+aliases. Each unchanged production CPU factory had exactly364 cohort hits,
+with no new misses or binding changes. Seven private/shared reference module
+bindings, foundation/input identities, CUDA settlement and exact actor
+retirement also passed. Both independent reviews closed this local result.
+Preparation and cold compilation remain excluded from the metric.
+
+Actual AMD64 disassembly shows direct scalar four-byte transfers without the
+reference's interleaved row-array staging. The copy helper remains an actual
+per-row call; SIMD and helper-call elimination remain separate candidates.
+Direct stores and paired traversal changed together, so the measured gain is
+not attributed separately to either. No reduced stack or total-admission claim
+follows from removing the source arrays.
+
+The earlier fused-reference packet failure before container launch and a separate
 native-manifest schema failure before test collection remain retained; neither
 produced performance samples. The complete24-position result uses only the
-successful fresh actor. It establishes a local warm bank improvement against
-the indexed candidate. Full fixed/stack/module/compiler admission, required
+successful fresh actors. The original fused result compares against the indexed
+candidate; the paired-tile result compares against the frozen fused reference.
+Full fixed/stack/module/compiler admission, required
 ARM64 thread-policy observations, installed execution, whole-model cold/warm
 startup and request/quality qualification, and comparison against accepted
 source remain pending. No production gain or release promotion is claimed.

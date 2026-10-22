@@ -107,10 +107,12 @@ A separate fused CPU native CT bank-loading candidate batches owned calibration 
 block-scale reads, streams bounded code chunks, and packs directly into final
 CPU authority through one byte-only native call per chunk. It preserves original error order and native arithmetic. The
 isolated candidate retains its reference's kernels and other loading paths.
-The pinned AMD64 checkout passed68 CPU controls, followed by5 source-read
-ownership controls. A warmed Qwen3.6 resident-bank comparison measured mean
-transaction time of0.550331s versus1.154288s for the indexed reference, with
-all6 paired blocks faster and complete byte/native controls passing. This is
+This checkout uses direct fixed-width byte copies and paired source tiles in
+that primitive. The pinned AMD64 checkout passed55 CPU controls, including
+actual compilation and independent paired/tail, unaligned-input and authority
+layout checks. A warmed Qwen3.6 resident-bank comparison measured mean
+transaction time of0.491860s versus0.554144s for frozen serial native reference
+`9734f82a`, with all6 paired blocks faster and complete byte/native controls passing. This is
 a local bank result; resource admission, ARM64/installed and full-model startup
 and request qualification remain pending. Its CPU-only C++ extension compiles on first eligible use with the
 configured Torch extension toolchain; compile cost is included in startup

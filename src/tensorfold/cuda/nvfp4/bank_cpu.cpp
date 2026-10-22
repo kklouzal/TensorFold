@@ -45,6 +45,35 @@ static U extent(U offset, U stride, U rows, U row_bytes, U capacity) {
     return tail + row_bytes;
 }
 
+// Copy logical words without forming a stack-resident interleaved row. memcpy
+// permits unaligned sources and transfers uninterpreted bits on every target.
+static void copy_word_row(std::uint8_t* output, const std::uint8_t* input) {
+    std::memcpy(output, input, 4);
+    std::memcpy(output + 4, input + 16, 4);
+    std::memcpy(output + 8, input + 4, 4);
+    std::memcpy(output + 12, input + 20, 4);
+    std::memcpy(output + 16, input + 8, 4);
+    std::memcpy(output + 20, input + 24, 4);
+    std::memcpy(output + 24, input + 12, 4);
+    std::memcpy(output + 28, input + 28, 4);
+}
+
+template <unsigned Tiles>
+static void copy_tile_rows(std::uint8_t* words, std::uint8_t* scales,
+                           const std::uint8_t* input, const std::uint8_t* input_scales,
+                           U code_stride, U scale_stride) {
+    // Two adjacent source tiles are consumed in each row before advancing its
+    // stride. A separately instantiated singleton handles an odd final tile.
+    for (U row = 0; row < 64; ++row) {
+        for (unsigned tile = 0; tile < Tiles; ++tile) {
+            copy_word_row(words + tile * 2048 + row * 32,
+                          input + row * code_stride + tile * 32);
+            std::memcpy(scales + tile * 256 + row * 4,
+                        input_scales + row * scale_stride + tile * 4, 4);
+        }
+    }
+}
+
 static void pack(const py::array& code_array, const py::array& scale_array,
                  const py::array& up_array, const py::array& down_array, const py::array& index_array,
                  py::ssize_t up_offset_arg, py::ssize_t up_stride_arg,
@@ -107,21 +136,20 @@ static void pack(const py::array& code_array, const py::array& scale_array,
             auto* target = projection ? up_data + local[e] * up_stride + (projection - 1) * blob
                                       : down_data + local[e] * down_stride;
             for (U i = 0; i < nt; ++i) {
-                for (U j = 0; j < kt; ++j) {
-                    for (U row = 0; row < 64; ++row) {
-                        const auto* input = source + (i * 64 + row) * (k / 2) + j * 32;
-                        std::array<std::uint32_t, 4> left, right;
-                        std::array<std::uint32_t, 8> interleaved;
-                        std::memcpy(left.data(), input, 16);
-                        std::memcpy(right.data(), input + 16, 16);
-                        for (U group = 0; group < 4; ++group) {
-                            interleaved[2 * group] = left[group];
-                            interleaved[2 * group + 1] = right[group];
-                        }
-                        std::memcpy(target + (i * kt + j) * 2048 + row * 32, interleaved.data(), 32);
-                        std::memcpy(target + words + (i * kt + j) * 256 + row * 4,
-                                    source_sf + (i * 64 + row) * (k / 16) + j * 4, 4);
-                    }
+                U j = 0;
+                for (; j + 1 < kt; j += 2) {
+                    copy_tile_rows<2>(target + (i * kt + j) * 2048,
+                                      target + words + (i * kt + j) * 256,
+                                      source + i * 64 * (k / 2) + j * 32,
+                                      source_sf + i * 64 * (k / 16) + j * 4,
+                                      k / 2, k / 16);
+                }
+                if (j < kt) {
+                    copy_tile_rows<1>(target + (i * kt + j) * 2048,
+                                      target + words + (i * kt + j) * 256,
+                                      source + i * 64 * (k / 2) + j * 32,
+                                      source_sf + i * 64 * (k / 16) + j * 4,
+                                      k / 2, k / 16);
                 }
             }
         }

@@ -44,7 +44,8 @@ def inputs(width=64, dims=128, *, strided=False):
     return torch.cat(code), torch.cat(sf), fields, torch.tensor(selected), expected, storage, expected_storage
 
 
-@pytest.mark.parametrize("width,dims", [(64, 128), (192, 64)])
+@pytest.mark.parametrize("width,dims", [(64, 64), (64, 128), (128, 128),
+                                        (192, 64), (192, 320), (256, 384)])
 @pytest.mark.parametrize("strided", [False, True])
 def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_lifetimes(width, dims, strided, monkeypatch):
     codes, scales, fields, indices, expected, storage, expected_storage = inputs(width, dims, strided=strided)
@@ -75,6 +76,31 @@ def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_life
         else:
             assert tensor._version == version and torch.equal(tensor, before)
     assert all(reference() is None for reference in aliases)
+
+
+def test_native_pair_tail_copy_accepts_unaligned_sources_and_preserves_physical_margins():
+    width, dims = 192, 320
+    codes, scales, _, indices, expected, _, _ = inputs(width, dims)
+    # Both projections have a paired prefix and odd tail. Raw input addresses
+    # need no four-byte alignment; only destination cells have that contract.
+    source_codes = np.full(codes.numel() + 1, 0x5a, dtype=np.uint8)
+    source_scales = np.full(scales.numel() + 3, 0x5a, dtype=np.uint8)
+    source_codes[1:] = codes.numpy()
+    source_scales[3:] = scales.numpy()
+    blob = width * dims * 9 // 16
+    up_stride, down_stride = 2 * blob + 12, blob + 20
+    up = np.full(4 * up_stride + 16, 0xa5, dtype=np.uint8)
+    down = np.full(4 * down_stride + 24, 0xa5, dtype=np.uint8)
+    expected_up, expected_down = up.copy(), down.copy()
+    for local in range(4):
+        expected_up[4 + local * up_stride:4 + local * up_stride + 2 * blob] = expected[0][local].numpy().reshape(-1)
+        expected_down[8 + local * down_stride:8 + local * down_stride + blob] = expected[1][local].numpy()
+    before = source_codes.copy(), source_scales.copy(), indices.clone()
+    bank_cpu._ext().pack(source_codes[1:], source_scales[3:], up, down, indices.numpy(),
+                         4, up_stride, 8, down_stride, 4, width, dims)
+    assert np.array_equal(up, expected_up) and np.array_equal(down, expected_down)
+    assert np.array_equal(source_codes, before[0]) and np.array_equal(source_scales, before[1])
+    assert torch.equal(indices, before[2])
 
 
 def native_arguments():
