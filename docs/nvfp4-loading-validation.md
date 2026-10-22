@@ -18,7 +18,51 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Native CT bank loading candidate — qualification pending
 
-This checkout folds the eight fixed byte transfers into the tile-row body of
+This checkout adds a separate metadata candidate: immediate validation may
+borrow the nested declaration of the current sole default policy instead of
+copying it. The public resolver still returns independent mutable results.
+Exclusions, default-format inheritance, live nested policy mutations and public
+resolver overrides remain authoritative; other policy capabilities retain
+their original resolution/merge and precise errors. The borrowed view is never
+mutated or returned from validation, whose result remains primitive values.
+No policy cache or concurrent-mutation guarantee is introduced. It passed152
+focused source CPU controls in1.71s on pinned AMD64/Torch9026/NumPy2.1, including
+independent public resolver unions/errors, live mutation/replacement, resolver
+dispatch overrides, primitive format outputs and existing host admission/error
+and actual FD-owner integration. Native CPP, IO and scalar arithmetic are
+unchanged; these are source-checkout checks, not installed or ARM64 qualification.
+
+A separate local AMD64/SM120 warm bank comparison used the original Qwen3.6 CT
+checkpoint, resident257-cell width512/dims2048 bank,8 intra-op/1 inter-op threads,
+fresh production Reader contexts,24 measured positions plus4 warmups and6
+mirrored HMMH/MHHM blocks. H is frozen `e87214fb`; M is the metadata increment.
+Mean complete bank transaction time was0.469614653250s for H and0.445129550667s
+for M. M minus H was−0.024485102583s, with the predeclared10,000-resample paired
+block bootstrap95% pointwise interval[−0.027481021000,−0.021509427167]s; all6 block differences
+were negative. Six blocks do not establish the assumed independence or
+representativeness, and no whole-model saving is extrapolated.
+
+Full six-field authority and native decode/prefill outputs matched before and
+after. All1323 source/test files and39 actual project origins stayed unchanged.
+Authenticated private H policy/format bodies and distinct real metadata owners
+were verified before timing, with their method/default/source bindings unchanged
+afterward. The preparation-only private import binding was restored to ordinary
+builtins before any measured call. One unchanged CPU module/factory served both
+arms and recorded728 production cache hits without misses or binding changes.
+Six actual native proof aliases identified three verified mappings: that shared
+CPU provider, the grouped CUDA provider and the FD provider. Inputs/foundation,
+CUDA settlement and owned actor retirement passed their gates.
+
+The metric includes loading/publication and attempted bank/cache/FD retirement.
+Metadata/context preparation and initial compilation are excluded. Nonqualifying
+policies retain extra dispatch costs requiring their own performance controls.
+Required owned-resource admission, observed library/stack/module/compilation
+effects, ARM64 ten-intra/ten-inter-op policy, installed packaging and full cold/warm model
+startup/request/quality qualification remain pending. This is a local warm
+component observation, not production promotion or a gain against accepted source.
+The historical native-loop results below retain their separate source scope.
+
+That reference folds the eight fixed byte transfers into the tile-row body of
 frozen paired-tile reference `ab3c33ba`. It passed the same55 independent CPU
 controls with an actual source-owned CPP build, and the separate local warm
 bank comparison below. No ISA flag or compiler-specific inlining promise is

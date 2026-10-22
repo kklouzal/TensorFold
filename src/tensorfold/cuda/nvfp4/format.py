@@ -88,6 +88,8 @@ class LinearMetadata:
 
         ``checkpoint=False`` is an explicit/stored-weight math policy; it may
         disable declared activation quantization but never reinterpret weights.
+        A sole default declaration is borrowed only for this read-only call;
+        its nested values never escape the primitive validation result.
         """
         if "weight" in tensors and "weight_packed" in tensors:
             raise ValueError(f"{name}: both weight and weight_packed are present")
@@ -97,7 +99,7 @@ class LinearMetadata:
         if len(shape) != 2 or any(type(n) is not int or n <= 0 for n in shape):
             raise ValueError(f"{name}: linear weight must have a positive two-dimensional shape")
         n, k = shape[0], shape[1] * (2 if kind == "nvfp4" else 1)
-        spec = self.policy.resolve(name)
+        spec = LinearQuantization._resolve_for_validation(self.policy, name)
         if spec is None:
             if kind != "bf16" and (checkpoint or self.policy.excluded(name)):
                 raise ValueError(f"{name}: stored {kind} weights have no matching quantization declaration")

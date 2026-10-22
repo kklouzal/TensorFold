@@ -107,7 +107,8 @@ A separate fused CPU native CT bank-loading candidate batches owned calibration 
 block-scale reads, streams bounded code chunks, and packs directly into final
 CPU authority through one byte-only native call per chunk. It preserves original error order and native arithmetic. The
 isolated candidate retains its reference's kernels and other loading paths.
-This checkout folds the fixed byte transfers into the tile-row body. It passed55
+Frozen tile-row-body reference `e87214fb` folds the fixed byte transfers into the
+row body. It passed55
 CPU controls with an actual CPP build on the pinned AMD64 checkout. A separate
 warmed Qwen3.6 resident257-cell comparison at8 intra-op/1 inter-op threads measured
 mean transaction time of0.464444748s versus0.488834095s for frozen paired-tile
@@ -118,6 +119,18 @@ observations; resource admission, ARM64/installed and full-model startup and
 request qualification remain pending. Its CPU-only C++ extension compiles on first eligible use with the
 configured Torch extension toolchain; compile cost is included in startup
 qualification. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
+
+This checkout separately borrows a sole default quantization declaration during
+immediate read-only validation, preserving public independent resolver results,
+current policy mutations and resolver overrides. It passed152 focused CPU
+checks on the pinned AMD64 checkout. A separate warmed resident257-cell comparison
+at8 intra-op/1 inter-op threads measured0.445129551s versus0.469614653s for frozen
+reference `e87214fb`: difference−0.024485103s,95% pointwise paired-block interval
+[−0.027481021,−0.021509427]s, with all6 blocks faster and full byte/native controls
+passing. This local result excludes metadata/context preparation and first
+compilation. Nonqualifying policy regions, ARM64/installed, owned-resource
+admission and complete cold/warm model startup and request qualification remain
+pending; the earlier native-loop results above retain their own source scope.
 
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;

@@ -119,6 +119,67 @@ def test_activation_math_requires_metadata_not_presence_of_static_scales(method,
     assert _metadata(method=method, dynamic=dynamic).validate("mlp", headers, checkpoint=False) == ("nvfp4", None)
 
 
+def test_borrowed_validation_observes_current_default_mutation_and_policy_replacement():
+    policy = _metadata()
+    headers = _projection()
+    assert policy.validate("mlp", headers, checkpoint=True) == ("nvfp4", 4)
+    policy.policy.defaults[0]["input_activations"] = None
+    assert policy.validate("mlp", headers, checkpoint=True) == ("nvfp4", None)
+    replacement = _metadata().policy
+    policy.policy = replacement
+    assert policy.validate("mlp", headers, checkpoint=True) == ("nvfp4", 4)
+    replacement.defaults[0]["weights"]["num_bits"] = 8
+    with pytest.raises(ValueError, match="stored nvfp4 weights disagree"):
+        policy.validate("mlp", headers, checkpoint=True)
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+@pytest.mark.parametrize("damage", [None, "activation", "weight", "output", "missing_scale", "shape"])
+def test_borrowed_validation_matches_independent_public_policy_result_and_error(checkpoint, damage):
+    class PublicPolicy(fmt.LinearQuantization):
+        """The unchanged public resolver is the project-owned declaration oracle."""
+
+    candidate, reference = _metadata(), _metadata()
+    reference.policy = PublicPolicy({"quant_method": "modelopt", "config_groups": {"g": {
+        "targets": ["Linear"], "weights": {"type": "float", "num_bits": 4, "group_size": 16},
+        "input_activations": {"type": "float", "num_bits": 4, "group_size": 16, "dynamic": False}}}})
+    headers = _projection()
+    for metadata in (candidate, reference):
+        group = metadata.policy.defaults[0]
+        if damage == "activation":
+            group["input_activations"]["dynamic"] = True
+        elif damage == "weight":
+            group["weights"]["group_size"] = 32
+        elif damage == "output":
+            group["output_activations"] = {"num_bits": 8}
+    if damage == "missing_scale":
+        del headers["input_scale"]
+    elif damage == "shape":
+        headers["weight"] = ("U8", [0, 32])
+    try:
+        expected = reference.validate("mlp", headers, checkpoint=checkpoint)
+    except ValueError as error:
+        with pytest.raises(ValueError) as actual:
+            candidate.validate("mlp", headers, checkpoint=checkpoint)
+        assert actual.value.args == error.args
+    else:
+        actual = candidate.validate("mlp", headers, checkpoint=checkpoint)
+        assert actual == expected
+        assert isinstance(actual[0], str) and (actual[1] is None or type(actual[1]) is int)
+
+
+def test_metadata_validation_keeps_replaced_public_resolver_authoritative(monkeypatch):
+    metadata, calls = _metadata(), []
+
+    def resolve(name):
+        calls.append(name)
+        return {"weights": {"type": "float", "num_bits": 4, "group_size": 16}, "input_activations": None}
+
+    monkeypatch.setattr(metadata.policy, "resolve", resolve)
+    assert metadata.validate("mlp", _projection(), checkpoint=True) == ("nvfp4", None)
+    assert calls == ["mlp"]
+
+
 @pytest.mark.parametrize("field,value", [
     ("input_scale", ("F32", [2])), ("input_scale", ("I32", [])),
     ("weight_scale_2", ("F32", [2])), ("weight_scale", ("F8_E4M3", [8, 3])),

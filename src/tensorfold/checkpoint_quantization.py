@@ -8,6 +8,7 @@ Normalization never chooses a runtime precision.
 from __future__ import annotations
 
 from copy import deepcopy
+from types import MethodType
 
 METHODS = ("modelopt", "compressed-tensors")
 
@@ -370,3 +371,32 @@ class LinearQuantization:
                 semantics.setdefault(key, None)
             selected = _merge(selected, semantics, f"{name}.matching quantization groups")
         return selected
+
+    def _resolve_for_validation(self, name: str, *, _resolve=resolve) -> dict | None:
+        """Borrow one default's nested declarations for immediate read-only use.
+
+        The caller must not mutate or retain this result. No policy snapshot is
+        cached: exclusions, defaults and nested mutations are observed on every
+        call. Public resolution keeps its independent mutable-result contract;
+        nondefault policies and resolver overrides retain their own dispatch.
+        The definition-time function identity distinguishes the owned resolver
+        from an instance or class replacement without inspecting custom callables.
+        """
+        resolver = self.resolve
+        if (type(self) is not LinearQuantization or type(resolver) is not MethodType
+                or resolver.__func__ is not _resolve or resolver.__self__ is not self
+                or type(self.exact) is not dict or self.exact
+                or type(self.patterns) is not list or self.patterns
+                or type(self.defaults) is not list or len(self.defaults) != 1
+                or type(self.defaults[0]) is not dict):
+            return resolver(name)
+        if self.excluded(name):
+            return None
+        semantics = {key: value for key, value in self.defaults[0].items() if key != "targets"}
+        if semantics.get("format") is None:
+            semantics.pop("format", None)
+            if self.default_format is not None:
+                semantics["format"] = self.default_format
+        for key in ("weights", "input_activations", "output_activations"):
+            semantics.setdefault(key, None)
+        return semantics

@@ -268,3 +268,80 @@ def test_a_static_record_on_other_layers_stays_a_conflict():
                     "input_activations": {"dynamic": False, "num_bits": 8, "type": "float", "strategy": "tensor"}}}
     with pytest.raises(ValueError, match="conflict"):
         LinearQuantization(_mixed(other, {"a.qkv": layers["a.qkv"]})["quantization_config"])
+
+
+@pytest.mark.parametrize("method", ["compressed-tensors", "modelopt"])
+@pytest.mark.parametrize("targets", [["Linear"], ["model"], ["re:^model\\..*$"]])
+@pytest.mark.parametrize("second", [None, {"group_size": 16}, {"num_bits": 8}])
+def test_validation_resolution_preserves_public_union_errors_exclusions_and_names(method, targets, second):
+    groups = {"first": {"targets": targets, "weights": {"type": "float", "num_bits": 4}, "format": None}}
+    if second is not None:
+        groups["second"] = {"targets": targets, "weights": second}
+    policy = LinearQuantization({"quant_method": method, "format": "nvfp4-pack-quantized",
+                                 "ignore": ["model.ignored", "vision*"], "config_groups": groups})
+    for name in ("model", "model.mlp", "model.ignored", "vision.proj", "other"):
+        try:
+            expected = policy.resolve(name)
+        except ValueError as error:
+            with pytest.raises(ValueError) as actual:
+                LinearQuantization._resolve_for_validation(policy, name)
+            assert actual.value.args == error.args
+        else:
+            assert LinearQuantization._resolve_for_validation(policy, name) == expected
+
+
+def test_validation_borrow_is_transient_while_public_results_remain_independent():
+    policy = LinearQuantization({"quant_method": "compressed-tensors", "config_groups": {
+        "g": {"weights": {"num_bits": 4}, "input_activations": {"num_bits": 4}}}})
+    independent = policy.resolve("model.mlp")
+    borrowed = LinearQuantization._resolve_for_validation(policy, "model.mlp")
+    assert borrowed == independent
+    assert borrowed["weights"] is policy.defaults[0]["weights"]
+    del borrowed
+    independent["weights"]["num_bits"] = 8
+    assert LinearQuantization._resolve_for_validation(policy, "model.mlp")["weights"]["num_bits"] == 4
+    policy.defaults[0]["input_activations"] = None
+    assert LinearQuantization._resolve_for_validation(policy, "model.mlp")["input_activations"] is None
+
+
+def test_validation_resolution_preserves_subclass_and_substituted_policy_dispatch():
+    calls, result = [], {"weights": None}
+
+    class Derived(LinearQuantization):
+        def resolve(self, name):
+            calls.append(("derived", name))
+            return result
+
+    class Other:
+        def resolve(self, name):
+            calls.append(("other", name))
+            return result
+
+    for policy, label in ((Derived({}), "derived"), (Other(), "other")):
+        assert LinearQuantization._resolve_for_validation(policy, "mlp") is result
+        assert calls[-1] == (label, "mlp")
+    assert len(calls) == 2
+
+
+def test_validation_resolution_preserves_class_instance_and_cross_bound_overrides(monkeypatch):
+    policy = LinearQuantization({"config_groups": {"g": {"weights": {"num_bits": 4}}}})
+    other = LinearQuantization({"config_groups": {"g": {"weights": {"num_bits": 8}}}})
+    policy.resolve = other.resolve
+    assert LinearQuantization._resolve_for_validation(policy, "mlp")["weights"]["num_bits"] == 8
+    del policy.resolve
+
+    class Resolver:
+        def __getattribute__(self, name):
+            if name == "__func__":
+                raise AssertionError("a custom resolver's attribute hooks must not be inspected")
+            return object.__getattribute__(self, name)
+
+        def __call__(self, name):
+            return {"name": name}
+
+    policy.resolve = Resolver()
+    assert LinearQuantization._resolve_for_validation(policy, "mlp") == {"name": "mlp"}
+    del policy.resolve
+    result = {"class_override": True}
+    monkeypatch.setattr(LinearQuantization, "resolve", lambda self, name: result)
+    assert LinearQuantization._resolve_for_validation(policy, "mlp") is result
