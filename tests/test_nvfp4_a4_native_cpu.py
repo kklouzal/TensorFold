@@ -105,8 +105,8 @@ def test_native_pair_tail_copy_accepts_unaligned_sources_and_preserves_physical_
 
 @pytest.mark.parametrize("selected", [[5], [11, 0, 8, 3, 10, 2, 7], [11, 0, 9, 2, 10, 3, 8, 4, 7, 5]])
 def test_projection_partitions_preserve_partial_chunks_and_unselected_interleaved_cells(selected):
-    # Three,21 and30 projection units cross the expert/task boundaries in
-    # distinct ways. Both projections retain their paired-prefix and odd tail.
+    # One,seven andten experts cover the adopted serial and multiworker ranges;
+    # their three projections retain the paired prefix and odd tile tail.
     codes, scales, fields, indices, expected, storage, expected_storage = inputs(
         192, 320, strided=True, count=12, selected=selected)
     before = codes.clone(), scales.clone(), indices.clone()

@@ -125,36 +125,38 @@ static void pack(const py::array& code_array, const py::array& scale_array,
     }
     const auto* code_data = static_cast<const std::uint8_t*>(codes.ptr);
     const auto* sf_data = static_cast<const std::uint8_t*>(scales.ptr);
-    const auto tasks = static_cast<std::int64_t>(count * 3); // count <= 1023 above
+    const auto tasks = static_cast<std::int64_t>(count); // count <= 1023 above
     py::gil_scoped_release release;
     // The adopted synchronous range owner joins before return/rethrow. Setup
     // can fail; authority remains unpublished, with all buffers retained here.
-    // Pairs of tasks own distinct projection cells even for interleaved up/down
+    // Tasks own distinct experts' projection cells even for interleaved up/down
     // allocations. Do not turn the enclosing-span checks into noalias promises.
     at::parallel_for(0, tasks, 1, [&](std::int64_t first, std::int64_t last) {
         for (auto task = first; task < last; ++task) {
-            const U e = static_cast<U>(task) / 3, projection = static_cast<U>(task) % 3;
-            const U n = projection ? width : dims, k = projection ? dims : width;
-            const U nt = n / 64, kt = k / 64;
-            const auto* source = code_data + (e * 3 + projection) * words;
-            const auto* source_sf = sf_data + (e * 3 + projection) * sf;
-            auto* target = projection ? up_data + local[e] * up_stride + (projection - 1) * blob
-                                      : down_data + local[e] * down_stride;
-            for (U i = 0; i < nt; ++i) {
-                U j = 0;
-                for (; j + 1 < kt; j += 2) {
-                    copy_tile_rows<2>(target + (i * kt + j) * 2048,
-                                      target + words + (i * kt + j) * 256,
-                                      source + i * 64 * (k / 2) + j * 32,
-                                      source_sf + i * 64 * (k / 16) + j * 4,
-                                      k / 2, k / 16);
-                }
-                if (j < kt) {
-                    copy_tile_rows<1>(target + (i * kt + j) * 2048,
-                                      target + words + (i * kt + j) * 256,
-                                      source + i * 64 * (k / 2) + j * 32,
-                                      source_sf + i * 64 * (k / 16) + j * 4,
-                                      k / 2, k / 16);
+            const U e = static_cast<U>(task);
+            for (U projection = 0; projection < 3; ++projection) {
+                const U n = projection ? width : dims, k = projection ? dims : width;
+                const U nt = n / 64, kt = k / 64;
+                const auto* source = code_data + (e * 3 + projection) * words;
+                const auto* source_sf = sf_data + (e * 3 + projection) * sf;
+                auto* target = projection ? up_data + local[e] * up_stride + (projection - 1) * blob
+                                          : down_data + local[e] * down_stride;
+                for (U i = 0; i < nt; ++i) {
+                    U j = 0;
+                    for (; j + 1 < kt; j += 2) {
+                        copy_tile_rows<2>(target + (i * kt + j) * 2048,
+                                          target + words + (i * kt + j) * 256,
+                                          source + i * 64 * (k / 2) + j * 32,
+                                          source_sf + i * 64 * (k / 16) + j * 4,
+                                          k / 2, k / 16);
+                    }
+                    if (j < kt) {
+                        copy_tile_rows<1>(target + (i * kt + j) * 2048,
+                                          target + words + (i * kt + j) * 256,
+                                          source + i * 64 * (k / 2) + j * 32,
+                                          source_sf + i * 64 * (k / 16) + j * 4,
+                                          k / 2, k / 16);
+                    }
                 }
             }
         }

@@ -252,8 +252,10 @@ source remain pending. No production gain or release promotion is claimed.
 
 ## CPU bank projection-partition candidate
 
-The isolated follow-up partitions `3*chunk` raw-byte projection units through
-the adopted `at::parallel_for`. Every original range/dtype/alias/ID check and the
+The earlier P follow-up partitions `3*chunk` raw-byte projection units through
+the adopted `at::parallel_for`. The current isolated E variant instead assigns
+`chunk` whole-expert units to that same facility, keeping the three original
+projection loops inside each expert. Every original range/dtype/alias/ID check and the
 single immutable local-ID snapshot still precede dispatch. The H tile-row byte
 loop and its paired/singleton tail are unchanged. Workers access only validated
 raw buffers, scalar geometry and the retained snapshot, with no Tensor, Python,
@@ -274,7 +276,7 @@ expose these settings outside packing calls. An explicitly called SDK-only
 One-thread and already-parallel
 regions retain the adopted facility's supported serial behavior.
 
-The pinned AMD64 image509 CPU SDK gate passed58 unique cases with no skips
+The earlier P pinned AMD64 image509 CPU SDK gate passed58 unique cases with no skips
 in2.52s, including three independent1/7/10 reordered, partial and interleaved
 partition cases. All1323 source/test files matched before/after/declared/current;
 28 actual project origins included every required owner. The normal factory
@@ -288,14 +290,26 @@ uninitialized; the displayed cpp_extension CUDA_HOME metadata warning is retaine
 and does not constitute a full compiler-warning audit. Exact client/container
 retirement completed with no owner errors.
 
-The first SDK attempt remains FAILED before tests: hashing the legitimate
+The first P SDK attempt remains FAILED before tests: hashing the legitimate
 readelf symlink under O_NOFOLLOW raised ELOOP, with the required test-origin
 secondary preserved. The corrected observer hashes and executes resolved OS-tool
 paths; runtime, compiler mode and numerical tests were unchanged. That failure
 is neither a packing-test failure nor a pass.
 
-E whole-expert remains the next coarse comparator with M serial and P projection
-units; T bounded tile rows remains conditional on measured coarse-partition
+The current E whole-expert source separately passed58 unique CPU SDK cases with
+no skips in2.46s on pinned AMD64 image509, with4 intraop/1 interop threads. Its own
+expert-unit CPP built and reused the normal source-hashed module with effective
+C++17/OpenMP201511; the explicit preparation probe observed IDs0–3. All1323
+source/test bytes and28 actual project origins passed their source interval;
+named managed GOMP/RECORD/ELF and seventeen core providers were unchanged, and
+exact retirement completed without owner errors. The same CUDA_HOME metadata
+warning is preserved with CUDA uninitialized. Physical GOMP VMA-FD identity is
+still unproved. This is E's own functional gate, independent of the historical P
+pass; it measures no packing gain or production worker distribution. Its reused
+independent1/7/10 selected-chunk controls cover whole-expert serial/multiworker
+boundaries, projection bytes, interleaved padding and retained ownership without
+a second oracle or an identity-only test. M serial/P projection/E expert remain the next
+coarse comparison; T bounded tile rows remains conditional on measured coarse-partition
 stalls. Actual setup/join/runtime stacks, concurrent callers, cold first-use
 compilation/team creation, protected GOMP VMA-FD identity, complete bank
 publication/retirement, installed ARM and full-model cold/warm/request/resource

@@ -1,14 +1,15 @@
 # TensorFold fork
 
-An isolated CPU native-bank candidate partitions each validated bulk chunk into
-projection ranges through PyTorch's adopted intra-op facility. It retains the
-serial kernel's exact bytes, validation, borrowed owners and unpublished-failure
-contract. Its pinned AMD64 CPU SDK gate passed58 cases with C++17/OpenMP4.5 and
-four observed worker IDs, unchanged source and completed retirement. Named
-Torch OpenMP mapping/RECORD/dependency checks passed; physical-provider proof,
-whole-bank performance, installed ARM and complete-model comparisons remain
-pending. This selects no speedup; [qualification scope](docs/nvfp4-loading-validation.md#cpu-bank-projection-partition-candidate)
-keeps cold first use and required regions separate.
+An isolated CPU native-bank candidate assigns whole experts to PyTorch's adopted
+intra-op facility, keeping each expert's three original projection loops together.
+It retains the serial kernel's bytes, validation, borrowed owners and unpublished-
+failure contract. This E variant separately passed58 pinned AMD64 CPU SDK cases
+with C++17/OpenMP4.5, four observed probe workers and completed source/provider/
+retirement checks; the earlier P result remains source-specific. The
+[qualification scope](docs/nvfp4-loading-validation.md#cpu-bank-projection-partition-candidate)
+still requires matched serial/projection/expert whole-bank, physical-provider,
+installed ARM and complete-model comparisons. No speedup is selected, and cold
+first use remains distinct from warmed component execution.
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
