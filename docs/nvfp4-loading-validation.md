@@ -16,6 +16,70 @@ RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CO
 
 Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first, then the active interpreter's NVIDIA namespace package, Torch's bundle, and system discovery. The managed foundation binds its selected physical NCCL provider and refuses a conflicting override. A broken selected override or environment library fails explicitly. The loaded library remains owned through native communicator retirement. POSIX rendezvous sets `SO_REUSEADDR` before binding to reuse retired sessions while preserving active-listener exclusivity; it does not enable `SO_REUSEPORT`. Older sessions created without reuse may still need their kernel timeout. The collective/numerical/retirement bodies are unchanged by these discovery and bind edits.
 
+## Direct C-exchange prototype
+
+This isolated source is based on G `ab3c33ba`; it changes the Python/native
+buffer boundary while retaining G's byte loop as a generated kernel. The
+minimal CPython and pybind candidates share one core and the same producer,
+version callback, validation, ID snapshot, owner lifetime and write sequence.
+Public DLPack1.3 temporary non-owning descriptors expose the original admitted
+strided target index sets. Every write must belong to those valid Tensor cells;
+logical numel is not a physical-capacity substitute. No Tensor C++ ABI,
+per-call managed Tensor/capsule, NumPy array or whole-storage Tensor view is used
+on this route. Standard GC-owned contexts retain the producer type/API capsule
+and the adopted version callback; the five original Tensor owners survive
+through synchronous completion and GIL reacquisition.
+
+All five exports precede the original up/down version callback. Shared counters
+therefore receive the original two updates. Native geometry/ID validation
+precedes every write. Advertised malformed API, producer, callback and resource
+errors fail explicitly; they do not trigger another provider. API absence,
+Tensor subclasses and integer-like geometry retain the original G NumPy route,
+selected before compiling an unused direct module. The direct native boundary
+requires exact built-in integer width/dims before any export. Their later
+range conversion cannot call user `__index__`; version-update/conversion order
+for admitted exact integers is retained. Capability/type/callback preparation is
+process-bounded, and ownership forbids concurrent metadata/data mutation during
+the synchronous interval. The bound callback has a version-only precondition:
+it may raise, but must never resize, rebind or mutate any exported Tensor,
+Storage, data, shape or stride during reentry. Production binds the adopted
+Torch operation; diagnostic spies must obey the same contract. Strong owner
+references alone do not stabilize metadata across an arbitrary callback.
+
+Reproduce the generated kernel with
+`PYTHONPATH=src python tools/generate_bank_exchange_kernel.py`; its authority is
+the unchanged `bank_cpu.cpp` G permutation. Do not hand-edit the header. Both
+new frontends and their owned transitive headers contribute to build identity.
+The ordinary CPU-only extension facility still compiles on first eligible use;
+compiler/module/cache and cold readiness remain resource/performance gates.
+
+The initial source completed 108 CPU checks on pinned AMD64 with GPUs hidden,
+including compilation and both frontend byte/owner/error controls. Review then
+found that int-like geometry could invoke `__index__` after descriptor export.
+Those as-run bytes/results are preserved; they do not clear that defect or
+qualify this corrected boundary. New controls reject a metadata-mutating
+`__index__` before either producer or version callback and retain the original
+provider for supported integer-like inputs.
+
+The corrected source then completed **114 CPU checks with zero skips** on
+pinned Linux AMD64, Python3.12.3/Torch9026, with GPUs hidden. Actual optimized
+warning-as-error compilation produced both new SDK frontends and the retained
+G provider. The gate covers complete independent bytes, source/version/physical
+padding, producer/callback failures, GC-cycle retirement, all four frontend
+integer-reentry controls, the real NumPy-integer G route and actual bank/Reader
+integration. All1,330 source/test files were unchanged before/after, with28
+verified project origins and exact actor retirement. Three native product paths
+were present in process maps; this is not a VMA-FD proof, fresh compiler-version
+query or full installed-header audit.
+
+This is checkout CPU evidence. Installed ARM, native GPU consumers, actual wheel
+header delivery, owned-resource/reserve/cgroup/refusal paths, first-use
+compiler/module/cache costs, complete-bank comparisons and whole-model quality/
+cold+warm P3 qualification remain pending. The provisional CPython binding is
+not a selected winner. The pybind comparator has no serving flag and must be
+dispositioned after complete-design comparison. Historical G/F observations
+below retain their exact source and limits.
+
 ## Native CT bank loading candidate — qualification pending
 
 This checkout is a separate loop variant of frozen native reference `9734f82a`.

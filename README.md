@@ -1,5 +1,14 @@
 # TensorFold fork
 
+An isolated native CT loading prototype uses the pinned public DLPack1.3
+non-owning C interface over original CPU Tensors. Both CPython/pybind frontends
+completed **114 CPU checks** on pinned Linux AMD64 with GPUs hidden, including
+real compilation, independent byte/owner/error/GC tests and integer-reentry
+controls. API-absent, subclass and integer-like geometry retain the original
+NumPy provider. ARM, installed packaging, resource and whole-model/performance
+qualification remain pending; neither frontend nor a gain is selected.
+[Boundary and validation scope](docs/nvfp4-loading-validation.md#direct-c-exchange-prototype).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
