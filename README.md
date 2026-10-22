@@ -18,6 +18,9 @@ The plan binds immutable image/source/input identities and exact request/cache
 counts. It retains complete token IDs, preprocessing and native settlement, and
 failed outcomes. This direct-engine procedure excludes HTTP/stream processing
 and concurrent service load; those require the existing campaign HTTP controls.
+Cleanup preserves the original failure when native completion, progress,
+diagnostic formatting or report publication also fails. All 27 benchmark CPU
+controls pass in the pinned AMD64 container; model qualification remains separate.
 
 The original GB10 Gemma CT/BF16 softcap candidate retains all three BF16 storage
 boundaries in one CUDA kernel. Installed SM121 checks match all 65,536 BF16 bit

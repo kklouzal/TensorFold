@@ -41,10 +41,10 @@ def save_plan(tmp_path, plan):
     return path
 
 
-def install_runtime(monkeypatch, tmp_path, *, warm=4, fault=None):
+def install_runtime(monkeypatch, tmp_path, *, warm=4, fault=None, native_error=None, close_error=None):
     state = {"constructed": 0, "closed": False, "calls": 0, "syncs": 0}
-    native_error = RuntimeError("native partial failure")
-    close_error = OSError("native retirement failure")
+    native_error = RuntimeError("native partial failure") if native_error is None else native_error
+    close_error = OSError("native retirement failure") if close_error is None else close_error
 
     class Engine:
         context_window = 4096
@@ -58,6 +58,8 @@ def install_runtime(monkeypatch, tmp_path, *, warm=4, fault=None):
             receive([22, 23] if fault != "short" else [22])
             if fault == "stats-list":
                 return ["invalid statistics type"]
+            if fault == "stats-repr":
+                return state["stats"]
             return {"cached": (0 if state["calls"] == 1 else warm) if fault != "cached" else True,
                     "prefill_s": .1, "decode_s": float("nan") if fault == "nan" else .2,
                     "rounds": 2, "drafted": 2, "accepted": 1}
@@ -241,3 +243,181 @@ def test_report_publication_failure_retains_inference_primary(monkeypatch, tmp_p
     assert caught.value is native and state["closed"] and "FAILED" in publications
     report = json.loads((tmp_path / "out/report.json").read_text())
     assert report["records"][0]["token_ids"] == [20, 21] and report["status"] == "FAILED"
+
+
+def failure_roots(error):
+    pending, seen = [error], []
+    while pending:
+        item = pending.pop()
+        if item is None or any(item is prior for prior in seen):
+            continue
+        seen.append(item)
+        pending.extend((item.__cause__, item.__context__))
+        if isinstance(item, BaseExceptionGroup):
+            pending.extend(item.exceptions)
+        pending.extend(getattr(item, "_tensorfold_retained_failures", ()))
+    return seen
+
+
+def test_settlement_attempts_both_operations_and_retains_both_raw_failures():
+    drained, synchronized = OSError("drain failed"), MemoryError("synchronize failed")
+    original = LookupError("original drain cause")
+    drained.__cause__ = original
+    calls = []
+
+    def drain():
+        calls.append("drain")
+        raise drained
+
+    def synchronize():
+        calls.append("synchronize")
+        raise synchronized
+
+    with pytest.raises(OSError) as caught:
+        tool._settle(SimpleNamespace(drain=drain), SimpleNamespace(cuda=SimpleNamespace(synchronize=synchronize)))
+    assert caught.value is drained and calls == ["drain", "synchronize"]
+    roots = failure_roots(drained)
+    assert all(any(root is item for root in roots) for item in (original, synchronized))
+
+
+def test_settlement_lookup_failure_still_attempts_device_completion():
+    lookup = MemoryError("drain binding exhausted")
+    calls = []
+
+    class Engine:
+        @property
+        def drain(self):
+            raise lookup
+
+    torch = SimpleNamespace(cuda=SimpleNamespace(synchronize=lambda: calls.append("synchronize")))
+    with pytest.raises(MemoryError) as caught:
+        tool._settle(Engine(), torch)
+    assert caught.value is lookup and calls == ["synchronize"]
+
+
+def test_formatter_exhaustion_cannot_skip_retirement_progress_or_partial_report(monkeypatch, tmp_path):
+    plan = fixture_plan(tmp_path)
+    state, native, _ = install_runtime(monkeypatch, tmp_path, fault="partial")
+    prior_cause, prior_context = ValueError("original cause"), LookupError("original context")
+    native.__cause__, native.__context__ = prior_cause, prior_context
+    formatting = MemoryError("formatting exhausted")
+    publications, idle = [], []
+    original_write, original_progress = tool.write_json, tool.Progress.update
+
+    def failure(error):
+        raise formatting
+
+    def write(path, document):
+        publications.append((document["status"], state["closed"]))
+        return original_write(path, document)
+
+    def progress(phase, **fields):
+        if phase == "idle":
+            idle.append((state["calls"], state["closed"]))
+        return original_progress(phase, **fields)
+
+    monkeypatch.setattr(tool, "_failure", failure)
+    monkeypatch.setattr(tool, "write_json", write)
+    monkeypatch.setattr(tool.Progress, "update", progress)
+    with pytest.raises(RuntimeError) as caught:
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert caught.value is native and state["closed"] and state["syncs"] == 2
+    # configure publishes an initial idle frame before the request and both
+    # mandatory retirement tails publish their own idle frame afterward.
+    assert idle == [(0, False), (1, False), (1, True)] and ("FAILED", True) in publications
+    roots = failure_roots(native)
+    assert all(any(root is item for root in roots) for item in (prior_cause, prior_context, formatting))
+    report = json.loads((tmp_path / "out/report.json").read_text())
+    row = report["records"][0]
+    assert report["status"] == row["status"] == "FAILED"
+    assert report["diagnostic_failed"] and row["diagnostic_failed"]
+    assert row["token_ids"] == [20, 21] and row["response_tokens"] == 2 and row["native_settled"]
+
+
+@pytest.mark.parametrize("fault", ["partial", "close"])
+def test_bad_exception_string_preserves_native_primary_and_cli_close(monkeypatch, tmp_path, fault):
+    plan = fixture_plan(tmp_path)
+    formatting = MemoryError("exception string exhausted")
+
+    class BadStringError(RuntimeError):
+        def __str__(self):
+            raise formatting
+
+    native = BadStringError()
+    state, _, _ = install_runtime(monkeypatch, tmp_path, fault=fault,
+                                  native_error=native, close_error=native)
+    with pytest.raises(BadStringError) as caught:
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert caught.value is native and state["closed"]
+    assert any(root is formatting for root in failure_roots(native))
+    report = json.loads((tmp_path / "out/report.json").read_text())
+    assert report["status"] == "FAILED" and report["diagnostic_failed"]
+    assert all(row["native_settled"] for row in report["records"] if row["status"] != "NOT_RUN")
+    assert state["syncs"] == (2 if fault == "partial" else 4)
+
+
+def test_bad_stats_representation_keeps_json_error_and_consumed_ids(monkeypatch, tmp_path):
+    plan = fixture_plan(tmp_path)
+    state, _, _ = install_runtime(monkeypatch, tmp_path, fault="stats-repr")
+    formatting = MemoryError("statistics representation exhausted")
+
+    class BadStats:
+        def __repr__(self):
+            raise formatting
+
+    state["stats"] = BadStats()
+    with pytest.raises(TypeError, match="JSON serializable") as caught:
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert state["closed"] and state["syncs"] == 2
+    assert any(root is formatting for root in failure_roots(caught.value))
+    row = json.loads((tmp_path / "out/report.json").read_text())["records"][0]
+    assert row["token_ids"] == [20, 21, 22, 23] and row["native_settled"] and row["diagnostic_failed"]
+
+
+@pytest.mark.parametrize("retirement", [False, True], ids=["heartbeat-tail", "all-five-request-slots"])
+def test_progress_formatter_and_publication_failures_preserve_all_raw_roots(monkeypatch, tmp_path, retirement):
+    plan = fixture_plan(tmp_path)
+    state, native, _ = install_runtime(monkeypatch, tmp_path, fault="partial")
+    progress_error, formatting, publication = OSError("progress failure"), MemoryError("format failure"), OSError("publish failure")
+    retirement_error = OSError("retirement failure")
+    original_failure, original_write, original_progress = tool._failure, tool.write_json, tool.Progress.update
+    original_settle = tool._settle
+    publication_attempts = []
+
+    def progress(phase, **fields):
+        if phase == "idle" and state["calls"]:
+            raise progress_error
+        return original_progress(phase, **fields)
+
+    def failure(error):
+        if error is progress_error or error is retirement_error:
+            raise formatting
+        return original_failure(error)
+
+    def settle(engine, torch):
+        original_settle(engine, torch)
+        if retirement and state["calls"]:
+            raise retirement_error
+
+    def write(path, document):
+        if state["calls"]:
+            publication_attempts.append(state["closed"])
+            if not state["closed"]:
+                raise publication
+        return original_write(path, document)
+
+    monkeypatch.setattr(tool.Progress, "update", progress)
+    monkeypatch.setattr(tool, "_failure", failure)
+    monkeypatch.setattr(tool, "write_json", write)
+    monkeypatch.setattr(tool, "_settle", settle)
+    with pytest.raises(RuntimeError) as caught:
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert caught.value is native and state["closed"] and state["syncs"] == 2
+    assert publication_attempts == [False, True]
+    roots = failure_roots(native)
+    assert all(any(root is item for root in roots) for item in (progress_error, formatting, publication))
+    if retirement:
+        assert any(root is retirement_error for root in roots)
+    report = json.loads((tmp_path / "out/report.json").read_text())
+    assert report["status"] == "FAILED" and report["diagnostic_failed"]
+    assert report["records"][0]["native_settled"] is not retirement

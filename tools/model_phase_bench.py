@@ -138,18 +138,32 @@ def _failure(error):
 def _settle(engine, torch):
     from tensorfold.cleanup import raise_failures
 
-    errors = []
-    drain = getattr(engine, "drain", None)
-    if drain is not None:
-        try:
+    primary, errors, count = None, [None, None], 0
+    prior_cause = prior_context = None
+    prior_suppress = False
+    try:
+        drain = getattr(engine, "drain", None)
+        if drain is not None:
             drain()
-        except BaseException as error:  # noqa: BLE001 - completion failure must not suppress GPU retirement
-            errors.append(error)
+    except BaseException as error:  # noqa: BLE001 - completion failure must not suppress GPU retirement
+        primary = error
+        prior_cause = BaseException.__cause__.__get__(error)
+        prior_context = BaseException.__context__.__get__(error)
+        prior_suppress = BaseException.__suppress_context__.__get__(error)
+        errors[count] = error
+        count += 1
     try:
         torch.cuda.synchronize()  # only this process's current CUDA device, under the experiment's exclusive guard
     except BaseException as error:  # noqa: BLE001 - report deferred native errors
-        errors.append(error)
-    raise_failures(None, errors)
+        errors[count] = error
+        count += 1
+    while len(errors) > count:
+        errors.pop()
+    if primary is not None:
+        BaseException.__cause__.__set__(primary, prior_cause)
+        BaseException.__context__.__set__(primary, prior_context)
+        BaseException.__suppress_context__.__set__(primary, prior_suppress)
+    raise_failures(primary, errors)
 
 
 def _attempt(app, case, row, report, output, torch):
@@ -159,10 +173,15 @@ def _attempt(app, case, row, report, output, torch):
     row["status"] = "RUNNING"
     write_json(output, report)
     ids, first, last = [], None, None
-    primary, errors = None, []
+    primary, errors, error_count = None, [None] * 5, 0
+    prior_cause = prior_context = None
+    prior_suppress = False
     began = returned = settled = prepare_started = prepared_at = None
     prepared = None
     retirement_attempted = retired = False
+    invalid_stats = False
+    # Retain partial IDs even if later diagnostic preparation cannot allocate.
+    row.update(token_ids=ids, native_settled=False, diagnostic_failed=False)
 
     def receive(tokens):
         nonlocal first, last
@@ -203,7 +222,7 @@ def _attempt(app, case, row, report, output, torch):
         try:
             json.dumps(stats, allow_nan=False)
         except (TypeError, ValueError):
-            row["invalid_stats_repr"] = repr(stats)[:4096]
+            invalid_stats = True
             raise
         row["stats"] = stats
         if not isinstance(stats, dict):
@@ -220,39 +239,67 @@ def _attempt(app, case, row, report, output, torch):
             raise ValueError("request returned fewer than its complete declared token count")
     except BaseException as error:  # noqa: BLE001 - partial inference/interrupt evidence survives
         primary = error
-        row["error"] = _failure(error)
+        prior_cause = BaseException.__cause__.__get__(error)
+        prior_context = BaseException.__context__.__get__(error)
+        prior_suppress = BaseException.__suppress_context__.__get__(error)
     if not retirement_attempted:
         try:
             _settle(engine, torch)
             retired = True
         except BaseException as error:  # noqa: BLE001 - preserve native retirement alongside the primary failure
-            errors.append(error)
-    settled = time.perf_counter() if settled is None else settled
-    if prepared is not None:
-        row["prompt_sha256"] = _sha(json.dumps(prepared.prompt, separators=(",", ":")).encode())
-    row.update(token_ids=ids, response_tokens=len(ids),
-               token_ids_sha256=_sha(json.dumps(ids, separators=(",", ":")).encode()),
-               first_s=None if first is None or began is None else first - began,
-               last_s=None if last is None or began is None else last - began,
-               generated_s=None if returned is None else returned - began,
-               settled_wall_s=None if began is None else settled - began,
-               prepare_s=None if prepared_at is None else prepared_at - prepare_started,
-               prepared_request_wall_s=None if prepare_started is None else settled - prepare_started,
-               first_from_prepare_s=None if first is None else first - prepare_started,
-               deferred_tail_s=None if returned is None else settled - returned,
-               retirement_errors=[_failure(error) for error in errors], native_settled=retired,
-               host_after=host_snapshot(),
-               status="FAILED" if primary is not None or errors else "COMPLETE")
+            errors[error_count] = error
+            error_count += 1
+    row["native_settled"] = retired
+    row["status"] = "FAILED" if primary is not None or error_count else "COMPLETE"
+    try:
+        settled = time.perf_counter() if settled is None else settled
+        if prepared is not None:
+            row["prompt_sha256"] = _sha(json.dumps(prepared.prompt, separators=(",", ":")).encode())
+        row.update(response_tokens=len(ids),
+                   token_ids_sha256=_sha(json.dumps(ids, separators=(",", ":")).encode()),
+                   first_s=None if first is None or began is None else first - began,
+                   last_s=None if last is None or began is None else last - began,
+                   generated_s=None if returned is None else returned - began,
+                   settled_wall_s=None if began is None else settled - began,
+                   prepare_s=None if prepared_at is None else prepared_at - prepare_started,
+                   prepared_request_wall_s=None if prepare_started is None else settled - prepare_started,
+                   first_from_prepare_s=None if first is None else first - prepare_started,
+                   deferred_tail_s=None if returned is None else settled - returned,
+                   retirement_errors=[_failure(errors[index]) for index in range(error_count)],
+                   host_after=host_snapshot())
+        if invalid_stats:
+            row["invalid_stats_repr"] = repr(stats)[:4096]
+        if primary is not None:
+            row["error"] = _failure(primary)
+    except BaseException as error:  # noqa: BLE001 - formatting must not bypass heartbeat reset or publication
+        errors[error_count] = error
+        error_count += 1
+        row["status"] = "FAILED"
+        row["diagnostic_failed"] = True
     try:
         Progress.update("idle", force=True)
     except BaseException as error:  # noqa: BLE001 - heartbeat failure cannot replace inference or suppress its report
-        errors.append(error)
+        errors[error_count] = error
+        error_count += 1
         row["status"] = "FAILED"
-        row["progress_error"] = _failure(error)
+        try:
+            row["progress_error"] = _failure(error)
+        except BaseException as diagnostic:  # noqa: BLE001 - retain both heartbeat and formatter failures
+            errors[error_count] = diagnostic
+            error_count += 1
+            row["diagnostic_failed"] = True
     try:
         write_json(output, report)
     except BaseException as error:  # noqa: BLE001 - publication cannot replace an inference failure
-        errors.append(error)
+        errors[error_count] = error
+        error_count += 1
+        row["status"] = "FAILED"
+    while len(errors) > error_count:
+        errors.pop()
+    if primary is not None:
+        BaseException.__cause__.__set__(primary, prior_cause)
+        BaseException.__context__.__set__(primary, prior_context)
+        BaseException.__suppress_context__.__set__(primary, prior_suppress)
     raise_failures(primary, errors)
 
 
@@ -264,13 +311,16 @@ def run(plan_path, destination):
     destination.mkdir(parents=True, exist_ok=False)
     output = destination / "report.json"
     (destination / "plan.json").write_bytes(raw)
-    report = {"schema": 1, "status": "STARTING", "plan_sha256": _sha(raw), "plan": plan,
+    report = {"schema": 1, "status": "STARTING", "diagnostic_failed": False,
+              "plan_sha256": _sha(raw), "plan": plan,
               "verified_inputs": bound, "tool_sha256": _sha(_read(__file__)), "host_before": host_snapshot(),
               "startup_scope": "production CLI entry to ready App; tool imports and input validation excluded",
               "records": [{"id": case["id"], "phase": case["phase"], "status": "NOT_RUN"}
                           for case in plan["cases"]]}
     write_json(output, report)
-    primary, errors = None, []
+    primary, errors, error_count = None, [None] * 4, 0
+    prior_cause = prior_context = None
+    prior_suppress = False
     started = None
 
     def work(app):
@@ -305,18 +355,44 @@ def run(plan_path, destination):
         report["status"] = "COMPLETE"
     except BaseException as error:  # noqa: BLE001 - CLI startup and close failures retain their own outcome
         primary = error
-        report.update(status="FAILED", error=_failure(error))
-    report["cli_lifetime_s"] = None if started is None else time.perf_counter() - started
-    report["host_after"] = host_snapshot()
+        prior_cause = BaseException.__cause__.__get__(error)
+        prior_context = BaseException.__context__.__get__(error)
+        prior_suppress = BaseException.__suppress_context__.__get__(error)
+        report["status"] = "FAILED"
+    try:
+        report["cli_lifetime_s"] = None if started is None else time.perf_counter() - started
+        report["host_after"] = host_snapshot()
+        if primary is not None:
+            report["error"] = _failure(primary)
+    except BaseException as error:  # noqa: BLE001 - CLI has closed; preserve diagnostics independently
+        errors[error_count] = error
+        error_count += 1
+        report["status"] = "FAILED"
+        report["diagnostic_failed"] = True
     try:
         Progress.update("idle", force=True)
     except BaseException as error:  # noqa: BLE001 - retain progress and CLI failure independently
-        errors.append(error)
-        report.update(status="FAILED", progress_error=_failure(error))
+        errors[error_count] = error
+        error_count += 1
+        report["status"] = "FAILED"
+        try:
+            report["progress_error"] = _failure(error)
+        except BaseException as diagnostic:  # noqa: BLE001 - publication still runs after formatter failure
+            errors[error_count] = diagnostic
+            error_count += 1
+            report["diagnostic_failed"] = True
     try:
         write_json(output, report)
     except BaseException as error:  # noqa: BLE001 - retain CLI and publication failures
-        errors.append(error)
+        errors[error_count] = error
+        error_count += 1
+        report["status"] = "FAILED"
+    while len(errors) > error_count:
+        errors.pop()
+    if primary is not None:
+        BaseException.__cause__.__set__(primary, prior_cause)
+        BaseException.__context__.__set__(primary, prior_context)
+        BaseException.__suppress_context__.__set__(primary, prior_suppress)
     raise_failures(primary, errors)
     return report
 
