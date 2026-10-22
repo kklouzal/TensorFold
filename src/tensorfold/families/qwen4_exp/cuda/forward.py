@@ -463,13 +463,9 @@ def layer_forward(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R:
     return (moe_mode, a, wts, b.inj_m)
 
 
-def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = True,
-           ends: Sequence[int] = ()) -> torch.Tensor | None:
-    """The last write-back, mixer and head; a prompt pass heads only its ``ends`` rows."""
+def _final_readout(mixer: HC, b: Buffers, R: int, c, ends: Sequence[int] = ()) -> int:
+    """Mix final streams for a head, pairing selected prompt rows with their PSS; return the mixed row count."""
 
-    c = w.cfg
-    b.streams[:R].copy_(b.h[:R])
-    _writeback(b.streams, b, R, c, pending)
     if b.prefill:
         if len(ends) > 1:
             at = torch.tensor(list(ends), dtype=torch.long, device=b.pss.device)
@@ -483,8 +479,19 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
         _readout(mixer, b, rows, R, c.eps, c.streams, c.low, None)
     else:
         _readout(mixer, b, b.streams, R, c.eps, c.streams, c.low, None)
+    return R
+
+
+def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = True,
+           ends: Sequence[int] = ()) -> torch.Tensor | None:
+    """Write final residual streams; ``logits=False`` stops there, otherwise mix and score only ``ends`` rows."""
+
+    c = w.cfg
+    b.streams[:R].copy_(b.h[:R])
+    _writeback(b.streams, b, R, c, pending)
     if not logits:
         return None
+    R = _final_readout(mixer, b, R, c, ends)
     out = _mm(b.mixed[:R], w.head, b.xs_mixed[:R], b.logits[:R], b)
     if w.comm is not None:
         candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))

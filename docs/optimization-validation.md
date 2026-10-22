@@ -18,6 +18,45 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Flash Next final-readout candidate, 2026-10-22
+
+The candidate ports only the Flash Next final-readout change onto the accepted
+baseline. A main-model or MTP absorption pass that requests no logits retains
+the final residual-stream copy, branch writeback, recurrent/cache state and
+required KV checks, then omits the unused final hyper-connection mixer. MTP
+scoring explicitly retains that mixer before its existing head selection. Head
+readout preserves the same selected stream/PSS pairing, BF16 storage boundaries,
+projection/reduction arithmetic and output rows. Precision, cache formats,
+loading, graph policy and launch defaults remain the caller's existing choices.
+
+The maintained controls cover stream-only boundary access, all head-selection
+branches and MTP validation, plus native affine/ModelOpt-A4, eager/graph and
+serial/MTP paths against the former always-readout oracle. Native checks retain
+full authoritative state, interior cuts, warm resume, complete replies and
+commit histories; one case crosses a 2,048-row prompt boundary. The factored
+readout adds an eager Python call on head-producing paths, so their complete
+request latency remains an affected performance gate.
+
+The isolated accepted-baseline `3b8cee82` plus this change passed 27 CPU controls
+and all 240 native checks on an RTX PRO 2000 Blackwell (SM 12.0). Both used the
+pinned AMD64 verification image `509b4135`, Python 3.12 and the `9026ad48` PyTorch
+build with CUDA 13.4. The complete 1,311-file source inventory stayed unchanged;
+153 imported project origins and 15 actual mapped native objects were verified,
+device-zero work settled, and the exact native container retired successfully.
+The first native attempt timed out after 32 passing cases and remains failed;
+the complete retry retained all 240 cases with a finite 1,800-second functional
+limit and normal Torch/Ninja cache validation. These are correctness results,
+not a compilation-cost or model-performance comparison.
+
+Installed ARM64/GB10 and complete-model checks remain pending.
+Required GB10 qualification includes startup/loading, cold and warm prefill,
+serial/MTP full-token identity, mixed/concurrent requests and unchanged service
+behavior under the declared checkpoint, context, precision and resource policy.
+Paired comparisons must retain complete work and failures, include all required
+regions and use predeclared uncertainty. Earlier broader-source component
+checks do not qualify this installed composition or establish a performance
+winner. Publication requires those gates and the accepted baseline comparison.
+
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
 Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch

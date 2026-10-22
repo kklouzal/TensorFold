@@ -56,6 +56,13 @@ to one stream, while successful checks allow the lane engine to combine requests
 
 ## CUDA
 
+The final-readout candidate preserves residual-stream writeback for intermediate
+prompt chunks and MTP absorption while omitting their unused final mixer. Main
+and MTP head scoring retain the existing BF16 readout. The isolated source passed
+27 CPU controls and 240 native checks on SM 12.0; installed ARM64/GB10 and
+complete-model performance gates remain pending. See the
+[qualification contract](../optimization-validation.md#flash-next-final-readout-candidate-2026-10-22).
+
 On CUDA Flash Next serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
 files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
 NVFP4. CUDA `--ple-on-ssd` supports affine, BF16, FP8 and NVFP4 tables. `tensorfold serve` loads the checkpoint

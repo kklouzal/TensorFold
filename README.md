@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The Flash Next CUDA final-readout candidate skips the final mixer for prompt
+chunks and MTP absorption that consume only residual streams and state. Head
+scoring retains the existing BF16 readout and selected-row pairing. This port
+preserves the accepted baseline's precision, loading and serving settings;
+the isolated source passed 27 CPU controls and all 240 native checks on the
+RTX PRO 2000 Blackwell (SM 12.0), with exact source/import and retirement checks.
+Installed ARM64/GB10, complete-model and comparative performance qualification
+remain pending. See [the contract and required
+checks](docs/optimization-validation.md#flash-next-final-readout-candidate-2026-10-22).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
