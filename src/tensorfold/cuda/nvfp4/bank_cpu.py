@@ -62,7 +62,18 @@ def _pybind_ext():
     if producer is None:
         raise RuntimeError("Tensor does not advertise the native C-exchange API")
     module = _load("bank_exchange_pybind.cpp", ("bank_exchange_core.h", "bank_exchange_kernel.h"))
-    return module.prepare(*producer, module._pack, module._Context)
+    return module.prepare(*producer, module._pack, module._Context, module)
+
+
+def _native_module(prepared):
+    """Owning extension of our prepared entry, for cold provider diagnostics.
+
+    Only results of the two factories above are admitted. This is not a
+    general callable resolver; pack performs no lookup through this interface.
+    Both immutable contexts strongly retain the actual loaded module.
+    """
+    context = prepared.__self__
+    return context[3] if type(context) is tuple else context.module_owner
 
 
 def _array(tensor):

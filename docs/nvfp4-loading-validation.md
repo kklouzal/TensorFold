@@ -18,23 +18,24 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Direct C-exchange prototype
 
-This isolated source is based on G `ab3c33ba`; it changes the Python/native
-buffer boundary while retaining G's byte loop as a generated kernel. The
+This isolated composition starts from the G-kernel C-exchange reference
+`1f88d99c`. Its `bank_cpu.cpp` is byte-exact H `e872` source `ce0527e2`, and
+the new frontends generate their byte kernel directly from that authority. The
 minimal CPython and pybind candidates share one core and the same producer,
 version callback, validation, ID snapshot, owner lifetime and write sequence.
 Public DLPack1.3 temporary non-owning descriptors expose the original admitted
 strided target index sets. Every write must belong to those valid Tensor cells;
 logical numel is not a physical-capacity substitute. No Tensor C++ ABI,
 per-call managed Tensor/capsule, NumPy array or whole-storage Tensor view is used
-on this route. Standard GC-owned contexts retain the producer type/API capsule
-and the adopted version callback; the five original Tensor owners survive
+on this route. Standard GC-owned contexts retain the producer type/API capsule,
+the adopted version callback and the actual loaded extension module. The five original Tensor owners survive
 through synchronous completion and GIL reacquisition.
 
 All five exports precede the original up/down version callback. Shared counters
 therefore receive the original two updates. Native geometry/ID validation
 precedes every write. Advertised malformed API, producer, callback and resource
 errors fail explicitly; they do not trigger another provider. API absence,
-Tensor subclasses and integer-like geometry retain the original G NumPy route,
+Tensor subclasses and integer-like geometry retain the NumPy route using the same H authority,
 selected before compiling an unused direct module. The direct native boundary
 requires exact built-in integer width/dims before any export. Their later
 range conversion cannot call user `__index__`; version-update/conversion order
@@ -48,12 +49,12 @@ references alone do not stabilize metadata across an arbitrary callback.
 
 Reproduce the generated kernel with
 `PYTHONPATH=src python tools/generate_bank_exchange_kernel.py`; its authority is
-the unchanged `bank_cpu.cpp` G permutation. Do not hand-edit the header. Both
+the unchanged H `bank_cpu.cpp` permutation. Do not hand-edit the header. Both
 new frontends and their owned transitive headers contribute to build identity.
 The ordinary CPU-only extension facility still compiles on first eligible use;
 compiler/module/cache and cold readiness remain resource/performance gates.
 
-The initial source completed 108 CPU checks on pinned AMD64 with GPUs hidden,
+The earlier G-kernel source completed 108 CPU checks on pinned AMD64 with GPUs hidden,
 including compilation and both frontend byte/owner/error controls. Review then
 found that int-like geometry could invoke `__index__` after descriptor export.
 Those as-run bytes/results are preserved; they do not clear that defect or
@@ -61,7 +62,7 @@ qualify this corrected boundary. New controls reject a metadata-mutating
 `__index__` before either producer or version callback and retain the original
 provider for supported integer-like inputs.
 
-The corrected source then completed **114 CPU checks with zero skips** on
+The corrected G-kernel reference `1f88d99c` then completed **114 CPU checks with zero skips** on
 pinned Linux AMD64, Python3.12.3/Torch9026, with GPUs hidden. Actual optimized
 warning-as-error compilation produced both new SDK frontends and the retained
 G provider. The gate covers complete independent bytes, source/version/physical
@@ -72,7 +73,39 @@ verified project origins and exact actor retirement. Three native product paths
 were present in process maps; this is not a VMA-FD proof, fresh compiler-version
 query or full installed-header audit.
 
-This is checkout CPU evidence. Installed ARM, native GPU consumers, actual wheel
+Those114 checks do not qualify this H-kernel/module-owner composition. The
+CPython prepared function retains its module in the immutable context tuple and
+sets its standard `__module__` name. The pybind candidate retains its module in
+the traversed private context and exposes a read-only `module_owner` diagnostic
+property. Cold `_native_module(prepared)` resolves only these factory results;
+packing performs no new module lookup, wrapper call or global rebinding. A
+native observer must use that real owner for its actual binary/VMA proof; raw
+process maps are not a substitute. Context cycles remain visible to GC.
+
+The first H/module-owner composition completed119 CPU checks on the same
+pinned AMD64/GPU-hidden route, including the new real module-owner/no-load,
+read-only/GC retirement and unrelated-module controls. Those ordinary successful
+facts are preserved. Review then found that the two cold pybind membership
+lookups used an API which suppresses allocation/equality errors, replacing them
+with a mismatch ValueError. The corrected path owns its Unicode keys and uses
+error-preserving lookup; two targeted native controls inject exact MemoryError
+through colliding dictionary-key equality at each member. The H kernel, direct
+packing, CPython frontend and version/geometry ordering are unchanged by this
+repair. The earlier119 pass does not qualify the repaired error path.
+
+The repaired H/module-owner source completed **121 CPU checks with zero skips**
+on pinned Linux AMD64, Python3.12.3/Torch9026, with GPUs hidden. Both actual
+colliding-key cases preserved the exact MemoryError object. The full gate also
+retained independent bytes, physical padding, source/version/geometry ordering,
+producer/callback errors, integer-reentry and real NumPy-integer behavior,
+module-owner/no-load/read-only/GC retirement and actual bank/Reader integration.
+All1,330 source/test files were stable,28 project origins were verified, three
+optimized warning-as-error native products appeared in process maps, and the
+exact actor completed and retired. This is not a VMA-FD proof, fresh compiler-
+version query or complete installed-header audit. The119 and G-reference114
+observations retain their original source identities and limits.
+
+These are checkout CPU facts. Installed ARM, native GPU consumers, actual wheel
 header delivery, owned-resource/reserve/cgroup/refusal paths, first-use
 compiler/module/cache costs, complete-bank comparisons and whole-model quality/
 cold+warm P3 qualification remain pending. The provisional CPython binding is

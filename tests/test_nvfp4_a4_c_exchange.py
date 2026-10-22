@@ -2,6 +2,7 @@
 
 import gc
 import weakref
+from types import ModuleType
 
 import pytest
 
@@ -23,7 +24,74 @@ def frontend(request):
         return lambda callback: module.prepare(torch.Tensor, torch.Tensor.__dlpack_c_exchange_api__, callback)
     module = bank_cpu._load("bank_exchange_pybind.cpp", HEADERS)
     return lambda callback: module.prepare(torch.Tensor, torch.Tensor.__dlpack_c_exchange_api__, callback,
-                                           module._pack, module._Context)
+                                           module._pack, module._Context, module)
+
+
+def test_prepared_entry_exposes_the_actual_strong_module_owner_without_loading_another(frontend, monkeypatch):
+    prepared = frontend(torch.autograd.graph.increment_version)
+    owner = bank_cpu._native_module(prepared)
+    assert type(owner) is ModuleType
+    assert prepared.__module__ == owner.__name__
+    assert owner.__file__.endswith(owner.__name__ + ".so")
+    reference = weakref.ref(owner)
+    del owner
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("provider diagnostics must not load another module")
+
+    monkeypatch.setattr(bank_cpu, "_load", forbidden)
+    gc.collect()
+    assert bank_cpu._native_module(prepared) is reference()
+    context = prepared.__self__
+    if type(context) is tuple:
+        assert len(context) == 4 and context[3] is reference()
+    else:
+        with pytest.raises(AttributeError):
+            context.module_owner = ModuleType("unrelated")
+
+
+def test_prepared_module_owner_survives_external_module_reference_retirement():
+    module = bank_cpu._load("bank_exchange.cpp", HEADERS)
+    reference = weakref.ref(module)
+    prepared = module.prepare(torch.Tensor, torch.Tensor.__dlpack_c_exchange_api__, torch.autograd.graph.increment_version)
+    del module
+    gc.collect()
+    codes, scales, fields, indices, expected, _, _ = inputs(64, 64)
+    prepared(codes, scales, *fields, indices, 64, 64)
+    assert bank_cpu._native_module(prepared) is reference()
+    assert all(torch.equal(value, old) for value, old in zip(fields, expected, strict=True))
+
+
+def test_pybind_cold_binding_rejects_an_unrelated_module_before_creating_a_context():
+    module = bank_cpu._load("bank_exchange_pybind.cpp", HEADERS)
+    with pytest.raises(ValueError, match="do not belong"):
+        module.prepare(torch.Tensor, torch.Tensor.__dlpack_c_exchange_api__, torch.autograd.graph.increment_version,
+                       module._pack, module._Context, ModuleType("unrelated"))
+
+
+@pytest.mark.parametrize("member", ["_pack", "_Context"])
+def test_pybind_cold_member_lookup_preserves_the_exact_python_failure(member):
+    module = bank_cpu._load("bank_exchange_pybind.cpp", HEADERS)
+    primary = MemoryError("injected cold member equality failure")
+    armed = False
+
+    class Key(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            if armed and str.__eq__(self, other):
+                raise primary
+            return str.__eq__(self, other)
+
+    owner = ModuleType("cold_members")
+    owner.__dict__[Key(member)] = getattr(module, member)
+    other = "_Context" if member == "_pack" else "_pack"
+    owner.__dict__[other] = getattr(module, other)
+    armed = True
+    with pytest.raises(MemoryError) as outcome:
+        module.prepare(torch.Tensor, torch.Tensor.__dlpack_c_exchange_api__, torch.autograd.graph.increment_version,
+                       module._pack, module._Context, owner)
+    assert outcome.value is primary
 
 
 @pytest.mark.parametrize("width,dims", [(64, 64), (64, 128), (192, 320)])

@@ -36,14 +36,39 @@ static PyObject* no_context_constructor(PyTypeObject*, PyObject*, PyObject*) {
     return nullptr;
 }
 
+static PyObject* context_module(PyObject* object, void*) {
+    auto* self = reinterpret_cast<Context*>(object);
+    if (!self->owners) {
+        PyErr_SetString(PyExc_RuntimeError, "native A4 exchange context is retired");
+        return nullptr;
+    }
+    return Py_NewRef(PyTuple_GET_ITEM(self->owners, 3));
+}
+
+static bool module_member(PyObject* names, const char* name, PyObject* expected) {
+    // GetItemString suppresses allocation/equality failures. Keep those errors
+    // distinct from an ordinary missing/mismatched cold preparation member.
+    auto* key = PyUnicode_FromString(name);
+    if (!key) throw a4_bank_exchange::PythonFailure{};
+    auto* value = PyDict_GetItemWithError(names, key);
+    Py_DECREF(key); // exact Unicode key cannot invoke user cleanup
+    if (!value && PyErr_Occurred()) throw a4_bank_exchange::PythonFailure{};
+    return value == expected;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     // Native context is immutable/non-instantiable from Python and fully GC-
     // traversed. A raw _pack call cannot forge an unchecked tuple/ABI pointer.
+    static PyGetSetDef getters[] = {
+        {"module_owner", context_module, nullptr, "Strong prepared extension owner; diagnostic use only.", nullptr},
+        {nullptr, nullptr, nullptr, nullptr, nullptr}
+    };
     static PyType_Slot slots[] = {
         {Py_tp_dealloc, reinterpret_cast<void*>(delete_context)},
         {Py_tp_traverse, reinterpret_cast<void*>(traverse_context)},
         {Py_tp_clear, reinterpret_cast<void*>(clear_context)},
         {Py_tp_new, reinterpret_cast<void*>(no_context_constructor)},
+        {Py_tp_getset, getters},
         {0, nullptr}
     };
     static PyType_Spec spec = {"tensorfold._A4ExchangeContext", sizeof(Context), 0,
@@ -67,13 +92,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
         return py::reinterpret_steal<py::object>(result);
     });
     module.def("prepare", [](const py::object& type, const py::object& capsule,
-                             const py::object& increment, const py::object& function, const py::type& context_type) {
+                             const py::object& increment, const py::object& function, const py::type& context_type,
+                             const py::module_& owner) {
         auto* result = a4_bank_exchange::translate([&]() -> PyObject* {
             auto* native_type = reinterpret_cast<PyTypeObject*>(context_type.ptr());
             a4_bank_exchange::require(native_type->tp_dealloc == delete_context
                                       && native_type->tp_basicsize == static_cast<Py_ssize_t>(sizeof(Context)) && PyCallable_Check(function.ptr()),
                                       "native A4 exchange binding type/function is invalid");
-            auto* prepared = a4_bank_exchange::context(type.ptr(), capsule.ptr(), increment.ptr());
+            auto* names = PyModule_GetDict(owner.ptr());
+            if (!names) throw a4_bank_exchange::PythonFailure{};
+            a4_bank_exchange::require(module_member(names, "_pack", function.ptr())
+                                      && module_member(names, "_Context", context_type.ptr()),
+                                      "native A4 exchange function/context do not belong to their module");
+            auto* prepared = a4_bank_exchange::context(type.ptr(), capsule.ptr(), increment.ptr(), owner.ptr());
             auto* value = reinterpret_cast<Context*>(native_type->tp_alloc(native_type, 0));
             if (!value) { Py_DECREF(prepared); throw a4_bank_exchange::PythonFailure{}; }
             value->owners = prepared;

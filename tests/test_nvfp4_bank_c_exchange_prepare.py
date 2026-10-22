@@ -47,6 +47,12 @@ class Preparation(unittest.TestCase):
         self.assertIs(producer(), selected)
         self.assertIs(selected[2], first)
 
+    def test_native_provider_interface_returns_only_the_already_retained_context_module(self):
+        owner = ModuleType("actual_extension")
+        resolve = owned_function("_native_module")
+        for context in ((object(), object(), object(), owner), SimpleNamespace(module_owner=owner)):
+            self.assertIs(resolve(SimpleNamespace(__self__=context)), owner)
+
     def test_plain_direct_inputs_never_create_storage_views_or_numpy_aliases(self):
         class Tensor:
             pass

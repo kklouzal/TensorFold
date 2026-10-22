@@ -51,7 +51,7 @@ static const DLPackExchangeAPI* api_pointer(PyObject* capsule) {
     return api;
 }
 
-static PyObject* context(PyObject* tensor_type, PyObject* capsule, PyObject* increment) {
+static PyObject* context(PyObject* tensor_type, PyObject* capsule, PyObject* increment, PyObject* module) {
     // Internal callback contract: update version counters only. It may raise,
     // but must not resize/rebind/mutate any exported Tensor, Storage, data,
     // shape or stride during reentry. Strong references alone do not prove it.
@@ -62,14 +62,16 @@ static PyObject* context(PyObject* tensor_type, PyObject* capsule, PyObject* inc
             && api->dltensor_from_py_object_no_sync,
             "native A4 exchange needs the public DLPack1.3 non-owning callback");
     require(PyCallable_Check(increment), "native A4 exchange needs the version callback");
+    require(PyModule_Check(module), "native A4 exchange needs its owning extension module");
     auto* declared = PyObject_GetAttrString(tensor_type, "__dlpack_c_exchange_api__");
     if (!declared) throw PythonFailure{};
     const bool matches = declared == capsule;
     Py_DECREF(declared);
     require(matches, "native A4 exchange capsule does not belong to its Tensor type");
-    // Standard tuple/callable GC owns all Python references, including cycles;
-    // no raw PyObject global or opaque C++ capture retains this context.
-    auto* result = PyTuple_Pack(3, tensor_type, capsule, increment);
+    // Keep the actual loaded module alive with its prepared entry. The fourth
+    // tuple field is its cold diagnostic origin; no module lookup runs in pack.
+    // Standard GC sees every owner/cycle; there is no opaque C++ capture/global.
+    auto* result = PyTuple_Pack(4, tensor_type, capsule, increment, module);
     if (!result) throw PythonFailure{};
     return result;
 }
@@ -245,12 +247,15 @@ static PyObject* direct_pack(PyObject* prepared, PyObject* const* arguments, Py_
 static PyMethodDef direct_method = {"pack", reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(direct_pack)), METH_FASTCALL,
                                   "Synchronous CPU A4 packing over original Tensor descriptors."};
 
-static PyObject* prepare(PyObject*, PyObject* arguments) {
+static PyObject* prepare(PyObject* module, PyObject* arguments) {
     return translate([&]() -> PyObject* {
         PyObject *type, *capsule, *increment;
         if (!PyArg_UnpackTuple(arguments, "prepare", 3, 3, &type, &capsule, &increment)) throw PythonFailure{};
-        auto* prepared = context(type, capsule, increment);
-        auto* function = PyCFunction_NewEx(&direct_method, prepared, nullptr);
+        auto* prepared = context(type, capsule, increment, module);
+        auto* name = PyModule_GetNameObject(module);
+        if (!name) { Py_DECREF(prepared); throw PythonFailure{}; }
+        auto* function = PyCFunction_NewEx(&direct_method, prepared, name);
+        Py_DECREF(name);
         Py_DECREF(prepared);
         return function;
     });

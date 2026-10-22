@@ -13,14 +13,14 @@ generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 
 
-def test_current_header_reproduces_exactly_from_unchanged_g_authority():
+def test_current_header_reproduces_exactly_from_h_authority():
     assert generator.generate(generator.source_bytes(generator.SOURCE)) == generator.source_bytes(generator.OUTPUT)
 
 
 def test_unexpected_source_boundary_cannot_produce_a_kernel():
     raw = generator.source_bytes(generator.SOURCE)
     with pytest.raises(ValueError, match="markers"):
-        generator.generate(raw.replace(b"// Copy logical words", b"// changed boundary"))
+        generator.generate(raw.replace(b"template <unsigned Tiles>", b"// changed boundary"))
 
 
 def test_short_write_and_close_failure_retain_exact_primary():
