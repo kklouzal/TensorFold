@@ -64,7 +64,9 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
     Complete64-row projection boundaries make the existing permutation
     separable. Keep per-projection word prefixes and SF tails separate: folding
     projections into N would put all words before all scales and change bytes.
-    Source owners remain live through all four synchronous indexed copies.
+    A private packed chunk receives four inverse-strided copies, then two
+    flat-row indexed copies publish its gate/up and down rows. Source owners
+    and the admitted packed chunk remain live through synchronous completion.
     """
     count = indices.numel()
     geometry = authority_fields_a4(up.shape[0], width, dims)
@@ -90,21 +92,31 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
             raise ValueError("native A4 chunk destinations must have disjoint bank cells")
     if any(_overlap(target, source) for target in (up, down) for source in (codes, scales)):
         raise ValueError("native A4 chunk destinations must not overlap source owners")
-    w, d, experts = width // 64, dims // 64, up.shape[0]
+    w, d = width // 64, dims // 64
     original_words = codes.view(torch.int32).view(count, 3, word_bytes // 4)
     original_scales = scales.view(count, 3, scale_bytes)
+    packed = torch.empty((count, 3, blob), dtype=torch.uint8, device="cpu")
+    packed_up, packed_down = packed[:, 1:], packed[:, 0]
+    packed_words = packed[..., :word_bytes].view(torch.int32)
+    packed_scales = packed[..., word_bytes:]
+    # Invert each existing source permutation onto private destination views.
+    # This keeps the bulk source order, exact word/SF boundaries and one
+    # admitted owner; final scatter traverses complete flat projection rows.
     pairs = (
-        (up[..., :word_bytes].view(torch.int32).view(experts, 2, w, d, 8, 8, 4, 2),
-         original_words[:, 1:].view(count, 2, w, 8, 8, d, 2, 4).permute(0, 1, 2, 5, 3, 4, 7, 6)),
-        (up[..., word_bytes:].view(experts, 2, w, d, 64, 4),
-         original_scales[:, 1:].view(count, 2, w, 64, d, 4).permute(0, 1, 2, 4, 3, 5)),
-        (down[..., :word_bytes].view(torch.int32).view(experts, d, w, 8, 8, 4, 2),
-         original_words[:, 0].view(count, d, 8, 8, w, 2, 4).permute(0, 1, 4, 2, 3, 6, 5)),
-        (down[..., word_bytes:].view(experts, d, w, 64, 4),
-         original_scales[:, 0].view(count, d, 64, w, 4).permute(0, 1, 3, 2, 4)),
+        (packed_words[:, 1:].view(count, 2, w, d, 8, 8, 4, 2).permute(0, 1, 2, 4, 5, 3, 7, 6),
+         original_words[:, 1:].view(count, 2, w, 8, 8, d, 2, 4)),
+        (packed_scales[:, 1:].view(count, 2, w, d, 64, 4).permute(0, 1, 2, 4, 3, 5),
+         original_scales[:, 1:].view(count, 2, w, 64, d, 4)),
+        (packed_words[:, 0].view(count, d, w, 8, 8, 4, 2).permute(0, 1, 3, 4, 2, 6, 5),
+         original_words[:, 0].view(count, d, 8, 8, w, 2, 4)),
+        (packed_scales[:, 0].view(count, d, w, 64, 4).permute(0, 1, 3, 2, 4),
+         original_scales[:, 0].view(count, d, 64, w, 4)),
     )
     for target, source in pairs:
-        target.index_copy_(0, indices, source)
+        target.copy_(source)
+    del pairs, target, source, original_words, original_scales, packed_words, packed_scales
+    up.index_copy_(0, indices, packed_up)
+    down.index_copy_(0, indices, packed_down)
 
 
 def _span(t):

@@ -146,7 +146,8 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
 
             before_pool = torch.cuda.memory._snapshot()
             pins = ExpertPinPolicy(plan.host_bytes, mode=vram_experts_pin,
-                                   future_bytes=host_extra + max(host_weight_staging - resident_report.bulk_host_increment,
+                                   future_bytes=host_extra + max(host_weight_staging - resident_report.bulk_host_increment
+                                                                + resident_report.bulk_offload_host_increment,
                                                                  self.rejection_workspace["host_bytes"]),
                                    allocation_bytes=plan.authority_allocations)
             try:

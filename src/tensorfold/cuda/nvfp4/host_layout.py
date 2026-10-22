@@ -99,14 +99,16 @@ class A4BulkLayout:
     scale_field_bytes: int
     scale_bytes: int
     payload_bytes: int
+    packed_bytes: int
 
 
 def bulk_layout_a4(count, width, dims):
     """Optional whole-SF/chunked-code plan inside the existing reader window.
 
     Both eight-aligned direct-read owners can retain at most three extra pages
-    apiece. The caller admits Python planning/index/native-view metadata
-    separately. Larger banks retain the existing projection-ordered path.
+    apiece. The separately charged private packed chunk preserves this exact
+    IO chunk selection. The caller also admits Python planning/index/native-
+    view metadata. Larger banks retain the projection-ordered path.
     """
     authority_fields_a4(count, width, dims)
     code, scale = width * dims // 2, width * dims // 16
@@ -115,7 +117,8 @@ def bulk_layout_a4(count, width, dims):
     chunk = min(count, room // (3 * code))
     if chunk < 1:
         return None
-    return A4BulkLayout(count, chunk, code, scale, scales, scales + chunk * 3 * code + 6 * 4096)
+    return A4BulkLayout(count, chunk, code, scale, scales, scales + chunk * 3 * code + 6 * 4096,
+                        chunk * 3 * (code + scale))
 
 
 def bulk_plan_host_bytes_a4(count, name_bytes):
@@ -142,7 +145,7 @@ def bulk_plan_host_bytes_a4(count, name_bytes):
 
 
 def bulk_host_bytes_a4(infos):
-    """(Raw-owner, resident-authority+raw, plan) peaks for eligible subsets.
+    """(Raw-owner, resident-authority+raw+packed, packed, plan) subset peaks.
 
     Whole-bank metadata is a conservative envelope for any selected IDs/shared
     subset. Geometry search is bounded by the existing1023-cell authority cap;
@@ -168,28 +171,30 @@ def bulk_host_bytes_a4(infos):
         # length, up is shorter, and weight_scale is shorter than weight_packed;
         # six copies of this actual gate name bound every generated field name.
         banks[key] = count + 1, names + 6 * sys.getsizeof(name)
-    payload = resident = planning = 0
+    payload = resident = packed = planning = 0
     geometries = {}
     for (_bank, width, dims), (count, names) in banks.items():
         key = min(count, 1023), width, dims
         if key not in geometries:
-            raw_peak = resident_peak = 0
+            raw_peak = resident_peak = packed_peak = 0
             for n in range(1, key[0] + 1):
                 layout = bulk_layout_a4(n, width, dims)
                 if layout is not None:
                     raw_peak = max(raw_peak, layout.payload_bytes)
+                    packed_peak = max(packed_peak, layout.packed_bytes)
                     # Resident's private CPU bank coexists with the raw owners;
                     # offload already charges its complete host authority.
                     authority = n * (27 * width * dims // 16 + 24)
-                    resident_peak = max(resident_peak, authority + layout.payload_bytes)
-            geometries[key] = raw_peak, resident_peak
-        raw_peak, resident_peak = geometries[key]
+                    resident_peak = max(resident_peak, authority + layout.payload_bytes + layout.packed_bytes)
+            geometries[key] = raw_peak, resident_peak, packed_peak
+        raw_peak, resident_peak, packed_peak = geometries[key]
         if raw_peak:
             payload = max(payload, raw_peak)
             resident = max(resident, resident_peak)
+            packed = max(packed, packed_peak)
             planning = max(planning, bulk_plan_host_bytes_a4(count, names))
     if not payload:
-        return 0, 0, 0
+        return 0, 0, 0, 0
     objects = largest = 0
     for table in (banks, geometries):
         for key, value in table.items():
@@ -201,7 +206,7 @@ def bulk_host_bytes_a4(infos):
             objects += size
             largest = max(largest, size)
     scan = 2 * (sys.getsizeof(banks) + sys.getsizeof(geometries)) + objects + largest
-    return payload, resident, max(planning, scan)
+    return payload, resident, packed, max(planning, scan)
 
 
 def plan_scratch_bytes_a4(pairs, width, dims):

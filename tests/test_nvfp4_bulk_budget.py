@@ -36,39 +36,42 @@ def test_actual_q36_window_leaves_all_alignment_inside_the_existing_cap():
     layout = bulk_layout_a4(257, 512, 2048)
     assert layout.scale_bytes == 50_528_256 and layout.chunk_experts == 10
     assert layout.payload_bytes == 66_281_472 <= READER_PIECE_BYTES
+    assert layout.packed_bytes == 17_694_720
     assert layout.payload_bytes + 3 * layout.code_field_bytes > READER_PIECE_BYTES
     assert bulk_layout_a4(1023, 512, 2048) is None
     # An owned subset can still be eligible when its complete source bank is
     # outside the window. The estimator must not return zero for that bank.
-    raw, resident, plan = bulk_host_bytes_a4(bank(1023, 512, 2048))
+    raw, resident, packed, plan = bulk_host_bytes_a4(bank(1023, 512, 2048))
     assert resident > raw >= layout.payload_bytes and plan > 0
+    assert packed >= layout.packed_bytes
 
 
 @pytest.mark.parametrize("width,dims", [(64, 64), (128, 192), (512, 2048)])
 def test_subset_envelope_covers_every_admissible_count_and_never_exceeds_raw_window(width, dims):
     entries = bank(257, width, dims)
-    raw, resident, planning = bulk_host_bytes_a4(entries)
+    raw, resident, packed, planning = bulk_host_bytes_a4(entries)
     for count in range(1, 258):
         layout = bulk_layout_a4(count, width, dims)
         if layout is not None:
             assert layout.payload_bytes <= raw <= READER_PIECE_BYTES
             authority = sum(math.prod(shape) * (1 if dtype == "U8" else 4)
                             for shape, dtype in authority_fields_a4(count, width, dims))
-            assert resident >= authority + layout.payload_bytes
+            assert resident >= authority + layout.payload_bytes + layout.packed_bytes
+            assert packed >= layout.packed_bytes == layout.chunk_experts * 27 * width * dims // 16
     assert planning > 6 * 257 * 8 + 8 * 257
 
 
 def test_ineligible_geometry_has_no_added_payload_or_plan_and_cumulative_scan_maps_are_charged():
-    assert bulk_host_bytes_a4(bank(1, 8192, 8192)) == (0, 0, 0)
-    assert bulk_host_bytes_a4({}) == (0, 0, 0)
+    assert bulk_host_bytes_a4(bank(1, 8192, 8192)) == (0, 0, 0, 0)
+    assert bulk_host_bytes_a4({}) == (0, 0, 0, 0)
     one = bank(1)
     many = {name: info for layer in range(1024) for name, info in bank(1, layer=layer).items()}
-    assert bulk_host_bytes_a4(many)[2] > bulk_host_bytes_a4(one)[2]
+    assert bulk_host_bytes_a4(many)[3] > bulk_host_bytes_a4(one)[3]
 
 
 @pytest.mark.parametrize("large_head", [False, True])
 @pytest.mark.parametrize("staged", [False, True])
-def test_resident_increment_is_exact_phase_widening_and_offload_only_adds_plan_metadata(monkeypatch, large_head, staged):
+def test_resident_phase_widening_and_offload_packed_charge_are_separate(monkeypatch, large_head, staged):
     entries = bank(8)
     entries.update({"model.embed_tokens.weight": {"dtype": "BF16", "shape": [2, 128]},
                     "lm_head.weight": {"dtype": "BF16", "shape": [2, 128]},
@@ -84,13 +87,14 @@ def test_resident_increment_is_exact_phase_widening_and_offload_only_adds_plan_m
     old = capacity._estimate_weights_from_headers(entries, transform)
     largest = max(math.prod(info["shape"]) * capacity.itemsize(info, name) for name, info in entries.items())
     prior = reader_host_bytes(largest, max(old.staging, largest), staged=staged)
-    _raw, resident_phase, planning = bulk_host_bytes_a4(entries)
+    _raw, resident_phase, packed, planning = bulk_host_bytes_a4(entries)
     delta = reader_host_bytes(largest, max(old.staging, largest, resident_phase), staged=staged) - prior
     resident = weight_estimate("same-header-snapshot", transform, scalar_batches=True, details=True)
     _, offload_host = weight_estimate("same-header-snapshot", transform, scalar_batches=True, bulk_resident=False)
     assert resident.bulk_host_increment == delta
+    assert resident.bulk_offload_host_increment == packed
     assert resident.host_bytes == prior + scalar_batch_host_bytes_a4(entries) + planning + delta
-    assert offload_host == resident.host_bytes - delta
+    assert offload_host == resident.host_bytes - delta + packed
     if large_head:
         assert delta == 0  # a proved disjoint late-read/publication phase dominates
 
@@ -98,11 +102,11 @@ def test_resident_increment_is_exact_phase_widening_and_offload_only_adds_plan_m
 @pytest.mark.parametrize("staged", [False, True])
 def test_smallest_resident_bank_charges_its_cpu_authority_alongside_worst_alignment_owners(monkeypatch, staged):
     entries = bank(1, 64, 64)
-    raw, resident_phase, _plan = bulk_host_bytes_a4(entries)
+    raw, resident_phase, packed, _plan = bulk_host_bytes_a4(entries)
     authority = sum(math.prod(shape) * (1 if dtype == "U8" else 4)
                     for shape, dtype in authority_fields_a4(1, 64, 64))
     assert authority == 6936
-    assert resident_phase == raw + authority > raw
+    assert resident_phase == raw + authority + packed > raw
     entries.update({"model.embed_tokens.weight": {"dtype": "BF16", "shape": [2, 64]},
                     "lm_head.weight": {"dtype": "BF16", "shape": [2, 64]},
                     "model.norm.weight": {"dtype": "BF16", "shape": [64]}})
@@ -118,8 +122,8 @@ def test_smallest_resident_bank_charges_its_cpu_authority_alongside_worst_alignm
     assert report.bulk_host_increment == resident_phase - prior_temporary
 
 
-@pytest.mark.parametrize("rejection", [0, 450, 600])
-def test_actual_preliminary_pin_call_removes_only_known_bulk_delta_before_the_rejection_max(rejection):
+@pytest.mark.parametrize("rejection", [0, 450, 525, 600])
+def test_actual_preliminary_pin_replaces_resident_delta_with_offload_chunk_before_rejection_max(rejection):
     source = Path(__file__).parents[1] / "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py"
     node = next(node for node in ast.walk(ast.parse(source.read_bytes()))
                 if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "pins" for t in node.targets))
@@ -127,8 +131,8 @@ def test_actual_preliminary_pin_call_removes_only_known_bulk_delta_before_the_re
     scope = {"ExpertPinPolicy": lambda authority, **kwargs: seen.append((authority, kwargs)),
              "plan": SimpleNamespace(host_bytes=1000, authority_allocations=(1000,)),
              "host_extra": 123, "host_weight_staging": 500,
-             "resident_report": SimpleNamespace(bulk_host_increment=50),
+             "resident_report": SimpleNamespace(bulk_host_increment=50, bulk_offload_host_increment=75),
              "self": SimpleNamespace(rejection_workspace={"host_bytes": rejection}), "vram_experts_pin": "auto"}
     exec(compile(ast.Module([node], []), str(source), "exec"), scope)  # noqa: S102 - exact owned pin admission expression.
-    assert seen == [(1000, {"mode": "auto", "future_bytes": 123 + max(450, rejection),
+    assert seen == [(1000, {"mode": "auto", "future_bytes": 123 + max(525, rejection),
                            "allocation_bytes": (1000,)})]

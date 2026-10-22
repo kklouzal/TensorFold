@@ -95,11 +95,13 @@ def test_real_resident_and_offload_estimators_charge_same_batch_once(monkeypatch
                       for name, info in entries.items() if transform(name, info)[0])
         prior = reader_host_bytes(largest, max(generic.staging, largest))
         ordinary_host = prior
-        _raw, resident_phase, planning = bulk_host_bytes_a4(entries)
+        _raw, resident_phase, packed, planning = bulk_host_bytes_a4(entries)
         _, host = weight_estimate("validated-header-fixture", transform, scalar_batches=True,
                                   bulk_resident=transform is resident)
         if transform is resident:
             prior = reader_host_bytes(largest, max(generic.staging, largest, resident_phase))
+        else:
+            prior += packed
         assert host == prior + charge + planning
         # Default dense admission remains outside this capability: no native
         # scalar-plan helper call or full additional header scan is performed.

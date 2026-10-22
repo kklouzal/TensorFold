@@ -138,17 +138,18 @@ class LoadingEstimate:
     weights: object
     host_bytes: int
     bulk_host_increment: int
+    bulk_offload_host_increment: int
 
 
 def weight_estimate(model_dir, transform, *, scalar_batches: bool = False,
                     bulk_resident: bool = True, details: bool = False):
     """Capacity weights/host reads, optionally with the exact resident bulk delta.
 
-    Offload's existing loading window already admits the bounded raw bank
-    phase; its shared estimator adds only planning metadata. The initial
-    resident estimate exposes its exact additional raw-owner charge so the
-    preliminary pin admission can remove that same overlap, before taking its
-    existing maximum with the rejection workspace. No header is parsed again.
+    Offload's existing window admits the raw bank owners; its shared estimator
+    adds the exact private packed-chunk peak and planning metadata. The initial
+    resident estimate exposes its complete phase widening and the offload
+    increment so preliminary pin admission can replace the former with the
+    latter before its rejection-workspace maximum. No header is parsed again.
     """
     from tensorfold.cuda.capacity import Weights, _estimate_weights_from_headers, headers, itemsize
 
@@ -182,7 +183,7 @@ def weight_estimate(model_dir, transform, *, scalar_batches: bool = False,
     # original CPU allowance and add those physical backings exactly once;
     # offload's additional authority allowance deliberately excludes the rings.
     host = reader_host_bytes(largest, max(existing.staging, largest))
-    bulk_increment = 0
+    bulk_increment = offload_increment = 0
     if scalar_batches:
         from tensorfold.cuda.nvfp4.host_layout import bulk_host_bytes_a4, scalar_batch_host_bytes_a4
 
@@ -190,14 +191,15 @@ def weight_estimate(model_dir, transform, *, scalar_batches: bool = False,
         # estimates. Charge the same plan once, without consuming old packing
         # slack; dense engines perform no scalar-plan import or header scan.
         host += scalar_batch_host_bytes_a4(entries)
-        raw, resident_phase, planning = bulk_host_bytes_a4(entries)
+        raw, resident_phase, packed, planning = bulk_host_bytes_a4(entries)
+        offload_increment = packed
         if bulk_resident and raw:
-            # Private CPU authority coexists with its raw SF/code owners.
-            # Raw owners retire before publication; CPU authority survives its
+            # Private CPU authority coexists with raw SF/code and packed-chunk
+            # owners. Temporary owners retire before publication; authority survives its
             # synchronous transfers. Reader rings and publication keep the
             # existing add/maximum structure, now covering the complete phase.
             bulk_increment = (reader_host_bytes(largest, max(existing.staging, largest, resident_phase))
                               - reader_host_bytes(largest, max(existing.staging, largest)))
-        host += planning + bulk_increment
+        host += planning + (bulk_increment if bulk_resident else offload_increment)
     weights = Weights(existing.resident + padding, staging, existing.mapped)
-    return LoadingEstimate(weights, host, bulk_increment) if details else (weights, host)
+    return LoadingEstimate(weights, host, bulk_increment, offload_increment) if details else (weights, host)

@@ -16,14 +16,16 @@ RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CO
 
 Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first, then the active interpreter's NVIDIA namespace package, Torch's bundle, and system discovery. The managed foundation binds its selected physical NCCL provider and refuses a conflicting override. A broken selected override or environment library fails explicitly. The loaded library remains owned through native communicator retirement. POSIX rendezvous sets `SO_REUSEADDR` before binding to reuse retired sessions while preserving active-listener exclusivity; it does not enable `SO_REUSEPORT`. Older sessions created without reuse may still need their kernel timeout. The collective/numerical/retirement bodies are unchanged by these discovery and bind edits.
 
-## Native CT bank loading candidate — qualification pending
+## Staged native CT bank loading alternative — locally rejected
 
 Native A4 loading can read a bank's validated F32 calibration fields into one
 owned CPU vector, prepare the unchanged FP32 factors, and read an eligible
 canonical Reader-owned contiguous SF run plus bounded code chunks. Physical
 lexical source order maps explicitly to the requested local expert order.
-Four separate integer/byte copies preserve each projection's word prefix and
-SF tail, including strided host-authority cells. Other supported topologies
+Four inverse-strided integer/byte copies fill a private contiguous packed chunk,
+preserving each projection's word prefix and SF tail. Two flat-row indexed
+copies scatter that chunk into requested local cells, including strided
+host-authority cells. Source IO uses the same bounded chunk selection. Other supported topologies
 retain the projection-ordered path with direct packing into final CPU rows.
 
 Only explicit calibration-invalid results select ordered validation. Unexpected
@@ -34,16 +36,44 @@ serving retains none of them. Original checkpoint calibrations, native kernels,
 BF16 exclusions and serving arithmetic are unchanged.
 
 The raw-owner/alignment envelope uses the existing64MiB reader window. Resident
-admission includes simultaneous private CPU authority and raw owners; offload
-keeps its separately charged authority and loading window. Both charge bounded
-scalar/bank planning metadata, and preliminary pin admission removes only the
-known resident-only increment. Fixed Python/native-record accounting remains an
+admission includes simultaneous private CPU authority, raw owners and the packed
+chunk. Offload keeps its separately charged authority and raw loading window,
+and adds the exact packed-chunk payload peak. Both charge bounded scalar/bank
+planning metadata. Preliminary pin admission replaces the resident phase
+widening with the separately exposed offload packed-chunk increment before its
+existing rejection-workspace maximum. Fixed Python/native-record accounting remains an
 open admission gate. Dense loading does not enable or scan these bank plans.
 
-This isolated candidate is composed on accepted source `3b8cee82`. Its source,
-installed/native, ARM64 and paired full-model startup/request qualification are
-pending. Checks of a broader development composition do not qualify this source.
-No new performance, supported-model or hardware result is claimed.
+This isolated alternative is based on the frozen indexed-bank composition of
+accepted source `3b8cee82`. The staged implementation passed **55 focused CPU
+checks in 2.87 s** and **seven native checks in 277.08 s**, with zero skips, on
+AMD64 Linux, RTX PRO 2000 Blackwell/SM 120 and pinned Torch
+`2.16.0.dev20261017+cu134` (`9026ad48`). Both gates retained all 1,320 source/test
+files and verified actual project/native origins, including the source-owned
+file-descriptor extension. Native coverage includes resident decode/prefill at
+64×128 and 512×2048 and strided authority with real single-cell eviction.
+
+The subsequent complete-bank comparison used actual Qwen3.6 layer zero with all
+256 routed experts and its shared expert, resident publication, eight Torch
+threads and one inter-op thread. Four warmups preceded 24 measured positions
+in six mirrored ACCA/CAAC blocks. Both initial and final complete authority-byte
+and native-output controls passed. The transaction included bank reads, packing,
+synchronous device publication and resource retirement; checkpoint metadata and
+context setup were outside that metric. This does not measure full CLI startup.
+
+Staged packing (C) averaged **1.281257001 s**; indexed packing (A, frozen `dcfc`
+composition) averaged **1.137975910 s**. The mean paired C−A difference was
+**+0.143281091 s**, with the predeclared pointwise 95% paired-block bootstrap
+interval **[+0.105885934, +0.168062151] s**. All six block differences were
+positive. The fixed-seed analysis retained every completed position; six blocks
+do not establish universal distribution, tail or confirmatory coverage.
+
+C is rejected from current local promotion and retained as a historical
+reference. Its functional results remain scoped checkout results. Total native/
+Python/worker admission, installed/ARM64 execution and full-model startup/request
+performance and quality remain pending. A's earlier checks keep their own
+identities. This result establishes no A-versus-accepted-runtime gain or
+additional supported-model/hardware qualification.
 
 ## Historical ABB67 artifacts — audited and affected gates closed
 
