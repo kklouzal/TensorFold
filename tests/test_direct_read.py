@@ -10,6 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
 
+from tensorfold.cleanup import rollback
 from tensorfold.cuda import direct_read  # noqa: E402
 
 
@@ -49,6 +50,26 @@ def test_host_reads_match_safe_open(tmp_path, monkeypatch, direct):
             _same(files.get(name), f.get_tensor(name), name)
     if direct and not files.reader.direct:
         pytest.skip("this file system refuses O_DIRECT: only the fallback was checked")
+
+
+def test_shared_shard_paths_preserve_actual_duplicate_payload_reads(tmp_path):
+    first, second = tmp_path / "first.safetensors", tmp_path / "second.safetensors"
+    left = torch.tensor([1, 2], dtype=torch.int32)
+    right = torch.tensor([3, 4], dtype=torch.int32)
+    replacement = torch.tensor([5, 6], dtype=torch.int32)
+    safetensors_torch.save_file({"left": left, "duplicate": left.clone()}, str(first))
+    safetensors_torch.save_file({"right": right, "duplicate": replacement}, str(second))
+    files = direct_read.SafeTensors([first, second])
+    close = files.close
+    try:
+        assert files.where["left"][0] == first
+        assert files.where["right"][0] is files.where["duplicate"][0]
+        assert files.where["duplicate"][0] == second
+        for name, expected in (("left", left), ("right", right), ("duplicate", replacement)):
+            _same(files.get(name), expected, name)
+    except BaseException as primary:  # noqa: BLE001 - Retire the actual reader without replacing an assertion/read failure.
+        rollback(files, primary, close)
+    close()
 
 
 def _write_unaligned(path, tensors):

@@ -164,6 +164,8 @@ class SafeTensors:
 
     Failed construction drains only a reader created here; a supplied reader
     remains caller-owned. Explicit close() drains the associated reader.
+    Records from one populated shard share its immutable lexical Path;
+    per-tensor shape lists remain independent.
     """
 
     def __init__(self, files, reader: Reader | None = None) -> None:
@@ -172,10 +174,13 @@ class SafeTensors:
         try:
             for path in files:
                 base, header = read_header(path)
+                if not header or (len(header) == 1 and "__metadata__" in header):
+                    continue
+                shard_path = Path(path)
                 for name, e in header.items():
                     if name != "__metadata__":
                         begin, end = e["data_offsets"]
-                        self.where[name] = (Path(path), base + begin, end - begin, e["dtype"], list(e["shape"]))
+                        self.where[name] = (shard_path, base + begin, end - begin, e["dtype"], list(e["shape"]))
 
         except BaseException as primary:
             if self.reader is not reader:

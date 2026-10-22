@@ -871,3 +871,24 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+## Shared shard-path candidate, 2026-10-22
+
+In the isolated candidate based on accepted source `3b8cee82`, SafeTensors
+metadata records for one populated shard share its immutable lexical `Path`.
+The constructor retains the original path value without resolving symlinks or
+the working directory and allocates no mapping path for empty/metadata-only
+shards. Shapes remain separately owned lists per tensor. Later-shard duplicate
+winners, key order, offsets, dtypes, Reader ownership, failure cleanup and payload
+reads retain their existing contracts. No global path cache or new file owner
+is introduced.
+
+The source change precedes tests for sharing/shape isolation, duplicate winners,
+empty shards, conversion/header failure ordering and actual two-shard CPU
+payload reads. Source `1ec85163` passed 20 checks (11 constructor controls and
+nine real Reader cases) in the pinned AMD64 container with Python 3.12.3 and
+Torch `2.16.0.dev20261017+cu134`. All 1,309 source/test entries matched before and
+after execution, and the owned actor retired successfully. The test cleanup
+callback is bound before its failure interval. Installed ARM/AMD, CUDA Reader
+and representative complete-model loading/prefill/decode qualification remain
+pending. This is an unselected loading candidate, not a measured memory/latency
+or model gain.

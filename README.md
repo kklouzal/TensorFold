@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The SafeTensors reader shares one immutable lexical path per populated shard,
+while retaining tensor-specific metadata and the existing read/cleanup contract.
+The candidate passed 20 source CPU checks in the pinned AMD64 container, including
+actual direct and buffered reads. Installed-image and complete-model comparisons
+remain pending; no performance gain is claimed.
+[Scope and pending checks](docs/optimization-validation.md#shared-shard-path-candidate-2026-10-22).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
