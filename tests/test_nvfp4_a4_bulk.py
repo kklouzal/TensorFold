@@ -256,7 +256,7 @@ def test_unexpected_preflight_helper_failure_is_never_canonical_eligibility(tmp_
     def fail(*_args, **_kwargs):
         raise failure
 
-    monkeypatch.setattr(fmt, "_native_factors_result", fail)
+    monkeypatch.setattr(fmt, "_native_calibration_error", fail)
     try:
         with pytest.raises(type(failure)) as caught:
             load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache, swiglu=swiglu)

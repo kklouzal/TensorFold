@@ -267,9 +267,13 @@ def validate_native_a4_scales(scales, *, name: str) -> None:
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
 
 
-def _native_factors_result(act: float, weight_scale: float, *, name: str,
-                           act_inverse: float | None = None):
-    """Native admission result; unexpected helper failures are never eligibility."""
+def _native_calibration_error(act: float, weight_scale: float, *, name: str,
+                              act_inverse: float | None = None) -> str | None:
+    """Native admission error, or None; unexpected helper failures propagate.
+
+    Both callers require only admission. Keep every FP32 factor operation and
+    its order without returning factors that neither caller consumes.
+    """
     import math
 
     from .checkpoint import _inv, alpha
@@ -279,16 +283,16 @@ def _native_factors_result(act: float, weight_scale: float, *, name: str,
     else:
         inverse, error = _calibration_result(act_inverse)
         if error is not None:
-            return None, f"{name}.input_global_scale: {error}"
+            return f"{name}.input_global_scale: {error}"
     product = alpha(act, weight_scale)
     if not (math.isfinite(inverse) and inverse > 0 and math.isfinite(product) and product > 0):
-        return None, f"{name}: native FP32 inverse and joint calibration must remain finite and positive"
-    return (inverse, product), None
+        return f"{name}: native FP32 inverse and joint calibration must remain finite and positive"
+    return None
 
 
 def native_calibration(act: float, weight_scale: float, *, name: str, act_inverse: float | None = None) -> float:
     """Admit native FP32 factors and return act; banks consume their own device fields."""
-    _, error = _native_factors_result(act, weight_scale, name=name, act_inverse=act_inverse)
+    error = _native_calibration_error(act, weight_scale, name=name, act_inverse=act_inverse)
     if error is not None:
         raise ValueError(error)
     return act

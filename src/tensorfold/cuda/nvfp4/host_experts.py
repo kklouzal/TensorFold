@@ -174,7 +174,7 @@ def _preflight_a4_calibrations(calibrations, owners, projections, fields):
             act, error = fmt._calibration_result(inverse, reciprocal=True)
             if error is not None:
                 return False
-            _, error = fmt._native_factors_result(act, scale, name=base, act_inverse=inverse)
+            error = fmt._native_calibration_error(act, scale, name=base, act_inverse=inverse)
             if error is not None:
                 return False
             if p < 2:

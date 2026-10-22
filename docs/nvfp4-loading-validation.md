@@ -18,6 +18,41 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Native CT bank loading candidate — qualification pending
 
+The current optional-error increment starts from frozen metadata source
+`430936c8`. Both production consumers of the previous private factor result
+discarded its successful values: public `native_calibration` returns its
+original activation, while bank preflight needs only admission. Their private
+helper now returns an error string or None, avoiding the discarded inner factor
+tuple and outer result tuple. The existing `_calibration_result` value/error
+contract is unchanged where its value is consumed. No compatibility alias or
+copied arithmetic is introduced.
+
+The actual checkpoint `_inv` and `alpha` helpers execute in their original
+order. An explicit original CT multiplier still passes through its original
+calibration check without reciprocal reconstruction. Invalid explicit input
+returns before alpha; an invalid implicit inverse still executes alpha before
+the joint finite/positive refusal. Exact public ValueError text, unexpected
+helper/resource/cancellation propagation and public activation return remain.
+The ordered and bulk loaders, ModelOpt, Qwen and Gemma callers therefore remain
+in the affected validation/startup scope. The current source passed56 unique
+CPU checks in8.36s on pinned AMD64/Torch9026/NumPy2.1 with GPUs hidden:
+22 new helper-order/optional-error/public-return/exact-error/root-propagation
+cases,6 existing actual FP32 admission/exhaustion cases,23 bulk byte/error
+controls, one original CT maximum-multiplier boundary,3 CT loader propagation
+cases and one real FD-owner control. No cases were skipped. All1324 source/test
+files, the four runtime/test candidate paths and29 actual project origins
+matched the sealed cohort. The unchanged CPP compiled to the existing native
+provider under the original protected C++17/O3 recipe; raw mapped presence is
+not a protected VMA-FD proof. The owned actor completed and retired without
+reported cleanup failures.
+
+The GPU-hidden four-CPU/16GiB gate used one-thread correctness settings. It does
+not establish production thread-region performance, ARM64 ten/ten or installed
+execution. Same-region integrated performance, other affected loading regions
+and complete cold/warm model/resource/quality gates remain pending. No gain or
+performance equivalence is inferred from removing tuples; historical bank
+results below retain their identities and do not qualify this increment.
+
 This checkout adds a separate metadata candidate: immediate validation may
 borrow the nested declaration of the current sole default policy instead of
 copying it. The public resolver still returns independent mutable results.

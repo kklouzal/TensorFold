@@ -132,6 +132,17 @@ compilation. Nonqualifying policy regions, ARM64/installed, owned-resource
 admission and complete cold/warm model startup and request qualification remain
 pending; the earlier native-loop results above retain their own source scope.
 
+This checkout separately removes discarded private native-calibration factor
+results. Its two admission callers receive only an optional error; the same
+FP32 inverse/product operations, original CT multiplier, public activation
+return and validation/failure order remain. Focused error/order tests are
+verified within56 CPU checks on the pinned AMD64 checkout, including actual
+FP32 exhaustion/admission, original CT multipliers, complete bulk error/byte
+controls and the FD owner. All1324 source/test files remained unchanged during
+that gate. Same-region performance, other affected loading regions,
+ARM64/installed, resource and full-model cold/warm qualification remain pending.
+Earlier bank results do not establish a gain for this increment.
+
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
