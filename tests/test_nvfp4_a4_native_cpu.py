@@ -18,8 +18,8 @@ from test_nvfp4_a4_host_control import oracle_blob
 from tensorfold.cuda.nvfp4 import bank_cpu, experts_a4, host_layout
 
 
-def inputs(width=64, dims=128, *, strided=False):
-    count, selected = 4, [3, 1, 0]
+def inputs(width=64, dims=128, *, strided=False, count=4, selected=None):
+    selected = [3, 1, 0] if selected is None else selected
     if strided:
         cache = CPUCache(width, dims)
         storage = torch.full((count, cache.entry_bytes), 0xa5, dtype=torch.uint8)
@@ -103,6 +103,19 @@ def test_native_pair_tail_copy_accepts_unaligned_sources_and_preserves_physical_
     assert torch.equal(indices, before[2])
 
 
+@pytest.mark.parametrize("selected", [[5], [11, 0, 8, 3, 10, 2, 7], [11, 0, 9, 2, 10, 3, 8, 4, 7, 5]])
+def test_projection_partitions_preserve_partial_chunks_and_unselected_interleaved_cells(selected):
+    # Three,21 and30 projection units cross the expert/task boundaries in
+    # distinct ways. Both projections retain their paired-prefix and odd tail.
+    codes, scales, fields, indices, expected, storage, expected_storage = inputs(
+        192, 320, strided=True, count=12, selected=selected)
+    before = codes.clone(), scales.clone(), indices.clone()
+    experts_a4.pack_bank_a4(codes, scales, *fields, indices, 192, 320)
+    assert all(torch.equal(field, reference) for field, reference in zip(fields, expected, strict=True))
+    assert torch.equal(storage, expected_storage)
+    assert all(torch.equal(value, original) for value, original in zip((codes, scales, indices), before, strict=True))
+
+
 def native_arguments():
     # Plain buffers test our language boundary directly, independent of the
     # Python adapter. Four authority rows, one 64x64 physical expert chunk.
@@ -161,5 +174,6 @@ def test_cpu_recipe_uses_owned_source_identity_without_cuda_discovery(monkeypatc
     assert bank_cpu._ext.__wrapped__() is recorded
     source = Path(bank_cpu.__file__).with_suffix(".cpp")
     assert recorded == {"name": "tf_a4_bank_cpu_" + hashlib.sha256(source.read_bytes()).hexdigest()[:16],
-                        "sources": [str(source)], "extra_cflags": ["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror"],
+                        "sources": [str(source)],
+                        "extra_cflags": ["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fopenmp"],
                         "with_cuda": False, "verbose": False}

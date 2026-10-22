@@ -1,5 +1,6 @@
 // Exact native A4 byte layout. Python owns all buffers through this synchronous
 // call and grants exclusive writable authority; no Tensor ABI is used here.
+#include <ATen/Parallel.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <array>
@@ -112,8 +113,8 @@ static void pack(const py::array& code_array, const py::array& scale_array,
     if (overlap(up_span, code_span) || overlap(up_span, scale_span) || overlap(up_span, index_span)
         || overlap(down_span, code_span) || overlap(down_span, scale_span) || overlap(down_span, index_span))
         throw py::value_error("native A4 destinations overlap immutable inputs");
-    // Snapshot IDs before release: no re-reading Python-owned map cells during
-    // the write interval, and no allocation or throwing operation after it starts.
+    // Snapshot and validate every ID before release or dispatch. Workers read
+    // only this retained map and raw buffers; no Python, Tensor or caller TLS.
     std::array<std::int64_t, 1023> local;
     std::memcpy(local.data(), indices.ptr, bounded(count, sizeof(std::int64_t)));
     for (U e = 0; e < count; ++e) {
@@ -124,9 +125,15 @@ static void pack(const py::array& code_array, const py::array& scale_array,
     }
     const auto* code_data = static_cast<const std::uint8_t*>(codes.ptr);
     const auto* sf_data = static_cast<const std::uint8_t*>(scales.ptr);
+    const auto tasks = static_cast<std::int64_t>(count * 3); // count <= 1023 above
     py::gil_scoped_release release;
-    for (U e = 0; e < count; ++e) {
-        for (U projection = 0; projection < 3; ++projection) {
+    // The adopted synchronous range owner joins before return/rethrow. Setup
+    // can fail; authority remains unpublished, with all buffers retained here.
+    // Pairs of tasks own distinct projection cells even for interleaved up/down
+    // allocations. Do not turn the enclosing-span checks into noalias promises.
+    at::parallel_for(0, tasks, 1, [&](std::int64_t first, std::int64_t last) {
+        for (auto task = first; task < last; ++task) {
+            const U e = static_cast<U>(task) / 3, projection = static_cast<U>(task) % 3;
             const U n = projection ? width : dims, k = projection ? dims : width;
             const U nt = n / 64, kt = k / 64;
             const auto* source = code_data + (e * 3 + projection) * words;
@@ -151,10 +158,44 @@ static void pack(const py::array& code_array, const py::array& scale_array,
                 }
             }
         }
-    }
+    });
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    // Preparation-only observations. Actual compiler/backend/runtime-provider
+    // admission is required before claiming that this dispatch is parallel.
+    module.attr("_parallel_openmp") = static_cast<bool>(AT_PARALLEL_OPENMP);
+    module.attr("_parallel_native") = static_cast<bool>(AT_PARALLEL_NATIVE);
+#ifdef INTRA_OP_PARALLEL
+    module.attr("_parallel_compiled") = true;
+#else
+    module.attr("_parallel_compiled") = false;
+#endif
+#ifdef _OPENMP
+    module.attr("_openmp_version") = _OPENMP;
+#else
+    module.attr("_openmp_version") = 0;
+#endif
+    module.attr("_cxx_mode") = static_cast<long>(__cplusplus);
+    module.def("_parallel_threads", &at::get_num_threads);
+    module.def("_parallel_info", &at::get_parallel_info);
+    module.def("_parallel_probe", [] {
+        // An explicit SDK-only observation, never called by pack or import.
+        // Scalars identify this probe's actual workers, not packing timings.
+        std::array<std::int64_t, 30> ids;
+        ids.fill(-1);
+        {
+            py::gil_scoped_release release;
+            at::parallel_for(0, 30, 1, [&](std::int64_t first, std::int64_t last) {
+                for (auto task = first; task < last; ++task)
+                    ids[task] = at::get_thread_num();
+            });
+        }
+        py::tuple result(ids.size());
+        for (std::size_t task = 0; task < ids.size(); ++task)
+            result[task] = ids[task];
+        return result;
+    });
     module.def("pack", &pack, py::arg("codes").noconvert(), py::arg("scales").noconvert(),
                py::arg("up").noconvert(), py::arg("down").noconvert(), py::arg("indices").noconvert(),
                py::arg("up_offset"), py::arg("up_stride"), py::arg("down_offset"), py::arg("down_stride"),

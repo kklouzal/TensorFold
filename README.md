@@ -1,5 +1,15 @@
 # TensorFold fork
 
+An isolated CPU native-bank candidate partitions each validated bulk chunk into
+projection ranges through PyTorch's adopted intra-op facility. It retains the
+serial kernel's exact bytes, validation, borrowed owners and unpublished-failure
+contract. Its pinned AMD64 CPU SDK gate passed58 cases with C++17/OpenMP4.5 and
+four observed worker IDs, unchanged source and completed retirement. Named
+Torch OpenMP mapping/RECORD/dependency checks passed; physical-provider proof,
+whole-bank performance, installed ARM and complete-model comparisons remain
+pending. This selects no speedup; [qualification scope](docs/nvfp4-loading-validation.md#cpu-bank-projection-partition-candidate)
+keeps cold first use and required regions separate.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

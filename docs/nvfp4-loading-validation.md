@@ -250,6 +250,59 @@ ARM64 thread-policy observations, installed execution, whole-model cold/warm
 startup and request/quality qualification, and comparison against accepted
 source remain pending. No production gain or release promotion is claimed.
 
+## CPU bank projection-partition candidate
+
+The isolated follow-up partitions `3*chunk` raw-byte projection units through
+the adopted `at::parallel_for`. Every original range/dtype/alias/ID check and the
+single immutable local-ID snapshot still precede dispatch. The H tile-row byte
+loop and its paired/singleton tail are unchanged. Workers access only validated
+raw buffers, scalar geometry and the retained snapshot, with no Tensor, Python,
+NumPy, GIL or caller-TLS operation. Disjoint cells remain valid when up/down share
+an interleaved allocation; enclosing spans are not treated as a noalias promise.
+The synchronous call retains all borrowed owners through completion/rethrow;
+dispatch can initialize a team or fail, and failed authority stays unpublished.
+
+The initial CPU-only recipe retains explicit C++17/O3/Wall/Wextra/Werror and adds
+the compile-only OpenMP flag for the adopted header. It adds no OpenMP linker
+flag or independent pool. Actual supported compiler mode, generated backend and
+feature macros, thread policy and the single managed threading provider are
+checked by the SDK gate; actual physical-provider FD proof is a separate
+prerequisite before a performance claim. Including the header alone does not
+guarantee parallel execution. Preparation-only native observations
+expose these settings outside packing calls. An explicitly called SDK-only
+30-unit probe observes actual worker IDs; import and packing never call it.
+One-thread and already-parallel
+regions retain the adopted facility's supported serial behavior.
+
+The pinned AMD64 image509 CPU SDK gate passed58 unique cases with no skips
+in2.52s, including three independent1/7/10 reordered, partial and interleaved
+partition cases. All1323 source/test files matched before/after/declared/current;
+28 actual project origins included every required owner. The normal factory
+built and reused the same binary with effective C++17 (`201703`), OpenMP4.5
+(`201511`) and four observed worker IDs under the explicit4 intraop/1 interop
+functional profile. Actual flags retain O3/Wall/Wextra/Werror/fopenmp without a
+new OpenMP linker flag. One named Torch OpenMP mapping matched its wheel RECORD
+and inherited ELF dependency chain, separately from seventeen unchanged core
+providers. This is not an actual GOMP VMA-FD physical-backing proof. CUDA remained
+uninitialized; the displayed cpp_extension CUDA_HOME metadata warning is retained
+and does not constitute a full compiler-warning audit. Exact client/container
+retirement completed with no owner errors.
+
+The first SDK attempt remains FAILED before tests: hashing the legitimate
+readelf symlink under O_NOFOLLOW raised ELOOP, with the required test-origin
+secondary preserved. The corrected observer hashes and executes resolved OS-tool
+paths; runtime, compiler mode and numerical tests were unchanged. That failure
+is neither a packing-test failure nor a pass.
+
+E whole-expert remains the next coarse comparator with M serial and P projection
+units; T bounded tile rows remains conditional on measured coarse-partition
+stalls. Actual setup/join/runtime stacks, concurrent callers, cold first-use
+compilation/team creation, protected GOMP VMA-FD identity, complete bank
+publication/retirement, installed ARM and full-model cold/warm/request/resource
+comparisons remain required before selection. The4+1 SDK result does not transfer
+to8+1 or ARM10+10 performance regions. Historical H/M results above do not
+qualify this candidate or establish a speed or admission gain.
+
 ## Historical ABB67 artifacts — audited and affected gates closed
 
 | Artifact | Immutable identity |

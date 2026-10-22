@@ -11,15 +11,20 @@ from tensorfold.cuda.tensor_file import _regular_stream
 
 @lru_cache(maxsize=1)
 def _ext():
-    # Follow the existing native SSD reader's CPU extension facility. In
-    # particular, CUDA build discovery must not run in a CPU loading worker.
+    # Follow the SSD reader's CPU extension facility without project CUDA
+    # discovery or compilation. Upstream may inspect its own toolkit metadata.
     from torch.utils.cpp_extension import load
 
     source = Path(__file__).with_suffix(".cpp")
     with _regular_stream(source) as stream:
         identity = hashlib.sha256(stream.read()).hexdigest()[:16]
+    # Enable the adopted header's OpenMP branch when Torch selects that backend.
+    # The normal CPU loader already links Torch/C10. Do not add an OpenMP link
+    # flag that could import another runtime; actual provider admission follows
+    # the protected SDK gate before any parallel-support or performance claim.
     return load(name="tf_a4_bank_cpu_" + identity, sources=[str(source)],
-                extra_cflags=["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror"], with_cuda=False, verbose=False)
+                extra_cflags=["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fopenmp"],
+                with_cuda=False, verbose=False)
 
 
 def _array(tensor):
