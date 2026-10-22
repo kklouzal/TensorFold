@@ -32,11 +32,11 @@ import time
 from pathlib import Path
 
 if __package__:
-    from .benchmark_output import write_json
+    from .benchmark_output import _compact_errors, write_json
     from .campaign_bench import HotGate, Progress, host_snapshot
     from .campaign_kl import with_app
 else:
-    from benchmark_output import write_json
+    from benchmark_output import _compact_errors, write_json
     from campaign_bench import HotGate, Progress, host_snapshot
     from campaign_kl import with_app
 
@@ -173,7 +173,7 @@ def _attempt(app, case, row, report, output, torch):
     row["status"] = "RUNNING"
     write_json(output, report)
     ids, first, last = [], None, None
-    primary, errors, error_count = None, [None] * 5, 0
+    primary, errors, assembly_errors, error_count = None, [None] * 5, [None], 0
     prior_cause = prior_context = None
     prior_suppress = False
     began = returned = settled = prepare_started = prepared_at = None
@@ -294,13 +294,30 @@ def _attempt(app, case, row, report, output, torch):
         errors[error_count] = error
         error_count += 1
         row["status"] = "FAILED"
-    while len(errors) > error_count:
-        errors.pop()
-    if primary is not None:
+    if primary is None and not error_count:
+        return
+    if primary is None:
+        primary = errors[0]
+        prior_cause = BaseException.__cause__.__get__(primary)
+        prior_context = BaseException.__context__.__get__(primary)
+        prior_suppress = BaseException.__suppress_context__.__get__(primary)
+    BaseException.__cause__.__set__(primary, prior_cause)
+    BaseException.__context__.__set__(primary, prior_context)
+    BaseException.__suppress_context__.__set__(primary, prior_suppress)
+    try:
+        if error_count:
+            _compact_errors(errors, error_count)
+            raise_failures(primary, errors)
+        else:
+            raise_failures(primary, ())
+    except BaseException as assembly:  # Final status assembly cannot replace inference or cleanup roots.
+        if assembly is primary:
+            raise
+        assembly_errors[0] = assembly
         BaseException.__cause__.__set__(primary, prior_cause)
         BaseException.__context__.__set__(primary, prior_context)
         BaseException.__suppress_context__.__set__(primary, prior_suppress)
-    raise_failures(primary, errors)
+        raise_failures(primary, assembly_errors)
 
 
 def run(plan_path, destination):

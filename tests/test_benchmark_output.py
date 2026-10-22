@@ -430,6 +430,112 @@ print('stdlib-only-' + mode)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), 'stdlib-only-' + mode)
 
+    def test_compaction_failure_retains_exact_primary_native_links_and_actual_cleanup_slots(self):
+        with tempfile.TemporaryDirectory(prefix='owned-benchmark-output-') as directory:
+            path = Path(directory) / 'report.json'
+            path.write_text('previous')
+            primary, cause, context = TypeError('serialization failed'), LookupError('native cause'), EOFError('native context')
+            primary.__cause__, primary.__context__ = cause, context
+            closing, unlinking, allocation = OSError('stream close'), OSError('unlink'), MemoryError('status resize')
+            original_open, original_unlink = output.os.fdopen, output.os.unlink
+            state, events = {}, []
+
+            def fdopen(*args, **kwargs):
+                stream = original_open(*args, **kwargs)
+
+                class Owner:
+                    @property
+                    def closed(self):
+                        return stream.closed
+
+                    def close(self):
+                        stream.close()
+                        events.append('stream')
+                        raise closing
+                return Owner()
+
+            def unlink(temporary):
+                original_unlink(temporary)
+                events.append('unlink')
+                raise unlinking
+
+            def compact(slots, count):
+                self.assertEqual((len(slots), count), (6, 2))
+                self.assertEqual(events, ['stream', 'unlink'])
+                state['slots'] = slots
+                while len(slots) > 3:
+                    slots.pop()
+                # Fail before the six-slot list's three-to-two resize frontier.
+                raise allocation
+
+            with patch.object(output.os, 'fdopen', fdopen), patch.object(output.json, 'dump', side_effect=primary), \
+                    patch.object(output.os, 'unlink', unlink), patch.object(output, '_compact_errors', compact):
+                try:
+                    output.write_json(path, {'report': 17})
+                except TypeError as error:
+                    caught = error
+                else:
+                    self.fail('compaction failure was not propagated')
+            self.assertIs(caught, primary)
+            self.assertEqual(state['slots'], [closing, unlinking, None])
+            trace = primary.__traceback__
+            while trace.tb_frame.f_code is not output.write_json.__code__:
+                trace = trace.tb_next
+            self.assertIs(trace.tb_frame.f_locals['errors'], state['slots'])
+            roots = retained_roots(primary)
+            self.assertTrue(all(any(root is item for root in roots)
+                                for item in (cause, context, closing, unlinking, allocation)))
+            self.assertEqual(path.read_text(), 'previous')
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_compaction_failure_preserves_first_cleanup_primary_after_successful_replace(self):
+        with tempfile.TemporaryDirectory(prefix='owned-benchmark-output-') as directory:
+            path = Path(directory) / 'report.json'
+            path.write_text('previous')
+            primary, cause, allocation = OSError('directory close'), LookupError('native cause'), MemoryError('status resize')
+            primary.__cause__ = cause
+            original_close, state = output.os.close, {}
+
+            def close(descriptor):
+                directory = stat.S_ISDIR(os.fstat(descriptor).st_mode)
+                original_close(descriptor)
+                if directory:
+                    state['directory_closed'] = True
+                    raise primary
+
+            def compact(slots, count):
+                self.assertEqual((len(slots), count), (6, 1))
+                self.assertTrue(state['directory_closed'])
+                state['slots'] = slots
+                while len(slots) > 3:
+                    slots.pop()
+                raise allocation
+
+            with patch.object(output.os, 'close', close), patch.object(output, '_compact_errors', compact):
+                try:
+                    output.write_json(path, {'report': 17})
+                except OSError as error:
+                    caught = error
+                else:
+                    self.fail('cleanup/compaction failure was not propagated')
+            self.assertIs(caught, primary)
+            roots = retained_roots(primary)
+            self.assertTrue(all(any(root is item for root in roots) for item in (cause, allocation)))
+            self.assertIs(state['slots'][0], primary)
+            self.assertEqual(json.loads(path.read_text()), {'report': 17})
+            self.assertTrue(any('was replaced' in note for note in primary.__notes__))
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_no_cleanup_statuses_need_no_fallible_compaction(self):
+        with tempfile.TemporaryDirectory(prefix='owned-benchmark-output-') as directory:
+            path = Path(directory) / 'report.json'
+            with patch.object(output, '_compact_errors', side_effect=AssertionError('empty compaction is unnecessary')):
+                output.write_json(path, {'report': 17})
+                with self.assertRaises(ValueError):
+                    output.write_json(path, {'invalid': float('nan')})
+            self.assertEqual(json.loads(path.read_text()), {'report': 17})
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
 
 if __name__ == '__main__':
     unittest.main()

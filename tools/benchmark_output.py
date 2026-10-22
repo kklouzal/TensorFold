@@ -20,6 +20,12 @@ else:
     from worker_lifetime import raise_failures
 
 
+def _compact_errors(errors, count):
+    """Drop unused status slots; the owner guards resizing/allocation failure."""
+    while len(errors) > count:
+        errors.pop()
+
+
 def write_json(path, value, *, indent=1):
     target = Path(path)
     if target.is_symlink() or (target.exists() and not target.is_file()):
@@ -33,7 +39,7 @@ def write_json(path, value, *, indent=1):
     prior_suppress = False
     # Four resource retirements, failed-close verification and an annotation.
     # Prepare status storage before creating any owned file or descriptor.
-    errors, error_count = [None] * 6, 0
+    errors, assembly_errors, error_count = [None] * 6, [None], 0
     try:
         descriptor, temporary = tempfile.mkstemp(prefix='.' + target.name + '.', suffix='.tmp', dir=target.parent)
         if mode is not None:
@@ -106,10 +112,27 @@ def write_json(path, value, *, indent=1):
         except BaseException as error:  # noqa: BLE001 - annotation runs only after every resource retirement attempt.
             errors[error_count] = error
             error_count += 1
-    while len(errors) > error_count:
-        errors.pop()
-    if primary is not None:
+    if primary is None and not error_count:
+        return
+    if primary is None:
+        primary = errors[0]
+        prior_cause = BaseException.__cause__.__get__(primary)
+        prior_context = BaseException.__context__.__get__(primary)
+        prior_suppress = BaseException.__suppress_context__.__get__(primary)
+    BaseException.__cause__.__set__(primary, prior_cause)
+    BaseException.__context__.__set__(primary, prior_context)
+    BaseException.__suppress_context__.__set__(primary, prior_suppress)
+    try:
+        if error_count:
+            _compact_errors(errors, error_count)
+            raise_failures(primary, errors)
+        else:
+            raise_failures(primary, ())
+    except BaseException as assembly:  # Raw slots and native fields remain frame-owned on allocation failure.
+        if assembly is primary:
+            raise
+        assembly_errors[0] = assembly
         BaseException.__cause__.__set__(primary, prior_cause)
         BaseException.__context__.__set__(primary, prior_context)
         BaseException.__suppress_context__.__set__(primary, prior_suppress)
-    raise_failures(primary, errors)
+        raise_failures(primary, assembly_errors)

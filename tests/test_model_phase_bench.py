@@ -256,6 +256,13 @@ def failure_roots(error):
         if isinstance(item, BaseExceptionGroup):
             pending.extend(item.exceptions)
         pending.extend(getattr(item, "_tensorfold_retained_failures", ()))
+        trace = item.__traceback__
+        while trace is not None:
+            if trace.tb_frame.f_code is tool._attempt.__code__:
+                state = trace.tb_frame.f_locals
+                pending.extend(state.get(key) for key in ("prior_cause", "prior_context"))
+                pending.extend(state.get("errors", ()))
+            trace = trace.tb_next
     return seen
 
 
@@ -421,3 +428,68 @@ def test_progress_formatter_and_publication_failures_preserve_all_raw_roots(monk
     report = json.loads((tmp_path / "out/report.json").read_text())
     assert report["status"] == "FAILED" and report["diagnostic_failed"]
     assert report["records"][0]["native_settled"] is not retirement
+
+
+def test_attempt_compaction_fault_preserves_exact_primary_raw_slots_and_completed_postflight(monkeypatch, tmp_path):
+    plan = fixture_plan(tmp_path)
+    state, native, _ = install_runtime(monkeypatch, tmp_path, fault="partial")
+    cause, context = LookupError("native cause"), EOFError("native context")
+    native.__cause__, native.__context__ = cause, context
+    progress_error, allocation = OSError("heartbeat failed"), MemoryError("status resize")
+    original_progress, original_write = tool.Progress.update, tool.write_json
+    observed, publications = {}, []
+
+    def progress(phase, **fields):
+        if phase == "idle" and state["calls"] and not state["closed"]:
+            raise progress_error
+        return original_progress(phase, **fields)
+
+    def write(path, document):
+        original_write(path, document)
+        if state["calls"]:
+            publications.append(state["closed"])
+
+    def compact(slots, count):
+        assert (len(slots), count) == (5, 1)
+        assert state["syncs"] == 2 and publications == [False]
+        observed["slots"] = slots
+        while len(slots) > 2:
+            slots.pop()
+        # Fail before the five-slot list's two-to-one resize frontier.
+        raise allocation
+
+    monkeypatch.setattr(tool.Progress, "update", progress)
+    monkeypatch.setattr(tool, "write_json", write)
+    monkeypatch.setattr(tool, "_compact_errors", compact)
+    with pytest.raises(RuntimeError) as caught:
+        tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+    assert caught.value is native and state["closed"] and publications == [False, True]
+    assert observed["slots"] == [progress_error, None]
+    trace = native.__traceback__
+    while trace.tb_frame.f_code is not tool._attempt.__code__:
+        trace = trace.tb_next
+    assert trace.tb_frame.f_locals["errors"] is observed["slots"]
+    roots = failure_roots(native)
+    assert all(any(root is item for root in roots) for item in (cause, context, progress_error, allocation))
+    report = json.loads((tmp_path / "out/report.json").read_text())
+    assert report["status"] == report["records"][0]["status"] == "FAILED"
+    assert report["records"][0]["token_ids"] == [20, 21] and report["records"][0]["native_settled"]
+
+
+@pytest.mark.parametrize("fault", [None, "partial"], ids=["success", "primary-only"])
+def test_empty_attempt_statuses_do_not_enter_compaction(monkeypatch, tmp_path, fault):
+    plan = fixture_plan(tmp_path)
+    state, native, _ = install_runtime(monkeypatch, tmp_path, fault=fault)
+
+    def compact(slots, count):
+        raise AssertionError("no cleanup statuses need compaction")
+
+    monkeypatch.setattr(tool, "_compact_errors", compact)
+    if fault is None:
+        report = tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+        assert report["status"] == "COMPLETE" and state["calls"] == 2
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            tool.run(save_plan(tmp_path, plan), tmp_path / "out")
+        assert caught.value is native and state["calls"] == 1
+    assert state["closed"]
