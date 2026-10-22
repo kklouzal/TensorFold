@@ -209,6 +209,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda = serve.add_argument_group("NVIDIA GPUs (DGX Spark)")
     cuda.add_argument("--backend", choices=("auto", "mlx", "cuda"), default="auto",
                       help="auto: MLX on macOS, CUDA elsewhere")
+    cuda.add_argument("--native-expandable-segments", dest="native_allocator", action="store_const",
+                      const="expandable", default=argparse.SUPPRESS,
+                      help="opt in to native expandable allocation and exact FP8 byte packing for Qwen dense "
+                           "native checkpoint math on SM12.1, "
+                           "one rank/stream; requires a caller-owned fresh process with no previous allocator "
+                           "configuration or consumers (omitted: preserve existing policy)")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,

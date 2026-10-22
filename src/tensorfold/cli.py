@@ -345,6 +345,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "no_drafts": bool(args.no_drafts),
     }
     options.update(_model_overrides(args))
+    if getattr(args, "native_allocator", None) is not None:
+        options["native_allocator"] = args.native_allocator
     if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
         options["drafter_bits"] = args.drafter_bits
     if getattr(args, "draft_rows", None) is not None:

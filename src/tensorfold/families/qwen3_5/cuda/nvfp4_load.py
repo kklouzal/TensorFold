@@ -123,9 +123,11 @@ def maths() -> tuple[dict[str, bool], str]:
     return own, f"full ({gpu} has neither the block-scaled FP4 nor the FP8 mma): bf16 activations, the stored weights"
 
 
-def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None, rope=None):
+def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, mlp=None, rope=None,
+               _pack_fp8=None):
     """NVFP4 and FP8 projections at full precision or in the checkpoint's own math, bf16 ones as stored (``rope``:
-    a static YaRN policy for a default-RoPE checkpoint)."""
+    a static YaRN policy for a default-RoPE checkpoint). ``_pack_fp8`` is a private,
+    load-scoped byte packing entry; only original checkpoint FP8 projections use it."""
 
     from tensorfold.cuda.capacity import headers
     from tensorfold.cuda.nvfp4 import format as fmt
@@ -208,14 +210,15 @@ def load_nvfp4(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=Non
                 token = activation is not None and own["fp8"]
                 if token:
                     used["fp8"] = per_token["fp8"] = True
-                return Fp8Linear.from_checkpoint(weight, got["weight_scale"], token=token)
+                return Fp8Linear.from_checkpoint(weight, got["weight_scale"], token=token, _packing=_pack_fp8)
             if kind == "fp8":
                 s = got["weight_scale"].float().reshape(-1)
                 if s.numel() != 1:
                     raise ValueError(f"{name}: FP8 with {s.numel()} scales; the CUDA engine reads one scale a tensor")
                 scale = fmt.calibration(float(s[0]), name=name + ".weight_scale")
                 return Fp8Linear.from_checkpoint(weight, scale,
-                                                 act=act_scale(name, got, "fp8", activation, scale)[0])
+                                                 act=act_scale(name, got, "fp8", activation, scale)[0],
+                                                 _packing=_pack_fp8)
             w = weight.to(torch.bfloat16).contiguous()
             return Plain8(w, rows8=Fp8Linear.from_bf16(w)) if prompt and prompt_precision.fp8() else Plain(w)
 

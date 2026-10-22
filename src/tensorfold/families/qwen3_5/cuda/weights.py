@@ -508,7 +508,7 @@ def _close_failed_checkpoint(reader, primary: BaseException) -> None:
 
 def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, mlp=None,
          prefill_world: int = 1, prefill_mlp: tuple[str, ...] | None = None, eos_token_ids=None,
-         rope=None) -> Weights:
+         rope=None, _pack_fp8=None) -> Weights:
     """MLX affine 4-bit, EXL3 or NVFP4 weights; ``tiled`` packs projections as read; ``rope``: a static YaRN policy
     (``--yarn-factor``) for a default-RoPE checkpoint.
 
@@ -516,6 +516,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
     weights. A custom ``mlp`` may declare its consumed prompt projection names
     through ``prefill_mlp`` (empty for routed experts); otherwise its selected
     FP8 geometry is checked after construction, before any prompt execution.
+    ``_pack_fp8`` is a target-load-only packing entry selected by the explicit
+    native allocator policy; affine/EXL3 and companion loads do not consume it.
     """
 
     from .exl3_load import load_exl3, quant_config
@@ -528,9 +530,15 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
         raise ValueError("custom prefill MLP metadata must name its unique gate/up/down projections")
     bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quant_config(model_dir) is not None:
+        if _pack_fp8 is not None:
+            raise ValueError("private FP8 packing requires a native quantized checkpoint")
         return load_exl3(model_dir, device, **bindings)
     if quantized(model_dir):
+        if _pack_fp8 is not None:
+            bindings["_pack_fp8"] = _pack_fp8
         return load_nvfp4(model_dir, device, **bindings)
+    if _pack_fp8 is not None:
+        raise ValueError("private FP8 packing requires a native quantized checkpoint")
     cfg = Config.read(model_dir, **bindings)
     raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
     t = _Tensors(model_dir, device)

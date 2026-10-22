@@ -18,6 +18,27 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Isolated dense native loading candidate, 2026-10-22
+
+The optional `--native-expandable-segments` policy selects native expandable
+allocation and exact checkpoint-FP8 byte packing only on the explicitly admitted
+dense Qwen target load. Default packing remains the accepted gather transform;
+BF16-derived, MXFP8, block-FP8, generic requantization and companion loads retain
+their existing routes. Conservative admission bounds remain unchanged.
+
+This composition is isolated from accepted source `949e5e02`. It passed 250 CPU
+controls (with 34 CUDA parameters deferred), then all 34 direct CUDA byte-layout
+cases on local SM12.0, using pinned AMD64 Torch `9026ad48`/CUDA13.4. All 1,314
+source/test entries stayed unchanged and both exact containers retired. These
+are source-functional controls, including opaque engine boundaries and a
+standalone byte-layout oracle; no unused owned CUDA provider was forced.
+Actual SM12.1 policy, new installed-image and complete-model loading/prefill/decode
+qualification remain pending.
+Earlier allocator/packing comparisons describe different compositions and do not
+establish a gain, equivalence or readiness here. Added policy checks, imports,
+arguments and constructor dispatch are part of the required fresh comparison.
+See the [policy contract](native-expandable-allocator.md).
+
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
 Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch

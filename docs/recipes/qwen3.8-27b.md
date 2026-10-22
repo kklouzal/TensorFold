@@ -71,6 +71,17 @@ has been loaded here yet.
 
 ### NVFP4 checkpoints
 
+`--native-expandable-segments` is an optional loading candidate for a fresh,
+exclusive SM12.1 process, one rank/stream, checkpoint math and bf16 prompts. It
+selects native expandable allocation and an exact FP8 byte transform only for
+this target load; the default, other formats and DFlash2 packing stay unchanged.
+The isolated composition passed 250 CPU controls and 34 direct byte-layout CUDA
+cases on local SM12.0. Actual SM12.1 policy, installed-image and model qualification
+remain pending. Read the
+[ownership, admission and failure contract](../native-expandable-allocator.md)
+before using the option; it is unsuitable for an already configured or embedded
+multi-engine process.
+
 The CUDA engine reads NVIDIA's ModelOpt export of the model (`nvidia/Qwen3.8-27B-NVFP4`: NVFP4 MLP and head, FP8
 attention and DeltaNet projections, bf16 embedding and gates) as it ships. The reader also takes
 compressed-tensors NVFP4 and FP8 exports, and ModelOpt mixed exports whose FP8 layers keep a scale per output channel

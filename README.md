@@ -1,5 +1,16 @@
 # TensorFold fork
 
+The optional dense CUDA `--native-expandable-segments` loading candidate couples
+native expandable allocation with an exact FP8 byte-packing transform on SM12.1,
+one rank/stream and native checkpoint math with bf16 prompts. It requires a
+caller-owned fresh process. Omission preserves the accepted allocator and packing
+paths, including other formats, families and companion loads. This isolated
+composition passed 250 pinned AMD64 CPU controls and all 34 deferred CUDA
+byte-layout cases on local SM12.0. These checks do not activate the optional
+SM12.1 allocator policy or qualify a new installed image, model or performance
+result; those gates remain pending. Historical measurements do not qualify it.
+[Contract and remaining gates](docs/native-expandable-allocator.md).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

@@ -36,6 +36,9 @@ class Value:
     def float(self):
         return self
 
+    def numel(self):
+        return 1
+
     def __add__(self, other):
         return self
 
@@ -327,7 +330,7 @@ class MetadataSelection(unittest.TestCase):
                         continue
                     result = load(Path("opaque"))
                 self.assertEqual(len(built), 8)                     # 7 projections and the head
-                self.assertEqual(built, [{"token": own}] * 8)
+                self.assertEqual(built, [{"token": own, "_packing": None}] * 8)
                 self.assertEqual(result.own, {"nvfp4": False, "fp8": own})
                 self.assertEqual(result.precision, "checkpoint" if own else "full")
                 self.assertEqual("rows quantized a token at a time" in stdout.getvalue(), own)

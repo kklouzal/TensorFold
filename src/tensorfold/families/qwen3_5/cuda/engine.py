@@ -21,7 +21,15 @@ def entry_end(prompt: Sequence[int]) -> int:
 
 
 class Qwen27Engine:
-    """Qwen3.8-27B on one GPU or two ranks (rank 0 here), DFlash2 drafting, prefix reuse."""
+    """Qwen3.8-27B on one GPU or two ranks (rank 0 here), DFlash2 drafting, prefix reuse.
+
+    ``native_allocator='expandable'`` is an explicit SM12.1/native-checkpoint,
+    one-rank/stream allocation and checkpoint-FP8 byte-packing policy. Its caller proves a fresh exec/import path with no
+    earlier allocator setters/consumers and exclusive startup. Omission retains
+    existing caller policy, including embedded/preconfigured/multiple engines.
+    Once attempted, configuration failure is terminal for that startup process;
+    parsing can be partial, and neither retry nor settings rollback is safe.
+    """
 
     tree_rows: int | None = None       # a lone stream's tree rows on one GPU (None: max_rows, as in 0.5.0)
     room = None                        # one GPU's attention-cache budget (streams.KVRoom), None on two
@@ -34,7 +42,12 @@ class Qwen27Engine:
                  context: int | None = None, context_explicit: bool | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, tree_rows: int | None = None,
                  keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
-                 yarn_factor: float | None = None):
+                 yarn_factor: float | None = None, native_allocator: str | None = None):
+        if native_allocator is not None:
+            from tensorfold.cuda.native_allocator import check_environment, check_request
+
+            check_request(native_allocator, tp=tp, rank=rank, streams=streams)
+            check_environment()
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.families.qwen3_5 import rope_parameters
 
@@ -56,6 +69,14 @@ class Qwen27Engine:
         if nvfp4 and vision:
             raise ValueError("image input on CUDA is tested on the MLX checkpoint only: drop --vision for an NVFP4 "
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
+        if native_allocator is not None:
+            from tensorfold.cuda import precision
+            from tensorfold.families import model_type
+
+            if (not nvfp4 or precision.mode() != precision.CHECKPOINT or prompt_precision.fp8()
+                    or model_type(model_dir) != "qwen3_5"):
+                raise ValueError("native_allocator='expandable' requires a Qwen dense native checkpoint with "
+                                 "checkpoint math and bf16 prompts")
         rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
         yarn = rope if rope.rope_type == "yarn" else None
         from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
@@ -110,6 +131,11 @@ class Qwen27Engine:
         from tensorfold.cuda.kv_arena import driver
 
         driver(0)                           # required VMM and admission granularity, before payloads or requests
+        if native_allocator is not None:
+            from tensorfold.cuda.native_allocator import enable_fresh_expansion
+
+            self.native_allocator_receipt = enable_fresh_expansion(torch)
+            self.native_allocator = native_allocator
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
             torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         if tp == 2:
@@ -182,6 +208,13 @@ class Qwen27Engine:
                              "target-only context")
         bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
                     if value is not None}
+        if native_allocator is not None:
+            # The positive policy was admitted and configured before any payload.
+            # Keep its packing choice local to this target load, never a module
+            # setting that could change companion or embedded callers.
+            from tensorfold.cuda.nvfp4.fragments import fragment_order
+
+            bindings["_pack_fp8"] = fragment_order
         if tp == 2:
             full = load(model_dir, prefill_world=tp, **bindings)
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)

@@ -239,9 +239,11 @@ class Fp8Linear:
 
     @classmethod
     def from_checkpoint(cls, weight: torch.Tensor, scale: float | torch.Tensor, act: float | None = None, *,
-                        token: bool = False) -> "Fp8Linear":
+                        token: bool = False, _packing=None) -> "Fp8Linear":
         """``weight`` e4m3 [N, K] with one fp32 scale (ModelOpt's per-tensor FP8) or ``scale`` [N] (its per-channel
-        FP8); ``act``: the static input scale of per-tensor checkpoint math, ``token``: per-token checkpoint math."""
+        FP8); ``act``: the static input scale of per-tensor checkpoint math, ``token``: per-token checkpoint math.
+        The private load-scoped ``_packing`` entry changes only the byte transform;
+        omission retains the original packing, and the projection never retains it."""
 
         n, k = weight.shape
         if k % 64:
@@ -261,7 +263,8 @@ class Fp8Linear:
             raise ValueError("per-token FP8 rows pair with per-channel weight scales")
         if cols is not None and act is not None:     # static-scale checkpoint math applies one tensor factor alone
             raise ValueError("per-channel FP8 weight scales take per-token or bf16 rows, not a static input scale")
-        return cls(_fragment_order(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
+        packing = _fragment_order if _packing is None else _packing
+        return cls(packing(weight.contiguous().view(torch.uint8), npad), float(scale), n, k, npad,
                    act=None if act is None else float(act), cols=cols, token=token)
 
     @classmethod

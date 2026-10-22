@@ -463,3 +463,106 @@ def test_rank_agreement_rejects_distinct_yarn_factors_below_one_millionth(startu
     with pytest.raises(RuntimeError, match="different settings"):
         Qwen27Engine(directory, None, tp=2, master="host", yarn_factor=4.0)
     assert "load" not in events
+
+
+def test_omitted_allocator_preserves_preconfigured_and_multiple_engines(startup, monkeypatch):
+    import builtins
+
+    from tensorfold.cuda import native_allocator
+
+    directory, _state, events, options, _gathers = startup
+    monkeypatch.setenv('PYTORCH_ALLOC_CONF', 'max_split_size_mb:64')
+    def untouched(*args, **kwargs):
+        pytest.fail('omitted policy inspected or configured the caller allocator')
+    monkeypatch.setattr(native_allocator, 'check_environment', untouched)
+    monkeypatch.setattr(native_allocator, 'enable_fresh_expansion', untouched)
+    actual_import = builtins.__import__
+    def legacy_import(name, *args, **kwargs):
+        if name == 'tensorfold.cuda.nvfp4.fragments':
+            pytest.fail('omitted policy imported positive-only fragment packing')
+        return actual_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', legacy_import)
+    first = Qwen27Engine(directory, None)
+    second = Qwen27Engine(directory, None)
+    try:
+        assert events.count('load') == 2
+        assert all('_pack_fp8' not in call for call in options)
+        assert not hasattr(first, 'native_allocator') and not hasattr(second, 'native_allocator')
+    finally:
+        second.close()
+        first.close()
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_explicit_allocator_orders_once_before_admission_and_payload(startup, monkeypatch, failed):
+    from tensorfold.cuda import native_allocator, precision
+
+    directory, state, events, options, _gathers = startup
+    state.format = 'nvfp4'
+    path = directory / 'config.json'
+    config = json.loads(path.read_text())
+    config['model_type'] = 'qwen3_5'
+    path.write_text(json.dumps(config))
+    for name in native_allocator.ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    primary = RuntimeError('setting failed')
+    def enable(runtime):
+        assert runtime is torch
+        events.append('allocator')
+        if failed:
+            raise primary
+        return {'policy': 'expandable'}
+    monkeypatch.setattr(native_allocator, 'enable_fresh_expansion', enable)
+    admit = capacity.admit
+    monkeypatch.setattr(capacity, 'admit', lambda *a, **kw: events.append('admit') or admit(*a, **kw))
+    with precision.using('checkpoint'):
+        if failed:
+            with pytest.raises(RuntimeError) as caught:
+                Qwen27Engine(directory, None, native_allocator='expandable')
+            assert caught.value is primary and events.count('allocator') == 1
+            assert 'load' not in events and 'admit' not in events
+            return
+        owner = Qwen27Engine(directory, None, native_allocator='expandable')
+    try:
+        from tensorfold.cuda.nvfp4.fragments import fragment_order
+
+        assert owner.native_allocator == 'expandable' and owner.native_allocator_receipt == {'policy': 'expandable'}
+        assert len(options) == 1 and options[0]['_pack_fp8'] is fragment_order
+        assert events.index('device') < events.index('vmm') < events.index('allocator') < events.index('admit') < events.index('load')
+    finally:
+        owner.close()
+
+
+def test_explicit_allocator_refuses_direct_fp8_prompts_before_device_or_payload(startup, monkeypatch):
+    from tensorfold.cuda import native_allocator, precision
+
+    directory, state, events, _options, _gathers = startup
+    state.format = 'nvfp4'
+    path = directory / 'config.json'
+    config = json.loads(path.read_text())
+    config['model_type'] = 'qwen3_5'
+    path.write_text(json.dumps(config))
+    for name in native_allocator.ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(prompt_precision, 'fp8', lambda: True)
+    def unexpected(*args, **kwargs):
+        pytest.fail('unsupported direct FP8 request reached allocator or payload work')
+    monkeypatch.setattr(native_allocator, 'enable_fresh_expansion', unexpected)
+    monkeypatch.setattr(capacity, 'admit', unexpected)
+    monkeypatch.setattr(weights, 'load', unexpected)
+    with precision.using('checkpoint'), pytest.raises(ValueError, match='bf16 prompts'):
+        Qwen27Engine(directory, None, native_allocator='expandable')
+    assert events == []
+
+
+@pytest.mark.parametrize('policy,options', [(False, {}), ('auto', {}), ('expandable', {'tp': 2}),
+                                           ('expandable', {'streams': 2}), ('expandable', {'rank': 1})])
+def test_invalid_allocator_request_fails_before_template_or_device(tmp_path, monkeypatch, policy, options):
+    from tensorfold.cuda import chat_template
+
+    def unexpected(*args, **kwargs):
+        pytest.fail('invalid opt-in reached template or device work')
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', unexpected)
+    monkeypatch.setattr(torch.cuda, 'set_device', unexpected)
+    with pytest.raises(ValueError, match='native_allocator'):
+        Qwen27Engine(tmp_path, None, native_allocator=policy, **options)
