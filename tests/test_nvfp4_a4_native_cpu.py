@@ -47,25 +47,39 @@ def inputs(width=64, dims=128, *, strided=False):
 @pytest.mark.parametrize("width,dims", [(64, 64), (64, 128), (128, 128),
                                         (192, 64), (192, 320), (256, 384)])
 @pytest.mark.parametrize("strided", [False, True])
-def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_lifetimes(width, dims, strided, monkeypatch):
+@pytest.mark.parametrize("phased", [False, True])
+def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_lifetimes(
+        width, dims, strided, phased, monkeypatch):
     codes, scales, fields, indices, expected, storage, expected_storage = inputs(width, dims, strided=strided)
     tensors = (codes, scales, *fields, indices)
     snapshots = [(t.data_ptr(), t.untyped_storage().resizable(), t._version, t.clone()) for t in tensors]
     actual = bank_cpu._ext()
     aliases = []
 
-    def pack(*args):
+    def observe(native, args):
         # The borrowed ndarray owns the imported Tensor, whose managed deleter
         # owns the original backing even if Python collection runs in the call.
-        arrays = args[:5]
+        arrays = args[:4 if phased else 5]
         assert all(isinstance(array.base, torch.Tensor) for array in arrays)
         assert all(not array.base.untyped_storage().resizable() for array in arrays)
         aliases.extend(weakref.ref(array) for array in arrays)
         gc.collect()
-        return actual.pack(*args)
+        return native(*args)
 
-    monkeypatch.setattr(bank_cpu, "_ext", lambda: SimpleNamespace(pack=pack))
-    experts_a4.pack_bank_a4(codes, scales, *fields, indices, width, dims)
+    monkeypatch.setattr(bank_cpu, "_ext", lambda: SimpleNamespace(
+        pack=lambda *args: observe(actual.pack, args),
+        pack_scales=lambda *args: observe(actual.pack_scales, args),
+        pack_words=lambda *args: observe(actual.pack_words, args)))
+    if phased:
+        experts_a4.pack_bank_scales_a4(scales, *fields, indices, width, dims)
+        words = width * dims // 2
+        for field, reference, snapshot in zip(fields, expected, snapshots[2:4], strict=True):
+            assert torch.equal(field[..., :words], snapshot[3][..., :words])
+            assert torch.equal(field[..., words:], reference[..., words:])
+        assert all(reference() is None for reference in aliases)
+        experts_a4.pack_bank_words_a4(codes, *fields, indices, width, dims)
+    else:
+        experts_a4.pack_bank_a4(codes, scales, *fields, indices, width, dims)
     assert all(torch.equal(field, reference) for field, reference in zip(fields, expected, strict=True))
     if strided:
         assert torch.equal(storage, expected_storage)
@@ -112,9 +126,10 @@ def native_arguments():
             np.array([2], dtype=np.int64), 0, 2 * blob, 0, blob, 4, 64, 64]
 
 
+@pytest.mark.parametrize("stage", ["combined", "words", "scales"])
 @pytest.mark.parametrize("fault", ["negative", "large", "duplicate", "truncated", "readonly", "wrong_dtype",
                                  "offset", "stride", "unaligned", "input_alias", "map_alias", "dimension"])
-def test_native_boundary_rejects_invalid_buffers_before_any_authority_write(fault):
+def test_native_boundary_rejects_invalid_buffers_before_any_authority_write(fault, stage):
     arguments = native_arguments()
     if fault == "negative":
         arguments[4][0] = -1
@@ -125,7 +140,8 @@ def test_native_boundary_rejects_invalid_buffers_before_any_authority_write(faul
         arguments[1] = np.tile(arguments[1], 2)
         arguments[4] = np.array([2, 2], dtype=np.int64)
     elif fault == "truncated":
-        arguments[0] = arguments[0][:-1]
+        at = int(stage == "scales")
+        arguments[at] = arguments[at][:-1]
     elif fault == "readonly":
         arguments[2].flags.writeable = False
     elif fault == "wrong_dtype":
@@ -137,14 +153,21 @@ def test_native_boundary_rejects_invalid_buffers_before_any_authority_write(faul
     elif fault == "unaligned":
         arguments[2] = np.full(arguments[2].size + 1, 0xa5, dtype=np.uint8)[1:]
     elif fault == "input_alias":
-        arguments[0] = arguments[2][:arguments[0].size]
+        at = int(stage == "scales")
+        arguments[at] = arguments[2][:arguments[at].size]
     elif fault == "map_alias":
         arguments[4] = arguments[2][:8].view(np.int64)
     elif fault == "dimension":
         arguments[11] = 2**31
     before = [value.copy() for value in arguments[:5]]
+    native = bank_cpu._ext()
+    if stage == "combined":
+        function, selected = native.pack, arguments
+    else:
+        function = native.pack_words if stage == "words" else native.pack_scales
+        selected = [arguments[int(stage == "scales")], *arguments[2:]]
     with pytest.raises((ValueError, TypeError)):
-        bank_cpu._ext().pack(*arguments)
+        function(*selected)
     assert all(np.array_equal(a, b) for a, b in zip(arguments[:5], before, strict=True))
 
 
@@ -163,3 +186,19 @@ def test_cpu_recipe_uses_owned_source_identity_without_cuda_discovery(monkeypatc
     assert recorded == {"name": "tf_a4_bank_cpu_" + hashlib.sha256(source.read_bytes()).hexdigest()[:16],
                         "sources": [str(source)], "extra_cflags": ["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror"],
                         "with_cuda": False, "verbose": False}
+
+
+@pytest.mark.parametrize("stage", ["combined", "words", "scales"])
+def test_native_validation_failure_preserves_bytes_and_original_prewrite_version_contract(stage):
+    codes, scales, fields, indices, _expected, _storage, _expected_storage = inputs()
+    indices[0] = -1
+    before = [(value.clone(), value._version) for value in fields]
+    if stage == "combined":
+        function, args = experts_a4.pack_bank_a4, (codes, scales, *fields, indices, 64, 128)
+    else:
+        function = experts_a4.pack_bank_words_a4 if stage == "words" else experts_a4.pack_bank_scales_a4
+        args = (codes if stage == "words" else scales, *fields, indices, 64, 128)
+    with pytest.raises(ValueError, match="local index is outside"):
+        function(*args)
+    for field, (snapshot, version) in zip(fields, before, strict=True):
+        assert torch.equal(field, snapshot) and field._version > version

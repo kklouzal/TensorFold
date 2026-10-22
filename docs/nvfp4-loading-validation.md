@@ -18,6 +18,82 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Native CT bank loading candidate — qualification pending
 
+The new SF-first increment starts from frozen metadata source `430936c8` below.
+It passed120 focused CPU checks in11.49s with an actual source-owned CPP build
+on pinned AMD64/Torch9026/NumPy2.1:65 native byte/buffer/version controls,
+24 bulk loader controls,5 SF-first real Reader/borrow-retirement/error controls,
+18 budget controls,7 host/calibration controls and one real FD-owner control.
+All1324 source/test files and31 actual project origins matched the sealed
+cohort. These are source-checkout functional checks; historical results below
+retain their separate identities.
+
+Original bulk eligibility is preserved. The same whole-run Torch U8
+`amax().item()` predicate first accepts all SF bytes. A separate native SF-only
+phase fills final private SF tails; all its ndarray/DLPack/buffer borrows and
+the raw SF owner retire before the first larger code read. Word-only native
+phases then fill prefixes without reading or overwriting SF. A single
+full-count I64 map owns the already explicit8-byte-per-cell transfer-index
+charge, and code phases borrow bounded slices. Invalid SF never enters these
+stages: its raw owner stays live through the original logical code-read and
+validation/error sequence. Invalid globals, unsupported runs and publication
+retain their existing paths. The public combined pack still validates both
+sources and the complete destination/map before any raw write; its original
+version-before-write failure contract is not replaced by a partial sequence.
+
+The raw bound is the maximum of whole SF plus3 alignment pages, one code chunk
+plus3 pages, and invalid whole SF plus one projection's codes plus6 pages.
+The existing estimator independently maximizes authority plus this raw bound
+over eligible subsets for resident loading; offload keeps its separately
+charged authority, and preliminary pin admission removes only the paired
+resident increment. No packing slack or zero metadata claim is used. Each
+staged adapter retains four borrowed arrays, two whole-storage views and one
+bounded source/map view interval; the native snapshot remains capped at1023
+I64 cells. Their library-managed effects, new finite compiled variants and
+cold compilation remain measured obligations under the adopted boundaries.
+On Qwen3.6's257-cell width512/dims2048 geometry, the source-derived valid code
+chunk is42 cells instead of10, with a raw/alignment maximum of66,072,576 bytes.
+These plan quantities alone do not establish performance or admission closure.
+
+A separate local AMD64/SM120 warm complete-bank comparison used the original
+Qwen3.6 CT checkpoint, resident257-cell width512/dims2048 bank,8 intra-op/1
+inter-op threads, fresh production Reader contexts,24 measured positions plus4
+warmups and6 mirrored MSSM/SMMS blocks. M is frozen `430936c8`; S is SF-first.
+Mean complete transaction time was0.444687575667s for M and0.436980649500s for S.
+S minus M was−0.007706926167s, with the predeclared10,000-resample paired-block
+bootstrap95% pointwise interval[−0.010329853000,−0.005083999333]s; all6 block
+differences were negative. Six blocks do not establish assumed independence or
+representativeness. This7.7ms observation is separate from all earlier
+comparisons; gains are not added or extrapolated to model startup.
+
+Complete six-field authority and native decode/prefill outputs matched before
+and after. All1324 source/test files,39 actual project origins and the private
+reference bindings stayed unchanged. M's original CPU source/CPP family and S's
+new staged provider were authenticated independently. Their production factories
+recorded364 and112 cached hits respectively, with no additional misses or
+binding changes:14 banks per arm,26 combined calls for M versus one SF and seven
+word calls for each S bank. Seven native proof aliases identified four actual
+VMA-FD verified mappings:the two CPU providers, shared grouped CUDA provider and
+FD provider. Input/foundation stability, CUDA settlement and exact owned actor
+retirement passed their gates.
+
+The measured transaction includes bank loading/publication and attempted
+bank/cache/FD retirement. Metadata/context preparation and initial compilation
+are excluded. A preselection provenance record retains a procedural deviation:
+one agent made two cloud web calls after the initial all-tool hold but before
+its explicit clarification to include web. Their wall-clock completion times
+are unavailable, so overlap with the actor cannot be established. No local or
+GB10 filesystem, tool, compiler or device work was reported during the hold;
+no concrete shared-resource path was identified. No exact-zero-effect or
+noise-equivalence assertion, sample exclusion or automatic rerun follows.
+All raw outcomes and both reviewed IO-procedure histories are retained.
+
+Small, sharded, offload and nonqualifying loading-region performance remains
+unrun. Required owned-resource admission, observed library/stack/module and
+first-compilation effects, ARM64 ten-intra/ten-inter-op execution, installed
+delivery and complete cold/warm model startup/request/quality qualification
+remain pending. This is a conditional local warm component observation, not a
+gain against accepted source or public production promotion.
+
 This checkout adds a separate metadata candidate: immediate validation may
 borrow the nested declaration of the current sole default policy instead of
 copying it. The public resolver still returns independent mutable results.

@@ -102,20 +102,24 @@ class A4BulkLayout:
 
 
 def bulk_layout_a4(count, width, dims):
-    """Optional whole-SF/chunked-code plan inside the existing reader window.
+    """Optional SF-first/chunked-code plan inside the existing reader window.
 
-    Both eight-aligned direct-read owners can retain at most three extra pages
-    apiece. The caller admits Python planning/index/native-view metadata
-    separately. Larger banks retain the existing projection-ordered path.
+    Keep the original eligibility: a whole SF owner plus at least one complete
+    expert's codes and both alignment allowances must fit. On valid SF, its
+    owner and every borrowed export retire before any code read, so the code
+    window can use the remaining single-owner capacity. Invalid SF retains the
+    original owner alongside one ordered projection. Each eight-aligned owner
+    can retain at most three extra pages. Plans/full-count indices are separate.
     """
     authority_fields_a4(count, width, dims)
     code, scale = width * dims // 2, width * dims // 16
     scales = count * 3 * scale
-    room = READER_PIECE_BYTES - scales - 6 * 4096
-    chunk = min(count, room // (3 * code))
-    if chunk < 1:
+    if scales + 3 * code + 6 * 4096 > READER_PIECE_BYTES:
         return None
-    return A4BulkLayout(count, chunk, code, scale, scales, scales + chunk * 3 * code + 6 * 4096)
+    chunk = min(count, (READER_PIECE_BYTES - 3 * 4096) // (3 * code))
+    peak = max(scales + 3 * 4096, chunk * 3 * code + 3 * 4096,
+               scales + code + 6 * 4096)
+    return A4BulkLayout(count, chunk, code, scale, scales, peak)
 
 
 def bulk_plan_host_bytes_a4(count, name_bytes):
@@ -123,7 +127,7 @@ def bulk_plan_host_bytes_a4(count, name_bytes):
 
     Six field names per cell, their tuples, preparation's duplicate-name set,
     physical-order indices and sort/key/merge pointer planes, one chunk slice,
-    and the CPU int64 transfer index are explicit. Singleton containers per
+    and the full-count CPU int64 transfer index are explicit. Singleton containers per
     entry conservatively cover the associated CPython growth slack. Native
     fixed records remain at the adopted-library boundary, independently of
     this variable charge and the bounded raw payload.

@@ -125,9 +125,8 @@ def test_owned_bank_has_independent_oracle_bytes_original_globals_and_no_retaine
 
 
 def test_admitted_window_forces_partial_chunks_without_reading_or_writing_other_cells(tmp_path, monkeypatch):
-    count, width, dims = 5, 64, 128
-    scales = count * 3 * width * dims // 16
-    monkeypatch.setattr(host_layout, "READER_PIECE_BYTES", scales + 6 * 4096 + 2 * 3 * width * dims // 2)
+    count, width, dims = 5, 64, 512
+    monkeypatch.setattr(host_layout, "READER_PIECE_BYTES", 3 * 4096 + 2 * 3 * width * dims // 2)
     context = FileContext(count=count, width=width, dims=dims).materialize(tmp_path)
     cache = CPUCache(width, dims)
     try:
@@ -265,20 +264,22 @@ def test_unexpected_preflight_helper_failure_is_never_canonical_eligibility(tmp_
         context.files.close()
 
 
-def test_partial_indexed_pack_failure_never_publishes_or_retains_reader_backing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stage", ["scales", "words"])
+def test_partial_stage_failure_never_publishes_or_retains_reader_backing(tmp_path, monkeypatch, stage):
     context = FileContext(count=2).materialize(tmp_path)
     cache = CPUCache()
     failure = OSError("private destination copy failed")
 
-    def fail(codes, _scales, up, _down, *_args):
-        up[0, 0, 0] = codes[0]
+    def fail(payload, up, _down, *_args):
+        up[0, 0, 0] = payload[0]
         raise failure
 
-    monkeypatch.setattr(experts_a4, "pack_bank_a4", fail)
+    monkeypatch.setattr(experts_a4, f"pack_bank_{stage}_a4", fail)
     try:
         with pytest.raises(OSError) as caught:
             load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache, swiglu=swiglu)
         assert caught.value is failure and not cache._layers and not context.used
+        assert len(context.run_reads) == (1 if stage == "scales" else 2)
         # The retained primary traceback legitimately owns its frame/locals.
         del caught
         failure.__traceback__ = None

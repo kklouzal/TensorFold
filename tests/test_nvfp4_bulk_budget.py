@@ -34,9 +34,9 @@ def bank(count, width=64, dims=128, *, layer=0):
 
 def test_actual_q36_window_leaves_all_alignment_inside_the_existing_cap():
     layout = bulk_layout_a4(257, 512, 2048)
-    assert layout.scale_bytes == 50_528_256 and layout.chunk_experts == 10
-    assert layout.payload_bytes == 66_281_472 <= READER_PIECE_BYTES
-    assert layout.payload_bytes + 3 * layout.code_field_bytes > READER_PIECE_BYTES
+    assert layout.scale_bytes == 50_528_256 and layout.chunk_experts == 42
+    assert layout.payload_bytes == 66_072_576 <= READER_PIECE_BYTES
+    assert (layout.chunk_experts + 1) * 3 * layout.code_field_bytes + 3 * 4096 > READER_PIECE_BYTES
     assert bulk_layout_a4(1023, 512, 2048) is None
     # An owned subset can still be eligible when its complete source bank is
     # outside the window. The estimator must not return zero for that bank.
@@ -52,10 +52,23 @@ def test_subset_envelope_covers_every_admissible_count_and_never_exceeds_raw_win
         layout = bulk_layout_a4(count, width, dims)
         if layout is not None:
             assert layout.payload_bytes <= raw <= READER_PIECE_BYTES
+            scales = count * 3 * width * dims // 16
+            words = width * dims // 2
+            assert layout.payload_bytes == max(scales + 3 * 4096,
+                                               layout.chunk_experts * 3 * words + 3 * 4096,
+                                               scales + words + 6 * 4096)
             authority = sum(math.prod(shape) * (1 if dtype == "U8" else 4)
                             for shape, dtype in authority_fields_a4(count, width, dims))
             assert resident >= authority + layout.payload_bytes
     assert planning > 6 * 257 * 8 + 8 * 257
+
+
+@pytest.mark.parametrize("width,dims", [(64, 64), (64, 512), (512, 2048), (8192, 8192)])
+def test_sf_first_preserves_original_eligibility(width, dims):
+    for count in range(1, 1024):
+        code, sf = width * dims // 2, width * dims // 16
+        original_eligible = count * 3 * sf + 3 * code + 6 * 4096 <= READER_PIECE_BYTES
+        assert (bulk_layout_a4(count, width, dims) is not None) == original_eligible
 
 
 def test_ineligible_geometry_has_no_added_payload_or_plan_and_cumulative_scan_maps_are_charged():

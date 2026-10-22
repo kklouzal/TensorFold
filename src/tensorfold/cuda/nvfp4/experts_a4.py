@@ -66,14 +66,43 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
     SF tail directly into final authority. Source owners remain live through
     its synchronous borrowed-buffer interval; no floating conversion occurs.
     """
+    _check_bank_a4(((codes, 2), (scales, 16)), up, down, indices, width, dims)
+    from .bank_cpu import pack
+
+    pack(codes, scales, up, down, indices, width, dims)
+
+
+def pack_bank_scales_a4(scales, up, down, indices, width, dims):
+    """Fill only SF tails of unpublished authority from a complete owned run."""
+    _check_bank_a4(((scales, 16),), up, down, indices, width, dims)
+    from .bank_cpu import pack_scales
+
+    pack_scales(scales, up, down, indices, width, dims)
+
+
+def pack_bank_words_a4(codes, up, down, indices, width, dims):
+    """Fill only word prefixes after the complete valid SF owner has retired."""
+    _check_bank_a4(((codes, 2),), up, down, indices, width, dims)
+    from .bank_cpu import pack_words
+
+    pack_words(codes, up, down, indices, width, dims)
+
+
+def _check_bank_a4(sources, up, down, indices, width, dims):
+    """Common byte-source and physical destination checks for each write phase.
+
+    A source pair carries its exact bytes-per-weight divisor: two for packed
+    codes, sixteen for SF. The combined API checks both before its first write;
+    the owned loader's separate phases never weaken that public contract.
+    """
     count = indices.numel()
     geometry = authority_fields_a4(up.shape[0], width, dims)
-    blob, word_bytes, scale_bytes = geometry[0][0][-1], width * dims // 2, width * dims // 16
+    blob = geometry[0][0][-1]
     if (count <= 0 or indices.device.type != "cpu" or indices.dtype != torch.int64 or indices.ndim != 1
             or not indices.is_contiguous()
             or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.ndim != 1 or not t.is_contiguous()
-                   for t in (codes, scales))
-            or codes.numel() != count * 3 * word_bytes or scales.numel() != count * 3 * scale_bytes):
+                   for t, _ in sources)
+            or any(t.numel() != count * 3 * width * dims // divisor for t, divisor in sources)):
         raise ValueError("native A4 chunk requires owned CPU byte runs and distinct admitted local indices")
     if (tuple(up.shape) != geometry[0][0] or tuple(down.shape) != geometry[1][0]
             or any(t.device.type != "cpu" or t.dtype != torch.uint8 or t.stride(-1) != 1
@@ -88,11 +117,8 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
         if not (up.stride(0) == down.stride(0) and 2 * blob <= delta
                 and delta + blob <= up.stride(0)):
             raise ValueError("native A4 chunk destinations must have disjoint bank cells")
-    if any(_overlap(target, source) for target in (up, down) for source in (codes, scales)):
+    if any(_overlap(target, source) for target in (up, down) for source, _ in sources):
         raise ValueError("native A4 chunk destinations must not overlap source owners")
-    from .bank_cpu import pack
-
-    pack(codes, scales, up, down, indices, width, dims)
 
 
 def _span(t):

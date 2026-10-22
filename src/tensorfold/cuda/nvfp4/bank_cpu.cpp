@@ -45,7 +45,9 @@ static U extent(U offset, U stride, U rows, U row_bytes, U capacity) {
     return tail + row_bytes;
 }
 
-template <unsigned Tiles>
+enum class Part { Both, Words, Scales };
+
+template <unsigned Tiles, Part part>
 static void copy_tile_rows(std::uint8_t* words, std::uint8_t* scales,
                            const std::uint8_t* input, const std::uint8_t* input_scales,
                            U code_stride, U scale_stride) {
@@ -53,31 +55,38 @@ static void copy_tile_rows(std::uint8_t* words, std::uint8_t* scales,
     // stride. A separately instantiated singleton handles an odd final tile.
     for (U row = 0; row < 64; ++row) {
         for (unsigned tile = 0; tile < Tiles; ++tile) {
-            auto* output = words + tile * 2048 + row * 32;
-            const auto* source = input + row * code_stride + tile * 32;
-            // Keep the fixed bit transfers in the row body: the prior helper
-            // remained an actual per-row call under the pinned optimizer.
-            // memcpy permits unaligned input without typed-pointer aliasing.
-            std::memcpy(output, source, 4);
-            std::memcpy(output + 4, source + 16, 4);
-            std::memcpy(output + 8, source + 4, 4);
-            std::memcpy(output + 12, source + 20, 4);
-            std::memcpy(output + 16, source + 8, 4);
-            std::memcpy(output + 20, source + 24, 4);
-            std::memcpy(output + 24, source + 12, 4);
-            std::memcpy(output + 28, source + 28, 4);
-            std::memcpy(scales + tile * 256 + row * 4,
-                        input_scales + row * scale_stride + tile * 4, 4);
+            if constexpr (part != Part::Scales) {
+                auto* output = words + tile * 2048 + row * 32;
+                const auto* source = input + row * code_stride + tile * 32;
+                // Keep the fixed bit transfers in the row body: the prior helper
+                // remained an actual per-row call under the pinned optimizer.
+                // memcpy permits unaligned input without typed-pointer aliasing.
+                std::memcpy(output, source, 4);
+                std::memcpy(output + 4, source + 16, 4);
+                std::memcpy(output + 8, source + 4, 4);
+                std::memcpy(output + 12, source + 20, 4);
+                std::memcpy(output + 16, source + 8, 4);
+                std::memcpy(output + 20, source + 24, 4);
+                std::memcpy(output + 24, source + 12, 4);
+                std::memcpy(output + 28, source + 28, 4);
+            }
+            if constexpr (part != Part::Words) {
+                std::memcpy(scales + tile * 256 + row * 4,
+                            input_scales + row * scale_stride + tile * 4, 4);
+            }
         }
     }
 }
 
-static void pack(const py::array& code_array, const py::array& scale_array,
+template <Part part>
+static void pack_part(const py::array* code_array, const py::array* scale_array,
                  const py::array& up_array, const py::array& down_array, const py::array& index_array,
                  py::ssize_t up_offset_arg, py::ssize_t up_stride_arg,
                  py::ssize_t down_offset_arg, py::ssize_t down_stride_arg,
                  py::ssize_t experts_arg, py::ssize_t width_arg, py::ssize_t dims_arg) {
-    auto codes = bytes(code_array, false), scales = bytes(scale_array, false);
+    py::buffer_info codes, scales;
+    if constexpr (part != Part::Scales) codes = bytes(*code_array, false);
+    if constexpr (part != Part::Words) scales = bytes(*scale_array, false);
     auto up = bytes(up_array, true), down = bytes(down_array, true);
     if (!index_array.dtype().is(py::dtype::of<std::int64_t>()) || index_array.ndim() != 1
         || !(index_array.flags() & py::array::c_style))
@@ -91,8 +100,8 @@ static void pack(const py::array& code_array, const py::array& scale_array,
     const U words = bounded(width, dims) / 2, sf = words / 8, blob = words + sf;
     const U up_stride = positive(up_stride_arg), down_stride = positive(down_stride_arg);
     const U up_offset = static_cast<U>(up_offset_arg), down_offset = static_cast<U>(down_offset_arg);
-    if (static_cast<U>(codes.size) != bounded(count, bounded(3, words))
-        || static_cast<U>(scales.size) != bounded(count, bounded(3, sf))
+    if ((part != Part::Scales && static_cast<U>(codes.size) != bounded(count, bounded(3, words)))
+        || (part != Part::Words && static_cast<U>(scales.size) != bounded(count, bounded(3, sf)))
         || up_stride < bounded(2, blob) || down_stride < blob)
         throw py::value_error("native A4 source lengths or destination row strides differ from geometry");
     const U up_extent = extent(up_offset, up_stride, experts, bounded(2, blob), up.size);
@@ -107,10 +116,15 @@ static void pack(const py::array& code_array, const py::array& scale_array,
         if (up_stride != down_stride || delta < 2 * blob || delta > up_stride || blob > up_stride - delta)
             throw py::value_error("native A4 destination cells overlap");
     }
-    const Span code_span = span(codes.ptr, codes.size), scale_span = span(scales.ptr, scales.size);
     const Span index_span = span(indices.ptr, bounded(count, sizeof(std::int64_t)));
-    if (overlap(up_span, code_span) || overlap(up_span, scale_span) || overlap(up_span, index_span)
-        || overlap(down_span, code_span) || overlap(down_span, scale_span) || overlap(down_span, index_span))
+    const auto input_overlap = [&](Span destination) {
+        if constexpr (part != Part::Scales)
+            if (overlap(destination, span(codes.ptr, codes.size))) return true;
+        if constexpr (part != Part::Words)
+            if (overlap(destination, span(scales.ptr, scales.size))) return true;
+        return overlap(destination, index_span);
+    };
+    if (input_overlap(up_span) || input_overlap(down_span))
         throw py::value_error("native A4 destinations overlap immutable inputs");
     // Snapshot IDs before release: no re-reading Python-owned map cells during
     // the write interval, and no allocation or throwing operation after it starts.
@@ -129,24 +143,26 @@ static void pack(const py::array& code_array, const py::array& scale_array,
         for (U projection = 0; projection < 3; ++projection) {
             const U n = projection ? width : dims, k = projection ? dims : width;
             const U nt = n / 64, kt = k / 64;
-            const auto* source = code_data + (e * 3 + projection) * words;
-            const auto* source_sf = sf_data + (e * 3 + projection) * sf;
+            const std::uint8_t* source = nullptr;
+            const std::uint8_t* source_sf = nullptr;
+            if constexpr (part != Part::Scales) source = code_data + (e * 3 + projection) * words;
+            if constexpr (part != Part::Words) source_sf = sf_data + (e * 3 + projection) * sf;
             auto* target = projection ? up_data + local[e] * up_stride + (projection - 1) * blob
                                       : down_data + local[e] * down_stride;
             for (U i = 0; i < nt; ++i) {
                 U j = 0;
                 for (; j + 1 < kt; j += 2) {
-                    copy_tile_rows<2>(target + (i * kt + j) * 2048,
+                    copy_tile_rows<2, part>(target + (i * kt + j) * 2048,
                                       target + words + (i * kt + j) * 256,
-                                      source + i * 64 * (k / 2) + j * 32,
-                                      source_sf + i * 64 * (k / 16) + j * 4,
+                                      part != Part::Scales ? source + i * 64 * (k / 2) + j * 32 : nullptr,
+                                      part != Part::Words ? source_sf + i * 64 * (k / 16) + j * 4 : nullptr,
                                       k / 2, k / 16);
                 }
                 if (j < kt) {
-                    copy_tile_rows<1>(target + (i * kt + j) * 2048,
+                    copy_tile_rows<1, part>(target + (i * kt + j) * 2048,
                                       target + words + (i * kt + j) * 256,
-                                      source + i * 64 * (k / 2) + j * 32,
-                                      source_sf + i * 64 * (k / 16) + j * 4,
+                                      part != Part::Scales ? source + i * 64 * (k / 2) + j * 32 : nullptr,
+                                      part != Part::Words ? source_sf + i * 64 * (k / 16) + j * 4 : nullptr,
                                       k / 2, k / 16);
                 }
             }
@@ -154,8 +170,34 @@ static void pack(const py::array& code_array, const py::array& scale_array,
     }
 }
 
+static void pack(const py::array& codes, const py::array& scales,
+                 const py::array& up, const py::array& down, const py::array& indices,
+                 py::ssize_t up_offset, py::ssize_t up_stride,
+                 py::ssize_t down_offset, py::ssize_t down_stride,
+                 py::ssize_t experts, py::ssize_t width, py::ssize_t dims) {
+    pack_part<Part::Both>(&codes, &scales, up, down, indices, up_offset, up_stride,
+                         down_offset, down_stride, experts, width, dims);
+}
+
+template <Part part>
+static void pack_single(const py::array& source, const py::array& up, const py::array& down,
+                        const py::array& indices, py::ssize_t up_offset, py::ssize_t up_stride,
+                        py::ssize_t down_offset, py::ssize_t down_stride,
+                        py::ssize_t experts, py::ssize_t width, py::ssize_t dims) {
+    pack_part<part>(part == Part::Words ? &source : nullptr, part == Part::Scales ? &source : nullptr,
+                    up, down, indices, up_offset, up_stride, down_offset, down_stride, experts, width, dims);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("pack", &pack, py::arg("codes").noconvert(), py::arg("scales").noconvert(),
+               py::arg("up").noconvert(), py::arg("down").noconvert(), py::arg("indices").noconvert(),
+               py::arg("up_offset"), py::arg("up_stride"), py::arg("down_offset"), py::arg("down_stride"),
+               py::arg("experts"), py::arg("width"), py::arg("dims"));
+    module.def("pack_words", &pack_single<Part::Words>, py::arg("codes").noconvert(),
+               py::arg("up").noconvert(), py::arg("down").noconvert(), py::arg("indices").noconvert(),
+               py::arg("up_offset"), py::arg("up_stride"), py::arg("down_offset"), py::arg("down_stride"),
+               py::arg("experts"), py::arg("width"), py::arg("dims"));
+    module.def("pack_scales", &pack_single<Part::Scales>, py::arg("scales").noconvert(),
                py::arg("up").noconvert(), py::arg("down").noconvert(), py::arg("indices").noconvert(),
                py::arg("up_offset"), py::arg("up_stride"), py::arg("down_offset"), py::arg("down_stride"),
                py::arg("experts"), py::arg("width"), py::arg("dims"));

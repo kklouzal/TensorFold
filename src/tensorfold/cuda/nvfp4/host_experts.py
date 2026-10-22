@@ -208,7 +208,14 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_bank_a4, pack_projection_a4, uniform_input_bits
+    from .experts_a4 import (
+        CachedExpertsA4,
+        ExpertsA4,
+        pack_bank_scales_a4,
+        pack_bank_words_a4,
+        pack_projection_a4,
+        uniform_input_bits,
+    )
     from .host_layout import authority_fields_a4, bulk_layout_a4, entry_layout_a4
 
     device = torch.device(device)
@@ -284,13 +291,18 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
                 # Canonical owned plain CPU U8, no floating reduction or bridge.
                 # Invalid runs retain projection-ordered names/errors below.
                 if int(all_scales.amax().item()) <= 0x7e:
+                    # This full-count I64 owner is in the explicit planning
+                    # charge. Native stages snapshot each selected map before
+                    # releasing the GIL; no SF view/export escapes its call.
+                    indices = torch.tensor(physical, dtype=torch.int64, device="cpu")
+                    pack_bank_scales_a4(all_scales, fields[0], fields[1], indices, width, dims)
+                    all_scales = None
                     for first in range(0, len(owners), bulk.chunk_experts):
                         stop = min(first + bulk.chunk_experts, len(owners))
                         codes = code_run(3 * first, 3 * stop)
-                        blocks = all_scales[first * 3 * bulk.scale_field_bytes:stop * 3 * bulk.scale_field_bytes]
-                        indices = torch.tensor(physical[first:stop], dtype=torch.int64, device="cpu")
-                        pack_bank_a4(codes, blocks, fields[0], fields[1], indices, width, dims)
-                        del codes, blocks, indices
+                        pack_bank_words_a4(codes, fields[0], fields[1], indices[first:stop], width, dims)
+                        del codes
+                    del indices
                     packed = True
                 else:
                     physical_at = [0] * len(owners)

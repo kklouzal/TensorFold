@@ -132,6 +132,25 @@ compilation. Nonqualifying policy regions, ARM64/installed, owned-resource
 admission and complete cold/warm model startup and request qualification remain
 pending; the earlier native-loop results above retain their own source scope.
 
+This checkout adds an SF-first loader increment on frozen metadata
+reference `430936c8`. After the unchanged Torch U8 maximum accepts the owned SF
+run, a separate native phase fills its final SF tails and retires all raw SF
+borrows before acquiring larger code chunks. Invalid SF retains the original
+ordered fallback; the public combined pack operation is preserved. Original
+bulk eligibility and the64MiB raw window remain, with the maximum of the valid
+SF, valid code and invalid ordered-read phases charged explicitly. It passed120
+focused CPU checks with an actual CPP build on the pinned AMD64 checkout.
+A separate warm resident257-cell comparison at8 intra-op/1 inter-op threads
+measured0.436980650s versus0.444687576s for `430936c8`: difference−0.007706926s,
+95% pointwise paired-block interval[−0.010329853,−0.005083999]s, with all6 blocks
+faster and complete byte/native controls passing. This result excludes
+metadata/context preparation and first compilation and is separate from earlier
+gains. The [validation record](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending)
+discloses two cloud web calls during the all-tool hold; no local/target work was
+reported, and no zero-effect or noise-equivalence claim is made. Other loading
+regions, ARM64/installed, owned-resource admission and complete cold/warm model
+startup/request/quality gates remain pending; no public promotion is claimed.
+
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
