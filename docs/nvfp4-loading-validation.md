@@ -22,8 +22,10 @@ Native A4 loading can read a bank's validated F32 calibration fields into one
 owned CPU vector, prepare the unchanged FP32 factors, and read an eligible
 canonical Reader-owned contiguous SF run plus bounded code chunks. Physical
 lexical source order maps explicitly to the requested local expert order.
-Four separate integer/byte copies preserve each projection's word prefix and
-SF tail, including strided host-authority cells. Other supported topologies
+One CPU native byte permutation preserves each projection's word prefix and
+SF tail directly in final authority, including strided host-authority cells.
+It replaces four high-rank indexed copies without an intermediate packed chunk.
+Other supported topologies
 retain the projection-ordered path with direct packing into final CPU rows.
 
 Only explicit calibration-invalid results select ordered validation. Unexpected
@@ -38,12 +40,84 @@ admission includes simultaneous private CPU authority and raw owners; offload
 keeps its separately charged authority and loading window. Both charge bounded
 scalar/bank planning metadata, and preliminary pin admission removes only the
 known resident-only increment. Fixed Python/native-record accounting remains an
-open admission gate. Dense loading does not enable or scan these bank plans.
+open admission gate. The fused primitive additionally retains five borrowed
+ndarray/managed-DLPack owner chains and their buffer descriptors, two whole-storage
+Tensor views, a fixed1023-entry int64 stack map (8184 bytes), and constant row
+scratch. Its byte loop is serial and synchronous; portable compiler vectorization
+is enabled with `-O3`, without architecture-specific intrinsics or floating math.
+Parallel packing remains a separate candidate. No fixed-record dominance or total
+admission result is inferred from removing indexed copies. Dense loading does not
+enable or scan these bank plans.
 
-This isolated candidate is composed on accepted source `3b8cee82`. Its source,
-installed/native, ARM64 and paired full-model startup/request qualification are
-pending. Checks of a broader development composition do not qualify this source.
-No new performance, supported-model or hardware result is claimed.
+The primitive follows the existing CPU native SSD reader's Torch C++ extension
+facility, with `with_cuda=False`, an owned source-hash module name and C++17.
+First-use compilation, code residency and failure are part of startup; a missing
+or failing supported compiler is an explicit preparation failure, never a silent
+fallback. CPU-only correctness must also run with GPUs hidden.
+
+NumPy borrows newly imported DLPack aliases. Each alias owns a separate from_blob
+Storage and retains its source Tensor, so NumPy's non-resizable base flag does
+not change the original Storage. All original owners must remain exclusively
+owned and unmodified by other threads through the GIL-released native interval.
+Whole-storage byte exports and explicit offsets/strides bound physical cache-row
+access. The kernel snapshots and validates IDs and all byte ranges before its
+first write. Public `torch.autograd.graph.increment_version` marks original
+targets before raw mutation. Any failed call leaves authority unpublished; exact
+historical version-counter increments are not promised. Checkpoint bytes, input
+versions, storage capacities, unselected cells and padding remain unchanged.
+
+This isolated candidate builds on the indexed loading reference `dcfc448a`
+(7359 source composition), which is itself composed on accepted source
+`3b8cee82`. Its first six-file source passed68 CPU controls in8.64s, including
+actual source-owned CPU compilation with `-O3 -std=c++17 -Wall -Wextra -Werror`,
+independent nonperiodic/all-byte packing oracles, strided authority, capacity,
+version, lifetime and malformed native-buffer checks. Review then corrected
+the source-hash read to use the existing owned regular-file stream; five
+additional actual-function/owned-stream controls passed. The CPP byte algorithm,
+adapter and independent oracle were unchanged by that correction. These are
+checkout checks on pinned Linux AMD64 Torch2.16.0.dev20261017 (`9026ad48`),
+and NumPy2.1 with GPUs hidden. The complete bank controls below used the
+RTX PRO 2000 Blackwell SM120. Neither is installed ARM64 or whole-model
+qualification.
+
+The corrected seven-file source (manifest3a0742cf) completed the local warmed
+resident257-cell bank comparison against the indexed reference. It used the
+original AEON-7 Qwen3.6 CT export, width512/dims2048, checkpoint math,8 intra-op
+and1 inter-op threads,6 mirrored AFFA/FAAF blocks (24 measured positions plus4
+warmups), fresh production Reader contexts and the same complete bank consumer.
+Mean load/publication/retirement time was1.154287824s for the indexed reference
+and0.550330685s for the fused implementation. The fused-minus-reference mean
+difference was−0.603957139s; the predeclared10,000-resample paired-block bootstrap
+gave a95% pointwise interval of[−0.667603003,−0.568140370]s. Every paired block
+was faster. The six-block independence/representativeness assumption remains
+an exploratory limit; no whole-model effect is extrapolated from these values.
+
+Complete six-field bank bytes and native prefill/decode controls matched before
+and after the cohort. All1323 source/test files were stable,39 actual project
+origins were coherent, and actual mapped-file FD proofs covered the CPU kernel,
+grouped consumer and file-owner provider. The original cached CPU factory had
+exactly364 production hits (14 fused banks×26 chunks), with unchanged misses,
+binding and cache size; no timed factory wrapper or observer was introduced.
+Foundation/input identities, CUDA settlement and exact actor retirement passed.
+The original CPU shared object was253960 bytes; its loaded-file hash matched the retained
+CPU build product. Both independent reviews closed this bounded result.
+
+The metric excludes header/context preparation and first-use compilation,
+which initial correctness warmed before timing. A subsequent diagnostic profile
+used one unprofiled warm bank and two fresh instrumented bank passes with the
+same source and provider checks. Its cProfile attributes roughly0.217s to26
+native pack calls,0.159s to28 reads,0.066s to six transfers and0.075s to771
+metadata resolutions. Instrumented timings are attribution only. ATen CPU
+events do not observe the raw CPP byte loop or total NumPy/native/Python memory.
+
+The earlier packet preparation failure before container launch and a separate
+native-manifest schema failure before test collection remain retained; neither
+produced performance samples. The complete24-position result uses only the
+successful fresh actor. It establishes a local warm bank improvement against
+the indexed candidate. Full fixed/stack/module/compiler admission, required
+ARM64 thread-policy observations, installed execution, whole-model cold/warm
+startup and request/quality qualification, and comparison against accepted
+source remain pending. No production gain or release promotion is claimed.
 
 ## Historical ABB67 artifacts — audited and affected gates closed
 

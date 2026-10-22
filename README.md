@@ -103,12 +103,18 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 qualification (2026-10-17):** the original `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` export now runs with RAM-backed experts and its separate DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell. Installed source `099eb4d0` completed serial/drafted identity, strict tools/JSON, streaming, cancellation and four concurrent 512-token replies. The eight-row BF16 draft profile reached about **37 tok/s** in the balanced single-request comparison; four concurrent requests completed at **57.70 aggregate client tok/s** in a separate profile. [Conditions, immutable images and limits](docs/qwen36-ct-nvfp4-validation.md) retain the numerical contracts and conditional performance analysis. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
-A separate native CT bank-loading candidate batches owned calibration and
+A separate fused CPU native CT bank-loading candidate batches owned calibration and
 block-scale reads, streams bounded code chunks, and packs directly into final
-CPU authority. It preserves original error order and native arithmetic. The
-isolated candidate retains the accepted runtime's kernels and other loading
-paths; source, resource, installed/native and full-model qualification remain
-pending. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
+CPU authority through one byte-only native call per chunk. It preserves original error order and native arithmetic. The
+isolated candidate retains its reference's kernels and other loading paths.
+The pinned AMD64 checkout passed68 CPU controls, followed by5 source-read
+ownership controls. A warmed Qwen3.6 resident-bank comparison measured mean
+transaction time of0.550331s versus1.154288s for the indexed reference, with
+all6 paired blocks faster and complete byte/native controls passing. This is
+a local bank result; resource admission, ARM64/installed and full-model startup
+and request qualification remain pending. Its CPU-only C++ extension compiles on first eligible use with the
+configured Torch extension toolchain; compile cost is included in startup
+qualification. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
 
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;

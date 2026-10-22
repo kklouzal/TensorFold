@@ -62,9 +62,9 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
 
     ``indices`` comes from the loader's validated distinct local expert map.
     Complete64-row projection boundaries make the existing permutation
-    separable. Keep per-projection word prefixes and SF tails separate: folding
-    projections into N would put all words before all scales and change bytes.
-    Source owners remain live through all four synchronous indexed copies.
+    separable. The CPU byte kernel writes each projection's word prefix and
+    SF tail directly into final authority. Source owners remain live through
+    its synchronous borrowed-buffer interval; no floating conversion occurs.
     """
     count = indices.numel()
     geometry = authority_fields_a4(up.shape[0], width, dims)
@@ -90,21 +90,9 @@ def pack_bank_a4(codes, scales, up, down, indices, width, dims):
             raise ValueError("native A4 chunk destinations must have disjoint bank cells")
     if any(_overlap(target, source) for target in (up, down) for source in (codes, scales)):
         raise ValueError("native A4 chunk destinations must not overlap source owners")
-    w, d, experts = width // 64, dims // 64, up.shape[0]
-    original_words = codes.view(torch.int32).view(count, 3, word_bytes // 4)
-    original_scales = scales.view(count, 3, scale_bytes)
-    pairs = (
-        (up[..., :word_bytes].view(torch.int32).view(experts, 2, w, d, 8, 8, 4, 2),
-         original_words[:, 1:].view(count, 2, w, 8, 8, d, 2, 4).permute(0, 1, 2, 5, 3, 4, 7, 6)),
-        (up[..., word_bytes:].view(experts, 2, w, d, 64, 4),
-         original_scales[:, 1:].view(count, 2, w, 64, d, 4).permute(0, 1, 2, 4, 3, 5)),
-        (down[..., :word_bytes].view(torch.int32).view(experts, d, w, 8, 8, 4, 2),
-         original_words[:, 0].view(count, d, 8, 8, w, 2, 4).permute(0, 1, 4, 2, 3, 6, 5)),
-        (down[..., word_bytes:].view(experts, d, w, 64, 4),
-         original_scales[:, 0].view(count, d, 64, w, 4).permute(0, 1, 3, 2, 4)),
-    )
-    for target, source in pairs:
-        target.index_copy_(0, indices, source)
+    from .bank_cpu import pack
+
+    pack(codes, scales, up, down, indices, width, dims)
 
 
 def _span(t):
