@@ -99,8 +99,18 @@ The raw-owner/alignment envelope uses the existing64MiB reader window. Resident
 admission includes simultaneous private CPU authority and raw owners; offload
 keeps its separately charged authority and loading window. Both charge bounded
 scalar/bank planning metadata, and preliminary pin admission removes only the
-known resident-only increment. Fixed Python/native-record accounting remains an
-open admission gate. The fused primitive additionally retains five borrowed
+known resident-only increment. The bank plan separately charges one fixed
+8,184-byte native index snapshot alongside the live Torch int64 index. Successive
+chunks reuse this allowance; it joins the loading-plan peak before the maximum
+with nonoverlapping header-scan metadata. Both resident and transformed offload
+estimates retain it, including preliminary pin admission. Empty/ineligible bulk
+paths add no snapshot charge. This sizing correction passed 69 affected CPU
+checks with no skips in the pinned AMD64 SDK (GPUvoid, four CPUs, 16 GiB). Full
+source before/after and imported origins matched, and the worker retired.
+New ARM/installed and integrated model qualification remain pending; this does
+not establish a total runtime-memory bound or a performance gain.
+Library-managed fixed records remain subject to the stated count/lifetime and
+runtime-observation boundary. The fused primitive additionally retains five borrowed
 ndarray/managed-DLPack owner chains and their buffer descriptors, two whole-storage
 Tensor views, a fixed1023-entry int64 stack map (8184 bytes), and bounded
 byte-copy call state. Its byte loop is serial and synchronous; portable compiler

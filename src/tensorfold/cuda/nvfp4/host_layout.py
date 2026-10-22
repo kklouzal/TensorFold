@@ -9,6 +9,10 @@ from math import prod
 
 from tensorfold.cuda.read_budget import READER_PIECE_BYTES, f32_scalar_batch_host_bytes
 
+# bank_cpu.cpp snapshots at most1023 int64 IDs before releasing the GIL.
+# The complete fixed array coexists with the caller's live Torch index.
+NATIVE_A4_INDEX_SNAPSHOT_BYTES = 1023 * 8
+
 
 def routed_tensor(name):
     return ".mlp.experts." in name
@@ -119,14 +123,15 @@ def bulk_layout_a4(count, width, dims):
 
 
 def bulk_plan_host_bytes_a4(count, name_bytes):
-    """Variable Python/index envelope for two immutable contiguous run plans.
+    """Python/index/native workspace for two immutable contiguous run plans.
 
     Six field names per cell, their tuples, preparation's duplicate-name set,
     physical-order indices and sort/key/merge pointer planes, one chunk slice,
     and the CPU int64 transfer index are explicit. Singleton containers per
-    entry conservatively cover the associated CPython growth slack. Native
-    fixed records remain at the adopted-library boundary, independently of
-    this variable charge and the bounded raw payload.
+    entry conservatively cover the associated CPython growth slack. One fixed
+    native ID snapshot additionally coexists with that live transfer index;
+    successive chunks reuse this allowance. Other library-managed fixed
+    records remain at the adopted-library boundary.
     """
     if any(type(n) is not int or n < 0 for n in (count, name_bytes)):
         raise ValueError("native A4 bulk plan sizes must be nonnegative integers")
@@ -138,7 +143,8 @@ def bulk_plan_host_bytes_a4(count, name_bytes):
     fields = count * 6
     per_field = sys.getsizeof({None}) + sys.getsizeof(appended) + 4 * pointer
     return (name_bytes + 4 * sys.getsizeof(()) + fields * (pointer + per_field)
-            + count * (sys.getsizeof(count) + 8 * pointer + 8))
+            + count * (sys.getsizeof(count) + 8 * pointer + 8)
+            + NATIVE_A4_INDEX_SNAPSHOT_BYTES)
 
 
 def bulk_host_bytes_a4(infos):

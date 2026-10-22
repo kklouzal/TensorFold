@@ -132,6 +132,14 @@ compilation. Nonqualifying policy regions, ARM64/installed, owned-resource
 admission and complete cold/warm model startup and request qualification remain
 pending; the earlier native-loop results above retain their own source scope.
 
+Bank admission additionally charges the native packer's fixed 8,184-byte index
+snapshot alongside the live Torch index. Resident and RAM-backed expert loading
+retain that charge through preliminary pin admission; chunks reuse it. This
+sizing correction leaves the byte loop and model arithmetic unchanged. It
+passed 69 affected CPU checks with no skips in the pinned AMD64 SDK, with GPUs
+hidden, four CPUs and 16 GiB. New ARM/installed and integrated model qualification
+remain pending; this is not a performance result or a total runtime-memory bound.
+
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
 loading admission includes the GPU packing peak. CT native-A4 retains its CPU
