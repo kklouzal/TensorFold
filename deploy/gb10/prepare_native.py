@@ -1,4 +1,4 @@
-"""Prepare or audit the two common GB10 native providers without a visible GPU.
+"""Prepare or audit the five common GB10 native providers without a visible GPU.
 
 Run only under the managed CPU guard after installing the owned wheel. Derived
 modules live in the immutable image, outside mounted compiler caches. The guard

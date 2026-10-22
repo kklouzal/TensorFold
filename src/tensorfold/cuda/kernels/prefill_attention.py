@@ -139,11 +139,16 @@ def _check(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, p0: in
     return hk
 
 
+def _build_options() -> dict:
+    """Canonical recipe shared by actual-device JIT and managed preparation."""
+    here = Path(__file__).parent
+    return {"name": "tensorfold_prefill_attention_v1", "sources": [str(here / "prefill_attention.cpp"),
+                                                                   str(here / "prefill_attention.cu")],
+            "extra_cuda_cflags": ["-O3", "--fmad=false"], "verbose": False, "prepared": True}
+
+
 @lru_cache(maxsize=1)
 def _ext():
     from tensorfold.cuda.build import load
 
-    here = Path(__file__).parent
-    return load(name="tensorfold_prefill_attention_v1", sources=[str(here / "prefill_attention.cpp"),
-                                                                 str(here / "prefill_attention.cu")],
-                extra_cuda_cflags=["-O3", "--fmad=false"], verbose=False)
+    return load(**_build_options())

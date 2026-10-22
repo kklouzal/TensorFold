@@ -15,14 +15,19 @@ from tensorfold.cuda import pdl
 from .qmm import chip
 
 
+def _build_options() -> dict:
+    """Canonical recipe shared by actual-device JIT and managed preparation."""
+    here = Path(__file__).parent
+    return {"name": "tensorfold_gdn_v3", "sources": [str(here / "gdn.cpp"), str(here / "gdn.cu"),
+                                                     str(here / "gdn_prefill.cu")],
+            "extra_cuda_cflags": ["-O3", "--fmad=false"], "verbose": False, "prepared": True}
+
+
 @lru_cache(maxsize=1)
 def _ext():
     from tensorfold.cuda.build import load
 
-    here = Path(__file__).parent
-    return load(name="tensorfold_gdn_v3", sources=[str(here / "gdn.cpp"), str(here / "gdn.cu"),
-                                                   str(here / "gdn_prefill.cu")],
-                extra_cuda_cflags=["-O3", "--fmad=false"], verbose=False)
+    return load(**_build_options())
 
 
 def _order_slots(parents: Sequence[int], order: list[int]) -> tuple[list[int], int]:

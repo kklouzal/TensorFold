@@ -926,7 +926,7 @@ def native_contract(guard, sealed, tmp_path, monkeypatch):
     directory = tmp_path / "native"
     directory.mkdir()
     recipes = []
-    for base in ("first", "second"):
+    for base in ("first", "second", "third", "fourth", "fifth"):
         source = package / (base + ".cpp")
         source.write_text('#include "owned.h"\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n'
                           '    m.def("execute", &execute);\n}\n')
@@ -956,13 +956,13 @@ def native_contract(guard, sealed, tmp_path, monkeypatch):
     return native, sealed, value, path, header
 
 
-@pytest.mark.parametrize("fault", [None, "third", "exports", "request", "missing-header", "header",
+@pytest.mark.parametrize("fault", [None, "extra-entry", "exports", "request", "missing-header", "header",
                                       "binary", "wheel", "abi", "extra-file", "extra-directory"])
-def test_two_provider_seal_checks_final_canonical_contract(native_contract, guard, fault):
+def test_five_provider_seal_checks_final_canonical_contract(native_contract, guard, fault):
     native, state, value, path, header = native_contract
     entry = next(iter(value["entries"].values()))
-    if fault == "third":
-        value["entries"]["stale_third_sm_121"] = dict(entry)
+    if fault == "extra-entry":
+        value["entries"]["stale_extra_sm_121"] = dict(entry)
     elif fault == "exports":
         entry["exports"] = ["stale"]
     elif fault == "request":
@@ -1021,7 +1021,7 @@ def test_native_preparation_preserves_primary_and_failed_audit(guard, monkeypatc
 @pytest.mark.torch
 @pytest.mark.skipif(any(Path('/dev').glob('nvidia[0-9]*')), reason="requires GPU-free preparation profile")
 @pytest.mark.parametrize("fault", [None, "exports", "existing-destination", "already-sealed"])
-def test_preparer_compiles_only_two_original_recipes_without_gpu_discovery(guard, monkeypatch, tmp_path, fault):
+def test_preparer_compiles_only_five_original_recipes_without_gpu_discovery(guard, monkeypatch, tmp_path, fault):
     from types import SimpleNamespace
 
     import prepare_native
@@ -1082,10 +1082,12 @@ def test_preparer_compiles_only_two_original_recipes_without_gpu_discovery(guard
         assert not sealed and not (destination / "manifest.json").exists()
     else:
         result = prepare_native.prepare(state, destination)
-        assert sealed == [destination / "manifest.json"] and len(compiled) == 2
-        assert [row["name"] for row in compiled] == ["tensorfold_nvfp4_ck_v7_sm_121a", "tensorfold_qwen_b16_v6_sm_121"]
+        assert sealed == [destination / "manifest.json"] and len(compiled) == 5
+        assert [row["name"] for row in compiled] == ["tensorfold_nvfp4_ck_v7_sm_121a", "tensorfold_qwen_b16_v6_sm_121",
+                                                    "tensorfold_gdn_v3_sm_121", "tensorfold_prefill_attention_v1_sm_121",
+                                                    "tensorfold_qmm_v6_sm_121"]
         assert [row["extra_cuda_cflags"][-1] for row in compiled] == [
-            "-gencode=arch=compute_121a,code=sm_121a", "-gencode=arch=compute_121,code=sm_121"]
+            "-gencode=arch=compute_121a,code=sm_121a", *["-gencode=arch=compute_121,code=sm_121"] * 4]
         assert all("prepared" not in row for row in compiled)
         assert not any(destination.glob("*.build"))
         assert set(result["entries"]) == {row["name"] for row in compiled}
@@ -1133,7 +1135,7 @@ def test_cpu_auditor_checks_exports_and_providers_without_resealing(native_contr
             prepare_native.audit(state, path.parent)
     else:
         result = prepare_native.audit(state, path.parent)
-        assert len(result["entries"]) == 2 and result["providers_unchanged"] is True
+        assert len(result["entries"]) == 5 and result["providers_unchanged"] is True
     assert observed == ([] if fault == "exports" else [profile])
     assert json.dumps(state, sort_keys=True) == before
 
@@ -1175,7 +1177,7 @@ def test_fresh_native_inputs_survive_whole_second_image_boundary(native_contract
 
     monkeypatch.setattr(cpp_extension, "load", compile_recipe)
     prepare_native.prepare(state, tmp_path / "prepared")
-    assert len(compiled) == 2
+    assert len(compiled) == 5
     for path in paths:
         assert guard.identity(path, full=True) == {
             **before[path], "mtime_ns": before[path]["mtime_ns"] // 10**9 * 10**9}
@@ -1202,4 +1204,4 @@ def test_fresh_native_inputs_survive_whole_second_image_boundary(native_contract
             guard.verify(state, full=full)
     with pytest.raises(ValueError, match="protected foundation file changed"):
         prepare_native.prepare(state, tmp_path / "must-not-repair")
-    assert len(compiled) == 2 and changed.stat().st_mtime_ns == stamp.st_mtime_ns + 1
+    assert len(compiled) == 5 and changed.stat().st_mtime_ns == stamp.st_mtime_ns + 1

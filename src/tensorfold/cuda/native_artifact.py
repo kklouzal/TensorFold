@@ -25,7 +25,10 @@ TARGET = (12, 1)
 # The sole managed-provider registry. Factories stay with their runtime owners;
 # argument tuples make GPU-free preparation use the same exact recipes.
 PROVIDERS = (("tensorfold.cuda.nvfp4.checkpoint", (TARGET,)),
-             ("tensorfold.families.qwen3_5.cuda.b16", ()))
+             ("tensorfold.families.qwen3_5.cuda.b16", ()),
+             ("tensorfold.cuda.kernels.gdn", ()),
+             ("tensorfold.cuda.kernels.prefill_attention", ()),
+             ("tensorfold.cuda.kernels.qmm", ()))
 _PREPARATION = threading.RLock()
 
 

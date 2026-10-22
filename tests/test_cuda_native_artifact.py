@@ -22,7 +22,7 @@ def bundle(tmp_path, monkeypatch):
     abi = {"host_machine": "fixture", "python_soabi": "fixture", "torch_version": "fixture"}
     manifest = {"schema_version": 1, "kind": "tensorfold-native-artifacts", "identity": {"wheel": "fixture"},
                 "abi": abi, "package_root": str(package), "target_capability": [12, 1], "entries": {}}
-    for name in ("first_sm_121", "second_sm_121"):
+    for name in ("first_sm_121", "second_sm_121", "third_sm_121", "fourth_sm_121", "fifth_sm_121"):
         binary = directory / (name + ".so")
         binary.write_bytes(b"sealed generated output")
         manifest["entries"][name] = {"module_name": name, "binary": binary.name,
@@ -157,11 +157,19 @@ def test_original_custom_load_kwargs_do_not_opt_into_matching_artifact(monkeypat
 
 @pytest.mark.torch
 def test_same_canonical_recipes_supply_runtime_and_explicit_preparation(monkeypatch):
-    pytest.importorskip("torch")
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.kernels import gdn, prefill_attention, qmm
     from tensorfold.cuda.nvfp4 import checkpoint
     from tensorfold.families.qwen3_5.cuda import b16
 
-    operations = [(b16._ext, b16._build_options()), (checkpoint._ext, checkpoint._build_options((12, 1)))]
+    def no_gpu(*args, **kwargs):
+        pytest.fail("pure canonical recipe queried a runtime GPU")
+
+    for name in ("get_device_capability", "get_device_properties", "current_device", "device_count", "is_available"):
+        monkeypatch.setattr(torch.cuda, name, no_gpu)
+    operations = [(b16._ext, b16._build_options()), (checkpoint._ext, checkpoint._build_options((12, 1))),
+                  (gdn._ext, gdn._build_options()), (prefill_attention._ext, prefill_attention._build_options()),
+                  (qmm._ext, qmm._build_options())]
     monkeypatch.setattr(checkpoint, "_capability", lambda: (12, 1))
     captured = []
     monkeypatch.setattr(build, "load", lambda **options: captured.append(options) or "module")
@@ -181,6 +189,21 @@ def test_same_canonical_recipes_supply_runtime_and_explicit_preparation(monkeypa
     assert checkpoint._build_options((12, 1))["extra_cuda_cflags"] == ["-O3"]
     assert checkpoint._build_options((8, 9))["arch_specific"] is False
     assert checkpoint._build_options((12, 1))["arch_specific"] is True
+    expected = [(gdn, "tensorfold_gdn_v3", ["gdn.cpp", "gdn.cu", "gdn_prefill.cu"], ["-O3", "--fmad=false"]),
+                (prefill_attention, "tensorfold_prefill_attention_v1", ["prefill_attention.cpp", "prefill_attention.cu"],
+                 ["-O3", "--fmad=false"]),
+                (qmm, "tensorfold_qmm_v6", ["qmm.cpp", "qmm.cu", "qmm_group.cu", "qmm_prefill.cu", "qmm_prefill8.cu"],
+                 ["-O3"])]
+    for owner, name, sources, flags in expected:
+        recipe = owner._build_options()
+        assert recipe["name"] == name and [Path(path).name for path in recipe["sources"]] == sources
+        assert recipe["extra_cuda_cflags"] == flags and recipe["verbose"] is False
+    assert native.PROVIDERS == (("tensorfold.cuda.nvfp4.checkpoint", ((12, 1),)),
+                                ("tensorfold.families.qwen3_5.cuda.b16", ()),
+                                ("tensorfold.cuda.kernels.gdn", ()),
+                                ("tensorfold.cuda.kernels.prefill_attention", ()),
+                                ("tensorfold.cuda.kernels.qmm", ()))
+    assert len(native.recipes()) == 5
 
 
 def test_binding_exports_cover_original_final_cpp_surfaces():
@@ -189,6 +212,10 @@ def test_binding_exports_cover_original_final_cpp_surfaces():
         "quant4", "quant8", "quant8_token", "lane", "pack4", "gemm", "gemm_ws", "gemm_gu_ck"])
     assert native.binding_exports([str(root / "families/qwen3_5/cuda/b16.cpp")]) == sorted([
         "b16_linear", "b16_linear_rows", "b16_prompt", "b16_linear_pair", "b16_prompt_pair"])
+    assert native.binding_exports([str(root / "cuda/kernels/gdn.cpp")]) == ["prefill", "replay", "tree"]
+    assert native.binding_exports([str(root / "cuda/kernels/prefill_attention.cpp")]) == ["prefill_attention"]
+    assert native.binding_exports([str(root / "cuda/kernels/qmm.cpp")]) == [
+        "lane_tiles", "qmm", "qmm_group", "qmm_prefill", "qmm_prefill8", "qmm_prefill8w"]
 
 
 @pytest.mark.parametrize("body", ["", 'm.attr("x") = 1;', '#ifdef FLAG\nm.def("x", &x);\n#endif',

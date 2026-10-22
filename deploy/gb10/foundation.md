@@ -253,18 +253,21 @@ editable/developer installations retain their existing update behavior.
 
 ## Prepared native bundle
 
-The managed image implements a two-provider preparation candidate: the original
-checkpoint packing/GEMM module and plain BF16/FP16 projection. The candidate
-passed 342 focused source/API/packaging CPU checks in 16.22 seconds on the pinned
-AMD64 foundation, using four CPUs, 16 GiB of memory and no GPU. The source was
-mounted read-only; imported project sources and their before/after identities
-were verified. These controls include scratch same-version pip installation and
-controlled compiler/import callbacks, not actual AOT compilation or real native
-binding import. Those checks, new installed images, ARM64, native GPU execution
-and model performance qualification remain pending. No numerical C++/CUDA
-source or serving flag is changed. This does not precompile every extension,
-Triton kernel, graph or model plan, and it does not select the experimental Gemma
-head epilogue.
+The managed image implements a five-provider preparation candidate: the original
+checkpoint packing/GEMM module, plain BF16/FP16 projection, and shared GDN,
+prefill-attention and QMM modules. It extends the separate two-provider baseline;
+that baseline's evidence does not qualify these additional prepared libraries.
+The five-provider source/API/packaging cohort passed 342 focused CPU tests in
+17.85 seconds on pinned AMD64 image `509b4135`, using four CPUs, 16 GiB and no GPU. Its 1,310
+source/test files matched before/after and the declared read-only source;
+21 actual project origins were checked. The controls use genuine scratch
+same-version pip installation and controlled compiler/import callbacks, not
+actual prepared CUDA compilation or binding import. Those target compile,
+new installed-image, ARM64/native GPU and full-model performance gates remain
+pending. No numerical C++/CUDA source or serving flag is changed. This does not
+precompile every
+extension, Triton kernel, graph or model plan, and it does not select the
+experimental Gemma head epilogue or Flash's separate family-specific GDN module.
 
 The `application-wheel` Docker stage builds and installs the exact owned wheel
 under the existing full foundation audits. Its completed immutable layer can be

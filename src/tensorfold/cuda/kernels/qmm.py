@@ -15,15 +15,20 @@ from tensorfold.cuda import pdl
 from .qmm_tiles import group_tile
 
 
+def _build_options() -> dict:
+    """Canonical recipe shared by actual-device JIT and managed preparation."""
+    here = Path(__file__).parent
+    return {"name": "tensorfold_qmm_v6", "sources": [str(here / "qmm.cpp"), str(here / "qmm.cu"),
+                                                     str(here / "qmm_group.cu"), str(here / "qmm_prefill.cu"),
+                                                     str(here / "qmm_prefill8.cu")],
+            "extra_cuda_cflags": ["-O3"], "verbose": False, "prepared": True}
+
+
 @lru_cache(maxsize=1)
 def _ext():
     from tensorfold.cuda.build import load
 
-    here = Path(__file__).parent
-    return load(name="tensorfold_qmm_v6", sources=[str(here / "qmm.cpp"), str(here / "qmm.cu"),
-                                                   str(here / "qmm_group.cu"), str(here / "qmm_prefill.cu"),
-                                                   str(here / "qmm_prefill8.cu")],
-                extra_cuda_cflags=["-O3"], verbose=False)
+    return load(**_build_options())
 
 
 @lru_cache(maxsize=None)
