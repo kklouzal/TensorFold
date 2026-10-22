@@ -264,12 +264,16 @@ void launch_tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, 
     const dim3 grid((dv + R * WARPS - 1) / (R * WARPS), hv, streams);
     const size_t shared = sizeof(float4) * WARPS * SLOTS * R * 32 + (CHAIN ? 0 : sizeof(int) * 3 * max_rows);
     auto kernel = tree_kernel<QK, SLOTS, R, WARPS, CHAIN>;
+    // A chain derives every row/source/destination from its stream range.
+    // Its valid empty Tensor carries device/ownership, but no pointer is read.
+    const int* entries = nullptr;
+    if constexpr (!CHAIN) entries = plan.data_ptr<int>();
     if (shared > 48 * 1024)
         C10_CUDA_CHECK(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared));
     tensorfold::launch(kernel, grid, dim3(32 * WARPS), shared, pdl,
         reinterpret_cast<const QK*>(q.data_ptr()), reinterpret_cast<const QK*>(k.data_ptr()),
         reinterpret_cast<const __nv_bfloat16*>(v.data_ptr()), g.data_ptr<float>(), beta.data_ptr<float>(),
-        state, table, starts, plan.data_ptr<int>(), nodes,
+        state, table, starts, entries, nodes,
         reinterpret_cast<__nv_bfloat16*>(y.data_ptr()), hk, hv, dv, pend, final_state, final_table);
 }
 

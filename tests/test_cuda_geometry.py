@@ -168,6 +168,50 @@ def test_static_round_table_bytes_are_the_tables_allocations(streams, each, mtp)
 
 
 @pytest.mark.torch
+@pytest.mark.parametrize("split", [(1,), (7,), (2, 3), (7, 5, 1, 4)])
+def test_static_chain_tables_omit_only_the_unused_schedule(split):
+    """The smaller allocation preserves every consumed range, tap, pending row and state pointer."""
+    import torch
+
+    from tensorfold.families.qwen4_exp.cuda import gdn_multi
+
+    slots, width, linear = 4, 7, 2
+    w = SimpleNamespace(device=torch.device("cpu"))
+    scratch = SimpleNamespace(lin=linear, parity=0)
+    static = gdn_multi.RoundTables(w, scratch, slots, width)
+    states = [SimpleNamespace(conv=torch.empty((linear, 3, 4)), rec=torch.empty((2, linear, 3, 128)),
+                              cur=[0, 1]) for _ in split]
+    segs, starts = [], [0]
+    for state, count in zip(states, split):
+        segs.append((state, starts[-1], starts[-1] + count))
+        starts.append(starts[-1] + count)
+    pending = [list(range(min(2, count))) for count in split]
+    tables = gdn_multi.Tables(scratch, segs, pending, static)
+    assert tables.plan.entries.shape == (0, 3)
+    assert tables.plan.entries.dtype == torch.int32 and tables.plan.entries.is_contiguous()
+    assert tables.plan.entries.device == static.i32.device
+    assert tables.plan.entries.untyped_storage().data_ptr() == static.i32.untyped_storage().data_ptr()
+    assert tables.plan.starts.tolist() == starts
+    assert tables.plan.slots == 0 and tables.plan.max_rows == max(split)
+    assert tables.sid.tolist() == [s for s, count in enumerate(split) for _ in range(count)]
+    wanted_windows = [[tap if tap < 3 else start + tap for tap in range(row, row + 4)]
+                      for start, count in zip(starts, split) for row in range(count)]
+    assert tables.win.tolist() == wanted_windows
+    assert tables.held.tolist() == [rows + [0] * (width - len(rows)) for rows in pending]
+    assert tables.held_counts.tolist() == [len(rows) for rows in pending]
+    for layer in range(linear):
+        assert tables.conv[layer].tolist() == [state.conv[layer].data_ptr() for state in states]
+        assert tables.state[layer].tolist() == [state.rec[state.cur[layer], layer].data_ptr() for state in states]
+    capacity = slots * width
+    assert static.i32.numel() == static.h32.numel() == 6 * capacity + 2 * slots + 1
+    old_payload = 2 * (9 * capacity + 2 * slots + 1) * 4
+    assert old_payload - bytes_in([static.i32, static.h32]) == 24 * capacity == 672
+    plan = tables.plan
+    del tables, static
+    assert plan.starts.tolist() == starts       # views retain their storage after the table owner is released
+
+
+@pytest.mark.torch
 @pytest.mark.parametrize("world", [1, 2])
 @pytest.mark.parametrize("mtp", [False, True])
 @pytest.mark.parametrize("prefill_rows", [2048, 4096])

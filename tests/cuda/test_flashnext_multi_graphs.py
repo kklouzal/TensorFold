@@ -173,11 +173,8 @@ def test_static_tables_and_fixed_geometry_and_replays_give_each_streams_own_bits
     _equal(want[:len(alone)], alone, "alone, folded")
 
 
-def test_static_chain_entries_equal_the_plan_builder():
-    """T2: the static tables' chain entries and starts are ``gdn.plan_host``'s for every split."""
-
-    import numpy as np
-
+def test_static_chain_ranges_equal_the_plan_builder_without_an_entry_payload():
+    """T2: each implicit chain retains the complete host builder's ranges and row geometry."""
     from tensorfold.cuda.kernels import gdn as shared
 
     w = _model()
@@ -188,13 +185,13 @@ def test_static_chain_entries_equal_the_plan_builder():
         for st, k in zip(dec.free, split):
             segs.append((st, a0, a0 + k))
             a0 += k
-        t.write(segs, [[] for _ in segs])
+        tables = gdn_multi.Tables(dec.gdn, segs, [[] for _ in segs], static=t)
         torch.cuda.synchronize()
         entries, starts, slots, _ = shared.plan_host([list(range(-1, k - 1)) for k in split])
-        R, at = a0, t.at
-        got = t.i32[at["entries"]:at["entries"] + 3 * R].cpu().numpy()
-        assert slots == 0 and np.array_equal(got, np.asarray(entries, dtype=np.int32)), split
-        assert t.i32[at["starts"]:at["starts"] + len(split) + 1].tolist() == starts, split
+        assert slots == tables.plan.slots == 0 and len(entries) == 3 * a0, split
+        assert tables.plan.entries.shape == (0, 3), split
+        assert tables.plan.starts.tolist() == starts, split
+        assert tables.plan.max_rows == max(split), split
 
 
 @pytest.mark.parametrize("n,split", [(1, [1]), (1, [4]), (2, [2, 3]), (3, [4, 1, 4]), (3, [1, 1, 1])])

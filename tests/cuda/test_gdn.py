@@ -218,7 +218,8 @@ def test_long_chains_and_their_final_state(nodes):
 
 
 @pytest.mark.parametrize("keys", [torch.bfloat16, torch.float32])
-def test_every_chain_shape_keeps_the_bits(keys, monkeypatch):
+@pytest.mark.parametrize("empty_plan", [False, True])
+def test_every_chain_shape_keeps_the_bits(keys, empty_plan, monkeypatch):
     """Chains at 4 and 8 value rows a warp (``gdn.CHAIN_ROWS`` picks one by chip) give the same outputs, final states
     and pending write-backs, at Flash Next's head shape and with a value width that leaves rows and warps past it."""
 
@@ -229,7 +230,10 @@ def test_every_chain_shape_keeps_the_bits(keys, monkeypatch):
         pending = [pk, pv, pg, pb, torch.tensor([[0, 1, 2]], dtype=torch.int32, device="cuda"),
                    torch.tensor([3], dtype=torch.int32, device="cuda")]
         table = gdn.to_device(gdn.pointers([state]), torch.int64, "cuda")
-        out = gdn.tree(*args[:5], gdn.plan([list(range(-1, nodes - 1))], "cuda"), table=table, pending=pending,
+        plan = gdn.plan([list(range(-1, nodes - 1))], "cuda")
+        if empty_plan:
+            plan = gdn.Plan(plan.starts[:0].view(0, 3), plan.starts, 0, plan.max_rows)
+        out = gdn.tree(*args[:5], plan, table=table, pending=pending,
                        final=gdn.to_device(gdn.pointers([final]), torch.int64, "cuda"))
         return out, final, state
 
@@ -239,6 +243,20 @@ def test_every_chain_shape_keeps_the_bits(keys, monkeypatch):
         for what, a, b in zip(("outputs", "final state", "committed state"), four, eight):
             bits = torch.int16 if a.dtype == torch.bfloat16 else torch.int32
             assert torch.equal(a.view(bits), b.view(bits)), (nodes, hv, what)
+
+
+@pytest.mark.parametrize("keys", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("nodes", [1, 7, 1025, 2048])
+def test_empty_chain_plan_retains_full_plan_outputs_and_final_state(keys, nodes):
+    """A complete validated schedule remains the independent representation control."""
+    args = _inputs(nodes, keys=keys, seed=nodes)
+    plan = gdn.plan([list(range(-1, nodes - 1))], "cuda")
+    empty = gdn.Plan(plan.starts[:0].view(0, 3), plan.starts, 0, plan.max_rows)
+    wanted_final, actual_final = torch.empty_like(args[5]), torch.empty_like(args[5])
+    wanted = gdn.tree(*args[:5], plan, state=args[5], final=wanted_final)
+    actual = gdn.tree(*args[:5], empty, state=args[5], final=actual_final)
+    assert torch.equal(actual.view(torch.int16), wanted.view(torch.int16))
+    assert torch.equal(actual_final.view(torch.int32), wanted_final.view(torch.int32))
 
 
 def test_schedule_reads_each_parent_state():

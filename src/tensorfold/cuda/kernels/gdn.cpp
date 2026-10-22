@@ -67,7 +67,8 @@ at::Tensor tree(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, c
     TORCH_CHECK(state.has_value() != table.has_value() && (state.has_value() ? !starts.has_value() : starts.has_value()),
                 "pass one state, or a table and starts");
     TORCH_CHECK(plan.is_cuda() && plan.is_contiguous() && plan.scalar_type() == at::kInt &&
-                plan.dim() == 2 && plan.size(0) == q.size(0) && plan.size(1) == 3, "plan: (W, 3) int32 on the device");
+                plan.dim() == 2 && (plan.size(0) == q.size(0) || (slots == 0 && plan.size(0) == 0)) &&
+                plan.size(1) == 3, "plan: (W, 3) int32 on the device, or (0, 3) for zero-slot chains");
     check_device(q, plan);
     TORCH_CHECK(slots >= 0 && slots <= 32 && max_rows >= 1 && max_rows <= std::numeric_limits<int>::max() &&
                 (slots == 0 || max_rows <= 1024),

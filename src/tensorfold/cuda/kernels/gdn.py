@@ -89,7 +89,11 @@ def schedule(parents: Sequence[int]) -> tuple[list[int], int]:
 
 @dataclass
 class Plan:
-    """A window's GDN schedule on the device: (W, 3) entries in stream order, stream row ranges, slot count."""
+    """A window's GDN schedule: same-device int32 (W, 3) entries, ranges and slot count.
+
+    Validated zero-slot chains may instead carry an empty (0, 3) entry view;
+    row order is implicit. ``plan`` and ``plan_host`` retain complete entries.
+    """
 
     entries: torch.Tensor
     starts: torch.Tensor

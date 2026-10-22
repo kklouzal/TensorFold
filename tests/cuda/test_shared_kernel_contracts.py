@@ -77,12 +77,15 @@ def test_gdn_vector_alignment_write_alias_and_empty_chain_contract():
     assert empty.shape == (0, 6, 128) and torch.equal(before, state)
 
 
-def test_gdn_owner_retention_side_stream_lifetime_and_packed_views():
+@pytest.mark.parametrize('empty_plan', [False, True])
+def test_gdn_owner_retention_side_stream_lifetime_and_packed_views(empty_plan):
     # A real side-stream consumer exercises record_stream, while explicit waits
     # cover producer completion. Allocation pressure begins after owner deletion.
     q, k, v, gates, beta, state = _rows()
     state_copy = state.clone()
     p = gdn.plan([list(range(-1, 6))], 'cuda')
+    if empty_plan:
+        p = gdn.Plan(p.starts[:0].view(0, 3), p.starts, 0, p.max_rows)
     tables = gdn.pointer_tables([[state], [state_copy]], 'cuda')
     reference = weakref.ref(state)
     del state
@@ -217,9 +220,12 @@ def test_grouped_output_cross_group_alias_and_selector_narrowing():
         assert torch.equal(storage[0], storage[1])
 
 
-def test_owned_gdn_pointer_table_graph_capture():
+@pytest.mark.parametrize('empty_plan', [False, True])
+def test_owned_gdn_pointer_table_graph_capture(empty_plan):
     q, k, v, gates, beta, state = _rows(w=1)
     p = gdn.plan([[-1]], 'cuda')
+    if empty_plan:
+        p = gdn.Plan(p.starts[:0].view(0, 3), p.starts, 0, p.max_rows)
     table = gdn.to_device(gdn.pointers([state]), torch.int64, 'cuda')
     gdn.tree(q, k, v, gates, beta, p, table=table)  # compile/warm before capture
     torch.cuda.synchronize()
@@ -230,6 +236,35 @@ def test_owned_gdn_pointer_table_graph_capture():
     wanted = gdn.tree(q, k, v, gates, beta, p, state=state)
     torch.cuda.synchronize()
     assert torch.equal(output, wanted)
+
+
+@pytest.mark.parametrize('invalid', ['slots', 'cpu', 'dtype', 'rank', 'columns', 'partial_rows'])
+def test_gdn_empty_schedule_cannot_bypass_required_native_validation(invalid):
+    q, k, v, gates, beta, state = _rows()
+    plan = torch.empty((0, 3), dtype=torch.int32, device='cuda')
+    slots = 0
+    if invalid == 'slots':
+        slots = 1
+    elif invalid == 'cpu':
+        plan = plan.cpu()
+    elif invalid == 'dtype':
+        plan = plan.long()
+    elif invalid == 'rank':
+        plan = plan.view(0)
+    elif invalid == 'columns':
+        plan = plan.view(0, 2)
+    else:
+        plan = torch.empty((1, 3), dtype=torch.int32, device='cuda')
+    with pytest.raises(RuntimeError, match='plan:'):
+        gdn._ext().tree(q, k, v, gates, beta, state, None, None, plan, slots, q.shape[0], None, None, 8, False)
+
+
+def test_gdn_empty_schedule_does_not_relax_final_state_exclusivity():
+    q, k, v, gates, beta, state = _rows()
+    plan = gdn.plan([list(range(-1, q.shape[0] - 1))], 'cuda')
+    empty = gdn.Plan(plan.starts[:0].view(0, 3), plan.starts, 0, plan.max_rows)
+    with pytest.raises(RuntimeError, match='final state writes'):
+        gdn.tree(q, k, v, gates, beta, empty, state=state, final=state)
 
 
 def test_qmm_raw_staging_alignment_and_scalar_output_exceptions():

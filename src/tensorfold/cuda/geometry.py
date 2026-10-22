@@ -46,7 +46,7 @@ def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:
 
     linear, attention = layer_counts(t)
     rows = streams * each
-    tables = ((8 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
+    tables = ((5 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
               + (1 + mtp) * (2 * rows + 2 * streams) * 4 + (attention * 6 + 4 + mtp * 10) * streams * 8)
     return 2 * tables + 8 * streams
 

@@ -66,6 +66,13 @@ parent -1, every other parent precedes its child, and no other root is allowed.
 offsets, a complete visiting order and initialized state slots. A tree requiring
 slots has at most 1024 rows per stream and at most 32 live slots. Chains use zero
 slots, read rows in their natural order, and need no shared schedule storage.
+An equivalent validated zero-slot chain may supply a contiguous same-device
+int32 `(0, 3)` entry tensor. Its starts, row counts, state ownership and all other
+checks remain required. The complete `(W, 3)` form remains supported for every
+plan, and a plan using any state slot still requires all its entries. Flash's
+concurrent static tables use an empty view of their existing int32 allocation;
+the compile-time chain launch passes no schedule pointer. The host schedule
+builders retain their complete visiting-order contract.
 
 A caller providing its own `Plan`, device row/count arrays, or raw native table
 must establish these same invariants before upload and preserve them until

@@ -1,5 +1,25 @@
 # Optimization validation
 
+## Flash concurrent chain metadata
+
+The isolated candidate removes the concurrent Flash decoder's unused chain
+schedule field and its per-round host writes. Zero-slot native verification may
+use a same-device contiguous int32 `(0, 3)` view of the existing static allocation;
+the kernel already derives each chain's row order and no longer receives a
+schedule pointer. Complete schedules, mixed trees, state/row validation, transfer
+fences and the existing recurrence rounding remain supported. Shared host plan
+builders retain their complete-entry contract.
+
+The four-stream MTP6 profile removes 336 logical bytes from each static int32
+device array and pinned mirror, 672 bytes together. Allocator granularity and
+actual admission can differ; this is not a measured capacity or speed gain.
+An isolated pinned AMD64 source-checkout run with the GPU hidden passed all
+90 geometry/table CPU checks without skips, including the four new stream-split
+cases; source/import identities and exact container retirement were verified.
+Changed C++/CUDA compilation, new immutable native builds, installed graph/eager
+correctness and complete-model performance qualification remain pending. Prior F3 and strict-tool
+fixture results do not qualify this separate candidate.
+
 Each optimization has a declared workload, platform, precision and sampling
 mode. A result applies to that region while its checkpoint, source, compiler,
 runtime, configuration and relevant cache state match. Rebuild or revalidate

@@ -395,6 +395,14 @@ results below keep their recorded source identities. Integration CPU, installed
 package, native device and full-model qualification have separate scopes; an
 upstream measurement does not qualify the combined fork automatically.
 
+The isolated Flash concurrent-chain metadata candidate omits unused per-round
+schedule entries while retaining the shared recurrence's arithmetic and full
+schedule support for other callers. An isolated pinned AMD64 run with the GPU hidden passed
+90 geometry/table CPU checks, including four new metadata cases. C++/CUDA
+compilation, installed native and full-model performance checks remain pending;
+no speedup is claimed. See
+[validation scope](docs/optimization-validation.md#flash-concurrent-chain-metadata).
+
 ## Supported models and formats
 
 The table describes supported integration paths. It is not a promise that every checkpoint fits a particular machine, or that all paths have been rerun on this fork's latest image. CUDA registers Qwen dense, Qwen3.6 MoE, Flash Next, Nemotron and GLM families, plus the initial single-stream Gemma4 affine/NVFP4 trial. Bonsai and DeepSeek listed here are MLX-only.

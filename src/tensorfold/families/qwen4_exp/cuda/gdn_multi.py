@@ -29,7 +29,7 @@ class Scratch:
 
 class RoundTables:
     """A decoder's DeltaNet round tables at fixed device addresses, so a captured graph reads each round's: rows'
-    streams and conv taps, chain entries and starts, pending rows (``width`` a stream: their row stride) and counts,
+    streams and conv taps, chain starts, pending rows (``width`` a stream: their row stride) and counts,
     and each layer's conv and state pointers (``slots`` a layer). ``Tables`` writes them through a pinned mirror,
     one copy each on the current stream before the forward; the mirror is rewritten only after that copy completes.
     Pointees are the decoder's States: a resize or drop frees their storage through the same stream's allocator."""
@@ -38,8 +38,8 @@ class RoundTables:
         dev, pin = w.device, torch.cuda.is_available()
         self.slots, self.width, self.rows, self.lin = slots, width, slots * width, scratch.lin
         rows = self.rows
-        self.at = {"sid": 0, "win": rows, "entries": 5 * rows, "starts": 8 * rows, "held": 8 * rows + slots + 1,
-                   "counts": 8 * rows + slots + 1 + slots * width}
+        self.at = {"sid": 0, "win": rows, "starts": 5 * rows, "held": 5 * rows + slots + 1,
+                   "counts": 5 * rows + slots + 1 + slots * width}
         size = self.at["counts"] + slots
         self.i32 = torch.zeros((size,), dtype=torch.int32, device=dev)
         self.h32 = torch.zeros((size,), dtype=torch.int32, pin_memory=pin)
@@ -58,18 +58,13 @@ class RoundTables:
             self.copied.synchronize()                    # the last copy out of the mirror is done
         h = self.h32.numpy()
         sid, win = h[:R], h[at["win"]:at["win"] + 4 * R].reshape(R, 4)
-        entries = h[at["entries"]:at["entries"] + 3 * R].reshape(R, 3)
         held = h[at["held"]:at["held"] + n * self.width].reshape(n, self.width)
         taps = np.arange(4)[None, :]
-        entries[:, 2] = -1                               # chains: no slots (gdn.plan_host's entries for chains)
-        entries[:, 1] = -2
         held[:] = 0
         for s, ((st, a0, a1), rows_) in enumerate(zip(segs, pending)):
             j = np.arange(a1 - a0)[:, None] + taps
             win[a0:a1] = np.where(j < 3, j, a0 + j)            # < 3: a conv state row, else window row tap - 3
             sid[a0:a1] = s
-            entries[a0:a1, 0] = np.arange(a0, a1)
-            entries[a0, 1] = -1
             held[s, :len(rows_)] = rows_
         h[at["starts"]:at["starts"] + n + 1] = [a0 for _, a0, _ in segs] + [R]
         h[at["counts"]:at["counts"] + n] = [len(rows_) for rows_ in pending]
@@ -99,8 +94,10 @@ class Tables:
         static.write(segs, pending)
         self.sid, self.win = t.i32[:R], t.i32[at["win"]:at["win"] + 4 * R].view(R, 4)
         most = max(a1 - a0 for _, a0, a1 in segs)
-        self.plan = shared.Plan(t.i32[at["entries"]:at["entries"] + 3 * R].view(R, 3),
-                                t.i32[at["starts"]:at["starts"] + n + 1], 0, most)
+        starts = t.i32[at["starts"]:at["starts"] + n + 1]
+        # These windows are validated natural chains. The kernel needs only
+        # their ranges; the empty entry view retains this fixed storage owner.
+        self.plan = shared.Plan(starts[:0].view(0, 3), starts, 0, most)
         self.held = t.i32[at["held"]:at["held"] + n * t.width].view(n, t.width)
         self.held_counts = t.i32[at["counts"]:at["counts"] + n]
         ptrs = t.i64.view(2, t.lin, t.slots)[:, :, :n]
