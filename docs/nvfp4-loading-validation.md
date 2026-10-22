@@ -18,7 +18,14 @@ Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first
 
 ## Native CT bank loading candidate — qualification pending
 
-This checkout is a separate loop variant of frozen native reference `9734f82a`.
+This checkout folds the eight fixed byte transfers into the tile-row body of
+frozen paired-tile reference `ab3c33ba`. It passed the same55 independent CPU
+controls with an actual source-owned CPP build, and the separate local warm
+bank comparison below. No ISA flag or compiler-specific inlining promise is
+added. Required ARM64/installed, total resource admission and whole-model gates
+remain pending; historical reference results keep their separate source scope.
+
+The paired-tile reference is a separate loop variant of native reference `9734f82a`.
 It copies each four-byte logical word directly to its final interleaved location
 and consumes two adjacent source tiles per row, with a singleton final tile
 when needed. It retains the reference's ABI, validation, owner lifetime and
@@ -155,11 +162,45 @@ Direct stores and paired traversal changed together, so the measured gain is
 not attributed separately to either. No reduced stack or total-admission claim
 follows from removing the source arrays.
 
+The current tile-row-body increment passed55 CPU checks in8.92s on the pinned
+AMD64 checkout, including the unchanged independent byte, paired/tail,
+unaligned-input, strided-authority, buffer/ownership, error and FD controls. Its
+actual shared object was258056 bytes. Read-only disassembly shows no separate
+copy helper and no calls between the owned GIL-release/reacquisition boundaries;
+it also shows compiler-generated unaligned SSE2 word-unpack operations. This
+does not establish which compiled version every input selects. The observed
+pack frame reserves9544 bytes,224 more than the paired-tile reference; no stack
+or total-admission reduction is claimed.
+
+Its separate G/H comparison used the same pinned AMD64/SM120 runtime and original
+Qwen3.6 checkpoint, resident257-cell width512/dims2048 bank,8 intra-op and1
+inter-op threads, fresh production Reader contexts and complete transaction
+boundary. Six mirrored GHHG/HGGH blocks retained all24 measured positions and4
+warmups. G is frozen `ab3c33ba`; H is this tile-row-body increment. Mean
+transaction time was0.488834094917s for G and0.464444748167s for H. H minus G
+was−0.024389346750s, with the predeclared10,000-resample paired-block95% pointwise
+interval[−0.027546247750,−0.021127616167]s. All6 block differences were negative.
+The six-block independence/representativeness assumption remains exploratory;
+these observations are not a whole-model startup estimate.
+
+Complete six-field bank bytes and native decode/prefill controls matched before
+and after. All1323 source/test files,39 actual project origins, the authenticated
+private reference bindings and input file stamps stayed unchanged. Both original
+CPU factories recorded exactly364 production cache hits without a miss or binding
+change, and actual mapped-file FD proofs identified both CPU shared objects plus
+the grouped CUDA and FD providers. CUDA settlement and owned container retirement
+completed. The metric includes bank loading/publication and attempted bank/cache/FD
+retirement; metadata/context preparation and initial compilation are excluded.
+The sealed plan's schedule description contains a retained transcription typo;
+its executable operator, frozen analyzer and all actual records agree on the
+GHHG/HGGH schedule stated here. No positions or raw assets were changed.
+
 The earlier fused-reference packet failure before container launch and a separate
 native-manifest schema failure before test collection remain retained; neither
 produced performance samples. The complete24-position result uses only the
 successful fresh actors. The original fused result compares against the indexed
-candidate; the paired-tile result compares against the frozen fused reference.
+candidate; the paired-tile result compares against the frozen fused reference,
+and the tile-row-body result compares against the paired-tile reference.
 Full fixed/stack/module/compiler admission, required
 ARM64 thread-policy observations, installed execution, whole-model cold/warm
 startup and request/quality qualification, and comparison against accepted

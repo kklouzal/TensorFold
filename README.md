@@ -107,14 +107,15 @@ A separate fused CPU native CT bank-loading candidate batches owned calibration 
 block-scale reads, streams bounded code chunks, and packs directly into final
 CPU authority through one byte-only native call per chunk. It preserves original error order and native arithmetic. The
 isolated candidate retains its reference's kernels and other loading paths.
-This checkout uses direct fixed-width byte copies and paired source tiles in
-that primitive. The pinned AMD64 checkout passed55 CPU controls, including
-actual compilation and independent paired/tail, unaligned-input and authority
-layout checks. A warmed Qwen3.6 resident-bank comparison measured mean
-transaction time of0.491860s versus0.554144s for frozen serial native reference
-`9734f82a`, with all6 paired blocks faster and complete byte/native controls passing. This is
-a local bank result; resource admission, ARM64/installed and full-model startup
-and request qualification remain pending. Its CPU-only C++ extension compiles on first eligible use with the
+This checkout folds the fixed byte transfers into the tile-row body. It passed55
+CPU controls with an actual CPP build on the pinned AMD64 checkout. A separate
+warmed Qwen3.6 resident257-cell comparison at8 intra-op/1 inter-op threads measured
+mean transaction time of0.464444748s versus0.488834095s for frozen paired-tile
+reference `ab3c33ba`. The difference was−0.024389347s, with a95% pointwise
+paired-block bootstrap interval of[−0.027546248,−0.021127616]s; all6 blocks were
+faster and complete byte/native controls passed. These are local warm bank
+observations; resource admission, ARM64/installed and full-model startup and
+request qualification remain pending. Its CPU-only C++ extension compiles on first eligible use with the
 configured Torch extension toolchain; compile cost is included in startup
 qualification. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
 
