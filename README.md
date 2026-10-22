@@ -398,12 +398,14 @@ upstream measurement does not qualify the combined fork automatically.
 The isolated Flash concurrent-chain metadata candidate omits unused per-round
 schedule entries while retaining the shared recurrence's arithmetic and full
 schedule support for other callers. The preceding source with a per-round empty
-view passed 90 geometry/table CPU checks in an isolated pinned AMD64 run with
-the GPU hidden, including four new metadata cases. C++/CUDA
-compilation, installed native and full-model performance checks remain pending;
-no speedup is claimed. The cached-view follow-up also passed one GPU-hidden CPU
-test of updated table contents and storage ownership across rounds. Native and
-full-model performance qualification of that follow-up remain pending. See
+view passed 90 geometry/table CPU checks with the GPU hidden, including four new
+metadata cases. The cached-view follow-up passed one separate GPU-hidden CPU
+test of updated contents and storage ownership. Its final `c9293dd3` source then
+completed all four affected native test modules on the RTX PRO 2000 Blackwell
+(SM 12.0): 170 passed and one second-GPU check skipped, with source/provider,
+device-settlement and retirement verification. This is pinned AMD64 source
+correctness under the explicitly authorized diagnostic profile, not installed
+ARM64/GB10 or full-model performance qualification. No speedup is claimed. See
 [validation scope](docs/optimization-validation.md#flash-concurrent-chain-metadata).
 
 ## Supported models and formats

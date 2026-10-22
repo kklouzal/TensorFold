@@ -16,9 +16,9 @@ actual admission can differ; this is not a measured capacity or speed gain.
 An isolated pinned AMD64 source-checkout run with the GPU hidden passed all
 90 geometry/table CPU checks without skips, including the four new stream-split
 cases; source/import identities and exact container retirement were verified.
-Changed C++/CUDA compilation, new immutable native builds, installed graph/eager
-correctness and complete-model performance qualification remain pending. Prior F3 and strict-tool
-fixture results do not qualify this separate candidate.
+That CPU run did not compile or execute the changed C++/CUDA. Prior F3 and
+strict-tool fixture results do not qualify this separate candidate; the later
+cached-source native result below has its own source and execution identity.
 
 The cached-view follow-up prepares that immutable empty metadata view once per
 fixed RoundTables allocation and borrows it for each round. Dynamic starts and
@@ -27,8 +27,33 @@ from each round to initialization; it saves no additional device payload.
 The 90-case CPU result above belongs to the preceding uncached-view source.
 Its new GPU-hidden CPU owner/content/lifetime test passed one case without
 skips; source/import identities and exact container retirement were verified.
-The preceding 90 cases were not rerun. Final native execution and complete-model
-performance qualification of the cached follow-up remain pending.
+The preceding 90 cases were not rerun.
+
+Final source `c9293dd35a5b6005d8f7693fc1dddf14af2f8c48` completed the four
+whole GDN, shared-kernel-contract, Flash multi-graph and Flash multi test modules
+on the RTX PRO 2000 Blackwell (SM 12.0): 171 collected, 170 passed and one check
+requiring a second compatible CUDA device skipped, in 340.99 seconds. Both
+343-token required strict-tool cases passed. Native controls include full/empty
+and mixed plans, long/final/pending state, side-stream ownership and graph
+replay. The complete source-checkout run used immutable pinned AMD64 image
+`509b4135`, Python 3.12.3, Torch `2.16.0.dev20261017+cu134` (`9026ad48`), eight
+intra-op and one inter-op threads, GPU 0, `MAX_JOBS=2` and a 16 GiB container budget.
+The explicit CAP_CHECKPOINT_RESTORE (bit 40) diagnostic profile enabled actual
+map_files-FD proof for that one functional run; it is not a production or
+performance privilege grant.
+
+All 1,312 declared source/test files were byte-stable before and after; the separately
+published AMD ABI3 prerequisite was the only addition after the CPU interval.
+Actual imports covered 135 project/test origins. Nine native observations
+identified seven unique mapped objects, including the normal shared-GDN factory
+and exact file-owner product; all 17 protected foundation providers and the
+actual driver stayed coherent. Device0 settled and the acknowledged exact
+container retired successfully in 355.20 seconds with no owner errors. The
+retained normal compiler cache had mixed state, and these elapsed values are
+not cold-compilation or performance measurements. No compiler-warning audit is
+claimed from ordinary pytest capture. New immutable ARM64/GB10, installed
+native, second-device and complete-model comparative performance gates remain
+pending; this result selects no speed or capacity gain.
 
 Each optimization has a declared workload, platform, precision and sampling
 mode. A result applies to that region while its checkpoint, source, compiler,
