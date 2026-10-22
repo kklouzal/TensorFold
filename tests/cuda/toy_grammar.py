@@ -35,6 +35,13 @@ TOOL = {"type": "object", "additionalProperties": False, "required": ["n", "u", 
 TOOLS = [{"type": "function", "function": {"name": "get", "parameters": TOOL, "strict": True}},
          {"type": "function", "function": {"name": "go", "strict": True}}]
 
+# xgrammar 0.2.8's emitted required grammar bounds the first get call by leading
+# blanks, markup, four parameter wrappers, finite values and closing markup.
+# The object has four whitespace runs of at most32 characters. Every non-EOS
+# toy token consumes at least one character. Later parallel calls and trailing
+# blanks occur after this first complete call.
+TOOL_FIRST_CALL_TOKENS = 32 + 27 + 4 * 28 + 2 + 2 + (11 + 4 * 32) + 5 + 24
+
 
 def tool_spell(t: int) -> str:
     out = ""

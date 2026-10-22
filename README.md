@@ -10,6 +10,14 @@ Installed ARM64/GB10, complete-model and comparative performance qualification
 remain pending. See [the contract and required
 checks](docs/optimization-validation.md#flash-next-final-readout-candidate-2026-10-22).
 
+The Flash Next strict-tool fixture gives required streams 343 tokens to finish
+their first call; optional and plain streams retain 96. The bound follows the
+pinned xgrammar 0.2.8 emitted grammar and the toy token spellings. Serial,
+concurrent and resumed requests use the same per-stream budgets and retain all
+existing equality, schema, cache and drafting assertions. All three fixture CPU
+checks passed in the pinned AMD64 environment with xgrammar 0.2.8; a new ARM64
+bake and complete affected GB10 native qualification remain pending.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

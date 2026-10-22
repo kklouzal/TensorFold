@@ -57,6 +57,33 @@ regions and use predeclared uncertainty. Earlier broader-source component
 checks do not qualify this installed composition or establish a performance
 winner. Publication requires those gates and the accepted baseline comparison.
 
+The required strict-tool fixture now uses per-stream budgets of 343, 96, 343 and
+96 consistently for serial references, concurrent streams and cache resumes.
+The original 96-token fixture failed on its first required stream on both the
+accepted and candidate GB10 images: the same reply was an accepted prefix without
+a completed call. Those failures remain historical evidence. This changes the fixture's
+generation window; every original output/schema/cache/drafting assertion remains.
+
+For the pinned xgrammar 0.2.8 emitted grammar, a first `get` call consumes at most
+32 leading blanks, 27 opening characters, four 28-character parameter wrappers,
+2 integer characters, 2 enum characters, 139 object characters, 5 boolean
+characters and 24 closing characters: 343 in total. The object has four whitespace
+runs of at most 32 characters. The alternative `go` call needs at most 82. The
+pinned [rule representation](https://github.com/mlc-ai/xgrammar/blob/v0.2.8/cpp/grammar_impl.h)
+and [lookahead implementation](https://github.com/mlc-ai/xgrammar/blob/v0.2.8/cpp/grammar_compiler.cc)
+separate lookahead restrictions from consumed rule characters;
+parallel repetition and trailing blanks occur after the first completed call.
+Every non-stop toy token consumes at least one ASCII character. Thus a conforming
+required stream either stops after a completed call or contains one within 343
+tokens. This is a first-call bound, with no EOS requirement or bound on later
+parallel calls. The CPU fixture checks the maximal witness and its unfinished
+342-token prefix against the real matcher and project parser. All three fixture
+CPU cases passed without skips in pinned AMD64 image `509b4135`, Python 3.12.3,
+PyTorch `9026ad48` and xgrammar 0.2.8. All 1,311 source/test files remained stable,
+the required project and test origins matched, and the exact container retired.
+A new ARM64 bake and the complete affected GB10 native cohort remain pending;
+no runtime, model or performance result is inferred from this fixture correction.
+
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
 Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch

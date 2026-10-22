@@ -521,12 +521,12 @@ def test_strict_tool_streams_together_equal_each_alone(graphs, kv_dtype):
     replies read as calls whose arguments satisfy the tool's schema."""
 
     pytest.importorskip("xgrammar")
-    from toy_grammar import toy_tools
+    from toy_grammar import TOOL_FIRST_CALL_TOKENS, toy_tools
 
     w = _model()
     variants = [toy_tools(V, required=True), toy_tools(V), toy_tools(V, required=True, parallel=False), None]
     samplings = [Sampling(seed=1234, top_k=20, top_p=0.95), Sampling(seed=7, top_k=20, top_p=0.95), None, None]
-    count = 96
+    counts = [TOOL_FIRST_CALL_TOKENS, 96, TOOL_FIRST_CALL_TOKENS, 96]
 
     def fresh(i):
         if variants[i] is None:
@@ -538,12 +538,12 @@ def test_strict_tool_streams_together_equal_each_alone(graphs, kv_dtype):
     for i, (prompt, sampling) in enumerate(zip(PROMPTS, samplings)):
         e = Engine(w, capacity=4096, max_rows=8, prefill_rows=256, kv_dtype=kv_dtype)
         c = fresh(i)
-        out = serial_decode(e, prefill(e, prompt, sampling, **c), count, sampling, **c).tokens
+        out = serial_decode(e, prefill(e, prompt, sampling, **c), counts[i], sampling, **c).tokens
         refs.append(out[:out.index(0) + 1] if 0 in out else out)          # the serial reference decodes past the end
     dec = MultiDecoder(w, slots=4, capacity=4096, depth=3, confidence=0.3, kv_dtype=kv_dtype, graphs=graphs)
     if graphs:
         dec.capture_graphs()
-    streams = [Stream(p, count, smp, **fresh(i)) for i, (p, smp) in enumerate(zip(PROMPTS, samplings))]
+    streams = [Stream(p, counts[i], smp, **fresh(i)) for i, (p, smp) in enumerate(zip(PROMPTS, samplings))]
     for s in streams:
         dec.admit(s)
     while dec.live():
@@ -552,7 +552,7 @@ def test_strict_tool_streams_together_equal_each_alone(graphs, kv_dtype):
     assert all(s.error is None for s in streams) and streams[3].min_rows >= 2   # the plain one verifies drafts
     assert sum(s.drafted for s in streams[:3]) > 0       # constrained rounds drafted too (the grammar cuts the rest)
     for i in (0, 1):                                     # the same prompts again, resumed from their kept slots
-        again = Stream(PROMPTS[i], count, samplings[i], **fresh(i))
+        again = Stream(PROMPTS[i], counts[i], samplings[i], **fresh(i))
         dec.admit(again)
         while dec.live():
             dec.finish(dec.round())
