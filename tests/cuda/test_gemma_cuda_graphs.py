@@ -65,3 +65,19 @@ def test_startup_prepares_the_context_clipped_smallest_grid_and_larger_grids_cap
     assert len(graphs.graphs) == after and (2, max(2, smallest), True) in graphs.graphs
     assert torch.equal(result.logits, expected.logits) and torch.equal(result.hidden, expected.hidden)
     assert all(torch.equal(result.taps[layer], expected.taps[layer]) for layer in expected.taps)
+
+
+@pytest.mark.parametrize("drafts,prepared", [(False, 1), (True, 4)])
+def test_generation_preparation_retains_lazy_multirow_without_taps(drafts, prepared):
+    model = target()
+    eager, staged = model.make_state(1600, rows=128), model.make_state(1600, rows=128)
+    graphs = Graphs(model, staged, max_rows=3)
+    assert graphs.prepare_generation(drafts=drafts) == prepared
+    assert staged.position == 0 and {key[0] for key in graphs.graphs if not key[2]} == {1}
+    assert {key[0] for key in graphs.graphs if key[2]} == ({1, 2, 3} if drafts else set())
+    expected = model.forward([5, 6, 7], eager, output_taps=False, trusted_tokens=True)
+    result = graphs.forward([5, 6, 7], staged, output_taps=False)
+    assert len(graphs.graphs) == prepared + 1
+    assert staged.position == eager.position == 3
+    assert torch.equal(result.hidden, expected.hidden) and torch.equal(result.logits, expected.logits)
+    assert result.taps == expected.taps == {}

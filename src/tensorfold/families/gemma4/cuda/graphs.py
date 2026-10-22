@@ -51,21 +51,39 @@ class Graphs:
         return graph, out
 
     @torch.inference_mode()
-    def prepare(self, taps: Sequence[bool] = (False, True)) -> int:
-        """Capture every row count's smallest-grid graphs now (engine startup), leaving the state where it was.
+    def prepare(self, taps: Sequence[bool] = (False, True), *, max_rows: int | None = None) -> int:
+        """Capture smallest-grid graphs, leaving the state where it was.
 
         Captures write KV rows past the state's position, which the rollback releases; the state holds no request
-        yet. Larger grids are still captured on first use. Returns the number of graphs held.
+        yet. By default every admitted row count is prepared. ``max_rows`` limits
+        startup work only; all supported row/tap/grid combinations remain lazy
+        in forward. Returns the number of graphs held.
         """
+        if max_rows is not None and (type(max_rows) is not int or not 1 <= max_rows <= self.max_rows):
+            raise ValueError("Gemma4 graph preparation rows must be within 1..max_rows")
         state = self.state
         start = state.position
         smallest = min(self.limit, self.span)
-        for rows in range(1, min(self.max_rows, state.context - start) + 1):
+        limit = self.max_rows if max_rows is None else max_rows
+        for rows in range(1, min(limit, state.context - start) + 1):
             for tap in taps:
                 if self.chunks(start + rows) == smallest:
                     self.forward([0] * rows, state, output_taps=tap)
                     state.rollback(start)
         return len(self.graphs)
+
+    def prepare_generation(self, *, drafts: bool) -> int:
+        """Prepare the engine's reachable startup pairs in their original order.
+
+        Without active drafts, generate carries one pending token and requests
+        no taps. Active drafts can carry every admitted row count with taps;
+        grammar windows only remove rows. The general preparation/forward APIs
+        keep other pairs available to callers on first use.
+        """
+        if type(drafts) is not bool:
+            raise ValueError("Gemma4 graph generation preparation needs a boolean draft role")
+        count = self.prepare(taps=(False,), max_rows=1)
+        return self.prepare(taps=(True,)) if drafts else count
 
     @torch.inference_mode()
     def forward(self, tokens: Sequence[int], state, *, output_taps: bool) -> ForwardResult:

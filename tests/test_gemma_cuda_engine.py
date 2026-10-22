@@ -622,3 +622,89 @@ def test_graph_startup_prepares_the_smallest_grid_even_when_the_context_caps_it(
     graphs.forward = forward
     assert graphs.prepare() == 6 and state.position == 0
     assert calls == [(rows, smallest, taps) for rows in range(1, 4) for taps in (False, True)]
+
+
+def _generation_preparation(max_rows=8):
+    pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from tensorfold.families.gemma4.cuda.graphs import Graphs
+    from tensorfold.families.gemma4.cuda.state import GLOBAL_CHUNK
+
+    state = SimpleNamespace(context=400, position=0)
+    state.rollback = lambda position: setattr(state, "position", position)
+    graphs = Graphs.__new__(Graphs)
+    graphs.state, graphs.max_rows, graphs.span = state, max_rows, 16
+    graphs.limit, graphs.graphs = -(-state.context // GLOBAL_CHUNK), {}
+    calls = []
+
+    def forward(tokens, seen, *, output_taps):
+        assert seen is state and state.position == 0
+        key = len(tokens), bool(output_taps)
+        calls.append(key)
+        graphs.graphs[key] = None
+        state.position += len(tokens)
+
+    graphs.forward = forward
+    return graphs, state, calls
+
+
+@pytest.mark.parametrize("with_head,draft,sampled,tokens,constrained", [
+    (False, True, False, 2, False), (False, False, True, 17, False),
+    (True, False, False, 17, False), (True, False, True, 2, False),
+    (True, True, False, 17, False), (True, True, True, 17, False),
+    (True, True, False, 2, False), (True, True, True, 2, False),
+    (True, True, False, 17, True), (True, True, True, 2, True),
+])
+def test_prepared_pairs_cover_actual_generation_modes(monkeypatch, with_head, draft, sampled, tokens, constrained):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.grammar import Window
+
+    engine = _engine(monkeypatch, with_head=with_head)
+    startup, state, calls = _generation_preparation(engine.max_rows)
+    count = startup.prepare_generation(drafts=with_head)
+    prepared = set(calls)
+    assert state.position == 0 and count == (engine.max_rows + 1 if with_head else 1)
+    assert calls[0] == (1, False) and all(taps or rows == 1 for rows, taps in calls)
+    observed = []
+
+    class Graphs:
+        def forward(self, inputs, state, *, output_taps):
+            pair = len(inputs), output_taps
+            observed.append(pair)
+            assert pair in prepared
+            return engine.target.forward(inputs, state)
+
+    class PrefixConstraint:
+        finished = False
+
+        def window(self, inputs, parents):
+            return Window(inputs[:1], [-1])
+
+        def mask(self, logits, window=None):
+            pass
+
+        def advance(self, selected):
+            pass
+
+    engine.graphs = Graphs()
+    policy = Sampling(seed=17, temperature=.7, top_k=7, top_p=.9) if sampled else None
+    output = []
+    engine.generate([2, 3, 4], tokens, policy, lambda ids: output.extend(ids), draft=draft,
+                    stop_eos=False, constraint=PrefixConstraint() if constrained else None)
+    assert observed and len(output) == tokens
+
+
+@pytest.mark.parametrize("max_rows", [0, -1, 9, True, 1.5])
+def test_graph_preparation_rejects_invalid_row_cap_before_forward(max_rows):
+    graphs, state, calls = _generation_preparation()
+    with pytest.raises(ValueError, match="preparation rows"):
+        graphs.prepare(max_rows=max_rows)
+    assert not calls and state.position == 0
+
+
+@pytest.mark.parametrize("drafts", [0, 1, None, "yes"])
+def test_generation_preparation_rejects_invalid_role_before_forward(drafts):
+    graphs, state, calls = _generation_preparation()
+    with pytest.raises(ValueError, match="boolean draft role"):
+        graphs.prepare_generation(drafts=drafts)
+    assert not calls and state.position == 0

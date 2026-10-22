@@ -166,11 +166,11 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
             self.target, self.state, self.span = target, state, span
             self.graphs = {}
             owner.bank_refs.append(weakref.ref(self))
-        def prepare(self, *, taps):
+        def prepare_generation(self, *, drafts):
             owner = self.target.owner
             assert owner.in_stream and self.state.position == 0 and owner._draft.position == 0
             assert owner._prefix is None and self.bound_head is owner.w.embed
-            assert taps == (False, True)
+            assert drafts is True
             owner.pending_initialization = True
             self.graphs["captured"] = self.bound_head
             return len(self.graphs)

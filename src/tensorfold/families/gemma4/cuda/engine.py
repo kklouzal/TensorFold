@@ -147,11 +147,11 @@ class Gemma4Engine:
         self._state = self.target.make_state(self.context_window, rows=forward_rows)
         self._draft = self.head.make_state() if self.head is not None else None
         from .graphs import Graphs
-        # Text decode/verify rounds replay CUDA graphs over the engine-lifetime state; prefill stays eager. Every
-        # row count's smallest-grid graph is captured now (before the load event below orders serving after it).
+        # Text rounds replay CUDA graphs; prefill and visual blocks stay eager.
+        # Prepare singleton serial and all drafted row counts before the load event.
         # Larger attention grids capture on first use; their outputs and pool are covered by admission.
         self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
-        self.graphs.prepare(taps=(False, True) if self.head is not None else (False,))
+        self.graphs.prepare_generation(drafts=self.head is not None)
         # Absent from a tokenizer: only whole-prompt checkpoints are kept.
         self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
         self._prefix = None

@@ -72,6 +72,42 @@ packets were not executed and establish no additional performance or correctness
 
 Raw traces, complete reports, source freezes and failures remain in the task evidence ledger.
 
+## Startup graph preparation candidate (2026-10-22)
+
+The source candidate prepares the one-row no-tap graph used by serial requests
+and, when a companion is loaded, all admitted row counts with taps. Generation
+can add proposal rows only while drafts are active; grammar windows only remove
+rows. The five-row draft profile therefore prepares six smallest-grid graphs
+instead of ten. A serial-only engine prepares one instead of every admitted
+width. These are source-derived graph counts, not latency measurements.
+
+The general graph preparation API keeps its default all-row Cartesian behavior;
+its optional row cap affects preparation only. Other supported row/tap pairs
+and larger attention grids still capture on first use. Head-comparison tools
+recreate the same generation preparation policy after retiring the old bank.
+Kernel arithmetic, prefill/vision paths, graph forward validation, prefix
+snapshots and conservative admission bounds are unchanged.
+
+The candidate passed **105 canonical-source CPU checks and 13 native checks**
+on AMD64 with the RTX PRO 2000 Blackwell (SM12.0), Torch
+`2.16.0.dev20261017+cu134` (`9026ad48`). The pinned foundation image was
+`sha256:509b41351f2fd3ac20260b446d869bc58639d9a21a4101c6176e84f76edeac54`.
+All 1,309 source/test files remained unchanged, required module origins and
+native mapped objects were verified, CUDA work settled, and both containers
+were retired. No selected case was skipped and no warning was reported.
+Coverage includes real generation dispatch with loaded/disabled drafts,
+sampled final reply slots and constrained prefixes, exact eager/graph bits for
+lazily captured omitted pairs, and default Cartesian preparation behavior.
+The initial CPU attempt retained 98 passes and seven real Git-provenance
+failures; a fresh run passed all 105 after exposing the registered worktree's
+actual Git metadata read-only, with no implementation or test change.
+
+Installed ARM64/SM12.1 and full-model gates remain pending. Loading, cold/warm
+TTFT, complete request wall and residency need matched integrated comparison:
+different graph-pool layout, compilation order and first touch cannot be
+assumed performance-neutral. No loading or request-speed gain is selected.
+Historical source/image checks in this guide do not qualify this candidate.
+
 ## Original deployment, 2026-10-18
 
 The installed TensorFold runtime serves the original `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` revision `90c8601b1a439497bc15d8fba9e52990b45ea0cb`, with BF16 `z-lab/gemma-4-26B-A4B-it-DFlash` revision `77d4202772dfe50b2396ec7bac9cfffc7b9e7057`. All fourteen target files passed their publisher hash checks. Checkpoint Python was not executed. Original FP4 codes, block scales and global calibrations remain authoritative; BF16 embedding/head, router and vision weights are retained. CUDA loading packs projections on the GPU.

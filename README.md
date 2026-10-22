@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The Gemma source candidate prepares startup graphs for singleton serial rounds
+and, with a companion, every drafted row count with taps. Other graph shapes
+remain available on first use. This candidate passed 105 canonical-source CPU
+checks and 13 native checks on the RTX PRO 2000 Blackwell (SM12.0), with unchanged
+source and completed container retirement. Installed ARM64/GB10, full-model and
+performance validation remain pending; no loading or request-speed gain is selected.
+[Behavior and required checks](docs/gemma4-cuda-validation.md#startup-graph-preparation-candidate-2026-10-22).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

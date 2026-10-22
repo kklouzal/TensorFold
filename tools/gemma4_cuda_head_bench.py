@@ -184,7 +184,7 @@ def _bind_head(engine, head):
         if engine._draft is not None:
             engine._draft.reset()
         engine.graphs = Graphs(engine.target, engine._state, max_rows=engine.max_rows, span=span)
-        count = engine.graphs.prepare(taps=(False, True) if engine.head is not None else (False,))
+        count = engine.graphs.prepare_generation(drafts=engine.head is not None)
     engine.drain()
     return {"changed": True, "seconds": time.perf_counter() - started, "prepared_graphs": count}
 
