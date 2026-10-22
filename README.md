@@ -1,5 +1,13 @@
 # TensorFold fork
 
+An isolated loading candidate composes M's immediate metadata validation with
+the H-kernel public DLPack1.3 C-exchange boundary. The composition completed
+**275 CPU checks** on pinned Linux AMD64 with GPUs hidden, including metadata
+and native byte/owner/error oracles plus real file-bank stage/override controls.
+ARM/installed, resource, cold/warm model and three-arm performance qualification
+remain pending; no frontend or composition gain is selected.
+[Composition and validation boundary](docs/nvfp4-loading-validation.md#metadata-and-c-exchange-composition).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

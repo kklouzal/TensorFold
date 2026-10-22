@@ -51,7 +51,7 @@ def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_life
     codes, scales, fields, indices, expected, storage, expected_storage = inputs(width, dims, strided=strided)
     tensors = (codes, scales, *fields, indices)
     snapshots = [(t.data_ptr(), t.untyped_storage().resizable(), t._version, t.clone()) for t in tensors]
-    actual = bank_cpu._ext()
+    actual = bank_cpu._numpy_ext()
     aliases = []
 
     def pack(*args):
@@ -64,7 +64,8 @@ def test_native_bytes_preserve_original_capacity_versions_padding_and_alias_life
         gc.collect()
         return actual.pack(*args)
 
-    monkeypatch.setattr(bank_cpu, "_ext", lambda: SimpleNamespace(pack=pack))
+    monkeypatch.setattr(bank_cpu, "_producer", lambda: None)
+    monkeypatch.setattr(bank_cpu, "_numpy_ext", lambda: SimpleNamespace(pack=pack))
     experts_a4.pack_bank_a4(codes, scales, *fields, indices, width, dims)
     assert all(torch.equal(field, reference) for field, reference in zip(fields, expected, strict=True))
     if strided:
@@ -96,7 +97,7 @@ def test_native_pair_tail_copy_accepts_unaligned_sources_and_preserves_physical_
         expected_up[4 + local * up_stride:4 + local * up_stride + 2 * blob] = expected[0][local].numpy().reshape(-1)
         expected_down[8 + local * down_stride:8 + local * down_stride + blob] = expected[1][local].numpy()
     before = source_codes.copy(), source_scales.copy(), indices.clone()
-    bank_cpu._ext().pack(source_codes[1:], source_scales[3:], up, down, indices.numpy(),
+    bank_cpu._numpy_ext().pack(source_codes[1:], source_scales[3:], up, down, indices.numpy(),
                          4, up_stride, 8, down_stride, 4, width, dims)
     assert np.array_equal(up, expected_up) and np.array_equal(down, expected_down)
     assert np.array_equal(source_codes, before[0]) and np.array_equal(source_scales, before[1])
@@ -144,7 +145,7 @@ def test_native_boundary_rejects_invalid_buffers_before_any_authority_write(faul
         arguments[11] = 2**31
     before = [value.copy() for value in arguments[:5]]
     with pytest.raises((ValueError, TypeError)):
-        bank_cpu._ext().pack(*arguments)
+        bank_cpu._numpy_ext().pack(*arguments)
     assert all(np.array_equal(a, b) for a, b in zip(arguments[:5], before, strict=True))
 
 
@@ -158,7 +159,7 @@ def test_cpu_recipe_uses_owned_source_identity_without_cuda_discovery(monkeypatc
         return recorded
 
     monkeypatch.setattr(cpp_extension, "load", load)
-    assert bank_cpu._ext.__wrapped__() is recorded
+    assert bank_cpu._numpy_ext.__wrapped__() is recorded
     source = Path(bank_cpu.__file__).with_suffix(".cpp")
     assert recorded == {"name": "tf_a4_bank_cpu_" + hashlib.sha256(source.read_bytes()).hexdigest()[:16],
                         "sources": [str(source)], "extra_cflags": ["-O3", "-std=c++17", "-Wall", "-Wextra", "-Werror"],

@@ -16,9 +16,62 @@ RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CO
 
 Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first, then the active interpreter's NVIDIA namespace package, Torch's bundle, and system discovery. The managed foundation binds its selected physical NCCL provider and refuses a conflicting override. A broken selected override or environment library fails explicitly. The loaded library remains owned through native communicator retirement. POSIX rendezvous sets `SO_REUSEADDR` before binding to reuse retired sessions while preserving active-listener exclusivity; it does not enable `SO_REUSEPORT`. Older sessions created without reuse may still need their kernel timeout. The collective/numerical/retirement bodies are unchanged by these discovery and bind edits.
 
+## Metadata and C-exchange composition
+
+This unqualified composition starts from metadata source `430936` and imports
+the exact non-document source of CAPIH `3fed5e39`. The two metadata modules and
+their two oracle modules remain byte-identical to M. The H `ce0527e2` CPP is
+both the required NumPy-provider kernel and the sole generated authority for
+the two direct frontends. No component gains are added or transferred.
+
+M borrows nested declarations only during immediate read-only validation and
+returns primitive kind/activation results before authority allocation or payload
+packing. Public mutable resolution, exclusions/live policy mutation, substituted
+policies and class/instance/cross-bound resolver overrides remain authoritative.
+The native boundary never receives or retains that borrowed metadata mapping.
+
+The public DLPack1.3 non-owning C interface exports five original CPU Tensors.
+Exact built-in geometry checks precede every export; version-only callback,
+physical index-set/range/ID validation, copy and GIL/owner release ordering stay
+unchanged. The callback must not resize/rebind/mutate exported data or metadata,
+and the loader exclusively owns this synchronous interval. API absence, Tensor
+subclasses and other supported integer-like geometry retain the H NumPy route;
+malformed advertised APIs or operation errors do not retry another provider.
+Neither direct frontend creates NumPy/imported-Storage/managed-capsule chains.
+Immutable GC-visible contexts strongly retain the actual loaded module. Cold
+diagnostics use the existing `_native_module` owner interface; packing adds no
+wrapper, global rebinding or repeated module lookup. Pybind's cold membership
+check preserves allocation/equality failures with owned Unicode keys and
+error-preserving lookup. Kernel/header generation remains authoritative.
+
+M's separate152 CPU and warm local metadata comparison, and CAPIH's separate121
+CPU checks, retain their own source scopes below and in their checkpoints.
+They are not a fresh composition result. The new gate must combine both test
+selections and real file-bank controls, including invalid current metadata before
+native discovery/authority/reads and public-resolver overrides through actual
+C exchange. This composition completed **275 CPU checks with zero skips** on pinned Linux
+AMD64, Python3.12.3/Torch9026, with GPUs hidden. Both metadata oracles and all
+native bytes/version/reentry/GC/module-owner/error checks passed, including
+exact cold MemoryError identity and the three real file-bank composition cases.
+All1,331 source/test files were stable,28 project origins were verified and
+the exact actor completed and retired. Three optimized warning-as-error native
+products appeared in process maps and were binary-identical to CAPIH121. This
+is not a VMA-FD proof, fresh compiler-version query or full installed-header
+audit. The inherited unchanged format-test C408 style diagnostic remains
+explicitly triaged against its identical M reference; no suppression or runtime
+edit was applied. Component152/121 results retain separate source scopes;
+their gains are not added or transferred to this composition.
+
+Wheel/header delivery, real
+callable-to-owner VMA proof, ARM/installed/required thread policies, owned raw/
+authority/pin/plan/map/view/export/context/argument lifetimes and actual reserve/
+cgroup/refusal policy, compiler/module/cache misses and complete cold/warm
+model quality/P3 comparisons remain pending. No frontend or shipping gain is
+selected. Required-region losses cannot be offset by another gain.
+
 ## Native CT bank loading candidate — qualification pending
 
-This checkout adds a separate metadata candidate: immediate validation may
+The M reference adds a separate metadata candidate: immediate validation may
 borrow the nested declaration of the current sole default policy instead of
 copying it. The public resolver still returns independent mutable results.
 Exclusions, default-format inheritance, live nested policy mutations and public

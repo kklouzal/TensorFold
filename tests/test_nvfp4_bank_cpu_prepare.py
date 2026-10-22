@@ -20,7 +20,7 @@ class SourcePreparation(unittest.TestCase):
     def exercise(self, *, primary=None, cleanup=None, opening=None):
         events, raw = [], b"owned C++ source bytes\n"
         node = next(node for node in ast.parse(SOURCE.read_bytes()).body
-                    if isinstance(node, ast.FunctionDef) and node.name == "_ext")
+                    if isinstance(node, ast.FunctionDef) and node.name == "_load")
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bank_cpu.py"
             (path.with_suffix(".cpp")).write_bytes(raw)
@@ -68,7 +68,7 @@ class SourcePreparation(unittest.TestCase):
             with (patch.dict(sys.modules, {"torch.utils.cpp_extension": module}),
                   patch.object(file_io, "FileStreams", Streams)):
                 try:
-                    actual = scope["_ext"]()
+                    actual = scope["_load"]("bank_cpu.cpp")
                 except BaseException as error:  # noqa: BLE001 - Exact transported root is the assertion input.
                     return error, events
                 self.assertIs(actual, result)
