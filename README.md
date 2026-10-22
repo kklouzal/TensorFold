@@ -2,11 +2,19 @@
 
 The Gemma source candidate prepares startup graphs for singleton serial rounds
 and, with a companion, every drafted row count with taps. Other graph shapes
-remain available on first use. This candidate passed 105 canonical-source CPU
+remain available on first use. The preparation-only candidate passed 105 canonical-source CPU
 checks and 13 native checks on the RTX PRO 2000 Blackwell (SM12.0), with unchanged
 source and completed container retirement. Installed ARM64/GB10, full-model and
 performance validation remain pending; no loading or request-speed gain is selected.
 [Behavior and required checks](docs/gemma4-cuda-validation.md#startup-graph-preparation-candidate-2026-10-22).
+
+A separate Gemma source candidate creates its temporary staged-forward function
+only on a graph-cache miss, with its stable inputs bound as defaults. Cached
+replays avoid constructing that function and its closure cells. This delta
+passed 115 canonical-source CPU checks and 15 native checks on AMD64/SM12.0,
+with source, CUDA completion and container retirement verified. Installed
+ARM64/GB10 and full-model qualification remain pending. No request-speed gain is selected.
+[Replay contract and pending checks](docs/gemma4-cuda-validation.md#cached-replay-function-preparation-candidate-2026-10-22).
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

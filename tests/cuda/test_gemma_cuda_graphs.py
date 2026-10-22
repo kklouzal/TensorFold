@@ -81,3 +81,34 @@ def test_generation_preparation_retains_lazy_multirow_without_taps(drafts, prepa
     assert staged.position == eager.position == 3
     assert torch.equal(result.hidden, expected.hidden) and torch.equal(result.logits, expected.logits)
     assert result.taps == expected.taps == {}
+
+
+@pytest.mark.parametrize("taps", [False, True])
+def test_cached_replay_reads_new_static_inputs_without_python_staged_work(monkeypatch, taps):
+    model = target()
+    eager, staged = model.make_state(256, rows=8), model.make_state(256, rows=8)
+    graphs = Graphs(model, staged, max_rows=3)
+    original = model.forward_staged
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model, "forward_staged", counted)
+    pointers = None
+    for tokens in ([1, 2], [9, 7]):
+        expected = model.forward(tokens, eager, output_taps=taps, trusted_tokens=True)
+        before = calls
+        result = graphs.forward(tokens, staged, output_taps=taps)
+        assert calls - before == (2 if pointers is None else 0)
+        assert torch.equal(result.hidden, expected.hidden) and torch.equal(result.logits, expected.logits)
+        assert result.start_position == expected.start_position and staged.position == eager.position
+        assert result.taps.keys() == expected.taps.keys()
+        assert all(torch.equal(result.taps[layer], expected.taps[layer]) for layer in expected.taps)
+        current = (result.hidden.data_ptr(), result.logits.data_ptr(),
+                   tuple((layer, value.data_ptr()) for layer, value in result.taps.items()))
+        assert pointers is None or current == pointers
+        pointers = current
+    assert len(graphs.graphs) == 1

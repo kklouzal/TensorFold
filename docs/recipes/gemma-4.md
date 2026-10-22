@@ -20,6 +20,13 @@ The checkpoint's chat template and generation metadata remain authoritative. The
 
 ## Original AEON NVFP4 on CUDA
 
+A separate source candidate creates the temporary graph-capture callable only
+on a cache miss and binds its inputs without closure cells. Its CPU, native and
+full-model gates are separate:115 canonical-source CPU and15 native checks
+passed on AMD64/SM12.0, while installed ARM64/GB10 and full-model qualification
+remain pending. It has no selected performance result. See
+[the replay contract](../gemma4-cuda-validation.md#cached-replay-function-preparation-candidate-2026-10-22).
+
 The current source candidate captures text decode/verification graphs over persistent KV. Startup prepares the singleton serial graph and, with a companion, every drafted width with taps, at the smallest attention grid. Other row/tap pairs and larger grids remain available on first use. Prefill and visual-block forwards remain eager. The preparation candidate passed 105 canonical-source CPU and 13 native checks on AMD64/RTX PRO 2000 Blackwell (SM12.0), with source identity, CUDA completion and container retirement verified. Installed ARM64/GB10, full-model and comparative performance gates remain pending; no new speed gain is selected. On GB10, the earlier runtime source `d19d807a` passed 460 installed CPU checks, 23 native DFlash checks and eight 512-token identity cases. Remaining numerical, full-context, media and comparative performance runs were waived for that accepted deployment; they do not qualify this source change or establish a new performance winner. Retain the source/image scope of the historical results below.
 
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` stores individually calibrated compressed-tensors NVFP4 projections. TensorFold preserves the original FP4 code/block-scale bytes and input/weight global calibrations. It executes the declared FP4 activation math on SM12.x, with bounded GPU packing during load. The original BF16 tied embedding/head, custom BF16 router weights, vision tower and projector remain unquantized. `--precision full` is refused for this path rather than silently changing the declared activation math.

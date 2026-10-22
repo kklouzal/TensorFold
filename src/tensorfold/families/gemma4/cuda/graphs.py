@@ -105,11 +105,14 @@ class Graphs:
         ids.copy_(torch.tensor(tokens, dtype=torch.int32))
         state.pos.fill_(start)
 
-        def run():
-            return self.target.forward_staged(ids, state, chunks=chunks, output_logits=True,
-                                              output_taps=bool(output_taps))
-
         entry = self.graphs.get(key)
+        if entry is None:
+            # Defaults keep the miss inputs alive without creating closure cells on cached replays.
+            # Construct outside the try: allocation failure before staged work must not poison the state.
+            def run(self=self, ids=ids, state=state, chunks=chunks, output_taps=output_taps):
+                return self.target.forward_staged(ids, state, chunks=chunks, output_logits=True,
+                                                  output_taps=bool(output_taps))
+
         try:
             if entry is None:
                 run()                                   # compiles kernels, retains lazily built buffers

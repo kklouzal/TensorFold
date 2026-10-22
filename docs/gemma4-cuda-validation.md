@@ -108,6 +108,50 @@ different graph-pool layout, compilation order and first touch cannot be
 assumed performance-neutral. No loading or request-speed gain is selected.
 Historical source/image checks in this guide do not qualify this candidate.
 
+## Cached replay function preparation candidate (2026-10-22)
+
+A separate source candidate creates the temporary staged-forward callable only
+when a graph entry is absent. Its five inputs bind as default arguments, so
+the cached path does not construct the function, a defaults tuple or closure
+cells. The target remains dynamically read from the same Graphs owner during
+warmup and capture; mutable input buffers and state retain their existing owners.
+This is a source-derived work reduction, not a measured latency result.
+
+Function construction remains outside the existing poisoning boundary. Warmup,
+graph construction, GC handling, capture, cache publication, replay and state
+advancement keep their order. Boolean conversions, inference mode, output
+borrowing, rollback, lazy row/grid coverage and the preparation policy are
+unchanged. Prefill and visual blocks still use their eager paths.
+
+New CPU controls cover cache-hit staging/output borrowing, default ownership,
+dynamic target lookup, conversion counts, construction failure before poisoning,
+and capture/publication/replay failures. Native controls compare fresh inputs
+against eager outputs for both tap modes and verify cached replays do not invoke
+Python staged work.
+
+Graph module `bb21c0b23b0a5ff8bea5aab32e0271daa6ba5b02421a4ece4a506aabf31c4054`
+passed **115 canonical-source CPU checks and 15 native checks** on the pinned
+AMD64/RTX PRO 2000 Blackwell SM12.0 foundation `509b4135`, Torch
+`2.16.0.dev20261017+cu134` (`9026ad48`). No selected case was skipped and no
+warning was reported. Both actual source/test cohorts of 1,310 files were
+stable during their runs; 30 CPU and 31 native project origins, four native
+mapped-object proofs, CUDA settlement and exact container retirement were
+verified. Both independent reviews closed the source and actual evidence.
+
+The initial CPU attempt retained 114 passes and one failed fault-injection
+fixture: Python3.12 requires an opcode-enabled frame before installing tracing.
+A fresh CPU run passed all115 after correcting only that test's setup and
+restoration, preserving its exact failure oracle. Runtime, native tests and
+callers were byte-identical to the real15-case native run; its evidence was
+explicitly reused for that CPU-only change, without claiming a second native
+execution or identical whole-tree source. Earlier105/13 preparation checks
+remain separate historical evidence.
+
+Installed ARM64/SM12.1 checks and full-model serial/draft comparisons remain
+pending. Cold/warm loading, TTFT, complete request wall and resource gates are
+required before selecting any performance gain. These local correctness checks
+do not establish a loading or request-speed improvement.
+
 ## Original deployment, 2026-10-18
 
 The installed TensorFold runtime serves the original `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` revision `90c8601b1a439497bc15d8fba9e52990b45ea0cb`, with BF16 `z-lab/gemma-4-26B-A4B-it-DFlash` revision `77d4202772dfe50b2396ec7bac9cfffc7b9e7057`. All fourteen target files passed their publisher hash checks. Checkpoint Python was not executed. Original FP4 codes, block scales and global calibrations remain authoritative; BF16 embedding/head, router and vision weights are retained. CUDA loading packs projections on the GPU.
