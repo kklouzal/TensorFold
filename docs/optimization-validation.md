@@ -20,6 +20,16 @@ Changed C++/CUDA compilation, new immutable native builds, installed graph/eager
 correctness and complete-model performance qualification remain pending. Prior F3 and strict-tool
 fixture results do not qualify this separate candidate.
 
+The cached-view follow-up prepares that immutable empty metadata view once per
+fixed RoundTables allocation and borrows it for each round. Dynamic starts and
+row geometry still refresh normally. This moves two metadata-view operations
+from each round to initialization; it saves no additional device payload.
+The 90-case CPU result above belongs to the preceding uncached-view source.
+Its new GPU-hidden CPU owner/content/lifetime test passed one case without
+skips; source/import identities and exact container retirement were verified.
+The preceding 90 cases were not rerun. Final native execution and complete-model
+performance qualification of the cached follow-up remain pending.
+
 Each optimization has a declared workload, platform, precision and sampling
 mode. A result applies to that region while its checkpoint, source, compiler,
 runtime, configuration and relevant cache state match. Rebuild or revalidate

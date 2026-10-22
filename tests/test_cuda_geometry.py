@@ -212,6 +212,41 @@ def test_static_chain_tables_omit_only_the_unused_schedule(split):
 
 
 @pytest.mark.torch
+def test_borrowed_empty_chain_metadata_survives_round_changes_and_separate_owners():
+    """Retained zero views stay empty/owned while the consumed per-round fields refresh."""
+    import torch
+
+    from tensorfold.families.qwen4_exp.cuda import gdn_multi
+
+    w, scratch = SimpleNamespace(device=torch.device("cpu")), SimpleNamespace(lin=2, parity=0)
+    states = [SimpleNamespace(conv=torch.zeros((2, 3, 4)), rec=torch.zeros((2, 2, 3, 128)),
+                              cur=[0, 1]) for _ in range(4)]
+    first, second = (gdn_multi.RoundTables(w, scratch, 4, 7) for _ in range(2))
+    saved = []
+    for owner, split in ((first, [2, 3]), (first, [1]), (first, [7, 5, 1, 4]),
+                         (second, [4, 2, 1]), (first, [3, 2])):
+        segs, starts = [], [0]
+        for state, count in zip(states, split):
+            segs.append((state, starts[-1], starts[-1] + count))
+            starts.append(starts[-1] + count)
+        pending = [list(range(min(2, count))) for count in split]
+        tables = gdn_multi.Tables(scratch, segs, pending, owner)
+        assert tables.plan.starts.tolist() == starts
+        assert tables.plan.max_rows == max(split)
+        assert tables.held_counts.tolist() == [len(rows) for rows in pending]
+        assert tables.held.tolist() == [rows + [0] * (7 - len(rows)) for rows in pending]
+        assert tables.sid.tolist() == [s for s, count in enumerate(split) for _ in range(count)]
+        saved.append((tables.plan, owner.i32.untyped_storage().data_ptr()))
+        for plan, storage in saved:
+            assert plan.entries.shape == (0, 3) and plan.entries.dtype == torch.int32
+            assert plan.entries.is_contiguous() and plan.entries.untyped_storage().data_ptr() == storage
+    retained, expected = tables.plan, starts
+    del tables, owner, first, second, saved
+    assert retained.starts.tolist() == expected
+    assert retained.entries.shape == (0, 3)     # the caller's borrowed Plan still owns its storage
+
+
+@pytest.mark.torch
 @pytest.mark.parametrize("world", [1, 2])
 @pytest.mark.parametrize("mtp", [False, True])
 @pytest.mark.parametrize("prefill_rows", [2048, 4096])

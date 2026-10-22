@@ -70,7 +70,8 @@ An equivalent validated zero-slot chain may supply a contiguous same-device
 int32 `(0, 3)` entry tensor. Its starts, row counts, state ownership and all other
 checks remain required. The complete `(W, 3)` form remains supported for every
 plan, and a plan using any state slot still requires all its entries. Flash's
-concurrent static tables use an empty view of their existing int32 allocation;
+concurrent static tables use an empty view of their existing int32 allocation.
+That read-only view is prepared once per fixed table owner and borrowed by each round;
 the compile-time chain launch passes no schedule pointer. The host schedule
 builders retain their complete visiting-order contract.
 

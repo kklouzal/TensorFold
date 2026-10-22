@@ -32,6 +32,7 @@ class RoundTables:
     streams and conv taps, chain starts, pending rows (``width`` a stream: their row stride) and counts,
     and each layer's conv and state pointers (``slots`` a layer). ``Tables`` writes them through a pinned mirror,
     one copy each on the current stream before the forward; the mirror is rewritten only after that copy completes.
+    The empty chain-entry view's metadata is borrowed read-only for this fixed allocation's lifetime.
     Pointees are the decoder's States: a resize or drop frees their storage through the same stream's allocator."""
 
     def __init__(self, w, scratch: Scratch, slots: int, width: int) -> None:
@@ -42,6 +43,8 @@ class RoundTables:
                    "counts": 5 * rows + slots + 1 + slots * width}
         size = self.at["counts"] + slots
         self.i32 = torch.zeros((size,), dtype=torch.int32, device=dev)
+        start = self.at["starts"]
+        self.chain_entries = self.i32[start:start].view(0, 3)
         self.h32 = torch.zeros((size,), dtype=torch.int32, pin_memory=pin)
         self.i64 = torch.zeros((2 * self.lin * slots,), dtype=torch.int64, device=dev)
         self.h64 = torch.zeros((2 * self.lin * slots,), dtype=torch.int64, pin_memory=pin)
@@ -97,7 +100,7 @@ class Tables:
         starts = t.i32[at["starts"]:at["starts"] + n + 1]
         # These windows are validated natural chains. The kernel needs only
         # their ranges; the empty entry view retains this fixed storage owner.
-        self.plan = shared.Plan(starts[:0].view(0, 3), starts, 0, most)
+        self.plan = shared.Plan(t.chain_entries, starts, 0, most)
         self.held = t.i32[at["held"]:at["held"] + n * t.width].view(n, t.width)
         self.held_counts = t.i32[at["counts"]:at["counts"] + n]
         ptrs = t.i64.view(2, t.lin, t.slots)[:, :, :n]
