@@ -22,8 +22,12 @@ Native A4 loading can read a bank's validated F32 calibration fields into one
 owned CPU vector, prepare the unchanged FP32 factors, and read an eligible
 canonical Reader-owned contiguous SF run plus bounded code chunks. Physical
 lexical source order maps explicitly to the requested local expert order.
-Four separate integer/byte copies preserve each projection's word prefix and
-SF tail, including strided host-authority cells. Other supported topologies
+Each projection uses the existing checked CPU direct pack into its final row,
+preserving its integer word prefix and unsigned SF tail, including strided
+host-authority cells. Bulk source owners remain shared through a bounded code
+chunk; no bank-axis index Tensor is created. This alternative is compared with
+the separate indexed-bank implementation; neither lower record counts nor
+fewer calls alone establish a performance result. Other supported topologies
 retain the projection-ordered path with direct packing into final CPU rows.
 
 Only explicit calibration-invalid results select ordered validation. Unexpected
@@ -40,10 +44,22 @@ scalar/bank planning metadata, and preliminary pin admission removes only the
 known resident-only increment. Fixed Python/native-record accounting remains an
 open admission gate. Dense loading does not enable or scan these bank plans.
 
-This isolated candidate is composed on accepted source `3b8cee82`. Its source,
-installed/native, ARM64 and paired full-model startup/request qualification are
-pending. Checks of a broader development composition do not qualify this source.
-No new performance, supported-model or hardware result is claimed.
+This isolated candidate is composed on accepted source `3b8cee82`. Its loader
+`16afa57f` passed **88 focused CPU checks in 3.91 s** and **seven native checks
+in 6.74 s**, with zero skips, from the read-only source checkout on AMD64 Linux,
+RTX PRO 2000 Blackwell/SM 120, and pinned Torch `2.16.0.dev20261017+cu134`
+(`9026ad48`). Both gates retained the same 1,319 source/test files and verified
+actual project/native origins, including the source-owned file-descriptor
+extension. The native cases cover resident decode/prefill at 64×128 and 512×2048,
+strided authority with real single-cell eviction, and file-owner metadata.
+These are checkout functional results; they do not certify an installed
+package, ARM64 execution, total fixed-record admission or full-checkpoint loading.
+
+Resource admission, installed/ARM64 gates and paired full-model startup/request
+performance and quality qualification remain pending. The indexed-bank source's
+earlier checks and checks of broader development compositions keep their own
+identities. No performance gain or additional supported-model/hardware
+qualification is claimed.
 
 ## Historical ABB67 artifacts — audited and affected gates closed
 

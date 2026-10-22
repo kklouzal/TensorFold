@@ -208,7 +208,7 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
     The model owns cache rollback/close if later model construction fails.
     """
     from . import format as fmt
-    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_bank_a4, pack_projection_a4, uniform_input_bits
+    from .experts_a4 import CachedExpertsA4, ExpertsA4, pack_projection_a4, uniform_input_bits
     from .host_layout import authority_fields_a4, bulk_layout_a4, entry_layout_a4
 
     device = torch.device(device)
@@ -284,13 +284,27 @@ def load_host_experts_a4(ctx, name, full, device="cuda", *, cache=None, owned_id
                 # Canonical owned plain CPU U8, no floating reduction or bridge.
                 # Invalid runs retain projection-ordered names/errors below.
                 if int(all_scales.amax().item()) <= 0x7e:
+                    code_bytes, scale_bytes = bulk.code_field_bytes, bulk.scale_field_bytes
                     for first in range(0, len(owners), bulk.chunk_experts):
                         stop = min(first + bulk.chunk_experts, len(owners))
                         codes = code_run(3 * first, 3 * stop)
-                        blocks = all_scales[first * 3 * bulk.scale_field_bytes:stop * 3 * bulk.scale_field_bytes]
-                        indices = torch.tensor(physical[first:stop], dtype=torch.int64, device="cpu")
-                        pack_bank_a4(codes, blocks, fields[0], fields[1], indices, width, dims)
-                        del codes, blocks, indices
+                        for at in range(first, stop):
+                            local = physical[at]
+                            code_cell = (at - first) * 3 * code_bytes
+                            scale_cell = at * 3 * scale_bytes
+                            for p, (_, n, k) in enumerate(projections):
+                                # The file is down/gate/up; destination rows
+                                # retain the caller's gate/up/down local order.
+                                wire = (p + 1) % 3
+                                code_offset = code_cell + wire * code_bytes
+                                scale_offset = scale_cell + wire * scale_bytes
+                                weight = codes[code_offset:code_offset + code_bytes].view(n, k // 2)
+                                blocks = (all_scales[scale_offset:scale_offset + scale_bytes]
+                                          .view(torch.float8_e4m3fn).view(n, k // 16))
+                                target = fields[0][local, p] if p < 2 else fields[1][local]
+                                pack_projection_a4(weight, blocks, out=target)
+                                del weight, blocks, target
+                        del codes
                     packed = True
                 else:
                     physical_at = [0] * len(owners)

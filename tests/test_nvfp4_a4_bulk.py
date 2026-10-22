@@ -139,6 +139,42 @@ def test_admitted_window_forces_partial_chunks_without_reading_or_writing_other_
 
 
 @pytest.mark.parametrize("width,dims", [(64, 128), (192, 128)])
+@pytest.mark.parametrize("direct", [False, True])
+def test_bulk_projection_rows_keep_nonperiodic_bytes_through_lexical_custom_order_and_partial_chunks(
+        tmp_path, monkeypatch, width, dims, direct):
+    context = FileContext(count=12, width=width, dims=dims)
+    generator = torch.Generator().manual_seed(4501 + width + dims)
+    for name, value in context.payload.items():
+        if name.endswith(".weight_packed"):
+            value.copy_(torch.randint(0, 256, value.shape, dtype=torch.uint8, generator=generator))
+            value.view(-1)[:256] = torch.randperm(256, generator=generator).to(torch.uint8)
+        elif name.endswith(".weight_scale"):
+            raw = value.view(torch.uint8)
+            raw.copy_(torch.randint(0, 127, raw.shape, dtype=torch.uint8, generator=generator))
+            raw.view(-1)[:127] = torch.randperm(127, generator=generator).to(torch.uint8)
+    context.materialize(tmp_path, direct=direct)
+    cache = CPUCache(width, dims)
+    ids = [11, 2, 0, 10, 8, 1, 4, 7, 3, 9, 5, 6]
+    scales = len(ids) * 3 * width * dims // 16
+    monkeypatch.setattr(host_layout, "READER_PIECE_BYTES", scales + 6 * 4096 + 5 * 3 * width * dims // 2)
+    try:
+        load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache,
+                            owned_ids=ids, swiglu=swiglu)
+        assert list(map(len, context.run_reads)) == [36, 15, 15, 6]
+        source = cache._layers[0].source[0]
+        expected_authority(context, cache.source_views(source), ids)
+        padding = torch.ones_like(source, dtype=torch.bool)
+        for field in cache.field_layout.fields:
+            padding[:, field.offset:field.offset + field.size] = False
+        assert bool((source[padding] == 0).all())
+        assert not context.where and context.used == {"nvfp4": True}
+        gc.collect()
+        assert all(ref() is None for ref in context.run_refs)
+    finally:
+        context.files.close()
+
+
+@pytest.mark.parametrize("width,dims", [(64, 128), (192, 128)])
 @pytest.mark.parametrize("strided", [False, True])
 def test_batched_word_and_sf_planes_have_independent_nonperiodic_all_byte_oracle(width, dims, strided):
     generator = torch.Generator().manual_seed(3903 + width + dims)
@@ -265,20 +301,25 @@ def test_unexpected_preflight_helper_failure_is_never_canonical_eligibility(tmp_
         context.files.close()
 
 
-def test_partial_indexed_pack_failure_never_publishes_or_retains_reader_backing(tmp_path, monkeypatch):
+def test_partial_projection_pack_failure_never_publishes_or_retains_reader_backing(tmp_path, monkeypatch):
     context = FileContext(count=2).materialize(tmp_path)
     cache = CPUCache()
     failure = OSError("private destination copy failed")
+    original = experts_a4.pack_projection_a4
+    calls = []
 
-    def fail(codes, _scales, up, _down, *_args):
-        up[0, 0, 0] = codes[0]
+    def fail(codes, scales, *, out):
+        calls.append(tuple(codes.shape))
+        if len(calls) == 1:
+            return original(codes, scales, out=out)
+        out[0] = codes[0, 0]
         raise failure
 
-    monkeypatch.setattr(experts_a4, "pack_bank_a4", fail)
+    monkeypatch.setattr(experts_a4, "pack_projection_a4", fail)
     try:
         with pytest.raises(OSError) as caught:
             load_host_experts_a4(context, PREFIX, context.cfg, "cuda:0", cache=cache, swiglu=swiglu)
-        assert caught.value is failure and not cache._layers and not context.used
+        assert caught.value is failure and len(calls) == 2 and not cache._layers and not context.used
         # The retained primary traceback legitimately owns its frame/locals.
         del caught
         failure.__traceback__ = None

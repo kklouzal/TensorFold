@@ -105,10 +105,14 @@ change can be verified.
 
 A separate native CT bank-loading candidate batches owned calibration and
 block-scale reads, streams bounded code chunks, and packs directly into final
-CPU authority. It preserves original error order and native arithmetic. The
-isolated candidate retains the accepted runtime's kernels and other loading
-paths; source, resource, installed/native and full-model qualification remain
-pending. [Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
+CPU authority. The current alternative retains bulk I/O and uses the existing
+checked direct pack for one projection at a time; it remains under comparison
+with indexed bank packing. It preserves original error order and native arithmetic.
+The isolated candidate retains the accepted runtime's kernels and other loading
+paths. Focused AMD64 checkout gates passed **88 CPU and seven native checks**
+on the pinned October 17 Torch build and SM 120; resource admission,
+installed/ARM64 and full-model performance qualification remain pending.
+[Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
 
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
