@@ -1,6 +1,6 @@
 """Prepared exact row reuse for the GB10 Gemma CT BF16 vocabulary head.
 
-The candidate GB10 policy uses existing R4/R8/R16 kernels by row count. Other
+The candidate GB10 policy uses weight-only CG loads at R1/R4/R8/R16. Other
 regions retain their original head. Both share the same original BF16 parameter;
 there is no new weight authority, quantization, scratch cache or runtime flag.
 """
@@ -35,17 +35,22 @@ class _RowsHead(Plain):
 class _AdaptiveRowsHead(Plain):
     """One prepared shape policy; the fixed R16 head remains a comparator."""
 
-    def __init__(self, incumbent: Plain):
+    def __init__(self, incumbent: Plain, *, global_cache: bool = False):
         super().__init__(incumbent.weight)
         self.incumbent = incumbent
-        self._small = partial(matmul_rows, rows=4)
-        self._medium = partial(matmul_rows, rows=8)
-        self._large = partial(matmul_rows, rows=16)
+        if global_cache:
+            from .head_cg import matmul as multiply
+        else:
+            multiply = matmul_rows
+        self._single = partial(multiply, w=self.weight, rows=1) if global_cache else incumbent
+        self._small = partial(multiply, rows=4)
+        self._medium = partial(multiply, rows=8)
+        self._large = partial(multiply, rows=16)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         rows = x.shape[0]
         if rows == 1:
-            return self.incumbent(x)
+            return self._single(x)
         # Zero rows retain the fixed R16 native validation/error path.
         multiply = self._small if 1 < rows <= 4 else self._medium if 4 < rows <= 8 else self._large
         return multiply(x, self.weight)
@@ -62,15 +67,16 @@ def _qualified(incumbent: Plain) -> bool:
 
 
 def select_head(incumbent: Plain) -> Plain:
-    """Bind the adaptive-row candidate for original CT Gemma on GB10SM12.1.
+    """Bind weight-only CG adaptive rows for original CT Gemma on GB10SM12.1.
 
-    R4 through four rows, R8 through eight, R16 above eight, with the original
-    singleton. The prior fixed R16 gain does not qualify this candidate's cost.
+    R4 through four rows, R8 through eight, R16 above eight, and R1 for a
+    singleton retain the same math with only the weight-load cache policy changed.
+    Neither the fixed-R16 gain nor adaptive-row evidence qualifies this change.
     Other architectures, shapes and parameter representations retain their
     original implementation. Call once while constructing the CT model, before
     target/DFlash borrowers are created; no hot capability discovery occurs.
     """
-    return _AdaptiveRowsHead(incumbent) if _qualified(incumbent) else incumbent
+    return _AdaptiveRowsHead(incumbent, global_cache=True) if _qualified(incumbent) else incumbent
 
 
 def prepare_head(incumbent: Plain, *, reuse_rows: int) -> Plain:

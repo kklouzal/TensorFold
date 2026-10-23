@@ -1,5 +1,65 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Weight-cache-policy prototype, unqualified
+
+This separate increment retains the adaptive head's R4 through four rows, R8
+through eight and R16 above eight, and the original R1 arithmetic for singleton
+calls. Only weight vector loads use `__ldcg`, caching at L2 rather than L1;
+reused input loads keep `__ldg`. One authoritative B16 template retains every
+ordered FP32 FMA, XOR addition and BF16 store rounding. The target and borrowed
+BF16 DFlash still apply softcap exactly once and return fresh public logits.
+The original tied BF16 weight, raw embedding and inherited prefill methods are
+retained; there is no packed weight copy or additional tensor payload.
+
+The static GB10/shape/type policy is bound at preparation. The private native
+entry reuses the existing layout/range/grid validation and requires the exact
+BF16 vocabulary shape; generic B16 callers retain the original cache policy.
+The private helper/factory module is imported only in qualified CG preparation;
+generic B16's complete Python module is unchanged, with no CG function or cache
+wrapper created by its import. The direct H/fixed paths do not load the helper.
+Fixed `prepare_head` comparators and the adaptive-only reference remain valid
+independent routes. The singleton uses one extra prepared callable/weight
+reference; no per-call cache-policy discovery or mutable serving flag is added.
+Existing graph keys remain valid shape descriptors, but graphs must be newly
+prepared with the new policy. A separate Gemma-only native provider directly
+lists the same B16 authority with its private compile-time macro, putting its
+bytes and options in Torch's versioned inputs. The ordinary v6 provider's
+preprocessed algorithm and CG-free recipe are retained. Existing wheel globs
+deliver the new C++ binder. Actual source/options/dependency closure, both
+providers' build/cache behavior and Gemma's added compile/module/
+capture/cold-start costs remain part of qualification.
+
+The current cold-helper source passed 83 pinned AMD64 SDK CPU cases: 33 policy,
+45 retained qualifier, four B16 boundary and one FD control. All 1,313 source/test
+and 36 tool files were bound. The local SM120/8+1-thread native gate passed all
+27 cases: 20 CG/H policy, six generic B16 and one FD control. Complete raw/softcap
+bits, exceptional BF16 words, fresh retained outputs, capture/new-input replay
+and native refusals passed, with actual CG/normal-B16/FD mapped-object identities,
+protected foundation stability, device settlement and exact owner retirement.
+
+Root exported both actual cache parents read-only. All object/ELF/Ninja bytes and
+recorded sources/options were verified. Offline CPU cuobjdump 13.4.92 inspection
+of those exact local SM120 ELFs records the weight-source `__ldcg` route as
+`LDG.E.128.STRONG.GPU`, while reused-input vector loads remain `CONSTANT`.
+R1/R4 printed instruction text matches after that modifier change. R8/R16
+register allocation/scheduling differs, with matching arithmetic/conversion/store
+opcode counts; counts alone are not numerical or binary equivalence. Existing
+source proofs and the independent native bit tests retain their own scope.
+The CG resource report shows 0 shared bytes versus 1,024 in the normal provider;
+R8 uses 39 versus 40 registers. Their cause or performance effect is not assumed.
+The separate provider and
+singleton empty-bias-wrapper removal are interactions in the complete candidate,
+so a future gain cannot be attributed entirely to the cache hint.
+
+Installed ARM64/public SM121 selection and instruction/resource checks, wheel
+delivery, complete-model outputs/counters, cold/warm resource/capture/startup
+budgets and predeclared comparative P3 remain pending. No speedup or selection
+is claimed. Streaming `__ldcs`, exact-M4/M5 and M2/R2 remain separate unselected
+candidates. The adaptive-only 70/eight checks below remain separate reference
+evidence. The preceding import-scope prototype's 83 passes are also historical:
+its unused CG definitions added work to generic B16 imports. Those facts do not
+qualify this correction or establish generic startup/performance neutrality.
+
 ## Adaptive vocabulary-head candidate, unqualified
 
 This source candidate prepares the existing R4 kernel for two through four

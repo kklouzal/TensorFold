@@ -35,3 +35,21 @@ checks do not establish producer readiness. Native qualification must cover
 both dtypes, scalar and paired outputs, linear row buckets, prompt tiles,
 layout and failure paths. One-device execution does not qualify switching
 between devices; that gate requires two compatible CUDA devices.
+
+The private `gemma_b16_head_cg` candidate accepts only BF16[262144,2816]
+weights and the prepared R1/R4/R8/R16 geometry. It changes only the weight's
+16-byte load to CUDA `__ldcg`; input loads retain `__ldg`, and active-row FP32
+FMA order, XOR reduction, BF16 rounding and fresh output storage are unchanged.
+This is a cache-policy performance hint, not synchronization or a speed guarantee.
+Inputs and weights remain read-only for the kernel's lifetime under the same
+consumer-stream ownership contract. Existing generic B16 and prompt entries
+keep their original load policy and v6 recipe. A separate Gemma-only provider
+compiles the same directly listed authority with its private compile-time macro;
+the ordinary provider excludes CG instantiations. The current source passed 83
+pinned AMD64 CPU and 27 local SM120 native checks. Owned-export inspection binds
+actual artifacts, recorded source/options and local SM120 weight/input load
+instructions. Installed ARM64/SM121, dependency/cache qualification, cold build/
+resource and complete-model performance remain pending; no gain is claimed.
+The private factory/wrapper lives in a Gemma-only module loaded during qualified
+CG preparation. Generic B16's entire Python module remains the H reference;
+neither that import nor unqualified Gemma/H/fixed preparation creates CG state.

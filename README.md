@@ -1,12 +1,16 @@
 # TensorFold fork
 
-The Gemma CUDA adaptive head-policy candidate passed 70 pinned AMD64 CPU checks
-and eight local SM120 native component checks. It uses the existing exact
-R4/R8/R16 kernels while retaining the original singleton, BF16 weight, softcap
-and sampling. Installed ARM64/public SM121 selection, full-model quality,
-resource/cold-start and comparative performance gates remain pending. No gain
-is established for this policy by the earlier fixed-R16 result.
-[Candidate scope](docs/gemma4-cuda-validation.md#adaptive-vocabulary-head-candidate-unqualified).
+The Gemma CUDA head cache-policy prototype retains adaptive R1/R4/R8/R16
+geometry, ordered FP32 arithmetic, BF16 output, softcap and sampling. Its helper
+loads only during qualified Gemma preparation; generic B16 Python stays unchanged.
+The current correction passed 83 pinned AMD64 SDK CPU checks and 27 local SM120
+native checks. Exact exported artifacts and offline cuobjdump inspection bind
+the recorded source/options and weight/input load-policy distinction. These
+checks establish no performance gain. Installed ARM64/SM121, complete-model
+quality, cold/warm resources and comparative P3 remain pending. The preceding
+import-scope prototype's separate 83 passes remain historical and still require
+replacement; they are not relabeled as this result.
+[Candidate scope](docs/gemma4-cuda-validation.md#weight-cache-policy-prototype-unqualified).
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
