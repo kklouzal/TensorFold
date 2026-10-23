@@ -1,5 +1,32 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Decode scratch candidate: local checks
+
+The current source candidate retains one mask-ID vector and one BF16 query
+buffer per DFlash state. Attention derives the shared proposal block
+`[position, position + rows)` in registers instead of materializing its two
+bound vectors. The explicit-bound attention path, grids, chunk and reduction
+order, all floating-point kernels and fresh public logits remain intact.
+
+One state is serialized on its existing CUDA stream: each attention launch
+consumes query scratch before the next layer overwrites it. Scratch is not
+committed KV or snapshot authority and is private to that state. Admission adds
+`block * (4 + 2 * heads * head_dim)` payload bytes per live lane, independently
+of prefix snapshots and the unchanged runtime/allocator reserves. No graph bank
+or precision policy is added.
+
+The frozen nine-path source manifest `647466bc` passed 138 GPU-hidden CPU
+checks and 49 local SM120 native checks on pinned AMD64 image `509b4135`,
+with zero skips or displayed warnings. Both gates retained the same 1,309
+source/test files before and after execution, matching import origins and
+complete owned-actor retirement. Native coverage includes exact explicit
+versus uniform attention bits, alternating state/length scratch reuse, old
+logit retention, and the existing independent DFlash/KV/target-graph controls.
+Only these two status documents change after those runs; runtime and test
+bytes remain identical. Installed ARM64/SM121, same-model output/resources
+and cold/warm decode-performance qualification remain pending. No gain or
+new deployment is claimed.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft

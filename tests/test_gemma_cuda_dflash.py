@@ -23,11 +23,77 @@ from safetensors.torch import save_file  # noqa: E402
 from tensorfold.families.gemma4.cuda import dflash  # noqa: E402
 from tensorfold.cuda.nvfp4.linear import Fp8Linear  # noqa: E402
 from tensorfold.cuda.requant import Head  # noqa: E402
-from tensorfold.families.gemma4.dflash_metadata import DraftConfig  # noqa: E402
+from tensorfold.families.gemma4.dflash_metadata import DraftConfig, proposal_scratch_bytes  # noqa: E402
 from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion runs CUDA kernels")
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
+
+
+def test_proposal_scratch_belongs_to_one_state_and_not_its_snapshot():
+    cfg = DraftConfig.from_dict(raw())
+    first, second = [dflash.DraftState(cfg, "cpu", 128, 16, cfg.block) for _ in range(2)]
+    payload = sum(value.numel() * value.element_size() for value in (first.ids, first.query))
+    assert payload == proposal_scratch_bytes(cfg, cfg.block)
+    assert first.query.shape == (cfg.block, cfg.heads, cfg.head_dim)
+    assert first.ids.tolist() == [cfg.mask_id] * cfg.block
+    assert first.ids.data_ptr() != second.ids.data_ptr() and first.query.data_ptr() != second.query.data_ptr()
+    first.length = 3
+    for key, value in zip(first.keys, first.values):
+        key.fill_(1)
+        value.fill_(2)
+    saved = first.snapshot()
+    first.ids[0], first.query[:] = 2, 7
+    first.restore(saved)
+    assert first.length == 3 and first.ids[0] == 2 and torch.all(first.query == 7)
+    assert second.length == 0 and second.ids.tolist() == [cfg.mask_id] * cfg.block
+
+
+def test_logits_reuses_only_lane_scratch_and_keeps_fresh_results(monkeypatch):
+    """Exercise the real adapter's ownership/dispatch with CPU operations, not a kernel model."""
+    cfg = DraftConfig.from_dict(raw())
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.config, draft.device, draft.block, draft.window = cfg, torch.device("cpu"), cfg.block, 128
+    states = [dflash.DraftState(cfg, "cpu", 128, 16, cfg.block) for _ in range(2)]
+    for state in states:
+        state.length = 7
+    embedded, published = [], []
+
+    def embed(ids):
+        embedded.append(ids.clone())
+        return ids[:, None].to(torch.bfloat16).expand(-1, cfg.hidden).contiguous()
+
+    def publish(fused, state, layer, query):
+        published.append((state, query.data_ptr(), query.shape))
+        query.fill_(layer + 1)
+
+    def attend(q, keys, values, pos, begins, ends, **policy):
+        assert begins is pos and ends is pos and policy["uniform_block"] == policy["blocks"]
+        return q.clone()
+
+    draft.raw_embed_tokens, draft._publish = embed, publish
+    draft.project_logits = lambda hidden: hidden.clone().float()
+    draft.weights = {"norm.weight": torch.ones(cfg.hidden)}
+    draft.linears = {}
+    for layer in range(cfg.layers):
+        base = f"layers.{layer}."
+        draft.weights[base + "input_layernorm.weight"] = torch.ones(cfg.hidden)
+        draft.weights[base + "post_attention_layernorm.weight"] = torch.ones(cfg.hidden)
+        draft.linears[base + "kvq"] = lambda hidden: hidden
+        draft.linears[base + "self_attn.o_proj.weight"] = lambda value: value[:, :cfg.hidden]
+        draft.linears[base + "gate_up"] = lambda hidden: torch.cat((hidden, hidden), dim=-1)
+        draft.linears[base + "mlp.down_proj.weight"] = lambda hidden: hidden
+    monkeypatch.setattr(dflash, "rms_norm", lambda value, weight, eps: value)
+    monkeypatch.setattr(dflash.attention, "sliding", attend)
+    previous = draft.logits(states[0], 2, 1)
+    saved = previous.clone()
+    draft.logits(states[1], 3, 3)
+    current = draft.logits(states[0], 5, 3)
+    assert [ids.tolist() for ids in embedded] == [[2, cfg.mask_id], [3, cfg.mask_id, cfg.mask_id, cfg.mask_id],
+                                                  [5, cfg.mask_id, cfg.mask_id, cfg.mask_id]]
+    assert all(pointer == state.query.data_ptr() for state, pointer, _ in published)
+    assert all(state.length == 7 for state in states)
+    assert previous.data_ptr() != current.data_ptr() and torch.equal(previous, saved)
 
 
 def test_prompt_append_partition_and_restore_keep_one_projection_arithmetic(monkeypatch):
@@ -116,6 +182,31 @@ def test_prompt_committed_kv_and_q_are_bit_identical_across_tiny_cached_suffix(t
     cached = draft.propose(split, 2, 4, sampled=True, sampling=policy).sample(0, 4, policy, 96)
     full256 = draft.propose(whole, 2, 4, sampled=True).sample(0, 4, policy, 96)
     assert cold == cached == full256
+
+
+@cuda
+@pytest.mark.parametrize("bits", [16, 8])
+def test_alternating_proposals_keep_per_state_scratch_and_old_logits(tmp_path, bits):
+    cfg, _arrays, target = make_fixture(tmp_path)
+    target.weights = NS(embed=NS(weight=target.head.to(DEV)))
+    target.config.softcap = 30.0
+    draft = dflash.DFlash(tmp_path, target, context_limit=8192, bits=bits, rows=128)
+    first, second = draft.make_state(), draft.make_state()
+    draft.append(first, taps_for(cfg, 95, 93).to(DEV), prompt=True)
+    draft.append(second, taps_for(cfg, 63, 19).to(DEV), prompt=True)
+    pointers = [(state.ids.data_ptr(), state.query.data_ptr()) for state in (first, second)]
+    original = draft.logits(first, 2, 3)
+    saved = original.clone()
+    draft.logits(first, 3, 1)
+    other = draft.logits(second, 4, 2)
+    repeated = draft.logits(first, 2, 3)
+    torch.cuda.synchronize(DEV)
+    assert (first.length, second.length) == (95, 63)
+    assert pointers == [(state.ids.data_ptr(), state.query.data_ptr()) for state in (first, second)]
+    assert pointers[0][0] != pointers[1][0] and pointers[0][1] != pointers[1][1]
+    assert all(state.ids[1:].tolist() == [cfg.mask_id] * (draft.block - 1) for state in (first, second))
+    assert torch.equal(original, saved) and torch.equal(repeated, saved)
+    assert len({value.data_ptr() for value in (original, other, repeated)}) == 3
 
 
 def test_proposal_factory_owns_sampled_q_packet_and_preserves_greedy_default():

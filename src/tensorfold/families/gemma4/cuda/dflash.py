@@ -104,6 +104,9 @@ class DraftState:
     64): the window plus a proposal block, and one append's rows on distinct
     slots. The full layer keeps every position of the admitted window.
     ``length`` counts committed target positions; ``pos`` is its device copy.
+    Proposal IDs and query scratch belong to this lane and are not checkpoint
+    authority. Callers serialize this state's operations on one CUDA stream,
+    as required for its K/V writes. A proposal never returns scratch storage.
     """
 
     def __init__(self, cfg, device, window: int, rows: int, block: int):
@@ -113,6 +116,9 @@ class DraftState:
         self.values = [torch.empty_like(k) for k in self.keys]
         self.rows, self.length = rows, 0
         self.pos = torch.zeros((1,), dtype=torch.int32, device=device)
+        # Embedding only reads IDs: all non-anchor rows remain the mask token.
+        self.ids = torch.full((block,), cfg.mask_id, dtype=torch.int32, device=device)
+        self.query = torch.empty((block, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=device)
 
     def reset(self) -> None:
         self.length = 0
@@ -273,21 +279,20 @@ class DFlash:
             return None
         if type(anchor) is not int or not 0 <= anchor < cfg.vocab:
             raise ValueError("Gemma DFlash anchors must be native target-vocabulary token IDs")
-        ids = torch.full((length,), self.mask_id, dtype=torch.int32, device=self.device)
+        ids = state.ids[:length]
         ids[0] = anchor
         x = self.raw_embed_tokens(ids)
         start = state.length
         state.pos.fill_(start)
-        # Noncausal layers see the whole block: every row shares [start, start + length).
-        block_start = state.pos.repeat(length)
-        block_end = block_start + length
+        # One Q buffer is safe across layers: attention consumes it before the
+        # next layer's publish on this stream. Attention returns fresh storage.
+        q = state.query[:length]
         scale = cfg.head_dim ** -0.5
         group = cfg.heads // cfg.kv_heads
         for layer, kind in enumerate(cfg.layer_types):
             base = f"layers.{layer}."
             h = rms_norm(x, self.weights[base + "input_layernorm.weight"], cfg.eps)
             fused = self.linears[base + "kvq"](h)
-            q = torch.empty((length, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=self.device)
             self._publish(fused, state, layer, q)
             noncausal = not cfg.causal_layers[layer]
             if kind == "sliding_attention":
@@ -296,8 +301,11 @@ class DFlash:
             else:
                 window, chunk = 0, FULL_CHUNK
                 slots = (start + length - 1) // chunk + 1
-            out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, block_start, block_end,
-                                    window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk)
+            # Only the noncausal case reads bounds; its uniform block is
+            # derived in registers from pos/length, without materialized rows.
+            out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, state.pos, state.pos,
+                                    window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk,
+                                    uniform_block=noncausal)
             x = x + self.linears[base + "self_attn.o_proj.weight"](out.reshape(length, -1))
             h = rms_norm(x, self.weights[base + "post_attention_layernorm.weight"], cfg.eps)
             gate, up = self.linears[base + "gate_up"](h).split(cfg.width, dim=-1)

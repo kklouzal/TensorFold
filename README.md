@@ -1,5 +1,14 @@
 # TensorFold fork
 
+Gemma CUDA's proposal-scratch candidate keeps IDs and query scratch with each
+DFlash state and derives uniform attention-block bounds without temporary
+bound vectors. The frozen nine-path manifest `647466bc` passed 138 GPU-hidden
+CPU checks and 49 local SM120 native checks on pinned AMD64 image `509b4135`,
+with no skips or displayed warnings. Runtime and test bytes are retained by
+this status-only update. Installed ARM64/SM121, full-model output/resources
+and cold/warm decode-performance qualification remain pending. No gain or
+new deployment is claimed; historical evidence below retains its own scope.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
