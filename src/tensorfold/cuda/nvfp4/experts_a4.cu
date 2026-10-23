@@ -164,9 +164,10 @@ __device__ __forceinline__ void stage_wait() { asm volatile("cp.async.wait_group
 
 // One 64-column block's packed words (128 x 16 B) then its E4M3 scales (16 x 16 B) for one 64-input group, copied by
 // the CTA's threads into ``dst`` (one ring buffer of BTILE bytes).
+template <int WARPS = TILE_WARPS>
 __device__ __forceinline__ void stage_tile(uint8_t* dst, const uint8_t* words, const uint8_t* bscales) {
     const uint32_t base = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
-    for (int c = threadIdx.x; c < BTILE / 16; c += TILE_WARPS * 32)
+    for (int c = threadIdx.x; c < BTILE / 16; c += WARPS * 32)
         stage_copy(base + c * 16, c < 128 ? words + c * 16 : bscales + (c - 128) * 16);
 }
 
@@ -331,18 +332,19 @@ __device__ __forceinline__ float activate(float gate, float up) {
 // down_kernel's chain form for the gate and up projections of one 64-column block in one CTA (both staged per group),
 // then the BF16 activation/product and the down projection's FP4 block quantization in the epilogue: each warp's
 // 16-column groups give one down block per row, written as the paired codes/scales the down GEMM reads.
-template <bool DIRECT, bool COMMON, int MT, int ACT, bool SINGLE>
-__global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t* codes, const uint8_t* scales,
+template <bool DIRECT, bool COMMON, int MT, int ACT, bool SINGLE, int WARPS = TILE_WARPS, int PIPE = STAGES>
+__global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* codes, const uint8_t* scales,
     const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input, const float* down_input,
     int64_t blob_stride, int64_t weight_stride, int64_t input_stride, int64_t down_stride, int cells,
     const int* items, int item_count, int pairs, uint8_t* down_codes, uint8_t* down_scales, int n, int k, int slices,
     const int* counts, const int* members, int slots, int code_rows) {
     // One m16 tile a warp (WM 1): with both projections' accumulators, 2-tile warps cost occupancy (measured
     // 2.02 -> 2.68 ms for a 4096-row Qwen layer on sm_120), unlike down_kernel.
-    constexpr int WM = 1, WGN = TILE_WARPS * WM / MT, SPW = 8 / WGN;
-    static_assert(MT % WM == 0 && (MT / WM) * WGN == TILE_WARPS && 8 % WGN == 0, "staged A4 warp layout");
+    static_assert(PIPE >= 2 && PIPE <= 4, "private Gemma-up pipeline requires two to four stages");
+    constexpr int WM = 1, WGN = WARPS * WM / MT, SPW = 8 / WGN;
+    static_assert(MT % WM == 0 && (MT / WM) * WGN == WARPS && 8 % WGN == 0, "staged A4 warp layout");
     static_assert(SPW % 2 == 0, "a warp owns whole 16-column down blocks");
-    __shared__ __align__(16) uint8_t stage[STAGES][2][BTILE];
+    __shared__ __align__(16) uint8_t stage[PIPE][2][BTILE];
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t = lane & 3;
     const int item = blockIdx.x, block = blockIdx.y;
     const int active_items = counts[0];
@@ -361,7 +363,7 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
 #pragma unroll
         for (int p = 0; p < 2; ++p) {
             const uint8_t* wp = w + p * blob_bytes;
-            stage_tile(stage[buffer][p], wp + tile * 2048, wp + static_cast<int64_t>(n) * k / 2 + tile * 256);
+            stage_tile<WARPS>(stage[buffer][p], wp + tile * 2048, wp + static_cast<int64_t>(n) * k / 2 + tile * 256);
         }
     };
     int lo[WM];
@@ -419,14 +421,14 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
     uint32_t a[2][WM][4] = {}, sa[2][WM] = {};
     if (live) load_a(0, a, sa);
 #pragma unroll
-    for (int s = 0; s < STAGES - 1; ++s) {
+    for (int s = 0; s < PIPE - 1; ++s) {
         if (s < kg_count) load(s, s);
         stage_commit();
     }
     for (int kg = 0; kg < kg_count; ++kg) {
-        stage_wait<STAGES - 2>();
+        stage_wait<PIPE - 2>();
         __syncthreads();
-        if (kg + STAGES - 1 < kg_count) load(kg + STAGES - 1, (kg + STAGES - 1) % STAGES);
+        if (kg + PIPE - 1 < kg_count) load(kg + PIPE - 1, (kg + PIPE - 1) % PIPE);
         stage_commit();
         if constexpr (!SINGLE) {
             if (kg % per == 0) {
@@ -444,7 +446,7 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
             if (kg + 1 < kg_count) load_a(kg + 1, next, next_sa);
 #pragma unroll
             for (int p = 0; p < 2; ++p) {
-                const uint8_t* staged = stage[kg % STAGES][p];
+                const uint8_t* staged = stage[kg % PIPE][p];
 #pragma unroll
                 for (int j = 0; j < SPW; ++j) {
                     const int s = sub0 + j;
@@ -615,6 +617,44 @@ void expert_a4_fused_up_cuda(const at::Tensor& codes, const at::Tensor& scales, 
     };
     const auto by_common = [&](auto mode) { if (common) by_tile(mode, T{}); else by_tile(mode, F{}); };
     if (direct) by_common(T{}); else by_common(F{});
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+// Private component-investigation entry. Every configuration preserves the
+// original CT/GeGLU, 16-pair, single-K-chain arithmetic; only staging and warp
+// ownership vary. The checked C++ boundary admits exactly six configurations.
+void expert_a4_gemma_fused_up_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
+    const at::Tensor& weight, const at::Tensor& input, const at::Tensor& down_input, const at::Tensor& items,
+    const at::Tensor& counts, const at::Tensor& members, at::Tensor& down_codes, at::Tensor& down_scales,
+    int64_t n, int64_t k, int64_t slots, bool common, int64_t warps, int64_t stages) {
+    const auto launch = [&](auto warp_count, auto depth, auto shared) {
+        constexpr int W = decltype(warp_count)::value, S = decltype(depth)::value;
+        fused_up_kernel<false, decltype(shared)::value, 1, 1, true, W, S>
+            <<<dim3(items.size(0), n / 64), W * 32, 0, at::cuda::getCurrentCUDAStream()>>>(
+                codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(), blob.data_ptr<uint8_t>(), blob.size(2),
+                weight.data_ptr<float>(), input.data_ptr<float>(), down_input.data_ptr<float>(),
+                blob.stride(0), weight.stride(0), input.stride(0), down_input.stride(0), blob.size(0),
+                items.data_ptr<int>(), items.size(0), members.size(0), down_codes.data_ptr<uint8_t>(),
+                down_scales.data_ptr<uint8_t>(), n, k, 1, counts.data_ptr<int>(), members.data_ptr<int>(),
+                slots, codes.size(1));
+    };
+    const auto by_stage = [&](auto warp_count, auto shared) {
+        switch (stages) {
+            case 2: launch(warp_count, std::integral_constant<int, 2>{}, shared); break;
+            case 3: launch(warp_count, std::integral_constant<int, 3>{}, shared); break;
+            case 4: launch(warp_count, std::integral_constant<int, 4>{}, shared); break;
+            default: TORCH_CHECK(false, "private Gemma-up stage invariant");
+        }
+    };
+    const auto by_common = [&](auto warp_count) {
+        if (common) by_stage(warp_count, std::true_type{});
+        else by_stage(warp_count, std::false_type{});
+    };
+    switch (warps) {
+        case 2: by_common(std::integral_constant<int, 2>{}); break;
+        case 4: by_common(std::integral_constant<int, 4>{}); break;
+        default: TORCH_CHECK(false, "private Gemma-up warp invariant");
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

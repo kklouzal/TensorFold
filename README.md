@@ -1,5 +1,16 @@
 # TensorFold fork
 
+This private branch contains an unselected Gemma CT-native MoE up-projection
+component entry for six warp/stage configurations. Production callers and the
+existing four-warp/four-stage policy remain unchanged. The first local SM120
+native run collected 61 cases: 53 passed and 8 stopped at an incorrectly ordered
+independent scratch oracle before the private byte-comparison loops. After the
+test-only coordinate correction, all 63 local checks passed with no skips,
+including full code/scale bytes, final outputs and changing-route graph replay.
+Installed ARM and integrated performance qualification remain pending; no gain
+or new default is claimed.
+[Prototype contract and pending checks](docs/gemma-moe-up-validation.md).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
