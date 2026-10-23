@@ -381,6 +381,11 @@ tensorfold serve Vontra/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit --no-upda
 
 The native extension requires a working platform compiler. Add the `vision` extra for image input, or `ssd` for the supported SSD expert path, for example `python -m pip install -e '.[grammar,vision,ssd]'`. The grammar extra installs xgrammar; the pinned Docker runtime already includes it. On CUDA, use the container's matching Torch, Triton and extension compiler; the package has no `cuda` installation extra.
 
+Managed CUDA toolkit-state reads preserve the original read error and an
+independent close failure. Thirteen targeted host checks passed; the same
+64 MiB limit, file-opening behavior and toolkit validation remain in force.
+[Scope and pending image qualification](docs/cuda-managed-state-io.md).
+
 `tensorfold models` lists registered families/checkpoints. `info MODEL` checks configuration without fetching weights. `pull MODEL [DRAFTER ...]` downloads ahead of time; `serve` can download a missing checkpoint. The CLI download uses repository defaults; the revision-pinned API download above is preferable for reproducible deployments. See the [runbook](RUNBOOK.md) and [recipes](docs/recipes/README.md) for family-specific setup.
 
 ## Python-line integration
