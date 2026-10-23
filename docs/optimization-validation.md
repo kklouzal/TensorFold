@@ -18,6 +18,26 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Native CT bank loading development, 2026-10-22
+
+The [loading validation record](nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending)
+records the separate native-loop, metadata and SF-first comparisons. SF-first
+measured a 7.706926 ms reduction in complete warm resident-bank transaction time
+against source `430936c8` on AMD64/SM120, using Qwen3.6 CT's 257-cell bank,
+8 intra-op/1 inter-op threads and six paired blocks. Its pointwise 95% interval
+was [-10.329853, -5.083999] ms; all six effects were negative. The record
+preserves workload, cache, quality, provenance and procedural limitations.
+This does not establish a full-model startup or GB10 gain.
+
+The development integration retains the separately tested 8,184-byte native
+index-snapshot admission correction. The correction alone passed 69 CPU checks.
+The integrated runtime passed 448 unique CPU checks; after the test-reader and
+driver IO correction, all 35 affected budget/owner checks passed again. These
+functional results do not qualify GB10/model performance. Fresh ARM
+installed/native execution and all four-model cold/warm loading, prefill,
+decode and quality gates remain pending. Unresolved
+direct-call frontend and parallel-packing candidates remain separate.
+
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
 Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch

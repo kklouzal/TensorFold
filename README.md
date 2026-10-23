@@ -50,7 +50,7 @@ thinking and budgets per request. Explicit environment overrides remain availabl
 
 **CUDA DFlash sampler migration:** sampled Gemma 4, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash requests use standard rejection sampling in the integration candidate, including normalized represented probability rows and strictly interior keyed uniforms. Greedy serial identity remains required; sampled serial/drafted tokens may differ while preserving the target sampling distribution. Fixed seed/configuration, cache and batch reproducibility remain required. [Implementation contract and pending qualification](docs/rejection-sampling-validation.md) distinguish this increment from the historical coupled-sampler results below.
 
-**Performance development paused (2026-10-21):** the GB10 container was verified healthy on the latest validated runtime, including a live HTTP generation. No new optimization from the resumed campaign completed all model/performance gates. Experimental work is checkpointed separately. [Current runtime verification and resume status](docs/performance-pause-20261021.md).
+**Performance development resumed (2026-10-22):** this development branch contains the locally measured loading increments below; new GB10 model and performance qualification remains pending. The [historical pause record](docs/performance-pause-20261021.md) preserves the accepted runtime and live generation verification from 2026-10-21.
 
 **Gemma sampled-proposal optimization (2026-10-21):** unpenalized requests with positive `top_k` through 256
 bind proposal extraction to that request's top-k support before probability normalization. Boundary ties retain
@@ -151,7 +151,18 @@ gains. The [validation record](docs/nvfp4-loading-validation.md#native-ct-bank-l
 discloses two cloud web calls during the all-tool hold; no local/target work was
 reported, and no zero-effect or noise-equivalence claim is made. Other loading
 regions, ARM64/installed, owned-resource admission and complete cold/warm model
-startup/request/quality gates remain pending; no public promotion is claimed.
+startup/request/quality gates remain pending; no deployment is claimed.
+
+Bank admission additionally charges the native packer's fixed 8,184-byte index
+snapshot alongside the live Torch index. Resident and RAM-backed expert loading
+retain that charge through preliminary pin admission; chunks reuse it. This
+sizing correction leaves the byte loop and model arithmetic unchanged. The
+correction alone passed 69 affected CPU checks with no skips in the pinned
+AMD64 SDK, with GPUs hidden, four CPUs and 16 GiB. Its integration with SF-first
+passed 448 unique CPU checks; after the test-reader and driver IO correction,
+all 35 affected budget/owner checks passed again. These functional results do
+not qualify GB10/model performance. New ARM/installed and four-model
+qualification remain pending; this is not a total runtime-memory bound.
 
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;
