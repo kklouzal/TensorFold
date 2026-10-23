@@ -1,10 +1,13 @@
 # TensorFold fork
 
-The Gemma FP8 provider-preparation candidate passed twelve pinned AMD64 source
-CPU checks: seven mocked-provider constructor controls and five existing
-validation and reader-lifetime checks, with no skips. Fresh ARM, native
-preparation, full-model quality and comparative performance qualification remain
-pending. [Scope](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
+On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
+throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
+BF16 drafting. All eight required decode cells had positive interval bounds;
+all 6,144 generated token IDs matched the four fixed greedy reference sequences.
+Startup took **14.97% longer**, including provider preparation. The native NVFP4
+GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
+`16`, required for the original affine checkpoint's quantized head.
+[Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

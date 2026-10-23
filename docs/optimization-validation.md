@@ -27,14 +27,74 @@ request arithmetic and the default BF16 proposal path are unchanged. Factory
 failures propagate before model readiness; no proposals, KV warmup or fallback
 are added. All preparation belongs to the production loading interval.
 
-The pinned AMD64 SDK (`509b4135`) passed twelve source CPU cases with no skips:
-seven constructor coordination controls and five existing validation,
-reader-failure and retirement checks. They cover DFlash source `03643eab` and
-test source `ac630168`; full source hashes, loaded project-module origins and
-worker retirement were verified. Native provider calls are mocked in these CPU
-controls. Fresh ARM image and native preparation, full-model output quality,
-cold-request behavior and comparative performance remain pending. Earlier image
-or FP8 pilot results do not qualify this candidate or establish a gain.
+Source `16b4c087` / DFlash `03643eab` passed twelve source AMD64 and twelve fresh
+installed ARM CPU cases, with no skips, including seven mocked-provider
+constructor coordination cases. Six real native cases passed on both SM120 and
+SM121. The ARM runtime is
+`sha256:e9b1197703b72a8c1875ae89f4bb332be22e0cda989599cff0040e2f33124278`;
+its verification image is `sha256:4ad13068032a5894aa9361d2e9c083c906352e22659973440d382bfef16490e3`.
+Both installed images had the same 564-file product manifest `d323ecb6`.
+The own-model gate and every comparison process passed complete token, prompt,
+cache, source, loaded-origin, foundation and owner-retirement checks.
+
+The fixed comparison used one GB10 (SM121), VBoost0/CPU boost1, cpuset
+`5-9,15-19`, actual Torch 10 intra-op/10 inter-op threads, 16 GiB host reserve,
+zero optional CUDA reserve, context 262144, BF16 target KV, one request lane and
+five verification rows. The unchanged local target is
+`AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4@90c8601b1a439497bc15d8fba9e52990b45ea0cb`;
+the companion is `z-lab/gemma-4-26B-A4B-it-DFlash@77d4202772dfe50b2396ec7bac9cfffc7b9e7057`.
+A is accepted runtime `2443…` / source `259b4238`, bits 16; F8 is the prepared
+runtime above, bits 8. No target/checkpoint activation precision changed.
+
+There were exactly six paired whole blocks / 24 fresh processes, alternating
+`A,F8,F8,A` and `F8,A,A,F8`. Each arm/block had its own new compiler cache:
+one cold process followed by one warm process using that same physical cache.
+Each process generated all 64 greedy IDs for short and 8,451-token history
+prompts, both uncached and fully cached; cached-token counts were 0/48/0/8451.
+All 6,144 IDs matched the fixed complete reference sequences. BF16 retained its
+exact counter oracle; FP8 used its declared positive, conserved proposal counts.
+This qualifies these greedy cases, not universal model quality or sampled
+throughput. Earlier pilots and the incomplete A/S cohort were not pooled.
+
+The predeclared scalar equally weights log cached throughput across short/history
+and compiler cold/warm. F8/A was **1.2096133**, with all six block effects positive
+and pointwise two-sided 95% t5 interval **[1.1526604,1.2693803]**. All eight required
+decode-cell intervals had positive lower bounds. These are pointwise intervals,
+not simultaneous family bounds; the independent representative block model
+remains an assumption. No equivalence margin or magnitude cutoff was used.
+
+| Prompt | Prompt cache | Compiler cache | BF16 tok/s | FP8 tok/s | F8/A pointwise95% interval |
+| --- | --- | --- | ---: | ---: | --- |
+| Short | Uncached | Cold | 42.559 | 46.141 | 1.08078–1.08760 |
+| Short | Uncached | Warm | 74.156 | 87.520 | 1.16996–1.19055 |
+| Short | Full | Cold | 75.386 | 91.976 | 1.20826–1.23198 |
+| Short | Full | Warm | 75.971 | 91.995 | 1.19396–1.22815 |
+| History | Uncached | Cold | 43.791 | 48.127 | 1.09175–1.10633 |
+| History | Uncached | Warm | 51.714 | 62.051 | 1.00227–1.43646 |
+| History | Full | Cold | 62.410 | 72.135 | 1.14274–1.16907 |
+| History | Full | Warm | 56.200 | 70.458 | 1.03795–1.51427 |
+
+Rates are six-process geometric means per arm/cell. Fully cached decode is
+64/settled-generation-wall; uncached decode is 63/(settled-wall−first-callback),
+using the same clock. Request preparation, all compilation and deferred CUDA
+work are retained in their applicable intervals; no observer warmed providers,
+tensors or KV. The independent own-model gate observed both FP8 provider caches
+already populated at readiness through passive cache metadata.
+
+The startup tradeoff is explicit: A/F8 whole-child ready latency was 0.8698024,
+so F8 took **14.97% longer** (inverted pointwise 95% interval: **8.84–21.44%**
+longer). The adopted decode objective ranks this below throughput, with the
+existing resource/deadline gates retained. Uncached TTFT improved by latency
+ratio A/F8=1.0771764, and all prepared-request wall latency by 1.1439377.
+These secondary measures do not establish higher-priority equivalence.
+
+The native NVFP4 GB10 profile now selects bits 8; affine exports with a quantized
+tied head still require bits 16. No global CLI default, target arithmetic or
+sampling contract changed. [Public receipt](verification-gemma-fp8-20261023.json)
+contains the frozen protocol, complete analysis, all 24 raw timing/control rows,
+source/image hashes and scope. It does not qualify other hardware, prompts,
+concurrency, precision or cache distributions. Further sampler, head, MoE and
+graph candidates remain separate investigations.
 
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
