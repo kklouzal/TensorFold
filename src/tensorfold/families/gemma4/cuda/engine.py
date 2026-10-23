@@ -351,6 +351,7 @@ class Gemma4Engine:
             stopped = bool(on_tokens([first]))
             active_drafts = bool(draft and self.head is not None)
             stochastic = active_drafts and sampling is not None and sampling.temperature > 0
+            proposal_tokens = self.head.propose_tokens if active_drafts and not stochastic and history is None else None
             while not stopped and len(out) < max_tokens and out[-1] not in eos \
                     and not (constraint is not None and constraint.finished):
                 self._check_open()
@@ -368,6 +369,8 @@ class Gemma4Engine:
                         packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
                                   else ChainPacket((), (), first_position))
                         guesses = packet.tokens
+                    elif proposal_tokens is not None:
+                        guesses = proposal_tokens(self._draft, inputs[0], limit)
                     else:
                         chains = self.head.propose(self._draft, inputs[0], limit, history)
                         guesses = chains.finish(0, limit, history)[0] if chains is not None else []

@@ -124,9 +124,9 @@ def _engine(monkeypatch, *, with_head=True):
             self.append_roles.append((len(taps), prompt))
             draft.taps.extend(int(v) for v in taps[:, 0])
 
-        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
+        def _tokens(self, draft, anchor, limit):
             if not draft.taps:
-                return None
+                return []
             total = sum(draft.taps) + anchor
             proposals = []
             for _ in range(limit):
@@ -136,6 +136,15 @@ def _engine(monkeypatch, *, with_head=True):
             # Force rejection after a correct prefix to expose rollback/tap bugs.
             if len(proposals) > 2:
                 proposals[2] = (proposals[2] + 1) % 19
+            return proposals
+
+        def propose_tokens(self, draft, anchor, limit):
+            return self._tokens(draft, anchor, limit)
+
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
+            proposals = self._tokens(draft, anchor, limit)
+            if not proposals:
+                return None
             def packet(row, count, sampling, first_position, history=None):
                 from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
                 # An intentionally unaware deterministic proposal is valid q: target rejection corrects it.
@@ -173,6 +182,34 @@ def _assert_prompt_path(engine, prompt):
     state = engine._state
     assert state.tokens[:len(prompt)] == list(prompt)
     assert state.prompt_rows == [True] * len(prompt) + [False] * (state.position - len(prompt))
+
+
+@pytest.mark.parametrize("temperature", [None, 0.0, 0.8])
+@pytest.mark.parametrize("penalized", [False, True])
+def test_only_unpenalized_greedy_requests_use_tokens_without_scores(monkeypatch, temperature, penalized):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import Penalties
+
+    engine = _engine(monkeypatch)
+    tokens_only, scored = engine.head.propose_tokens, engine.head.propose
+    calls = []
+
+    def tokens(state, anchor, limit):
+        calls.append('tokens')
+        return tokens_only(state, anchor, limit)
+
+    def scores(state, anchor, limit, history=None, *, sampled=False, sampling=None):
+        calls.append('scores')
+        return scored(state, anchor, limit, history, sampled=sampled, sampling=sampling)
+
+    engine.head.propose_tokens, engine.head.propose = tokens, scores
+    sampling = None if temperature is None else Sampling(seed=71, temperature=temperature, top_k=7)
+    penalties = Penalties(presence=.3) if penalized else None
+    output = []
+    stats = engine.generate([3, 1, 4], 20, sampling, lambda ids: output.extend(ids),
+                            stop_eos=False, penalties=penalties)
+    assert len(output) == 20 and stats['rounds'] > 0 and calls
+    assert set(calls) == ({'tokens'} if not penalized and temperature in (None, 0.0) else {'scores'})
 
 
 @pytest.mark.parametrize("with_head", [False, True])
@@ -314,10 +351,16 @@ def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypat
     seen = []
 
     class Exact(type(engine.head)):
-        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
+        def _logits(self, draft, limit):
             first = len(draft.taps) + 1             # the committed context ends at the anchor
             seen.append(first == engine._state.position + 1)
-            logits = torch.stack([scores(first + j) for j in range(limit)])
+            return torch.stack([scores(first + j) for j in range(limit)])
+
+        def propose_tokens(self, draft, anchor, limit):
+            return self._logits(draft, limit).argmax(-1).tolist()
+
+        def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
+            logits = self._logits(draft, limit)
             return speculative.Chains(logits, [history], limit, sampled=sampled, sampling=sampling)
 
     engine.head = Exact()

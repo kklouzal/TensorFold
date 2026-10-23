@@ -871,3 +871,47 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+## Gemma tokens-only greedy proposals
+
+The 2026-10-23 source candidate adds an explicit Gemma DFlash token-only entry
+for the engine's unpenalized greedy, no-confidence/no-cutoff consumer. It uses
+the same original FP32 softcapped logits and existing complete-row sampler,
+including first-maximum tie behavior, NaN/positive-infinity refusal and at least
+one finite score in every produced row. It reads all produced rows before any
+acceptance cut. Only the sampler's two exact builtin score-domain failures are
+normalized to the existing proposal ValueError, retaining the original cause;
+shape, resource and foreign errors propagate unchanged.
+
+The request selects this entry once inside generation. The public scored
+`propose`/`Chains` APIs, sampled and penalized/history paths, logical prefix
+verification, room/EOS/constraint handling, rollback, tap commits and sampling
+remain unchanged. No per-round CUDA wait is removed. The sampler's synchronous
+readback completes on the existing exclusive serving stream before host IDs
+drive the target graph; borrowed outputs, graph keys/captures and persistent
+resource bounds are unchanged. The existing close/drain ownership protocol
+still applies after callback failures.
+
+The eliminated confidence path includes full-vocabulary log-sum-exp and
+cumulative confidence work plus unused parent/confidence lists. The replacement
+still performs required full-row invalid-score checks and has different small
+temporary packet work. This is a candidate cost model, not a measured gain.
+The separate Gemma mask/Q scratch and uniform-attention-bound candidate is not
+included in this isolated source.
+
+Source f89ff2f1 passed the two whole maintained engine/companion CPU modules
+in pinned AMD64 image 509b4135: 94 passes and 26 source-declared CUDA-only
+skips. The same source then passed all 52 companion cases on local SM120,
+including eight original/new greedy-ID, tie, mask, stream and lifetime
+cases and three invalid-suffix cases. Existing public proposal, sampled,
+penalty, independent companion-equation and context controls remained.
+All 1,309 source/test files stayed byte-equal across each operation, and both
+exact clients/containers retired without owner errors.
+
+The native gate used eight intra-op/one inter-op threads and an explicit
+CAP40 functional profile for owned DSO/FD/foundation VMA-file proof. It
+used the ordinary retained mixed compilation cache; its durations are
+not cold/warm or performance results. No displayed warning lines occurred;
+this is not a complete compiler-warning audit. Installed ARM64 provenance,
+complete target-model quality, same-region decode/complete-request timing
+and performance selection remain pending. The local component result
+does not qualify GB10 execution, serving thread policy or a capacity gain.
