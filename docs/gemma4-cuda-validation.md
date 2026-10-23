@@ -1,5 +1,46 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Adaptive vocabulary-head candidate, unqualified
+
+This source candidate prepares the existing R4 kernel for two through four
+rows, R8 for five through eight, and R16 for larger calls. Singleton calls
+retain the original head; zero rows retain the fixed-R16 native refusal path.
+The original contiguous BF16[262144,2816] weight and GB10SM12.1 eligibility are
+unchanged, with no capability discovery during projection. Other shapes,
+representations and architectures keep their original implementation.
+
+Each active row retains the same ordered FP32 FMA chain, XOR reduction and
+BF16 output rounding. Target and BF16 DFlash borrowers still apply the existing
+softcap exactly once. Prompt methods, the separate FP8 companion head, sampler,
+native CUDA/C++ sources and fixed `prepare_head` comparators are unchanged.
+The retained R8/R16 qualification tool recognizes the exact new policy only to
+recover its original weight owner; its benchmark arms remain fixed R8/R16.
+
+The prepared policy adds two callable objects relative to the fixed head and a
+row-count dispatch on each projection. Weight/output tensor geometry, graph
+keys and native recipes are unchanged. Preparation, capture, dispatch and
+compiler-cold effects remain part of the required complete-model comparison.
+The policy is bound before target/DFlash graph preparation and belongs to that
+engine lifetime; it is not a mutable serving flag.
+
+Pinned source checks passed 70 cases on the protected AMD64 Torch9026/CUDA13.4
+SDK with GPU hidden: 24 policy controls, 45 retained qualifier controls and one
+actual FD metadata case. Complete source and imported tool identities were
+verified. A separate local SM120/8+1-thread functional gate passed eight cases:
+seven direct-policy tests plus the FD control. Complete raw bits matched fixed
+R16 and original singleton projections, including partition/permutation,
+softcap, signed-zero/extreme inputs, CUDA replay and the zero-row refusal.
+Actual B16/FD mapped-object proofs, foundation stability, device settlement and
+owner retirement passed. The original host attempt with 17 missing-Torch
+failures remains recorded separately; it is not relabeled as a pass.
+
+Both gates used the pinned509 source checkout. They do not qualify installed
+ARM64/public SM121 selection. Serial/drafted greedy and sampled full-model
+identity, other request/cache regions, resource/cold-start/capture budgets and
+comparative throughput remain pending. No benchmark result is claimed.
+The historical fixed-R16 gain and unresolved R8/R16 ranking below remain their
+own evidence; no adaptive-policy gain or production selection is claimed.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft
