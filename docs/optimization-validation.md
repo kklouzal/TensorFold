@@ -18,6 +18,24 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Gemma FP8 provider preparation, 2026-10-23
+
+The candidate prepares the existing native prompt and lane providers during
+Gemma DFlash initialization only for `--drafter-bits 8`, after metadata, weight
+copy validation and private head construction. Native sources, compiler flags,
+request arithmetic and the default BF16 proposal path are unchanged. Factory
+failures propagate before model readiness; no proposals, KV warmup or fallback
+are added. All preparation belongs to the production loading interval.
+
+The pinned AMD64 SDK (`509b4135`) passed twelve source CPU cases with no skips:
+seven constructor coordination controls and five existing validation,
+reader-failure and retirement checks. They cover DFlash source `03643eab` and
+test source `ac630168`; full source hashes, loaded project-module origins and
+worker retirement were verified. Native provider calls are mocked in these CPU
+controls. Fresh ARM image and native preparation, full-model output quality,
+cold-request behavior and comparative performance remain pending. Earlier image
+or FP8 pilot results do not qualify this candidate or establish a gain.
+
 ## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
 
 Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch

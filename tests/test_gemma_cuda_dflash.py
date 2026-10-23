@@ -19,12 +19,12 @@ pytest.importorskip("triton")
 
 import torch.nn.functional as F  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
+from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
-from tensorfold.families.gemma4.cuda import dflash  # noqa: E402
 from tensorfold.cuda.nvfp4.linear import Fp8Linear  # noqa: E402
 from tensorfold.cuda.requant import Head  # noqa: E402
+from tensorfold.families.gemma4.cuda import dflash  # noqa: E402
 from tensorfold.families.gemma4.dflash_metadata import DraftConfig  # noqa: E402
-from test_gemma_cuda_dflash_metadata import config  # noqa: E402
 
 cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion runs CUDA kernels")
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
@@ -374,6 +374,86 @@ def test_successful_reads_do_not_hide_reader_retirement_failure(tmp_path, monkey
     with pytest.raises(OSError) as caught:
         dflash.DFlash(tmp_path, target, context_limit=8192)
     assert caught.value is failure
+
+
+@pytest.mark.parametrize(("bits", "failure_at"), [
+    (16, None), (8, None), (8, "reader-close"), (8, "copy"),
+    (8, "head"), (8, "prompt-provider"), (8, "lane-provider"),
+])
+def test_fp8_selected_providers_prepare_after_copies_and_preserve_failures(monkeypatch, bits, failure_at):
+    """Exercise constructor ordering; quantization and native build remain their existing owners' work."""
+    cfg = DraftConfig.from_dict(raw())
+    arrays = {name: torch.ones(shape, dtype=torch.bfloat16) for name, shape in cfg.shapes().items()}
+    target = NS(device=torch.device("cpu"), tap_layers=cfg.tap_layers,
+                config=NS(hidden=cfg.hidden, layers=cfg.target_layers, vocab=cfg.vocab, softcap=30.0),
+                weights=NS(embed=NS(weight=torch.ones((cfg.vocab, cfg.hidden), dtype=torch.bfloat16))),
+                raw_embed_tokens=object(), project_logits=object())
+    events, copies = [], []
+    primary = KeyboardInterrupt("selected FP8 preparation failed")
+    prior_cause = ValueError("original provider context")
+    primary.__cause__ = prior_cause
+
+    def step(name):
+        events.append(name)
+        if failure_at == name:
+            raise primary
+
+    class Reader:
+        def __init__(self, paths):
+            step("reader-open")
+
+        def get(self, name):
+            return arrays[name]
+
+        def close(self):
+            step("reader-close")
+
+    def copy(weight, kind):
+        step("copy")
+        assert kind == "fp8"
+        result = object()
+        copies.append(result)
+        return result
+
+    private_head = object()
+
+    def head(source, kind, *, softcap):
+        step("head")
+        assert source is target.weights.embed and kind == "fp8" and softcap == 30.0
+        return private_head
+
+    def provider(name):
+        assert events.count("reader-close") == 1
+        assert len(copies) == len(cfg.fused_shapes()) and events[-1] in ("head", "prompt-provider")
+        step(name)
+
+    from tensorfold.cuda.nvfp4 import linear
+
+    monkeypatch.setattr(dflash, "checked_headers", lambda directory: (cfg, {}))
+    monkeypatch.setattr(dflash, "checkpoint_path", lambda directory, name: directory / name)
+    monkeypatch.setattr(dflash, "SafeTensors", Reader)
+    monkeypatch.setattr(dflash, "requantize", copy)
+    monkeypatch.setattr(dflash, "prefix", lambda value, rows: value)
+    monkeypatch.setattr(dflash, "Head", head)
+    monkeypatch.setattr(linear, "_prompt_ext", lambda: provider("prompt-provider"))
+    monkeypatch.setattr(linear, "_ext", lambda: provider("lane-provider"))
+    if failure_at is None:
+        draft = dflash.DFlash("metadata-only", target, context_limit=256, bits=bits, rows=128)
+        if bits == 8:
+            assert draft.project_logits is private_head
+            assert events[-2:] == ["prompt-provider", "lane-provider"]
+        else:
+            assert events == ["reader-open", "reader-close"] and not copies
+            assert draft.project_logits == target.project_logits
+    else:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            dflash.DFlash("metadata-only", target, context_limit=256, bits=bits, rows=128)
+        assert caught.value is primary and primary.__cause__ is prior_cause
+        assert events[-1] == failure_at and events.count("reader-close") == 1
+        if failure_at in ("reader-close", "copy", "head"):
+            assert "prompt-provider" not in events
+        if failure_at == "prompt-provider":
+            assert "lane-provider" not in events
 
 
 def test_precision_and_attention_geometry_fail_before_payload_allocation(tmp_path, monkeypatch):

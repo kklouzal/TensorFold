@@ -6,6 +6,16 @@ CUDA DFlash sampled requests use standard rejection sampling; greedy serial iden
 
 The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights by default (`--drafter-bits 16`). With a BF16 tied target head, as in the native CT profile below, `--drafter-bits 8` runs it on private FP8 copies (E4M3, one scale an output row) of its projections and head, changing proposals only. The original affine checkpoint's 6-bit tied head requires `--drafter-bits 16`. Proposals are verified by the target before publication, so replies retain their target semantics. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
 
+For `--drafter-bits 8`, model initialization prepares the existing native prompt
+and decode providers after constructing the validated private FP8 copies.
+Compilation and module loading count toward startup; failures stop construction
+before serving becomes ready. Preparation does not generate proposals or touch
+KV history. BF16 proposal loading and the provider kernels are unchanged.
+[Qualification status](../optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23)
+records twelve passing source CPU cases with mocked native providers. Fresh
+ARM/native preparation and full-model/performance qualification remain pending;
+earlier images and measurements retain their separate scope.
+
 For a local complete mixed4/6 snapshot and matching companion:
 
 ```sh
