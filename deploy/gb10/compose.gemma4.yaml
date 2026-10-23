@@ -21,7 +21,7 @@ services:
       - --drafter
       - /drafter
       - --drafter-bits
-      - '16'
+      - '8'
       - --draft-rows
       - ${TENSORFOLD_DRAFT_ROWS:-5}
       - --parallel
