@@ -976,3 +976,56 @@ this is not a complete compiler-warning audit. Installed ARM64 provenance,
 full-model quality and controlled same-region decode and complete-request
 comparisons remain pending. No speed, equivalence, capacity or cross-target
 result is claimed.
+
+## Gemma prepared FP8 maximum packet
+
+This isolated source combines the G2 maximum-packet parent `5978bbe46dc3`
+with the constructor preparation from `16b4c0870416`. The G2 engine routing,
+token packet, complete-row refusal, public proposal and sampled/history paths
+remain unchanged. The only runtime addition to G2 is the terminal bits8
+constructor branch. All native bodies, compiler flags, graph keys and defaults
+remain unchanged.
+
+The constructor first validates metadata and geometry, retires its reader,
+constructs validated private FP8 projections and head, and initializes rotary
+frequencies. It then loads the original prompt provider followed by the original
+decode provider before the engine can publish model readiness. No fake proposal,
+KV warmup or workload tensor is used to prepare them. Provider failures propagate
+and prevent readiness; a successfully loaded provider keeps its existing bounded
+process-cache lifetime if the next load fails. All compilation/import work stays
+inside loading and its budgets. Bits16 performs no provider preparation; its
+additional constructor predicate remains initialization work.
+
+The seven constructor coordination cases are copied exactly from the preparation
+parent: bits16 bypass, bits8 success, and reader-close, copy, head, prompt-provider
+and decode-provider failures. Existing G2 engine, packet/ID, finite-row, stream,
+lifetime, error and independent numerical oracles are retained unchanged.
+
+Parent records retain their own source and hardware scope. G2 `5978bbe46dc3`
+passed 92 source CPU cases with 26 declared CUDA-only skips and 50 local SM120
+companion cases. Preparation source `16b4c0870416` separately passed 12 source
+CPU cases, six local SM120 cases, 12 installed ARM CPU cases and six installed
+SM121 cases. Its separate registered GB10/SM121 comparison selected prepared
+FP8 at source `16b4c087`: **20.96% higher cached-decode throughput** with
+**14.97% longer startup** against accepted source `259`. The comparison used
+the recorded four-case 64-token greedy workload, five rows, BF16 target/KV,
+ten intra/inter-op threads, VBoost 0 and the fixed cold/warm compiler states.
+The [published receipt at commit `4ab3fad7`](https://github.com/kklouzal/TensorFold/blob/4ab3fad7c78134cb67c82a18d68485ce4a835c6e/docs/verification-gemma-fp8-20261023.json)
+retains the images, per-region evidence and uncertainty. This is the preparation
+parent's result, not evidence for the G2 maximum packet or this combined source.
+
+The combined runtime `9e075c42` with tests `bfb97ea8` passed **99 source CPU
+cases**, with **26 declared CUDA-only skips**, from 125 collected cases across
+the whole maintained engine and companion modules. All seven new constructor
+coordination cases passed. The authenticated `c143438a` result used the pinned
+Linux AMD64 SDK `509b4135`, Torch `9026ad48`, CUDA hidden and the qualified
+source/owner procedure; the owning process completed and retired. The original
+command metadata and its explicit hash erratum remain preserved. Eight Ruff
+findings match the unchanged G2 import-header baseline; this is not an overall
+Ruff-clean result or a new lint run.
+
+Combined native execution, immutable ARM build and installed provenance,
+complete-model quality, resource checks and independent same-region P3 evidence
+remain **UNRUN** and are required before selection. Parent runs are not
+combined-source passes. No combined speed, timing equivalence, additive gain or
+G2 gain is claimed.

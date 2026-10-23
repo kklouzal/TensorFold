@@ -217,6 +217,14 @@ class DFlash:
         exponent = torch.arange(0, cfg.head_dim, 2, dtype=torch.int64).float() / cfg.head_dim
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(self.device)
 
+        if bits == 8:
+            # Prepare only the providers selected by these validated private
+            # copies. First-use compilation belongs to loading, before ready.
+            from tensorfold.cuda.nvfp4.linear import _ext, _prompt_ext
+
+            _prompt_ext()
+            _ext()
+
     def make_state(self) -> DraftState:
         return DraftState(self.config, self.device, self.window, self.rows, self.block)
 

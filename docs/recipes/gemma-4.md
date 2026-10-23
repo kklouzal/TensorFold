@@ -6,6 +6,23 @@ CUDA DFlash sampled requests use standard rejection sampling; greedy serial iden
 
 The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights by default (`--drafter-bits 16`). With a BF16 tied target head, as in the native CT profile below, `--drafter-bits 8` runs it on private FP8 copies (E4M3, one scale an output row) of its projections and head, changing proposals only. The original affine checkpoint's 6-bit tied head requires `--drafter-bits 16`. Proposals are verified by the target before publication, so replies retain their target semantics. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
 
+The isolated prepared maximum-packet candidate loads the selected FP8 prompt
+and decode providers during DFlash initialization, after validating and building
+its private copies and before model readiness. Compilation/import cost belongs
+to loading and its budgets; no proposal or KV warmup is performed. A preparation
+failure aborts loading. The tokens-only greedy entry retains G2's complete-row
+maximum/ID packet, while public confidence, sampled and penalized paths retain
+their existing contracts. No CLI flag or default changes. Combined runtime
+`9e075c42` and tests `bfb97ea8` passed 99 source CPU checks, including all seven
+constructor cases, with 26 declared CUDA-only skips under pinned SDK `509b4135`,
+Torch `9026ad48` and CUDA hidden. Combined native, ARM, complete-model and P3
+qualification remain **UNRUN**. The selected preparation parent's separate GB10
+result is 20.96% higher cached-decode throughput with 14.97% longer startup
+([published receipt](https://github.com/kklouzal/TensorFold/blob/4ab3fad7c78134cb67c82a18d68485ce4a835c6e/docs/verification-gemma-fp8-20261023.json));
+it establishes no G2 or combined-source gain. The
+[validation scope](../optimization-validation.md#gemma-prepared-fp8-maximum-packet)
+records the distinct sources, baseline Ruff findings and remaining gates.
+
 For a local complete mixed4/6 snapshot and matching companion:
 
 ```sh

@@ -1,17 +1,24 @@
 # TensorFold fork
 
-**Gemma greedy maximum-packet candidate (2026-10-23):** unpenalized greedy
-serving extracts DFlash token IDs with the original Torch maximum/index
-reduction. Returned maxima validate every produced row in the same readback,
-omitting unused confidence work and separate vocabulary-wide validity scans.
-Public confidence packets, sampled proposals and penalized requests keep
-their original path; target and proposal logits remain unchanged. The G1
-reference passed 94 CPU cases (26 CUDA-only skips) and 52 SM120 companion
-cases. This separate candidate passed 92 CPU cases (26 source-declared CUDA-only
-skips) and all 50 local SM120 companion cases. Installed ARM64, complete-model
-quality and performance checks remain pending;
-[validation scope](docs/optimization-validation.md#gemma-greedy-maximum-packet)
-does not claim a performance gain.
+**Gemma prepared FP8 maximum-packet candidate (2026-10-23):** this isolated
+source combines G2's complete-row maximum/index token packet with selected
+FP8 provider preparation during DFlash loading. With `--drafter-bits 8`, the
+original prompt and decode providers load after validated private copies and
+before model readiness; compilation remains loading work. Public confidence,
+sampled and penalized paths, numerical rules and defaults retain their contracts.
+The combined runtime `9e075c42` and companion tests `bfb97ea8` passed **99 CPU
+checks**, including all seven constructor cases, with **26 declared CUDA-only
+skips** in pinned SDK `509b4135` with Torch `9026ad48` and CUDA hidden. Native,
+ARM build/installed, complete-model and P3 gates remain **UNRUN** for this
+combined source. Eight Ruff findings match the unchanged G2 import-header
+baseline; no overall Ruff-clean result is claimed.
+The separate G2 parent passed 92 CPU cases with 26 CUDA-only skips and 50 local
+SM120 cases. Preparation parent `16b4c087` separately passed its local and
+installed ARM checks; its selected GB10 region gained **20.96% cached decode
+throughput** with **14.97% longer startup** ([published receipt](https://github.com/kklouzal/TensorFold/blob/4ab3fad7c78134cb67c82a18d68485ce4a835c6e/docs/verification-gemma-fp8-20261023.json)).
+That result does not qualify the combined maximum-packet candidate or establish
+a G2 gain. Its [validation scope](docs/optimization-validation.md#gemma-prepared-fp8-maximum-packet)
+keeps the parent and combined records separate.
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
