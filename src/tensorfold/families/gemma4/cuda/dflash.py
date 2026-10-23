@@ -20,6 +20,7 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 
+import numpy as np
 import torch
 import triton
 import triton.language as tl
@@ -28,7 +29,6 @@ from tensorfold.cleanup import rollback
 from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, prefix, requantize
-from tensorfold.cuda.sampling import sample_rows
 from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda import b16
 
@@ -38,7 +38,6 @@ from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
 FULL_CHUNK = 1024        # companion full-layer key chunk (no invariance contract: proposals are verified)
-_ERROR_ARGS = BaseException.args.__get__  # Native score-error access, bound before request/error paths.
 
 
 @triton.jit
@@ -268,27 +267,25 @@ class DFlash:
     def propose_tokens(self, state: DraftState, anchor: int, count: int) -> list[int]:
         """Unpenalized greedy IDs when the caller needs no confidence or cutoff.
 
-        The existing sampler validates every produced vocabulary row before
-        returning its first maximum. Its synchronous readback completes on the
-        current stream while logits and the engine's state/weights remain owned.
+        ``logits`` constructs FP32 CUDA rows. The adopted max/index reduction
+        propagates any NaN, selects positive infinity over finite scores, and
+        leaves an all-negative-infinity row nonfinite; a finite maximum proves
+        the complete row is admissible. Equal values select the first index.
+        The two-word packet retains exact maximum bits and IDs for every row.
+        Its synchronous readback completes on the current stream while logits
+        and the engine's state/weights remain owned.
         No packet or graph output survives into the next proposal/replay.
         Public ``propose`` retains its confidence, history and sampled contracts.
         """
         logits = self.logits(state, anchor, count)
         if logits is None:
             return []
-        try:
-            return sample_rows(logits, range(state.length + 1, state.length + 1 + logits.shape[0]), None)
-        except ValueError as error:
-            # Normalize only the sampler's two owned score-domain failures to
-            # the existing greedy proposal error; shape/resource errors escape.
-            if type(error) is ValueError:
-                arguments = _ERROR_ARGS(error)
-                if len(arguments) == 1 and type(arguments[0]) is str and arguments[0] in (
-                        'sampling scores contain NaN or positive infinity',
-                        'a complete vocabulary row needs at least one finite score'):
-                    raise ValueError('draft confidence scores must be finite') from error
-            raise
+        best, tokens = logits.max(-1)
+        packet = torch.stack((tokens, best.view(torch.int32).to(torch.int64)), dim=1).cpu().numpy()
+        maximum = packet[:, 1].astype(np.int32).view(np.float32)
+        if not np.isfinite(maximum).all():
+            raise ValueError('draft confidence scores must be finite')
+        return packet[:, 0].tolist()
 
     @torch.no_grad()
     def logits(self, state: DraftState, anchor: int, count: int) -> torch.Tensor | None:

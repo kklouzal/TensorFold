@@ -1,15 +1,17 @@
 # TensorFold fork
 
-**Gemma greedy proposal candidate (2026-10-23):** unpenalized greedy serving
-can extract only the DFlash token IDs it consumes, through the existing
-complete-row validated sampler. Public confidence packets, sampled proposals
-and penalized requests keep their original path. This removes unused greedy
-confidence/parent preparation without changing the target or proposal logits.
-Local pinned AMD64 checks passed 94 CPU cases (26 CUDA-only skips),
-and the SM120 companion module passed all 52 cases. Installed ARM64,
-complete model quality and performance checks remain pending;
-[validation scope](docs/optimization-validation.md#gemma-tokens-only-greedy-proposals)
-does not qualify this source candidate as a performance result.
+**Gemma greedy maximum-packet candidate (2026-10-23):** unpenalized greedy
+serving extracts DFlash token IDs with the original Torch maximum/index
+reduction. Returned maxima validate every produced row in the same readback,
+omitting unused confidence work and separate vocabulary-wide validity scans.
+Public confidence packets, sampled proposals and penalized requests keep
+their original path; target and proposal logits remain unchanged. The G1
+reference passed 94 CPU cases (26 CUDA-only skips) and 52 SM120 companion
+cases. This separate candidate passed 92 CPU cases (26 source-declared CUDA-only
+skips) and all 50 local SM120 companion cases. Installed ARM64, complete-model
+quality and performance checks remain pending;
+[validation scope](docs/optimization-validation.md#gemma-greedy-maximum-packet)
+does not claim a performance gain.
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

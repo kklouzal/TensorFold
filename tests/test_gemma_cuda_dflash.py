@@ -12,6 +12,7 @@ import json
 from functools import partial
 from types import SimpleNamespace as NS
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -30,75 +31,74 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion r
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
 
 
-def test_tokens_only_proposal_delegates_complete_rows_and_actual_positions(monkeypatch):
+def test_tokens_only_proposal_uses_owned_rows_and_complete_maximum_packet():
     draft = dflash.DFlash.__new__(dflash.DFlash)
-    logits = torch.zeros(3, 7)
+    # A CPU producer double covers the project's packet conversion and returned
+    # IDs; the serving producer constructs CUDA FP32 rows, exercised below.
+    logits = torch.tensor([[0., 2., 2., -float('inf')], [0., -1., 3., 1.], [-0., 0., -1., -2.]])
     state = NS(length=41)
     calls = []
-    draft.logits = lambda seen, anchor, count: logits if (seen is state and anchor == 2 and count == 3) else None
 
-    def sample(rows, positions, sampling):
-        # CPU boundary double only; actual CUDA choice/readback is tested below.
-        assert rows is logits and list(positions) == [42, 43, 44] and sampling is None
-        calls.append(rows)
-        return [0, 2, 1]
+    def produced(seen, anchor, count):
+        assert seen is state and anchor == 2 and count == 3
+        calls.append(True)
+        return logits
 
-    monkeypatch.setattr(dflash, 'sample_rows', sample)
-    assert draft.propose_tokens(state, 2, 3) == [0, 2, 1] and calls == [logits]
+    draft.logits = produced
+    assert draft.propose_tokens(state, 2, 3) == np.argmax(logits.numpy(), axis=-1).tolist() == [1, 2, 0]
     draft.logits = lambda *args: None
     assert draft.propose_tokens(state, 2, 0) == [] and len(calls) == 1
 
 
-@pytest.mark.parametrize('message', ['sampling scores contain NaN or positive infinity',
-                                    'a complete vocabulary row needs at least one finite score'])
-def test_tokens_only_score_failure_keeps_legacy_refusal_and_exact_cause(monkeypatch, message):
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_tokens_only_packet_rejects_every_invalid_row_before_return(bad):
     draft = dflash.DFlash.__new__(dflash.DFlash)
-    draft.logits = lambda *args: torch.zeros(3, 7)
-    primary = ValueError(message)
-
-    def failed(*args):
-        raise primary
-
-    monkeypatch.setattr(dflash, 'sample_rows', failed)
-    with pytest.raises(ValueError, match='draft confidence scores must be finite') as caught:
-        draft.propose_tokens(NS(length=7), 2, 3)
-    assert caught.value.__cause__ is primary
+    logits = torch.ones(4, 7)
+    if bad == -float('inf'):
+        logits[3] = bad
+    else:
+        logits[3, 2] = bad
+    draft.logits = lambda *args: logits
+    with pytest.raises(ValueError, match='draft confidence scores must be finite'):
+        draft.propose_tokens(NS(length=7), 2, 4)[:1]
 
 
-@pytest.mark.parametrize('kind', ['resource', 'shape', 'subclass', 'foreign_argument', 'string_subclass'])
-def test_tokens_only_never_translates_resource_shape_or_foreign_errors(monkeypatch, kind):
-    class Foreign(ValueError):
-        pass
+@pytest.mark.parametrize('stage', ['reduction', 'readback'])
+def test_tokens_only_keeps_operation_failures_and_owns_logits_through_readback(monkeypatch, stage):
+    import weakref
 
-    class Argument:
-        def __eq__(self, other):
-            pytest.fail('unexpected error argument compared')
-
-    class String(str):
-        def __eq__(self, other):
-            pytest.fail('unexpected string subclass compared')
-
-    primary = (MemoryError('allocation') if kind == 'resource' else ValueError('shape') if kind == 'shape'
-               else Foreign('sampling scores contain NaN or positive infinity') if kind == 'subclass'
-               else ValueError(Argument()) if kind == 'foreign_argument'
-               else ValueError(String('sampling scores contain NaN or positive infinity')))
+    primary = MemoryError(stage)
     draft = dflash.DFlash.__new__(dflash.DFlash)
-    draft.logits = lambda *args: torch.zeros(3, 7)
+    refs = []
 
-    def failed(*args):
-        raise primary
+    class FailedReduction:
+        def max(self, dim):
+            assert dim == -1
+            raise primary
 
-    monkeypatch.setattr(dflash, 'sample_rows', failed)
-    with pytest.raises(type(primary)) as caught:
+    class FailedReadback:
+        def cpu(self):
+            assert refs[0]() is not None
+            raise primary
+
+    def produced(*args):
+        value = FailedReduction() if stage == 'reduction' else torch.ones(3, 7)
+        refs.append(weakref.ref(value))
+        return value
+
+    draft.logits = produced
+    if stage == 'readback':
+        monkeypatch.setattr(dflash.torch, 'stack', lambda *args, **kwargs: FailedReadback())
+    with pytest.raises(MemoryError) as caught:
         draft.propose_tokens(NS(length=7), 2, 3)
     assert caught.value is primary
 
 
 @pytest.mark.parametrize('length,count', [(0, 3), (7, 0), (32, 4)])
-def test_tokens_only_empty_geometry_uses_original_producer_without_sampling(monkeypatch, length, count):
+def test_tokens_only_empty_geometry_uses_original_producer_without_packet(monkeypatch, length, count):
     draft = dflash.DFlash.__new__(dflash.DFlash)
     draft.config, draft.block, draft.window = NS(vocab=7), 8, 32
-    monkeypatch.setattr(dflash, 'sample_rows', lambda *args: pytest.fail('empty proposal sampled'))
+    monkeypatch.setattr(dflash.torch, 'stack', lambda *args, **kwargs: pytest.fail('empty proposal packed'))
     assert draft.propose_tokens(NS(length=length), 1, count) == []
 
 
@@ -106,7 +106,7 @@ def test_tokens_only_empty_geometry_uses_original_producer_without_sampling(monk
 def test_tokens_only_retains_original_anchor_and_limit_boundary(monkeypatch, anchor, count):
     draft = dflash.DFlash.__new__(dflash.DFlash)
     draft.config, draft.block, draft.window = NS(vocab=7), 8, 32
-    monkeypatch.setattr(dflash, 'sample_rows', lambda *args: pytest.fail('invalid proposal sampled'))
+    monkeypatch.setattr(dflash.torch, 'stack', lambda *args, **kwargs: pytest.fail('invalid proposal packed'))
     with pytest.raises(ValueError, match='proposal count|anchors'):
         draft.propose_tokens(NS(length=7), anchor, count)
 
@@ -132,6 +132,7 @@ def test_tokens_only_matches_original_confidence_ids_and_completes_readback(kind
         elif kind == 'masked':
             logits[:, :3000] = -float('inf')
         expected = speculative.Chains(logits, [None], 4).finish(0, 4)[0]
+        independent = np.argmax(logits.cpu().numpy(), axis=-1).tolist()
         draft = dflash.DFlash.__new__(dflash.DFlash)
         refs = []
         done = torch.cuda.Event()
@@ -143,7 +144,7 @@ def test_tokens_only_matches_original_confidence_ids_and_completes_readback(kind
             return actual
 
         draft.logits = produced
-        assert draft.propose_tokens(NS(length=41), 2, 4) == expected
+        assert draft.propose_tokens(NS(length=41), 2, 4) == expected == independent
         assert done.query() and refs[0]() is None
 
 

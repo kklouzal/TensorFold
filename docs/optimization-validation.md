@@ -873,7 +873,7 @@ runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
 ## Gemma tokens-only greedy proposals
 
-The 2026-10-23 source candidate adds an explicit Gemma DFlash token-only entry
+The G1 reference from 2026-10-23 adds an explicit Gemma DFlash token-only entry
 for the engine's unpenalized greedy, no-confidence/no-cutoff consumer. It uses
 the same original FP32 softcapped logits and existing complete-row sampler,
 including first-maximum tie behavior, NaN/positive-infinity refusal and at least
@@ -915,3 +915,64 @@ this is not a complete compiler-warning audit. Installed ARM64 provenance,
 complete target-model quality, same-region decode/complete-request timing
 and performance selection remain pending. The local component result
 does not qualify GB10 execution, serving thread policy or a capacity gain.
+
+## Gemma greedy maximum packet
+
+The separate G2 candidate starts from the G1 reference and changes only its
+token-only DFlash method and imports. It uses the same original `logits`
+producer and `logits.max(-1)` reduction already used by public `Chains`.
+The producer returns nonempty-vocabulary FP32 CUDA rows for the admitted
+proposal count, or no rows. No new per-round metadata scan or sampling policy
+is introduced. The engine's existing request dispatch, public scored packets,
+sampling/history routes, acceptance, rollback, taps and graph ownership remain
+unchanged.
+
+The pinned AMD64 Torch source `9026ad48` and ARM64 source `ef46daf1` have
+byte-identical selected max dispatch/reduction sources. Their max/index
+comparator propagates any NaN and selects the lowest index for equal values;
+the floating accumulator starts at negative infinity. Thus a finite returned
+maximum means the whole row contains neither NaN nor positive infinity and
+has at least one finite score. Partial negative-infinity masks remain valid;
+all-negative-infinity rows fail. This uses the adopted library's max contract,
+not a new reducer or approximate numerical rule.
+
+The packet contains an integer token ID and the exact FP32 maximum bits,
+widened to an integer word, for every produced row. One synchronous readback
+is followed by the existing finite-score refusal before any IDs are returned
+or acceptance limits are applied. Token IDs are never encoded as floats.
+Reduction, allocation and readback failures propagate unchanged. Local logits,
+maxima and indices remain owned through the readback; no packet survives into
+the next proposal or replay. There is no new persistent buffer, cache key,
+graph bank or CUDA wait. Temporary packet payload is two 64-bit words per
+row, with the existing maximum of 127 proposal rows; this is not a peak-memory
+or capacity claim.
+
+G1's sampler-delegation and exact sampler-error-normalization controls belong
+to that retained reference: G2 no longer calls or intercepts that sampler.
+Maintained G2 controls instead cover packet conversion, complete-row refusal,
+exact reduction/readback failure propagation and source-owner lifetime.
+Original public proposal and engine-routing controls remain. Native ID checks
+retain the original `Chains` oracle and add independent NumPy IDs, including
+ties, signed zero and negative-infinity masks; invalid suffixes and nondefault
+stream completion remain required.
+
+This removes separate whole-vocabulary validity work as a source cost model.
+The explicit NumPy import, maximum/index outputs, integer packing and host
+conversion still cost work. G1's 94 CPU passes, 26 CUDA-only skips and 52 local
+SM120 cases do not qualify this changed method. Source f96ea575 passed the two whole maintained engine/companion CPU modules
+in pinned AMD64 image 509b4135: 92 passes and 26 all-and-only source-declared
+CUDA skips. The same source passed all 50 companion cases on local SM120,
+including the eight original/new greedy-ID, tie, mask, stream and lifetime
+cases and three invalid-suffix cases. Public proposal, sampled/history,
+independent companion-equation and context controls remained. All 1,309
+source/test files and 64 native inputs stayed exact across both operations;
+the actual clients and containers retired without owner errors.
+
+The native gate used eight intra-op/one inter-op threads and an explicit
+CAP40 functional profile for owned DSO/FD/foundation VMA-file proof. It
+used the normal retained mixed compilation cache; its elapsed values are
+not cold/warm or performance results. No displayed warning lines occurred;
+this is not a complete compiler-warning audit. Installed ARM64 provenance,
+full-model quality and controlled same-region decode and complete-request
+comparisons remain pending. No speed, equivalence, capacity or cross-target
+result is claimed.
