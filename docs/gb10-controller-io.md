@@ -39,7 +39,8 @@ python3 -B -m pytest tests/test_gb10_controller_io.py -q
 ```
 
 The check uses subprocess/selector doubles and isolated temporary files; it
-does not call Docker or a GPU. Its source is authored but **unrun**. The other
+does not call Docker or a GPU. All **15 cases passed** in the combined 58-case
+host run on Linux CPython 3.14.4 with pytest 9.0.2. The other
 controller lifecycle bodies remain unchanged and gain no new qualification from
 this IO fix. Actual packet binding, host checks, profile execution and retirement
 verification remain separate requirements. No model-quality or performance

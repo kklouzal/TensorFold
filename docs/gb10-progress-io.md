@@ -20,6 +20,9 @@ declared optional host-observation `OSError`-to-`None` recovery.
 The targeted tests cover the owned integration: exact heartbeat format/cadence,
 disabled work, existing temporary-file truncation/mode, write/read with close
 failure, no publication after failed retirement, and hot-timeout refusal/cooling.
-They do not reimplement filesystem or JSON algorithms. All tests and lint for
-this increment are **UNRUN** pending root-owned checks. Historical successful
+They do not reimplement filesystem or JSON algorithms. All **13 cases passed**
+in the combined 58-case host run on Linux CPython 3.14.4 with pytest 9.0.2.
+The changed progress code and tests add no Ruff diagnostics; seven inherited
+controller diagnostics remain separately scoped. No profile or hardware run is
+qualified by these host checks. Historical successful
 captures and measurements retain their original source and validity.
