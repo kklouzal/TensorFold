@@ -83,6 +83,7 @@ class Gemma4Engine:
 
     tp = 1
     graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
+    _body_graphs = None     # private proposal owner; public DFlash.logits stays eager/fresh
 
     def __init__(self, model_dir: Path, *, drafter: str = "", drafter_bits: int = 16,
                  depth: int | None = None, context: int | None = None,
@@ -104,7 +105,7 @@ class Gemma4Engine:
         from tensorfold.token_metadata import load_tokenizer, resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
-        from .capacity import admit
+        from .capacity import admit, draft_graph_workspace
         from .forward import Gemma4Target
         from .weights import Gemma4Weights
 
@@ -113,16 +114,22 @@ class Gemma4Engine:
                                                    template_name=chat_template_name)
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         self.max_rows = 16 if depth is None else depth + 1
+        raw = read_config(model_dir)
+        native = quant_method(raw) == "compressed-tensors"
+        # Static, engine-lifetime investigation policy. Other regions keep the
+        # same eager proposer; no per-round capability/allocator discovery.
+        body_graphs = (native and draft_dir is not None and drafter_bits == 8 and self.max_rows == 5
+                       and torch.cuda.get_device_capability(0) == (12, 1)
+                       and torch.cuda.memory.get_allocator_backend() == 'native')
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
                                    vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
-                                   drafter_bits=drafter_bits)
+                                   drafter_bits=drafter_bits, draft_body_graphs=body_graphs)
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
-        raw = read_config(model_dir)
         text = raw.get("text_config") or raw
         self.eos = resolve_eos(model_dir, text.get("eos_token_id"),
                                vocab_size=text["vocab_size"], override=eos_token_ids)
-        if quant_method(raw) == "compressed-tensors":
+        if native:
             from .nvfp4_weights import load
             self.w = load(model_dir, vision=vision)
         else:
@@ -161,6 +168,15 @@ class Gemma4Engine:
         self._closed = False
         self._owner = None
         self._stream = torch.cuda.Stream(device=self.target.device)
+        self._proposer = self.head
+        enabled = bool(body_graphs and self.max_rows == 5)
+        self.capacity_plan['draft_body_graphs'] = enabled
+        self.capacity_plan['draft_graph_tensor_bytes_estimate'] = (streams * draft_graph_workspace(
+            self.head.config, self.max_rows, self.context_window) if enabled else 0)
+        if enabled:
+            from .body_graphs import DraftBodyGraphs
+            self._body_graphs = DraftBodyGraphs(self.head, self._draft, self._stream)
+            self._proposer = self._body_graphs
         self.concurrent = False
         self.scheduler = None
         # All model uploads/packing occur on the constructing stream. Publish
@@ -197,7 +213,12 @@ class Gemma4Engine:
             raise RuntimeError("cannot close Gemma4 from its active request callback")
         with self._closed_lock:
             self._closed = True
-        self.drain()
+        # Closed is published before acquiring the run lock. Holding the
+        # closed lock while waiting here would invert _lane's lock order.
+        with self._run_lock:
+            self._stream.synchronize()
+            if self._body_graphs is not None:
+                self._body_graphs.close_after_drain()
         with self._prefix_lock:
             self._prefix = None
 
@@ -361,17 +382,26 @@ class Gemma4Engine:
                     # Sampled noncausal proposal geometry belongs to this request's deployment, never its
                     # remaining output room. Even the final emitted slot tests the same full q packet.
                     limit = self.max_rows - 1 if stochastic else min(self.max_rows - 1, room - 1)
-                    if stochastic:
-                        chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True,
-                                                   sampling=sampling)
-                        first_position = state.position + 1
-                        packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
-                                  else ChainPacket((), (), first_position))
-                        guesses = packet.tokens
-                    else:
-                        chains = self.head.propose(self._draft, inputs[0], limit, history)
-                        guesses = chains.finish(0, limit, history)[0] if chains is not None else []
-                    chains = None  # synchronous packet readback completed; retire decoded launch staging now
+                    try:
+                        if stochastic:
+                            chains = self._proposer.propose(self._draft, inputs[0], limit, history, sampled=True,
+                                                           sampling=sampling)
+                            first_position = state.position + 1
+                            packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
+                                      else ChainPacket((), (), first_position))
+                            guesses = packet.tokens
+                        else:
+                            chains = self._proposer.propose(self._draft, inputs[0], limit, history)
+                            guesses = chains.finish(0, limit, history)[0] if chains is not None else []
+                        chains = None  # synchronous packet readback completed; retire decoded launch staging now
+                    except BaseException:
+                        if self._body_graphs is not None and self._body_graphs.failed:
+                            # Capture/replay/deferred-readback failure is not
+                            # an eager fallback or permission to reuse CUDA
+                            # resources. Keep the owner until explicit drain.
+                            with self._closed_lock:
+                                self._closed = True
+                        raise
                     if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
                                                    for t in guesses):
                         raise RuntimeError("Gemma4 DFlash returned an invalid proposal")

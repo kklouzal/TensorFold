@@ -1,5 +1,87 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Private DFlash body graphs investigation, 2026-10-23
+
+This private, unselected increment starts from the selected prepared-FP8 source
+`4ab3`. It changes no numerical kernel, proposal policy, general CLI default or
+final accepted-taps append. The engine resolves its investigation policy once:
+native CT target, FP8 drafter, five verification rows, SM121 and the native CUDA
+caching allocator. Other regions keep the eager proposer. The public
+`DFlash.logits` method remains eager and returns fresh logits; its math body is
+shared with the graph adapter so attention, projection, RoPE and softcap
+operations keep their original order and parameters.
+
+One engine-private owner binds a model, DraftState and exclusive lane stream.
+It owns the S-style int32 proposal IDs and BF16 query arena, not prefix
+snapshots. Anchor and position are staged outside capture. A cache slot per
+actual width retains only its current exact companion full-attention grid,
+`ceil((committed_length + width) / 1024)`. A mismatch replaces the entry in either
+direction, including a restored shorter prefix. Reset/restore keep the same
+state storage; a different state/model needs another owner. The cache holds at
+most four entries in this region, rather than all context grids.
+
+Each generation owns a public default `torch.cuda.MemPool`. Normal replacement
+follows completed consumer → graph reset → captured output release → pool-owner
+release. The last step invokes that pool's targeted library reclamation; a bare
+pool token and an implicit dead capture do not provide this retention contract.
+Direct public capture runs on the existing nondefault lane stream after an
+explicit warmup drain, without a global allocator change or `empty_cache` call.
+Warmup and replay write only proposal noise and never advance committed length.
+On a cache miss, that ordinary warm body's real logits are the first proposal
+result. They stay alive through capture and the same Chains readback. Capture
+only records nodes: its separate pool-owned output is private and uninitialized
+until a later cache hit replays the graph. The miss therefore submits no
+redundant first replay. Hits replay normally before using that output; a
+completed readback then records `output_initialized`. Capturing the same body
+does not mutate the warm result or repeat its GPU KV writes. The existing
+separate whole-warm-body allowance dominates the live final warm result plus
+the captured-pool union; no new budget or allocator free is assumed.
+The private proposer completes the existing Chains synchronous readback,
+including sampled full-row repair, before returning a real Chains object to
+the engine. It adds no GPU-output borrowing to public APIs. Capture/replay and
+readback failures close the engine and retain/poison the owner; there is no
+eager error fallback or implicit retry. Close drains under the run lock before
+resetting graphs. A failed entry retains its tensor/pool references for the
+closed model's lifetime because raw exception frames may still alias them;
+neither reset nor object destruction is treated as a GPU completion proof.
+
+Admission adds the named `draft_graph_tensor_bytes_estimate` term, including
+the lane arena, a conservative union of each retained width's explicit Tensor
+payloads and one separate warmup-body union. It borrows no target-graph or
+retired-snapshot allowance. Four final FP32 logit buffers alone total 10 MiB at
+vocabulary 262144. This requested-payload estimate is not a bound on allocator
+rounding/retention, graph/driver allocations or whole-process RSS; those remain
+runtime-managed effects under the existing reserve and guard contract.
+Capture, replay-submission and grid-replacement counters describe setup and
+transition work; completion still comes from readback/drain.
+
+Authored checks cover private owner isolation, exact-grid hits and forward/backward
+replacement, validation/no-op ordering, graph/output/pool retirement order,
+capture/readback/GC-restoration failures, engine drain/poison handling and the
+last greedy slot's mandatory append. Two small native tests compare complete
+FP8 eager/replayed logits and K/V through the 1024 boundary, restored prefixes,
+ring wrap, widths/tails, changed anchors, sampled readback and separate states.
+They reuse the maintained DFlash fixture/oracles. The pinned GPU-hidden
+source-CPU cohort for manifest `dccff9c8` collected 114 unique cases: 99
+passed and 15 declared CUDA-only cases skipped. The totals are policy 17,
+DFlash 16 passed plus 15 skipped, engine 62 and capacity 4. Its 1,312
+source/FD files and 51 project import origins, including the shared qmm
+shape-policy module, were verified unchanged through owner retirement.
+Both actual reviews closed on summary `14984d48` and handoff `a884a04c`.
+Strict Ruff retains ten byte-triaged baseline I001/UP035/C408 diagnostics
+from the selected parent, with no new findings; this is not an overall
+zero-diagnostic claim. CPU facades do not establish real CUDA capture.
+**All native body-graph tests remain unrun.** Actual SM121 capture and
+pool-retention qualification, installed-image/full-model quality and
+independent cold/warm/transition performance comparisons remain pending. No
+body-graph gain, safe zero-cost transition or beyond-region qualification is
+claimed. Real-prefix preparation before the first decode is a prospective
+alternative; it must preserve first-callback cancellation/error ordering and
+count every operation in the original request clocks before selection.
+The earlier warm-plus-capture-plus-first-replay v1 source is retained read-only
+as a prospective reference. The miss-result change has no measured advantage
+yet, and neither implementation has been declared inferior.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft

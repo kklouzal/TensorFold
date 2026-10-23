@@ -1,5 +1,19 @@
 # TensorFold fork
 
+This private source also contains an **unqualified DFlash body-graph
+investigation** over the selected prepared-FP8 baseline below. It activates only
+for a native CT target with FP8 drafting, five rows, SM121 and the native CUDA
+allocator. Its pinned GPU-hidden source-CPU cohort collected 114 unique
+cases: 99 passed and 15 declared CUDA-only cases skipped. Strict Ruff
+retains ten unchanged baseline diagnostics; the new findings are resolved.
+Actual CUDA graphs/native, SM121 pool retention, installed ARM, full-model
+and comparative performance gates remain pending.
+On a graph miss, the ordinary warm body supplies that actual proposal while
+capture records the graph for later hits; captured output is not read before
+a real replay initializes it. This is an unmeasured cold-path candidate.
+The general CLI defaults and the measured baseline claims below are unchanged.
+[Ownership, admission and pending checks](docs/gemma4-cuda-validation.md#private-dflash-body-graphs-investigation-2026-10-23).
+
 On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
 throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
 BF16 drafting. All eight required decode cells had positive interval bounds;

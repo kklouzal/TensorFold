@@ -156,6 +156,7 @@ def _engine(monkeypatch, *, with_head=True):
     engine.target = Target()
     engine._state = engine.target.make_state()
     engine.head = Head() if with_head else None
+    engine._proposer = engine.head
     engine._draft = engine.head.make_state() if with_head else None
     engine.context_window, engine.max_rows, engine.eos = 400, 8, (18,)
     engine.vision = None
@@ -321,6 +322,7 @@ def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypat
             return speculative.Chains(logits, [history], limit, sampled=sampled, sampling=sampling)
 
     engine.head = Exact()
+    engine._proposer = engine.head
 
     def run(draft, penalties=penalties):
         output = []

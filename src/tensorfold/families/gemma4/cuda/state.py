@@ -26,6 +26,7 @@ PREFILL_ROWS = 1024      # widest text prefill forward of a request lane
 QUERY_TILE = 16          # (row, head) query pairs a program carries; fixed for every row count
 SLIDING_CHUNK = 256      # absolute key chunk of sliding layers
 GLOBAL_CHUNK = 512       # absolute key chunk of full-attention layers
+DRAFT_FULL_CHUNK = 1024  # companion full-attention chunk; graph keys and payload admission share it
 SEQUENTIAL_ROWS = 17     # full attention folds in one program per query tile from this many rows
 
 

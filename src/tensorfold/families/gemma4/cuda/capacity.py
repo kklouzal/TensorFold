@@ -13,6 +13,53 @@ from pathlib import Path
 GRAPH_SPAN = 16      # graphs.Graphs' smallest full-attention grid (chunks); larger grids double up to the context's
 
 
+def draft_graph_workspace(cfg, max_rows: int, context: int) -> int:
+    """Added explicit Tensor-payload allowance for the private FP8 body graphs.
+
+    One current grid per width, its lane IDs/query arena, and one eager warmup
+    body are named separately from the existing target graphs. The union of
+    body allocations is an overcharge of logical payload, not a promise about
+    allocator rounding/retention, graph/driver memory or whole-process RSS.
+    Native MemPool lifetime/targeted reclamation and the existing runtime
+    reserves/guard remain required; no retired-target-workspace credit.
+    """
+    from tensorfold.cuda.kernels.qmm import split_k
+
+    from .state import DRAFT_FULL_CHUNK, sliding_slots
+
+    full = -(-context // DRAFT_FULL_CHUNK)
+    d, h, hk, hd, width = cfg.hidden, cfg.heads, cfg.kv_heads, cfg.head_dim, cfg.width
+    fused = (h + 2 * hk) * hd
+    group = h // hk
+
+    def part(rows, n, k):
+        splits = split_k(n, k)
+        return 4 * rows * n * splits if splits > 8 else 0
+
+    bodies = []
+    for rows in range(2, max_rows + 1):
+        count = rows - 1
+        # Raw embeddings; materialized noncausal bounds; final norm and FP32
+        # head output/divide/tanh/multiply, plus the source FP8 lane's explicit
+        # split-K part if its shared shape policy requests more than8 splits.
+        total = 2 * rows * d + 8 * rows + 2 * count * d + 16 * count * cfg.vocab
+        total += part(count, cfg.vocab, d)
+        for kind, causal in zip(cfg.layer_types, cfg.causal_layers, strict=True):
+            slots = (sliding_slots(cfg.sliding_window, rows, group, 0 if causal else rows)
+                     if kind == 'sliding_attention' else full)
+            total += rows * (12 * d + 2 * fused + 8 * width + 2 * h * hd)
+            total += 4 * rows * h * slots * (hd + 2)
+            if rows <= 16:   # wider _project8 rows take their prompt GEMM
+                total += part(rows, fused, d) + part(rows, d, h * hd)
+                total += part(rows, 2 * width, d) + part(rows, d, width)
+        bodies.append(total)
+    arena = max_rows * (4 + 2 * h * hd)
+    # Warmup runs outside the capture pool. Its real result stays live through
+    # capture and first Chains readback: the extra whole warm-body union
+    # dominates that simultaneous final result. No allocator-page free credit.
+    return arena + sum(bodies) + max(bodies, default=0)
+
+
 def graph_workspace(cfg, max_rows: int, slots: int, taps: int) -> int:
     """Retained bytes of graphs.Graphs: each (rows, grid, taps) graph's static outputs plus one activation bound.
 
@@ -51,7 +98,7 @@ def expert_workspace(cfg, rows: int) -> int:
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, draft_body_graphs=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -141,6 +188,9 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                 if draft is not None else {"device_bytes": 0, "host_bytes": 0})
     proposals = (chain_workspace(max_rows - 1, cfg.vocab, streams=streams, penalized=True)
                  if draft is not None else {"device_bytes": 0, "host_bytes": 0})
+    if type(draft_body_graphs) is not bool or (draft_body_graphs and not (
+            native and draft is not None and drafter_bits == 8 and max_rows == 5)):
+        raise ValueError('private draft graphs require the prepared FP8/row5 native contract')
 
     def workspace(slots):
         # One layer's simultaneous activation/route tensors and retained taps.
@@ -156,6 +206,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             scratch += expert_workspace(cfg, rows)
         from .weights import TAP_LAYERS
         scratch += graph_workspace(cfg, max_rows, slots, len([i for i in TAP_LAYERS if i < cfg.layers]))
+        if draft_body_graphs and slots >= max_rows:
+            scratch += draft_graph_workspace(draft, max_rows, min(slots, cfg.max_position))
         if vision:
             v = raw['vision_config']
             patches = max(media_geometry.image_patches, media_geometry.video_patches)

@@ -34,9 +34,9 @@ from tensorfold.families.qwen3_5.cuda import b16
 from ..dflash_metadata import checked_headers, positive
 from . import attention
 from .forward import rms_norm
-from .state import PREFILL_ROWS, companion_rings, sliding_slots
+from .state import DRAFT_FULL_CHUNK, PREFILL_ROWS, companion_rings, sliding_slots
 
-FULL_CHUNK = 1024        # companion full-layer key chunk (no invariance contract: proposals are verified)
+FULL_CHUNK = DRAFT_FULL_CHUNK  # companion key chunk (no invariance contract: proposals are verified)
 
 
 @triton.jit
@@ -285,6 +285,18 @@ class DFlash:
         x = self.raw_embed_tokens(ids)
         start = state.length
         state.pos.fill_(start)
+        return self._logits_body(state, x, full_slots=(start + length - 1) // FULL_CHUNK + 1)
+
+    def _logits_body(self, state: DraftState, x: torch.Tensor, *, full_slots: int,
+                     query: torch.Tensor | None = None) -> torch.Tensor:
+        """The unchanged proposal math, with position/IDs staged by its owner.
+
+        Eager callers allocate their query normally. The engine-private graph
+        owner supplies one lane arena, fully written before each attention and
+        reused only after that layer's consumers on the same CUDA stream.
+        This body does not advance the committed length or perform readback.
+        """
+        cfg, length = self.config, x.shape[0]
         # Noncausal layers see the whole block: every row shares [start, start + length).
         block_start = state.pos.repeat(length)
         block_end = block_start + length
@@ -294,7 +306,8 @@ class DFlash:
             base = f"layers.{layer}."
             h = rms_norm(x, self.weights[base + "input_layernorm.weight"], cfg.eps)
             fused = self.linears[base + "kvq"](h)
-            q = torch.empty((length, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=self.device)
+            q = (torch.empty((length, cfg.heads, cfg.head_dim), dtype=torch.bfloat16, device=self.device)
+                 if query is None else query)
             self._publish(fused, state, layer, q)
             noncausal = not cfg.causal_layers[layer]
             if kind == "sliding_attention":
@@ -302,7 +315,7 @@ class DFlash:
                 slots = sliding_slots(window, length, group, length if noncausal else 0)
             else:
                 window, chunk = 0, FULL_CHUNK
-                slots = (start + length - 1) // chunk + 1
+                slots = full_slots
             out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, block_start, block_end,
                                     window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk)
             x = x + self.linears[base + "self_attn.o_proj.weight"](out.reshape(length, -1))

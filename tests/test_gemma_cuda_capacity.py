@@ -122,3 +122,22 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     assert runtime_workspace[1] == runtime_workspace[2]
     assert runtime_workspace[1][1] >= 16 * 16 * vocab
     assert all(full > serial for full, serial in zip(runtime_workspace[1], runtime_workspace[0]))
+
+
+def test_private_draft_graph_payload_is_added_and_tracks_exact_full_grid():
+    """Independent unavoidable owners, not allocator-reserved/RSS assertions."""
+    from types import SimpleNamespace
+
+    from tensorfold.families.gemma4.cuda.capacity import draft_graph_workspace
+    from tensorfold.families.gemma4.cuda.state import DRAFT_FULL_CHUNK
+
+    cfg = SimpleNamespace(hidden=128, heads=2, kv_heads=1, head_dim=64, width=256, vocab=4096,
+                          layer_types=('sliding_attention', 'full_attention'),
+                          causal_layers=(True, False), sliding_window=8)
+    before = draft_graph_workspace(cfg, 5, DRAFT_FULL_CHUNK)
+    after = draft_graph_workspace(cfg, 5, DRAFT_FULL_CHUNK+1)
+    # Four current-width graphs retain1+2+3+4 FP32 vocabulary rows, and one
+    # active lane owns its five int32 IDs and BF16 query arena. These owners
+    # cannot borrow the existing target graphs' allowance or a snapshot slot.
+    unavoidable = 4 * cfg.vocab * (1+2+3+4) + 5 * (4 + 2*cfg.heads*cfg.head_dim)
+    assert before >= unavoidable and after > before
