@@ -343,6 +343,71 @@ AMD64 or historical GB10 checks as new runs.
 
 ## Build the current selected image
 
+### Freeze immutable build inputs
+
+Audit workflows can create the existing schema4 source-and-named-context
+handoff with the canonical stdlib command below. It reads a clean, explicit
+commit; it does not edit that checkout, compile code, run Docker, or execute
+checkpoint Python. The capture host requires native Linux filesystem APIs and
+a Python build with the public tar data filter. Runtime/build target selection
+remains explicitly `arm64` or `amd64`; this command does not emulate a builder.
+
+First prepare the selected immutable foundation inputs as described below.
+Choose new output and bytecode-prefix paths and keep all input trees immutable
+through capture, transfer, build and audit:
+
+```bash
+TF_CAPTURE_REPO=/path/to/clean/TensorFold
+TF_CAPTURE_REVISION="$(git -C "$TF_CAPTURE_REPO" rev-parse HEAD)"
+TF_CAPTURE_OUTPUT=/path/to/new/capture
+TF_CAPTURE_PYCACHE_PREFIX=/path/to/absent/pycache
+python3 -I -S -B -X "pycache_prefix=$TF_CAPTURE_PYCACHE_PREFIX" tools/gb10_capture.py \
+  --architecture "$TF_BUILD_ARCH" --repo "$TF_CAPTURE_REPO" \
+  --revision "$TF_CAPTURE_REVISION" --output "$TF_CAPTURE_OUTPUT" \
+  --foundation-pins "$TF_FOUNDATION_PINS" \
+  --foundation-artifacts "$TF_FOUNDATION_ARTIFACTS"
+```
+
+Successful output contains the clean-commit `source.tar` and extracted `payload`,
+two `named-contexts/*/context.tar` archives and payloads, `source.json`, and
+`capture-status.json`. SOURCE_UID still hashes the sorted source files,
+symlinks and modes; BUID still binds that source archive, declared platform and
+exactly the two named-context identities. Named-context entries remain regular
+files/directories only. Their original modes, deterministic archive member
+order and zero archive timestamps are preserved. The source Git archive keeps
+its existing safe in-tree symlink contract through Python's data filter.
+
+File reads/copies retain descriptor identity checks. Raw outputs handle partial
+writes, and publication happens only after successful stream retirement.
+Archive abort, adapter/descriptor close and status-publication failures preserve
+the original operation object and independent cleanup roots. A slotted
+`RetirementFailure` cause is allocated before resource acquisition. It retains
+the original native cause, context and suppression flag, failed resource,
+cleanup error and transport outcome even if `contextlib` removes a generator
+traceback or later diagnostics cannot allocate. The canonical cleanup transport
+enriches this carrier without replacing the original operation exception.
+A failed attempt stays in its new directory; do not retry
+or adopt it because partial files exist. Require successful command completion,
+a complete status, and the existing archive/payload identity verification before
+the separate transfer/build/audit steps. This is process-completion evidence,
+not an added crash-durability guarantee.
+
+The final local source/fault suite passed **58 cases** with no failures or skips:
+30 capture, 15 controller and 13 progress cases on the Linux host with
+CPython 3.14.4 and pytest 9.0.2. All nine source files matched before and after
+the run. This includes the corrected traceback-independent ownership and
+exhaustion checks, full mode-bit preservation including SGID, publication faults
+and deterministic capture identities. The original failed run and the passing
+pre-style source remain preserved with their own identities.
+
+Ruff still reports seven unchanged inherited controller diagnostics outside the
+changed spans; those are separately triaged. The changed source and tests add no
+remaining diagnostic, but this is not an overall Ruff-clean result. The actual
+new source capture, transfer, ARM image build and downstream qualification remain
+**UNRUN**. These tool checks do not transfer earlier model/runtime/performance
+qualification to a new capture or image. Prior capture artifacts remain
+historical records.
+
 First run [input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 from the repository root with `TF_BUILD_ARCH=arm64` for a native GB10 builder.
 Keep its exported variables in the same shell; no `generated-arm64` or
