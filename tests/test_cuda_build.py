@@ -1,6 +1,8 @@
 """CUDA extensions build for the GPU present, whatever architecture list the container sets (#56), and say what a
 silent start does: a first build, or a lock a killed build left."""
 
+import builtins
+import json
 import os
 import threading
 import time
@@ -533,3 +535,203 @@ def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
     assert lock.exists()
     with actual_lock(str(lock), timeout=1):
         pass
+
+
+class _ManagedStream:
+    def __init__(self, raw=b'{}', read_error=None, close_error=None, closing=None):
+        self.raw, self.read_error, self.close_error, self.closing = raw, read_error, close_error, closing
+        self.reads, self.closes = [], 0
+
+    def read(self, count):
+        self.reads.append(count)
+        if self.read_error is not None:
+            raise self.read_error
+        return self.raw
+
+    def close(self):
+        self.closes += 1
+        if self.closing is not None:
+            self.closing()
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _ManagedPath:
+    def __init__(self, stream):
+        self.stream, self.opens = stream, []
+
+    def open(self, *args, **kwargs):
+        self.opens.append((args, kwargs))
+        return self.stream
+
+
+def _managed_roots(error):
+    if isinstance(error, BaseExceptionGroup):
+        return [root for nested in error.exceptions for root in _managed_roots(nested)]
+    return [error]
+
+
+def test_managed_read_preserves_same_open_and_exact_read_contract():
+    stream = _ManagedStream(raw=b'{"toolchain": {}}')
+    path = _ManagedPath(stream)
+    assert build._read_managed_state(path) == stream.raw
+    assert path.opens == [(("rb",), {})]
+    assert stream.reads == [64 * 2**20 + 1] and stream.closes == 1
+
+
+@pytest.mark.parametrize("primary", [MemoryError("read exhaustion"), KeyboardInterrupt()])
+def test_managed_read_failure_with_successful_close_keeps_exact_root(primary):
+    prior = OSError("native")
+    primary.__cause__ = prior
+    stream = _ManagedStream(read_error=primary)
+    try:
+        build._read_managed_state(_ManagedPath(stream))
+    except BaseException as error:  # noqa: BLE001 - assert exact exhaustion/interruption identity, including KeyboardInterrupt.
+        assert error is primary and BaseException.__cause__.__get__(error) is prior
+    else:
+        pytest.fail("read failure was swallowed")
+    assert stream.closes == 1
+
+
+def test_managed_success_has_no_new_transport_dependency(monkeypatch):
+    original = builtins.__import__
+
+    def guard(name, *args, **kwargs):
+        if name == "tensorfold.cleanup":
+            pytest.fail("successful state read must not import failure transport")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guard)
+    stream = _ManagedStream(raw=b'snapshot')
+    assert build._read_managed_state(_ManagedPath(stream)) == b'snapshot'
+    assert stream.closes == 1
+
+
+def test_managed_transport_import_failure_still_keeps_read_primary(monkeypatch):
+    original = builtins.__import__
+    allocation = MemoryError("transport import")
+
+    def fail(name, *args, **kwargs):
+        if name == "tensorfold.cleanup":
+            raise allocation
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail)
+    primary = RuntimeError("read")
+    stream = _ManagedStream(read_error=primary, close_error=OSError("close"))
+    with pytest.raises(RuntimeError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is primary and BaseException.__cause__.__get__(primary) is allocation
+    assert stream.closes == 1
+
+
+@pytest.mark.parametrize("same_error", [False, True])
+def test_managed_read_and_close_keep_primary_and_native_links(same_error):
+    primary, prior, context = RuntimeError("read"), ValueError("native"), KeyError("context")
+    cleanup = primary if same_error else OSError("close")
+    primary.__cause__, primary.__context__, primary.__suppress_context__ = prior, context, True
+
+    def rewrite_links():
+        primary.__cause__ = ArithmeticError("foreign close changed native link")
+
+    stream = _ManagedStream(read_error=primary, close_error=cleanup, closing=rewrite_links)
+    with pytest.raises(RuntimeError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is primary and stream.closes == 1
+    roots = _managed_roots(BaseException.__cause__.__get__(primary))
+    assert any(error is prior for error in roots)
+    if not same_error:
+        assert any(error is context for error in roots) and any(error is cleanup for error in roots)
+
+
+def test_managed_close_only_is_exact_failure_without_retry():
+    cleanup = OSError("close")
+    stream = _ManagedStream(raw=b'{}', close_error=cleanup)
+    with pytest.raises(OSError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is cleanup and stream.closes == 1
+    frames = []
+    traceback = cleanup.__traceback__
+    while traceback is not None:
+        frames.append(traceback.tb_frame)
+        traceback = traceback.tb_next
+    assert any(frame.f_locals.get("stream") is stream for frame in frames)
+
+
+def test_managed_hostile_exception_getters_cannot_skip_close():
+    class HostileError(RuntimeError):
+        def __getattribute__(self, name):
+            if name in ("__cause__", "__context__", "__suppress_context__"):
+                raise AssertionError("exception hook must not run")
+            return super().__getattribute__(name)
+
+    primary, cleanup = HostileError("read"), OSError("close")
+    stream = _ManagedStream(read_error=primary, close_error=cleanup)
+    try:
+        build._read_managed_state(_ManagedPath(stream))
+    except BaseException as error:  # noqa: BLE001 - inspect the exact primary and cleanup roots without invoking hostile getters.
+        assert error is primary
+        assert any(item is cleanup for item in _managed_roots(BaseException.__cause__.__get__(primary)))
+    else:
+        pytest.fail("owned read/close failures were swallowed")
+    assert stream.closes == 1
+
+
+def _managed_toolkit(monkeypatch, stream):
+    original = build.Path
+    selected = _ManagedPath(stream)
+    monkeypatch.setenv("TF_FOUNDATION_STATE", "selected-managed-state")
+    monkeypatch.setattr(build, "Path", lambda value: selected if value == "selected-managed-state" else original(value))
+    return selected
+
+
+def test_managed_state_cap_refuses_before_json_after_one_close(monkeypatch):
+    stream = _ManagedStream(raw=b' ' * (64 * 2**20 + 1))
+    selected = _managed_toolkit(monkeypatch, stream)
+    with pytest.raises(ValueError, match="managed CUDA foundation state exceeds its bound"):
+        build.pip_toolkit(None, None)
+    assert selected.opens == [(("rb",), {})]
+    assert stream.reads == [64 * 2**20 + 1] and stream.closes == 1
+
+
+def test_managed_state_exact_cap_is_retained(tmp_path, monkeypatch):
+    home = tmp_path / "native-toolkit"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "nvcc").touch()
+    payload = json.dumps({"toolchain": {"cuda_home": str(home)}}).encode()
+    stream = _ManagedStream(raw=payload + b' ' * (64 * 2**20 - len(payload)))
+    _managed_toolkit(monkeypatch, stream)
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    assert build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None) == []
+    assert stream.closes == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="ordinary POSIX symlink fixture")
+def test_managed_state_follows_the_same_path_open_symlink(tmp_path, monkeypatch):
+    home = tmp_path / "native-toolkit"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "nvcc").touch()
+    source = tmp_path / "state.json"
+    source.write_text(json.dumps({"toolchain": {"cuda_home": str(home)}}))
+    selected = tmp_path / "state-link.json"
+    selected.symlink_to(source)
+    monkeypatch.setenv("TF_FOUNDATION_STATE", str(selected))
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    assert build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None) == []
+    assert selected.is_symlink()
+
+
+def test_managed_invalid_json_and_toolkit_mismatch_keep_existing_failures(tmp_path, monkeypatch):
+    stream = _ManagedStream(raw=b'invalid-json')
+    _managed_toolkit(monkeypatch, stream)
+    with pytest.raises(json.JSONDecodeError):
+        build.pip_toolkit(None, None)
+    assert stream.closes == 1
+    home = tmp_path / "missing-toolkit"
+    home.mkdir()  # A valid declared root reaches the unchanged missing-nvcc refusal.
+    stream = _ManagedStream(raw=json.dumps({"toolchain": {"cuda_home": str(home)}}).encode())
+    _managed_toolkit(monkeypatch, stream)
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    with pytest.raises(RuntimeError, match="managed CUDA foundation requires its selected native toolkit"):
+        build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None)
+    assert stream.closes == 1

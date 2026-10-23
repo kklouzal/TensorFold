@@ -170,12 +170,61 @@ def _pip_flags() -> tuple[str, ...]:
     return tuple(pip_toolkit(cpp_extension, torch))
 
 
+def _read_managed_state(path: Path) -> bytes:
+    """Retire the same binary stream once, preserving read and close roots.
+
+    Open/file-type/symlink behavior stays Path.open('rb'); no FD extension or
+    new parser is needed. A failed close retains its stream in this owning
+    traceback until explicit recovery or process retirement, never a retry.
+    Failure transport is imported only after resource work has been attempted.
+    """
+    statuses = [None]
+    primary = prior_cause = prior_context = None
+    prior_suppress = False
+    # Bind the native getters before acquisition; exception subclasses cannot
+    # intercept them or allocate a fresh Python bound method during failure.
+    cause = BaseException.__cause__.__get__
+    context = BaseException.__context__.__get__
+    suppress = BaseException.__suppress_context__.__get__
+    stream = path.open("rb")
+    raw = None
+    try:
+        raw = stream.read(64 * 2**20 + 1)
+    except BaseException as error:  # noqa: BLE001 - every read/interruption root survives owned retirement.
+        primary = error
+        prior_cause = cause(error)
+        prior_context = context(error)
+        prior_suppress = suppress(error)
+    finally:
+        try:
+            stream.close()
+        except BaseException as error:  # noqa: BLE001 - one attempted close; unresolved stream stays frame-owned.
+            statuses[0] = error
+            if primary is None:
+                primary = error
+                prior_cause = cause(error)
+                prior_context = context(error)
+                prior_suppress = suppress(error)
+    if primary is not None:
+        try:
+            from tensorfold.cleanup import raise_failures
+
+            BaseException.__cause__.__set__(primary, prior_cause)
+            BaseException.__context__.__set__(primary, prior_context)
+            BaseException.__suppress_context__.__set__(primary, prior_suppress)
+            raise_failures(primary, statuses if statuses[0] is not None else ())
+        except BaseException as transport:  # Raw roots remain owned if failure transport exhausts.
+            if transport is primary:
+                raise
+            raise primary from transport
+    return raw
+
+
 def pip_toolkit(cpp_extension: Any, torch: Any) -> list[str]:
     """No toolkit found (CUDA_HOME, nvcc, /usr/local/cuda): NVIDIA's pip one beside torch, its cudart linked by name."""
 
     if os.environ.get("TF_FOUNDATION_STATE"):
-        with Path(os.environ["TF_FOUNDATION_STATE"]).open("rb") as stream:
-            raw = stream.read(64 * 2**20 + 1)
+        raw = _read_managed_state(Path(os.environ["TF_FOUNDATION_STATE"]))
         if len(raw) > 64 * 2**20:
             raise ValueError("managed CUDA foundation state exceeds its bound")
         expected = Path(json.loads(raw)["toolchain"]["cuda_home"]).resolve(strict=True)
