@@ -68,10 +68,20 @@ DFlash 16 passed plus 15 skipped, engine 62 and capacity 4. Its 1,312
 source/FD files and 51 project import origins, including the shared qmm
 shape-policy module, were verified unchanged through owner retirement.
 Both actual reviews closed on summary `14984d48` and handoff `a884a04c`.
-Strict Ruff retains ten byte-triaged baseline I001/UP035/C408 diagnostics
-from the selected parent, with no new findings; this is not an overall
-zero-diagnostic claim. CPU facades do not establish real CUDA capture.
-**All native body-graph tests remain unrun.** Actual SM121 capture and
+That earlier body-only Ruff check retained ten byte-triaged baseline
+I001/UP035/C408 diagnostics and resolved its new findings; this is not an
+overall zero-diagnostic claim. After the managed-read-owner merge, source
+`f789b7da` passed all 55 local SM120 functional checks without skips:
+the two real body-graph tests, DFlash 31, policy 17, target graphs 4 and
+the FD metadata check. Complete proposal logits/KV, real MISS/HIT paths,
+frontier/restore/tail transitions, sampled readback, distinct owners and
+normal drained teardown were exercised; failure-policy controls remain
+CPU facades. The gate verified 1,312 source/FD files, 64 native source
+texts, 63 project/test origins, nine native observations over six mapped
+objects, protected foundation stability, CUDA settlement and owner
+retirement. Both actual reviews closed on summary `3ab41b47` and handoff
+`f3e2653f`. This is local functional evidence, not an allocator/driver
+retention bound or performance result. Actual SM121 capture and
 pool-retention qualification, installed-image/full-model quality and
 independent cold/warm/transition performance comparisons remain pending. No
 body-graph gain, safe zero-cost transition or beyond-region qualification is

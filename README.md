@@ -3,11 +3,14 @@
 This private source also contains an **unqualified DFlash body-graph
 investigation** over the selected prepared-FP8 baseline below. It activates only
 for a native CT target with FP8 drafting, five rows, SM121 and the native CUDA
-allocator. Its pinned GPU-hidden source-CPU cohort collected 114 unique
-cases: 99 passed and 15 declared CUDA-only cases skipped. Strict Ruff
-retains ten unchanged baseline diagnostics; the new findings are resolved.
-Actual CUDA graphs/native, SM121 pool retention, installed ARM, full-model
-and comparative performance gates remain pending.
+allocator. Its earlier GPU-hidden source-CPU cohort collected 114 unique
+cases: 99 passed and 15 declared CUDA-only cases skipped. After the
+managed-read-owner merge, the current source passed all 55 local SM120
+functional checks without skips, including both real body-graph
+differentials and the existing DFlash and target-graph checks. The earlier
+body-only Ruff check retained ten unchanged baseline diagnostics and
+resolved its new findings. Actual SM121 capture/pool retention, installed
+ARM, full-model and comparative performance gates remain pending.
 On a graph miss, the ordinary warm body supplies that actual proposal while
 capture records the graph for later hits; captured output is not read before
 a real replay initializes it. This is an unmeasured cold-path candidate.
