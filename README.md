@@ -9,6 +9,18 @@ GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
 `16`, required for the original affine checkpoint's quantized head.
 [Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
+**Prepared FP8 adaptive target-head candidate:** this isolated source combines
+the existing R4/R8/R16 target-head policy with prepared FP8 drafting and the
+corrected CUDA managed-state reader. With bits8, it changes the target's BF16
+projection only; the private FP8 proposal head copies the same original weight
+and retains its own projection path. On pinned AMD64 image `509b4135`, this
+combined source passed **143 GPU-hidden CPU checks** and **eight local SM120
+direct-policy native checks**, with zero skips. The native check covers the
+explicit adaptive policy, not its SM121 selection or the private FP8 drafter.
+Fresh ARM/SM121, full-model quality and comparative performance remain **UNRUN**.
+The selected FP8 result above does not establish a gain for this candidate.
+[Composition scope](docs/optimization-validation.md#gemma-prepared-fp8-adaptive-target-head-2026-10-23).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

@@ -375,9 +375,11 @@ def qualify(app, cfg_index, plan, items, report, outdir, modules):
              and engine.context_window == 262144 and engine.vision is not None and engine.graphs is not None,
              "constructed engine differs from the fixed production launch descriptor")
     head_module = modules["tensorfold.families.gemma4.cuda.head"]
-    _require(isinstance(engine.w.embed, head_module._RowsHead), "prepared GB10 exact BF16 head required")
-    incumbent = engine.w.embed.incumbent
-    heads = {n: engine.w.embed if engine.w.embed.reuse_rows == n else head_module.prepare_head(incumbent, reuse_rows=n)
+    selected = engine.w.embed
+    fixed = isinstance(selected, head_module._RowsHead)
+    _require(fixed or type(selected) is head_module._AdaptiveRowsHead, "prepared GB10 exact BF16 head required")
+    incumbent = selected.incumbent
+    heads = {n: selected if fixed and selected.reuse_rows == n else head_module.prepare_head(incumbent, reuse_rows=n)
              for n in (16, 8)}
     prepared, metadata = _prepare(app, plan, items)
     info = report["configurations"][cfg_index]

@@ -114,9 +114,9 @@ def test_regular_input_boundary_rejects_fifo_without_blocking_and_accepts_hf_sym
         tool._read(fifo, 10)
 
 
-def runtime(monkeypatch, tmp_path, *, fault=None):
+def runtime(monkeypatch, tmp_path, *, fault=None, head_kind="fixed"):
     plan, path = fixture_plan(tmp_path)
-    states = {"engines": [], "requests": [], "proof": False, "timed": 0, "closed": 0}
+    states = {"engines": [], "requests": [], "proof": False, "timed": 0, "closed": 0, "bound_heads": []}
     partial = object()
     class Chains:
         pass
@@ -127,12 +127,18 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
     class Head:
         def __init__(self, incumbent, rows):
             self.incumbent, self.reuse_rows, self.weight = incumbent, rows, incumbent.weight
+    class AdaptiveHead:
+        def __init__(self, incumbent):
+            self.incumbent, self.weight = incumbent, incumbent.weight
     class Engine:
         def __init__(self, rows, bits):
             assert speculative._PROPOSAL_GUARD == 32
             assert all(item.closed for item in states["engines"])
             self.max_rows, self.context_window = rows, 262144
-            self.w = NS(numerics="ct_nvfp4", embed=Head(Plain(), 16))
+            incumbent = Plain()
+            selected = (Head(incumbent, 16) if head_kind == "fixed" else AdaptiveHead(incumbent)
+                        if head_kind == "adaptive" else type("OtherAdaptive", (AdaptiveHead,), {})(incumbent))
+            self.w = NS(numerics="ct_nvfp4", embed=selected)
             self.head, self.vision, self.graphs = NS(bits=bits), object(), object()
             self.capacity_plan = {"context_window": 262144, "cpu_fixture": True}
             self._prefix, self._prefix_lock, self.closed = None, threading.Lock(), False
@@ -185,7 +191,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
     modules = {name: NS() for name in tool.SOURCES}
     modules[tool.proposal.SOURCES[0]], modules[tool.proposal.SOURCES[1]] = speculative, sampling
     modules[tool.proposal.SOURCES[2]] = NS(Gemma4Engine=Engine)
-    modules["tensorfold.families.gemma4.cuda.head"] = NS(_RowsHead=Head,
+    modules["tensorfold.families.gemma4.cuda.head"] = NS(_RowsHead=Head, _AdaptiveRowsHead=AdaptiveHead,
         prepare_head=lambda incumbent, *, reuse_rows: Head(incumbent, reuse_rows))
     def with_app(argv, port, work):
         assert port == 8899
@@ -195,6 +201,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
         finally:
             engine.close()
     def bind(engine, head):
+        states["bound_heads"].append(head)
         changed = engine.w.embed is not head
         engine.w.embed = head
         if changed:
@@ -248,6 +255,20 @@ def test_launch_uses_fresh_owners_truthful_modes_and_exact_comparison_scopes(mon
     sampled = [r for r in report["records"] if r["phase"] == "timed"]
     assert sampled[0]["token_ids"] != sampled[-1]["token_ids"]  # legitimate cross-geometry/FP8 difference
     assert len(states["requests"]) == 72 and states["timed"] == 32  # warm/timed have no proof observers
+
+
+def test_adaptive_selected_head_supplies_only_incumbent_to_unchanged_fixed_arms(monkeypatch, tmp_path):
+    _plan, path, states, _speculative, _sampling = runtime(monkeypatch, tmp_path, head_kind="adaptive")
+    assert tool.main(["--plan", str(path), "--out", str(tmp_path / "out")]) == 0
+    assert states["closed"] == 2 and len(states["requests"]) == 72
+    assert states["bound_heads"] and {head.reuse_rows for head in states["bound_heads"]} == {8, 16}
+
+
+def test_an_unknown_adaptive_subclass_is_not_admitted_as_the_exact_prepared_policy(monkeypatch, tmp_path):
+    _plan, path, states, _speculative, _sampling = runtime(monkeypatch, tmp_path, head_kind="other")
+    with pytest.raises(ValueError, match="prepared GB10 exact BF16 head required"):
+        tool.main(["--plan", str(path), "--out", str(tmp_path / "out")])
+    assert states["closed"] == 1 and states["requests"] == [] and states["bound_heads"] == []
 
 
 @pytest.mark.parametrize("fault", ["source", "prompt", "head-drift", "serial-drift", "short", "cache", "request", "drain"])

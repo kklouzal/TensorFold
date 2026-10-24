@@ -18,6 +18,77 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Gemma prepared FP8 adaptive target head, 2026-10-23
+
+This isolated candidate composes the adaptive head from source `f4a88d38` with
+the corrected prepared-FP8 baseline `437e61e5`. The head source is `6f13f0ab`,
+retaining `77ca0044`'s executable policy with its precision-specific borrowing
+docstring clarified. The original FP8 preparation source `03643eab`, its
+constructor controls, the managed-state read fix `9f89e26b` and its regression
+controls remain unchanged.
+All 64 native source files and the target loader, forward, engine, graph,
+capacity, B16 and FP8 providers retain their baseline bytes. No new runtime flag,
+weight copy, scratch cache or numerical precision policy is introduced by the
+adaptive head.
+
+Selection still occurs once while loading an original contiguous CUDA BF16
+`[262144,2816]` CT embedding/head on SM12.1. The candidate uses the existing R4
+kernel for 2–4 rows, R8 for 5–8, and R16 above eight. It keeps the original
+singleton and the R16 native zero-row refusal. Other shapes, storage kinds and
+architectures retain their existing head. Original fixed R8/R16 comparators and
+the independent raw-bit, partition, permutation, softcap and replay oracles
+remain available for their required verification roles.
+
+With `--drafter-bits 8`, this policy affects **only the target BF16 head**.
+DFlash constructs its private FP8 `Head` from the same aliased BF16 weight and
+then replaces its borrowed target projector; FP8 projection does not call the
+adaptive BF16 wrapper. Token embedding lookup and the inherited prompt method
+remain unchanged, and target softcap remains outside the BF16 head exactly
+once. Under bits16, the existing shared target/drafter projection relationship
+is retained instead. The maintained head-qualification tool recognizes the exact
+adaptive wrapper while preserving its original fixed comparison arms and
+refusing an unknown adaptive subclass.
+
+The combined executable/test source frozen by manifest `30172c25` passed
+**143 source CPU checks** and **eight local SM120 native checks**, with no skips
+or displayed warnings. Both used pinned AMD64 image
+`sha256:509b41351f2fd3ac20260b446d869bc58639d9a21a4101c6176e84f76edeac54`
+and CPython 3.12.3. The GPU-hidden CPU role used four CPUs, 16 GiB,
+`OMP_NUM_THREADS=1` and `MAX_JOBS=1`; it joined all 1,311 source/test files, 36 tool files,
+48 source families, complete raw/JUnit identities and actual project/tool
+origins. It includes the retained provider-constructor controls and engine,
+head-policy, qualifier, B16 boundary and FD checks. The strict CPU summary is
+`916237ae`; ten finite metadata-reader controls also passed.
+
+The native role used local SM120, eight CPUs, 16 GiB, eight compute threads,
+one inter-op thread, MAX_JOBS 2 and a fresh functional compiler cache. Its exact
+same-session collection joined all eight raw/JUnit passes, the same 1,311
+source/test files and 64 native inputs, actual project/test origins, the
+naturally consumed B16 and FD mapped objects, unchanged protected foundation,
+CUDA settlement and complete owned-actor retirement. Its strict summary is
+`e900bb21`. The seven direct-policy numerical/replay checks plus FD supplier
+check do **not** qualify automatic SM121 selection, the private FP8 drafter,
+an installed ARM image or full-model behavior. These are correctness results;
+the functional run times are not performance comparisons. Only the three
+status documents change after those runs; executable and test bytes remain
+identical to that tested manifest.
+
+Fresh ARM source/image/origin audits, SM121 selection and native gates, the own
+bits8 complete four-by-64 quality gate and an independent same-region comparison
+against corrected F8 remain **UNRUN**. Use the current F8 quality/count contract,
+not historical
+bits16 H counters. Historical H and F8 runs retain their own revisions,
+precisions, images and scopes. Unchanged component evidence remains reusable
+when all its preconditions match; it does not automatically qualify the combined
+runtime, full model or performance. No gain is transferred to this composition.
+Old R8/R16 ranking uncertainty is not equivalence.
+
+The reviewed short F8 trace motivates target-head investigation, but its kernel
+sums are diagnostic, not a decode-rate ratio or a speedup prediction. Singleton
+work remains unchanged. Any comparison must count constructor/capture/deferred
+work, dispatch, cold and warm compiler caches, startup and request costs under
+its prospectively fixed objective. No gain is claimed for this candidate.
+
 ## Gemma FP8 provider preparation, 2026-10-23
 
 The candidate prepares the existing native prompt and lane providers during

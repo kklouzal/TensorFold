@@ -6,6 +6,18 @@ CUDA DFlash sampled requests use standard rejection sampling; greedy serial iden
 
 The CUDA implementation reads original MLX affine 4/6-bit projections in groups of 64, including the original 6-bit tied embedding/head and expert down projections. It does not requantize the checkpoint. The separate `z-lab/gemma-4-26B-A4B-it-DFlash` companion retains BF16 weights by default (`--drafter-bits 16`). With a BF16 tied target head, as in the native CT profile below, `--drafter-bits 8` runs it on private FP8 copies (E4M3, one scale an output row) of its projections and head, changing proposals only. The original affine checkpoint's 6-bit tied head requires `--drafter-bits 16`. Proposals are verified by the target before publication, so replies retain their target semantics. CUDA currently requires `--parallel 1` and BF16 KV. Tensor/expert parallelism is outside this initial implementation. The separate native CT NVFP4 path below requires SM12.x.
 
+The isolated prepared-FP8 adaptive target-head candidate retains the selected
+bits8 profile and corrected managed-state loading. On the original SM12.1 CT
+BF16 head it selects existing R4/R8/R16 kernels by row count; with bits8 the
+private FP8 draft head still copies the same original weight and bypasses that
+BF16 projection policy. No CLI flag, precision default, target weight or softcap
+contract changes. The combined source passed 143 GPU-hidden CPU checks and eight
+local SM120 direct-policy native checks on pinned AMD64 image `509b4135`, with
+zero skips. SM121 selection, private FP8 drafting, fresh ARM images, full-model
+and comparative performance remain **UNRUN**; these local checks and parent
+qualification do not establish a new gain.
+[Exact composition scope and required gates](../optimization-validation.md#gemma-prepared-fp8-adaptive-target-head-2026-10-23).
+
 For `--drafter-bits 8`, model initialization prepares the existing native prompt
 and decode providers after constructing the validated private FP8 copies.
 Compilation and module loading count toward startup; failures stop construction
