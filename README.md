@@ -9,6 +9,17 @@ GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
 `16`, required for the original affine checkpoint's quantized head.
 [Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
+Native build-preparation IO passed **58 source/fault controls** on the Linux
+host with CPython 3.14.4 and pytest 9.0.2: 30 capture, 15 controller and 13 progress
+cases, with no failures or skips. The checks cover preallocated retirement
+ownership, transport exhaustion, file modes and schema4 capture identities.
+Seven inherited controller Ruff diagnostics outside the changed spans remain
+triaged; no whole-tool Ruff-clean result is claimed. The actual new source
+capture and ARM build remain **UNRUN**. This is no model or performance result.
+[Capture contract](deploy/gb10/README.md#freeze-immutable-build-inputs).
+[Controller IO contract](docs/gb10-controller-io.md) records its separate
+durability and process-retirement behavior.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
