@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "as_of": "2026-10-24",
+  "platform": "linux/amd64",
+  "python": "3.12",
+  "base": "nvcr.io/nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:420850a3fd665171b3f1fd08946c51d50468d732a46d6c42345ea04444755048",
+  "base_index": "nvcr.io/nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:16656a1ef115bca9e1f820c6349876f1486d2b3c9a0e615773799fe402960dc5",
+  "cuda": "12.9.2",
+  "cache_key": "sm70-fp16-cu1292-torch2141-cu126-triton38",
+  "foundation_roots": ["torch==2.14.1+cu126", "torchvision==0.29.1+cu126", "triton==3.8.0"],
+  "wheels": {
+    "torch": {
+      "version": "2.14.1+cu126",
+      "url": "https://download-r2.pytorch.org/whl/cu126/torch-2.14.1%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "75727245346d8f92224a860bf40c56bd681edcfa0456d01d7dfcb0bf6f0cf86c"
+    },
+    "torchvision": {
+      "version": "0.29.1+cu126",
+      "url": "https://download-r2.pytorch.org/whl/cu126/torchvision-0.29.1%2Bcu126-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "sha256": "f846900988cbd64b055886c9ad7e7a44606c5710e8272921062c647f237eae34"
+    },
+    "triton": {
+      "version": "3.8.0",
+      "url": "https://download-r2.pytorch.org/whl/triton-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "07a88b13e4f7e8b1769094238ab75109a5db2a8160a24ddc49c24d2efa44cb58"
+    }
+  },
+  "nccl_provider": "native",
+  "native_addons": []
+}

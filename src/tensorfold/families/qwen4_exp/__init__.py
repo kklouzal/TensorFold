@@ -7,6 +7,7 @@ from typing import Any
 
 from .kv_formats import DTYPES
 
+CUDA_DRAFT_METHODS = ("auto", "mtp", "dspark")
 CUDA_KV_DTYPES = DTYPES          # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
 
 MODEL_TYPES = ("qwen4_exp", "qwen3_8_flash_next")   # the second: the name newer exports (Mia-AiLab's NVFP4) carry
@@ -16,7 +17,7 @@ LANES = True
 MODELS = ("TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP", "turboderp/Qwen3.8-Flash-Next-exl3",
           "local-inference-lab/Qwen3.8-Flash-Next-NVFP4", "RadixArk/Qwen3.8-Flash-Next-NVFP4")
 NVFP4_MODELS = MODELS[2:]
-QUANT_METHODS = {"cuda": ("mlx", "exl3", "modelopt")}  # MLX affine 4-bit, EXL3 packs and NVFP4 (ModelOpt)
+QUANT_METHODS = {"cuda": ("mlx", "exl3", "modelopt", "gguf")}  # each format retains its own byte reader/provider
 EXL3_VARIANT = "any"                           # every EXL3 codebook and width (tensorfold.families.EXL3_VARIANT_ANY)
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.flash_next.v1"
 KERNEL_VERSION = "v1"
@@ -64,6 +65,11 @@ def check(model_dir: Path) -> None:
     from tensorfold.families import EXL3_QUANT, OWN_MODEL_HELP, describe_quantization, quant_method, read_config
 
     config = read_config(model_dir)
+    if quant_method(config) == "gguf":
+        from .gguf import GGUFCheckpoint, resolve_gguf
+
+        GGUFCheckpoint.open(resolve_gguf(model_dir))
+        return
     if quant_method(config) == EXL3_QUANT:
         # an EXL3 pack (the CUDA engine, any codebook and per-tensor width): only the MTP head to report
         if (Path(model_dir) / "model.safetensors.index.json").is_file() and not has_mtp(model_dir):
@@ -206,7 +212,14 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if is_exl3(Path(model_dir)):
         print("[tensorfold] EXL3 packs are experimental: replies are exact; see "
               "docs/recipes/qwen3.8-flash-next.md#exl3-checkpoints-experimental for how they compare", flush=True)
-    if drafter:
+    from .gguf import resolve_gguf
+    gguf = resolve_gguf(model_dir) is not None
+    method = options.get("draft_method", "auto")
+    if method not in CUDA_DRAFT_METHODS:
+        raise ValueError("Flash Next draft_method must be auto, mtp or dspark")
+    if method == "dspark" and not gguf:
+        raise ValueError("DSpark currently requires the Flash Next GGUF SM70 provider")
+    if drafter and not gguf:
         raise ValueError(f"{TITLE} drafts with its own MTP head on CUDA: a separate draft model does not apply")
     from .cuda import CONFIDENCE, DEPTH
     from .cuda.engine import FlashNextEngine
@@ -214,7 +227,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
     get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # validate before weights or Torch are loaded
     depth = 0 if no_drafts else DEPTH if mtp_drafts is None else int(mtp_drafts)
-    if depth and not has_mtp(Path(model_dir)):
+    if method == "dspark" and depth > 0 and not drafter:
+        raise ValueError("DSpark requires its checkpoint directory through --drafter")
+    if depth and not drafter and not has_mtp(Path(model_dir)):
         raise ValueError(f"this checkpoint has no MTP head, which {TITLE}'s CUDA engine drafts with ({MODELS[0]} "
                          "has one): without it every round would decode one token. Serve a checkpoint with the "
                          "head, or pass --no-drafts for the serial reference")
@@ -240,6 +255,17 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                       "vram_experts": vram_experts}
     if vram_experts_pin != "off":
         engine_options["vram_experts_pin"] = vram_experts_pin
+    if gguf and drafter:
+        from .cuda.dspark_admission import is_dspark
+        kind = "dspark" if is_dspark(drafter) else "mtp"
+        if method != "auto" and method != kind:
+            raise ValueError(f"--draft-method {method} does not match the selected {kind} drafter checkpoint")
+        key = "dspark_model_dir" if kind == "dspark" else "mtp_model_dir"
+        engine_options[key] = Path(drafter)
+    elif method == "dspark" and depth > 0:
+        raise ValueError("DSpark requires its checkpoint directory through --drafter")
+    if "draft_vocab" in options:
+        engine_options["draft_vocab"] = options["draft_vocab"]
     if options.get("kv_full_windows") is not None:
         engine_options["kv_full_windows"] = options["kv_full_windows"]
     for name in ("eos_token_ids", "chat_template_file", "chat_template_name"):

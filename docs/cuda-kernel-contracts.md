@@ -5,6 +5,44 @@ CUDA stream. Their native wrappers check tensor metadata, device identity,
 kernel dimension ranges, and known write/read overlap before launch. These
 checks do not synchronize device data or change floating-point operations.
 
+## SM70 FP16 execution policy
+
+The `cuda.sm70` provider stores activations as FP16, with FP32 reductions and
+recurrent state. Native RMSNorm, text split-half RoPE, mixed-GGUF decode and GDN
+chain/replay enqueue on PyTorch's current stream. Native wrappers validate
+layout, dtype, shape, same-device residency, launch ranges and applicable
+read/write overlap; empty row batches do not launch kernels. GDN retains its
+existing State/GDNScratch ownership, including a separate reusable prefill
+packet sized to admitted prompt rows. Convolution, normalization, decay, beta,
+state transition and output gating are part of the family execution path.
+
+GGUF tensors retain their encoding identity. Dense projections are decoded in
+bounded chunks at load; expert banks retain original blocks and decode bounded
+routed tiles. Partial column shards duplicate complete intersecting blocks and
+crop the logical view without requantization. Fixed dense row tiles preserve a
+row's reduction policy across prompt/decode grouping. Expert slots retain the
+shared family's lower-precision prefill and FP32 decode storage policy.
+Checkpoint gamma, GDN head tiling and PLE layer/hash conventions are restored
+by the loader, without changing other checkpoint readers.
+
+The same family interfaces dispatch FP16 HC, PLE, routing, indexed causal
+attention and KV operations. Attention masks both scores and V operands so
+stale nonfinite rows outside the causal/QSA selection cannot contaminate a
+retained prefix. SM70 admits raw FP16 and the existing INT8 H32 KV descriptor,
+including mixed sides; modern BF16 providers reject raw FP16. Storage identity
+and execution policy are part of state reuse and rank agreement. INT8 changes
+cache arithmetic; its scales and codes retain the existing format identity.
+
+Preparation/compilation happens before graph capture. Captured tensors retain
+their owners through every replay under the stream rules below. Component and
+tiny-family graph replay checks do not enable full-model capture: the SM70
+serving profile uses an explicit eager fallback, and concurrent TP still needs
+qualified pointer routing for captured rounds. TP uses the ordinary NCCL owner,
+per-peer acknowledgements and shared scheduler; numeric cache failures reach
+rank consensus before publishing tokens or entering later sampling collectives.
+See [the V100 qualification](v100-flashnext-validation.md) for actual installed
+and full-model results; BF16 bit identity is not claimed.
+
 ## Streams and ownership
 
 Every input producer must complete before its consumer reads that input. Same

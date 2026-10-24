@@ -429,8 +429,8 @@ def agree_eos(all_gather: Callable[[torch.Tensor, torch.Tensor], None], stops, *
     The synchronous gather callable accepts (send, receive), independently of
     whether the owner uses a Comm object or PyTorch's distributed process group.
     """
-    if type(world) is not int or not 1 <= world <= 4:
-        raise ValueError("EOS agreement requires one through four participants")
+    if type(world) is not int or not 1 <= world <= 8:
+        raise ValueError("EOS agreement requires one through eight participants")
     valid = (type(stops) in (tuple, list) and bool(stops)
              and all(type(value) is int and 0 <= value <= 2**63 - 1 for value in stops))
     ids = sorted(set(stops)) if valid else []

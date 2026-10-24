@@ -129,7 +129,7 @@ class Controls(unittest.TestCase):
                     stage('load')
                     self.fail('failure fixture reached actual payload/model setup')
                 cls._same_settings = lambda *args: stage('settings')
-                side = NS(bits=16, group=1, scale_bytes=0, codec=None)
+                side = NS(name='bf16', bits=16, group=1, scale_bytes=0, codec=None)
                 pair = NS(key=side, value=side, symmetric=True, row_bytes=lambda *args: 128)
                 rope = NS(rope_type='default', native_context=8192, context_limit=8192, metadata=lambda: {})
                 text = dict(vocab_size=128, hidden_size=64, num_attention_heads=1, num_key_value_heads=2, head_dim=64)

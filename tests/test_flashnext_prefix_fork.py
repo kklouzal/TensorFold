@@ -28,7 +28,8 @@ def slot():
 def decoder(*, busy=False, room=True):
     dec = object.__new__(MultiDecoder)
     dec.used, dec.clock = {}, 0
-    dec.w = SimpleNamespace(comm=None)
+    dec.w = SimpleNamespace(comm=None, meta={"execution_provider": "cuda"})
+    dec.graphs = None
     source, spare = slot(), slot()
     prefix = list(range(300))
     snap = {"pos": 300, "mtp_len": 299, **source.kv_snapshot_metadata()}

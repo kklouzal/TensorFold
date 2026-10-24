@@ -7,6 +7,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda import pdl
+from tensorfold.cuda.sm70 import family_ops as _half_ops
 from tensorfold.cuda.pdl import wait as pdl_wait
 
 from .image_rows import rope_axis
@@ -46,6 +47,9 @@ def _embed(IDS, W, S, B, OUT, D: tl.constexpr, S_COPIES: tl.constexpr, PDL: tl.c
 def embed(ids: torch.Tensor, weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, dims: int,
           copies: int = 1, out: torch.Tensor | None = None) -> torch.Tensor:
     """ids (R,) int32 -> (R, copies * dims) bf16 rows of the 4-bit embedding (MLX layout, group 32)."""
+    if out is not None and out.dtype == torch.float16:
+        return _half_ops.embed(ids, weight, scales, biases, dims, copies, out)
+
 
     rows = ids.shape[0]
     if out is None:
@@ -115,6 +119,9 @@ def hc_writeback(h: torch.Tensor, hout: torch.Tensor, pss: torch.Tensor, streams
                  branch: torch.Tensor | None = None, inject: torch.Tensor | None = None,
                  y: torch.Tensor | None = None, wts: torch.Tensor | None = None, block: int = 256) -> None:
     """mode 3: ``branch`` is the gathered partials [world, R, D] fp32 (contiguous); mode 4: a matmul's K slices [SK, R, D] fp32."""
+    if h.dtype == torch.float16:
+        return _half_ops.hc_writeback(h, hout, pss, streams, mode, branch, inject, y, wts, block)
+
 
     rows, wide = h.shape
     d = wide // streams
@@ -143,6 +150,9 @@ def _moe_partial(Y, WTS, OUT, D: tl.constexpr, TOPK: tl.constexpr, SLOTS: tl.con
 
 
 def moe_partial(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor, rows: int) -> None:
+    if y.dtype == torch.float16:
+        return _half_ops.moe_partial(y, wts, out, rows)
+
     d = out.shape[1]
     _moe_partial[(rows, d // 256)](y, wts, out, D=d, TOPK=wts.shape[1] - 1, SLOTS=wts.shape[1], BLOCK=256,
                                    num_warps=2)
@@ -150,6 +160,9 @@ def moe_partial(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor, rows: int
 
 def hc_normed(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: torch.Tensor, xs: torch.Tensor,
               streams: int, eps: float, block: int = 512) -> None:
+    if h.dtype == torch.float16:
+        return _half_ops.hc_normed(h, pss, scale, normed, xs, streams, eps, block)
+
     rows, wide = h.shape
     d = wide // streams
     _hc_normed[(rows, wide // block)](h, pss, scale, normed, xs, eps, D=d, S=streams, NC=pss.shape[1],
@@ -213,6 +226,9 @@ def _hc_reduce_act(PART, ACT, XS, INJ, SK: tl.constexpr, M, S: tl.constexpr, LOW
 def hc_reduce_act(part: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Tensor | None, streams: int,
                   low: int) -> None:
     """part: the down projection's unreduced slices [SK, R, N]."""
+    if act.dtype == torch.float16:
+        return _half_ops.hc_reduce_act(part, act, xs, inj, streams, low)
+
 
     sk, rows, ndn = part.shape
     _hc_reduce_act[(rows,)](part, act, xs, inj if inj is not None else act, SK=sk, M=rows, S=streams, LOW=low,
@@ -222,6 +238,9 @@ def hc_reduce_act(part: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: 
 
 def hc_act(dn: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Tensor | None, streams: int,
            low: int) -> None:
+    if act.dtype == torch.float16:
+        return _half_ops.hc_act(dn, act, xs, inj, streams, low)
+
     rows, ndn = dn.shape
     _hc_act[(rows,)](dn, act, xs, inj if inj is not None else act, S=streams, LOW=low,
                      LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4,
@@ -249,6 +268,9 @@ def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.c
 
 def hc_mix(up: torch.Tensor, normed: torch.Tensor, mixed: torch.Tensor, xs: torch.Tensor, streams: int,
            block: int = 256) -> None:
+    if up.dtype == torch.float16:
+        return _half_ops.hc_mix(up, normed, mixed, xs, streams, block)
+
     rows, wide = up.shape
     d = wide // streams
     _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, num_warps=2,
@@ -277,6 +299,9 @@ def _rmsnorm(X, W, OUT, XS, eps, x_stride, D: tl.constexpr, G: tl.constexpr, BLO
 
 def rmsnorm(x: torch.Tensor, w: torch.Tensor, eps: float, group: int | None = None,
             out: torch.Tensor | None = None, xs: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    if x.dtype == torch.float16:
+        return _half_ops.rmsnorm(x, w, eps, group, out, xs)
+
     rows, d = x.shape
     g = group or d
     if out is None:
@@ -435,7 +460,8 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
               status: torch.Tensor | None = None, layer: int = 0,
               k_bits: int | None = None, k_codec: int | None = None,
               v_bits: int | None = None, v_codec: int | None = None,
-              centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None) -> None:
+              centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None,
+              valid_rows: torch.Tensor | None = None, independent_rows: bool = False) -> None:
     """Write BF16 post-RMS/RoPE queries and independently encoded K/V rows.
 
     Symmetric native formats use the original kernel path. Mixed/Rotor formats
@@ -443,6 +469,9 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
     K controls query rotation and V never changes query or index preparation.
     Eight-bit RotorQuant sides encode with an attention scratch's ``centroids`` and ``thresholds`` tables.
     """
+    if p.dtype == torch.float16:
+        return _half_ops.attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps, q_heads=q_heads, kv_heads=kv_heads, head_dim=head_dim, index_heads=index_heads, index_dim=index_dim, ks=ks, vs=vs, bits=bits, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, codec=codec, status=status, layer=layer, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, centroids=centroids, thresholds=thresholds, valid_rows=valid_rows, independent_rows=independent_rows)
+
 
     rows, pw = p.shape
     kb, kf, vb, vf = resolve_pair(bits, codec, k_bits, k_codec, v_bits, v_codec, head_dim)
@@ -490,6 +519,9 @@ def _attn_gate(O, P, OUT, XS, PW: tl.constexpr, NQ: tl.constexpr, HD: tl.constex
 
 def attn_gate(o: torch.Tensor, p: torch.Tensor, out: torch.Tensor, xs: torch.Tensor, *, q_heads: int,
               head_dim: int) -> None:
+    if o.dtype == torch.float16:
+        return _half_ops.attn_gate(o, p, out, xs, q_heads=q_heads, head_dim=head_dim)
+
     rows = o.shape[0]
     _attn_gate[(rows, q_heads)](o, p, out, xs, PW=p.shape[1], NQ=q_heads, HD=head_dim, num_warps=2,
                                 PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -522,6 +554,9 @@ def _ple_embed(W, S, B, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: t
 def ple_embed(rows: int, weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, heads: int, dh: int,
               out: torch.Tensor, xs: torch.Tensor, *, scale: float = 1.0) -> None:
     """Gathered rows (the n-gram table's ``gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    if out.dtype == torch.float16:
+        return _half_ops.ple_embed(rows, weight, scales, biases, heads, dh, out, xs, scale=scale)
+
 
     _ple_embed[(rows, heads)](weight, scales, biases, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
                               PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -550,6 +585,9 @@ def _ple_embed_bf16(V, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl
 def ple_embed_bf16(rows: int, values: torch.Tensor, heads: int, dh: int, out: torch.Tensor,
                    xs: torch.Tensor, *, scale: float = 1.0) -> None:
     """A bf16 table's gathered rows (``BF16Table.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    if out.dtype == torch.float16:
+        return _half_ops.ple_embed_bf16(rows, values, heads, dh, out, xs, scale=scale)
+
 
     _ple_embed_bf16[(rows, heads)](values, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
                                    PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -598,7 +636,12 @@ def _ple_gate(KEYS, VALS, H, NK, NQ, GATED, PSS, eps,
         tl.store(PSS + r * S + s, gss)
 
 
-def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps: float, streams: int) -> None:
+def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps: float, streams: int, *,
+             valid_rows=None, independent_rows=False) -> None:
+    if h.dtype == torch.float16:
+        return _half_ops.ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps, streams,
+                                   valid_rows, independent_rows)
+
     rows, wide = h.shape
     _ple_gate[(rows,)](keys, vals, h, norm_key, norm_query, gated, pss, eps, D=wide // streams, S=streams,
                        BLOCK=512, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -640,6 +683,9 @@ def _ple_conv(GATED, PSS, NC, TAIL, CW, H, HOUT, NROW, eps, R,
 
 
 def ple_conv(gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps: float, streams: int, dilation: int) -> None:
+    if gated.dtype == torch.float16:
+        return _half_ops.ple_conv(gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps, streams, dilation)
+
     rows, wide = h.shape
     taps = conv_w.shape[1]
     _ple_conv[(rows, wide // 512)](gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps, rows,
@@ -662,5 +708,8 @@ def _add_streams(E, HS, OUT, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constex
 
 
 def add_streams(e: torch.Tensor, hs: torch.Tensor, out: torch.Tensor, streams: int) -> None:
+    if e.dtype == torch.float16:
+        return _half_ops.add_streams(e, hs, out, streams)
+
     rows, d = e.shape
     _add_streams[(rows, d // 256)](e, hs, out, D=d, S=streams, BLOCK=256, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)

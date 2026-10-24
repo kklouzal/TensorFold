@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv and not argv[0].startswith("-") and argv[0] not in COMMANDS:
         from tensorfold import hub
 
-        if Path(argv[0]).expanduser().is_dir() or hub.is_repo_id(argv[0]):
+        if Path(argv[0]).expanduser().is_dir() or Path(argv[0]).suffix.lower() == ".gguf" or hub.is_repo_id(argv[0]):
             argv = ["serve", *argv]
     args = build_parser().parse_args(argv)
     try:
@@ -55,6 +55,11 @@ def _config_dir(model: str, *, latest: bool = False) -> Path:
     from tensorfold import hub
 
     path = Path(model).expanduser()
+    if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
+                                           and any(path.glob("*.gguf"))):
+        from tensorfold.families.qwen4_exp.gguf_assets import prepare
+
+        return prepare(path)
     if path.is_dir():
         return path
     if not hub.is_repo_id(model):
@@ -345,6 +350,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "no_drafts": bool(args.no_drafts),
     }
     options.update(_model_overrides(args))
+    if getattr(args, "draft_method", "auto") != "auto":
+        options["draft_method"] = args.draft_method
     if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
         options["drafter_bits"] = args.drafter_bits
     if getattr(args, "draft_rows", None) is not None:
@@ -446,7 +453,9 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         effective_context = app.effective_context_window
         _show_model_bindings(engine.eos, app.template.provenance(), reply_tokens)
         own = getattr(weights, "precision", "") == precision.CHECKPOINT
-        prompts = "FP8 activations" if fp8 else "the checkpoint math" if own else "bf16 activations"
+        prompts = ("FP8 activations" if fp8 else "the checkpoint math" if own else
+                   "fp16 activations" if getattr(getattr(weights, "cfg", None), "execution_dtype", None) == "float16"
+                   else "bf16 activations")
         print(
             f"[tensorfold] serving {served} at http://{args.host}:{args.port}/v1 on CUDA{where} "
             f"(sampling: {shown}; drafts: {'off' if args.no_drafts else 'on'}; prompts: {prompts}; "
@@ -521,6 +530,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             )
     settings = families.read_config(config_dir)
     families.require_readable(family, settings, backend)
+    if families.quant_method(settings) == "gguf" and not getattr(args, "_kv_dtype_explicit", False):
+        args.kv_dtype = "fp16"
     _check_model_overrides(args, config_dir, settings)
     _sampling_defaults(args, config_dir)
     _reply_tokens(args, config_dir)

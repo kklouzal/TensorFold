@@ -1,5 +1,51 @@
 # TensorFold fork
 
+**Flash Next on eight V100s (2026-10-24):** the native mixed-GGUF SM70 provider
+uses the existing CUDA engine, scheduler and HTTP API, with FP16 execution and
+FP32 recurrent state. The selected C22 configuration uses **stock MTP depth 3,
+INT8 KV, and three equal 262,144-token context windows**, fully allocated on all
+eight ranks with `--parallel 3 --kv-full-windows 3`. The existing 4 GiB device
+floor and 2 GiB serving workspace remain protected. `/stats.capacity_plan`
+reports admission and actual rank allocations.
+
+Quiet single-client 128-input/512-output replies measured **54.04/54.42/59.78
+decode tokens/s** with MTP. Cold 128-token prefill measured 58.2–58.6 tokens/s;
+a repeated prompt reused 127 tokens with 0.139 s TTFT. These are short-prompt
+measurements with a full reserved window, not262K generation measurements.
+**100 single-request decode tokens/s remains unmet.**
+
+DSpark remains maintained and selectable through `--draft-method auto|mtp|dspark`
+and `--drafter /path/to/checkpoint`. Its best tested depth in the bounded2/3/7
+screen was 3, measuring 50.41/53.92/54.67 decode tokens/s with two fully allocated
+262,140-token windows. MTP's three-slot run retained a repeated prefix that the
+two-slot DSpark run evicted; these screens do not isolate a method-only gain.
+Compose exposes method/checkpoint/depth/confidence and equal full-window counts.
+
+The explicit `TENSORFOLD_SM70_PROFILE=optimized` profile selects canonical
+packed experts through R32, prepared linears, native family operations and
+admitted graphs. It requires the pinned TP8 Flash Next geometry. Native
+attention is qualified for local H3/KV1/D256 and real query ends 65–8192; other
+windows retain original per-query Torch attention. `reference` remains the
+general profile default. Modern BF16 providers keep their existing contracts.
+
+The C21 target arithmetic passed the unchanged 325 + 389 teacher suites, with
+mean KL 0/0.00002549, perplexity 1/1.00004297 and full top-1 agreement. C22 changes
+allocation, validation and scheduling while retaining that arithmetic. Its
+installed checks passed 2,679 CPU and 338 GPU cases. Actual three-window MTP and
+six-slot DSpark serving passed all 9 serial/draft pairs, 12 baselines, complete
+concurrent responses, SSE, cancellation and prefix recovery. This is relative
+INT8-cache quality evidence, not FP16/HF equivalence or full262K quality coverage.
+The expert-parallel trial failed quality gates; the TP4 graph-memory trial
+refused startup budget. Both are closed and unselected.
+
+The plain installed service is healthy on port8000; all four benchmark outputs
+and three simultaneous complete responses match the qualified candidate. The
+four closeouts are complete; the optimization goal is paused at the agreed
+stopping point with100tokens/s unmet.
+
+[Build and selected configuration](deploy/v100/README.md),
+[quality, allocation, workload and experiment evidence](docs/v100-flashnext-validation.md).
+
 On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
 throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
 BF16 drafting. All eight required decode cells had positive interval bounds;
@@ -423,8 +469,9 @@ The table describes supported integration paths. It is not a promise that every 
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
 | Ternary Bonsai 2 27B | `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` | MLX | `z-lab/Qwen3.8-27B-DFlash2` and context copies |
 | Flash Next NVFP4 | `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` or `RadixArk/Qwen3.8-Flash-Next-NVFP4` | CUDA; resident single-GPU or RAM expert-rank mode | Included MTP and context copies |
+| Flash Next mixed GGUF | Huihui UD-Q4_K_XL V2 local shards | CUDA SM70/FP16, TP1/2/4/8; validated on eight V100s | Matching stock MTP or DSpark; [profile and scope](deploy/v100/README.md) |
 
-Dense Qwen reads affine 2/3/4/5/6/8-bit checkpoints, including mixed layers and groups 32/64/128; newer paths retain their documented hardware-qualification limits. Flash Next's affine path requires 4-bit/group-32 weights. Its EXL3 path reads per-tensor codebook widths; supported NVFP4 exports and block-scaled FP8 linears have separate checks. Flash Next without an MTP head needs `--no-drafts` on CUDA. Nemotron CUDA uses 4-bit/group-64 weights and requires its MTP head unless serial decoding is selected.
+Dense Qwen reads affine 2/3/4/5/6/8-bit checkpoints, including mixed layers and groups 32/64/128; newer paths retain their documented hardware-qualification limits. Flash Next's affine path requires 4-bit/group-32 weights. Its EXL3 path reads per-tensor codebook widths; supported NVFP4 exports and block-scaled FP8 linears have separate checks. Flash Next without an MTP head needs `--no-drafts` on CUDA, or the matching separate stock head on the GGUF SM70 path. Nemotron CUDA uses 4-bit/group-64 weights and requires its MTP head unless serial decoding is selected.
 
 GLM reads affine 4-bit/group-64 and supported mixed-bit MLX conversions; CUDA also has the experimental `Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw` path. Its optional `incoai/GLM-5.3-Flash-DFlash2` has non-commercial terms. Gemma on MLX uses 4-bit/group-32 or 64 with an 8-bit router. The initial CUDA paths read original affine mixed4/6 group-64 projections with a 6-bit tied head, or AEON compressed-tensors NVFP4 with calibrated FP4 activations on SM12.x and its original BF16 tied head. Both use BF16 KV and BF16 DFlash; other layouts are refused. DeepSeek uses affine 4-bit/group-64 plus MXFP4 experts and the converted DSpark/MTP heads. Model weights and draft models keep their own licenses. Consult [quantized checkpoints](docs/quantization.md), [third-party notices](THIRD_PARTY_NOTICES.md) and the [family recipes](docs/recipes/README.md).
 
@@ -443,9 +490,9 @@ slot-ordered FP32 addition. The shared EXL3 kernel's BF16 activation mode keeps
 that [family arithmetic](docs/recipes/glm-5.3-flash.md#exl3); its FP32 mode retains
 an FMA slot sum.
 
-Flash Next's concurrent CUDA decoder captures its pure decode rounds (the verify forward and each MTP step) as CUDA graphs at startup. With `TENSORFOLD_MULTI_GRAPH_MIB` unset, it uses remaining admitted memory after eager warmup, protecting one complete context window, cache-resize overlap, snapshots, serving workspace and the configured memory floor. Additional concurrent contexts grow while memory lasts. A numeric value is an explicit MiB ceiling (`0` disables capture). The startup record retains the original context admission, resolved graph allowance, measured memory and any reason capture stopped. Rounds with a prompt pass, image rows or the Rotor7 lookup decoder, and keys outside the allowance, run eagerly with the same bits; experts read through a host cache (`--vram-experts`) decline capture and plan no graph memory. Automatic sizing passed the [source297 installed GB10 model protocols](docs/gb10-nvfp4-validation.md#source297-auto-graph-protocols) and focused CPU contracts; the [user-selected four-stream profile](docs/gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection) has a separate controlled comparison and explicit single-request tradeoffs. Its decode kernels use programmatic dependent launch on GB10 (compute capability 12.1, where it was measured; other GPUs launch them plainly), which keeps every result unchanged. Earlier fixed-budget GB10 measurements found 1.6 to 2.4% faster decode with captured rounds, no established difference from programmatic dependent launch, up to 8.7% faster long-context decode from the multi-CTA sparse-attention select and 34 to 38% faster RotorQuant 6 prompt passes; see [optimization validation](docs/optimization-validation.md) for those sources, workloads and uncertainty.
+Flash Next's concurrent modern CUDA decoder captures its pure decode rounds (the verify forward and each MTP step) as CUDA graphs at startup. The GGUF SM70 path currently runs eagerly; its native component graph tests do not qualify full-model capture. With `TENSORFOLD_MULTI_GRAPH_MIB` unset, eligible providers use remaining admitted memory after eager warmup, protecting one complete context window, cache-resize overlap, snapshots, serving workspace and the configured memory floor. Additional concurrent contexts grow while memory lasts. A numeric value is an explicit MiB ceiling (`0` disables capture). The startup record retains the original context admission, resolved graph allowance, measured memory and any reason capture stopped. Rounds with a prompt pass, image rows or the Rotor7 lookup decoder, and keys outside the allowance, run eagerly with the same bits; experts read through a host cache (`--vram-experts`) decline capture and plan no graph memory. Automatic sizing passed the [source297 installed GB10 model protocols](docs/gb10-nvfp4-validation.md#source297-auto-graph-protocols) and focused CPU contracts; the [user-selected four-stream profile](docs/gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection) has a separate controlled comparison and explicit single-request tradeoffs. Its decode kernels use programmatic dependent launch on GB10 (compute capability 12.1, where it was measured; other GPUs launch them plainly), which keeps every result unchanged. Earlier fixed-budget GB10 measurements found 1.6 to 2.4% faster decode with captured rounds, no established difference from programmatic dependent launch, up to 8.7% faster long-context decode from the multi-CTA sparse-attention select and 34 to 38% faster RotorQuant 6 prompt passes; see [optimization validation](docs/optimization-validation.md) for those sources, workloads and uncertainty.
 
-MLX shares rounds across supported requests, with per-request state and sampling keys; load-time checks restrict families that cannot reproduce their serial arithmetic. CUDA explicit `--parallel N` enables shared rounds for Qwen dense on one/two ranks and Flash Next/Qwen3.6 MoE on one rank. Flash Next rejects concurrent tensor-parallel execution with `--tp 2`; its separate same-host expert-rank mode keeps `--tp 1` and supports concurrent requests on rank zero. GLM and Nemotron CUDA are serial; CUDA `--parallel auto` means one. Qwen dense, Flash Next and Nemotron have one/two-rank CUDA paths; GLM requires two. The expert-rank path supports affine4 and NVFP4 RAM-backed routed experts; EXL3 expert partitioning is refused. A real two-GPU deployment needs separate qualification; a one-rank NCCL check does not establish it. See [two-rank setup](RUNBOOK.md#nvidia-gpus).
+MLX shares rounds across supported requests, with per-request state and sampling keys; load-time checks restrict families that cannot reproduce their serial arithmetic. CUDA explicit `--parallel N` enables shared rounds for Qwen dense on one/two ranks, Qwen3.6 MoE on one rank and Flash Next on its supported concurrent providers. Flash Next's modern provider supports concurrency on one rank and refuses concurrent `--tp 2`; the GGUF SM70 provider supports concurrent TP1/2/4/8 through the same scheduler. The separate same-host expert-rank mode keeps `--tp 1` and supports concurrent requests on rank zero. GLM and Nemotron CUDA are serial; CUDA `--parallel auto` means one. Qwen dense, modern Flash Next and Nemotron have one/two-rank CUDA paths; GLM requires two. The expert-rank path supports affine4 and NVFP4 RAM-backed routed experts; EXL3 expert partitioning is refused. Hardware and full-model qualification remain scoped to their recorded deployments; a one-rank NCCL check does not establish a multi-GPU deployment. See [two-rank setup](RUNBOOK.md#nvidia-gpus) and the [V100 profile](deploy/v100/README.md).
 
 ## Configuration
 
@@ -606,7 +653,7 @@ Persistent prefix snapshots use format 2 and explicit current-model registries. 
 
 ## KV cache formats
 
-Flash Next CUDA supports the following **16 formats**, with independent K/V selection; **BF16 is the default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations.
+Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider instead admits `fp16` (its CLI default) and `int8`, including either ordered mixed pair. Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |
 | --- | --- | ---: |

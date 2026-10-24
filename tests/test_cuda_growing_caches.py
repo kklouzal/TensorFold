@@ -57,6 +57,8 @@ def decoder(multi, state, torch, room: int):
 
     dec = multi.MultiDecoder.__new__(multi.MultiDecoder)
     dec.w, dec.depth, dec.streams, dec.free, dec.kept, dec.keep = weights(), 3, {}, [], [], 8
+    dec.graphs = dec._failed_graphs = dec._memory_error = None
+    dec.failed_slots = []
     dec.used, dec.clock = {}, 0
     dec.filling, dec.fills, dec.held = [], {}, {}
     dec.memory_gate = importlib.import_module("tensorfold.cuda.memory_gate").MemoryGate(room, reserve=0)

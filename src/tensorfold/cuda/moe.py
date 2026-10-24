@@ -62,6 +62,15 @@ def route_logits(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor, *,
     Gemma router input bf16(bf16(bf16(x * rsqrt(mean(x^2) + eps)) * root) * scale) in FP32 with BF16 roundings.
     """
 
+    if x.dtype == torch.float16:
+        value = x.float()
+        if prenorm is not None:
+            eps, root, scale = prenorm
+            value = ((value * torch.rsqrt(value.square().mean(-1, keepdim=True) + eps)).half().float()
+                     * root).half().float() * scale.float()
+            value = value.half().float()
+        out.copy_(value @ rows.float().T)
+        return out
     eps, root, scale = prenorm if prenorm is not None else (0.0, 0.0, None)
     _route_ext().logits(x, rows, out, float(eps), float(root), scale)
     return out
@@ -76,13 +85,32 @@ def route_select(logits: torch.Tensor, expert_scale: torch.Tensor, picks: torch.
     _route_ext().select(logits, expert_scale, picks, weights)
 
 
-def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None) -> torch.Tensor:
-    """BF16 rows/router weights to FP32 logits."""
+def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None, *,
+           independent_rows: bool = False) -> torch.Tensor:
+    """Rows/router weights to FP32 logits; FP16 decode can preserve serial GEMV arithmetic."""
 
     m, d = x.shape
     ne = rows.shape[0]
     if out is None:
         out = torch.empty((m, ne), dtype=torch.float32, device=x.device)
+    if x.dtype == torch.float16:
+        if rows.device != x.device or rows.ndim != 2 or rows.shape[1] != d:
+            raise ValueError("FP16 router rows must share the input device and width")
+        if independent_rows:
+            from .sm70 import routing_native
+
+            if routing_native.supports_logits(x, rows, out):
+                return routing_native.logits(x, rows, out)
+        value, weight = x.float(), rows.float()
+        if independent_rows:
+            # Actual M changes the FP32 GEMM reduction, occasionally moving the
+            # selected softmax weight across an FP16 rounding boundary. Decode
+            # rows must retain the serial target's arithmetic during verification.
+            for row in range(m):
+                out[row:row + 1].copy_(value[row:row + 1] @ weight.T)
+        else:
+            out.copy_(value @ weight.T)
+        return out
     bm = _tile(m)
     if bm == 16:
         be, bk, stages = 32, 256, 4
@@ -135,12 +163,14 @@ class MoEBuffers:
                  tile: int = grouped.PREFILL_TILE) -> None:
         slots = cfg.num_experts_per_tok + 1
         self.rows, self.slots, self.tile = rows, slots, tile
+        self.execution_dtype = getattr(cfg, "execution_dtype", "bfloat16")
+        dtype = torch.float16 if self.execution_dtype == "float16" else torch.bfloat16
         self.logits = torch.empty((rows, cfg.num_experts + 1), dtype=torch.float32, device=device)
         self.pick = torch.empty((rows, slots), dtype=torch.int32, device=device)
         self.wts = torch.empty((rows, slots), dtype=torch.float32, device=device)
         self.plan = grouped.Plan(rows, slots, cfg.num_experts + 1, device, prefill=prefill)
-        self.act = torch.empty((rows, slots, cfg.moe_intermediate_size), dtype=torch.bfloat16, device=device)
-        self.y = torch.empty((rows, slots, cfg.hidden_size), dtype=torch.bfloat16 if prefill else torch.float32,
+        self.act = torch.empty((rows, slots, cfg.moe_intermediate_size), dtype=dtype, device=device)
+        self.y = torch.empty((rows, slots, cfg.hidden_size), dtype=dtype if prefill else torch.float32,
                              device=device)
 
 
@@ -148,6 +178,30 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
     """Each row's experts and weights, rows in parallel (buf.pick, buf.wts); EXL3 experts group themselves in their kernel."""
 
     rows = logits.shape[0]
+    if buf.act.dtype == torch.float16:
+        if logits.shape[1] != experts + 1 or not 1 <= top_k <= experts:
+            raise ValueError("FP16 expert selection geometry is invalid")
+        from tensorfold.cuda.sm70 import family_ops
+
+        if family_ops._NATIVE_FAMILY and logits.is_cuda and experts == 512 and top_k <= 32:
+            from tensorfold.cuda.sm70.routing_native import indices as stable_indices, route as stable_route
+
+            picks, rounded = buf.pick[:rows], buf.wts[:rows]
+            if (picks.shape[1] == top_k + 1 and rounded.shape == picks.shape
+                    and picks.dtype == torch.int32 and rounded.dtype == torch.float32
+                    and picks.is_contiguous() and rounded.is_contiguous()):
+                stable_route(logits, picks, rounded)
+                return
+            indices = stable_indices(logits, top_k)
+        else:
+            indices = logits[:, :experts].argsort(dim=-1, descending=True, stable=True)[:, :top_k]
+        selected = logits[:, :experts].gather(1, indices)
+        weights = selected.softmax(-1).half().float()
+        buf.pick[:rows, :top_k].copy_(indices)
+        buf.pick[:rows, top_k].fill_(experts)
+        buf.wts[:rows, :top_k].copy_(weights)
+        buf.wts[:rows, top_k].copy_(logits[:, experts].half().float().sigmoid().half().float())
+        return
     _topk_rows[(rows,)](logits, buf.pick, buf.wts, NE=experts, NL=logits.shape[1], TOPK=top_k, SLOTS=top_k + 1,
                         BLOCK=triton.next_power_of_2(experts + 1), SLOTP=triton.next_power_of_2(top_k + 1), num_warps=4,
                         PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -167,6 +221,10 @@ def moe(x: torch.Tensor, router_rows: torch.Tensor, ex: grouped.Experts, buf: Mo
 
     rows = x.shape[0]
     router(x, router_rows, buf.logits[:rows])
+    if getattr(ex, "kernel", None) in ("gguf", "sm70_dense"):
+        select_rows(buf.logits[:rows], buf, top_k, experts)
+        ex.forward(x, buf.pick[:rows], out=buf.y[:rows])
+        return buf
     select(buf.logits[:rows], buf, top_k, experts)
     grouped.gate_up(x, ex, buf.plan, buf.act.view(-1, ex.width), rows)
     grouped.down(buf.act.view(-1, ex.width), ex, buf.plan, buf.y.view(-1, ex.dims), rows)

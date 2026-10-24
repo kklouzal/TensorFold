@@ -63,9 +63,11 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     k = len(segs)
     if b.prefill:                                # prefill buffers mix the last row into row 0: its logits only
         rows, xs, k = b.mixed[:1], b.xs_mixed[:1], 1
-    elif k == 1:
+    elif k == 1 and not getattr(b, "dynamic_last", False):
         rows, xs = b.mixed[n - 1:n], b.xs_mixed[n - 1:n]
     else:
+        # A bound graph's physical rows include padding even for one segment.
+        # Its real last row arrives through the same device index as batching.
         rows = b.mixed.index_select(0, b.last[:k])
         xs = b.xs_mixed.index_select(0, b.last[:k])
     out = _mm(rows, head, xs, b.logits.view(-1)[:k * head.n].view(k, head.n), b)     # contiguous at any k

@@ -79,12 +79,16 @@ def service_live_bytes(pool):
 def capturable(w) -> str | None:
     """Why this model's rounds cannot be captured (None: they can): experts that read their plan on the host."""
 
-    if w.comm is not None:
+    if w.comm is not None and w.meta.get("execution_provider") != "sm70":
         return "tensor-parallel ranks"
+    if w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):
+        return w.meta.get("capture_reason", "the SM70 family provider has not prepared capture-safe state")
     if any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
         return "this MoE reads its plan's item list on the host, which a capture rejects"
     if w.mtp is not None and getattr(w.mtp.layer.moe.experts, "capturable", True) is False:
         return "the MTP head's MoE reads its plan's item list on the host"
+    if w.meta.get("execution_provider") == "sm70" and sum(layer.ple is not None for layer in w.layers) > 1:
+        return "bound SM70 captures require at most one PLE table"
     return None
 
 
@@ -122,6 +126,12 @@ class RoundGraphs:
         self.admitted = False
         self.failure = self.failure_traceback = self.failure_cause = self.failure_context = None
         self.failure_frames = None
+        self.pending = []
+        self.bound = None
+        if dec.w.meta.get("execution_provider") == "sm70":
+            from .bound_graphs import BoundStateGraphs
+
+            self.bound = BoundStateGraphs(self)
 
     def retain_failure(self, primary) -> None:
         """Own the original tensor-bearing frames independently of later exception traceback clearing."""
@@ -135,6 +145,8 @@ class RoundGraphs:
     def verify_forward(self, segs) -> torch.Tensor | None:
         """The round's verify logits from its captured key (its tables written), or None: this round runs eagerly."""
 
+        if getattr(self, "bound", None) is not None:
+            return self.bound.forward("verify", segs)
         b = self.dec.buf
         if b.rotor_lookup or b.attn_step.vision:
             return None
@@ -144,7 +156,11 @@ class RoundGraphs:
         self._replay(pieces, segs, b)
         return pieces.out
 
-    def mtp_step(self, segs) -> torch.Tensor | None:
+    def mtp_step(self, segs, *, mtp_positions=None, device_tokens=None) -> torch.Tensor | None:
+        if getattr(self, "bound", None) is not None:
+            return self.bound.forward("mtp", segs, mtp_positions=mtp_positions, device_tokens=device_tokens)
+        if mtp_positions is not None or device_tokens is not None:
+            raise ValueError("provisional MTP positions and device tokens require bound SM70 graphs")
         b = self.dec.mbuf
         if b.rotor_lookup or b.attn_step.vision:
             return None
@@ -170,28 +186,32 @@ class RoundGraphs:
                 stage_late(w, b)
 
     # -- capture -----------------------------------------------------------------------------------------------
-    def _pieces(self, run, b) -> Pieces:
+    def _pieces(self, run, b, *, split=True) -> Pieces:
         """``run()`` captured in pieces, one ending at each ``b.split`` insert. Only a begun capture is ended, once;
         a failure inside ``run`` stays the raised error, with a failed end of its open capture attached."""
 
         pieces = Pieces()
+        pending = getattr(self, "pending", None)
+        if pending is None:
+            pending = self.pending = []
+        pending.append(pieces)                          # retain native owners before any fallible capture call
         open_graph: list[torch.cuda.CUDAGraph] = []      # the piece being captured (begun, not yet ended)
 
         def begin() -> None:
             graph = torch.cuda.CUDAGraph()
-            graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
             open_graph.append(graph)
             pieces.graphs.append(graph)
+            graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
 
         def end() -> None:
             open_graph.pop().capture_end()               # popped first: a failed end is never retried
 
-        def split(insert) -> None:
+        def insert_piece(insert) -> None:
             end()
             pieces.inserts.append(insert)
             begin()
 
-        b.split = split
+        b.split = insert_piece if split else None
         try:
             with torch.cuda.stream(self.side):
                 begin()
@@ -208,6 +228,7 @@ class RoundGraphs:
                 end()
         finally:
             b.split = None
+        pending.remove(pieces)
         return pieces
 
     def capture(self, *, prepared: bool = False) -> None:
@@ -296,6 +317,9 @@ class RoundGraphs:
         return True
 
     def _keys(self, states) -> None:
+        if getattr(self, "bound", None) is not None:
+            self.bound.warm(states)
+            return
         dec = self.dec
         slots, width, launch = len(states), dec.depth + 1, dec.pdl
         pdl.ON = launch
@@ -371,3 +395,30 @@ class RoundGraphs:
                 "allocator": self.allocator_record,
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
                 "keys": self.measured}
+
+    def invalidate_state(self, state):
+        if getattr(self, "bound", None) is not None:
+            self.bound.invalidate(state)
+
+    def close(self):
+        """After replay admission closes, fence and retire graphs before borrowed native owners."""
+        torch.cuda.synchronize(self.dec.w.device)
+        if getattr(self.dec.w, "dspark", None) is not None:
+            # A failed capture can retain graphs outside the bound catalogue.
+            # Retire those borrowers before bound.close releases tap anchors.
+            for pieces in tuple(getattr(self, "pending", ())):
+                for graph in pieces.graphs:
+                    graph.reset()
+                self.pending.remove(pieces)
+        if getattr(self, "bound", None) is not None:
+            self.bound.close()
+        else:
+            for mapping in (self.verify, self.mtp):
+                for key, pieces in tuple(mapping.items()):
+                    for graph in pieces.graphs:
+                        graph.reset()
+                    del mapping[key]
+        for pieces in tuple(getattr(self, "pending", ())):
+            for graph in pieces.graphs:
+                graph.reset()
+            self.pending.remove(pieces)

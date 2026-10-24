@@ -23,6 +23,7 @@ def _decoder():
     namespace = {"PREFILL_ROWS": 2048, "ENDS": 16, "entry_end": lambda prompt: max(1, len(prompt) - 1)}
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(root / "multi.py"), "exec"), namespace)
     dec = namespace["Decoder"]()
+    dec.w = SimpleNamespace(meta={"execution_provider": "cuda"})
     dec.streams = {0: SimpleNamespace(done=False)}
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 2048, 0.25, None, None
     return dec, namespace

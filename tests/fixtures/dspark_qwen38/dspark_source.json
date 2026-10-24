@@ -1,0 +1,11 @@
+{
+  "repository": "https://huggingface.co/shadowpa0327/Qwen3.8-Flash-Next-DSpark",
+  "revision": "3f74bdfa4a1b9deaaa56cc7c1377440ec5095fad",
+  "config_sha256": "1b85e471ba999a26f20fa99394eb3da5cec4aa46eb4bbbc6fb45116cfbedbc33",
+  "model_lfs_sha256_from_api": "fb41acdeaeaa6e434099edc2cb04ad40e0e052ec168b6509cfd858d186f2c67a",
+  "model_bytes": 1329146274,
+  "header_json_bytes": 6552,
+  "fetch_ranges": [[0,7],[8,6559]],
+  "model_payload_downloaded_bytes": 0,
+  "note": "Metadata fixture only. Model weights retain their target-derived model license. No remote code or tensor payload included."
+}

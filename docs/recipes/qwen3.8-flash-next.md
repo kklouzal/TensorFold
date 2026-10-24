@@ -1,7 +1,8 @@
 # Qwen3.8 Flash Next
 
 The `qwen4_exp` family has Gated DeltaNet, sparse attention, MoE, hyper-connections and hashed n-gram
-embeddings. The supported checkpoint uses MLX affine 4-bit weights in groups of 32 and includes an MTP head.
+embeddings. The portable checkpoint below uses MLX affine 4-bit weights in groups of 32 and includes an MTP head.
+CUDA also reads the NVFP4, EXL3 and SM70 mixed-GGUF formats described below.
 
 ```bash
 tensorfold pull TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP
@@ -56,7 +57,20 @@ to one stream, while successful checks allow the lane engine to combine requests
 
 ## CUDA
 
-On CUDA Flash Next serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
+The V100/SM70 provider reads the original mixed-GGUF shards through the same
+family engine, with FP16 activations and FP32 recurrent state. It supports
+TP1/2/4/8, including complete-group KV-head replication, and TP concurrency
+through the existing scheduler. The packed model requires enough aggregate GPU
+memory; the local host uses eight 32 GB V100s. GGUF defaults to raw
+`--kv-dtype fp16`; `int8` and mixed FP16/INT8 sides use the existing cache descriptor. Other
+cache formats and modern BF16 checkpoint providers retain their own admission.
+Use `--no-drafts` for a baseline, or `--drafter /path/to/matching/stock-mtp` with
+`--mtp-drafts 2` for the matching separate stock head. The original GGUF is never
+rewritten. Tokenizer/config sidecars are staged in the runtime cache. See the
+[V100 serving profile](../../deploy/v100/README.md) and its
+[validation scope](../v100-flashnext-validation.md) before selecting a deployment.
+
+The modern CUDA provider serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
 files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
 NVFP4. CUDA `--ple-on-ssd` supports affine, BF16, FP8 and NVFP4 tables. `tensorfold serve` loads the checkpoint
 you name; it picks none by itself. Use the [container setup](../../RUNBOOK.md#nvidia-gpus) for any of them. Prompts
@@ -418,7 +432,12 @@ On an M3 Ultra, each flag was held to a smaller Mac's budget and compared on the
 Maintain this recipe and the main README in the same change whenever supported KV formats, public settings,
 deployment requirements, or published quality and performance results change.
 
-`--kv-dtype bf16` is the default. `--kv-dtype int8` and `--kv-dtype int4` store each attention layer's keys and
+The modern CUDA provider defaults to `--kv-dtype bf16` and supports the BF16/INT8/INT4/RotorQuant formats
+described in this section. The GGUF SM70 provider defaults to raw `--kv-dtype fp16` and admits only FP16/INT8
+on each side; its indexer and pooled cache are FP16. Raw FP16 uses 512 bytes per 256-value key or value head,
+with a storage identity distinct from BF16. See the [V100 profile](../../deploy/v100/README.md) for its qualification.
+
+`--kv-dtype int8` and `--kv-dtype int4` store each attention layer's keys and
 values as codes with one fp16 scale per 32 values, the arithmetic of ExLlamaV3's `-cq 8` and `-cq 4` (the
 non-companded grid): each group of 32 is rotated by a 32-point Hadamard, its absmax is the scale, and the codes sit
 on the midpoint grid. 8-bit stores `q - 128` as int8; 4-bit stores two unsigned codes a byte, low nibble first. The
@@ -533,3 +552,38 @@ TBD [release-0.3.5].
 Use `--vision` on one CUDA GPU with `--parallel` of at least two. Image requests always prefill fresh; text prefix
 caching remains available. See the [image recipe](flash-next-vision.md) for tower weights, memory admission, EXL3
 sidecar conversion and verification.
+
+
+### Select MTP or DSpark on Flash Next CUDA
+
+`--draft-method auto` (the default) selects from the checkpoint passed through
+`--drafter`. Use `--draft-method mtp --drafter /path/to/mtp` or
+`--draft-method dspark --drafter /path/to/dspark` to require a method explicitly.
+A mismatched checkpoint is rejected before target payload loading. Included
+MTP heads on other Flash Next CUDA formats remain supported; DSpark currently
+requires the GGUF SM70 text provider and its full target vocabulary.
+`--mtp-drafts` controls proposal depth for either method, `--mtp-confidence`
+controls its stopping threshold, and `--no-drafts` selects serial execution.
+DSpark uses the existing position-keyed target verifier and shared scheduler.
+Its proposal graphs use the explicit admitted optimized profile; current host
+evidence and numerical qualification limits are recorded in the [V100 note](../v100-flashnext-validation.md).
+
+For the qualified eight-V100 geometry, `TENSORFOLD_SM70_PROFILE=optimized` selects
+the canonical SM70 operators before admission/loading; Compose uses
+`TF_SM70_PROFILE`. The reference profile remains the general default. Native
+attention has an explicit65–8192real-query-end scope with original Torch
+fallback elsewhere. This operator profile is independent of `--draft-method`.
+
+For resident GGUF concurrent serving, reserve equal full windows with
+`--context LIMIT --parallel N --kv-full-windows N`, N≥2. Choose LIMIT near the
+model maximum, then the largest count admitted with workspace and graph room.
+This flag covers target and selected drafter caches. V100 Compose exposes
+`TF_KV_FULL_WINDOWS` and defaults it to `TF_PARALLEL`. Counts have no parity
+restriction. The default CLI shared growth policy is unchanged.
+
+The selected eight-V100 C22 configuration is stock MTP depth3/confidence0,
+INT8 K/V, `--context 262144 --parallel 3 --kv-full-windows 3`. All eight ranks
+preallocate three complete windows; full-window concurrency/SSE/cancel/prefix
+and9+12live quality cases passed. DSpark's bounded best depth was3 with two
+262140-token windows. See the validation note for measured workload/quality
+limits; these allocations are not a full262K numerical benchmark.

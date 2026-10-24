@@ -23,6 +23,13 @@ ATT_ROWS = 256  # prompt attention runs in blocks of this many rows (its partial
 ENDS = 16       # prompts one prompt pass can end (each ending prompt's last row gets the head)
 
 
+def execution_dtype(w: Weights):
+    policy = w.meta.get("execution_dtype", getattr(w.cfg, "execution_dtype", "bfloat16"))
+    if policy not in ("bfloat16", "float16"):
+        raise ValueError(f"unsupported Flash Next execution dtype {policy!r}")
+    return getattr(torch, policy)
+
+
 class Buffers:
     """Scratch for windows of up to ``rows`` rows, sliced [:R] for smaller ones; ``prefill`` for prompt chunks."""
 
@@ -35,7 +42,16 @@ class Buffers:
         self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
         self.hc_plans = None
         head_rows = ENDS if prefill else rows
-        bf, f32 = torch.bfloat16, torch.float32
+        bf, f32 = execution_dtype(w), torch.float32
+        self.execution_dtype = bf
+        from .padded_linears import create as padded_linears
+
+        self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf)
+
+        def row_tensor(name, shape, *, dtype=bf, zero=False):
+            if self.padded_linears is not None:
+                return self.padded_linears.tensor(name, shape, dtype, zero=zero)
+            return (torch.zeros if zero else torch.empty)(shape, dtype=dtype, device=dev)
         self.ids = torch.zeros((rows,), dtype=torch.int32, device=dev)
         self.ids_host = torch.zeros((rows,), dtype=torch.int32, pin_memory=torch.cuda.is_available())
         self.last = torch.zeros((rows,), dtype=torch.int32, device=dev)          # each stream's last row
@@ -45,48 +61,52 @@ class Buffers:
         self.split = None              # while a forward is captured in pieces: ends one at each per-step insert
         self.h = torch.empty((rows, wide), dtype=bf, device=dev)
         self.pss = torch.empty((rows, c.hidden // 256, c.streams), dtype=f32, device=dev)
-        self.normed = torch.empty((rows, wide), dtype=bf, device=dev)
+        self.normed = row_tensor("normed", (rows, wide), dtype=bf)
         self.xs_normed = torch.empty((rows, wide // 32), dtype=f32, device=dev)
         self.dn = torch.empty((rows, c.low + c.streams), dtype=bf, device=dev)
         self.dn_mix = torch.empty((rows, c.low), dtype=bf, device=dev)      # a mixer's down (no inject rows)
-        self.act = torch.empty((rows, c.low), dtype=bf, device=dev)
+        self.act = row_tensor("act", (rows, c.low), dtype=bf)
         self.xs_act = torch.empty((rows, c.low // 32), dtype=f32, device=dev)
         self.inj_a = torch.empty((rows, c.streams), dtype=bf, device=dev)
         self.inj_m = torch.empty((rows, c.streams), dtype=bf, device=dev)
-        self.up = torch.empty((rows, wide), dtype=bf, device=dev)
-        self.mixed = torch.empty((rows, c.hidden), dtype=bf, device=dev)
+        self.up = row_tensor("up", (rows, wide), dtype=bf)
+        self.mixed = row_tensor("mixed", (rows, c.hidden), dtype=bf)
         self.xs_mixed = torch.empty((rows, c.hidden // 32), dtype=f32, device=dev)
-        self.branch = torch.empty((rows, c.hidden), dtype=bf, device=dev)
+        self.branch = row_tensor("branch", (rows, c.hidden), dtype=bf)
         attn_width = c.heads * 2 * c.head_dim + 2 * c.kv_heads * c.head_dim + (c.index_heads + 1) * c.index_dim
-        self.pa = torch.empty((rows, attn_width), dtype=bf, device=dev)
+        self.pa = row_tensor("pa", (rows, attn_width), dtype=bf)
         self.q = torch.empty((rows, c.heads, c.head_dim), dtype=bf, device=dev)
         self.iq = torch.empty((rows, c.index_heads, c.index_dim), dtype=bf, device=dev)
         self.attn = attn_mod.AttnScratch(min(rows, ATT_ROWS) if prefill else rows, c.heads, c.head_dim, capacity,
-                                         dev, budget=c.index_budget, ratio=c.index_ratio)
-        self.gated = torch.empty((rows, c.heads * c.head_dim), dtype=bf, device=dev)
+                                         dev, budget=c.index_budget, ratio=c.index_ratio, dtype=bf)
+        self.gated = row_tensor("gated", (rows, c.heads * c.head_dim), dtype=bf)
         self.xs_gated = torch.empty((rows, c.heads * c.head_dim // 32), dtype=f32, device=dev)
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
-                                      tile=grouped.PREFILL_TILE if prefill else grouped.window_tile(dev))
+                                      tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels
         lin = 1 if prefill else sum(1 for layer in w.layers if layer.linear)     # a prompt chunk commits each layer
-        self.proj = torch.zeros((lin, rows, gdn_mod.widths(c.nk, c.nv)[1]), dtype=bf, device=dev)
+        self.proj = row_tensor("proj", (lin, rows, gdn_mod.widths(c.nk, c.nv)[1]), dtype=bf, zero=True)
+        # Prompt chunks can exceed decode max_rows. Their temporary replay rows
+        # are shared layer-by-layer; committed State scratch stays decode-sized.
+        self.prefill_gdn_scratch = (gdn_mod.GDNScratch(rows, dev, c.nk, c.nv, dtype=bf)
+                                   if prefill and bf == torch.float16 else None)
         if prefill:                    # the DeltaNet rows' conv taps ([conv state (3) | the chunk's rows]) and stream
             self.windows = (torch.arange(rows, dtype=torch.int32, device=dev)[:, None]
                             + torch.arange(c.conv_kernel, dtype=torch.int32, device=dev)).contiguous()
             self.sid = torch.zeros((rows,), dtype=torch.int32, device=dev)
             self.conv_ptr = torch.zeros((1,), dtype=torch.int64, device=dev)
             self.pos_blk = torch.zeros((1,), dtype=torch.int32, device=dev)
-        self.gout = torch.empty((rows, c.nv * gdn_mod.DV), dtype=bf, device=dev)
+        self.gout = row_tensor("gout", (rows, c.nv * gdn_mod.DV), dtype=bf)
         self.gxs = torch.empty((rows, c.nv * gdn_mod.DV // 32), dtype=f32, device=dev)
         self.attn_o = torch.empty((rows, c.heads, c.head_dim), dtype=bf, device=dev)
         self.streams = torch.empty((rows, wide), dtype=bf, device=dev)
         # fp32 logits: the head's fp32 sums reach the sampler unrounded (bf16 steps are 1/8 at logits 16-32)
-        self.logits = torch.empty((head_rows, w.head.n), dtype=f32, device=dev)
+        self.logits = row_tensor("logits", (head_rows, w.head.n), dtype=f32)
         world = int(w.meta.get("world", 1))
         self.world = world
         if world > 1:                  # tensor parallel: fp32 partials and their rank-ordered gathers
-            self.part_branch = torch.empty((rows, c.hidden), dtype=f32, device=dev)
+            self.part_branch = row_tensor("part_branch", (rows, c.hidden), dtype=f32)
             self.part_moe = torch.empty((rows, c.hidden), dtype=f32, device=dev)
             self.g_branch = torch.empty((world * rows * c.hidden,), dtype=f32, device=dev)
             self.g_moe = torch.empty((world * rows * c.hidden,), dtype=f32, device=dev)
@@ -104,10 +124,10 @@ class Buffers:
         self.ple_hb = torch.zeros((nrow, dh // 32), dtype=torch.int16, pin_memory=pin)
         self.ple_v = torch.zeros((nrow, dh), dtype=bf, device=dev)          # a bf16 table's rows, as they ship
         self.ple_hv = torch.zeros((nrow, dh), dtype=bf, pin_memory=pin)
-        self.ple_emb = torch.empty((rows, c.ple_dim), dtype=bf, device=dev)
+        self.ple_emb = row_tensor("ple_emb", (rows, c.ple_dim), dtype=bf)
         self.xs_ple = torch.empty((rows, c.ple_dim // 32), dtype=f32, device=dev)
-        self.ple_keys = torch.empty((rows, wide), dtype=bf, device=dev)
-        self.ple_vals = torch.empty((rows, c.hidden), dtype=bf, device=dev)
+        self.ple_keys = row_tensor("ple_keys", (rows, wide), dtype=bf)
+        self.ple_vals = row_tensor("ple_vals", (rows, c.hidden), dtype=bf)
         self.ple_gated = torch.empty((rows, wide), dtype=bf, device=dev)
         self.ple_pss = torch.empty((rows, c.streams), dtype=f32, device=dev)
         self.ple_nrow = torch.empty((rows, wide), dtype=bf, device=dev)
@@ -120,6 +140,8 @@ class Buffers:
         self.mtp_xh = torch.empty((rows, wide // 32), dtype=f32, device=dev)
         self.mtp_hs = torch.empty((rows * c.streams, c.hidden), dtype=bf, device=dev)
         self.mtp_in = torch.empty((rows, wide), dtype=bf, device=dev)          # the MTP's input streams
+        draft = getattr(w, "dspark", None)
+        self.dspark_taps = draft.new_taps(rows, dev) if draft is not None else None
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:
@@ -137,6 +159,7 @@ class _MoECfg:
         self.num_experts = c.experts
         self.moe_intermediate_size = c.moe_width
         self.hidden_size = c.hidden
+        self.execution_dtype = getattr(c, "execution_dtype", "bfloat16")
 
 
 # -- committed state -----------------------------------------------------------------------------------
@@ -156,6 +179,8 @@ class State:
                  kv_value_dtype: str | None = None) -> None:
         c = w.cfg
         dev = w.device
+        bf = execution_dtype(w)
+        self.execution_dtype = bf
         kvcache.check(kv_dtype)
         if kv_pair is not None:
             if type(kv_pair) is not kvcache.KVPairFormat:
@@ -165,9 +190,12 @@ class State:
             if kv_dtype != "bf16" and kv_pair != kvcache.get_pair(kv_dtype):
                 raise ValueError("KV dtype shorthand conflicts with the explicit pair")
         self.kv_pair = kv_pair if kv_pair is not None else kvcache.get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
+        if bf == torch.float16 and any(name not in ("fp16", "int8") for name in
+                                      (self.kv_pair.key_dtype, self.kv_pair.value_dtype)):
+            raise ValueError("SM70 FP16 execution requires explicit fp16 or int8 KV cache storage")
         self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
-        self.kv_working_policy = "stored-basis-native64-v1"
+        self.kv_working_policy = "stored-basis-fp16-fp32acc-v1" if bf == torch.float16 else "stored-basis-native64-v1"
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
         self.kv_value_bits = 0 if self.kv_pair.value.bits == 16 else self.kv_pair.value.bits
@@ -175,7 +203,8 @@ class State:
         # Graph kernels only OR error bits and publish the first failing layer.
         # This allocation keeps its address through growth, restore and reset.
         self.kv_status = (torch.tensor([0, -2], dtype=torch.int32, device=dev)
-                          if not self.kv_pair.symmetric or self.kv_key_codec or self.kv_value_codec else None)
+                          if (not self.kv_pair.symmetric or self.kv_key_codec or self.kv_value_codec
+                              or (bf == torch.float16 and self.kv_pair.key.quantized)) else None)
         world = int(w.meta.get("world", 1))
         self._kv_peer_status = (torch.empty((world, 2), dtype=torch.int32, device=dev)
                                 if self.kv_status is not None and world > 1 else None)
@@ -198,19 +227,19 @@ class State:
         self.lin_index = {layer.index: i for i, layer in enumerate(lin)}
         self.att_index = {layer.index: i for i, layer in enumerate(att)}
         n = len(lin)
-        self.conv = torch.zeros((n, c.conv_kernel - 1, c.conv_dim), dtype=torch.bfloat16, device=dev)
+        self.conv = torch.zeros((n, c.conv_kernel - 1, c.conv_dim), dtype=bf, device=dev)
         self.rec = torch.zeros((2, n, c.nv, c.dv, c.dk), dtype=torch.float32, device=dev)
         self.cur = [0] * n
-        self.scratch = [gdn_mod.GDNScratch(max_rows, dev, c.nk, c.nv) for _ in range(n)]
+        self.scratch = [gdn_mod.GDNScratch(max_rows, dev, c.nk, c.nv, dtype=bf) for _ in range(n)]
         self.ratio, self.index_dim = c.index_ratio, c.index_dim
         self.layers = len(att) + (w.mtp is not None)              # attention caches: the layers', the MTP head's
         self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + c.index_dim * 2
         self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair) for _ in att]
-        self.ikc = [torch.zeros((capacity, c.index_dim), dtype=torch.bfloat16, device=dev) for _ in att]
+        self.ikc = [torch.zeros((capacity, c.index_dim), dtype=bf, device=dev) for _ in att]
         nb = -(-capacity // c.index_ratio)
-        self.pooled = [torch.zeros((nb, c.index_dim), dtype=torch.bfloat16, device=dev) for _ in att]
+        self.pooled = [torch.zeros((nb, c.index_dim), dtype=bf, device=dev) for _ in att]
         wide = c.streams * c.hidden
-        self.ple_tail = torch.zeros(((c.ple_kernel - 1) * c.ngram_size, wide), dtype=torch.bfloat16, device=dev)
+        self.ple_tail = torch.zeros(((c.ple_kernel - 1) * c.ngram_size, wide), dtype=bf, device=dev)
         self.ple_history = c.ngram(0).initial_history() if c.ple_layers else None
         self.ple_last: tuple[np.ndarray, np.ndarray] | None = None
         # MTP head (its own attention cache; ``mtp_len`` entries, the last ``mtp_drafted`` of them chained drafts)
@@ -219,9 +248,14 @@ class State:
         self.mtp_pos = torch.zeros((1,), dtype=torch.int32, device=dev)
         if w.mtp is not None:
             self.mtp_kc = kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair)
-            self.mtp_ikc = torch.zeros((capacity, c.index_dim), dtype=torch.bfloat16, device=dev)
-            self.mtp_pooled = torch.zeros((-(-capacity // c.index_ratio), c.index_dim), dtype=torch.bfloat16,
+            self.mtp_ikc = torch.zeros((capacity, c.index_dim), dtype=bf, device=dev)
+            self.mtp_pooled = torch.zeros((-(-capacity // c.index_ratio), c.index_dim), dtype=bf,
                                           device=dev)
+
+        self.dspark_runtime = getattr(w, "dspark", None)
+        self.dspark = None
+        if self.dspark_runtime is not None:
+            self.dspark_runtime.init_state(self)
 
     @property
     def kv_dtype(self) -> str:
@@ -317,7 +351,10 @@ class State:
             # at different sizes. The old capacity is no longer an accounting
             # authority, even though no such geometry may be used for inference.
             return self.owned_cache_bytes()
-        return self.layers * self.layer_bytes(rows)
+        total = self.layers * self.layer_bytes(rows)
+        if getattr(self, "dspark_runtime", None) is not None:
+            total += (self.capacity if rows is None else int(rows)) * self.dspark_runtime.plan.cache_row_bytes
+        return total
 
     def owned_cache_bytes(self) -> int:
         """Actual attached cache storage; used only for failed resize accounting and retirement."""
@@ -326,6 +363,8 @@ class State:
         total += sum(array.nbytes for arrays in (self.ikc, self.pooled) for array in arrays)
         if hasattr(self, "mtp_kc"):
             total += self.mtp_kc.nbytes + self.mtp_ikc.nbytes + self.mtp_pooled.nbytes
+        if getattr(self, "dspark", None) is not None:
+            total += self.dspark.nbytes
         return total
 
     def layer_bytes(self, rows: int | None = None) -> int:
@@ -358,6 +397,8 @@ class State:
             self._resize_caches(rows, self.pos, self.mtp_len)
             self.capacity = rows
             self.version += 1
+            if getattr(self, "dspark_runtime", None) is not None:
+                self.dspark_runtime.resize(self)
             return self.cache_bytes() - before
         except BaseException as error:
             self._poison_resize(error)
@@ -436,6 +477,8 @@ class State:
             self._resize_error = self._kv_error = None
             self.reset(w)
             self.version += 1
+            if getattr(self, "dspark_runtime", None) is not None:
+                self.dspark_runtime.resize(self)
             return self.cache_bytes() - before
         except BaseException as error:
             self._poison_resize(error)
@@ -462,6 +505,8 @@ class State:
         self.image_positions, self.image_rows, self.image_features = None, (), None
         self.mtp_drafted = 0
         self.set_mtp_len(0)
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.reset(self)
 
     def set_rope_delta(self, delta: int) -> None:
         self.rope_delta = int(delta)
@@ -488,6 +533,8 @@ class State:
         for sc_new, sc in zip(other.scratch, self.scratch):
             for name, value in vars(sc).items():
                 setattr(sc_new, name, value.clone())
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.clone_state(self, other)
         return other
 
     def set_mtp_len(self, n: int) -> None:
@@ -500,6 +547,8 @@ class State:
 
         source.kv_check()
         self.kv_check()
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.validate_copy(self, source, pos)
         if self is source or self.kv_identity != source.kv_identity or self.ratio != source.ratio:
             raise ValueError("a prefix copy needs distinct slots with matching cache formats")
         if (type(pos) is not int or type(mtp_len) is not int
@@ -530,6 +579,9 @@ class State:
             self.mtp_ikc[:mtp_len].copy_(source.mtp_ikc[:mtp_len])
             self.mtp_pooled[:mtp_len // self.ratio].copy_(source.mtp_pooled[:mtp_len // self.ratio])
 
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.copy_prefix(self, source, pos)
+
     def snapshot(self) -> dict:
         """The committed state outside the cache rows; ``restore`` needs the cache rows below ``pos`` still in place."""
 
@@ -540,10 +592,13 @@ class State:
         return {"pos": self.pos, "rec": self.rec[p].clone(), "conv": self.conv.clone(),
                 "ple_tail": self.ple_tail.clone(),
                 "ple_history": None if self.ple_history is None else self.ple_history.copy(),
-                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata}
+                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata,
+                **(self.dspark_runtime.snapshot(self) if getattr(self, "dspark_runtime", None) is not None else {})}
 
     def restore(self, snap: dict) -> None:
         self.kv_validate_snapshot(snap)
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.validate_snapshot(self, snap)
         self.rec[0].copy_(snap["rec"])
         self.cur = [0] * len(self.cur)
         self.conv.copy_(snap["conv"])
@@ -555,3 +610,5 @@ class State:
         self.image_positions, self.image_rows, self.image_features = None, (), None
         self.mtp_drafted = 0
         self.set_mtp_len(snap["mtp_len"])
+        if getattr(self, "dspark_runtime", None) is not None:
+            self.dspark_runtime.restore(self, snap)

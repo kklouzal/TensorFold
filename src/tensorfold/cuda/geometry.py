@@ -248,7 +248,7 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
 
     linear, attention = layer_counts(t)
     d, h = int(t["hidden_size"]), int(t["num_attention_heads"]) // world
-    hk = int(t["num_key_value_heads"]) // world
+    hk = local_kv_heads(t, world)
     hd = int(t.get("head_dim") or d // int(t["num_attention_heads"]))
     nk, nv = int(t["linear_num_key_heads"]) // world, int(t["linear_num_value_heads"]) // world
     dk, dv = int(t["linear_key_head_dim"]), int(t["linear_value_head_dim"])
@@ -472,11 +472,21 @@ def dflash2_weights(draft_dir, world: int) -> Weights:
     return Weights(resident, staging, 0)
 
 
+def local_kv_heads(t: dict, world: int) -> int:
+    """GGUF GQA may replicate KV heads when tensor ranks outnumber them."""
+    heads = int(t["num_key_value_heads"])
+    if t.get("_replicate_kv_heads") and world > heads:
+        if heads <= 0 or world % heads:
+            raise ValueError("tensor ranks must form complete replicated KV-head groups")
+        return 1
+    return heads // world
+
+
 def _gdn_dims(t: dict, world: int) -> tuple:
     d, heads = int(t["hidden_size"]), int(t["num_attention_heads"])
     nk, nv = int(t["linear_num_key_heads"]) // world, int(t["linear_num_value_heads"]) // world
     dk, dv = int(t["linear_key_head_dim"]), int(t["linear_value_head_dim"])
-    return (d, heads // world, int(t["num_key_value_heads"]) // world, int(t.get("head_dim") or d // heads),
+    return (d, heads // world, local_kv_heads(t, world), int(t.get("head_dim") or d // heads),
             nk, nv, dk, dv, 2 * nk * dk + 2 * nv * dv + 2 * nv)
 
 
@@ -508,11 +518,17 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             first: int = 256, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                             kv_scale_bytes: int = 2, kv_status: bool = False,
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
-                            world: int = 1, points: int = 1, graph_bytes: int = 0) -> Geometry:
+                            world: int = 1, points: int = 1, graph_bytes: int = 0,
+                            full_windows: int | None = None, workspace_bytes: int = 0) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
     budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs)."""
 
+    if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
+        raise ValueError("full KV windows must be a positive integer")
+    if type(workspace_bytes) is not int or workspace_bytes < 0:
+        raise ValueError("full-window workspace must be nonnegative integer bytes")
+    windows = 1 if full_windows is None else min(streams, full_windows)
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
     hc = int(t.get("hc_count", 1))
@@ -538,7 +554,11 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
 
     def bytes_at(capacity: int) -> int:
         blocks = (capacity + ratio - 1) // ratio
-        cache = caches(capacity) + (streams - 1) * caches(min(first, capacity))
+        cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
+        if full_windows is not None:
+            # Resizes replace one target attention layer at a time. All full
+            # slot windows coexist with the replacement and serving workspace.
+            cache += (caches(capacity) // count if count else 0) + workspace_bytes
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
         scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
         scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)

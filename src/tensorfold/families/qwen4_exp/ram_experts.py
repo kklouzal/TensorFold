@@ -15,16 +15,19 @@ MAX_ROUTED_EXPERTS = 1023  # experts.cu's EMAX=1024 includes the shared expert.
 
 
 def check_kv_full_windows(value: int | None, *, streams: int, vram_experts: float | str | None,
-                          tp: int = 1) -> None:
+                          tp: int = 1, resident_gguf: bool = False) -> None:
     """An explicit shared allowance changes concurrent capacity, never model precision."""
 
     if value is None:
         return
     if type(value) is not int or value < 1:
         raise ValueError("--kv-full-windows must be a positive whole number")
-    if vram_experts != "auto" or type(streams) is not int or streams <= 1 or tp != 1:
-        raise ValueError("--kv-full-windows requires Flash Next CUDA --vram-experts auto, --parallel 2 or more "
-                         "and --tp 1")
+    concurrent = type(streams) is int and streams > 1
+    resident = resident_gguf and vram_experts is None and type(tp) is int and tp in (1, 2, 4, 8)
+    automatic = vram_experts == "auto" and tp == 1
+    if not concurrent or not (resident or automatic):
+        raise ValueError("--kv-full-windows requires Flash Next CUDA --parallel 2 or more and either "
+                         "resident GGUF weights or --vram-experts auto with --tp 1")
 
 
 def reserved_growth(each: list[int], full_windows: int | None = None) -> tuple[int, int]:

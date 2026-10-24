@@ -100,6 +100,8 @@ def config(model_dir: str | Path) -> dict:
             raise ValueError(f"checkpoint {name} metadata must be an object or null")
     quantization = raw.get("quantization") or raw.get("quantization_config") or {}
     text["_quantization"] = quantization
+    if quantization.get("quant_method") == "gguf":
+        text["_replicate_kv_heads"] = True
     return text
 
 
@@ -476,6 +478,14 @@ def floor(model_dir: str | Path) -> tuple[int, int]:
 
     from tensorfold.cuda import build
 
+    from tensorfold.checkpoint_metadata import read_config
+
+    path = Path(model_dir)
+    if not (path / "config.json").is_file() and path.suffix.lower() != ".gguf" and not any(path.glob("*.gguf")):
+        return build.MIN_CAPABILITY
+    raw = read_config(model_dir)
+    if (raw.get("quantization_config") or raw.get("quantization") or {}).get("quant_method") == "gguf":
+        return (7, 0)
     return build.MIN_CAPABILITY
 
 

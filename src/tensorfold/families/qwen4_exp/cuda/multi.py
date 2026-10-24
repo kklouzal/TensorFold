@@ -29,11 +29,14 @@ from tensorfold.engine.grammar import GrammarError
 
 from ..cuda import CONFIDENCE, DEPTH
 from . import attn_multi, gdn_multi, image_rows, multi_graphs, prefixes
-from .decode import PREFILL_ROWS, WARM_TAIL, Engine, draft, entry_end, prefill_begin
+from .decode import (
+    PREFILL_ROWS, WARM_TAIL, Engine, SamplingShard, _gathered_fits, choose_gathered,
+    draft, entry_end, prefill_begin, tp_sample_rows,
+)
 from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
-from .service_memory import automatic_graph_bytes, future_service
+from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service
 from .state import ENDS, Buffers, KVNumericError, State
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -51,6 +54,9 @@ def _slot(w, st: State, buf: Buffers, mbuf: Buffers, pbuf: Buffers, capacity: in
     e.w, e.capacity, e.rows, e.prefill_rows = w, capacity, buf.rows, prefill_rows
     e.buf, e.mbuf, e.pbuf, e.st, e.graphs = buf, mbuf, pbuf, st, None
     e.kv_pair = st.kv_pair
+    e._sample_plan = getattr(buf, "sample_plan", None)
+    e._draft_plan = getattr(mbuf, "sample_plan", None) if mbuf is not None else None
+    e._draft_map = None
     e.stops = ()
     return e
 
@@ -62,12 +68,16 @@ class MultiDecoder:
                  stop_eos: bool = True, keep: int = 8, kv_dtype: str = "bf16", prefill_rows: int = PREFILL_ROWS,
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
-                 graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0) -> None:
-        if w.comm is not None:
-            raise ValueError("concurrent Flash Next runs on one GPU for now")
+                 graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
+                 full_windows: int | None = None) -> None:
+        if w.comm is not None and w.meta.get("execution_provider") != "sm70":
+            raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
         if budget is not None and (type(budget) is not int or budget < 0):
             raise ValueError("captured-round budget must be nonnegative integer bytes or automatic")
+        if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
+            raise ValueError("full KV windows must be a positive integer")
+        self.full_windows = full_windows
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
         from .rotor_decoder import RotorDecoderPolicy
         self.rotor_decoder_policy = RotorDecoderPolicy()
@@ -83,6 +93,13 @@ class MultiDecoder:
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity) if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
+        self._sample_plan = self._draft_plan = None
+        if w.comm is not None:
+            self._sample_plan = self.buf.sample_plan = SamplingShard(w, w.head.n, offset=int(w.meta["vocab_offset"]))
+            if self.mbuf is not None:
+                width = w.draft_head.n if w.draft_head is not None else w.head.n
+                self._draft_plan = self.mbuf.sample_plan = SamplingShard(
+                    w, width, offset=int(w.meta["vocab_offset"]), id_map=w.draft_ids)
         from .hc_plans import enroll
 
         enroll(w, self.buf)
@@ -90,6 +107,11 @@ class MultiDecoder:
         self.gdn = gdn_multi.Scratch(w, rows)            # every stream's DeltaNet rows, one launch a step
         # a frame's codec status words, read back with its sampling packet (KVWords): one host wait a step
         self.kv_host = torch.zeros((slots, 2), dtype=torch.int32, pin_memory=torch.cuda.is_available())
+        self.kv_cohort = None
+        if w.comm is not None and w.meta.get("execution_provider") == "sm70":
+            from .kv_status import KVStatusCohort
+
+            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device)
         # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
         self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
         self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
@@ -100,19 +122,26 @@ class MultiDecoder:
         reason = None if graphs else "not requested"
         if graphs and budget == 0:
             reason = f"{multi_graphs.ENV}=0"
+        elif graphs and getattr(w, "dspark", None) is not None and not getattr(w.dspark, "target_capturable", False):
+            reason = "DSpark target feature capture runs eagerly"
         elif graphs:
             reason = multi_graphs.capturable(w)
         self.graph_request = budget
         self.graph_budget = (budget or 0) if reason is None else 0
         self.graph_header_room = graph_header_room
+        self.graph_floor = FIRST
+        self.graph_floor_extra_bytes = 0
         self.vision_workspace_bytes = vision_workspace_bytes
         self.graph_record: dict = {"captured": False, "reason": reason}
         # programmatic dependent launch of the decode kernels: this chip's policy, once (pdl.ON is set each round)
         self.pdl = pdl.select(w.device.index or 0) if torch.cuda.is_available() else False
         pdl.ON = self.pdl
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
-        # slots start small and grow with their stream's context, up to the window, while the gate has room
-        self.free = [State(w, min(capacity, FIRST), depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
+        # A full-window promise owns every selected cache before startup returns.
+        # Legacy and explicitly shared modes keep the original growing floors.
+        self.full_resident = full_windows is not None and full_windows >= slots
+        initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
+        self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
                            kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype) for _ in range(slots)]
         self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
@@ -120,8 +149,23 @@ class MultiDecoder:
         free = torch_live(torch, available_bytes) if torch.cuda.is_available() else None
         # the mapped n-gram tables are not held back (they barely fit on a Spark); lookups page from disk instead
         live = free
-        self.memory_gate = MemoryGate(live() if live is not None else 1 << 62,
-                                      reserve=max(2 * GIB, workspace_bytes), live=live)
+        reserve = max(2 * GIB, workspace_bytes)
+        room = live() if live is not None else 1 << 62
+        already_held = 0
+        if full_windows is not None:
+            promise = context_reservation(self.free, full_windows, preserve_overlap=self.full_resident)
+            required = promise["growth_bytes"] + promise["copy_overlap_bytes"] + reserve
+            if room < required:
+                raise RuntimeError("admitted full KV windows and workspace no longer fit available device memory")
+            already_held = sum(st.cache_bytes() - st.cache_bytes(min(FIRST, st.limit)) for st in self.free)
+            room = already_held + required
+        self.memory_gate = MemoryGate(room, reserve=reserve, live=live,
+                                      allow_lone_growth=full_windows is None)
+        self.memory_gate.held = already_held
+        if w.comm is not None:
+            from .tp_scheduler import SharedMemoryGate
+
+            self.memory_gate = SharedMemoryGate(self.memory_gate, w.comm)
         self._memory_error: BaseException | None = None
         self.streams: dict[int, Stream] = {}
         self.filling: list[Stream] = []                  # admitted, prompts still prefilling (oldest first)
@@ -148,6 +192,9 @@ class MultiDecoder:
     def _drop_kept(self, st: State) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
 
+    def _cache_overlap(self, st, rows):
+        return cache_resize_overlap(st, rows, auxiliary=getattr(self, "full_windows", None) is not None)
+
     def _grow(self, st: State, rows: int, *, alone: bool = False, protect: State | None = None) -> bool:
         """Grow caches while the gate has room; one stream may use its startup allowance within an explicit cap."""
 
@@ -156,7 +203,7 @@ class MultiDecoder:
         size = min(st.limit, -(-rows // STEP) * STEP)
         before = st.cache_bytes()
         grow = st.cache_bytes(size) - before
-        while not self.memory_gate.fits(grow + st.layer_bytes(size)):     # a layer's old buffers stay until its copy
+        while not self.memory_gate.fits(grow + self._cache_overlap(st, size)):     # a layer's old buffers stay until its copy
             if not self._evict_kept(st, protect=protect):
                 if alone:
                     if not self.memory_gate.allow_lone_growth:
@@ -167,7 +214,7 @@ class MultiDecoder:
                     limit = cuda_limit_bytes() if torch.cuda.is_available() else None
                     if limit is not None:
                         # A lone stream may use its startup reserve without exceeding the copy peak cap.
-                        peak = int(torch.cuda.memory_allocated()) + grow + st.layer_bytes(st.capacity)
+                        peak = int(torch.cuda.memory_allocated()) + grow + self._cache_overlap(st, st.capacity)
                         if peak > limit:
                             if self.filling:
                                 return False             # a filling request can finish and release its slot
@@ -183,6 +230,8 @@ class MultiDecoder:
         # is interrupted; a partially executed take() cannot double-charge.
         gate, held_before, primary = self.memory_gate, self.memory_gate.held, None
         try:
+            if self.graphs is not None:
+                self.graphs.invalidate_state(st)
             st.resize(size)
         except BaseException as error:  # noqa: BLE001 - charge attached storage even after interrupted replacement
             primary = error
@@ -201,17 +250,21 @@ class MultiDecoder:
         return True
 
     def _shrink(self, st: State, *, force: bool = False) -> None:
-        """An idle slot back to its first rows: its caches' memory returns to the gate."""
+        """Reset an idle slot; full resident windows persist unless forced/error retirement releases them."""
 
         gate, held_before = self.memory_gate, self.memory_gate.held
         before, primary, errors = st.cache_bytes(), None, []
+        floor = (st.limit if getattr(self, "full_resident", False) else getattr(self, "graph_floor", FIRST))
+        target = min(FIRST if force or st._resize_error is not None else floor, st.limit)
         try:
+            if self.graphs is not None and (force or st._resize_error is not None or st.capacity > target):
+                self.graphs.invalidate_state(st)
             if st._resize_error is not None:
                 st.recover_resize(self.w, min(FIRST, st.limit))
             else:
                 st.reset(self.w)
-                if force or st.capacity > FIRST:
-                    st.resize(min(FIRST, st.limit))
+                if force or st.capacity > target:
+                    st.resize(target)
         except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation
             primary = error
             try:
@@ -242,6 +295,8 @@ class MultiDecoder:
 
     def _retire_failed_slot(self, st: State) -> None:
         self._shrink(st, force=True)
+        if getattr(self, "full_resident", False) and not self._grow(st, st.limit, alone=True):
+            raise NoRoom("retired slot cannot restore its promised full context window")
         try:
             self.free.append(st)
             self.failed_slots.remove(st)
@@ -402,6 +457,33 @@ class MultiDecoder:
             self.capture_graphs()
 
     @torch.no_grad()
+    def _prepare_graph_floor(self):
+        """Admit persistent bound slots without counting one promised full window twice."""
+        floor = min(8192, self.capacity)
+        growth = [max(0, state.cache_bytes(floor) - state.cache_bytes()) for state in self.free]
+        promised = min(len(growth), getattr(self, "full_windows", None) or 1)
+        extra = sum(growth) - sum(sorted(growth, reverse=True)[:promised])
+        if self.graph_header_room is not None and extra > self.graph_header_room:
+            self.graph_budget = 0
+            self.graph_record = {"captured": False, "reason": "bound graph cache floors exceed admitted header room",
+                                 "floor_tokens": floor, "floor_extra_bytes": extra, "budget_bytes": 0}
+            return False
+        self.graph_floor = floor
+        try:
+            for state in self.free:
+                if not self._grow(state, floor):
+                    raise NoRoom("bound graph cache floors cannot retain the promised full window")
+        except BaseException:
+            self.graph_floor = FIRST
+            for state in self.free:
+                self._shrink(state, force=True)
+            raise
+        self.graph_floor_extra_bytes = extra
+        if self.graph_header_room is not None:
+            self.graph_header_room -= extra
+        return True
+
+    @torch.no_grad()
     def capture_graphs(self) -> None:
         """Capture the rounds' verify forwards and MTP steps on the idle slots (``multi_graphs``) and take their
         measured memory (``room_bytes``) from the stream caches' room. Before any request: every slot must be free."""
@@ -412,14 +494,19 @@ class MultiDecoder:
             raise RuntimeError("captured-round pools are immutable until this decoder retires")
         if self.graph_record["reason"] is not None:
             return
+        if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
+            return
         multi_graphs.prepare_capture()
         slots = len(self.free)
-        # Resident serving promises one full native window. Other streams'
-        # growth and kept KV rows remain opportunistic under MemoryGate.
-        growth = max(st.cache_bytes(st.limit) - st.cache_bytes() for st in self.free)
+        # The legacy resident policy promises one full native window. Explicit
+        # full windows also protect every selected slot's target/draft caches.
+        promise = context_reservation(self.free, getattr(self, "full_windows", None),
+                                      preserve_overlap=getattr(self, "full_resident", False))
+        growth = promise["growth_bytes"]
         future = future_service(self.w, self.free, streams=slots, retained=self.keep + slots * POINTS,
                                 growth_bytes=growth, vision_workspace_bytes=self.vision_workspace_bytes,
-                                minimum_workspace_bytes=self.memory_gate.reserve)
+                                minimum_workspace_bytes=self.memory_gate.reserve,
+                                copy_overlap_bytes=promise["copy_overlap_bytes"])
         live = multi_graphs.live_bytes
         initial_live = live()
         automatic = self.graph_request is None
@@ -427,7 +514,21 @@ class MultiDecoder:
             self.graph_budget = automatic_graph_bytes(initial_live, future["future_bytes"], self.graph_header_room)
         resolution = {"automatic": automatic, "initial_live_bytes": initial_live,
                       "header_room_bytes": self.graph_header_room, "future_service": future}
+        if getattr(self, "full_resident", False):
+            resolution["materialized_full_windows"] = {
+                "slots": slots, "capacities": [st.capacity for st in self.free],
+                "cache_bytes": sum(st.cache_bytes() for st in self.free)}
+        if getattr(self.w, "meta", {}).get("execution_provider") == "sm70":
+            resolution.update(floor_tokens=self.graph_floor, floor_extra_bytes=self.graph_floor_extra_bytes)
         if not self.graph_budget:
+            if getattr(self, "graph_floor_extra_bytes", 0):
+                released = self.graph_floor_extra_bytes
+                self.graph_floor, self.graph_floor_extra_bytes = FIRST, 0
+                for state in self.free:
+                    self._shrink(state, force=True)
+                if self.graph_header_room is not None:
+                    self.graph_header_room += released
+                resolution.update(floor_tokens=FIRST, floor_extra_bytes=0, declined_floor_extra_bytes=released)
             self.graph_record = {"captured": False, "reason": "automatic graph budget has no room after required service",
                                  "budget_bytes": 0, **resolution}
             return
@@ -460,7 +561,13 @@ class MultiDecoder:
             record = {"captured": captured,
                       "reason": None if captured else "capture failed; retained pool accounted, decoder remains eager",
                       **resolution, **graphs.record()}
-            room = self.memory_gate.room - graphs.room_bytes
+            # The explicit gate already contains only promised cache/workspace
+            # bytes; graph capture protected that promise instead of borrowing it.
+            if (getattr(self, "full_windows", None) is not None and
+                    self.memory_gate.held + live() < self.memory_gate.room):
+                raise RuntimeError("captured graph pool consumed the promised full KV windows or workspace")
+            room = (self.memory_gate.room if getattr(self, "full_windows", None) is not None else
+                    self.memory_gate.room - graphs.room_bytes)
             self.memory_gate.live = live
             self.memory_gate.room = room
             self.graph_record = record
@@ -485,7 +592,10 @@ class MultiDecoder:
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
         t0 = time.perf_counter()
-        st, resume, s.cached = self._slot_for(list(s.prompt), s.draft and s.vision is None)
+        from .prefix_policy import reuse_allowed
+
+        reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision, position=len(s.prompt))
+        st, resume, s.cached = self._slot_for(list(s.prompt), reuse)
         try:
             if not self._grow(st, len(s.prompt) + self.depth + 2, alone=not self.streams and not self.filling):
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
@@ -570,6 +680,10 @@ class MultiDecoder:
         """The next pass: rows from the filling prompts in ``_order``, up to ``rows`` and ENDS ending prompts."""
 
         pieces, room = [], self._pass_rows() if rows is None else rows
+        # Independent prompts retain their standalone bulk GEMM/reduction shape.
+        # Decode windows still batch together in the existing round/graph path.
+        meta = self.w.meta
+        separate = meta.get("execution_provider") == "sm70" and meta.get("sm70_profile") == "optimized"
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)
@@ -581,6 +695,8 @@ class MultiDecoder:
                 break
             pieces.append((s, start, n))
             room -= n
+            if separate:
+                break
         return pieces
 
     def _pass(self) -> list[Stream]:
@@ -649,7 +765,7 @@ class MultiDecoder:
     def _absorb(self, pieces, segs, cuts=()) -> list[torch.Tensor]:
         """After a pass's forward: each prompt's last row and kept point, the MTP head's absorb, the commits."""
 
-        _kv_check(segs)
+        _kv_check(segs, comm=self.w.comm)
         lasts = [self.pbuf.streams[a1 - 1:a1].clone() for _, _, a1 in segs]
         at, points = {(cut.at, cut.row): cut for cut in cuts}, []
         for (s, a, n), (st, a0, _) in zip(pieces, segs):      # before the MTP head writes the pass's streams
@@ -686,7 +802,7 @@ class MultiDecoder:
     def _joined(self, pieces, heads, lasts, spent: float) -> list[Stream]:
         """Prompts that ended sample their first token, draft and join the rounds; returns those already done."""
 
-        _kv_check([(s.st, 0, n) for s, _, n in pieces])
+        _kv_check([(s.st, 0, n) for s, _, n in pieces], comm=self.w.comm)
         joined, head = [], 0
         for (s, a, n), last in zip(pieces, lasts):
             s.prefill_s += spent
@@ -727,7 +843,8 @@ class MultiDecoder:
             e.buf.rotor_lookup = self._rotor_lookup(s)
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
-            if mtp and not s.done and s.count > 1:
+            has_draft = mtp or (s.draft and self.depth > 0 and getattr(self.w, "dspark", None) is not None)
+            if has_draft and not s.done and s.count > 1:
                 s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
                                  self.confidence)
             if s.done:
@@ -810,9 +927,11 @@ class MultiDecoder:
                 ended += self._failed(pieces, exc)
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
-        tables = self.buf.gdn_tables = gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
-        self.buf.attn_step = attn_multi.Step(self.w, segs, mtp=False, tables=self.step_tables,
-                                             rotor_lookup=self.buf.rotor_lookup)
+        half = self.buf.h.dtype == torch.float16
+        tables = None if half else gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
+        self.buf.gdn_tables = tables
+        self.buf.attn_step = (None if half else attn_multi.Step(
+            self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 pends = self._end_rows(pieces, psegs)
@@ -824,6 +943,10 @@ class MultiDecoder:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
+        if self.w.comm is not None:
+            # Delayed KVWords checks are local. Every TP owner must learn a
+            # failed peer's status before any rank enters the sampler gather.
+            _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
@@ -834,20 +957,33 @@ class MultiDecoder:
         try:
             for s, (_, a0, a1) in zip(live, segs):
                 if s.sid in grammars:
-                    s.constraint.mask(logits[a0:a1], grammars[s.sid])
-            launched = launch_streams(logits, starts, positions, samplings)
+                    s.constraint.mask(logits[a0:a1], grammars[s.sid], self.w.meta.get("vocab_offset", 0))
+            launched = launch_streams(logits, starts, positions, samplings) if self.w.comm is None else None
         except BaseException:
             words.settle()
             raise
-        sampled = collect_streams(launched, words)
+        if self.w.comm is None:
+            sampled = collect_streams(launched, words)
+        else:
+            words.settle()
+            if (not grammars and self.w.meta.get("execution_provider") == "sm70"
+                    and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
+                chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
+                                         [position for group in positions for position in group], samplings[0],
+                                         logits=logits, plan=self._sample_plan)
+                sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
+            else:
+                sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
+                           for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
             if s.probabilities is not None:
                 capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
                         s.probabilities, rows=[a0 + r for r in path])
-        for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
-            self.held[s.sid] = rows                      # the next round's trees fold these rows in first
+        if not half:
+            for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
+                self.held[s.sid] = rows                  # the next round's trees fold these rows in first
         kept = []
         for s, (_, tokens), (st, a0, a1), rows, (path, end) in zip(live, windows, segs, sampled, paths):
             commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False)
@@ -882,6 +1018,31 @@ class MultiDecoder:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
         status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
+
+        provider = getattr(self.w, "dspark", None)
+        if provider is not None:
+            for s, _at, keep in streams:
+                s.drafts = []
+                count = min(self.depth, s.count - len(s.out) - len(keep))
+                if count <= 0:
+                    continue
+                if new and s.sid in new and getattr(s, "copies", None) is not None:
+                    before = len(s.context)
+                    try:
+                        s.context.extend(new[s.sid])
+                        s.drafts = s.copies.propose(s.context, max(count, COPY_MATCH))[:count]
+                    finally:
+                        del s.context[before:]
+                    if s.drafts:
+                        continue
+                e = _slot(self.w, s.st, self.buf, None, self.pbuf, self.capacity, self.prefill_rows)
+                s.drafts = provider.draft(e, int(keep[-1]), count, s.sampling, self.confidence)
+            return
+
+        bound = getattr(getattr(self, "graphs", None), "bound", None)
+        handoff = getattr(bound, "greedy", None)
+        if handoff is not None and handoff.try_draft(streams, new):
+            return
 
         for s, _, _ in streams:
             s.drafts = []
@@ -952,11 +1113,15 @@ class MultiDecoder:
         if self.live() == 1:
             request = next(iter(self.streams.values())) if self.streams else self.filling[0]
             self.mbuf.rotor_lookup = self._rotor_lookup(request, len(segs))
-        self.mbuf.attn_step = attn_multi.Step(self.w, segs, mtp=True, tables=self.mtp_tables,
-                                              rotor_lookup=self.mbuf.rotor_lookup)
+        self.mbuf.attn_step = (None if self.mbuf.h.dtype == torch.float16 else attn_multi.Step(
+            self.w, segs, mtp=True, tables=self.mtp_tables, rotor_lookup=self.mbuf.rotor_lookup))
         try:                                             # the caller checks the step's status
             out = self.graphs.mtp_step(segs) if self.graphs is not None else None
-            return mtp_compute(self.w, segs, self.mbuf, check=False) if out is None else out
+            if out is None:
+                out = mtp_compute(self.w, segs, self.mbuf, check=False)
+            if self.w.comm is not None:
+                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            return out
         finally:
             self.mbuf.attn_step = None
 
@@ -985,6 +1150,22 @@ class MultiDecoder:
         if not positions:
             words.settle()
             return []
+        if self.w.comm is not None:
+            words.settle()
+            if (self.w.meta.get("execution_provider") == "sm70"
+                    and logits.data_ptr() == self.mbuf.logits.data_ptr()
+                    and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
+                chosen, probabilities = choose_gathered(
+                    self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
+                    logits=logits, plan=self._draft_plan)
+                return list(zip(chosen, probabilities))
+            picks = []
+            for row, (position, sampling) in enumerate(zip(positions, samplings)):
+                tokens, probabilities = tp_sample_rows(
+                    self.w, logits[row:row + 1], [position], sampling, with_prob=True, plan=self._draft_plan,
+                    offset=int(self.w.meta["vocab_offset"]), id_map=self.w.draft_ids)
+                picks.append((tokens[0], probabilities[0]))
+            return picks
         try:                                             # a failure before the words' check settles them first
             row = logits.float()
             # Greedy proposals only consume the original maximum and log-sum-exp.

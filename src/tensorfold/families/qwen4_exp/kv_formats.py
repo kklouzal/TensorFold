@@ -40,7 +40,7 @@ class KVFormat:
 
     @property
     def payload_dtype(self) -> str:
-        return "bfloat16" if self.bits == 16 else "int8" if self.name == "int8" else "uint8"
+        return "float16" if self.name == "fp16" else "bfloat16" if self.bits == 16 else "int8" if self.name == "int8" else "uint8"
 
     @property
     def scale_dtype(self) -> str:
@@ -58,7 +58,7 @@ class KVFormat:
     def storage_uid(self) -> str:
         if self.rotor is not None:
             return self.rotor.codec_id
-        return f"kv-native-v1-{self.name}-h32-midpoint-fp16-absmax" if self.quantized else "kv-native-v1-bf16"
+        return f"kv-native-v1-{self.name}-h32-midpoint-fp16-absmax" if self.quantized else f"kv-native-v1-{self.name}"
 
     def value_bytes(self, head_dim: int) -> int:
         """One position/head's K or V payload and metadata; reject partial groups."""
@@ -79,7 +79,7 @@ class KVFormat:
         """Legacy protocol values stay fixed; new formats identify all pinned tables."""
 
         if self.rotor is None:
-            return self.bits
+            return 0x10010 if self.name == "fp16" else self.bits
         return int.from_bytes(hashlib.sha256(self.rotor.codec_id.encode("ascii")).digest()[:8], "big") & (2**63 - 1)
 
 
@@ -102,6 +102,7 @@ FORMATS = (
     KVFormat("rotorquant8-norm", 8, 8, 128, 4, descriptor(8, "signed-iso128-norm8")),
     KVFormat("rotorquant-planar3", 3, 1, 128, 4, descriptor(3, "planar")),
     KVFormat("rotorquant-iso3", 3, 2, 128, 4, descriptor(3, "isofast")),
+    KVFormat("fp16", 16, 0, 32, 2),
 )
 DTYPES = tuple(item.name for item in FORMATS)
 BITS_OF = MappingProxyType({item.name: item.bits for item in FORMATS})

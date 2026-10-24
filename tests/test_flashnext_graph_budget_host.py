@@ -15,6 +15,7 @@ from tensorfold.cuda import capacity, geometry
 from tensorfold.cuda.memory_gate import MemoryGate, torch_live
 from tensorfold.families.qwen4_exp.cuda.service_memory import (
     automatic_graph_bytes,
+    context_reservation,
     failure_frame_values,
     future_service,
     private_pool_spare,
@@ -206,6 +207,7 @@ def decoder(request=None, live_bytes=5000, header=1000):
                                            live_bytes=lambda: live[0], service_live_bytes=lambda pool: lambda: live[0]),
                         "POINTS": 4,
                         "future_service": future_service, "automatic_graph_bytes": automatic_graph_bytes,
+                        "context_reservation": context_reservation,
                         "raise_failures": raise_failures})
     dec = cls()
     dec.w, dec.free = weights(), states()

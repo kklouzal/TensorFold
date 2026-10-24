@@ -18,6 +18,7 @@ name the serving process, whose prefix cache and counters a restart empties.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import os
 import time
 import uuid
@@ -74,6 +75,7 @@ def snapshot(app: Any, *, server: Any = None,
                  "held_for_memory": (getattr(sched, "held", None) is not None) if decoder is not None else None,
                  "http_connections_in_use": transport["in_use"] if transport is not None else None,
                  "stream_tokens": metrics.stream_tokens(app)},
+        "capacity_plan": deepcopy(fixed["capacity_plan"]),
         "kv": memory.get("kv"),
         "prefix_cache": memory.get("prefix_cache"),
         "totals": {"requests": reading.requests,
@@ -149,6 +151,7 @@ def _describe(app: Any) -> dict[str, Any]:
                   "kv_dtype": kv_dtype, "mtp_drafts": depth if isinstance(depth, int) else None,
                   "vision": getattr(app, "vision", None) is not None,
                   "thinking_default": thinking if isinstance(thinking, bool) else None},
+        "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)) if cuda else None,
         "limits": {"lanes": lanes, "pending_requests": getattr(app, "max_pending_requests", None),
                    "engine_calls": limit, "http_connections": None,
                    "prefix_cache_entries": getattr(decoder, "keep", None) if decoder is not None else None},

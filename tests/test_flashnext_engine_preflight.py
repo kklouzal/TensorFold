@@ -51,3 +51,54 @@ def test_invalid_pair_rejects_before_supported_mode_or_shape_setup(monkeypatch, 
     monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
     with pytest.raises(ValueError, match='KV|dtype|format'):
         engine.FlashNextEngine(tmp_path, kv_dtype='invalid')
+
+
+@pytest.mark.parametrize('key,value', [('fp16', 'fp16'), ('fp16', 'int8'), ('int8', 'fp16'), ('int8', 'int8')])
+def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_path, key, value):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold.families.qwen4_exp.cuda import engine
+
+    class NextStage(Exception):
+        pass
+
+    def next_stage(*args, **kwargs):
+        raise NextStage
+
+    monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: tmp_path / 'model.gguf')
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', next_stage)
+    with pytest.raises(NextStage):
+        engine.FlashNextEngine(tmp_path, kv_key_dtype=key, kv_value_dtype=value)
+
+
+@pytest.mark.parametrize('gguf,options', [
+    (True, {'kv_dtype': 'bf16'}),
+    (True, {'kv_dtype': 'rotorquant8'}),
+    (False, {'kv_dtype': 'fp16'}),
+    (False, {'kv_key_dtype': 'fp16', 'kv_value_dtype': 'int8'}),
+])
+def test_execution_provider_refuses_incompatible_cache_payload_before_cuda(monkeypatch, tmp_path, gguf, options):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families.qwen4_exp import gguf as gguf_module
+    from tensorfold.families.qwen4_exp.cuda import engine
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('incompatible cache payload reached model or CUDA setup')
+
+    monkeypatch.setattr(gguf_module, 'resolve_gguf', lambda path: tmp_path / 'model.gguf' if gguf else None)
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', forbidden)
+    monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
+    with pytest.raises(ValueError, match='SM70|provider'):
+        engine.FlashNextEngine(tmp_path, **options)
+
+
+@pytest.mark.parametrize('world,rows', [(1, 17), (4, 256), (8, 2048)])
+def test_sm70_prompt_replay_scratch_admission_matches_allocated_tensor_payload(world, rows):
+    from tensorfold.families.qwen4_exp.cuda.engine import _sm70_prefill_gdn_bytes
+    from tensorfold.families.qwen4_exp.cuda.gdn import GDNScratch
+
+    metadata = {'linear_num_key_heads': 16, 'linear_num_value_heads': 48,
+                'linear_key_head_dim': 128, 'linear_value_head_dim': 128}
+    scratch = GDNScratch(rows, 'cpu', 16 // world, 48 // world, dtype=torch.float16)
+    allocated = sum(tensor.numel() * tensor.element_size() for tensor in vars(scratch).values())
+    assert _sm70_prefill_gdn_bytes(metadata, world, rows) == allocated

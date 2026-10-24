@@ -23,7 +23,7 @@ from tests.test_cuda_server_errors import HI, app_for
 from tests.test_openai_compliance import exchange, frames, mac_server
 from tests.test_token_routes import MacApp
 
-SECTIONS = {"object", "schema_version", "time", "server", "model", "limits", "load", "kv", "prefix_cache", "totals"}
+SECTIONS = {"object", "schema_version", "time", "server", "model", "limits", "load", "kv", "prefix_cache", "totals", "capacity_plan"}
 LOAD = {"requests_in_flight", "requests_running", "requests_waiting", "lanes", "held_for_memory",
         "http_connections_in_use", "stream_tokens"}
 TOTALS = {"requests", "finished", "cancelled", "failed", "prompt_tokens", "cached_prompt_tokens", "generated_tokens",

@@ -139,6 +139,10 @@ def group_sums(x: torch.Tensor) -> torch.Tensor:
     """(M, K) bf16 (rows may be strided) -> (M, K/32) fp32 sums of each 32-input group."""
 
     m, k = x.shape
+    if x.dtype == torch.float16:
+        if k % GS:
+            raise ValueError("FP16 group sums require complete 32-value groups")
+        return x.float().reshape(m, k // GS, GS).sum(-1)
     kg = k // GS
     xs = torch.empty((m, kg), dtype=torch.float32, device=x.device)
     gb = 32
@@ -310,6 +314,11 @@ def matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, out: torch
     ``block_n`` (16, 32 or 64: dividing ``BN``) override the tiled kernel's launch, never its bits; the "frag" layout
     ignores them. The tiled kernel's arguments are checked before any launch (ValueError)."""
 
+    if getattr(q, "kernel", None) == "gguf":
+        if not reduce:
+            result = q.matmul(x, f32=True)
+            return result.unsqueeze(0)
+        return q.matmul(x, out=out, f32=f32)
     if q.layout == "frag":
         if x.shape[1] != q.k or x.stride(1) != 1:
             raise ValueError(f"matmul: x {tuple(x.shape)} does not match K={q.k}")
@@ -356,6 +365,8 @@ def prefill_matmul(x: torch.Tensor, q: Q4, xs: torch.Tensor | None = None, *, ou
                    f32: bool = False, part: torch.Tensor | None = None, reduce: bool = True) -> torch.Tensor:
     """A prompt chunk's matmul ("frag": shared prefill matmul, "tiled": ``matmul``); row-invariant at any chunk."""
 
+    if getattr(q, "kernel", None) == "gguf":
+        return matmul(x, q, xs, out=out, f32=f32, part=part, reduce=reduce)
     if q.layout == "frag":
         return shared.prefill_matmul(x, q, f32=f32, out=out)
     return matmul(x, q, xs, out=out, f32=f32, part=part, reduce=reduce)

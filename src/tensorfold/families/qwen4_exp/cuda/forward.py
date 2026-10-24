@@ -39,6 +39,13 @@ def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: i
 
 def _mm(x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, out: torch.Tensor, b: Buffers, **kw) -> torch.Tensor:
     f32 = out.dtype == torch.float32              # unrounded sums: tensor-parallel partials and the head's logits
+    prepared = getattr(b, "padded_linears", None)
+    if prepared is not None:
+        result = prepared.matmul(x, q, out)
+        if result is not None:
+            return result
+    if getattr(q, "kernel", "qmm") in ("gguf", "sm70_dense"):
+        return q.matmul(x, out=out, f32=f32)
     if getattr(q, "kernel", "qmm") == "b16":      # an NVFP4 checkpoint's BF16 linear (non-experts)
         return bf16.matmul(x, q, out=out, f32=f32)
     if not isinstance(q, qmm.Q4):                 # EXL3 (``exl3_mm``) and FP8 matrices write out's dtype
@@ -49,6 +56,8 @@ def _mm(x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, out: torch.Tensor, b: Buff
 
 def _embed(w: Weights, ids: torch.Tensor, copies: int, out: torch.Tensor) -> torch.Tensor:
     if len(w.embed) == 1:     # an unquantized embedding: an EXL3 pack's, or an NVFP4 checkpoint's BF16 table
+        if hasattr(w.embed[0], "lookup"):
+            return w.embed[0].lookup(ids, copies=copies, out=out)
         from .exl3_mm import embed
 
         return embed(ids, w.embed[0], w.cfg.hidden, copies, out)
@@ -111,7 +120,8 @@ def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stre
         if upmix is not None:
             upmix(b.act[:R], hc.up, b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
             return
-    _mm(b.act[:R], hc.prefill_up if b.prefill else hc.up, b.xs_act[:R], b.up[:R], b)
+    _mm(b.act[:R], hc.prefill_up if b.prefill and hc.prefill_up is not None else hc.up,
+        b.xs_act[:R], b.up[:R], b)
     glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
 
 
@@ -120,11 +130,15 @@ def _down_act(hc: HC, b: Buffers, R: int, streams: int, low: int, inject) -> Non
 
     out = b.dn[:R] if hc.down.n == b.dn.shape[1] else b.dn_mix[:R]
     if isinstance(hc.down, qmm.Q4):
-        got = _mm(b.normed[:R], hc.prefill_down if b.prefill else hc.down, b.xs_normed[:R], out, b, reduce=False)
+        got = _mm(b.normed[:R], hc.prefill_down if b.prefill and hc.prefill_down is not None else hc.down,
+                  b.xs_normed[:R], out, b, reduce=False)
     elif b.prefill:                                   # an EXL3 pack's fp16 matrix: summed slices, any row count
         got = hc.down(b.normed[:R], out)
     else:
-        got = hc.down.partials(b.normed[:R])          # fp32 slices [SK, R, N] that the activation sums in order
+        prepared = getattr(b, "padded_linears", None)
+        got = None if prepared is None else prepared.partials(hc.down, b.normed[:R])
+        if got is None:
+            got = hc.down.partials(b.normed[:R])      # fp32 slices [SK, R, N] that the activation sums in order
     if got.dim() == 3:
         glue.hc_reduce_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     else:
@@ -158,7 +172,7 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
     tables = getattr(b, "gdn_tables", None)           # a concurrent round: every stream in one launch a step
-    if tables is not None:
+    if tables is not None and b.h.dtype != torch.float16:
         gdn_multi.block(g, li, tables, b.proj[li, :R], c.eps, b.gout[:R], b.gxs[:R], c.nk)
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     for st, a0, a1 in segs:
@@ -173,6 +187,27 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
     inside, ascending) splits the chain: the rows before it, its state copied out, then on from it."""
 
     n, p, cur = a1 - a0, b.proj[0, a0:a1], st.cur[li]
+    if p.dtype == torch.float16:
+        start = 0
+        for cut in (*cuts, None):
+            end = n if cut is None else cut.row
+            conv = st.conv[li].clone()
+            if start:
+                shift_windows(conv[None], p[None, :start], start, c.conv_dim)
+            gdn_mod.chain(p[start:end], conv, g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
+                          end - start, b.prefill_gdn_scratch, st.rec[1 - cur, li], b.gout[a0 + start:a0 + end],
+                          b.gxs[a0 + start:a0 + end])
+            cur = 1 - cur
+            if cut is not None:
+                if cut.rec is None:
+                    cut.rec, cut.conv = torch.empty_like(st.rec[0]), torch.empty_like(st.conv)
+                cut.rec[li].copy_(st.rec[cur, li])
+                cut.conv[li].copy_(st.conv[li])
+                shift_windows(cut.conv[li:li + 1], p[None, :end], end, c.conv_dim)
+            start = end
+        st.cur[li] = cur
+        shift_windows(st.conv[li:li + 1], p[None], n, c.conv_dim)
+        return
     b.conv_ptr.fill_(st.conv[li].data_ptr())
     q, k, v, gt, beta = gdn_io.front(p, b.conv_ptr, b.sid[:n], b.windows[:n], g.conv, g.a_log, g.dt_bias, c.nk)
     start = 0
@@ -196,6 +231,9 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
 def _out_proj(w: Weights, b: Buffers, x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, R: int):
     """A block's output projection: (1, bf16 branch) on one GPU; (3, gathered fp32 partials) across ranks."""
 
+    if getattr(q, "kernel", "qmm") in ("gguf", "sm70_dense") and w.comm is not None:
+        _mm(x, q, xs, b.part_branch[:R], b)
+        return 3, _gather(w, b, b.part_branch, b.g_branch, R)
     if not isinstance(q, qmm.Q4):      # an NVFP4 checkpoint's BF16 face, or an EXL3 pack (one GPU): the bf16 branch
         return 1, _mm(x, q, xs, b.branch[:R], b)
     if w.comm is None:
@@ -226,7 +264,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     scale = c.head_dim ** -0.5
     rope_scale = c.rope_attention_factor
     sections = getattr(c, "mrope_section", (11, 11, 10))
-    step = None if b.prefill else getattr(b, "attn_step", None)     # a concurrent step: every stream at once
+    step = None if b.prefill or b.h.dtype == torch.float16 else getattr(b, "attn_step", None)
     if step is not None:
         o = attn_multi.layer(layer, w, b, step, scale)
         glue.attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
@@ -243,6 +281,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                        k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
                        v_bits=st.kv_value_bits, v_codec=st.kv_value_codec,
                        status=st.kv_status, layer=layer.index,
+                       valid_rows=getattr(st, "graph_rows", None), independent_rows=not b.prefill,
                        rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale,
                        centroids=b.attn.centroids, thresholds=b.attn.thresholds)
         if b.prefill:
@@ -265,6 +304,29 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
                                 rope_scale=rope_scale)
+        # Unqualified decode windows use the original Torch operator at each
+        # query's actual end. Padded keys must not select a different GEMM tree.
+        if b.h.dtype == torch.float16 and getattr(st, "graph_rows", None) is None:
+            from tensorfold.cuda.sm70.attention_qualification import active, allows
+
+            if active() and not allows(w, [host_pos], a1-a0, keys):
+                from copy import copy
+                from tensorfold.cuda.sm70 import family_ops as half_ops
+
+                for row in range(a1-a0):
+                    view = copy(b.attn)
+                    view.ids = b.attn.ids[row:row+1]
+                    view.nk = b.attn.nk[row:row+1]
+                    view.sparse = b.attn.sparse[row:row+1]
+                    row_pos = pos if row == 0 else pos + row
+                    half_ops.attention(b.q[a0+row:a0+row+1], cache.k, cache.v, row_pos,
+                                       view, 1, scale, out=b.attn_o[a0+row:a0+row+1],
+                                       context=host_pos+row+1, ks=cache.ks, vs=cache.vs,
+                                       k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
+                                       v_bits=st.kv_value_bits, v_codec=st.kv_value_codec,
+                                       rotor_lookup=b.rotor_lookup, _native_allowed=False)
+                o = b.attn_o[a0:a1]
+                continue
         o = attn_mod.attention(b.q[a0:a1], cache.k, cache.v, pos, b.attn, a1 - a0, scale, context=keys,
                                ks=cache.ks, vs=cache.vs, k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
                                v_bits=st.kv_value_bits, v_codec=st.kv_value_codec, rotor_lookup=b.rotor_lookup)
@@ -299,7 +361,8 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         _mm(b.ple_emb[:R], p.key, b.xs_ple[:R], b.ple_keys[:R], b)
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
     glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
-                  b.ple_pss[:R], c.eps, c.streams)
+                  b.ple_pss[:R], c.eps, c.streams, valid_rows=getattr(b, "graph_rows", None),
+                  independent_rows=not b.prefill)
     if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
         b.split(("ple_conv", layer))
     else:
@@ -320,6 +383,8 @@ def stage_ple_rows(p, b: Buffers, ids: np.ndarray, at: int = 0) -> None:
 
     if getattr(p.table, "bits", 4) == 16:                  # a bf16 table: the rows go over as they are
         values = p.table.gather(ids)
+        if b.ple_hv.dtype == torch.float16:
+            values = np.asarray(values, dtype=np.float16).reshape(-1, b.ple_hv.shape[1])
         rows = slice(at, at + values.shape[0])
         b.ple_hv[rows].view(torch.int16).numpy()[:] = values.view(np.int16)
         b.ple_v[rows].copy_(b.ple_hv[rows], non_blocking=True)
@@ -339,6 +404,18 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     """Routed experts + the shared expert. Returns the pending write-back: (2, slots y, weights) on one GPU, (3, gathered fp32 partials, None) across ranks."""
 
     m = layer.moe
+    if getattr(m.experts, "kernel", "qmm") in ("gguf", "sm70_dense"):
+        buf = b.moe
+        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
+        moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
+        execute = m.experts.forward
+        if b.prefill:
+            execute = getattr(m.experts, "forward_prefill", execute)
+        execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+        if w.comm is None:
+            return 2, buf.y[:R], buf.wts[:R]
+        glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
+        return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
     if getattr(m.experts, "kernel", "qmm") == "expert_parallel":
         buf = b.moe
         moe_mod.router(b.mixed[:R], m.router, buf.logits[:R])
@@ -496,12 +573,23 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
     """Gather each rank's top CAND values, global ids as int32 bits and log-sum-exp into b.cand_all [world, R, 2 CAND + 1] inside the step graph, avoiding a sampling collective."""
 
     lf = logits.float()
-    vals, idx = torch.topk(lf, CAND, dim=-1, sorted=False)
-    ids = (id_map[idx] if id_map is not None else idx + offset).to(torch.int32)
+    kept = min(CAND, lf.shape[-1])
     c = b.cand[:R]
-    c[:, :CAND] = vals
-    c[:, CAND:2 * CAND] = ids.view(torch.float32)
-    c[:, 2 * CAND:] = torch.logsumexp(lf, dim=-1, keepdim=True)
+    canonical = getattr(w, "meta", {}).get("execution_provider") == "sm70"
+    spans = ((row, row + 1) for row in range(R)) if canonical else ((0, R),)
+    for row, end in spans:
+        # CUDA reductions change their tree with the number of output rows.
+        # A compact aligned row also preserves the serial tree for pruned
+        # heads whose odd width makes later source rows unaligned.
+        scores = lf[row:end].clone() if canonical else lf
+        vals, idx = torch.topk(scores, kept, dim=-1, sorted=False)
+        ids = (id_map[idx] if id_map is not None else idx + offset).to(torch.int32)
+        c[row:end, :kept] = vals
+        c[row:end, CAND:CAND + kept] = ids.view(torch.float32)
+        if kept < CAND:
+            c[row:end, kept:CAND] = -float("inf")
+            c[row:end, CAND + kept:2 * CAND].view(torch.int32).fill_(-1)
+        c[row:end, 2 * CAND:] = torch.logsumexp(scores, dim=-1, keepdim=True)
     w.comm.all_gather(c, b.cand_all[:b.world * R * (2 * CAND + 1)])
 
 
@@ -580,22 +668,41 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     ``check=False``: the codec status stays pending for the caller's check (``_kv_check`` or ``KVWords``) before any
     of the frame's rows are used."""
 
-    _kv_begin(segs)
-    c = w.cfg
     R = segs[-1][2]
-    _embed(w, b.ids[:R], c.streams, b.h[:R])
-    if b.prefill:
-        image_rows.embed(segs, b, c.streams)
-    if features is not None:
-        target, source = features
-        b.h.index_copy_(0, target, source.to(b.h.dtype).repeat(1, c.streams))
-    pending = None
-    for layer in w.layers:
-        pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
-    result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
-    if check:
-        _kv_check(segs, comm=w.comm)
-    return result
+    runtime = getattr(w, "dspark", None)
+    graph_taps = runtime is not None and getattr(b, "dspark_graph", False)
+    capture = (runtime.begin_graph(b, R) if graph_taps else runtime.begin(segs, b)) if runtime is not None else None
+    try:
+        _kv_begin(segs)
+        c = w.cfg
+        _embed(w, b.ids[:R], c.streams, b.h[:R])
+        if b.prefill:
+            image_rows.embed(segs, b, c.streams)
+        if features is not None:
+            target, source = features
+            b.h.index_copy_(0, target, source.to(b.h.dtype).repeat(1, c.streams))
+        pending = None
+        for layer in w.layers:
+            if capture is not None:
+                capture.before_layer(layer.index, b.h[:R], pending)
+            pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
+        result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
+        if check:
+            _kv_check(segs, comm=w.comm)
+        if runtime is not None:
+            if graph_taps:
+                runtime.finish_graph_capture(capture, segs, b)
+            else:
+                runtime.finish(capture, segs)
+        return result
+    except BaseException as primary:
+        if runtime is not None:
+            try:
+                runtime.abort(capture, segs)
+            except BaseException as cleanup:
+                from tensorfold.cleanup import raise_failures
+                raise_failures(primary, [cleanup])
+        raise
 
 
 def _kv_begin(segs: Sequence[Seg]) -> None:
@@ -606,12 +713,14 @@ def _kv_begin(segs: Sequence[Seg]) -> None:
             st.kv_begin()
 
 
-def _kv_check(segs: Sequence[Seg], *, comm=None) -> None:
+def _kv_check(segs: Sequence[Seg], *, comm=None, workspace=None) -> None:
     """Latch every numeric failure before exposing any participant's frame."""
 
     states = [st for st, _, _ in segs if st.kv_status is not None]
     if not states or (states[0].kv_status.is_cuda and torch.cuda.is_current_stream_capturing()):
         return
+    if workspace is not None:
+        return workspace.check(states, comm=comm)
     first = None
     for st in states:
         try:
@@ -620,23 +729,23 @@ def _kv_check(segs: Sequence[Seg], *, comm=None) -> None:
             if first is None:
                 first = error
     if comm is not None:
-        if len(states) != 1:
+        if len(states) != 1 and any(getattr(st, "execution_dtype", torch.bfloat16) != torch.float16 for st in states):
             raise ValueError("tensor-parallel RotorQuant validation requires one sequence")
-        st = states[0]
-        peers = st._kv_peer_status
-        if peers is None or peers.shape != (comm.world, 2):
-            raise ValueError("RotorQuant peer validation buffer does not match the tensor-parallel world")
-        # Every rank joins even after a local numeric failure. No rank throws
-        # before its peers observe the failure and stop the same frame.
-        comm.all_gather(st.kv_status, peers)
-        for rank, (bits, layer) in enumerate(peers.cpu().tolist()):
-            if bits:
-                if first is None:
-                    first = KVNumericError(f"K={st.kv_key_dtype}, V={st.kv_value_dtype} numeric validation failed on rank {rank}: "
-                                           f"bits={bits}, layer={'MTP' if layer == -1 else layer}, pos={st.pos}; "
-                                           "this sequence requires reset")
-                st._kv_error = first
-                break
+        # TP half requests share the scheduler's rank-identical segment order.
+        # Complete every participant's collective before raising any frame error.
+        for st in states:
+            peers = st._kv_peer_status
+            if peers is None or peers.shape != (comm.world, 2):
+                raise ValueError("KV peer validation buffer does not match the tensor-parallel world")
+            comm.all_gather(st.kv_status, peers)
+            for rank, (bits, layer) in enumerate(peers.cpu().tolist()):
+                if bits:
+                    if first is None:
+                        first = KVNumericError(f"K={st.kv_key_dtype}, V={st.kv_value_dtype} numeric validation failed on rank {rank}: "
+                                               f"bits={bits}, layer={'MTP' if layer == -1 else layer}, pos={st.pos}; "
+                                               "this sequence requires reset")
+                    st._kv_error = first
+                    break
     if first is not None:
         raise first
 
@@ -685,7 +794,11 @@ class KVWords:
         if self.states:
             if not self.queued:
                 self.queue()
-            torch.cuda.current_stream(self.states[0].kv_status.device).synchronize()
+            # TP may already have completed its collective status check. Its
+            # validation clears pending; another stream wait has no words to
+            # settle. Keep check/after ordering and every latched error intact.
+            if any(st._kv_pending and st._kv_error is None for st in self.states):
+                torch.cuda.current_stream(self.states[0].kv_status.device).synchronize()
         self.check()
 
 
@@ -757,6 +870,10 @@ def _shift_windows(OLD, NEW, keep, OLD_L, NEW_L, NEW_ROW, C: tl.constexpr, T: tl
 def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int) -> None:
     """old [L, T, C] (in place), new [L, R, W >= C] (the first C columns of each row are the window's)."""
 
+    if old.dtype == torch.float16:
+        from tensorfold.cuda.sm70.family_ops import shift_windows as half_shift
+
+        return half_shift(old, new, keep, channels)
     layers, taps, _ = old.shape
     block = 256
     _shift_windows[(layers, triton.cdiv(channels, block))](
@@ -769,6 +886,8 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
     """Keep the first ``keep`` of R rows ``st`` ran from row ``at``; ``states=False``: gdn_multi committed them."""
 
     st.kv_check()
+    if b.h.dtype == torch.float16:
+        states = True  # FP16 recurrence owns per-segment state, rather than pending pointer-table folds.
     c = w.cfg
     if not 1 <= keep <= R or (b.prefill and keep != R):
         raise ValueError("keep must be in 1..R, and all of a prompt chunk")
@@ -787,6 +906,8 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
         tail = st.ple_tail
         shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1])
     st.set_pos(st.pos + keep)
+    if getattr(w, "dspark", None) is not None:
+        w.dspark.commit(st, keep)
 
 
 def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> dict:
@@ -800,4 +921,5 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> d
         shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1])
     return {"pos": st.pos + cut.row, "rec": cut.rec, "conv": cut.conv, "ple_tail": tail,
             "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len,
-            **st.kv_snapshot_metadata()}
+            **st.kv_snapshot_metadata(),
+            **(w.dspark.snapshot(st, st.pos + cut.row) if getattr(w, "dspark", None) is not None else {})}

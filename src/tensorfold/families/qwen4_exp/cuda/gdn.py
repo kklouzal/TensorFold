@@ -31,9 +31,9 @@ def _ext():
 class GDNScratch:
     """A sequence's replay inputs for its last window of up to ``rows`` rows."""
 
-    def __init__(self, rows: int, device, nk: int = NK, nv: int = NV) -> None:
+    def __init__(self, rows: int, device, nk: int = NK, nv: int = NV, *, dtype=torch.bfloat16) -> None:
         self.k = torch.empty((rows, nk, DK), dtype=torch.float32, device=device)
-        self.v = torch.empty((rows, nv, DV), dtype=torch.bfloat16, device=device)
+        self.v = torch.empty((rows, nv, DV), dtype=dtype, device=device)
         self.g = torch.empty((rows, nv), dtype=torch.float32, device=device)
         self.b = torch.empty((rows, nv), dtype=torch.float32, device=device)
 
@@ -43,9 +43,25 @@ def chain(p: torch.Tensor, conv_state: torch.Tensor, conv_w: torch.Tensor, state
           scratch: GDNScratch, state_out: torch.Tensor, out: torch.Tensor, xs: torch.Tensor) -> None:
     """``out`` [rows, NV*DV] bf16 and ``xs`` (its 32-group sums) may be row views of a larger buffer."""
 
+    if p.dtype == torch.float16:
+        if p.is_cuda:
+            from tensorfold.cuda.sm70.gdn_native import chain as gdn_chain
+        else:
+            from tensorfold.cuda.sm70.family_ops import gdn_chain
+
+        return gdn_chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, eps, rows,
+                         scratch, state_out, out, xs)
+
     _ext().chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, float(eps), int(rows), out, xs,
                  state_out, scratch.k, scratch.v, scratch.g, scratch.b)
 
 
 def replay(state_in: torch.Tensor, scratch: GDNScratch, rows: int, state_out: torch.Tensor) -> None:
+    if scratch.v.dtype == torch.float16:
+        if state_in.is_cuda:
+            from tensorfold.cuda.sm70.gdn_native import replay as gdn_replay
+        else:
+            from tensorfold.cuda.sm70.family_ops import gdn_replay
+
+        return gdn_replay(state_in, scratch, rows, state_out)
     _ext().replay(state_in, scratch.k, scratch.v, scratch.g, scratch.b, int(rows), state_out)

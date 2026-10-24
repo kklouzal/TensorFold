@@ -33,13 +33,13 @@ def participants(stops):
     return outcomes, calls
 
 
-@pytest.mark.parametrize("stops", [[(0,)], [(3, 1, 3), (1, 3)], [(0, 2)] * 4])
+@pytest.mark.parametrize("stops", [[(0,)], [(3, 1, 3), (1, 3)], [(0, 2)] * 4, [(0, 2)] * 8])
 def test_exact_membership_ignores_order_and_duplicate_declarations(stops):
     outcomes, calls = participants(stops)
     assert outcomes == [None] * len(stops) and calls == [2] * len(stops)
 
 
-@pytest.mark.parametrize("stops", [[(1,), (1, 2)], [(1, 2), (1, 3)], [(0,)] * 3 + [(1,)]])
+@pytest.mark.parametrize("stops", [[(1,), (1, 2)], [(1, 2), (1, 3)], [(0,)] * 3 + [(1,)], [(0,)] * 7 + [(1,)]])
 def test_every_participant_refuses_different_effective_stop_sets(stops):
     outcomes, _ = participants(stops)
     assert all(isinstance(error, RuntimeError) and "different effective EOS" in str(error) for error in outcomes)

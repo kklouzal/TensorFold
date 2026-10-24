@@ -175,6 +175,11 @@ def resolve(name: str, *, download: bool = True, cache_dir: Any = None,
     """A model directory for ``name``: the directory itself, or a repo id's snapshot (downloaded if needed)."""
 
     path = Path(str(name)).expanduser()
+    if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
+                                           and any(path.glob("*.gguf"))):
+        from tensorfold.families.qwen4_exp.gguf_assets import prepare
+
+        return prepare(path)
     if path.is_dir():
         return path
     if not is_repo_id(str(name)):

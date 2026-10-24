@@ -1,4 +1,4 @@
-"""The Flash Next CUDA engine: MTP chains verified exactly on one GPU or two ranks in lockstep."""
+"""The Flash Next CUDA engine: shared model execution with lockstep tensor-parallel peers."""
 
 from __future__ import annotations
 
@@ -32,6 +32,14 @@ def vision_workspace() -> int:
     return int(value) * 2**20
 
 
+def _sm70_prefill_gdn_bytes(text: dict, world: int, rows: int) -> int:
+    """One prompt buffer's FP32 keys/gates and FP16 values, shared across GDN layers."""
+
+    nk, nv = int(text["linear_num_key_heads"]) // world, int(text["linear_num_value_heads"]) // world
+    dk, dv = int(text["linear_key_head_dim"]), int(text["linear_value_head_dim"])
+    return rows * (nk * dk * 4 + nv * dv * 2 + nv * 8)
+
+
 def _expert_authority(cache) -> tuple[str, dict | None]:
     """Publish the completed loader's registration result, including auto refusals."""
     policy = cache.pin_policy
@@ -49,9 +57,9 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 
 
 class FlashNextEngine:
-    """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (rank 1), as ``tensorfold.cuda.server`` expects."""
+    """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None) -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -62,7 +70,7 @@ class FlashNextEngine:
         self.expert_session = expert_session
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -75,19 +83,43 @@ class FlashNextEngine:
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
                  kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off",
-                 eos_token_ids=None, chat_template_file=None, chat_template_name=None) -> None:
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 mtp_model_dir: Path | None = None, dspark_model_dir: Path | None = None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
 
-        check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
+        # Reject malformed counts without reading checkpoint metadata.
+        if kv_full_windows is not None and (type(kv_full_windows) is not int or kv_full_windows < 1):
+            check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
         self.kv_full_windows = kv_full_windows
         from .. import rope_parameters
         from ..kv_formats import get_pair
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
-        if tp not in (1, 2) or rank not in range(tp):
-            raise ValueError(f"rank {rank} of {tp}: Flash Next runs on one GPU or two")
-        if streams > 1 and tp > 1:
+        from ..gguf import resolve_gguf
+        gguf = resolve_gguf(model_dir) is not None
+        check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp,
+                              resident_gguf=gguf)
+        resident_windows = kv_full_windows if gguf and vram_experts is None else None
+        if mtp_model_dir is not None and not gguf:
+            raise ValueError("an external Flash Next MTP checkpoint is supported by the GGUF SM70 loader only")
+        if dspark_model_dir is not None and (mtp_model_dir is not None or not gguf):
+            raise ValueError("DSpark requires the GGUF SM70 target and a separate DSpark drafter selection")
+        self.mtp_model_dir = Path(mtp_model_dir) if mtp_model_dir is not None else None
+        self.dspark_model_dir = Path(dspark_model_dir) if dspark_model_dir is not None else None
+        self._dspark_plan = None
+        supported_tp = (1, 2, 4, 8) if gguf else (1, 2)
+        if type(tp) is not int or tp not in supported_tp or type(rank) is not int or rank not in range(tp):
+            raise ValueError(f"rank {rank} of {tp}: Flash Next supports tensor-parallel sizes {supported_tp} "
+                             f"for {'GGUF SM70' if gguf else 'this checkpoint'}")
+        if gguf and any(side.name not in ("fp16", "int8") for side in (self.kv_pair.key, self.kv_pair.value)):
+            raise ValueError("the GGUF SM70 execution path requires fp16 or int8 on each KV cache side")
+        if not gguf and any(side.name == "fp16" for side in (self.kv_pair.key, self.kv_pair.value)):
+            raise ValueError("fp16 KV caches require the GGUF SM70 execution provider")
+        if gguf and (vram_experts is not None or expert_session is not None):
+            raise ValueError("GGUF SM70 currently retains packed experts on each tensor-parallel device; "
+                             "--vram-experts and separate expert ranks are not supported by this loader")
+        if streams > 1 and tp > 1 and not gguf:
             raise ValueError("--parallel decodes several Flash Next requests together on one GPU; with --tp 2 it "
                              "serves one request at a time for now, so drop --parallel")
         if not 0 <= int(depth) <= MAX_DEPTH:
@@ -98,8 +130,8 @@ class FlashNextEngine:
             raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
         if vram_experts_pin not in ("off", "auto", "on") or vram_experts_pin != "off" and vram_experts is None:
             raise ValueError("expert pinning requires a RAM expert budget and off, auto or on")
-        if tp == 2 and not master:
-            raise ValueError("two ranks need rank 0's address (master)")
+        if tp > 1 and not master:
+            raise ValueError("tensor-parallel ranks need rank 0's address (master)")
         if vram_experts is not None:
             from ..ram_experts import check
 
@@ -126,23 +158,64 @@ class FlashNextEngine:
                                               indexed_stream_geometry, indexed_weights, multi_graph_request)
         chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
         text = config(model_dir)
-        ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if int(depth) > 0 else None
+        if gguf:
+            for field in ("num_attention_heads", "linear_num_key_heads", "linear_num_value_heads",
+                          "moe_intermediate_size", "shared_expert_intermediate_size"):
+                if int(text[field]) % tp:
+                    raise ValueError(f"GGUF {field} must divide evenly across {tp} tensor-parallel ranks")
+            kv_heads = int(text["num_key_value_heads"])
+            if kv_heads <= 0 or (kv_heads % tp if kv_heads >= tp else tp % kv_heads):
+                raise ValueError("GGUF KV heads must shard evenly or replicate in complete rank groups")
+        dspark_plan = None
+        if self.dspark_model_dir is not None and int(depth) > 0:
+            from .dspark_admission import inspect as inspect_dspark
+
+            if vision or expert_session is not None or vram_experts is not None:
+                raise ValueError("DSpark with GGUF requires the ordinary text target and resident expert shards")
+            if not (draft_vocab is None or type(draft_vocab) is str and draft_vocab in ("default", "0")
+                    or type(draft_vocab) is int and draft_vocab == 0):
+                raise ValueError("DSpark shares the complete target vocabulary; a pruned MTP vocabulary does not apply")
+            dspark_plan = inspect_dspark(self.dspark_model_dir, text, tp=(rank, tp))
+            if int(depth) > dspark_plan.config.block:
+                raise ValueError(f"DSpark drafts at most {dspark_plan.config.block} tokens per block")
+            self._dspark_plan = dspark_plan
+            from .dspark_runtime import DSparkRuntime
+            if streams <= 1 or not getattr(DSparkRuntime, "target_capturable", False):
+                if graphs:
+                    print("[tensorfold] CUDA graphs off: DSpark target feature capture runs eagerly", flush=True)
+                graphs = False
+        stock_mtp = int(depth) > 0 and dspark_plan is None
+        ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if stock_mtp else None
         if ids is not None and ids.size < tp:
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
+        if gguf and ids is not None:
+            # Share this exact selection across admission, the settings digest
+            # and loading; a file changed after startup cannot change the head.
+            ids.flags.writeable = False
         torch.cuda.set_device(0)
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
+        self.execution_provider = "sm70" if gguf else "cuda"
+        if gguf:
+            from tensorfold.cuda.sm70.execution_policy import configure
+
+            self.sm70_profile = configure(text, tp=tp, torch=torch)
+            from tensorfold.cuda.sm70.attention_qualification import runtime_identity
+
+            self._sm70_attention_identity = runtime_identity(torch.device("cuda", torch.cuda.current_device()))
         self.streams, self.graphs_enabled = int(streams), bool(graphs)
         self.comm = None
         self.vision = None                   # the image tower (``QwenCudaVision``) with --vision
-        if tp == 2:
+        if tp > 1:
             from tensorfold.cuda.comm import open_comm
 
-            self.comm = open_comm(rank, 2, master, port)
+            self.comm = open_comm(rank, tp, master, port)
             self.comm.barrier()
-        gather = (lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else None
-        each, mtp = self.depth + 1, self.depth > 0
+        gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
+                  (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
+        each, mtp = self.depth + 1, stock_mtp
         head_dim = int(text.get("head_dim") or int(text["hidden_size"]) // int(text["num_attention_heads"]))
-        self.kv_pair.row_bytes(int(text["num_key_value_heads"]) // tp, head_dim)
+        self.kv_pair.row_bytes(max(1, int(text["num_key_value_heads"]) // tp) if gguf
+                               else int(text["num_key_value_heads"]) // tp, head_dim)
         kv_geometry = tuple((side.bits, side.group, side.scale_bytes)
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
@@ -180,13 +253,41 @@ class FlashNextEngine:
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
         graph_request = multi_graph_request() if streams > 1 and graphs else 0
+        self._graph_request = graph_request
         graph_bytes = (graph_request or 0) if vram_experts is None else 0
         geometry = ((lambda text: indexed_stream_geometry(text, streams, each, KEEP, mtp=mtp, points=POINTS,
                                                           kv_pair=kv_geometry, graph_bytes=graph_bytes,
-                                                          prefill_rows=rows0, kv_status=kv_status))
+                                                          prefill_rows=rows0, kv_status=kv_status, world=tp,
+                                                          full_windows=resident_windows,
+                                                          workspace_bytes=2 * 2**30 if resident_windows is not None else 0))
                     if streams > 1 else
                     (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
                                                kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status)))
+        if gguf:
+            original_geometry = geometry
+            def geometry(text):
+                # Two global KV heads remain one local head per TP8 rank,
+                # replicated across groups of four. The original metadata is
+                # unchanged; this copy is solely the per-rank allocation plan.
+                local = dict(text)
+                local["num_key_value_heads"] = max(tp, int(text["num_key_value_heads"]))
+                base = original_geometry(local)
+                from tensorfold.cuda.sm70 import family_ops
+                from . import padded_linears
+
+                from tensorfold.cuda.capacity import Geometry
+                from tensorfold.cuda.sm70.attention_native import workspace_bytes
+
+                main_rows = streams * each if streams > 1 else max(8, each)
+                padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp)
+                native_attention = family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
+                if not native_attention and not padded_bytes:
+                    return base
+                scratch_rows = (1 + int(mtp)) * main_rows + min(rows0, 256)
+                heads = int(text["num_attention_heads"]) // tp
+                return Geometry(lambda capacity: base.bytes_at(capacity) + padded_bytes + (
+                    workspace_bytes(scratch_rows, heads, head_dim, capacity) if native_attention else 0),
+                    base.reserve, base.minimum_slots)
         if a4_workspace:
             from tensorfold.cuda.capacity import Geometry
 
@@ -301,6 +402,86 @@ class FlashNextEngine:
                 self._pin_future_bytes = host_staging + a4_scalar_host
                 return weights, host_staging
             numeric_capacity["weight_estimator"] = pin_forecast
+        prefill_plan = None
+        if gguf:
+            from .gguf_admission import capacity_options
+            from .gguf_prefill import plan as prefill_expert_plan
+
+            prefill_plan = prefill_expert_plan(text, rows=rows0, world=tp)
+            self._gguf_prefill_receipt = prefill_plan.receipt() if prefill_plan is not None else None
+
+            options = capacity_options(model_dir, rank=rank, world=tp, mtp=mtp,
+                                       **({"prefill_plan": prefill_plan} if prefill_plan is not None else {}),
+                                       **({"draft_ids": ids} if ids is not None else {}),
+                                       **({"mtp_model_dir": self.mtp_model_dir} if self.mtp_model_dir is not None else {}))
+            # The half prompt chain owns full-piece replay inputs, independent
+            # of each sequence's small decode scratch. They remain live beside
+            # the serving cache and the loader's shared GGUF workspaces.
+            sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
+            options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
+            status_device = status_host = 0
+            if tp > 1 and streams > 1:
+                from .kv_status import workspace_bytes
+
+                status_device, status_host = workspace_bytes(streams, tp)
+                options["device_workspace_bytes"] += status_device
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + status_host
+            for key in ("host_resident", "host_extra_staging", "host_workspace_bytes"):
+                if key in options:
+                    host_capacity[key] = options.pop(key)
+            numeric_capacity.update(options)
+        if dspark_plan is not None:
+            from tensorfold.cuda.capacity import Geometry
+
+            main_rows = streams * each if streams > 1 else max(8, each)
+            dspark_cache_copies = (min(streams, resident_windows) if resident_windows is not None else 1) if streams > 1 else 2
+            if streams > 1:
+                from .multi import FIRST as dspark_first
+            else:
+                dspark_first = 0
+            def dspark_slots(total):
+                return total * dspark_cache_copies + max(0, streams - dspark_cache_copies) * min(dspark_first, total)
+            # Match indexed target geometry: selected full windows plus other
+            # slots' initial floors, or two full caches for a serial twin.
+            dspark_context_limit = dspark_plan.config.context - each
+            if max_len is None:
+                max_len = min(int(text.get("max_position_embeddings", dspark_context_limit)), dspark_context_limit)
+            elif max_len > dspark_context_limit:
+                raise ValueError(f"DSpark prompt/reply context must not exceed {dspark_context_limit} tokens")
+            from .dspark_proposal_graphs import _ENABLED as proposal_graphs_enabled, graph_host_bytes
+
+            dspark_graph_host = 0
+            if graphs and streams > 1 and proposal_graphs_enabled:
+                # Bound per-slot/bucket pinned packets before ownership. Device
+                # buffers and graph pools still use the common measured budget.
+                dspark_graph_host = graph_host_bytes(streams, min(int(depth), dspark_plan.config.block),
+                                                    tp, int(max_len))
+                host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + dspark_graph_host
+            dspark_geometry = geometry
+            def geometry(text):
+                base = dspark_geometry(text)
+                return Geometry(lambda total: base.bytes_at(total) + dspark_plan.capacity_bytes(
+                    dspark_slots(total), main_rows=main_rows, prompt_rows=rows0, slots=streams),
+                    base.reserve, base.minimum_slots)
+            if resident_windows is not None:
+                dspark_full_geometry = geometry
+                # Original target geometry charges one target-layer replacement.
+                # Auxiliary DSpark resize replaces all its layers together.
+                from tensorfold.cuda.geometry import _kv_pair_bytes, layer_counts
+                target_layers = layer_counts(text)[1] + int(mtp)
+                pair_row, pair_dummies = _kv_pair_bytes(head_dim, 16, 32, 2, kv_geometry)
+                local_kv = max(1, int(text["num_key_value_heads"]) // tp)
+                index_dim = int(text.get("indexer_head_dim", 128))
+                ratio = int(text.get("indexer_compress_ratio", 4))
+                def geometry(text):
+                    base = dspark_full_geometry(text)
+                    def bytes_at(total):
+                        target_copy = (total * local_kv * pair_row + pair_dummies +
+                            (total + -(-total // ratio)) * index_dim * 2) if target_layers else 0
+                        return base.bytes_at(total) + max(0, total * dspark_plan.cache_row_bytes - target_copy)
+                    return Geometry(bytes_at, base.reserve, base.minimum_slots)
+            numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + dspark_plan.resident_bytes
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + dspark_plan.loading_host_bytes
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    weight_rule,
@@ -309,6 +490,35 @@ class FlashNextEngine:
                                    **automatic_capacity,
                                    **numeric_capacity,
                                    **rope_capacity, **host_capacity)
+        if resident_windows is not None:
+            self.capacity_plan["kv_full_windows"] = {
+                "requested": resident_windows, "reserved": min(streams, resident_windows),
+                "stream_slots": streams, "context_window": self.capacity_plan["context_window"],
+                "cache_slots_each": self.capacity_plan["cache_slots"],
+                "auxiliary": "dspark" if dspark_plan is not None else "mtp" if mtp else None,
+                "workspace_bytes": 2 * 2**30, "policy": "resident-full-windows-v2"}
+        if dspark_plan is not None:
+            self.capacity_plan["dspark"] = {
+                "identity": dspark_plan.identity, "source_identity": dspark_plan.source_identity,
+                "resident_bytes": dspark_plan.resident_bytes,
+                "loading_host_bytes": dspark_plan.loading_host_bytes,
+                "cache_row_bytes": dspark_plan.cache_row_bytes,
+                "shared_cache_slots": self.capacity_plan["cache_slots"],
+                "cache_copies": dspark_cache_copies,
+                "initial_other_slots": max(0, streams - dspark_cache_copies) * min(dspark_first, self.capacity_plan["cache_slots"]),
+                "workspace_and_cache_bytes": dspark_plan.capacity_bytes(
+                    dspark_slots(self.capacity_plan["cache_slots"]),
+                    main_rows=main_rows, prompt_rows=rows0, slots=streams),
+                "target_graphs_requested": bool(graphs),
+                "proposal_graphs": bool(graphs and streams > 1 and proposal_graphs_enabled),
+                "proposal_graph_host_bytes": dspark_graph_host,
+                "verification": "position-keyed-first-mismatch",
+            }
+        if gguf:
+            self.capacity_plan["sm70_prefill_gdn_bytes"] = sm70_prefill_bytes
+            self.capacity_plan["sm70_status_cohort"] = {"device_bytes": status_device, "host_bytes": status_host}
+            if prefill_plan is not None:
+                self.capacity_plan["gguf_prefill_experts"] = self._gguf_prefill_receipt
         if expert_session is not None:
             expert_session.pin_future_bytes = self._pin_future_bytes
             expert_session.admit_followers()
@@ -342,12 +552,15 @@ class FlashNextEngine:
             print(f"[tensorfold] {self.prefill_rows}-row idle prompt workspace {prompt_workspace / 2**30:.2f} GiB; "
                   f"planned peak {peak:.2f} GiB at the admitted window", flush=True)
         self.max_len = self.capacity_plan["cache_slots"]
-        if tp == 2:
+        if tp > 1:
             self._same_settings(torch, ids)
         reads = self._startup_reads                              # the n-gram tables' pages, read while the weights load
-        w = load(model_dir, mtp=self.depth > 0, tp=(rank, 2) if tp == 2 else None,
-                 draft_vocab=draft_vocab if self.depth > 0 else None, ple_on_ssd=ple_on_ssd,
+        w = load(model_dir, mtp=stock_mtp, tp=(rank, tp) if tp > 1 else None,
+                 draft_vocab=draft_vocab if stock_mtp else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
+                 **({"_prefill_plan": prefill_plan} if prefill_plan is not None else {}),
+                 **({"_draft_ids": ids} if gguf and ids is not None else {}),
+                 **({"mtp_model_dir": self.mtp_model_dir} if self.mtp_model_dir is not None else {}),
                  **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
                  **({"expert_loader": expert_session.load_bank} if expert_session is not None else
                     {"vram_experts": vram_experts} if vram_experts is not None else {}),
@@ -392,12 +605,23 @@ class FlashNextEngine:
         self._drain_startup_reads()                               # raises a table read's error
         waited = time.perf_counter() - waited
         w.comm = self.comm
+        if gguf:
+            from tensorfold.cuda.sm70.execution_policy import prepare_weights
+
+            prepare_weights(w)
         if self.comm is not None:
             from tensorfold.cuda.comm import agree_eos
 
             agree_eos(self.comm.all_gather, w.cfg.eos, world=tp, device=w.device)
             self.comm.ready("loading")               # a peer stuck loading is named, not waited on in NCCL
-        if self.depth > 0 and w.mtp is None:
+        if dspark_plan is not None:
+            from .dspark_runtime import prepare as prepare_dspark
+
+            runtime = prepare_dspark(w, dspark_plan, prefill_rows=self.prefill_rows)
+            if runtime.nbytes > dspark_plan.resident_bytes:
+                raise MemoryError("loaded DSpark weights exceed their admitted resident plan")
+            self.capacity_plan["dspark"]["loaded_bytes"] = runtime.nbytes
+        if self.depth > 0 and w.mtp is None and getattr(w, "dspark", None) is None:
             raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
                              "that has it, or --no-drafts for the serial reference (one token a round)")
         from tensorfold.cuda.markers import resume_points
@@ -430,14 +654,43 @@ class FlashNextEngine:
                                       graphs=graphs, graph_budget=graph_request,
                                       graph_header_room=max(0, self.capacity_plan["budget_bytes"]
                                                             - self.capacity_plan["serving_peak_bytes_estimate"]),
-                                      vision_workspace_bytes=workspace)
+                                      vision_workspace_bytes=workspace,
+                                      **({"full_windows": resident_windows} if resident_windows is not None else {}))
+            if resident_windows is not None:
+                capacities = [st.capacity for st in self.multi.free]
+                owned_cache_bytes = sum(st.owned_cache_bytes() for st in self.multi.free)
+                local_materialization = [rank, int(self.multi.full_resident), owned_cache_bytes,
+                                         int(torch.cuda.memory_allocated()), int(torch.cuda.memory_reserved()), *capacities]
+                rank_materializations = gather(local_materialization) if tp > 1 else [local_materialization]
+                if any(row[0] != peer or len(row) != 5 + streams or
+                       self.multi.full_resident and (row[1] != 1 or any(n != self.max_len for n in row[5:]))
+                       for peer, row in enumerate(rank_materializations)):
+                    raise RuntimeError("ranks did not materialize every promised full context window")
+                self.capacity_plan["kv_full_windows"].update(
+                    materialized=self.multi.full_resident, startup_capacities=capacities,
+                    allocated_cache_bytes=owned_cache_bytes,
+                    ranks=[{"rank": row[0], "materialized": bool(row[1]), "allocated_cache_bytes": row[2],
+                            "torch_allocated_bytes": row[3], "torch_reserved_bytes": row[4],
+                            "startup_capacities": row[5:]} for row in rank_materializations])
             if self.multi.graph_budget != graph_bytes:   # admission planned exactly what the decoder may capture
-                raise RuntimeError(f"the startup plan reserved {graph_bytes} bytes for captured rounds, but the "
-                                   f"decoder's budget is {self.multi.graph_budget} "
-                                   f"({self.multi.graph_record['reason'] or 'capturable'})")
+                if gguf and self.multi.graph_record["reason"] is not None and self.multi.graph_budget == 0:
+                    from .service_memory import release_uncaptured_graph_plan
+
+                    release_uncaptured_graph_plan(self.capacity_plan, graph_bytes)
+                    graph_bytes = 0
+                else:
+                    raise RuntimeError(f"the startup plan reserved {graph_bytes} bytes for captured rounds, but the "
+                                       f"decoder's budget is {self.multi.graph_budget} "
+                                       f"({self.multi.graph_record['reason'] or 'capturable'})")
             if automatic_experts:
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
-            self.scheduler = Scheduler(self.multi, max_streams=streams)
+            if self.comm is not None:
+                from .tp_scheduler import TensorParallelDecoder
+
+                self.tp_decoder = TensorParallelDecoder(self.multi, self)
+                self.scheduler = Scheduler(self.tp_decoder, max_streams=streams) if rank == 0 else None
+            else:
+                self.scheduler = Scheduler(self.multi, max_streams=streams)
         else:
             self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
                             kv_pair=self.kv_pair, prefill_rows=self.prefill_rows)
@@ -496,11 +749,22 @@ class FlashNextEngine:
         started = time.perf_counter()
         if self.concurrent:
             self.multi.warm()                            # and captures its rounds' graphs
+            if (graph_bytes and not self.multi.graph_budget and self.multi.graphs is None
+                    and self.multi._failed_graphs is None):
+                from .service_memory import release_uncaptured_graph_plan
+
+                release_uncaptured_graph_plan(self.capacity_plan, graph_bytes)
+                graph_bytes = 0
+            floor_extra = getattr(self.multi, "graph_floor_extra_bytes", 0)
             if graph_request is None:
                 from .service_memory import reserve_graph_plan
 
                 graph_bytes = self.multi.graph_budget
-                reserve_graph_plan(self.capacity_plan, graph_bytes)
+                reserve_graph_plan(self.capacity_plan, graph_bytes + floor_extra)
+            elif floor_extra:
+                from .service_memory import reserve_graph_plan
+
+                reserve_graph_plan(self.capacity_plan, floor_extra)
             if self.multi.graph_budget != graph_bytes or self.capacity_plan["total_bytes_estimate"] > self.capacity_plan["budget_bytes"]:
                 raise RuntimeError("resolved captured-round budget differs from its admitted service plan")
             self.capacity_plan["multi_graphs"] = {"planned_bytes": graph_bytes, **self.multi.graph_record}
@@ -520,6 +784,8 @@ class FlashNextEngine:
             self.serial = None                            # the serial requests' engine, made on first use
         rule = (f"1 to {self.depth} MTP drafts a round, a chain stops before a later draft under "
                 f"{self.confidence:.0%}" if self.depth else "no drafts: the serial reference, one token a round")
+        if dspark_plan is not None:
+            rule = f"1 to {self.depth} DSpark proposals a round, learned confidence threshold {self.confidence:.0%}"
         graphs_note = ""
         if self.concurrent:
             record = self.multi.graph_record
@@ -533,6 +799,9 @@ class FlashNextEngine:
                  f"{self.multi.window_bytes / 2**30:.2f} GiB for one at the full window), {graphs_note}"
                  if self.concurrent else
                  f"{self.context_window}-token prompt/reply window; {self.max_len}-token cache")
+        if resident_windows is not None and self.concurrent:
+            where = (f"{min(streams, resident_windows)} full {self.context_window}-token prompt/reply windows "
+                     f"reserved across {streams} streams; {graphs_note}")
         if ple_on_ssd:
             how = "read from SSD at each lookup"
         elif tables_read:                             # read during the load: the wait after it, then any lock
@@ -540,9 +809,9 @@ class FlashNextEngine:
                 f", locked in memory in {read_s:.1f}s" if locked else "")
         else:
             how = f"{'locked in memory' if locked else 'read'} in {read_s:.1f}s"
+        quantized = " (quantized cache changes output)" if min(self.kv_pair.key.bits, self.kv_pair.value.bits) < 16 else ""
         kv = ("" if self.kv_pair.key_dtype == self.kv_pair.value_dtype == "bf16" else
-              f"; KV cache K={self.kv_pair.key_dtype}, V={self.kv_pair.value_dtype} "
-              "(quantized cache changes output)")
+              f"; KV cache K={self.kv_pair.key_dtype}, V={self.kv_pair.value_dtype}{quantized}")
         print(f"[tensorfold] Flash Next on CUDA: {rule}; {where}{kv}; n-gram tables {how}; {captured} "
               f"decode graphs captured; idle prompt pieces {self.prefill_rows} rows; "
               f"prompt kernels warmed in {warm_s:.1f}s", flush=True)
@@ -604,8 +873,14 @@ class FlashNextEngine:
 
     def _send_shutdown(self) -> None:
         """Rank0's existing stop frame, only while admission/callers are quiescent."""
-        if self.tp == 2 and self.rank == 0 and (not self._shutdown_sent):
-            self.comm.store.set(self._key(self.served), json.dumps({'stop': True}))
+        if self.tp > 1 and self.rank == 0 and (not self._shutdown_sent):
+            if getattr(self, "tp_decoder", None) is not None:
+                self.tp_decoder.shutdown()
+                self._shutdown_sent = True
+                return
+            text = json.dumps({'stop': True})
+            for peer in range(1, self.tp):
+                self.comm.store.set(self._key(self.served, peer), text)
             self._shutdown_sent = True
 
     def _configure_auto_experts(self, torch, streams: int, *, vision_workspace_bytes: int = 0) -> None:
@@ -736,35 +1011,72 @@ class FlashNextEngine:
         return self.kv_pair.key_dtype
 
     def _same_settings(self, torch, ids) -> None:
-        """Both ranks must decode with the same rule, context, draft vocabulary and KV cache, or they would fall out of step: refuse to start otherwise."""
+        """Every rank agrees on execution, sampling and cache identities before payload loading."""
 
         import hashlib
+        import os
         import struct
 
-        total = int(ids.sum()) if ids is not None else -1
+        draft_digest = (int.from_bytes(hashlib.sha256(ids.tobytes()).digest()[:8], "big") & (2**63 - 1)
+                        if ids is not None else -1)
         rope_digest = int.from_bytes(hashlib.sha256(json.dumps(self.rope.metadata(), sort_keys=True).encode()).digest()[:8],
                                      "big") & (2**63 - 1)
-        policy_digest = int.from_bytes(hashlib.sha256(b"stored-basis-native64-v1").digest()[:8], "big") & (2**63 - 1)
+        draft_path = getattr(self, "mtp_model_dir", None)
+        native_policy = None
+        expert_policy = proposal_policy = context_policy = attention_policy = prefix_policy = None
+        if getattr(self, "execution_provider", "cuda") == "sm70":
+            from tensorfold.cuda.sm70 import family_ops, routing_native
+            from . import padded_linears
+            from .gguf_weights import GGUFExperts, GGUFConcat
+            from .dspark_proposal_graphs import _ENABLED as proposal_enabled
+            from .dspark_context_graphs import _ENABLED as context_enabled
+
+            expert_policy = [GGUFExperts.implementation, GGUFExperts.packed_rows, GGUFConcat.implementation]
+            proposal_policy = bool(proposal_enabled)
+            context_policy = bool(context_enabled)
+            attention_policy = getattr(self, "_sm70_attention_identity", None)
+            from .prefix_policy import identity as prefix_identity
+
+            prefix_policy = prefix_identity(getattr(self, "sm70_profile", None))
+
+            native_policy = [family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION, padded_linears._ENABLED,
+                             routing_native._NATIVE_LOGITS]
+        policy = ["stored-basis-native64-v1", getattr(self, "execution_provider", "cuda"),
+                  str(draft_path.resolve()) if draft_path is not None else None,
+                  self.streams > 1 and os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1",
+                  getattr(self, "_graph_request", None), native_policy,
+                  getattr(self, "_gguf_prefill_receipt", None),
+                  getattr(getattr(self, "_dspark_plan", None), "identity", None),
+                  expert_policy, proposal_policy, context_policy, attention_policy,
+                  getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        policy_digest = int.from_bytes(hashlib.sha256(json.dumps(policy).encode()).digest()[:8], "big") & (2**63 - 1)
         confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
         mine = torch.tensor([self.depth, confidence_bits, self.max_len,
                              self.streams, int(self.graphs_enabled), self.prefill_rows,
-                             len(ids) if ids is not None else -1, total, self.kv_pair.handshake, policy_digest,
+                             len(ids) if ids is not None else -1, draft_digest, self.kv_pair.handshake, policy_digest,
                              rope_digest, int(prompt_precision.fp8())], dtype=torch.int64, device="cuda")
-        both = torch.empty((2 * mine.numel(),), dtype=torch.int64, device="cuda")
+        both = torch.empty((self.tp * mine.numel(),), dtype=torch.int64, device="cuda")
         self.comm.all_gather(mine, both)
-        both = both.view(2, -1).cpu()
-        prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
-        if not torch.equal(both[0], both[1]):
-            raise RuntimeError(f"the two ranks were started with different settings (drafts, confidence, context, "
-                               f"parallel streams, graphs, prompt rows, draft vocabulary, KV cache, RoPE): "
-                               f"rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}")
+        both = both.view(self.tp, -1).cpu()
+        for peer in range(1, self.tp):
+            prompt_precision.same_on_ranks(int(both[0, -1]), int(both[peer, -1]))
+            if not torch.equal(both[0], both[peer]):
+                raise RuntimeError("the tensor-parallel ranks were started with different settings "
+                                   "(drafts, confidence, context, parallel streams, graphs, prompt rows, "
+                                   "draft vocabulary, copy drafts, KV cache, execution provider, RoPE): "
+                                   f"rank 0 {both[0].tolist()}, rank {peer} {both[peer].tolist()}")
 
-    def _key(self, n: int) -> str:
-        return f"tensorfold/flashnext/request/{n}"
+    def _key(self, n: int, peer: int | None = None) -> str:
+        key = f"tensorfold/flashnext/request/{n}"
+        # One consumable frame per follower: deleting rank1's frame must not
+        # hide the request or shutdown from ranks2..7. Retain the two-rank key.
+        if getattr(self, "tp", 2) > 2:
+            return key + f"/rank/{getattr(self, 'rank', 0) if peer is None else peer}"
+        return key
 
     def shutdown(self) -> None:
-        """Rank 0: tell rank 1 to leave ``follow``."""
-        if self.tp == 2 and self.rank == 0:
+        """Rank 0: tell every peer to leave ``follow``."""
+        if self.tp > 1 and self.rank == 0:
             operation = threading.Lock()
             with operation:
                 primary = None
@@ -791,9 +1103,10 @@ class FlashNextEngine:
                 "sampling": None if sampling is None else [int(sampling.seed), float(sampling.temperature),
                                                            int(sampling.top_k), float(sampling.top_p),
                                                            float(sampling.min_p)],
-                "grammar": pack(constraint)}                 # rank 1 walks and masks the same rows
+                "grammar": pack(constraint)}                 # all peers walk and mask the same rows
         text = json.dumps(body)
-        self.comm.store.set(self._key(self.served), text)
+        for peer in range(1, getattr(self, "tp", 2)):
+            self.comm.store.set(self._key(self.served, peer), text)
         return self._unpack(text)
 
     def _receive(self) -> tuple | None:
@@ -807,7 +1120,7 @@ class FlashNextEngine:
             except DistNetworkError:
                 with self._lifecycle:
                     self._abort_comm = True
-                print('[tensorfold] rank 0 closed the connection; rank 1 stops', flush=True)
+                print(f'[tensorfold] rank 0 closed the connection; rank {getattr(self, "rank", 1)} stops', flush=True)
                 return None
             except Exception as error:
                 if not timed_out(error, [key], timedelta(hours=1)):
@@ -912,7 +1225,7 @@ class FlashNextEngine:
         self._remember(list(prompt[:end]), self.e.kept)
         torch.cuda.synchronize()
         stats: dict[str, Any] = {"prefill_s": round(time.perf_counter() - t0, 4), "cached": len(hit[0]) if hit else 0,
-                                 "drafts": True}
+                                 "drafts": self.depth > 0}
         if (on_tokens is not None and on_tokens([first])) or (stop_eos and first in self.eos) or max_tokens <= 1:
             return stats
         if self.depth > 0:
@@ -1042,6 +1355,13 @@ class FlashNextEngine:
 
     def _close_resources(self) -> None:
         """After request drain, keep owners intact until their device fence."""
+        seen_graphs = set()
+        for decoder in (getattr(self, "multi", None), getattr(self, "e", None), getattr(self, "serial", None)):
+            for name in ("graphs", "_failed_graphs"):
+                graphs = getattr(decoder, name, None)
+                if graphs is not None and id(graphs) not in seen_graphs:
+                    graphs.close()
+                    seen_graphs.add(id(graphs))
         comm = getattr(self, 'comm', None)
         if comm is not None:
             comm.close(abort=getattr(self, '_abort_comm', False))
@@ -1057,6 +1377,9 @@ class FlashNextEngine:
         multi = getattr(self, "multi", None)
         if multi is not None:
             multi.recover_failed_slots()
+        dspark = getattr(weights, "dspark", None)
+        if dspark is not None:
+            dspark.close()
         seen = set()
         for decoder in (getattr(self, 'multi', None), getattr(self, 'e', None), getattr(self, 'serial', None)):
             for name in ('buf', 'mbuf'):
@@ -1102,12 +1425,12 @@ class FlashNextEngine:
                                             **({"progress": progress} if progress is not None else {}))
                 hit = self._resume(prompt) if draft else None
                 points = None
-                if self.tp == 2:                     # rank 0 decodes exactly what it hands rank 1
+                if self.tp > 1:                      # every peer decodes the leader's exact request
                     prompt, max_tokens, sampling, draft, _, _, stop_eos, points = self._share(
                         prompt, max_tokens, sampling, draft, len(hit[0]) if hit else 0, constraint, stop_eos)
                     self.served += 1
                     emit = on_tokens
-                    on_tokens = lambda new: (emit(new), False)[1]       # noqa: E731  both ranks decode to the end
+                    on_tokens = lambda new: (emit(new), False)[1]       # noqa: E731  peers retain collective ordering
                 if not draft:
                     return self._serial(prompt, max_tokens, sampling, on_tokens, constraint, stop_eos, probabilities=probabilities)
                 return self._decode(prompt, max_tokens, sampling, on_tokens, hit, constraint, stop_eos,
@@ -1158,10 +1481,13 @@ class FlashNextEngine:
         return probe.label_logits, probe.logsumexp
 
     def follow(self) -> None:
-        """Rank 1: decode every request rank 0 serves, until rank 0 stops."""
+        """Peer rank: decode every request rank 0 serves, until rank 0 stops."""
         with self._lifecycle:
             if self._closing or self._closed:
                 raise RuntimeError('Flash Next engine is closing or closed; new requests are rejected')
+        if getattr(self, "tp_decoder", None) is not None:
+            self._follow_concurrent()
+            return
         while True:
             operation = threading.Lock()
             with operation:
@@ -1191,14 +1517,42 @@ class FlashNextEngine:
                     if draft and cached:
                         hit = next(((ids, snap) for ids, snap in self.cache if len(ids) == cached and prompt[:cached] == ids), None)
                         if hit is None:
-                            raise RuntimeError(f'rank 1 has no kept state for the {cached} tokens rank 0 resumes from')
+                            raise RuntimeError(f'rank {self.rank} has no kept state for the {cached} tokens rank 0 resumes from')
                     try:
                         if draft:
                             self._decode(prompt, max_tokens, sampling, None, hit, constraint, stop_eos, points=points)
                         else:
                             self._serial(prompt, max_tokens, sampling, None, constraint, stop_eos)
                     except ValueError as exc:
-                        print(f'[tensorfold] request {self.served} failed on both ranks: {exc}', flush=True)
+                        print(f'[tensorfold] request {self.served} failed on tensor-parallel rank {self.rank}: {exc}', flush=True)
+                except BaseException as error:
+                    primary = error
+                    raise
+                finally:
+                    self._retire_request(operation, primary)
+
+    def _follow_concurrent(self) -> None:
+        """Mirror rank zero's Scheduler operations under the existing receive lifetime lease."""
+        while True:
+            operation = threading.Lock()
+            with operation:
+                primary = None
+                try:
+                    with self._lifecycle:
+                        if self._closing:
+                            return
+                        self._begin_request(operation)
+                        self._receiving = operation
+                    try:
+                        body = self.tp_decoder.receive()
+                    finally:
+                        with self._lifecycle:
+                            if self._receiving is operation:
+                                self._receiving = False
+                            self._lifecycle.notify_all()
+                    if body is None:
+                        return
+                    self.tp_decoder.apply(body)
                 except BaseException as error:
                     primary = error
                     raise

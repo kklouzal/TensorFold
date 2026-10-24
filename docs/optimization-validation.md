@@ -18,6 +18,80 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Flash Next V100 live measurements, 2026-10-24
+
+The unchanged installed SM70 candidate 3 passed a repeated live-request matrix
+on eight V100s: three uncached trials at each of 128/1,024/2,048 prompt tokens,
+with 64-token replies and immediate repeats. Median prefill was 32.6–35.7
+tokens/s and decode 3.94–4.28 tokens/s under INT8 KV/MTP2/eager execution and
+the host's existing 200 W power limits (SM clocks reached 1,530 MHz). This is bounded functional and
+throughput evidence, without an optimization comparison or a full-window claim.
+[Exact image, workload, cache-hit counts, formulas and observed ranges](v100-flashnext-validation.md#repeated-live-requests-2026-10-24).
+One separate six-client batch produced 384 tokens in 62.48 s: 6.15 aggregate
+end-to-end tokens/s including prefill, with 1.51–1.57 tokens/s individual decode.
+All seven bounded live API cases passed, including mixed MTP/reference
+concurrency and cancellation. No runtime changes were made for these tests.
+
+Subsequent native optimization is a separate qualification campaign. Packed
+experts passed the initial full-model gate; combined candidate 5 failed its
+predeclared mean-KL limit. Exact-math candidate 7 passed the same 325-step gate
+with Torch prompt attention and native decode attention. Private
+candidate 12 measured 59.7–64.2 decode tokens/s on three quiet 512-token replies
+and passed 2,029 CPU tests, 228 family/routing and 209 GGUF GPU checks, a native
+four-rank cohort, all 12 baseline responses and all nine serial/drafted
+comparisons. Its decoder preserves serial router
+rounding after full-model tracing exposed a row-dependent expert-weight change.
+A separate cold/cached repeat differs at token 46. Candidate 13 subsequently
+passed the same 325-step numerical gate (mean KL 0.00008817, perplexity ratio
+0.9990703, all top-1 predictions unchanged) and eight-rank forced-history
+logit/state/candidate checks. Candidate 14 adds GPU greedy draft handoffs and
+prepared matrix buffers; its installed image passed 2,090 CPU tests, 332 GPU
+checks and four/eight-rank state/error checks. All nine sequential serial/drafted
+comparisons and 12 baseline responses passed. Its three quiet 512-token replies
+measured 62.1–69.3 decode tokens/s; all benchmark IDs match candidate 12, with
+per-request GPU handoff/readback/context-bucket checks passing. Cold 128-token
+prefill regressed to about 4.6 seconds. The small measurement set has no confidence
+interval, and further profiling is underway. The original installed candidate 3
+reproduces the known prompt-layout variation; its full cold and split-prompt
+logit vectors each match candidate 14 exactly. Broader prompt-chunk quality remains
+open. Default providers remain unchanged, and the requested
+100 single-request tokens/s remains unmet.
+[Exact checkpoint and numerical gates](v100-flashnext-validation.md#native-optimization-checkpoint).
+
+Candidate 15's exact router batches and fused GPU draft gather subsequently
+passed 2,118 selected/common CPU controls, 201 installed GPU controls,
+four/eight-rank state/packet gates, all 12 baseline responses and nine sequential
+serial/drafted pairs. Three quiet 512-token replies measured 69.46, 71.23 and
+74.15 decode tokens/s with the same model/TP8/six-slot/INT8/context237,598/
+depth3/confidence0/full-draft-head configuration. All four benchmark replies
+matched candidate 12's complete IDs/messages; actual native handoff and graph
+usage were verified. Cold 128-token prefill was about 3.56 seconds in this run.
+These are bounded workload/cache observations without confidence intervals;
+100+ tokens/s and final promotion remain pending.
+
+A later serving-factory audit corrected earlier draft-head labels: GGUF CLI
+serving forced the full 248,320-token draft head for candidate 12/14/15 HTTP
+measurements. Direct-engine studies/Nsight probes have their separately recorded
+head selections. The measured rates and response identities are unchanged.
+
+Candidate 16 subsequently passed 2,151 installed CPU and 235 installed GPU
+checks, the unchanged 325-step numerical gate, and eight-rank deep/120-row
+state/logit/proposal checks. It contains admitted adaptive reference-math
+prefill and the factory draft-vocabulary correction; the direct-engine gate
+observed the 79,591-token draft map. All nine sequential serial/drafted pairs
+and 12 baseline API responses subsequently passed. Quiet decode measured
+69.39–73.99 tokens/s and cold128 prefill about 2.13 seconds; all benchmark
+IDs/messages match candidate 15. Broader quality and promotion remain pending,
+as does a distinct mixed-prompt/cache-history correctness issue found
+in the layout study. The expanded 24-request paired affinity comparison found
+no verified gain and restored original masks. See the [candidate 16 scope and
+closeout inventory](v100-flashnext-validation.md#candidate-16-and-closeout-inventory).
+
+The additional nine-case/389-step teacher suite has since completed and failed
+the fixed KL/top-1 gates (0.0003104521 and 0.9897172), while perplexity ratio
+1.0000344 passed. This supersedes the broader-quality pending label above;
+operator isolation is underway and candidate 16 remains unpromoted.
+
 ## Gemma FP8 provider preparation, 2026-10-23
 
 The candidate prepares the existing native prompt and lane providers during
@@ -949,3 +1023,51 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+
+
+DSpark C19 target-graph execution improved three quiet single-client512-token
+requests from C18's26.86/28.10/27.23 to43.16/45.19/44.27decode tokens/s on the
+same8×V100/depth3/confidence0 settings. All benchmark choices and9+12live
+cases matched; actual target replay hits and DSpark counters were observed.
+This is experimental evidence, not a qualified backend promotion: the separate
+389-step numerical failure still requires expert and attention math repair.
+Proposal-body GPU capture has passed three bounded component cases; common
+graph-owner, TP and actual-checkpoint validation are pending. Retain both stock
+MTP and DSpark and compare their real accepted-token latency; see the
+[full validation record](v100-flashnext-validation.md).
+
+C20's full-block greedy DSpark proposal graph increased the same three
+512-token screens to58.12/60.74/59.93decode tokens/s, with unchanged acceptance
+and complete output IDs/messages, one readback per captured proposal, and9+12
+live cases passed. It keeps C19 target arithmetic, so the broader389-step
+numerical failure remains a promotion blocker. DSpark method selection and
+shared engine/State/graph ownership are now maintained; optimized defaults are
+still pending numerical qualification.
+
+
+C21 repaired-target quality passed the unchanged325/389teacher suites
+independently: KL0/PPL1/top1all and KL0.0000254874/PPL1.00004297/top1all.
+Actual native attention was observed at6k contexts. The remaining measured
+long-case variation is recorded explicitly; this is not universal byte identity.
+The optimized profile is now a normal engine selection through
+`TENSORFOLD_SM70_PROFILE`, with reference default, pinned TP8 geometry and
+65–8192native attention scope/original Torch fallback. Live/API/performance
+selection and the separate expert-parallel full-model comparison remain pending.
+
+C22 integrated serving repairs passed2679CPU/338GPU checks and actualTP8
+DSpark six-client R24 identity,9serial/draft pairs,12baselines, streaming,
+cancellation and prefix recovery. Its capped attention scratch changes
+allocation/validation only; target arithmetic remains the C21-qualified code.
+Full-context physical allocation and quiet method/depth performance are pending;
+see the [current validation](v100-flashnext-validation.md#c22-serving-and-capacity-closeout).
+
+C22 finite closeouts are complete through actual full-window MTP acceptance:
+three262144-token windows, all eight ranks materialized, full R12 concurrency/
+SSE/cancel/prefix and9+12live checks PASS. Best measured stockMTPdepth3
+single-client128-input/512-output decode52.86/53.29/58.93tokens/s; DSpark remains
+selectable (best depth3 in2/3/7screen). NativeR32/component+R24serving PASS;
+EPfull714quality FAIL/unselected; TP4graph-budget trial unqualified/closed.
+The plain shipping service is healthy on port8000: same607runtimehashes,
+all4benchmark outputs+3concurrent complete responses exact. Quiet128-input/
+512-output decode54.04/54.42/59.78tokens/s. All four closeouts complete;
+100single-request tokens/s remains unmet and optimization pauses as agreed.

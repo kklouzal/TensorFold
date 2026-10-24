@@ -200,9 +200,11 @@ suppressed.
 Session-title requests are also treated as background work.
 
 On CUDA, `--parallel auto` serves one request at a time. An explicit `--parallel N` above one shares rounds
-for Qwen3.8-27B on one or two ranks and for Flash Next and Qwen3.6 on one rank; GLM and Nemotron stay serialized.
+for Qwen3.8-27B on one or two ranks, Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8,
+and Qwen3.6 on one rank; GLM and Nemotron stay serialized. The GGUF provider uses the same scheduler
+and per-request cancellation. See the [V100 qualification](v100-flashnext-validation.md) for its tested scope.
 When a client disconnects, its CUDA request stops at the next round, and a request still waiting behind
-another in one-at-a-time serving does not start; two-rank Flash Next, Nemotron and GLM requests finish on
+another in one-at-a-time serving does not start; serialized two-rank Flash Next, Nemotron and GLM requests finish on
 both ranks. Under an explicit `--parallel N`, a request that has no tokens yet (queued, or its prompt prefilling) is
 checked every 15 s: a stream whose headers are sent gets an SSE comment line (`: keepalive`), which Messages and
 Responses streams pass on, so a client with an inactivity timeout keeps a long prefill; a queued request whose client
@@ -263,8 +265,9 @@ tools uses their grammar instead (below), which also holds the arguments.
 Supported model/backend configurations enforce `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
 or `{"type": "json_object"}`) and vLLM's `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar` (EBNF) and
 `structured_outputs` (`json`, `json_object`, `regex`, `choice` or `grammar`): on the Mac, and on CUDA with one or two
-GPUs, alone or under supported `--parallel N` modes. Flash Next on two CUDA ranks refuses structured output
-under `--parallel`; other engine/mode support follows its family contract. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
+GPUs, alone or under supported `--parallel N` modes. The modern Flash Next provider refuses `--parallel` on two CUDA ranks; other engine/mode support follows
+its family contract. GGUF/SM70 concurrent TP has separate [qualification](v100-flashnext-validation.md);
+this V100 foundation does not install the optional grammar extra. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
 installs torch, Macs included. Drafting stays on. The engine masks each target row to the tokens the grammar allows
 after that row's path and omits invalid verification paths. The sampling contract above applies to constrained
 replies, including its distinction between greedy identity and sampled distribution preservation. Two GPUs compile the same grammar and mask
@@ -343,7 +346,7 @@ it, type-specific keywords without a `type` or with several non-null types, `pat
 null (raw text could be either), a string parameter whose schema refers back to itself, a string parameter's `pattern`
 that can spell `</parameter>`, `enum`/`const` strings containing it, and tool or parameter names with whitespace, `<`
 or `>`. Strict tools are also refused beside `response_format` or the `guided_*` fields, on an engine without grammar
-support (or Flash Next on two GPUs under `--parallel`), and for a template whose call markup is not Qwen XML;
+support (or the modern Flash Next provider on two GPUs under `--parallel`), and for a template whose call markup is not Qwen XML;
 `strict: false` keeps the lenient path. Clients that validate ordinary tool arguments before execution can explicitly
 choose that path without changing their schemas. TensorFold never retries a strict request without enforcement or
 silently drops its constraints.
@@ -554,6 +557,7 @@ Times are seconds, sizes bytes.
 | `load.held_for_memory` | A request waits, first in line, for memory to admit it |
 | `load.http_connections_in_use` | Accepted HTTP connections |
 | `load.stream_tokens` | Tokens each live stream's cache holds |
+| `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable; resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes |
 | `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
@@ -704,3 +708,20 @@ including responses whose key label retired while they were in flight. Global
 request, token and timing counters keep their independent engine lifetimes.
 The active configuration bounds per-key series; historical key rotations do not
 retain an unbounded set of labels.
+
+
+Flash Next CUDA can select its proposal provider at launch with
+`--draft-method auto|mtp|dspark` and `--drafter`. DSpark currently uses the GGUF
+SM70 text provider. Requests retain the same sampling and `draft` controls;
+provider selection does not replace target verification. Stock MTP remains
+available. See the [Flash Next recipe](recipes/qwen3.8-flash-next.md) and
+[V100 validation limits](v100-flashnext-validation.md).
+
+Resident Flash Next GGUF concurrent CUDA serving can reserve equal complete
+windows using `--parallel N --kv-full-windows N` (N≥2). This includes selected
+MTP or DSpark auxiliary KV and serving workspace; the context limit applies to
+each lane. Without the flag, the existing shared growth policy remains.
+On the optimized SM70 profile, positive-temperature requests prefill cold
+because cached suffixes have not met output-identity checks; drafting remains
+enabled. Greedy requests retain prefix borrowing. Independent cold prompts
+retain separate prefill passes while decode windows still batch.

@@ -66,10 +66,11 @@ class Config:
     eos: tuple[int, ...]
     group_size: int
     bits: int
-    quant: str = "mlx"                 # "mlx" (affine 4-bit everywhere) or "modelopt" (NVFP4 routed experts)
+    quant: str = "mlx"                 # MLX affine, ModelOpt/NVFP4, EXL3 or original mixed GGUF storage.
     mrope_section: tuple[int, int, int] = (11, 11, 10)   # interleaved t/h/w rotary pairs
     nvfp4_group: int = 16              # the NVFP4 block size (the checkpoint's config_groups weights.group_size)
     rope: RopeParameters | None = None  # immutable startup policy; tiny synthetic fixtures default to native RoPE
+    execution_dtype: str = "bfloat16"   # the selected execution provider, independently of weight/cache storage
 
     @classmethod
     def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None, eos_token_ids=None) -> "Config":
@@ -82,7 +83,8 @@ class Config:
             raise ValueError(f"output_gate_type {gate!r}: the CUDA backend's DeltaNet kernels support 'sigmoid' only")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
         teos = t.get("eos_token_id")
-        eos = resolve_eos(model_dir, raw.get("eos_token_id", teos), vocab_size=int(t["vocab_size"]),
+        metadata_root = Path(model_dir).parent if Path(model_dir).suffix.lower() == ".gguf" else model_dir
+        eos = resolve_eos(metadata_root, raw.get("eos_token_id", teos), vocab_size=int(t["vocab_size"]),
                           override=eos_token_ids)
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
         method = str(quant.get("quant_method") or "mlx").lower()
@@ -114,6 +116,7 @@ class Config:
             quant=method, nvfp4_group=group,
             mrope_section=policy.mrope_section,
             rope=policy,
+            execution_dtype=str(raw.get("execution_dtype", "float16" if method == "gguf" else "bfloat16")),
         )
 
     @property
@@ -229,6 +232,8 @@ class Weights:
     draft_ids: torch.Tensor | None = None   # the subset's token ids (this rank's share), in draft-head row order
     x3: Any = None            # an EXL3 checkpoint's shared scratch (``exl3.Scratch``); None for the MLX checkpoint
 
+    dspark: Any = None       # explicit separate draft owner; never an MTPW
+
     @property
     def device(self) -> torch.device:
         return self.inv_freq.device
@@ -262,7 +267,7 @@ class Weights:
                 for tensor in x.device_tensors():
                     add(tensor)
 
-        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids):
+        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids, self.dspark):
             add(part)
         return sum(seen.values()) + (self.x3.nbytes() if self.x3 is not None else 0)
 

@@ -21,7 +21,7 @@ class Scratch:
         lin = sum(1 for layer in w.layers if layer.linear)
         self.q = torch.empty((rows, c.nk, DK), dtype=torch.float32, device=dev)
         self.k = torch.empty((2, lin, rows, c.nk, DK), dtype=torch.float32, device=dev)
-        self.v = torch.empty((2, lin, rows, c.nv, DV), dtype=torch.bfloat16, device=dev)
+        self.v = torch.empty((2, lin, rows, c.nv, DV), dtype=getattr(torch, getattr(c, "execution_dtype", "bfloat16")), device=dev)
         self.g = torch.empty((2, lin, rows, c.nv), dtype=torch.float32, device=dev)
         self.beta = torch.empty((2, lin, rows, c.nv), dtype=torch.float32, device=dev)
         self.lin, self.parity = lin, 0

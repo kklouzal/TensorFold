@@ -50,6 +50,23 @@ def tp_sample_rows(w: Weights, logits: torch.Tensor, positions: Sequence[int], s
     return sample_shards(logits, positions, sampling, plan=plan, with_prob=with_prob)
 
 
+def _validate_gathered_padding(values: np.ndarray, tokens: np.ndarray, plan: SamplingShard | None) -> None:
+    """Only an original shard owner can prove a packet's absent trailing IDs."""
+
+    if plan is None:
+        if (tokens < 0).any():
+            raise ValueError("graph-gathered token IDs must be nonnegative int32 without a shard owner")
+        return
+    if len(plan.widths) != tokens.shape[0]:
+        raise ValueError("graph-gathered shard owner differs from the packet's rank count")
+    for rank, size in enumerate(plan.widths):
+        kept = min(CAND, int(size))
+        if ((tokens[rank, :, :kept] < 0).any()
+                or (tokens[rank, :, kept:] != -1).any()
+                or not np.isneginf(values[rank, :, kept:]).all()):
+            raise ValueError("graph-gathered padding differs from the immutable vocabulary shard widths")
+
+
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
                     with_prob: bool = False, *, logits: torch.Tensor | None = None,
                     plan: SamplingShard | None = None):
@@ -88,8 +105,7 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
     g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
     values = g[:, :, :CAND].astype(np.float32)
     tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
-    if (tokens < 0).any():
-        raise ValueError("graph-gathered token IDs must be nonnegative int32")
+    _validate_gathered_padding(values, tokens, plan)
     valid_scores(values, require_finite=False)
     norms = g[:, :, 2 * CAND]
     if np.isnan(norms).any() or np.isposinf(norms).any():
@@ -179,8 +195,13 @@ class Engine:
         if graphs:
             from .graphs import Graphs
 
+            if getattr(w, "dspark", None) is not None and not w.dspark.capturable:
+                print("[tensorfold] CUDA graphs off: DSpark target feature capture runs eagerly", flush=True)
+            elif w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):
+                reason = w.meta.get("capture_reason", "the SM70 family provider has not prepared capture-safe state")
+                print(f"[tensorfold] CUDA graphs off: {reason}; decode runs eagerly", flush=True)
             # experts that read their plan on the host (NVFP4) can't be captured: decline graphs before a capture fails
-            if any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
+            elif any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
                 print("[tensorfold] CUDA graphs off: this MoE reads its plan's item list on the host, which a "
                       "capture rejects; decode runs eagerly (correct, slower)")
             else:
@@ -274,6 +295,13 @@ def draft(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], position
           sampling: Sampling | None, confidence: float = 0.0) -> list[int]:
     """Absorb kept rows and chain drafts, always retaining the first even below ``confidence``, then stopping before later drafts below it or after a low-confidence first draft."""
 
+    provider = getattr(e.w, "dspark", None)
+    if provider is not None:
+        if count <= 0:
+            return []
+        if not next_tokens:
+            raise ValueError("DSpark proposals require the pending target token")
+        return provider.draft(e, int(next_tokens[-1]), count, sampling, confidence)
     st = e.st
     logits = absorb(e, streams, next_tokens)
     drafts: list[int] = []
@@ -508,7 +536,7 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
             unabsorbed = None
     torch.cuda.synchronize()
     seconds = time.perf_counter() - start
-    if unabsorbed is not None:              # the MTP cache takes the last kept rows: it then covers the sequence
+    if unabsorbed is not None and w.mtp is not None:  # DSpark context commits with the target forward
         absorb(e, b.streams[:unabsorbed[0]], unabsorbed[1])
     committed = out[:st.pos - pos0]
     return DecodeResult(out[:count], seconds, rounds, drafted, accepted, keeps, committed, widths)

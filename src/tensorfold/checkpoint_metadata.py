@@ -72,6 +72,12 @@ def read_config(model_dir: str | Path) -> dict:
     """
     from tensorfold.checkpoint_quantization import effective_config
 
+    root = Path(model_dir)
+    if root.suffix.lower() == ".gguf" or (root.is_dir() and not (root / "config.json").exists()
+                                           and any(root.glob("*.gguf"))):
+        from tensorfold.families.qwen4_exp.gguf import metadata_config
+
+        return metadata_config(root)
     raw = read_json(model_dir, "config.json", required=True)
     sources = [raw]
     text = raw.get("text_config")

@@ -74,6 +74,11 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    method = getattr(args, "draft_method", "auto")
+    if method not in ("auto", "mtp", "dspark"):
+        raise ValueError("--draft-method must be auto, mtp or dspark")
+    if method != "auto" and (backend != "cuda" or method not in getattr(family.package, "CUDA_DRAFT_METHODS", ())):
+        raise ValueError("--draft-method requires a CUDA model with the selected proposal method")
     draft_rows = getattr(args, "draft_rows", None)
     if draft_rows is not None:
         if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)
@@ -96,8 +101,13 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":
             raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
         from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
+        if type(windows) is not int or windows < 1:
+            check_kv_full_windows(windows, streams=1, vram_experts=None)
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        resident_gguf = config_dir is not None and resolve_gguf(config_dir) is not None
         check_kv_full_windows(windows, streams=_cuda_streams(getattr(args, "parallel", "auto")),
-                              vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1))
+                              vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1),
+                              resident_gguf=resident_gguf)
     if backend == "cuda":
         _cuda_topology(args, family)
     if backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe" and not getattr(args, "no_drafts", False):
@@ -185,6 +195,12 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     supported = getattr(family.package, "CUDA_KV_DTYPES", ("bf16",))
     if kv not in supported:
         raise ValueError(f"{family.title} on CUDA serves a {' or '.join(supported)} KV cache, not --kv-dtype {kv}")
+    if "fp16" in (kv, getattr(args, "kv_key_dtype", None), getattr(args, "kv_value_dtype", None)):
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
+                or resolve_gguf(config_dir or args.model) is None):
+            raise ValueError("--kv-dtype fp16 requires the Flash Next GGUF FP16 execution provider")
     for name in ("kv_key_dtype", "kv_value_dtype"):
         value = getattr(args, name, None)
         if value is None:
@@ -234,15 +250,19 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
     """Validate rank topology and the selected Flash Next execution envelope before weights are resolved."""
 
     tp, rank = getattr(args, "tp", 1), getattr(args, "rank", 0)
-    if type(tp) is not int or tp not in (1, 2, 4):
-        raise ValueError("--tp must be 1, 2 or 4")
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+    gguf = (getattr(family, "model_type", "") in ("qwen4_exp", "qwen3_8_flash_next")
+            and resolve_gguf(getattr(args, "model", "")) is not None)
+    if type(tp) is not int or tp not in (1, 2, 4, 8) or tp == 8 and not gguf:
+        raise ValueError("--tp must be 1, 2 or 4; Flash Next GGUF additionally supports 8")
     if type(rank) is not int or rank < 0:
         raise ValueError("--rank must be a nonnegative integer")
     if tp > 1 and not getattr(args, "master", ""):
-        raise ValueError("--tp 2/4 needs --master: rank 0's address on the link between the ranks")
+        raise ValueError("--tp 2/4/8 needs --master: rank 0's address on the link between the ranks")
     if rank >= max(tp, getattr(args, "expert_ranks", 1)):
         raise ValueError(f"--rank {rank} needs --tp {rank + 1} or more")
-    if tp == 4 and not getattr(family.package, "CUDA_TP4", False):
+    if tp == 4 and not gguf and not getattr(family.package, "CUDA_TP4", False):
         raise ValueError(f"--tp 4: {family.title} runs on one or two GPUs on CUDA")
     port = getattr(args, "master_port", 29551)
     # Every follower connects to this same CLI value; no channel advertises a leader's ephemeral port.
@@ -250,7 +270,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
         raise ValueError("--master-port must be an integer from 1 to 65535 for multiple ranks")
     if getattr(family, "model_type", "") == "qwen4_exp":
         streams = _cuda_streams(getattr(args, "parallel", "auto"))
-        if tp > 1 and streams > 1:
+        if tp > 1 and streams > 1 and not gguf:
             raise ValueError("--parallel decodes several Flash Next requests together on one GPU; with --tp 2 it "
                              "serves one request at a time for now, so drop --parallel")
         if getattr(args, "vision", False) and (streams < 2 or tp != 1):

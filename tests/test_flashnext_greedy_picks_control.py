@@ -117,7 +117,8 @@ def run(samplings, mapping=None, *, normalizer=4., width=8, column=5):
     exec(compile(ast.Module(body=[picks], type_ignores=[]), str(SOURCE), 'exec',
                  flags=__future__.annotations.compiler_flag, dont_inherit=True), namespace)
     host = Row(mapping) if mapping is not None else None
-    owner = SimpleNamespace(draft_host=host, _draft_map=SimpleNamespace(ids=lambda width: host) if host is not None else None)
+    owner = SimpleNamespace(w=SimpleNamespace(comm=None), draft_host=host,
+                            _draft_map=SimpleNamespace(ids=lambda width: host) if host is not None else None)
     values = namespace['_picks'](owner, Tensor('logits', state), [(1 << 64) - 1] * len(samplings), samplings, words)
     return state, values
 

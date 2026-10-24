@@ -1,17 +1,47 @@
 """Remaining service storage after fixed CUDA state has been prepared, before requests start.
 
 The caller selects the growth contract: fixed expert pools keep all selected
-windows, resident graph capture keeps one complete window and lets additional
-concurrent contexts grow under the existing memory gate. Snapshot and transient
+windows. Resident graph capture keeps one complete window by default; an
+explicit count protects that many complete windows. Snapshot and transient
 allowances share the same accounting in both policies; this module allocates no
 device storage and imports no accelerator runtime.
 """
 
 
+def context_reservation(states, full_windows=None, *, preserve_overlap=False):
+    """Remaining cache growth, including auxiliary caches through State.cache_bytes.
+
+    The legacy resident policy promises one window. An explicit count reserves
+    the largest N complete windows and every resize keeps its old storage live.
+    DSpark replaces its whole auxiliary cache, while target/MTP resize by layer.
+    """
+    if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
+        raise ValueError("full KV windows must be a positive integer")
+    each = [max(0, st.cache_bytes(st.limit) - st.cache_bytes()) for st in states]
+    windows = min(len(each), 1 if full_windows is None else full_windows)
+    growth = sum(sorted(each, reverse=True)[:windows])
+    overlap = max((cache_resize_overlap(st, st.limit, auxiliary=full_windows is not None)
+                   for st in states), default=0) if growth or preserve_overlap else 0
+    return {"growth_bytes": growth, "copy_overlap_bytes": overlap,
+            "full_context_growth_bytes": sum(each), "full_windows_reserved": windows,
+            "stream_slots": len(states)}
+
+
+def cache_resize_overlap(state, rows, *, auxiliary=False):
+    target = state.layer_bytes(rows)
+    draft = getattr(state, "dspark_runtime", None)
+    return max(target, rows * draft.plan.cache_row_bytes) if auxiliary and draft is not None else target
+
+
 def future_service(w, states, *, streams, retained, growth_bytes,
-                   vision_workspace_bytes=0, minimum_workspace_bytes=0):
+                   vision_workspace_bytes=0, minimum_workspace_bytes=0, copy_overlap_bytes=None):
+    if copy_overlap_bytes is not None and (type(copy_overlap_bytes) is not int or copy_overlap_bytes < 0):
+        raise ValueError("cache resize overlap must be nonnegative integer bytes")
     state = states[0]
-    overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth_bytes else 0
+    if copy_overlap_bytes is None:
+        overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth_bytes else 0
+    else:
+        overlap = copy_overlap_bytes
     wide = w.cfg.streams * w.cfg.hidden
     snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
     snapshot += state.ple_tail.numel() * state.ple_tail.element_size()
@@ -43,6 +73,18 @@ def reserve_graph_plan(receipt, graph_bytes):
     initial = deepcopy(receipt)
     receipt.update(initial_graph_admission=initial,
                    cache_workspace_bytes_estimate=receipt["cache_workspace_bytes_estimate"] + graph_bytes,
+                   serving_peak_bytes_estimate=serving, total_bytes_estimate=total,
+                   full_mapped_working_set_bytes_estimate=total + receipt["mapped_table_bytes"])
+
+
+def release_uncaptured_graph_plan(receipt, graph_bytes):
+    """Release only a pre-load reservation declined before a graph owner was created."""
+    if type(graph_bytes) is not int or not 0 <= graph_bytes <= receipt["cache_workspace_bytes_estimate"]:
+        raise RuntimeError("invalid uncaptured graph reservation")
+    serving = receipt["serving_peak_bytes_estimate"] - graph_bytes
+    total = max(receipt["startup_peak_bytes_estimate"], serving)
+    receipt.update(uncaptured_graph_reservation_bytes=graph_bytes,
+                   cache_workspace_bytes_estimate=receipt["cache_workspace_bytes_estimate"] - graph_bytes,
                    serving_peak_bytes_estimate=serving, total_bytes_estimate=total,
                    full_mapped_working_set_bytes_estimate=total + receipt["mapped_table_bytes"])
 

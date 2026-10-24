@@ -7,6 +7,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda import pdl
+from tensorfold.cuda.sm70 import family_ops as _half_ops
 from tensorfold.cuda.pdl import wait as pdl_wait
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
@@ -309,13 +310,14 @@ def _merge_row(PO, PM, PL, OUT, n, r, h, H: tl.constexpr, D: tl.constexpr, CH: t
 
 class AttnScratch:
     def __init__(self, rows: int, heads: int, head_dim: int, capacity: int, device, *, budget: int = 2048,
-                 ratio: int = 4) -> None:
+                 ratio: int = 4, dtype=torch.bfloat16) -> None:
         # a row reads at most budget + ratio - 1 keys (dense below the budget, its selected blocks and tail past it)
+        self.capacity = capacity
         self.nch = -(-min(capacity, budget + ratio - 1) // CHUNK)
         self.po = torch.zeros((rows, self.nch, heads, head_dim), dtype=torch.float32, device=device)
         self.pm = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
         self.pl = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
-        self.out = torch.empty((rows, heads, head_dim), dtype=torch.bfloat16, device=device)
+        self.out = torch.empty((rows, heads, head_dim), dtype=dtype, device=device)
         # sparse attention (QSA): each row's key list, its length, whether it is sparse, block scores
         self.budget, self.ratio = budget, ratio
         self.idw = budget + ratio
@@ -357,6 +359,9 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     original shader dispatch; optional side traits are an all-or-none plan.
     ``prompt`` (a prompt pass's row blocks) decodes six-bit sides' centroids by register gather, the same bits.
     """
+    if q.dtype == torch.float16:
+        return _half_ops.attention(q, kc, vc, pos0, scratch, rows, scale, out, context=context, ks=ks, vs=vs, bits=bits, codec=codec, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, rotor_lookup=rotor_lookup, prompt=prompt)
+
 
     _, h, d = q.shape
     kb, kf, vb, vf = resolve_pair(bits, codec, k_bits, k_codec, v_bits, v_codec, d)
@@ -774,6 +779,9 @@ def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_sca
              inv_freq: torch.Tensor, eps: float, scratch: AttnScratch, rows: int, *, rope=None, delta=None, length=0,
              sections=(11, 11, 10), rope_scale: float = 1.0) -> None:
     """Pool completed blocks with full prompt rotary positions, including a block spanning prompt pieces."""
+    if ikc.dtype == torch.float16:
+        return _half_ops.qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+
 
     mode = 2 if rope is not None else 1 if delta is not None else 0
     _pool[(rows // scratch.ratio + 2,)](ikc, pooled, pos0, ik_scale, inv_freq, eps, rows,
@@ -786,6 +794,9 @@ def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_sca
 def qsa_rows(iq: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch, rows: int, *,
              context: int | None = None) -> None:
     """Score and select the blocks of rows P0 .. P0 + rows - 1; ``context`` bounds the launches to keys in use."""
+    if iq.dtype == torch.float16:
+        return _half_ops.qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
+
 
     di = pooled.shape[1]
     ratio, top = scratch.ratio, scratch.budget // scratch.ratio

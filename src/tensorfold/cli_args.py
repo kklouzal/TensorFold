@@ -11,6 +11,12 @@ from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
 from tensorfold.families.qwen4_exp.kv_formats import DTYPES as FLASH_NEXT_KV_DTYPES
 
 
+class _KVFormat(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace._kv_dtype_explicit = True
+
+
 def _vram_experts(value: str) -> float | str:
     """Parse an explicit packed-weight budget or startup-sized expert caching."""
 
@@ -39,7 +45,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
 
     serve = commands.add_parser("serve", help="serve a model at an OpenAI-compatible endpoint",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    serve.add_argument("model", help="a Hugging Face repo id (downloaded on first use) or a model directory")
+    serve.add_argument("model", help="a Hugging Face repo id (downloaded on first use), model directory or Flash Next GGUF shard")
     serve.add_argument("--trust-model-code", action="store_true",
                        help="MLX provider recipes: explicitly permit checkpoint model_file Python to execute "
                             "with server privileges; custom code uses per-process disk cache identity")
@@ -140,6 +146,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
+    speed.add_argument("--draft-method", choices=("auto", "mtp", "dspark"), default="auto",
+                       help="proposal method; auto detects the drafter architecture. Explicit MTP/DSpark "
+                            "selection is supported by Flash Next CUDA (DSpark currently GGUF); --drafter selects the checkpoint")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
@@ -149,7 +158,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="maximum target tokens verified per draft block. CUDA Gemma4 DFlash: 2-128 "
                             "(default 16); CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
-                       help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
+                       help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
                             "an explicit value selects included MTP instead of default DFlash; 0: no MTP drafts")
     speed.add_argument("--mtp-confidence", type=float, default=None,
@@ -198,7 +207,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "affine, BF16, FP8 and NVFP4 tables; EXL3 retains its native mapped table. "
                             "Memory and latency depend on checkpoint format and storage")
     speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
-                       help="Flash Next CUDA RAM experts auto: reserve N full KV windows across concurrent slots")
+                       help="Flash Next CUDA resident GGUF or RAM experts auto: reserve N full KV windows across concurrent slots")
     speed.add_argument("--vram-experts-pin", choices=("off", "auto", "on"), default="off",
                        help="RAM expert authority: off keeps pageable bytes; auto admits host page registration, "
                             "on requires it; allocation and full host capacity are checked before loading")
@@ -206,22 +215,22 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--no-update-check", action="store_true",
                        help="don't ask GitHub whether a newer release exists (also TENSORFOLD_NO_UPDATE_CHECK=1)")
 
-    cuda = serve.add_argument_group("NVIDIA GPUs (DGX Spark)")
+    cuda = serve.add_argument_group("NVIDIA GPUs")
     cuda.add_argument("--backend", choices=("auto", "mlx", "cuda"), default="auto",
                       help="auto: MLX on macOS, CUDA elsewhere")
-    cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
+    cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
                       help="comma-separated routed-expert counts per expert rank, covering every expert exactly")
-    cuda.add_argument("--rank", type=int, choices=(0, 1, 2, 3), default=0,
+    cuda.add_argument("--rank", type=int, choices=tuple(range(8)), default=0,
                       help="tensor/expert rank index; rank 0 serves HTTP, others follow it")
     cuda.add_argument("--master", default="", help="rank 0 rendezvous address; expert ranks require same-host loopback")
     cuda.add_argument("--master-port", type=int, default=29551,
                       help="rank 0 rendezvous port (1 to 65535, the same on every tensor/expert rank)")
-    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16",
-                      help="KV cache: bf16 (the default), int8, int4, or a RotorQuant format. "
+    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
+                      help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
                            "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA only)")
     cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
