@@ -1,5 +1,16 @@
 # TensorFold fork
 
+This private source composes the **unqualified existing H/CG Gemma head
+candidate** with the selected prepared-FP8 baseline. The eligible GB10 target
+head uses the existing adaptive R1/R4/R8/R16 policy and weight-only CG loads;
+FP8 DFlash retains its separately prepared private head and original weights.
+The default bits8 deployment profile, general CLI defaults and managed-read
+fix are preserved. All checks for this new composition remain unrun; earlier
+H/CG results do not qualify it. Required CPU/native, installed ARM/SM121,
+full-model quality, cold-start/resource and paired performance gates remain
+pending. No cache-policy gain or pure-cache attribution is claimed.
+[Scope and ownership](docs/gemma4-cuda-validation.md#private-prepared-fp8-hcg-composition-2026-10-24).
+
 On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
 throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
 BF16 drafting. All eight required decode cells had positive interval bounds;

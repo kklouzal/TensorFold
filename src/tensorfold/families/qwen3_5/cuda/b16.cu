@@ -27,9 +27,21 @@ template <>
 __device__ __forceinline__ __nv_bfloat16 f_from<__nv_bfloat16>(float v) { return __float2bfloat16_rn(v); }
 
 // Eight elements (16 bytes) as fp32.
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+template <typename T, bool GLOBAL_CACHE = false>
+#else
 template <typename T>
+#endif
 __device__ __forceinline__ void ld8(const T* __restrict__ p, float (&v)[8]) {
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+    // The prepared Gemma head streams its weight through L2; reused x keeps
+    // the original read-only L1 path. Both loads return the same sixteen bytes.
+    uint4 u;
+    if constexpr (GLOBAL_CACHE) u = __ldcg(reinterpret_cast<const uint4*>(p));
+    else u = __ldg(reinterpret_cast<const uint4*>(p));
+#else
     const uint4 u = __ldg(reinterpret_cast<const uint4*>(p));
+#endif
     const uint32_t w[4] = {u.x, u.y, u.z, u.w};
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
@@ -63,7 +75,11 @@ __global__ void __launch_bounds__(WARPS * 32) b16_kernel(const T* __restrict__ x
     for (int r = 0; r < R; ++r) acc[r] = 0.f;
     for (int k = 8 * lane; k + 8 <= K; k += 256) {
         float b[8];
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+        ld8<T, true>(wr + k, b);
+#else
         ld8(wr + k, b);
+#endif
 #pragma unroll
         for (int r = 0; r < R; ++r) {
             if (row0 + r >= M) break;
@@ -274,6 +290,7 @@ static void pair_in(const at::Tensor& x, const at::Tensor& w) {
                 "w: contiguous 16-byte aligned (N, K) of x's dtype");
 }
 
+#ifndef TENSORFOLD_GEMMA_HEAD_CG
 at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor& bias) {
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
     TORCH_CHECK(w.is_cuda() && w.device() == x.device() && w.is_contiguous() && w.dim() == 2,
@@ -301,14 +318,24 @@ at::Tensor b16_linear(const at::Tensor& x, const at::Tensor& w, const at::Tensor
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return y;
 }
+#endif
 
 // A bias-free projection at an R its caller selected at preparation (4 warps a block): b16_linear's bits every R.
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+at::Tensor gemma_b16_head_cg(const at::Tensor& x, const at::Tensor& w, int64_t rows) {
+    TORCH_CHECK(rows == 1 || rows == 4 || rows == 8 || rows == 16, "Gemma CG rows must be1,4,8 or16");
+#else
 at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t rows) {
     TORCH_CHECK(rows == 2 || rows == 4 || rows == 8 || rows == 16, "B16 reused rows must be2,4,8 or16");
+#endif
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2, "x must be contiguous 2-d CUDA");
     pair_in(x, w);
     const bool is_half = x.scalar_type() == at::kHalf;
     TORCH_CHECK(is_half || x.scalar_type() == at::kBFloat16, "only fp16 and bf16 weights are supported");
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+    TORCH_CHECK(x.scalar_type() == at::kBFloat16 && w.size(0) == 262144 && w.size(1) == 2816,
+                "Gemma CG head requires BF16[262144,2816] weight");
+#endif
     dimensions(x, w, false);
     TORCH_CHECK(x.size(1) % 8 == 0 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
                 "K must be a multiple of8 and x16-byte aligned");
@@ -317,12 +344,20 @@ at::Tensor b16_linear_rows(const at::Tensor& x, const at::Tensor& w, int64_t row
     at::cuda::CUDAGuard guard(x.device());
     const int M = (int)x.size(0), K = (int)x.size(1), N = (int)w.size(0);
     auto y = at::empty({M, N}, x.options());
+#ifdef TENSORFOLD_GEMMA_HEAD_CG
+    if (rows == 1) launch<__nv_bfloat16, 1, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+    else if (rows == 4) launch<__nv_bfloat16, 4, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+    else if (rows == 8) launch<__nv_bfloat16, 8, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+    else launch<__nv_bfloat16, 16, 4>(x, w, nullptr, y, M, K, N, nullptr, nullptr);
+#else
     if (is_half) by_rows<half>(b, x, w, nullptr, y, M, K, N);
     else by_rows<__nv_bfloat16>(b, x, w, nullptr, y, M, K, N);
+#endif
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return y;
 }
 
+#ifndef TENSORFOLD_GEMMA_HEAD_CG
 // Two weights of the same rows in one launch (the GDN gates b and a): each output ``b16_linear``'s bits.
 std::vector<at::Tensor> b16_linear_pair(const at::Tensor& x, const at::Tensor& w0, const at::Tensor& w1) {
     TORCH_CHECK(x.is_cuda() && x.is_contiguous() && x.dim() == 2 && x.size(1) % 8 == 0 &&
@@ -394,3 +429,4 @@ std::vector<at::Tensor> b16_prompt_pair(const at::Tensor& x, const at::Tensor& w
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return {y0, y1};
 }
+#endif

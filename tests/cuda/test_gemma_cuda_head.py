@@ -72,11 +72,11 @@ def test_selected_ct_head_keeps_original_authority_and_raw_bits(actual_head, mon
     incumbent, hidden, singleton = actual_head
     selected = select_head(incumbent)
     assert selected.incumbent is incumbent and selected.weight is incumbent.weight
-    assert selected.reuse_rows == 16 and selected.nbytes() == incumbent.nbytes()
+    assert selected.nbytes() == incumbent.nbytes()
     assert select_head(selected) is selected
     with monkeypatch.context() as scope:
         scope.setattr(torch.cuda, "get_device_capability", lambda *_: pytest.fail("hot capability discovery"))
-        for rows in (1, 5, 16):
+        for rows in (1, 2, 4, 5, 8, 9, 16, 17):
             assert torch.equal(selected(hidden[:rows]).view(torch.int16), singleton[:rows].view(torch.int16))
 
 

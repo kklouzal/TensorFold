@@ -35,3 +35,26 @@ checks do not establish producer readiness. Native qualification must cover
 both dtypes, scalar and paired outputs, linear row buckets, prompt tiles,
 layout and failure paths. One-device execution does not qualify switching
 between devices; that gate requires two compatible CUDA devices.
+
+## Private Gemma CG composition
+
+The private composed candidate preserves the ordinary entry points above.
+Only the eligible prepared Gemma BF16 head binds the existing separate
+`gemma_b16_head_cg` entry, with R1/R4/R8/R16, the original shape/grid/alignment
+checks, current stream and fresh output ownership. Its weight-only CG load
+retains the same authoritative FMA/XOR/BF16 chain; input loads remain LDG.
+The generic Python factory and binder are unchanged, and normal compilation
+excludes CG instantiations. Changed shared source bytes can still cause normal
+cache/build work and must not be called startup-neutral.
+
+Bits8 DFlash owns a private FP8 Head built from the same original BF16 weight;
+it does not invoke this BF16 target callable. The current FP8 provider
+preparation, public FP32-logit contract and default profile remain unchanged.
+Inherited Plain.prefill and embedding access remain available, while eligible
+target project_logits calls use the prepared head wherever requested. Policy
+binding precedes graph preparation and storage/provider owners outlive all
+consumers. Four prepared partials, a separately cached provider/DSO and its
+compile/code/cache residency are counted; no tensor/weight copy is added by
+this policy. Singleton wrapper and adaptive-row interactions prohibit pure
+cache-attribution claims. All new-composition execution/ARM/model/P3 gates
+remain pending; see the Gemma validation guide.

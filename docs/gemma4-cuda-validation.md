@@ -1,5 +1,71 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Private prepared-FP8 H/CG composition, 2026-10-24
+
+This unselected private source starts from the corrected selected prepared-FP8
+baseline and composes the existing H adaptive-row policy with the existing CG
+implementation from private checkpoint `612d3e6b`. It preserves the current
+prepared-FP8 constructor/provider order, default bits8 deployment profile and
+managed build-state reader. Old local H/CG source, native and instruction facts
+remain historical; **all checks of this composition are unrun**. Those records
+do not establish an integrated source review, execution or selection here.
+
+Eligibility is resolved once for the original contiguous BF16[262144,2816]
+Gemma head on SM121. The prepared target uses R1 for singleton, R4 for2..4,
+R8 for5..8 and R16 above8. Other shapes, architectures and representations
+retain the original head; fixed-R16 and ordinary H remain independent
+comparators. The authoritative B16 template retains its ordered FP32 FMA,
+XOR butterfly, BF16 store rounding and existing softcap. Only the weight load
+uses the existing CG specialization; reused input loads retain ordinary LDG.
+There is no new CS/R5 variant, precision change, public flag or live rebinding.
+
+The target applies softcap once in `project_logits`. BF16 DFlash can borrow
+that target projector. **Bits8 DFlash instead copies the original BF16 weight
+into its own FP8 Head and bypasses this BF16 callable**; its prepared private
+projection providers remain unchanged. Raw embedding reads keep the original
+weight. Inherited `Plain.prefill` and ordinary generic prompt entries remain
+baseline. A target `project_logits` call still uses the selected target head,
+including when prefill requests logits; its quality and cost remain required
+qualification, rather than a blanket prefill-neutrality claim.
+
+The private cold helper is imported only when preparing the eligible CG
+policy. Generic B16 Python and its public binder are byte-exact baseline.
+The separately named private provider directly lists the authoritative CUDA
+source and one existing macro; the normal compilation excludes CG
+instantiations. The shared CUDA file's changed bytes can nevertheless change
+ordinary build/cache work. No generic startup or compiler-cost neutrality is
+claimed. Model/provider code and input/weight storage must remain immutable
+and owned through their actual stream consumers and graph replay lifetimes.
+Bind the policy before preparing graph banks; existing rows/chunks/taps keys
+and the original drain/rebuild procedure remain authoritative.
+
+The prepared CG object adds its four callable partials and one cold cached
+provider role; DSO/compiler/code/cache residency and cold compilation are real
+costs. It adds no weight authority or application tensor payload. Its singleton
+entry also bypasses the old Plain/empty-bias wrapper, while the H row policy is
+part of the composition. Any eventual gain therefore includes those
+interactions and cannot be attributed solely to a cache hint. No removed
+allocation or unspecified reserve slack is credited to admission.
+
+Existing head-policy, full raw/softcap-bit, partition/permutation, exceptional
+input, fresh-output, graph replay and boundary oracles are retained. The H
+qualifier still constructs its original fixed R8/R16 arms from the incumbent;
+it does not silently measure CG as one of those arms. A new CPU-only adapter
+case uses actual `Head` construction to check that FP8 quantization reads the
+prepared target's original weight without invoking that target or building CG.
+The current independent FP8 provider-preparation controls remain unchanged.
+These tests are authored, not executed by this source owner.
+
+Before selection, run the affected pinned SDK CPU and local native checks,
+new installed ARM/SM121 and protected provider/source/wheel checks, actual
+compiler/recipe/instruction/resource observations, own full-model quality and
+predeclared same-region cold/warm performance comparisons. Include target
+prefill, graph preparation, private FP8 preparation and shared-provider build
+costs. Earlier candidate counts or instruction text are not current outcomes,
+performance causality or an ARM admission certificate. Root owns all actors,
+Git and final selection; the current fixed24 cohort and its sources are
+untouched by this separate canonical worktree.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft
