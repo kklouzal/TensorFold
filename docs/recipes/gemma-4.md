@@ -19,6 +19,14 @@ eight required decode cells and 14.97% longer startup. The original affine
 checkpoint with its quantized tied head still requires bits 16; earlier images
 and measurements retain their separate scope.
 
+The standalone scratch composition retains prepared FP8 loading and the current
+managed-state read correction. It reuses state-owned proposal IDs/query storage
+and uniform proposal attention bounds while preserving fresh output logits,
+sampling and checkpoint arithmetic. All checks for the combined source remain
+unrun; [its qualification scope](../gemma4-cuda-validation.md#scratch-with-prepared-fp8-composition-2026-10-24)
+keeps historical standalone and parent-FP8 evidence separate. Existing serving
+flags and the native NVFP4 profile below are unchanged.
+
 For a local complete mixed4/6 snapshot and matching companion:
 
 ```sh

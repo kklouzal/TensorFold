@@ -107,10 +107,11 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     resident = sum(sizes.values()) + padding
     staging = 3 * max(sizes.values(), default=0)
 
-    draft = None
+    draft, draft_scratch = None, 0
     if drafter_dir is not None:
-        from ..dflash_metadata import checked_headers
+        from ..dflash_metadata import checked_headers, proposal_scratch_bytes
         draft, draft_entries = checked_headers(Path(drafter_dir))
+        draft_scratch = proposal_scratch_bytes(draft, max_rows)
         if (draft.hidden, draft.target_layers, draft.vocab) != (cfg.hidden, cfg.layers, cfg.vocab):
             raise ValueError('Gemma DFlash companion dimensions disagree with the target')
         bf16 = {name: math.prod(info['shape']) * itemsize(info, name) for name, info in draft_entries.items()}
@@ -175,5 +176,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     return common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), staging),
-                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"],
+                  # Scratch belongs only to live lanes, never the detached prefix snapshots.
+                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"]
+                                         + streams * draft_scratch,
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"])

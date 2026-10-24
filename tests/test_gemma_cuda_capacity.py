@@ -122,3 +122,11 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     assert runtime_workspace[1] == runtime_workspace[2]
     assert runtime_workspace[1][1] >= 16 * 16 * vocab
     assert all(full > serial for full, serial in zip(runtime_workspace[1], runtime_workspace[0]))
+    from tensorfold.families.gemma4 import dflash_metadata
+
+    # Isolate the new fixed lane charge at the real shared-admission boundary;
+    # it is additional to, not borrowed from, the existing proposal/sampler plan.
+    charged = runtime_workspace[1][0]
+    monkeypatch.setattr(dflash_metadata, "proposal_scratch_bytes", lambda config, block: 0)
+    capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir, keep=3)
+    assert charged - runtime_workspace[-1][0] == 16 * (4 + 2 * draft.heads * draft.head_dim)

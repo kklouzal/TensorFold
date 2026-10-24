@@ -1,5 +1,39 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Scratch with prepared FP8 composition, 2026-10-24
+
+This source composes the existing standalone scratch candidate from
+`4c73ffd120aa9cc570135aee886e66a9e5fa0be4` with corrected prepared-FP8 baseline
+`437e61e5829f6bbdd92a4c59fc0f3377fa3446a2`. Each DFlash state retains one int32
+mask-ID vector and one BF16 query buffer. Uniform attention derives the common
+proposal interval `[position, position + rows)` in registers. Explicit per-row
+bounds remain the default for target and vision callers. Attention grids, chunk
+and reduction order, all floating-point expressions, precision, sampling,
+history, constraints and fresh public FP32 logits retain their contracts.
+
+The existing single-stream lane serialization orders each query write,
+attention read and subsequent overwrite. Scratch belongs to that state and is
+excluded from committed KV snapshots. Admission adds exactly
+`block * (4 + 2 * heads * head_dim)` payload bytes per live lane, independently
+of prefix snapshots and the unchanged allocator/runtime reserves. This is
+payload accounting, not a physical-memory or allocator-retention bound.
+
+The current bits8 constructor still prepares both selected native providers
+after the validated private copies and private FP8 head, before readiness.
+Its failure tests and the managed-state read correction remain intact. The
+native NVFP4 Compose profile retains bits8; the general CLI default remains
+bits16. No proposal graph bank or adaptive head policy is added.
+
+The original standalone S source had bounded CPU/native checks under its own
+source, images and precision. Those results do not qualify this composition.
+The failed and abandoned earlier A/S comparison stays historical; its samples
+are not retried, pooled or used for a performance claim. All combined source
+CPU/native, fresh ARM build/inventory/installed, complete model correctness,
+resource, cold/warm and registered paired performance gates remain **unrun**.
+The parent prepared-FP8 gain remains scoped to its published receipt. Fresh
+qualification must compare this exact combined source with the current F8
+reference using the original attention and DFlash numerical oracles.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft

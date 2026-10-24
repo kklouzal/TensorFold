@@ -15,6 +15,15 @@ def positive(value, name):
     return value
 
 
+def proposal_scratch_bytes(config, block: int) -> int:
+    """One lane's persistent int32 IDs and BF16 query buffer; snapshots exclude both.
+
+    These are payload bytes. The shared admission policy still owns allocator
+    and runtime reserves; no physical-memory or allocator-retention claim is made.
+    """
+    return block * (4 + 2 * config.heads * config.head_dim)
+
+
 @dataclass(frozen=True)
 class DraftConfig:
     hidden: int

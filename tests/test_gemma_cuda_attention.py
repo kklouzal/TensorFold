@@ -251,12 +251,13 @@ def test_state_bounds_and_capacity_accounting():
         attention.check_geometry(Config(**{**config().__dict__, "max_position": 1 << 21}))
 
 
-@pytest.mark.parametrize("window,noncausal", [(16, False), (0, True), (0, False)])
-def test_companion_geometry_ring_attention_matches_float64_oracle(window, noncausal):
+@pytest.mark.parametrize("window,noncausal", [(16, False), (16, True), (0, True), (0, False)])
+@pytest.mark.parametrize("total", [300, 1026])
+def test_companion_geometry_ring_attention_matches_float64_oracle(window, noncausal, total):
     """Head width 128, query group 4, softmax scale, unbounded window and a bidirectional proposal block."""
     torch.manual_seed(7)
-    total, block, hk, g, d = 300, 5, 8, 4, 128
-    ring = 384 if window else 512
+    block, hk, g, d = 5, 8, 4, 128
+    ring = 384 if window else -(-total // 64) * 64
     keys = (torch.randn(ring, hk, d) * 2).to(torch.bfloat16).to(DEV)
     values = (torch.randn(ring, hk, d) * 2).to(torch.bfloat16).to(DEV)
     q = (torch.randn(block, hk * g, d) * 2).to(torch.bfloat16).to(DEV)
@@ -272,6 +273,12 @@ def test_companion_geometry_ring_attention_matches_float64_oracle(window, noncau
         slots = (total - 1) // chunk + 1
     out = attention.sliding(q, keys, values, pos, bs, be, window=window, slots=slots, blocks=noncausal,
                             scale=scale, chunk=chunk)
+    # Wrong explicit bounds deliberately remain readable: the uniform variant
+    # must derive every active/tail row from pos and block, ignoring these values.
+    ignored = torch.full_like(bs, -1)
+    uniform = attention.sliding(q, keys, values, pos, ignored, ignored, window=window, slots=slots,
+                                blocks=noncausal, scale=scale, chunk=chunk, uniform_block=True)
+    assert torch.equal(uniform, out)
     index = torch.arange(total, device=DEV) % ring
     k, v = keys[index], values[index]
     qpos = start + torch.arange(block, device=DEV)

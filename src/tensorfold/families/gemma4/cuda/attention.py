@@ -152,7 +152,8 @@ def _fold_step(m, l, o, cm, cl, co):
 
 
 @triton.jit
-def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCKS: tl.constexpr):
+def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCKS: tl.constexpr,
+             UNIFORM_BLOCK: tl.constexpr = False):
     """A program's 16 (row, head) pairs, their visibility bounds and the union key range.
 
     WINDOW 0 is unbounded (causal from position 0). BLOCKS loads per-row
@@ -165,8 +166,15 @@ def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCK
     head = hk * G + qi % G
     pos = tl.load(POS) + r
     if BLOCKS:
-        bs = tl.load(BS + r, mask=ok, other=-1)
-        be = tl.load(BE + r, mask=ok, other=-1)
+        if UNIFORM_BLOCK:
+            # DFlash's complete proposal block is [POS, POS + R) for every row.
+            # Keep inactive lanes identical to the explicit bounded loads.
+            start = tl.load(POS)
+            bs = tl.where(ok, start, -1)
+            be = tl.where(ok, start + R, -1)
+        else:
+            bs = tl.load(BS + r, mask=ok, other=-1)
+            be = tl.load(BE + r, mask=ok, other=-1)
         last = tl.maximum(pos + 1, be)
     else:
         bs = tl.full((16,), -1, tl.int32)
@@ -207,10 +215,12 @@ def _sliding_chunk(q, KC, VC, RING, chunk, hk, pos, ok, bs, be, earliest, last, 
 @triton.jit
 def _sliding(Q, KC, VC, POS, BS, BE, PO, PM, PL, R, RING, SPLITS,
              H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, WINDOW: tl.constexpr,
-             BLOCKS: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SCALE: tl.constexpr):
+             BLOCKS: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SCALE: tl.constexpr,
+             UNIFORM_BLOCK: tl.constexpr = False):
     """Program (query tile, KV head, chunk slot): slot s is absolute chunk lo // CH + s."""
     t, hk, s = tl.program_id(0), tl.program_id(1), tl.program_id(2)
-    r, ok, head, pos, bs, be, earliest, last, lo, hi = _queries(t, hk, R, POS, BS, BE, G, WINDOW, BLOCKS)
+    r, ok, head, pos, bs, be, earliest, last, lo, hi = _queries(
+        t, hk, R, POS, BS, BE, G, WINDOW, BLOCKS, UNIFORM_BLOCK)
     dd = tl.arange(0, D)
     q = tl.load(Q + (r[:, None] * H + head[:, None]) * D + dd[None, :], mask=ok[:, None], other=0.0)
     m, l, o = _sliding_chunk(q, KC, VC, RING, lo // CH + s, hk, pos, ok, bs, be, earliest, last, lo, hi,
@@ -425,12 +435,15 @@ def prep_full(q_raw, k_raw, q_norm, inverse, pos, raw, inv, *, eps: float, round
 
 
 def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slots: int, blocks: bool = True,
-            scale: float = 1.0, chunk: int = SLIDING_CHUNK):
+            scale: float = 1.0, chunk: int = SLIDING_CHUNK, uniform_block: bool = False):
     """Ring attention: causal, windowed (window 0 = unbounded), optionally with
     bidirectional per-row blocks, over keys already published in the ring.
 
     ``slots`` must cover every absolute chunk a query tile's union key range
     spans (state.sliding_slots); an uncovered chunk would be silently omitted.
+    ``uniform_block`` represents one complete [pos, pos + rows) block; its
+    bounds come from pos and rows, and block_starts/block_ends are not read.
+    It does not change the grid, chunk order or floating-point operations.
     """
     rows, h, d = q.shape
     ring, hk, _ = keys.shape
@@ -441,7 +454,7 @@ def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slot
     pl = torch.empty_like(pm)
     _sliding[(tiles, hk, slots)](q, keys, values, pos, block_starts, block_ends, po, pm, pl, rows, ring, slots,
                                  H=h, HK=hk, D=d, G=g, WINDOW=window, BLOCKS=blocks, CH=chunk,
-                                 BK=SLIDING_TILE, SCALE=scale, **LAUNCH)
+                                 BK=SLIDING_TILE, SCALE=scale, UNIFORM_BLOCK=uniform_block, **LAUNCH)
     out = torch.empty_like(q)
     _merge[(rows, h, d // MERGE_COLUMNS)](po, pm, pl, out, pos, slots, H=h, D=d, DS=MERGE_COLUMNS,
                                           CH=chunk, GLOBAL=False, num_warps=1, enable_fp_fusion=False)

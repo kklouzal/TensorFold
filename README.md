@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The standalone Gemma CUDA scratch candidate is composed with prepared FP8
+DFlash and the current managed-state read correction. Each companion state
+owns proposal IDs and query scratch; uniform proposal attention bounds avoid
+materialized bound vectors. Fresh public FP32 logits and the original attention
+oracles are retained. All checks of this combined source, including installed
+ARM, full-model correctness and performance, remain unrun.
+[Composition and qualification scope](docs/gemma4-cuda-validation.md#scratch-with-prepared-fp8-composition-2026-10-24).
+
 On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
 throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
 BF16 drafting. All eight required decode cells had positive interval bounds;
