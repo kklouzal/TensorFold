@@ -164,8 +164,91 @@ def _engine(monkeypatch, *, with_head=True):
     engine._stream = SimpleNamespace(synchronize=lambda: None)
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
     monkeypatch.setattr("tensorfold.cuda.sampling.sample_rows", sample)
+    monkeypatch.setattr("tensorfold.families.gemma4.cuda.sampling.greedy_rows", sample)
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     return engine
+
+
+@pytest.mark.parametrize("temperature", [None, 0.0, -0.5, 0.8])
+@pytest.mark.parametrize("draft", [False, True])
+def test_target_max_policy_is_greedy_only_after_the_legacy_first_draw(monkeypatch, temperature, draft):
+    from tensorfold.cuda import sampling as shared
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.gemma4.cuda import sampling as target_sampling
+
+    policy = None if temperature is None else Sampling(73, temperature, 7, 0.9)
+
+    def run(retain_legacy):
+        engine = _engine(monkeypatch)
+        reference = shared.sample_rows
+        calls, output = [], []
+
+        def legacy(logits, positions, sampling):
+            calls.append("legacy")
+            return reference(logits, positions, sampling)
+
+        def maximum(logits, positions, sampling):
+            calls.append("legacy" if retain_legacy else "maximum")
+            return reference(logits, positions, sampling)
+
+        monkeypatch.setattr(shared, "sample_rows", legacy)
+        monkeypatch.setattr(target_sampling, "greedy_rows", maximum)
+        engine.generate([1, 2, 3], 13, policy, lambda tokens: output.extend(tokens),
+                        draft=draft, stop_eos=False)
+        return output, calls
+
+    expected, _ = run(True)
+    actual, calls = run(False)
+    assert actual == expected and len(actual) == 13
+    assert calls[0] == "legacy"
+    if temperature is None or temperature <= 0:
+        assert calls.count("legacy") == 1 and calls.count("maximum") > 0
+    else:
+        # In particular a positive-temperature draft=False request has
+        # stochastic=False, but its target law must remain sampled.
+        assert "maximum" not in calls
+        if not draft:
+            assert len(calls) > 1
+
+
+def test_target_max_does_not_preempt_a_legacy_first_draw_failure(monkeypatch):
+    from tensorfold.cuda import sampling as shared
+    from tensorfold.families.gemma4.cuda import sampling as target_sampling
+
+    engine = _engine(monkeypatch)
+    primary = ValueError("original initial sampling boundary")
+
+    class UnvalidatedPolicy:
+        @property
+        def temperature(self):
+            pytest.fail("target policy was selected before the initial legacy validation")
+
+    def first(*args):
+        raise primary
+
+    monkeypatch.setattr(shared, "sample_rows", first)
+    monkeypatch.setattr(target_sampling, "greedy_rows", lambda *args: pytest.fail("failed first draw was sampled"))
+    with pytest.raises(ValueError) as caught:
+        engine.generate([1, 2, 3], 7, UnvalidatedPolicy(), lambda tokens: None)
+    assert caught.value is primary
+
+
+@pytest.mark.parametrize("stop", [False, True])
+def test_target_max_is_not_called_when_the_first_draw_finishes_the_request(monkeypatch, stop):
+    from tensorfold.cuda import sampling as shared
+    from tensorfold.families.gemma4.cuda import sampling as target_sampling
+
+    engine = _engine(monkeypatch)
+    reference, calls = shared.sample_rows, []
+
+    def first(*args):
+        calls.append("first")
+        return reference(*args)
+
+    monkeypatch.setattr(shared, "sample_rows", first)
+    monkeypatch.setattr(target_sampling, "greedy_rows", lambda *args: pytest.fail("finished request sampled again"))
+    engine.generate([1, 2, 3], 9 if stop else 1, None, lambda tokens: stop, stop_eos=False)
+    assert calls == ["first"]
 
 
 def _assert_prompt_path(engine, prompt):
@@ -292,6 +375,7 @@ def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypat
     monkeypatch.undo()                      # the real CUDA sampler's host rule, on CPU scores
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
     monkeypatch.setattr("tensorfold.cuda.sampling.validate_rows", lambda logits, positions, sampling: None)
+    monkeypatch.setattr("tensorfold.families.gemma4.cuda.sampling.validate_rows", lambda logits, positions, sampling: None)
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     sampling = Sampling(seed=4321, **policy) if policy is not None else None
     penalties = Penalties(presence=0.8, frequency=0.4, repetition=1.2) if penalized else None

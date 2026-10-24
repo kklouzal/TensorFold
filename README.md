@@ -9,6 +9,13 @@ GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
 `16`, required for the original affine checkpoint's quantized head.
 [Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
+A private Gemma-only target-sampling candidate replaces the greedy verification
+loop's separate vocabulary-validity scan with a paired max/index reduction and
+two-word row packet. The first draw and the public/shared sampler remain
+unchanged. CPU, native CUDA, installed-image, full-model and performance checks
+for this candidate are **pending**; no throughput gain is claimed.
+[Contract and required checks](docs/gemma-target-sampling-validation.md).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

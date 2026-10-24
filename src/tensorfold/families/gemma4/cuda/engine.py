@@ -351,6 +351,10 @@ class Gemma4Engine:
             stopped = bool(on_tokens([first]))
             active_drafts = bool(draft and self.head is not None)
             stochastic = active_drafts and sampling is not None and sampling.temperature > 0
+            if sampling is None or sampling.temperature <= 0:
+                from .sampling import greedy_rows as sample_target_rows
+            else:
+                sample_target_rows = sample_rows
             while not stopped and len(out) < max_tokens and out[-1] not in eos \
                     and not (constraint is not None and constraint.finished):
                 self._check_open()
@@ -400,7 +404,7 @@ class Gemma4Engine:
                     del probabilities
                     packet = None
                 else:
-                    sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
+                    sampled = sample_target_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
                     chosen = _accepted(sampled, inputs, room, eos)
                 if history is not None:
                     history.extend(chosen)
