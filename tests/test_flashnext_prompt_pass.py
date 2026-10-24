@@ -112,4 +112,3 @@ class TestPromptPass(unittest.TestCase):
             if value.fills[stream.sid][2] == len(stream.prompt):
                 value.filling.remove(stream)
         self.assertEqual(took, {0: list(range(30)), 1: list(range(35)), 2: list(range(41))})
-
