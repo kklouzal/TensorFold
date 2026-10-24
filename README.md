@@ -9,6 +9,13 @@ GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
 `16`, required for the original affine checkpoint's quantized head.
 [Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
+A private composition retains the existing G1 token-only greedy proposal method
+with the current FP8-before-ready preparation, managed-state correction and
+bits8 GB10 profile. This combination is **unqualified**: source CPU/native,
+installed ARM, full-model and comparative performance checks remain pending.
+Earlier G1/G2 and selected FP8 results do not establish a combined gain.
+[Composition contract and required checks](docs/gemma-fp8-greedy-alt-validation.md).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

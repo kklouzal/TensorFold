@@ -30,6 +30,144 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the companion r
 DEV = torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
 
 
+def test_tokens_only_proposal_delegates_complete_rows_and_actual_positions(monkeypatch):
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    logits = torch.zeros(3, 7)
+    state = NS(length=41)
+    calls = []
+    draft.logits = lambda seen, anchor, count: logits if (seen is state and anchor == 2 and count == 3) else None
+
+    def sample(rows, positions, sampling):
+        # CPU boundary double only; actual CUDA choice/readback is tested below.
+        assert rows is logits and list(positions) == [42, 43, 44] and sampling is None
+        calls.append(rows)
+        return [0, 2, 1]
+
+    monkeypatch.setattr(dflash, 'sample_rows', sample)
+    assert draft.propose_tokens(state, 2, 3) == [0, 2, 1] and calls == [logits]
+    draft.logits = lambda *args: None
+    assert draft.propose_tokens(state, 2, 0) == [] and len(calls) == 1
+
+
+@pytest.mark.parametrize('message', ['sampling scores contain NaN or positive infinity',
+                                    'a complete vocabulary row needs at least one finite score'])
+def test_tokens_only_score_failure_keeps_legacy_refusal_and_exact_cause(monkeypatch, message):
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.logits = lambda *args: torch.zeros(3, 7)
+    primary = ValueError(message)
+
+    def failed(*args):
+        raise primary
+
+    monkeypatch.setattr(dflash, 'sample_rows', failed)
+    with pytest.raises(ValueError, match='draft confidence scores must be finite') as caught:
+        draft.propose_tokens(NS(length=7), 2, 3)
+    assert caught.value.__cause__ is primary
+
+
+@pytest.mark.parametrize('kind', ['resource', 'shape', 'subclass', 'foreign_argument', 'string_subclass'])
+def test_tokens_only_never_translates_resource_shape_or_foreign_errors(monkeypatch, kind):
+    class Foreign(ValueError):
+        pass
+
+    class Argument:
+        def __eq__(self, other):
+            pytest.fail('unexpected error argument compared')
+
+    class String(str):
+        def __eq__(self, other):
+            pytest.fail('unexpected string subclass compared')
+
+    primary = (MemoryError('allocation') if kind == 'resource' else ValueError('shape') if kind == 'shape'
+               else Foreign('sampling scores contain NaN or positive infinity') if kind == 'subclass'
+               else ValueError(Argument()) if kind == 'foreign_argument'
+               else ValueError(String('sampling scores contain NaN or positive infinity')))
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.logits = lambda *args: torch.zeros(3, 7)
+
+    def failed(*args):
+        raise primary
+
+    monkeypatch.setattr(dflash, 'sample_rows', failed)
+    with pytest.raises(type(primary)) as caught:
+        draft.propose_tokens(NS(length=7), 2, 3)
+    assert caught.value is primary
+
+
+@pytest.mark.parametrize('length,count', [(0, 3), (7, 0), (32, 4)])
+def test_tokens_only_empty_geometry_uses_original_producer_without_sampling(monkeypatch, length, count):
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.config, draft.block, draft.window = NS(vocab=7), 8, 32
+    monkeypatch.setattr(dflash, 'sample_rows', lambda *args: pytest.fail('empty proposal sampled'))
+    assert draft.propose_tokens(NS(length=length), 1, count) == []
+
+
+@pytest.mark.parametrize('anchor,count', [(1, -1), (1, True), (1, 128), (-1, 3), (True, 3), (7, 3)])
+def test_tokens_only_retains_original_anchor_and_limit_boundary(monkeypatch, anchor, count):
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.config, draft.block, draft.window = NS(vocab=7), 8, 32
+    monkeypatch.setattr(dflash, 'sample_rows', lambda *args: pytest.fail('invalid proposal sampled'))
+    with pytest.raises(ValueError, match='proposal count|anchors'):
+        draft.propose_tokens(NS(length=7), anchor, count)
+
+
+@cuda
+@pytest.mark.parametrize('kind', ['random', 'ties', 'signed_zero', 'masked'])
+@pytest.mark.parametrize('nondefault', [False, True])
+def test_tokens_only_matches_original_confidence_ids_and_completes_readback(kind, nondefault):
+    import weakref
+    from contextlib import nullcontext
+
+    from tensorfold.cuda import speculative
+
+    stream = torch.cuda.Stream() if nondefault else None
+    with torch.cuda.stream(stream) if stream is not None else nullcontext():
+        generator = torch.Generator(device='cuda').manual_seed(7123)
+        logits = torch.randn(4, 4099, device='cuda', generator=generator)
+        if kind == 'ties':
+            logits.fill_(1)
+        elif kind == 'signed_zero':
+            logits.zero_()
+            logits[:, ::2] = -0.0
+        elif kind == 'masked':
+            logits[:, :3000] = -float('inf')
+        expected = speculative.Chains(logits, [None], 4).finish(0, 4)[0]
+        draft = dflash.DFlash.__new__(dflash.DFlash)
+        refs = []
+        done = torch.cuda.Event()
+
+        def produced(*args):
+            actual = logits.clone()
+            refs.append(weakref.ref(actual))
+            done.record()
+            return actual
+
+        draft.logits = produced
+        assert draft.propose_tokens(NS(length=41), 2, 4) == expected
+        assert done.query() and refs[0]() is None
+
+
+@cuda
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_tokens_only_rejects_invalid_suffix_before_any_acceptance_cut(bad):
+    from tensorfold.cuda import speculative
+
+    logits = torch.ones(4, 7, device='cuda')
+    if bad == -float('inf'):
+        logits[3] = bad
+    else:
+        logits[3, 2] = bad
+    reference = speculative.Chains(logits, [None], 4)
+    with pytest.raises(ValueError, match='draft confidence scores must be finite'):
+        reference.finish(0, 1)
+    draft = dflash.DFlash.__new__(dflash.DFlash)
+    draft.logits = lambda *args: logits
+    # Even a caller retaining only the first returned ID must validate the
+    # entire produced packet, matching the original pre-cap refusal.
+    with pytest.raises(ValueError, match='draft confidence scores must be finite'):
+        draft.propose_tokens(NS(length=41), 2, 4)[:1]
+
+
 def test_prompt_append_partition_and_restore_keep_one_projection_arithmetic(monkeypatch):
     """A sensitive CPU adapter control: distinct lane/prompt results expose the real dispatch boundary, without
     pretending to emulate either CUDA dot product. The former small-suffix dispatch fails this cache invariant."""
@@ -549,6 +687,9 @@ def test_fp8_proposals_track_bf16(tmp_path):
     assert clear.any()                      # the id check below must not pass vacuously
     assert torch.equal(left.argmax(-1)[clear], right.argmax(-1)[clear])
     assert torch.equal(fp8.logits(b, 2, 3), right)
+    # The composed G1 route consumes the actual prepared FP8 producer, while
+    # the retained public scored route remains an independent result oracle.
+    assert fp8.propose_tokens(b, 2, 3) == fp8.propose(b, 2, 3).finish(0, 3)[0] == right.argmax(-1).tolist()
     copies = [fn.keywords["linear"] for fn in fp8.linears.values()]
     assert all(fn.func is dflash._project8 for fn in fp8.linears.values())
     assert all(isinstance(c, Fp8Linear) for c in copies) and isinstance(fp8.project_logits, Head)
