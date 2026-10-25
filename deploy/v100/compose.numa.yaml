@@ -1,0 +1,7 @@
+# Optional RAM-archive capability override. Generate/requalify the profile from
+# this host's running Docker default with tools/generate_numa_seccomp.py first.
+# The base profile and ordinary GPU-history mode need no custom seccomp policy.
+services:
+  tensorfold:
+    security_opt:
+      - "seccomp=${TF_NUMA_SECCOMP:?Set TF_NUMA_SECCOMP to the generated host seccomp.json path}"

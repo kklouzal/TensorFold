@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from . import history_runtime
 from .forward import _kv_check, compute, stage
 from .mtp import mtp_compute, mtp_stage
 
@@ -89,8 +90,13 @@ class Graphs:
             compute(w, segs, b, context=context)     # eager warm-up: compiles this launch shape
             g = self._capture(lambda: compute(w, segs, b, context=context))
             self.main[key] = g
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill)
         st.kv_begin()
         g.replay()
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill)
         _kv_check(segs, comm=w.comm)
         return b.logits[:R]
 
@@ -115,8 +121,13 @@ class Graphs:
             g = self._capture(lambda: mtp_compute(w, segs, b, context=context))
             self.mtp[key] = g
             self.mtp_out[key] = out
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill, mtp=True)
         st.kv_begin()
         g.replay()
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill, mtp=True)
         _kv_check(segs, comm=w.comm)
         return self.mtp_out[key]
 

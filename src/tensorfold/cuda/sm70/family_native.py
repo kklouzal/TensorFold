@@ -1,4 +1,12 @@
-"""Capture-safe fused FP16 family operations behind the shared family ABI."""
+"""Capture-safe fused FP16 family operations behind the shared family ABI.
+
+Staged indexer entrypoints are internal owner-mediated operations. History,
+State and Weights construct their writable stage/ring/pooled tensors in
+separate allocations from position/status/live/origin and model norm/frequency
+reads, then retain those storages through stream/graph completion. These
+immutable ownership facts are established at construction, not re-proved on
+every native launch; direct internal callers must preserve the same contract.
+"""
 
 from functools import lru_cache
 import hashlib

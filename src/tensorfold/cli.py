@@ -360,6 +360,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
+    if getattr(args, "indexer_history", "gpu") != "gpu":
+        options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
         options["vram_experts_pin"] = args.vram_experts_pin
     if getattr(args, "kv_dtype", "bf16") != "bf16":

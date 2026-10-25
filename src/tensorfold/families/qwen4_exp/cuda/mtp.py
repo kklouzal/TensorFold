@@ -6,7 +6,7 @@ from typing import Sequence
 
 import torch
 
-from . import glue
+from . import glue, history_runtime
 from .forward import _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
 from .state import Buffers, State
 from .weights import Weights
@@ -40,6 +40,9 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     ``logits=False`` absorbs into the MTP cache and skips the unused draft-vocabulary projection. ``check=False``
     (a draft step's logits): the codec status stays pending for the caller's check before its rows are used."""
 
+    archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+    if archive:
+        history_runtime.begin(segs, prefill=b.prefill, mtp=True)
     _kv_begin(segs)
     c = w.cfg
     m = w.mtp
@@ -52,6 +55,12 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     glue.add_streams(b.mtp_eo[:n], b.mtp_hs[:n * c.streams], b.h[:n], c.streams)
     pending = layer_forward(m.layer, w, segs, b, n, None, mtp=True, context=context)
     finish(w, m.mixer, b, n, pending, logits=False)
+    # The archive copy precedes every possible validation/return branch. The
+    # external completion event is recorded only for actual eager submissions;
+    # graph owners record it after replay on the real producing stream.
+    if archive:
+        history_runtime.enqueue(segs, prefill=b.prefill, mtp=True)
+        history_runtime.submitted(segs, prefill=b.prefill, mtp=True)
     if not logits:
         _kv_check(segs, comm=w.comm)
         return None

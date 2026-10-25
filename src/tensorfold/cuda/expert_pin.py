@@ -235,4 +235,4 @@ def _native():
     from .build import load
 
     return load(name="tensorfold_expert_pin_v1", sources=[str(Path(__file__).with_suffix(".cpp"))],
-                with_cuda=True, extra_cflags=["-O3"], verbose=False)
+                need=(7, 0), with_cuda=True, extra_cflags=["-O3"], verbose=False)

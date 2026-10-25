@@ -59,7 +59,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, indexer_history: str="gpu") -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -68,9 +68,10 @@ class FlashNextEngine:
         self._shutdown_sent = False
         self.comm = self.vision = self.w = self.scheduler = self.multi = self.e = self.serial = None
         self.expert_session = expert_session
+        self._indexer_history_session = None
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, indexer_history=indexer_history)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -84,11 +85,15 @@ class FlashNextEngine:
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
                  kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off",
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None,
-                 mtp_model_dir: Path | None = None, dspark_model_dir: Path | None = None) -> None:
+                 mtp_model_dir: Path | None = None, dspark_model_dir: Path | None = None,
+                 indexer_history: str = "gpu") -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
 
+        if indexer_history not in ("gpu", "ram"):
+            raise ValueError("indexer history must be gpu or ram")
+        self.indexer_history = indexer_history
         # Reject malformed counts without reading checkpoint metadata.
         if kv_full_windows is not None and (type(kv_full_windows) is not int or kv_full_windows < 1):
             check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
@@ -98,6 +103,8 @@ class FlashNextEngine:
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
         from ..gguf import resolve_gguf
         gguf = resolve_gguf(model_dir) is not None
+        if indexer_history == "ram" and not gguf:
+            raise ValueError("RAM indexer history requires the GGUF SM70 execution provider")
         check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp,
                               resident_gguf=gguf)
         resident_windows = kv_full_windows if gguf and vram_experts is None else None
@@ -198,6 +205,8 @@ class FlashNextEngine:
             # and loading; a file changed after startup cannot change the head.
             ids.flags.writeable = False
         torch.cuda.set_device(0)
+        if indexer_history == "ram" and torch.cuda.get_device_capability() != (7, 0):
+            raise ValueError("RAM indexer history is supported by the GGUF SM70 CUDA provider only")
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
         self.execution_provider = "sm70" if gguf else "cuda"
         if gguf:
@@ -217,6 +226,12 @@ class FlashNextEngine:
             self.comm.barrier()
         gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
                   (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
+        if gguf and gather is not None:
+            # RAM placement adds collectives before final capacity agreement.
+            # All GGUF ranks must agree on that schedule before taking a branch.
+            modes = gather([int(indexer_history == "ram")])
+            if any(row != modes[0] for row in modes[1:]):
+                raise RuntimeError("tensor-parallel ranks selected different indexer history modes")
         each, mtp = self.depth + 1, stock_mtp
         head_dim = int(text.get("head_dim") or int(text["hidden_size"]) // int(text["num_attention_heads"]))
         self.kv_pair.row_bytes(max(1, int(text["num_key_value_heads"]) // tp) if gguf
@@ -224,8 +239,23 @@ class FlashNextEngine:
         kv_geometry = tuple((side.bits, side.group, side.scale_bytes)
                             for side in (self.kv_pair.key, self.kv_pair.value))
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
-                     or gguf and self.kv_pair.key.quantized)
+                     or gguf and self.kv_pair.key.quantized or indexer_history == "ram")
         rows0 = chunk or PREFILL_ROWS
+        history_plan = None
+        history_maximum_owners = 0
+        history_geometry = {}
+        if indexer_history == "ram":
+            from tensorfold.cuda.geometry import layer_counts
+            from .indexer_history import HistoryPlan
+
+            history_plan = HistoryPlan(layer_counts(text)[1] + int(mtp),
+                int(text.get("indexer_head_dim", 128)), int(text.get("indexer_compress_ratio", 4)),
+                rows0, each if streams > 1 else max(8, each))
+            # Concurrent retained prefixes alias their N allocated slots.
+            # A serial engine can additionally create one independent twin.
+            history_maximum_owners = streams if streams > 1 else 2
+            history_geometry["indexer_raw_device_bytes"] = history_plan.device_bytes_per_layer
+        self._indexer_history_plan = history_plan
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         a4_scalar_host = 0
         if modelopt:
@@ -265,10 +295,12 @@ class FlashNextEngine:
                                                           kv_pair=kv_geometry, graph_bytes=graph_bytes,
                                                           prefill_rows=rows0, kv_status=kv_status, world=tp,
                                                           full_windows=resident_windows,
-                                                          workspace_bytes=2 * 2**30 if resident_windows is not None else 0))
+                                                          workspace_bytes=2 * 2**30 if resident_windows is not None else 0,
+                                                          **history_geometry))
                     if streams > 1 else
                     (lambda text: gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
-                                               kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status)))
+                                               kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status,
+                                               **history_geometry)))
         if gguf:
             original_geometry = geometry
             def geometry(text):
@@ -482,12 +514,21 @@ class FlashNextEngine:
                 def geometry(text):
                     base = dspark_full_geometry(text)
                     def bytes_at(total):
+                        raw_rows = total if history_plan is None else 0
                         target_copy = (total * local_kv * pair_row + pair_dummies +
-                            (total + -(-total // ratio)) * index_dim * 2) if target_layers else 0
+                            (raw_rows + -(-total // ratio)) * index_dim * 2) if target_layers else 0
                         return base.bytes_at(total) + max(0, total * dspark_plan.cache_row_bytes - target_copy)
                     return Geometry(bytes_at, base.reserve, base.minimum_slots)
             numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + dspark_plan.resident_bytes
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + dspark_plan.loading_host_bytes
+        history_host_limit = history_host_per_rank = 0
+        if history_plan is not None:
+            # Every CPU archive owns its complete declared window up front.
+            # Charge all ranks together: host/cgroup availability is shared,
+            # while GPU device admission remains independently per rank.
+            history_host_limit = int(max_len if max_len is not None else self.rope.context_limit) + each
+            history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
+            host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision, rank, workspace),
                                    weight_rule,
@@ -496,6 +537,16 @@ class FlashNextEngine:
                                    **automatic_capacity,
                                    **numeric_capacity,
                                    **rope_capacity, **host_capacity)
+        if history_plan is not None:
+            self.capacity_plan["indexer_history"] = {
+                "mode": "ram", "policy": "lossless-fp16-ram-archive-v1",
+                "host_capacity_upper_bound": history_host_limit,
+                "host_bytes_per_rank_upper_bound": history_host_per_rank,
+                "host_bytes_all_ranks_upper_bound": tp * history_host_per_rank,
+                "device_bytes_per_layer": history_plan.device_bytes_per_layer,
+                "layers": history_plan.layers,
+                "host_archive": "full-window-pageable", "pinned": "bounded-transfer-staging-only",
+            }
         if resident_windows is not None:
             self.capacity_plan["kv_full_windows"] = {
                 "requested": resident_windows, "reserved": min(streams, resident_windows),
@@ -558,8 +609,19 @@ class FlashNextEngine:
             print(f"[tensorfold] {self.prefill_rows}-row idle prompt workspace {prompt_workspace / 2**30:.2f} GiB; "
                   f"planned peak {peak:.2f} GiB at the admitted window", flush=True)
         self.max_len = self.capacity_plan["cache_slots"]
+        if history_plan is not None and self.max_len <= int(text.get("indexer_budget", 2048)):
+            raise ValueError("RAM indexer history requires pooled sparse attention; the admitted cache must exceed indexer_budget")
         if tp > 1:
             self._same_settings(torch, ids)
+        if history_plan is not None:
+            from .indexer_admission import prepare as prepare_history
+            from .indexer_history import HistorySession
+
+            allocator, placement = prepare_history(history_plan, limit=self.max_len, maximum_owners=history_maximum_owners,
+                torch=torch, device=torch.device("cuda", torch.cuda.current_device()), rank=rank, world=tp, gather=gather)
+            self._indexer_history_session = HistorySession(history_plan, allocator,
+                torch.device("cuda", torch.cuda.current_device()), maximum_owners=history_maximum_owners)
+            self.capacity_plan["indexer_history"].update(placement)
         reads = self._startup_reads                              # the n-gram tables' pages, read while the weights load
         w = load(model_dir, mtp=stock_mtp, tp=(rank, tp) if tp > 1 else None,
                  draft_vocab=draft_vocab if stock_mtp else None, ple_on_ssd=ple_on_ssd,
@@ -573,6 +635,8 @@ class FlashNextEngine:
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
         self.w, self.scheduler = w, None
+        if self._indexer_history_session is not None:
+            w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
         if expert_session is not None:
             expert_session.finish_loading()
             w.meta["expert_cache"] = expert_session.cache
@@ -703,6 +767,28 @@ class FlashNextEngine:
             if automatic_experts:
                 self.serial = self.e.twin()
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
+        if history_plan is not None:
+            history_states = list(self.multi.free) if self.multi is not None else [self.e.st]
+            if self.serial is not None:
+                history_states.append(self.serial.st)
+            actual_host = sum(st.host_cache_bytes() for st in history_states)
+            actual_device = sum(st.indexer_history_owner.device_nbytes for st in history_states)
+            owners = len(history_states)
+            allocator_receipt = self._indexer_history_session.allocator.receipt
+            valid = (all(st.indexer_history_owner.limit == self.max_len for st in history_states)
+                     and actual_host == owners * history_plan.host_bytes(self.max_len)
+                     and actual_device == owners * history_plan.device_nbytes
+                     and allocator_receipt["charged_bytes"] == actual_host
+                     and allocator_receipt["pinned_extent_bytes"] == owners * history_plan.pinned_bytes)
+            local = [rank, int(valid), owners, actual_host, actual_device,
+                     allocator_receipt["pinned_extent_bytes"]]
+            materializations = gather(local) if tp > 1 else [local]
+            if any(row[0] != peer or row[1] != 1 for peer, row in enumerate(materializations)):
+                raise RuntimeError("RAM indexer startup allocation disagrees with its admitted archive/staging plan")
+            self.capacity_plan["indexer_history"].update(materialized=True,
+                startup_ranks=[{"rank": row[0], "owners": row[2], "host_backing_bytes": row[3],
+                                "device_raw_bytes": row[4], "pinned_staging_bytes": row[5]}
+                               for row in materializations], local_allocator=allocator_receipt)
         if self.multi is not None:
             from .rotor_decoder import MTP_FORMATS, SERIAL_FORMATS, select
             runtime = None
@@ -1057,6 +1143,11 @@ class FlashNextEngine:
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
         if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
             policy.append(["sm70-kv-working-policy", self._sm70_kv_policy])
+        if getattr(self, "indexer_history", "gpu") == "ram":
+            history_plan = self._indexer_history_plan
+            policy.append(["indexer-history", "lossless-fp16-ram-archive-v1",
+                           [getattr(history_plan, field) for field in
+                            ("layers", "index_dim", "ratio", "prefill_rows", "decode_rows", "page_size")]])
         policy_digest = int.from_bytes(hashlib.sha256(json.dumps(policy).encode()).digest()[:8], "big") & (2**63 - 1)
         confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
         mine = torch.tensor([self.depth, confidence_bits, self.max_len,
@@ -1385,6 +1476,14 @@ class FlashNextEngine:
         multi = getattr(self, "multi", None)
         if multi is not None:
             multi.recover_failed_slots()
+        history = getattr(self, "_indexer_history_session", None)
+        if history is not None:
+            # Graphs/requests are retired and failed-slot recovery is complete;
+            # full host archives outlive every accepted D2H transfer and reset.
+            if weights is not None:
+                torch.cuda.synchronize(weights.device)
+            history.close(fenced=True)
+            self._indexer_history_session = None
         dspark = getattr(weights, "dspark", None)
         if dspark is not None:
             dspark.close()

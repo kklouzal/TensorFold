@@ -466,6 +466,16 @@ allocation margin. Parallel slots share weights and the expert cache; their
 sequence state is separate. Numeric `--vram-experts GIB` budgets keep their
 existing behavior. See [RAM-backed experts](recipes/ram-experts.md).
 
+Flash Next GGUF on SM70 additionally exposes `--indexer-history gpu|ram`.
+`gpu` is the default. `ram` stores lossless raw FP16 indexer history in verified
+NUMA-local host pages, using bounded GPU ring/staging storage and asynchronous
+copies into small registered local host stages. Attention KV and the complete
+pooled indexer cache remain in VRAM. This option is independent of KV precision
+and drafter selection. The host and container must support the restricted NUMA
+operations described in the [V100 guide](../deploy/v100/README.md#numa-local-indexer-archive);
+unsupported placement fails explicitly. Archive-mode full-model qualification
+and measured capacity/performance remain pending.
+
 On a unified-memory GPU (the DGX Spark's GB10), the CUDA server's allocations come out of the host's RAM but are not
 charged to a container's memory limit (`docker run --memory`, cgroup `memory.max`): the limit neither caps the
 model's weights and cache nor keeps them from crowding other work on the machine. The server sizes its window from the

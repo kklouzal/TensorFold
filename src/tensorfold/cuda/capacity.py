@@ -286,14 +286,20 @@ def cuda_reserve_bytes(total: int, *, default: int | None = None) -> int:
     return scaled // denominator
 
 
+def host_stream_reserve_bytes(total: int) -> int:
+    """Existing host staging reserve, shared by global and NUMA admission."""
+    if type(total) is not int or total <= 0:
+        raise ValueError("host physical memory must be positive integer bytes")
+    return reserve_bytes(total, host=True) if os.environ.get("TENSORFOLD_MEMORY_RESERVE_GIB", "").strip() else 2 * GIB
+
+
 def host_stream_bytes() -> int | None:
     """Host staging room, with a 2-GiB default reserve or the explicit startup reserve override."""
 
     memory = _meminfo()
     if memory is None:
         return None
-    reserve = (reserve_bytes(memory["MemTotal"], host=True)
-               if os.environ.get("TENSORFOLD_MEMORY_RESERVE_GIB", "").strip() else 2 * GIB)
+    reserve = host_stream_reserve_bytes(memory["MemTotal"])
     return max(0, memory["MemAvailable"] - reserve)
 
 

@@ -72,6 +72,14 @@ rewritten. Tokenizer/config sidecars are staged in the runtime cache. See the
 [V100 serving profile](../../deploy/v100/README.md) and its
 [validation scope](../v100-flashnext-validation.md) before selecting a deployment.
 
+`--indexer-history ram` selects a bounded GPU raw-indexer working set plus a
+lossless asynchronous NUMA-local RAM archive on this GGUF/SM70 provider.
+`--indexer-history gpu` retains the default full GPU history. Pooled indexer
+keys and attention KV remain on the GPU; KV precision and drafting flags retain
+their own contracts. Use the [NUMA deployment procedure](../../deploy/v100/README.md#numa-local-indexer-archive).
+The archive path is under qualification; no new concurrent-window or throughput
+result is established yet.
+
 The modern CUDA provider serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
 files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
 NVFP4. CUDA `--ple-on-ssd` supports affine, BF16, FP8 and NVFP4 tables. `tensorfold serve` loads the checkpoint

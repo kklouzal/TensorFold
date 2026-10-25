@@ -208,6 +208,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "Memory and latency depend on checkpoint format and storage")
     speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
                        help="Flash Next CUDA resident GGUF or RAM experts auto: reserve N full KV windows across concurrent slots")
+    speed.add_argument("--indexer-history", choices=("gpu", "ram"), default="gpu",
+                       help="Flash Next GGUF/SM70: full GPU raw indexer history (default), or a bounded GPU "
+                            "working ring with asynchronous NUMA-local RAM archive; pooled history stays on GPU")
     speed.add_argument("--vram-experts-pin", choices=("off", "auto", "on"), default="off",
                        help="RAM expert authority: off keeps pageable bytes; auto admits host page registration, "
                             "on requires it; allocation and full host capacity are checked before loading")

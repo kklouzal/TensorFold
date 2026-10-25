@@ -78,7 +78,11 @@ def test_real_active_package_spec_does_not_execute_nvidia_python(monkeypatch, tm
         # Ensure both preexisting modules and newly created entries restore.
         monkeypatch.setitem(sys.modules, name, None)
         monkeypatch.delitem(sys.modules, name)
-    monkeypatch.syspath_prepend(str(root))
+    # A regular installed NVIDIA package overrides namespace portions even
+    # later on sys.path. This fixture owns the active package search path;
+    # it must not accidentally select the container's real regular package.
+    monkeypatch.setattr(sys, "path", [str(root)])
+    comm.importlib.invalidate_caches()
     monkeypatch.delenv("TF_NCCL_LIB", raising=False)
     monkeypatch.setattr(comm.ctypes, "CDLL", lambda path: path)
     assert comm._library() == selected

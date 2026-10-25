@@ -337,3 +337,54 @@ The bounded compatible configuration uses3equal245713-token windows with
 1GiBgraph allowance, preservingtheexisting4GiBfloor/2GiBworkspace, and passed
 all27serial/draft/concurrent/SSE/cancel/recovery checks. It is not a claim of
 three simultaneous full262KDSpark workloads or of better output quality.
+
+## NUMA-local indexer archive
+
+`--indexer-history ram` replaces full raw GPU indexer history with a bounded
+GPU ring and staging buffers plus a lossless FP16 archive in local system RAM.
+`--indexer-history gpu` is the default. Attention KV and all pooled indexer
+keys remain on the GPU. The archive is independent of the selected KV format
+and drafter. Its full-model correctness, capacity and performance qualification
+is pending; the preceding service measurements use GPU history.
+
+Each rank resolves its actual GPU UUID/PCI device to a NUMA node, binds owned
+anonymous allocations before first write, verifies every backing page, and
+registers only bounded transfer stages. CPU archive copies run on that node's
+CPUs. Missing placement capabilities fail explicitly. CPU affinity alone does
+not establish memory locality. On this host GPUs0–3 attach to node0 and
+GPUs4–7 to node1; runtime discovery also supports CUDA ordinal remapping.
+
+Docker's ordinary default seccomp policy blocks the required NUMA operations.
+Generate the narrow override from a temporary CPU-only container using this
+host's actual default policy and the intended immutable TensorFold image:
+
+```bash
+docker run -d --name tf-numa-default --network none \
+  --entrypoint /bin/sleep "$TF_IMAGE" 300
+sudo python3 tools/generate_numa_seccomp.py --container tf-numa-default \
+  --output-directory /absolute/new/numa-profile
+docker rm -f tf-numa-default
+```
+
+The generated profile preserves the captured filter and grants only static
+node binding without migration, policy queries and self page-location queries.
+It requires neither extra capabilities nor unconfined seccomp. Regenerate and
+requalify after changes to Docker/runtime defaults, capabilities or CPU/node
+allowances. Keep the selected node in the container's allowed memory set.
+
+For a direct run, add `--security-opt
+seccomp=/absolute/new/numa-profile/seccomp.json` to Docker and
+`--indexer-history ram` to the TensorFold command. For Compose:
+
+```bash
+export TF_INDEXER_HISTORY=ram
+export TF_NUMA_SECCOMP=/absolute/new/numa-profile/seccomp.json
+docker compose -f deploy/v100/compose.yaml \
+  -f deploy/v100/compose.numa.yaml up -d
+```
+
+Use an archive-capable image built from the matching canonical source. The
+optional override is unnecessary for GPU-history mode. Startup reports host
+archive/pinned staging reservations separately from GPU cache storage. Preserve
+the existing device floor and workspace while selecting equal context windows;
+saved raw-history bytes alone do not establish how many full windows fit.

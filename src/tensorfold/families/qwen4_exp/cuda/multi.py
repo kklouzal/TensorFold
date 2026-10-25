@@ -788,10 +788,16 @@ class MultiDecoder:
             mtp_compute(self.w, mtp_stage(self.pbuf, absorb), self.pbuf, logits=False)
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
+        for s, mtp_len, _, snap in points:
+            if snap is not None and getattr(s.st, "indexer_history_owner", None) is not None:
+                snap.update(s.st.indexer_snapshot_metadata(snap["pos"], mtp_len))
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
             commit(self.w, st, self.pbuf, n, n, at=a0)
         for s, mtp_len, tail, snap in points:            # a point that ends its piece: the state as committed
-            self.fills[s.sid][3].append((snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}, tail))
+            state = snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}
+            if snap is None and getattr(s.st, "indexer_history_owner", None) is not None:
+                state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
+            self.fills[s.sid][3].append((state, tail))
         return lasts
 
     def _failed(self, pieces, exc: Exception) -> list[Stream]:
@@ -871,7 +877,10 @@ class MultiDecoder:
             if self._keep_at(s) is not None and max(MIN_GAP, s.cached + 1) <= at < len(s.prompt):
                 mtp_len = s.st.mtp_len - 1 if mtp else s.st.mtp_len        # as a point ending a piece keeps it
                 try:
-                    self._remember(list(s.prompt[:at]), s.st, {**s.st.snapshot(), "mtp_len": mtp_len}, tail)
+                    state = {**s.st.snapshot(), "mtp_len": mtp_len}
+                    if getattr(s.st, "indexer_history_owner", None) is not None:
+                        state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
+                    self._remember(list(s.prompt[:at]), s.st, state, tail)
                 except Exception as exc:                 # noqa: BLE001  its reply is the error; its slot holds nothing
                     s.error = exc
                     self._drop_kept(s.st)
@@ -1264,9 +1273,17 @@ class MultiDecoder:
 
 
 def _tensors(st: State):
+    from .indexer_history import IndexerHistory, HistoryLayer
+
     for value in vars(st).values():
         for v in value if isinstance(value, list) else [value]:
-            if isinstance(v, torch.Tensor):
+            if isinstance(v, IndexerHistory):
+                yield from v.device_tensors()
+            elif isinstance(v, HistoryLayer):
+                # The State's explicit owner above accounts for each shared
+                # ring/stage once; a layer handle owns no additional storage.
+                continue
+            elif isinstance(v, torch.Tensor):
                 yield v
             elif hasattr(v, "__dict__"):                  # scratch and KV cache objects, the MTP head's too
                 yield from (t for t in vars(v).values() if isinstance(t, torch.Tensor))

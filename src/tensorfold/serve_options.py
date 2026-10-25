@@ -96,6 +96,17 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         from tensorfold.cuda.capacity import config
         from tensorfold.cuda.expert_parallel import ownership
         ownership(ranks, shards, getattr(args, "rank", 0), int(config(config_dir)["num_experts"]))
+    history = getattr(args, "indexer_history", "gpu")
+    if history not in ("gpu", "ram"):
+        raise ValueError("--indexer-history must be gpu or ram")
+    if history == "ram":
+        if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
+            raise ValueError("--indexer-history ram requires Flash Next GGUF on CUDA/SM70")
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if source is None or resolve_gguf(source) is None:
+            raise ValueError("--indexer-history ram requires a local Flash Next GGUF checkpoint")
     windows = getattr(args, "kv_full_windows", None)
     if windows is not None:
         if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":

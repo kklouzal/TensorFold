@@ -74,6 +74,32 @@ def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABI
     links = _toolkit()
     if links:
         kwargs["extra_ldflags"] = [*kwargs.get("extra_ldflags", []), *links]
+    return _load(cpp_extension, name, sources, kwargs)
+
+
+def load_cpu(name: str, sources: str | list[str], *, with_cuda: bool = False, **kwargs: Any) -> Any:
+    """Build a CPU extension without GPU discovery, CUDA flags or toolkit links.
+
+    The CPU suffix separates module/build-lock identities from GPU variants.
+    Explicit build directories remain roots, as for ``load``. Callers retain
+    responsibility for source, compiler-option and framework cache identities.
+    """
+    from torch.utils import cpp_extension
+
+    if with_cuda is not False:
+        raise ValueError("CPU extensions require with_cuda=False")
+    name = name + "_cpu"
+    directory = kwargs.get("build_directory")
+    if directory is not None:
+        directory = Path(directory) / name
+        directory.mkdir(parents=True, exist_ok=True)
+        kwargs["build_directory"] = str(directory)
+    kwargs["with_cuda"] = False
+    return _load(cpp_extension, name, sources, kwargs)
+
+
+def _load(cpp_extension: Any, name: str, sources: str | list[str], kwargs: dict[str, Any]) -> Any:
+    """Share build-lock diagnostics without adding target policy to CPU builds."""
     held = _announce(cpp_extension, name, sources, kwargs.get("build_directory"))
     timer = None
     if held is not None:

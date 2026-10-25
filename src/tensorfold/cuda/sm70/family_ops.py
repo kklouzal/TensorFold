@@ -13,6 +13,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from tensorfold.families.qwen4_exp.cuda.indexer_history import HistoryLayer
+
 
 def group_sums(value, out):
     out.copy_(value.float().reshape(*value.shape[:-1], value.shape[-1] // 32, 32).sum(-1))
@@ -352,14 +354,37 @@ def rotary(value, inv_freq, positions, *, rope=None, delta=None, length=0, secti
     return result
 
 
+def _history_stage(history, kind, capacity, rope):
+    """Select a captured stage using caller-owned phase and logical capacity."""
+    if rope is not None:
+        raise ValueError("RAM indexer history supports the SM70 text rotary path only")
+    if kind not in ("prefill", "decode"):
+        raise ValueError("RAM indexer history requires an explicit prefill/decode phase")
+    if type(capacity) is not int or not 0 < capacity <= history.owner.limit:
+        raise ValueError("RAM indexer history requires the current positive cache capacity")
+    stage = history.stage(kind)
+    from .family_native import extension
+
+    return extension(), stage
+
+
 def attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps, *,
               q_heads, kv_heads, head_dim, index_heads, index_dim, ks=None, vs=None, bits=0,
               rope=None, delta=None, length=0, sections=(11, 11, 10), rope_scale=1.0, codec=0,
               status=None, layer=0, k_bits=None, k_codec=None, v_bits=None, v_codec=None,
-              centroids=None, thresholds=None, valid_rows=None, independent_rows=False):
+              centroids=None, thresholds=None, valid_rows=None, independent_rows=False,
+              history_kind=None, history_capacity=None):
     kb, vb = _kv_plan(bits, codec, k_bits, k_codec, v_bits, v_codec)
     kf = codec if k_codec is None else k_codec
     vf = codec if v_codec is None else v_codec
+    if isinstance(ikc, HistoryLayer):
+        if history_capacity != kc.shape[0]:
+            raise ValueError("RAM indexer preparation requires the current K/V cache capacity")
+        native, stage = _history_stage(ikc, history_kind, history_capacity, rope)
+        return native.prep_staged(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, stage,
+                                  ks if kb else None, vs if vb else None, status, delta, valid_rows,
+                                  q_heads, kv_heads, head_dim, index_heads, index_dim, kb, vb, layer,
+                                  eps, rope_scale, independent_rows, kf, vf, ikc.origin)
     native = _fused(p) if rope is None and head_dim <= 256 and index_dim <= 256 else None
     if native is not None:
         if kf or vf:
@@ -485,7 +510,16 @@ def _torch_add_streams(e, hs, out, streams):
 
 
 def qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, *, rope=None, delta=None,
-             length=0, sections=(11, 11, 10), rope_scale=1.0):
+             length=0, sections=(11, 11, 10), rope_scale=1.0,
+             history_kind=None, history_capacity=None, status=None, valid_rows=None, layer=0):
+    if isinstance(ikc, HistoryLayer):
+        native, stage = _history_stage(ikc, history_kind, history_capacity, rope)
+        ring, origin = ikc.ring, ikc.origin
+        # Pooling must consume old carry before publishing the new ring tail.
+        # The full current capacity preserves the original RMS reduction mode.
+        native.pool_staged(stage, ring, pooled, pos0, ik_scale, inv_freq, delta, scratch.ratio,
+                           rows, history_capacity, eps, rope_scale, status, valid_rows, layer, origin)
+        return native.ring_publish(stage, ring, pos0, rows, history_capacity, status, valid_rows, layer, origin)
     ratio, dims = scratch.ratio, ikc.shape[1]
     native = _fused(ikc) if rope is None and dims <= 256 else None
     if native is not None:

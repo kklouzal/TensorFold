@@ -37,6 +37,64 @@ def test_every_cuda_extension_builds_through_the_helper():
 
 
 @pytest.mark.torch
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cpu_extension_uses_shared_build_policy_without_gpu_discovery(ext, monkeypatch, tmp_path, explicit):
+    def forbidden(*args, **kwargs):
+        pytest.fail("CPU extension consulted GPU architecture or CUDA toolkit")
+
+    monkeypatch.setattr(build, "arch_flags", forbidden)
+    monkeypatch.setattr(build, "_toolkit", forbidden)
+    root = tmp_path / "host-build" if explicit else None
+    options = {"build_directory": root} if explicit else {}
+    assert build.load_cpu("tf_host", ext.sources, extra_cflags=["-O2"], verbose=False, **options) == "module"
+    expected = {"name": "tf_host_cpu", "sources": ext.sources, "extra_cflags": ["-O2"],
+                "verbose": False, "with_cuda": False}
+    if explicit:
+        expected["build_directory"] = str(root / "tf_host_cpu")
+        assert (root / "tf_host_cpu").is_dir()
+    assert ext.calls == [((), expected)]
+    assert ext.said == ["building CUDA extension tf_host_cpu (first start after an install or update; "
+                        "later starts reuse it)"]
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("invalid", [True, None, 0, 1])
+def test_cpu_extension_refuses_cuda_policy_before_build(ext, invalid):
+    with pytest.raises(ValueError, match="with_cuda=False"):
+        build.load_cpu("tf_host", ext.sources, with_cuda=invalid)
+    assert ext.calls == []
+
+
+@pytest.mark.torch
+def test_cpu_extension_reports_the_actual_cpu_build_lock(ext):
+    directory = ext.dir.parent / "tf_host_cpu"
+    directory.mkdir()
+    lock = directory / "lock"
+    lock.write_text("")
+    assert build.load_cpu("tf_host", ext.sources) == "module"
+    assert len(ext.said) == 1
+    assert str(lock) in ext.said[0] and HINT in ext.said[0]
+
+
+@pytest.mark.torch
+def test_cpu_extension_preserves_build_failure_and_stops_its_timer(ext, monkeypatch):
+    primary = RuntimeError("controlled CPU compile failure")
+    timer = SimpleNamespace(daemon=False, start=lambda: calls.append("start"), cancel=lambda: calls.append("cancel"))
+    calls = []
+    monkeypatch.setattr(build, "_announce", lambda *args: ("cpu-lock", (1, 2)))
+    monkeypatch.setattr(build.threading, "Timer", lambda *args: timer)
+
+    def fail(**kwargs):
+        raise primary
+
+    monkeypatch.setattr(ext.torch, "load", fail)
+    with pytest.raises(RuntimeError) as caught:
+        build.load_cpu("tf_host", ext.sources)
+    assert caught.value is primary
+    assert timer.daemon and calls == ["start", "cancel"]
+
+
+@pytest.mark.torch
 def test_the_flags_name_only_this_gpu(monkeypatch):
     _gpu(monkeypatch, (12, 1))
     assert build.arch_flags() == ["-gencode=arch=compute_121,code=sm_121"]

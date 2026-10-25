@@ -53,6 +53,35 @@ def test_invalid_pair_rejects_before_supported_mode_or_shape_setup(monkeypatch, 
         engine.FlashNextEngine(tmp_path, kv_dtype='invalid')
 
 
+@pytest.mark.parametrize('mode', [None, False, 0, 'cpu', 'RAM'])
+def test_invalid_indexer_history_mode_refuses_before_model_or_cuda(monkeypatch, tmp_path, mode):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families.qwen4_exp.cuda import engine
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid indexer history reached model or accelerator setup')
+
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', forbidden)
+    monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
+    with pytest.raises(ValueError, match='indexer history'):
+        engine.FlashNextEngine(tmp_path, indexer_history=mode)
+
+
+def test_ram_indexer_history_requires_gguf_before_model_or_cuda(monkeypatch, tmp_path):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold.families.qwen4_exp.cuda import engine
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('unsupported RAM indexer history reached model or accelerator setup')
+
+    monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: None)
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', forbidden)
+    monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
+    with pytest.raises(ValueError, match='RAM indexer history requires.*GGUF SM70'):
+        engine.FlashNextEngine(tmp_path, indexer_history='ram')
+
+
 @pytest.mark.parametrize('key,value', [('fp16', 'fp16'), ('fp16', 'int8'), ('int8', 'fp16'), ('int8', 'int8')])
 def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_path, key, value):
     from tensorfold.cuda import chat_template

@@ -112,6 +112,48 @@ MULTI_TEXT = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads
               "vocab_size": 1024, "hc_count": 4}
 
 
+@pytest.mark.parametrize("capacity", [37, 256, 8196, 262148])
+@pytest.mark.parametrize("mtp", [False, True])
+@pytest.mark.parametrize("full_windows", [None, 1, 4])
+def test_bounded_raw_indexer_forecast_counts_every_owner_and_only_real_resize_overlap(capacity, mtp, full_windows):
+    raw_owner_bytes = 2060 * 128 * 2
+    options = dict(streams=4, each=4, keep=8, mtp=mtp, world=2, full_windows=full_windows,
+                   workspace_bytes=2 << 30)
+    full = geometry.indexed_stream_geometry(MULTI_TEXT, **options)
+    bounded = geometry.indexed_stream_geometry(MULTI_TEXT, **options, indexer_raw_device_bytes=raw_owner_bytes)
+    count = 3 + int(mtp)
+    windows = 1 if full_windows is None else full_windows
+    raw_rows = windows * capacity + (4 - windows) * min(256, capacity)
+    difference = count * (raw_rows * 128 * 2 - 4 * raw_owner_bytes)
+    if full_windows is not None:
+        difference += capacity * 128 * 2  # full raw history was also held during one-layer replacement
+    assert full.bytes_at(capacity) - bounded.bytes_at(capacity) == difference
+
+
+@pytest.mark.parametrize("capacity", [37, 8196, 262148])
+@pytest.mark.parametrize("mtp", [False, True])
+def test_serial_bounded_raw_indexer_forecast_charges_both_independent_state_owners(capacity, mtp):
+    raw_owner_bytes = 2060 * 128 * 2
+    options = dict(world=2, reserve=4, indexed=True, mtp=mtp)
+    full = geometry.gdn_geometry(MULTI_TEXT, **options)
+    bounded = geometry.gdn_geometry(MULTI_TEXT, **options, indexer_raw_device_bytes=raw_owner_bytes)
+    assert full.bytes_at(capacity) - bounded.bytes_at(capacity) == 2 * (3 + int(mtp)) * (
+        capacity * 128 * 2 - raw_owner_bytes)
+
+
+@pytest.mark.parametrize("invalid", [True, -1, 1.5, "100"])
+def test_bounded_raw_indexer_forecast_rejects_invalid_byte_contract(invalid):
+    with pytest.raises(ValueError, match="raw indexer"):
+        geometry.indexed_stream_geometry(MULTI_TEXT, 4, 4, 8, mtp=True, indexer_raw_device_bytes=invalid)
+    with pytest.raises(ValueError, match="raw indexer"):
+        geometry.gdn_geometry(MULTI_TEXT, 2, 4, indexed=True, indexer_raw_device_bytes=invalid)
+
+
+def test_bounded_indexer_history_cannot_silently_change_nonindexed_geometry():
+    with pytest.raises(ValueError, match="indexed attention"):
+        geometry.gdn_geometry(MULTI_TEXT, 2, 4, indexer_raw_device_bytes=128)
+
+
 @pytest.mark.parametrize("value,mib", [(None, 0), ("", 0), (" 64 ", 64), ("0", 0), ("0064", 64),
                                        ("65536", 65536)])
 def test_multi_graph_budget_reads_whole_mebibytes(monkeypatch, value, mib):

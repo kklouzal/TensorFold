@@ -196,7 +196,7 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
         def drop(self):
             return []
 
-    owner = SimpleNamespace(concurrent=True, multi=Decoder(), scheduler=None,
+    owner = SimpleNamespace(concurrent=True, multi=Decoder(), scheduler=None, comm=None,
                             vision=SimpleNamespace(warm=lambda: stages.append("vision")))
     owner.close = lambda: owner.scheduler.close()
     owner._rollback_startup = owner.close

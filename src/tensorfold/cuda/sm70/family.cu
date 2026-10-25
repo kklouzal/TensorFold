@@ -383,14 +383,14 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 // specialization preserves its stored Half boundaries without adding branches
 // or codec registers to the existing launch. The codec owns its staged basis,
 // normalization, codebook and packed stores in the shared Q4 header.
-template<bool NORM5_POSSIBLE>
+template<bool NORM5_POSSIBLE, bool INDEX_STAGED = false>
 __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_long, const float* qw,
                                const float* kw, const float* iw, const float* freq, __half* queries,
                                void* kc, void* vc, __half* iq, __half* ikc, void* ks, void* vs,
                                int* status, const int* delta, const int* live, int qheads, int kvheads,
                                int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
                                int rotary_half, int capacity, int rows, float eps, float rope_scale,
-                               bool independent_rows, int kcodec, int vcodec) {
+                               bool independent_rows, int kcodec, int vcodec, const int64_t* stage_origin, int stage_rows) {
     __shared__ float shared[512], normalized[256];
     const int units = qheads + 2 * kvheads + index_heads + 1;
     const int unit = blockIdx.x % units, row = blockIdx.x / units, col = threadIdx.x;
@@ -401,11 +401,21 @@ __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_l
     }
     if (row >= count) return;  // Padded rows do not read source or mutate cache.
     const int64_t start_row = position_value(position, pos_long);
-    if (start_row < 0 || start_row >= capacity || row >= int64_t(capacity) - start_row) {
+    if (start_row < 0 || start_row >= capacity
+            || (INDEX_STAGED ? count > int64_t(capacity) - start_row : row >= int64_t(capacity) - start_row)) {
         if (!col && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
         return;
     }
     const int64_t cache_row = start_row + row;
+    int64_t stage_offset = 0;
+    if constexpr (INDEX_STAGED) {
+        const int64_t origin = stage_origin ? *stage_origin : start_row;
+        if (origin < 0 || origin > start_row || count > int64_t(stage_rows) - (start_row - origin)) {
+            if (!col && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+            return;
+        }
+        stage_offset = start_row - origin;
+    }
     int kind, head, width, start, flag;
     if (unit < qheads) { kind = 0; head = unit; width = dim; start = head * 2 * dim; flag = 1; }
     else if (unit < qheads + kvheads) { kind = 1; head = unit - qheads; width = dim; start = 2 * qheads * dim + head * dim; flag = 2; }
@@ -473,7 +483,7 @@ __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_l
         if (vbits == 8) quantized_store(value, static_cast<int8_t*>(vc), static_cast<__half*>(vs), base, col, status, layer, row, live);
         else static_cast<__half*>(vc)[base + col] = __float2half_rn(value);
     } else if (kind == 3) iq[(int64_t(row) * index_heads + head) * index_dim + col] = __float2half_rn(value);
-    else ikc[cache_row * index_dim + col] = __float2half_rn(value);
+    else ikc[(INDEX_STAGED ? stage_offset + row : cache_row) * index_dim + col] = __float2half_rn(value);
 }
 
 __global__ void pool_kernel(const __half* cache, __half* pooled, const void* position, bool pos_long,
@@ -503,6 +513,90 @@ __global__ void pool_kernel(const __half* cache, __half* pooled, const void* pos
         value = half_round(value * cosine + (col < rotary_half ? -cross : cross) * sine);
     }
     if (col < dim) pooled[int64_t(block) * dim + col] = __float2half_rn(value);
+}
+
+__device__ __forceinline__ bool staged_index_frame(const void* position, bool pos_long, const int* live,
+                                                  int rows, int capacity, const int64_t* origin, int stage_rows,
+                                                  int* status, int layer, int64_t& start, int& count, int64_t& offset) {
+    count = live ? *live : rows;
+    if (count < 0 || count > rows) {
+        if (!threadIdx.x && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return false;
+    }
+    if (!count) return false;
+    start = position_value(position, pos_long);
+    if (start < 0 || start >= capacity || count > int64_t(capacity) - start) {
+        if (!threadIdx.x && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return false;
+    }
+    const int64_t first = origin ? *origin : start;
+    if (first < 0 || first > start || count > int64_t(stage_rows) - (start - first)) {
+        if (!threadIdx.x && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return false;
+    }
+    offset = start - first;
+    return true;
+}
+
+__global__ void pool_staged_kernel(const __half* stage, const __half* ring, __half* pooled,
+                                   const void* position, bool pos_long, const float* weight,
+                                   const float* freq, const int* delta, const int* live, int* status,
+                                   int ratio, int rows, int dim, int ring_rows, int capacity,
+                                   int logical_outputs, int rotary_half, int layer, float eps, float rope_scale,
+                                   const int64_t* stage_origin, int stage_rows) {
+    __shared__ float shared[512], normalized[256];
+    int64_t start, stage_offset;
+    int count;
+    if (!staged_index_frame(position, pos_long, live, rows, capacity, stage_origin, stage_rows,
+                            status, layer, start, count, stage_offset)) return;
+    const int64_t block = start / ratio + blockIdx.x;
+    if (block >= logical_outputs || (block + 1) * ratio > start + count) return;
+    const int col = threadIdx.x;
+    float value = 0.f;
+    if (col < dim) {
+        for (int tap = 0; tap < ratio; ++tap) {
+            const int64_t source = block * ratio + tap;
+            const float next = guarded(__half2float(source < start
+                ? ring[(source % ring_rows) * dim + col]
+                : stage[(stage_offset + source - start) * dim + col]), status, 16, layer, 0, nullptr);
+            if (!tap) value = next;
+            else value = value + next;
+        }
+        value = half_round(value * (1.f / float(ratio)));
+    }
+    normalized[col] = value;
+    __syncthreads();
+    // The old full-cache launch supplied capacity/ratio via gridDim.x.
+    // A bounded launch must retain that logical reduction-mode input.
+    float total = torch_sum(FloatSquareReader{normalized}, dim, logical_outputs, shared);
+    float inv = rsqrtf(total * (1.f / float(dim)) + eps);
+    normalized[col] = col < dim ? half_round((value * inv) * weight[col]) : 0.f;
+    __syncthreads();
+    value = normalized[col];
+    if (col < rotary_half * 2) {
+        float angle = float(block * ratio + (delta ? *delta : 0)) * freq[col % rotary_half];
+        float sine = sinf(angle), cosine = cosf(angle); sine *= rope_scale; cosine *= rope_scale;
+        float cross = normalized[col < rotary_half ? col + rotary_half : col - rotary_half];
+        value = half_round(value * cosine + (col < rotary_half ? -cross : cross) * sine);
+    }
+    if (col < dim) pooled[block * dim + col] = __float2half_rn(guarded(value, status, 16, layer, 0, nullptr));
+}
+
+__global__ void ring_publish_kernel(const __half* stage, __half* ring, const void* position, bool pos_long,
+                                    const int* live, int* status, int rows, int dim, int ring_rows,
+                                    int capacity, int layer, const int64_t* stage_origin, int stage_rows) {
+    int64_t start, stage_offset;
+    int count;
+    if (!staged_index_frame(position, pos_long, live, rows, capacity, stage_origin, stage_rows,
+                            status, layer, start, count, stage_offset)) return;
+    const int retained = min(count, ring_rows), first = count - retained;
+    for (int64_t index = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         index < int64_t(retained) * dim; index += int64_t(gridDim.x) * blockDim.x) {
+        const int source = first + index / dim, col = index % dim;
+        // At most ring_rows distinct logical rows publish after pooling consumed
+        // all staging/carry inputs. No modulo destination has multiple writers.
+        ring[((start + source) % ring_rows) * dim + col] = stage[(stage_offset + source) * dim + col];
+    }
 }
 
 __global__ void qsa_dense_kernel(const void* position, bool pos_long, int* sparse, int* counts, int rows) {
@@ -666,16 +760,17 @@ void family_prep_cuda(const T& p, const T& position, const T& qw, const T& kw, c
         index_dim, kbits, vbits, layer, frequency.numel(), kc.size(0), p.size(0), eps, rope_scale, independent_rows);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
-void family_prep_q4_cuda(const T& p, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+template<bool INDEX_STAGED>
+void prep_format_cuda(const T& p, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
                          T& q, T& kc, T& vc, T& iq, T& ikc, const O& ks, const O& vs, const O& status,
                          const O& delta, const O& live, int qheads, int kvheads, int dim, int index_heads,
                          int index_dim, int kbits, int vbits, int layer, float eps, float rope_scale,
-                         bool independent_rows, int kcodec, int vcodec) {
+                         bool independent_rows, int kcodec, int vcodec, const O& stage_origin) {
     if (p.size(0)) {
         // CODEC4 keeps a separate compiled path without CODEC5's norm work or
         // register lifetimes; mixed CODEC4/5 follows the extended specialization.
         auto launch = [&](auto norm5) {
-            prep_q4_kernel<decltype(norm5)::value><<<p.size(0) * (qheads + 2 * kvheads + index_heads + 1),
+            prep_q4_kernel<decltype(norm5)::value, INDEX_STAGED><<<p.size(0) * (qheads + 2 * kvheads + index_heads + 1),
                                                     THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
                 ptr<__half>(p), position.data_ptr(), position.scalar_type() == at::kLong,
                 ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(frequency), ptr<__half>(q),
@@ -683,11 +778,29 @@ void family_prep_q4_cuda(const T& p, const T& position, const T& qw, const T& kw
                 ks ? ks->data_ptr() : nullptr, vs ? vs->data_ptr() : nullptr, status ? ptr<int>(*status) : nullptr,
                 delta ? ptr<int>(*delta) : nullptr, live ? ptr<int>(*live) : nullptr, qheads, kvheads, dim, index_heads,
                 index_dim, kbits, vbits, layer, frequency.numel(), kc.size(0), p.size(0), eps, rope_scale,
-                independent_rows, kcodec, vcodec);
+                independent_rows, kcodec, vcodec, stage_origin ? ptr<int64_t>(*stage_origin) : nullptr, ikc.size(0));
         };
         if (kcodec == 5 || vcodec == 5) launch(std::true_type{}); else launch(std::false_type{});
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void family_prep_q4_cuda(const T& p, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+                         T& q, T& kc, T& vc, T& iq, T& ikc, const O& ks, const O& vs, const O& status,
+                         const O& delta, const O& live, int qheads, int kvheads, int dim, int index_heads,
+                         int index_dim, int kbits, int vbits, int layer, float eps, float rope_scale,
+                         bool independent_rows, int kcodec, int vcodec) {
+    prep_format_cuda<false>(p, position, qw, kw, iw, frequency, q, kc, vc, iq, ikc, ks, vs, status, delta, live,
+                             qheads, kvheads, dim, index_heads, index_dim, kbits, vbits, layer, eps, rope_scale,
+                             independent_rows, kcodec, vcodec, {});
+}
+void family_prep_staged_cuda(const T& p, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+                             T& q, T& kc, T& vc, T& iq, T& ikc, const O& ks, const O& vs, const O& status,
+                             const O& delta, const O& live, int qheads, int kvheads, int dim, int index_heads,
+                             int index_dim, int kbits, int vbits, int layer, float eps, float rope_scale,
+                             bool independent_rows, int kcodec, int vcodec, const O& stage_origin) {
+    prep_format_cuda<true>(p, position, qw, kw, iw, frequency, q, kc, vc, iq, ikc, ks, vs, status, delta, live,
+                            qheads, kvheads, dim, index_heads, index_dim, kbits, vbits, layer, eps, rope_scale,
+                            independent_rows, kcodec, vcodec, stage_origin);
 }
 void family_pool_cuda(const T& cache, T& pooled, const T& position, const T& weight, const T& frequency,
                       const O& delta, int ratio, int rows, float eps, float rope_scale) {
@@ -695,6 +808,29 @@ void family_pool_cuda(const T& cache, T& pooled, const T& position, const T& wei
     if (count) pool_kernel<<<count, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(ptr<__half>(cache), ptr<__half>(pooled),
         position.data_ptr(), position.scalar_type() == at::kLong, ptr<float>(weight), ptr<float>(frequency),
         delta ? ptr<int>(*delta) : nullptr, ratio, rows, cache.size(1), frequency.numel(), eps, rope_scale);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void family_pool_staged_cuda(const T& stage, const T& ring, T& pooled, const T& position, const T& weight,
+                             const T& frequency, const O& delta, int ratio, int rows, int capacity,
+                             float eps, float rope_scale, const O& status, const O& live, int layer,
+                             const O& stage_origin) {
+    const int count = int((int64_t(rows) + ratio - 1) / ratio);
+    if (count) pool_staged_kernel<<<count, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(stage), ptr<__half>(ring), ptr<__half>(pooled), position.data_ptr(),
+        position.scalar_type() == at::kLong, ptr<float>(weight), ptr<float>(frequency),
+        delta ? ptr<int>(*delta) : nullptr, live ? ptr<int>(*live) : nullptr, status ? ptr<int>(*status) : nullptr,
+        ratio, rows, stage.size(1), ring.size(0), capacity, capacity / ratio, frequency.numel(), layer, eps, rope_scale,
+        stage_origin ? ptr<int64_t>(*stage_origin) : nullptr, stage.size(0));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void family_ring_publish_cuda(const T& stage, T& ring, const T& position, int rows, int capacity,
+                              const O& status, const O& live, int layer, const O& stage_origin) {
+    const int64_t count = int64_t(std::min<int64_t>(rows, ring.size(0))) * stage.size(1);
+    if (count) ring_publish_kernel<<<blocks(count), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(stage), ptr<__half>(ring), position.data_ptr(), position.scalar_type() == at::kLong,
+        live ? ptr<int>(*live) : nullptr, status ? ptr<int>(*status) : nullptr,
+        rows, stage.size(1), ring.size(0), capacity, layer,
+        stage_origin ? ptr<int64_t>(*stage_origin) : nullptr, stage.size(0));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void family_qsa_dense_cuda(const T& position, T& sparse, T& counts, int rows) {

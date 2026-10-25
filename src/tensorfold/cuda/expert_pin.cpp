@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <exception>
 #include <limits>
+#include <dlfcn.h>
 
 // Explicit model-owned registration. The Python policy publishes this owner
 // before calling pin(), so interrupts cannot strand a successful registration.
@@ -76,4 +77,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.attr("memory_allocation") = static_cast<int>(cudaErrorMemoryAllocation);
     m.attr("not_supported") = static_cast<int>(cudaErrorNotSupported);
     m.def("error_text", [](int code) { return cudaGetErrorString(static_cast<cudaError_t>(code)); });
+    m.def("runtime_info", []() {
+        int runtime = 0;
+        const auto status = cudaRuntimeGetVersion(&runtime);
+        TORCH_CHECK(status == cudaSuccess, "cannot identify loaded CUDA host-registration runtime");
+        Dl_info library{};
+        TORCH_CHECK(dladdr(reinterpret_cast<void*>(cudaHostRegister), &library) && library.dli_fname,
+                    "cannot identify loaded CUDA host-registration library");
+        pybind11::dict result;
+        result["version"] = runtime;
+        result["library"] = library.dli_fname;
+        return result;
+    });
 }

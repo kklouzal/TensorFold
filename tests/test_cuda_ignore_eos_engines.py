@@ -5,7 +5,7 @@ rank 0 sends), and a first token that is an end token ends the reply only when e
 import importlib
 import json
 import threading
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -23,6 +23,9 @@ def modules(allocations, monkeypatch):  # noqa: F811
     import sys
 
     monkeypatch.setattr(sys.modules["triton"], "jit", lambda fn=None, **kw: fn if fn is not None else (lambda f: f))
+    core = ModuleType("triton.language.core")
+    core.TRITON_MAX_TENSOR_NUMEL = 1 << 20  # pinned Triton metadata; no compiler/kernel execution in this fixture
+    monkeypatch.setitem(sys.modules, "triton.language.core", core)
     return allocations
 
 
@@ -47,6 +50,9 @@ def _flash_next(monkeypatch, calls):
     eng._calls = {}
     eng._abort_comm = eng._receiving = eng._shutdown_sent = False
     eng.e = SimpleNamespace(st=SimpleNamespace(snapshot=lambda: {}), mbuf=None, last_streams=None, kept={})
+    eng.w = eng.e.w = SimpleNamespace(meta={"execution_provider": "cuda", "indexer_history": "gpu"})
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    eng.kv_pair = get_pair("bf16")
     eng.serial, eng.tp, eng.depth, eng.confidence, eng.scheduler = SimpleNamespace(), 1, 3, 0.0, None
     eng.cache, eng.eos, eng.max_len, eng.served = [], (END,), 1024, 0
     return mod, eng
@@ -96,9 +102,10 @@ def test_flash_next_hands_stop_eos_to_its_scheduler(modules, monkeypatch):
 @pytest.mark.parametrize("stop_eos", [True, False])
 def test_rank_one_reads_the_field_rank_zero_sends(modules, monkeypatch, family, stop_eos):
     mod, eng = family(monkeypatch, [])
+    eng.tp = 2
     sent = {}
     eng.comm = SimpleNamespace(store=SimpleNamespace(set=lambda key, text: sent.update(text=text)))
-    eng._key = lambda n: f"request/{n}"
+    eng._key = lambda n, peer=None: f"request/{n}/{peer}"
     got = eng._share([5, 6], 9, None, True, 0, None, stop_eos)
     if family is _nemotron:
         def unpack(text):

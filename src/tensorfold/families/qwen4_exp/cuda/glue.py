@@ -11,6 +11,7 @@ from tensorfold.cuda.sm70 import family_ops as _half_ops
 from tensorfold.cuda.pdl import wait as pdl_wait
 
 from .image_rows import rope_axis
+from .indexer_history import HistoryLayer
 from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage, validate_tables
 
 from .kvquant import h32, quant_groups_4, quant_groups_8
@@ -461,7 +462,8 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
               k_bits: int | None = None, k_codec: int | None = None,
               v_bits: int | None = None, v_codec: int | None = None,
               centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None,
-              valid_rows: torch.Tensor | None = None, independent_rows: bool = False) -> None:
+              valid_rows: torch.Tensor | None = None, independent_rows: bool = False,
+              history_kind: str | None = None, history_capacity: int | None = None) -> None:
     """Write BF16 post-RMS/RoPE queries and independently encoded K/V rows.
 
     Symmetric native formats use the original kernel path. Mixed/Rotor formats
@@ -469,8 +471,12 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
     K controls query rotation and V never changes query or index preparation.
     Eight-bit RotorQuant sides encode with an attention scratch's ``centroids`` and ``thresholds`` tables.
     """
+    history = isinstance(ikc, HistoryLayer)
+    if history and p.dtype != torch.float16:
+        raise ValueError("RAM indexer preparation requires the FP16 SM70 provider")
     if p.dtype == torch.float16:
-        return _half_ops.attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps, q_heads=q_heads, kv_heads=kv_heads, head_dim=head_dim, index_heads=index_heads, index_dim=index_dim, ks=ks, vs=vs, bits=bits, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, codec=codec, status=status, layer=layer, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, centroids=centroids, thresholds=thresholds, valid_rows=valid_rows, independent_rows=independent_rows)
+        history_options = dict(history_kind=history_kind, history_capacity=history_capacity) if history else {}
+        return _half_ops.attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps, q_heads=q_heads, kv_heads=kv_heads, head_dim=head_dim, index_heads=index_heads, index_dim=index_dim, ks=ks, vs=vs, bits=bits, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, codec=codec, status=status, layer=layer, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, centroids=centroids, thresholds=thresholds, valid_rows=valid_rows, independent_rows=independent_rows, **history_options)
 
 
     rows, pw = p.shape

@@ -13,6 +13,7 @@ from functools import partial
 
 import torch
 
+from . import history_runtime
 from .forward import _kv_begin, _kv_check, compute, stage, stage_late
 from .mtp import mtp_compute, mtp_stage
 from .state import CAND, Buffers
@@ -26,6 +27,7 @@ class BoundLane:
         self.recurrent = torch.empty_like(state.rec)
         self.mtp_position = torch.empty_like(state.mtp_pos) if provisional_mtp else None
         self.keep_rows = torch.ones((1,), dtype=torch.int32, device=state.rec.device)
+        self.history_rows = 1
         self.scratch = [copy.copy(scratch) for scratch in state.scratch]
         for scratch in self.scratch:
             scratch.keep_rows = self.keep_rows
@@ -47,7 +49,9 @@ class BoundLane:
         view.cur = [0] * len(state.cur)
         view.scratch, view.graph_rows = self.scratch, self.keep_rows
         if rows is not None:
+            self.history_rows = rows
             self.keep_rows.fill_(rows)
+        view.history_rows = self.history_rows
         if state.cur and any(parity != state.cur[0] for parity in state.cur):
             raise ValueError("bound graph recurrent layers must share one committed parity")
         parity = state.cur[0] if state.cur else 0
@@ -407,9 +411,16 @@ class BoundStateGraphs:
             self._account(previous)
         else:
             self.hits += 1
+        archive = getattr(self.dec.w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            # Bound views carry provisional MTP positions and logical counts;
+            # their owners are shared with the original States, not duplicated.
+            history_runtime.begin(bound, prefill=b.prefill, mtp=kind == "mtp", counts=rows)
         _kv_begin(segs)
         for graph in pieces.graphs:
             graph.replay()
+        if archive:
+            history_runtime.submitted(bound, prefill=b.prefill, mtp=kind == "mtp")
         # Match RoundGraphs' ordinary contract: status remains pending for the
         # caller's mandatory check, after exports and before sampling/publication.
         if kind == "verify":

@@ -44,7 +44,9 @@ class Comm:
 
     def all_gather(self, mine, both):
         self.sent = list(mine)
-        both[:] = [value for row in (self.peers or [mine, mine]) for value in row]
+        rows = self.peers or [mine, mine]
+        assert len(rows) == 2 and len(both) == sum(len(row) for row in rows)
+        both[:] = [value for row in rows for value in row]
 
 
 torch = types.SimpleNamespace(tensor=lambda values, **kw: Tensor(values),
@@ -66,7 +68,7 @@ def engine(value, peers=None):
             rows = prefill_rows()
     return types.SimpleNamespace(depth=6, confidence=.7, max_len=8192, kv_pair=types.SimpleNamespace(handshake=16),
                                  rope=types.SimpleNamespace(metadata=lambda: {"rope_type": "default"}),
-                                 streams=1, graphs_enabled=True,
+                                 streams=1, graphs_enabled=True, tp=2,
                                  prefill_rows=rows or 2048, comm=Comm(peers))
 
 

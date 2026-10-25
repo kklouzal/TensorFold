@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The optional `--indexer-history ram` path is being qualified for Flash Next
+GGUF on SM70. It keeps raw FP16 indexer history in NUMA-local system memory,
+with bounded GPU ring/staging buffers; pooled indexer keys and attention KV
+stay on the GPU. The default `gpu` mode retains full GPU history. Actual
+archive-mode model correctness, concurrency and throughput checks are pending;
+this does not change the qualified service settings below. See the
+[archive deployment procedure](deploy/v100/README.md#numa-local-indexer-archive).
+
 **RotorQuant Q4 on V100 (2026-10-25):** native SM70 now supports the existing
 `rotorquant-signed128-4` and `rotorquant-signed64-norm4` cache formats,
 independently for K/V. Both preserve the fork's packed descriptors and use fused

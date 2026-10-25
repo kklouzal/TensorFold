@@ -28,7 +28,7 @@ def context_reservation(states, full_windows=None, *, preserve_overlap=False):
 
 
 def cache_resize_overlap(state, rows, *, auxiliary=False):
-    target = state.layer_bytes(rows)
+    target = (state.layer_resize_bytes(rows) if hasattr(state, "layer_resize_bytes") else state.layer_bytes(rows))
     draft = getattr(state, "dspark_runtime", None)
     return max(target, rows * draft.plan.cache_row_bytes) if auxiliary and draft is not None else target
 
@@ -39,7 +39,7 @@ def future_service(w, states, *, streams, retained, growth_bytes,
         raise ValueError("cache resize overlap must be nonnegative integer bytes")
     state = states[0]
     if copy_overlap_bytes is None:
-        overlap = max((st.layer_bytes(st.limit) for st in states), default=0) if growth_bytes else 0
+        overlap = max((cache_resize_overlap(st, st.limit) for st in states), default=0) if growth_bytes else 0
     else:
         overlap = copy_overlap_bytes
     wide = w.cfg.streams * w.cfg.hidden

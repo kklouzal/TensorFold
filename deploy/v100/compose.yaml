@@ -44,6 +44,8 @@ services:
       - "${TF_KV_FULL_WINDOWS:-${TF_PARALLEL:-2}}"
       - --kv-dtype
       - "${TF_KV_DTYPE:-fp16}"
+      - --indexer-history
+      - "${TF_INDEXER_HISTORY:-gpu}"
       - --draft-method
       - "${TF_DRAFT_METHOD:-auto}"
       - --drafter

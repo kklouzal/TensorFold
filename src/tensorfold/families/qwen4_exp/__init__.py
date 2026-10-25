@@ -214,6 +214,11 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
               "docs/recipes/qwen3.8-flash-next.md#exl3-checkpoints-experimental for how they compare", flush=True)
     from .gguf import resolve_gguf
     gguf = resolve_gguf(model_dir) is not None
+    history = options.get("indexer_history", "gpu")
+    if history not in ("gpu", "ram"):
+        raise ValueError("indexer_history must be gpu or ram")
+    if history == "ram" and not gguf:
+        raise ValueError("indexer_history ram requires the GGUF SM70 provider")
     method = options.get("draft_method", "auto")
     if method not in CUDA_DRAFT_METHODS:
         raise ValueError("Flash Next draft_method must be auto, mtp or dspark")
@@ -255,6 +260,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                       "vram_experts": vram_experts}
     if vram_experts_pin != "off":
         engine_options["vram_experts_pin"] = vram_experts_pin
+    if history != "gpu":
+        engine_options["indexer_history"] = history
     if gguf and drafter:
         from .cuda.dspark_admission import is_dspark
         kind = "dspark" if is_dspark(drafter) else "mtp"

@@ -1,6 +1,7 @@
 // Fused half family ABI: existing buffers, current stream, no host tensor readback.
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/MemoryOverlap.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cmath>
 #include <optional>
@@ -27,7 +28,13 @@ void family_prep_cuda(const T&, const T&, const T&, const T&, const T&, const T&
 void family_prep_q4_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, T&, T&, T&,
                          const O&, const O&, const O&, const O&, const O&, int, int, int, int, int, int, int, int,
                          float, float, bool, int, int);
+void family_prep_staged_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, T&, T&, T&,
+                             const O&, const O&, const O&, const O&, const O&, int, int, int, int, int, int, int, int,
+                             float, float, bool, int, int, const O&);
 void family_pool_cuda(const T&, T&, const T&, const T&, const T&, const O&, int, int, float, float);
+void family_pool_staged_cuda(const T&, const T&, T&, const T&, const T&, const T&, const O&,
+                             int, int, int, float, float, const O&, const O&, int, const O&);
+void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const O&, int, const O&);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
 
@@ -47,6 +54,13 @@ void floating(const T& tensor, const T& owner) {
     check(tensor, owner, tensor.scalar_type(), "family partials");
 }
 void epsilon(double eps) { TORCH_CHECK(std::isfinite(eps) && float(eps) > 0 && std::isfinite(float(eps)), "invalid epsilon"); }
+float positive_float(double value, const char* name) {
+    TORCH_CHECK(std::isfinite(value) && value > 0 && value <= std::numeric_limits<float>::max(),
+                name, " must be finite, positive and representable as float32");
+    const float result = static_cast<float>(value);
+    TORCH_CHECK(result > 0.f, name, " underflows float32");
+    return result;
+}
 void groups(const T& out, const T& xs) {
     check(xs, out, at::kFloat, "group sums");
     TORCH_CHECK(out.dim() == 2 && out.size(1) % 32 == 0 && xs.numel() == out.numel() / 32, "group-sum geometry");
@@ -220,23 +234,18 @@ void prep(const T& projection, const T& position, const T& qw, const T& kw, cons
                      float(eps), float(rope_scale), independent_rows);
 }
 
-void prep_q4(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+template<bool STAGED>
+void prep_format(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
              T queries, T kc, T vc, T index_queries, T index_cache, O ks, O vs, O status, O delta, O valid_rows,
              int qheads, int kvheads, int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
-             double eps, double rope_scale, bool independent_rows, int kcodec, int vcodec) {
+             double eps, double rope_scale, bool independent_rows, int kcodec, int vcodec, const O& stage_origin) {
     check_half(projection);
-    auto positive_float = [](double value, const char* name) {
-        TORCH_CHECK(std::isfinite(value) && value > 0 && value <= std::numeric_limits<float>::max(),
-                    name, " must be finite, positive and representable as float32");
-        const float result = static_cast<float>(value);
-        TORCH_CHECK(result > 0.f, name, " underflows float32");
-        return result;
-    };
     const float native_eps = positive_float(eps, "epsilon");
     const float native_rope_scale = positive_float(rope_scale, "rotary scale");
     TORCH_CHECK(layer >= -1, "KV error layer must be a model layer or MTP -1");
     TORCH_CHECK(projection.dim() == 2 && qheads > 0 && kvheads > 0 && index_heads > 0
-                && (dim == 128 || dim == 256) && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0,
+                && (STAGED ? dim > 0 && dim <= 256 && dim % 32 == 0 : dim == 128 || dim == 256)
+                && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0,
                 "Rotor Q4 preparation dimensions");
     const int64_t units = int64_t(qheads) + 2 * int64_t(kvheads) + index_heads + 1;
     const int64_t packed = 2 * int64_t(qheads) * dim + 2 * int64_t(kvheads) * dim
@@ -257,11 +266,22 @@ void prep_q4(const T& projection, const T& position, const T& qw, const T& kw, c
     auto admitted = [](int bits, int codec) {
         return (bits == 0 && codec == 0) || (bits == 8 && codec == 0) || (bits == 4 && (codec == 4 || codec == 5));
     };
-    TORCH_CHECK(admitted(kbits, kcodec) && admitted(vbits, vcodec) && (kcodec != 0 || vcodec != 0),
+    TORCH_CHECK(admitted(kbits, kcodec) && admitted(vbits, vcodec) && (STAGED || kcodec != 0 || vcodec != 0),
                 "Rotor Q4 preparation requires raw/int8/CODEC4-or-5 Q4 sides with at least one Q4 side");
     TORCH_CHECK(kc.dim() == 3 && vc.dim() == 3 && kc.size(0) == vc.size(0)
                 && kc.size(0) <= std::numeric_limits<int>::max() && kc.size(1) == kvheads && vc.size(1) == kvheads
-                && index_cache.size(0) == kc.size(0), "attention cache geometry");
+                && (STAGED ? index_cache.size(0) >= rows : index_cache.size(0) == kc.size(0)), "attention cache geometry");
+    if (kcodec || vcodec) TORCH_CHECK(dim % 128 == 0, "Rotor Q4 requires complete 128-coordinate groups");
+    if constexpr (STAGED) {
+        TORCH_CHECK(status.has_value() && index_cache.size(0) <= std::numeric_limits<int>::max(),
+                    "staged indexer preparation requires owned status and bounded stage rows");
+        if (stage_origin) {
+            check(*stage_origin, projection, at::kLong, "index stage origin");
+            TORCH_CHECK(stage_origin->numel() == 1, "index stage origin geometry");
+        }
+        for (const auto* tensor : std::initializer_list<const T*>{&projection, &queries, &kc, &vc, &index_queries})
+            at::assert_no_overlap(index_cache, *tensor);
+    }
     auto side = [&](const T& cache, const O& scales, int bits, int codec, const char* name) {
         const auto dtype = codec ? at::kByte : bits == 8 ? at::kChar : at::kHalf;
         check(cache, projection, dtype, name);
@@ -283,9 +303,31 @@ void prep_q4(const T& projection, const T& position, const T& qw, const T& kw, c
         TORCH_CHECK((*control)->numel() == (control == &status ? 2 : 1), "attention control geometry");
     }
     c10::cuda::CUDAGuard guard(projection.device());
-    family_prep_q4_cuda(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_cache,
+    if constexpr (STAGED)
+        family_prep_staged_cuda(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_cache,
+                                ks, vs, status, delta, valid_rows, qheads, kvheads, dim, index_heads, index_dim,
+                                kbits, vbits, layer, native_eps, native_rope_scale, independent_rows, kcodec, vcodec, stage_origin);
+    else
+        family_prep_q4_cuda(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_cache,
+                            ks, vs, status, delta, valid_rows, qheads, kvheads, dim, index_heads, index_dim,
+                            kbits, vbits, layer, native_eps, native_rope_scale, independent_rows, kcodec, vcodec);
+}
+
+void prep_q4(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+             T queries, T kc, T vc, T index_queries, T index_cache, O ks, O vs, O status, O delta, O valid_rows,
+             int qheads, int kvheads, int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
+             double eps, double rope_scale, bool independent_rows, int kcodec, int vcodec) {
+    prep_format<false>(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_cache,
                         ks, vs, status, delta, valid_rows, qheads, kvheads, dim, index_heads, index_dim,
-                        kbits, vbits, layer, native_eps, native_rope_scale, independent_rows, kcodec, vcodec);
+                        kbits, vbits, layer, eps, rope_scale, independent_rows, kcodec, vcodec, {});
+}
+void prep_staged(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+                 T queries, T kc, T vc, T index_queries, T index_stage, O ks, O vs, O status, O delta, O valid_rows,
+                 int qheads, int kvheads, int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
+                 double eps, double rope_scale, bool independent_rows, int kcodec, int vcodec, O stage_origin) {
+    prep_format<true>(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_stage,
+                       ks, vs, status, delta, valid_rows, qheads, kvheads, dim, index_heads, index_dim,
+                       kbits, vbits, layer, eps, rope_scale, independent_rows, kcodec, vcodec, stage_origin);
 }
 
 void pool(const T& cache, T pooled, const T& position, const T& weight, const T& frequency,
@@ -301,6 +343,60 @@ void pool(const T& cache, T pooled, const T& position, const T& weight, const T&
     if (delta) { check(*delta, cache, at::kInt, "pool rotary delta"); TORCH_CHECK(delta->numel() == 1, "pool delta geometry"); }
     c10::cuda::CUDAGuard guard(cache.device());
     family_pool_cuda(cache, pooled, position, weight, frequency, delta, ratio, rows, float(eps), float(rope_scale));
+}
+
+namespace {
+void index_stage_plan(const T& stage, const T& ring, const T& position, int rows, int capacity,
+                      const O& status, const O& live, int layer, const O& origin) {
+    check_half(stage); same_half(ring, stage);
+    TORCH_CHECK(stage.dim() == 2 && ring.dim() == 2 && stage.size(1) > 0 && stage.size(1) <= 256
+                && stage.size(1) % 32 == 0 && ring.size(1) == stage.size(1) && ring.size(0) > 0
+                && ring.size(0) <= std::numeric_limits<int>::max() && rows >= 0 && rows <= stage.size(0)
+                && stage.size(0) <= std::numeric_limits<int>::max()
+                && capacity >= 0, "staged indexer dimensions and logical capacity");
+    TORCH_CHECK(position.scalar_type() == at::kInt || position.scalar_type() == at::kLong, "indexer position dtype");
+    check(position, stage, position.scalar_type(), "indexer position");
+    TORCH_CHECK(position.numel() == 1 && status.has_value() && layer >= -1, "indexer position/status ownership");
+    check(*status, stage, at::kInt, "indexer status");
+    TORCH_CHECK(status->numel() == 2, "indexer status geometry");
+    if (live) {
+        check(*live, stage, at::kInt, "indexer active row count");
+        TORCH_CHECK(live->numel() == 1, "indexer active row count geometry");
+    }
+    if (origin) {
+        check(*origin, stage, at::kLong, "index stage origin");
+        TORCH_CHECK(origin->numel() == 1, "index stage origin geometry");
+    }
+    at::assert_no_overlap(stage, ring);
+}
+}  // namespace
+
+void pool_staged(const T& stage, const T& ring, T pooled, const T& position, const T& weight,
+                 const T& frequency, O delta, int ratio, int rows, int capacity,
+                 double eps, double rope_scale, O status, O valid_rows, int layer, O stage_origin) {
+    index_stage_plan(stage, ring, position, rows, capacity, status, valid_rows, layer, stage_origin);
+    const float native_eps = positive_float(eps, "epsilon");
+    const float native_rope_scale = positive_float(rope_scale, "rotary scale");
+    TORCH_CHECK(ratio > 0 && ring.size(0) >= ratio, "indexer ring must retain a complete pooling block");
+    same_half(pooled, stage);
+    check(weight, stage, at::kFloat, "index norm"); check(frequency, stage, at::kFloat, "index frequencies");
+    TORCH_CHECK(pooled.dim() == 2 && pooled.size(1) == stage.size(1) && pooled.size(0) >= capacity / ratio
+                && weight.numel() == stage.size(1) && frequency.dim() == 1 && frequency.numel() > 0
+                && frequency.numel() <= stage.size(1) / 2, "staged indexer pooling geometry");
+    if (delta) {
+        check(*delta, stage, at::kInt, "pool rotary delta");
+        TORCH_CHECK(delta->numel() == 1, "pool rotary delta geometry");
+    }
+    at::assert_no_overlap(pooled, stage); at::assert_no_overlap(pooled, ring);
+    c10::cuda::CUDAGuard guard(stage.device());
+    family_pool_staged_cuda(stage, ring, pooled, position, weight, frequency, delta, ratio, rows, capacity,
+                            native_eps, native_rope_scale, status, valid_rows, layer, stage_origin);
+}
+void ring_publish(const T& stage, T ring, const T& position, int rows, int capacity,
+                  O status, O valid_rows, int layer, O stage_origin) {
+    index_stage_plan(stage, ring, position, rows, capacity, status, valid_rows, layer, stage_origin);
+    c10::cuda::CUDAGuard guard(stage.device());
+    family_ring_publish_cuda(stage, ring, position, rows, capacity, status, valid_rows, layer, stage_origin);
 }
 
 void qsa_dense(const T& position, T sparse, T counts, int rows) {
@@ -332,6 +428,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);
-    m.def("prep", &prep); m.def("prep_q4", &prep_q4); m.def("pool", &pool); m.def("qsa_dense", &qsa_dense);
+    m.def("prep", &prep); m.def("prep_q4", &prep_q4); m.def("prep_staged", &prep_staged);
+    m.def("pool", &pool); m.def("pool_staged", &pool_staged); m.def("ring_publish", &ring_publish);
+    m.def("qsa_dense", &qsa_dense);
     m.def("qsa_rows", &qsa_rows);
 }

@@ -32,7 +32,7 @@ from tensorfold.cuda import pdl
 # re-exported for the decoder (multi.py): the captured rounds' budget, geometry's variable and parser (one source)
 from tensorfold.cuda.geometry import MULTI_GRAPH_ENV as ENV, multi_graph_request as budget_bytes  # noqa: F401
 
-from . import attn_multi, gdn_multi
+from . import attn_multi, gdn_multi, history_runtime
 from .forward import _kv_begin, _kv_check, compute, ple_conv_streams, stage, stage_late
 from .mtp import mtp_compute, mtp_stage
 from .service_memory import failure_frame_values, private_pool_spare
@@ -167,11 +167,14 @@ class RoundGraphs:
         pieces = self.mtp.get((pdl.ON, len(segs), segs[-1][2]))
         if pieces is None:
             return None
-        self._replay(pieces, segs, b)
+        self._replay(pieces, segs, b, mtp=True)
         return pieces.out
 
-    def _replay(self, pieces: Pieces, segs, b) -> None:
+    def _replay(self, pieces: Pieces, segs, b, *, mtp=False) -> None:
         w = self.dec.w
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill, mtp=mtp)
         _kv_begin(segs)                                  # the frame's codec status: checked by the caller
         for graph, insert in zip(pieces.graphs, pieces.inserts + [None]):
             graph.replay()
@@ -184,6 +187,8 @@ class RoundGraphs:
                 ple_conv_streams(layer, w, segs, b)
             elif b.ple_late is not None:                 # "ple_stage": the late n-gram reads (stage(late=True))
                 stage_late(w, b)
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill, mtp=mtp)
 
     # -- capture -----------------------------------------------------------------------------------------------
     def _pieces(self, run, b, *, split=True) -> Pieces:

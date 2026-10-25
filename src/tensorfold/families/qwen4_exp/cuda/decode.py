@@ -378,9 +378,16 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
     if use_mtp and nxt:
         mtp_forward(w, st, pb, nxt, pb.streams[:len(nxt)], logits=False)
         st.set_mtp_len(st.mtp_len + len(nxt))
+    if point and snap is not None and getattr(st, "indexer_history_owner", None) is not None:
+        # The recurrent cut is captured before MTP reuses the buffers. Its
+        # archive metadata is valid only after those MTP rows complete.
+        snap.update(st.indexer_snapshot_metadata(snap["pos"], mtp_len))
     commit(w, st, pb, R, R)
     if point:                                            # as a fresh prefill of prompt[:keep_at] leaves it
-        e.kept = {"state": snap if snap is not None else {**st.snapshot(), "mtp_len": mtp_len}, "tail": tail}
+        state = snap if snap is not None else {**st.snapshot(), "mtp_len": mtp_len}
+        if snap is None and getattr(st, "indexer_history_owner", None) is not None:
+            state.update(st.indexer_snapshot_metadata(st.pos, mtp_len))
+        e.kept = {"state": state, "tail": tail}
     return last
 
 

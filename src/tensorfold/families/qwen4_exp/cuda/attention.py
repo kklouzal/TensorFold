@@ -12,6 +12,7 @@ from tensorfold.cuda.pdl import wait as pdl_wait
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
 from .image_rows import rope_axis
+from .indexer_history import HistoryLayer
 from .kv_pair import load_quarter, load_side, resolve_pair, validate_storage
 
 from .kvquant import dequant_group_4, dequant_group_8, h32
@@ -767,20 +768,30 @@ def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: i
 def qsa_select(iq: torch.Tensor, ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
                inv_freq: torch.Tensor, eps: float, scratch: AttnScratch, rows: int,
                *, context: int | None = None, rope=None, delta=None, length=0, sections=(11, 11, 10),
-               rope_scale: float = 1.0) -> None:
+               rope_scale: float = 1.0, history_kind: str | None = None,
+               history_capacity: int | None = None, status: torch.Tensor | None = None,
+               valid_rows: torch.Tensor | None = None, layer: int = 0) -> None:
     """Pool the blocks the window completes, score and select each sparse row's blocks (scratch.ids/nk/sparse)."""
 
+    history_options = (dict(history_kind=history_kind, history_capacity=history_capacity,
+                            status=status, valid_rows=valid_rows, layer=layer)
+                       if isinstance(ikc, HistoryLayer) else {})
     qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows,
-             rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+             rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, **history_options)
     qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
 
 
 def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
              inv_freq: torch.Tensor, eps: float, scratch: AttnScratch, rows: int, *, rope=None, delta=None, length=0,
-             sections=(11, 11, 10), rope_scale: float = 1.0) -> None:
+             sections=(11, 11, 10), rope_scale: float = 1.0, history_kind: str | None = None,
+             history_capacity: int | None = None, status: torch.Tensor | None = None,
+             valid_rows: torch.Tensor | None = None, layer: int = 0) -> None:
     """Pool completed blocks with full prompt rotary positions, including a block spanning prompt pieces."""
-    if ikc.dtype == torch.float16:
-        return _half_ops.qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+    history = isinstance(ikc, HistoryLayer)
+    if history or ikc.dtype == torch.float16:
+        history_options = (dict(history_kind=history_kind, history_capacity=history_capacity,
+                                status=status, valid_rows=valid_rows, layer=layer) if history else {})
+        return _half_ops.qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, **history_options)
 
 
     mode = 2 if rope is not None else 1 if delta is not None else 0

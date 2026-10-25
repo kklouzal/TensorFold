@@ -181,6 +181,13 @@ class State:
         dev = w.device
         bf = execution_dtype(w)
         self.execution_dtype = bf
+        self.indexer_history_mode = w.meta.get("indexer_history", "gpu")
+        if self.indexer_history_mode not in ("gpu", "ram"):
+            raise ValueError("indexer history must be gpu or ram")
+        if self.indexer_history_mode == "ram" and (
+                bf != torch.float16 or w.meta.get("execution_provider") != "sm70"):
+            raise ValueError("RAM indexer history requires the GGUF SM70 FP16 execution provider")
+        self.indexer_history_owner = None
         kvcache.check(kv_dtype)
         if kv_pair is not None:
             if type(kv_pair) is not kvcache.KVPairFormat:
@@ -200,6 +207,8 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        if self.indexer_history_mode == "ram":
+            self.kv_identity += (("indexer-history", "lossless-fp16-ram-archive-v1"),)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
         self.kv_value_bits = 0 if self.kv_pair.value.bits == 16 else self.kv_pair.value.bits
         self.kv_key_codec, self.kv_value_codec = self.kv_pair.key.codec, self.kv_pair.value.codec
@@ -207,7 +216,8 @@ class State:
         # This allocation keeps its address through growth, restore and reset.
         self.kv_status = (torch.tensor([0, -2], dtype=torch.int32, device=dev)
                           if (not self.kv_pair.symmetric or self.kv_key_codec or self.kv_value_codec
-                              or (bf == torch.float16 and self.kv_pair.key.quantized)) else None)
+                              or (bf == torch.float16 and self.kv_pair.key.quantized)
+                              or self.indexer_history_mode == "ram") else None)
         world = int(w.meta.get("world", 1))
         self._kv_peer_status = (torch.empty((world, 2), dtype=torch.int32, device=dev)
                                 if self.kv_status is not None and world > 1 else None)
@@ -236,9 +246,27 @@ class State:
         self.scratch = [gdn_mod.GDNScratch(max_rows, dev, c.nk, c.nv, dtype=bf) for _ in range(n)]
         self.ratio, self.index_dim = c.index_ratio, c.index_dim
         self.layers = len(att) + (w.mtp is not None)              # attention caches: the layers', the MTP head's
-        self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + c.index_dim * 2
+        if self.indexer_history_mode == "ram":
+            session = w.meta.get("indexer_history_session")
+            if session is None:
+                raise ValueError("RAM indexer history requires its admitted host allocation session")
+            if (session.plan.layers, session.plan.index_dim, session.plan.ratio) != (
+                    self.layers, c.index_dim, c.index_ratio):
+                raise ValueError("RAM indexer history plan disagrees with the model's attention geometry")
+            # Host history owns the complete declared window from startup.
+            # GPU KV growth never reallocates or aliases this independent owner.
+            self.indexer_history_owner = session.new(self.limit)
+            if not self.layers or self.indexer_history_owner.device_nbytes % self.layers:
+                raise ValueError("raw indexer device allocation disagrees with its per-layer byte plan")
+            self.indexer_raw_device_bytes = self.indexer_history_owner.device_nbytes // self.layers
+        else:
+            self.indexer_raw_device_bytes = None
+        self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + (
+            c.index_dim * 2 if getattr(self, "indexer_history_owner", None) is None else 0)
         self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair) for _ in att]
-        self.ikc = [torch.zeros((capacity, c.index_dim), dtype=bf, device=dev) for _ in att]
+        self.ikc = ([torch.zeros((capacity, c.index_dim), dtype=bf, device=dev) for _ in att]
+                    if getattr(self, "indexer_history_owner", None) is None else
+                    [self.indexer_history_owner.layer(i) for i in range(len(att))])
         nb = -(-capacity // c.index_ratio)
         self.pooled = [torch.zeros((nb, c.index_dim), dtype=bf, device=dev) for _ in att]
         wide = c.streams * c.hidden
@@ -251,7 +279,8 @@ class State:
         self.mtp_pos = torch.zeros((1,), dtype=torch.int32, device=dev)
         if w.mtp is not None:
             self.mtp_kc = kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair)
-            self.mtp_ikc = torch.zeros((capacity, c.index_dim), dtype=bf, device=dev)
+            self.mtp_ikc = (torch.zeros((capacity, c.index_dim), dtype=bf, device=dev)
+                            if getattr(self, "indexer_history_owner", None) is None else self.indexer_history_owner.layer(len(att)))
             self.mtp_pooled = torch.zeros((-(-capacity // c.index_ratio), c.index_dim), dtype=bf,
                                           device=dev)
 
@@ -289,6 +318,8 @@ class State:
         error = self._kv_error if self._kv_error is not None else self._resize_error
         if error is not None:
             raise error
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self.indexer_history_owner.check()
         status = self.kv_status
         if status is None:
             return
@@ -320,6 +351,14 @@ class State:
                 f"layer={'MTP' if layer == -1 else layer}, pos={self.pos}, mtp_len={self.mtp_len}; "
                 "this sequence requires reset")
             raise self._kv_error
+        if getattr(self, "indexer_history_owner", None) is not None:
+            try:
+                # The consumed status readback follows this State's submitted
+                # D2H stages on the producing stream. No additional wait.
+                self.indexer_history_owner.validated(fenced=True)
+            except BaseException as error:
+                self._kv_error = error
+                raise
 
     def kv_snapshot_metadata(self) -> dict:
         """Pinned codec identity and validated status for an in-memory snapshot."""
@@ -343,8 +382,42 @@ class State:
 
     def set_pos(self, pos: int) -> None:
         self.kv_check()
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self._indexer_commit(pos, self.mtp_len)
         self.pos = pos
         self.pos_dev.fill_(pos)
+
+    def _indexer_commit(self, pos: int, mtp_len: int) -> None:
+        lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
+        try:
+            self.indexer_history_owner.commit(lengths)
+        except BaseException as error:
+            self._kv_error = error
+            raise
+
+    def _publish_indexer_positions(self, pos: int, mtp_len: int) -> None:
+        """Publish a restored/reset pair without mixing old and new extents."""
+        self._indexer_commit(pos, mtp_len)
+        try:
+            self.pos, self.mtp_len = pos, mtp_len
+            self.pos_dev.fill_(pos)
+            self.mtp_pos.fill_(mtp_len)
+        except BaseException as error:
+            self._kv_error = error
+            raise
+
+    def indexer_snapshot_metadata(self, pos: int, mtp_len: int) -> dict:
+        """Exact raw-history extent after validation, including a cut before commit.
+
+        Ordinary ``kv_snapshot_metadata`` remains the numeric-status authority.
+        Raw bytes need only be available, not published at the main cursor yet.
+        """
+        if getattr(self, "indexer_history_owner", None) is None:
+            return {}
+        if any(type(value) is not int or not 0 <= value <= self.capacity for value in (pos, mtp_len)):
+            raise ValueError("raw-history snapshot positions must fit this State's device cache")
+        lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
+        return {"indexer_history": self.indexer_history_owner.snapshot(lengths)}
 
     def cache_bytes(self, rows: int | None = None) -> int:
         """Bytes of the caches that grow with context at ``rows`` rows (now: ``capacity``), the MTP head's included."""
@@ -363,9 +436,13 @@ class State:
         """Actual attached cache storage; used only for failed resize accounting and retirement."""
 
         total = sum(cache.nbytes for cache in self.kc)
-        total += sum(array.nbytes for arrays in (self.ikc, self.pooled) for array in arrays)
+        total += sum(array.nbytes for array in self.pooled)
+        total += (sum(array.nbytes for array in self.ikc) if getattr(self, "indexer_history_owner", None) is None else
+                  self.indexer_history_owner.device_nbytes)
         if hasattr(self, "mtp_kc"):
-            total += self.mtp_kc.nbytes + self.mtp_ikc.nbytes + self.mtp_pooled.nbytes
+            total += self.mtp_kc.nbytes + self.mtp_pooled.nbytes
+            if getattr(self, "indexer_history_owner", None) is None:
+                total += self.mtp_ikc.nbytes
         if getattr(self, "dspark", None) is not None:
             total += self.dspark.nbytes
         return total
@@ -374,7 +451,15 @@ class State:
         """One attention layer's share of ``cache_bytes``: what a resize holds twice at once."""
 
         rows = self.capacity if rows is None else int(rows)
-        return rows * self.row_bytes + self.kv_pair.dummy_bytes + -(-rows // self.ratio) * self.index_dim * 2
+        raw = getattr(self, "indexer_raw_device_bytes", None) or 0
+        return rows * self.row_bytes + self.kv_pair.dummy_bytes + -(-rows // self.ratio) * self.index_dim * 2 + raw
+
+    def layer_resize_bytes(self, rows: int) -> int:
+        """Replacement GPU storage; the RAM owner's fixed ring/stages survive resize."""
+        return self.layer_bytes(rows) - (getattr(self, "indexer_raw_device_bytes", None) or 0)
+
+    def host_cache_bytes(self) -> int:
+        return 0 if getattr(self, "indexer_history_owner", None) is None else self.indexer_history_owner.host_nbytes
 
     def ensure(self, rows: int, step: int = 8192) -> int:
         """Grow every context cache to hold ``rows`` rows (a ``step`` at a time, at most ``limit``); returns the new bytes."""
@@ -418,11 +503,13 @@ class State:
         blocks, kept_blocks = -(-rows // self.ratio), -(-max(pos, mtp_len) // self.ratio)
         for i in range(len(self.kc)):
             self.kc[i] = self.kc[i].resized(rows, pos)
-            self.ikc[i] = _rows(self.ikc[i], rows, pos)
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.ikc[i] = _rows(self.ikc[i], rows, pos)
             self.pooled[i] = _rows(self.pooled[i], blocks, kept_blocks)
         if hasattr(self, "mtp_kc"):
             self.mtp_kc = self.mtp_kc.resized(rows, mtp_len)
-            self.mtp_ikc = _rows(self.mtp_ikc, rows, mtp_len)
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.mtp_ikc = _rows(self.mtp_ikc, rows, mtp_len)
             self.mtp_pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
 
     def _poison_resize(self, error: BaseException) -> None:
@@ -492,6 +579,8 @@ class State:
 
         if self._resize_error is not None:
             raise self._kv_error if self._kv_error is not None else self._resize_error
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self.indexer_history_owner.reset()
         if self.kv_status is not None:
             self.kv_status.zero_()
             self.kv_status[1].fill_(-2)
@@ -503,11 +592,15 @@ class State:
         self.ple_tail.zero_()
         self.ple_history = w.cfg.ngram(0).initial_history() if w.cfg.ple_layers else None
         self.ple_last = None
-        self.set_pos(0)
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self._publish_indexer_positions(0, 0)
+        else:
+            self.set_pos(0)
         self.set_rope_delta(0)
         self.image_positions, self.image_rows, self.image_features = None, (), None
         self.mtp_drafted = 0
-        self.set_mtp_len(0)
+        if getattr(self, "indexer_history_owner", None) is None:
+            self.set_mtp_len(0)
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.reset(self)
 
@@ -532,6 +625,11 @@ class State:
             elif isinstance(value, list) and value and isinstance(value[0], kvcache.KVCache):
                 setattr(other, name, [v.clone() for v in value])
         other.cur = list(self.cur)
+        if getattr(self, "indexer_history_owner", None) is not None:
+            other.indexer_history_owner = self.indexer_history_owner.clone()
+            other.ikc = [other.indexer_history_owner.layer(i) for i in range(len(self.kc))]
+            if hasattr(self, "mtp_kc"):
+                other.mtp_ikc = other.indexer_history_owner.layer(len(self.kc))
         other.scratch = [copy.copy(sc) for sc in self.scratch]
         for sc_new, sc in zip(other.scratch, self.scratch):
             for name, value in vars(sc).items():
@@ -542,6 +640,8 @@ class State:
 
     def set_mtp_len(self, n: int) -> None:
         self.kv_check()
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self._indexer_commit(self.pos, n)
         self.mtp_len = n
         self.mtp_pos.fill_(n)
 
@@ -566,6 +666,11 @@ class State:
         for dst, src in pairs:
             if dst.pair != src.pair or (dst.kv_heads, dst.head_dim) != (src.kv_heads, src.head_dim):
                 raise ValueError("a prefix copy needs matching cache formats, dimensions and rotation tables")
+        lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
+        if getattr(self, "indexer_history_owner", None) is not None:
+            # The owner validates both full archives before its first write.
+            # Do this before any main-KV mutation, without validating twice.
+            self.indexer_history_owner.copy_prefix(source.indexer_history_owner, lengths)
         def copy_cache(dst, src, rows):
             dst.k[:rows].copy_(src.k[:rows])
             dst.v[:rows].copy_(src.v[:rows])
@@ -575,11 +680,13 @@ class State:
                 dst.vs[:rows].copy_(src.vs[:rows])
         for i, cache in enumerate(self.kc):
             copy_cache(cache, source.kc[i], pos)
-            self.ikc[i][:pos].copy_(source.ikc[i][:pos])
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.ikc[i][:pos].copy_(source.ikc[i][:pos])
             self.pooled[i][:pos // self.ratio].copy_(source.pooled[i][:pos // self.ratio])
         if mtp_len:
             copy_cache(self.mtp_kc, source.mtp_kc, mtp_len)
-            self.mtp_ikc[:mtp_len].copy_(source.mtp_ikc[:mtp_len])
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.mtp_ikc[:mtp_len].copy_(source.mtp_ikc[:mtp_len])
             self.mtp_pooled[:mtp_len // self.ratio].copy_(source.mtp_pooled[:mtp_len // self.ratio])
 
         if getattr(self, "dspark_runtime", None) is not None:
@@ -592,26 +699,34 @@ class State:
         p = self.cur[0] if self.cur else 0
         if any(c != p for c in self.cur):
             raise RuntimeError("DeltaNet layers out of step")
+        history = self.indexer_snapshot_metadata(self.pos, self.mtp_len - self.mtp_drafted)
         return {"pos": self.pos, "rec": self.rec[p].clone(), "conv": self.conv.clone(),
                 "ple_tail": self.ple_tail.clone(),
                 "ple_history": None if self.ple_history is None else self.ple_history.copy(),
-                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata,
+                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata, **history,
                 **(self.dspark_runtime.snapshot(self) if getattr(self, "dspark_runtime", None) is not None else {})}
 
     def restore(self, snap: dict) -> None:
         self.kv_validate_snapshot(snap)
+        lengths = [snap["pos"]] * len(self.kc) + ([snap["mtp_len"]] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.validate_snapshot(self, snap)
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self.indexer_history_owner.restore(snap.get("indexer_history"), lengths)
         self.rec[0].copy_(snap["rec"])
         self.cur = [0] * len(self.cur)
         self.conv.copy_(snap["conv"])
         self.ple_tail.copy_(snap["ple_tail"])
         self.ple_history = None if snap["ple_history"] is None else snap["ple_history"].copy()
         self.ple_last = None
-        self.set_pos(snap["pos"])
+        if getattr(self, "indexer_history_owner", None) is not None:
+            self._publish_indexer_positions(snap["pos"], snap["mtp_len"])
+        else:
+            self.set_pos(snap["pos"])
         self.set_rope_delta(0)                       # kept prompts are text only
         self.image_positions, self.image_rows, self.image_features = None, (), None
         self.mtp_drafted = 0
-        self.set_mtp_len(snap["mtp_len"])
+        if getattr(self, "indexer_history_owner", None) is None:
+            self.set_mtp_len(snap["mtp_len"])
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.restore(self, snap)

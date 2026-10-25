@@ -23,6 +23,7 @@ from . import attention as attn_mod
 from . import gdn as gdn_mod
 from . import attn_multi, bf16, gdn_io, gdn_multi, glue, nvfp4_moe, qmm
 from . import image_rows
+from . import history_runtime
 from .hc_check import fuser as _hc_fuser
 from .state import ATT_ROWS, CAND, Buffers, State, KVNumericError, _MoECfg
 from .weights import HC, LayerW, Weights
@@ -271,6 +272,12 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     for st, a0, a1 in segs:
         cache, ikc, pooled, pos, host_pos = _caches(layer, st, mtp)
+        history = {}
+        if getattr(st, "indexer_history_owner", None) is not None:
+            if not b.attn.qsa:
+                raise ValueError("RAM indexer history requires Flash Next pooled sparse attention")
+            history = {"history_kind": "prefill" if b.prefill else "decode",
+                       "history_capacity": cache.capacity}
         keys = context if context is not None else host_pos + a1 - a0
         rope = st.image_positions
         length = 0 if rope is None else rope.shape[0]
@@ -283,11 +290,14 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                        status=st.kv_status, layer=layer.index,
                        valid_rows=getattr(st, "graph_rows", None), independent_rows=not b.prefill,
                        rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale,
-                       centroids=b.attn.centroids, thresholds=b.attn.thresholds)
+                       centroids=b.attn.centroids, thresholds=b.attn.thresholds, **history)
+        pool_history = ({**history, "status": st.kv_status, "layer": layer.index,
+                         "valid_rows": getattr(st, "graph_rows", None)} if history else {})
         if b.prefill:
             if b.attn.qsa:
                 attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
-                                  delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+                                  delta=delta, length=length, sections=sections, rope_scale=rope_scale,
+                                  **pool_history)
             for r0 in range(a0, a1, ATT_ROWS):
                 n = min(ATT_ROWS, a1 - r0)
                 b.pos_blk.fill_(host_pos + r0 - a0)
@@ -303,7 +313,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         if b.attn.qsa:
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
-                                rope_scale=rope_scale)
+                                rope_scale=rope_scale, **pool_history)
         # Unqualified decode windows use the original Torch operator at each
         # query's actual end. Padded keys must not select a different GEMM tree.
         if b.h.dtype == torch.float16 and getattr(st, "graph_rows", None) is None:
@@ -670,9 +680,12 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
 
     R = segs[-1][2]
     runtime = getattr(w, "dspark", None)
+    archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
     graph_taps = runtime is not None and getattr(b, "dspark_graph", False)
     capture = (runtime.begin_graph(b, R) if graph_taps else runtime.begin(segs, b)) if runtime is not None else None
     try:
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill)
         _kv_begin(segs)
         c = w.cfg
         _embed(w, b.ids[:R], c.streams, b.h[:R])
@@ -687,6 +700,9 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
                 capture.before_layer(layer.index, b.h[:R], pending)
             pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
         result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
+        if archive:
+            history_runtime.enqueue(segs, prefill=b.prefill)
+            history_runtime.submitted(segs, prefill=b.prefill)
         if check:
             _kv_check(segs, comm=w.comm)
         if runtime is not None:
@@ -813,6 +829,10 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
                   ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
+    archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+    if archive:
+        history_runtime.begin(dsegs, prefill=False)
+        history_runtime.begin(psegs, prefill=True)
     _kv_begin(dsegs)
     _kv_begin(psegs)
     c = w.cfg
@@ -830,6 +850,11 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
         mode, y, wts = moe_block(layer, w, pb, Rp + Rd)
         dp, pp = (mode, y[Rp:], wts[Rp:], db.inj_m), (mode, y[:Rp], wts[:Rp], pb.inj_m)
     result = finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
+    if archive:
+        history_runtime.enqueue(dsegs, prefill=False)
+        history_runtime.enqueue(psegs, prefill=True)
+        history_runtime.submitted(dsegs, prefill=False)
+        history_runtime.submitted(psegs, prefill=True)
     _kv_check([*dsegs, *psegs], comm=w.comm)
     return result
 

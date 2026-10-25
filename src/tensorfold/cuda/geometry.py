@@ -241,11 +241,17 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
                  kv_bits: int = 16, rows: int | None = None, prompt: int = 0, evicts: bool = False,
                  kept: int = 2, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                  kv_scale_bytes: int = 2, kv_status: bool = False,
-                 kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> Geometry:
+                 kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+                 indexer_raw_device_bytes: int | None = None) -> Geometry:
     """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``kept``: retained prefix states.
     Non-indexed attention uses arenas: ``evicts`` charges one live lineage, otherwise ``kept`` plus the current one.
-    Non-indexed ``mtp`` also retains the MoE decoder's separate graph state and ordinary MTP head caches."""
+    Non-indexed ``mtp`` also retains the MoE decoder's separate graph state and ordinary MTP head caches.
+    ``indexer_raw_device_bytes`` replaces each indexed raw-history allocation
+    with its owner's bounded persistent bytes; pooled keys remain on device."""
 
+    if indexer_raw_device_bytes is not None and (
+            type(indexer_raw_device_bytes) is not int or indexer_raw_device_bytes < 0 or not indexed):
+        raise ValueError("bounded raw indexer device bytes require nonnegative integer bytes and indexed attention")
     linear, attention = layer_counts(t)
     d, h = int(t["hidden_size"]), int(t["num_attention_heads"]) // world
     hk = local_kv_heads(t, world)
@@ -283,7 +289,8 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
         if indexed:
             # Separate K/V arrays in both the main state and the lazy serial-reference twin.
             cache = 2 * count * (capacity * hk * row + dummies)
-            cache += 2 * count * (capacity + (capacity + ratio - 1) // ratio) * index_dim * 2
+            raw = capacity * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
+            cache += 2 * count * (raw + (capacity + ratio - 1) // ratio * index_dim * 2)
             # chunk partials cover the keys a row reads (at most the indexer budget and a block's tail)
             chunks = (min(capacity, budget + ratio - 1) + 511) // 512
             blocks = (capacity + ratio - 1) // ratio
@@ -519,15 +526,21 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             kv_scale_bytes: int = 2, kv_status: bool = False,
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
                             world: int = 1, points: int = 1, graph_bytes: int = 0,
-                            full_windows: int | None = None, workspace_bytes: int = 0) -> Geometry:
+                            full_windows: int | None = None, workspace_bytes: int = 0,
+                            indexer_raw_device_bytes: int | None = None) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
-    budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs)."""
+    budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
+    A bounded raw-history owner persists through KV resize; its exact per-layer
+    device bytes replace full raw rows and do not join the copy overlap."""
 
     if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
         raise ValueError("full KV windows must be a positive integer")
     if type(workspace_bytes) is not int or workspace_bytes < 0:
         raise ValueError("full-window workspace must be nonnegative integer bytes")
+    if indexer_raw_device_bytes is not None and (
+            type(indexer_raw_device_bytes) is not int or indexer_raw_device_bytes < 0):
+        raise ValueError("bounded raw indexer device bytes must be nonnegative integer bytes")
     windows = 1 if full_windows is None else min(streams, full_windows)
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
@@ -552,7 +565,8 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     count = attention + int(mtp)
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:
-        return count * (rows * hk * row + dummies + (rows + (rows + ratio - 1) // ratio) * index_dim * 2)
+        raw = rows * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
+        return count * (rows * hk * row + dummies + raw + (rows + ratio - 1) // ratio * index_dim * 2)
 
     def bytes_at(capacity: int) -> int:
         blocks = (capacity + ratio - 1) // ratio
@@ -560,7 +574,12 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
         if full_windows is not None:
             # Resizes replace one target attention layer at a time. All full
             # slot windows coexist with the replacement and serving workspace.
-            cache += (caches(capacity) // count if count else 0) + workspace_bytes
+            replacement = (caches(capacity) // count if count else 0)
+            if count and indexer_raw_device_bytes is not None:
+                # The bounded owner keeps its ring/staging through a KV resize;
+                # only the main KV and pooled history acquire replacements.
+                replacement -= indexer_raw_device_bytes
+            cache += replacement + workspace_bytes
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
         scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
         scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
