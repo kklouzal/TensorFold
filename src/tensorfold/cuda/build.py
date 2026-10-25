@@ -64,17 +64,30 @@ def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABI
     flags = arch_flags(need, arch_specific)
     # arch_flags constructs this single target from one current-device query;
     # the `a` suffix also distinguishes architecture-specific instructions.
-    name = name + "_" + flags[0].split(",code=", 1)[1]
+    target = flags[0].split(",code=", 1)[1]
+    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *flags]
+    links = _toolkit()
+    if links:
+        kwargs["extra_ldflags"] = [*kwargs.get("extra_ldflags", []), *links]
+    foundation = None
+    if target == "sm_70":
+        from .sm70.foundation_headers import selected_headers
+
+        foundation = selected_headers()
+        if foundation is not None:
+            # Torch 2.14 emits user -I before its own/toolkit -isystem paths.
+            kwargs["extra_include_paths"] = [*map(str, foundation.roots), *kwargs.get("extra_include_paths", [])]
+            name += "_h" + foundation.build_identity(kwargs)[:20]
+    name = name + "_" + target
     directory = kwargs.get("build_directory")
     if directory is not None:
         directory = Path(directory) / name
         directory.mkdir(parents=True, exist_ok=True)
         kwargs["build_directory"] = str(directory)
-    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *flags]
-    links = _toolkit()
-    if links:
-        kwargs["extra_ldflags"] = [*kwargs.get("extra_ldflags", []), *links]
-    return _load(cpp_extension, name, sources, kwargs)
+    module = _load(cpp_extension, name, sources, kwargs)
+    if foundation is not None:
+        foundation.verify()  # Never publish a module compiled across changed header authority.
+    return module
 
 
 def load_cpu(name: str, sources: str | list[str], *, with_cuda: bool = False, **kwargs: Any) -> Any:

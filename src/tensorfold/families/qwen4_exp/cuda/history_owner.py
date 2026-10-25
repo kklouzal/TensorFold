@@ -366,6 +366,9 @@ class OwnerBuffers:
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
+        self.native_comm = self.native_collective = None
+        self._native_transport_configured = False
+        self.reference_transport_rows = 0
         self.closed = False
 
     def __init__(self, weights, rows, scratch, *, prefill=False):
@@ -378,6 +381,9 @@ class OwnerBuffers:
         self.rows, self.heads, self.prefill = rows, c.heads, prefill
         self.head_dim, self.rank, self.idw = c.head_dim, int(weights.meta.get("rank", 0)), scratch.idw
         self.device, self.comm = torch.device(device), getattr(weights, "comm", None)
+        from .owner_execution import FULL_COLLECTIVE
+
+        self.native_comm, self.native_collective = self.comm, FULL_COLLECTIVE
         self.queries = torch.empty((world, rows, c.heads, c.head_dim), dtype=torch.float16, device=device)
         self.device = self.queries.device
         self.selection = torch.zeros((rows, scratch.idw + 2), dtype=torch.int32, device=device)
@@ -435,6 +441,7 @@ class OwnerBuffers:
                 "communication_tensor_bytes": self.nbytes - extras,
                 "native_tensor_bytes": extras, "host_staging_bytes": native["host_descriptor_bytes"],
                 "pinned_host_staging_bytes": native["pinned_descriptor_bytes"],
+                "collective_family": native["collective_family"], "attention_members": native["attention_members"],
                 "qualification": "construction extents; not physical allocator or execution qualification"}
 
     def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None):
@@ -634,6 +641,12 @@ class OwnerBuffers:
                 "local_stats": local_stats, "all_stats": all_stats, "global_stats": self.global_stats[:rows],
                 "local_values": local_values, "all_values": all_values, "out": out}
 
+    def graph_tensors(self):
+        """Stable direct graph inputs; State pointers are separately leased by descriptors."""
+        return {"queries": self.queries, "selections": self.selections, "partial": self.partial,
+                "partials": self.partials, "descriptors": self.descriptors, "global_stats": self.global_stats,
+                "lane_rows": self.lane_rows, "native_layer": self.native_layer}
+
     def native_bucket(self, actual_rows):
         if type(actual_rows) is not int or not 1 <= actual_rows <= self.rows or not self.native_buckets:
             raise ValueError("native owner rows exceed the prepared execution catalogue")
@@ -655,6 +668,67 @@ class OwnerBuffers:
         if self._upload_pending:
             torch.cuda.current_stream(self.queries.device).wait_event(self.descriptor_upload)
 
+    def configure_native_transport(self, policy, comm):
+        """Fix an initialized startup communicator; never switch with live work."""
+        from .owner_execution import FULL_COLLECTIVE, HEAD_COLLECTIVE
+
+        if self._native_transport_configured or self.native_states is not None or self._native_pending:
+            raise RuntimeError("native owner transport is immutable after startup configuration")
+        world = 8 if policy == FULL_COLLECTIVE else 4 if policy == HEAD_COLLECTIVE else 0
+        if (not world or comm is None or comm.world != world or comm.rank != self.rank % world
+                or (world == 8 and comm is not self.comm)):
+            raise ValueError("native owner transport does not match its fixed head/rank group")
+        self.native_comm, self.native_collective = comm, policy
+        self._native_transport_configured = True
+
+    def gather_native(self, send, destination):
+        # The native kernels consume only the four logical ranks sharing this
+        # KV head. Preserve global rank indices/merge order in the same slabs;
+        # the other head's entries are neither evaluated nor merged.
+        if self.native_comm.world == 4:
+            first = self.rank // 4 * 4
+            destination = destination[first:first + 4]
+        self.native_comm.all_gather(send, destination)
+
+    def warm_native_transport(self, rows):
+        """Inactive startup only: initialize every used wire datatype/shape."""
+        if self.native_states is not None or self._native_pending:
+            raise RuntimeError("native transport warmup requires the unbound startup workspace")
+        if rows not in self.native_buckets:
+            raise ValueError("native transport shape was not prepared before startup warmup")
+        views = self.native_views(rows)
+        self.gather_native(views["q_all"][self.rank], views["q_all"])
+        # Canonical selection remains global even under the four rank policy.
+        self.comm.all_gather(self.selection[:rows], views["selected_all"])
+
+    def warm_reference_transport(self):
+        """Warm every still-eligible exact reference wire shape before capacity.
+
+        Reference attention does not pad its rows. It remains selectable after
+        native preparation, so head4 bucket warmup alone cannot bound full8
+        datatype/shape lazy residency. The owner envelope is at most256 rows.
+        """
+        if self.native_states is not None or self._native_pending or self.reference_transport_rows:
+            raise RuntimeError("reference transport warmup requires the untouched startup workspace")
+        for rows in range(1, self.rows + 1):
+            views = self.native_views(rows)
+            # Reference q is out-of-place. Reuse a disjoint, sufficiently large
+            # partial slab before its statistics/PV phases; no new tensor data
+            # allocation is needed. NCCL overwrites the complete receive view.
+            query = self.partial.view(torch.float16).reshape(-1)[:rows * self.heads * self.head_dim].view(
+                rows, self.heads, self.head_dim)
+            query.zero_()
+            self.selection[:rows].zero_()
+            self.comm.all_gather(query, views["q_all"])
+            self.comm.all_gather(self.selection[:rows], views["selected_all"])
+            views["local_stats"].zero_()
+            self.comm.all_gather(views["local_stats"], views["all_stats"])
+            views["local_values"].zero_()
+            self.comm.all_gather(views["local_values"], views["all_values"])
+        if self.queries.is_cuda:
+            torch.cuda.synchronize(self.device)
+        self.reference_transport_rows = self.rows
+
     def native_run(self, rows):
         """The same preallocated partial-attention pipeline for eager and graphs."""
         from tensorfold.cuda.sm70 import paged_attention as native
@@ -668,12 +742,12 @@ class OwnerBuffers:
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
         native.local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
                                 key_bits=bits, key_codec=codec, scale=256 ** -0.5, **common)
-        self.comm.all_gather(views["local_stats"], views["all_stats"])
+        self.gather_native(views["local_stats"], views["all_stats"])
         native.merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
         native.normalized_partial(views["q_all"], views["selected_all"], views["row_table"], views["global_stats"],
                                   views["local_values"], key_bits=bits, key_codec=codec,
                                   value_bits=bits, value_codec=codec, scale=256 ** -0.5, **common)
-        self.comm.all_gather(views["local_values"], views["all_values"])
+        self.gather_native(views["local_values"], views["all_values"])
         native.merge_values(views["all_values"], views["row_table"], views["out"], rank=self.rank,
                              page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
         return views["out"]
@@ -713,11 +787,16 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
+        self.native_comm = None
         self.closed, self._base_ready = True, False
 
     def native_record(self):
         return {"prepared": self.descriptors is not None,
+                "collective_family": self.native_collective,
+                "attention_members": list(range(self.rank // 4 * 4, self.rank // 4 * 4 + 4))
+                                     if self.native_comm is not None and self.native_comm.world == 4 else list(range(8)),
                 "native_rows": list(self.native_buckets),
+                "reference_transport_rows": self.reference_transport_rows,
                 "bound_states": 0 if self.native_states is None else len(self.native_states),
                 "descriptor_bytes": 0 if self.descriptors is None else self.descriptors.nbytes,
                 "global_statistics_bytes": 0 if self.global_stats is None else self.global_stats.nbytes,
@@ -791,7 +870,7 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
             send = query_all[rank]
             send[:count].copy_(buffers.q[base:base + count])
             send[count:].zero_()
-            comm.all_gather(send, query_all)  # Exactly this rank's legal in-place receive slice.
+            owner.gather_native(send, query_all)  # Exactly this rank's legal in-place receive slice.
         else:
             comm.all_gather(buffers.q[base:base + count], query_all)
         selection = owner.selection[:bucket]

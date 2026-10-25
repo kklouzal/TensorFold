@@ -249,6 +249,9 @@ def _runtime(engine, *, previous_topology=None):
                "graphs_enabled": engine.graphs_enabled,
                "environment": {k: os.environ.get(k) for k in _RUNTIME_ENV},
                "tuning_environment_sha256": tuning_environment_identity(os.environ)}
+    from tensorfold.cuda.sm70.foundation_headers import selected_identity
+
+    runtime["source_foundation_headers"] = selected_identity()
     # Only hashes of host-specific identifiers leave this process group.
     host = hashlib.sha256(_small("/proc/sys/kernel/random/boot_id") + b"\0" + _small("/etc/machine-id")).hexdigest()
     topology = {"rank": engine.rank, "host": host, "uuid": uuid, "name": props.name,

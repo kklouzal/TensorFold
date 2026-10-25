@@ -28,6 +28,9 @@ def _native():
         raise RuntimeError("this PyTorch wheel has no sm_70 kernels; select a Volta-enabled foundation")
     if not torch.version.cuda or not torch.version.cuda.startswith("12."):
         raise RuntimeError("the SM70 provider requires a CUDA 12.x PyTorch foundation")
+    from .foundation_headers import selected_headers
+
+    selected_headers()  # NVCC environment options files are consumed even by --version.
     build._toolkit()  # Retain the existing managed-foundation validation and toolkit selection.
     if cpp_extension.CUDA_HOME is None:
         raise RuntimeError("the SM70 provider requires a native CUDA 12.x compiler")

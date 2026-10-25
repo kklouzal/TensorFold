@@ -16,6 +16,9 @@ def extension():
 
     if torch.cuda.get_device_capability() != (7, 0) or "sm_70" not in torch.cuda.get_arch_list():
         raise RuntimeError("mixed GGUF FP16 execution requires a Volta-enabled PyTorch build and SM70 device")
+    from .foundation_headers import selected_headers
+
+    selected_headers()  # Validate injected argument channels before compiler metadata queries too.
     build._toolkit()
     if cpp_extension.CUDA_HOME is None:
         raise RuntimeError("mixed GGUF execution requires the native CUDA12 compiler")

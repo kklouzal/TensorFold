@@ -61,15 +61,21 @@ def prepared_owner(monkeypatch):
     calls = []
     output = torch.zeros((6, 3, 256))
     side = SimpleNamespace(bits=8, codec=0)
-    owner = SimpleNamespace(queries=torch.zeros((8, 6, 3, 256)), heads=3, head_dim=256,
+    owner = SimpleNamespace(queries=torch.zeros((8, 6, 3, 256)), rows=6, rank=0, heads=3, head_dim=256,
+                            native_buckets=(1, 2, 4, 6),
                             selection=torch.zeros((6, 4), dtype=torch.int32), native_page_tokens=128,
                             native_pair=SimpleNamespace(key=side, value=side),
                             clear_native_inputs=lambda rows: calls.append(("clear", rows)),
+                            warm_native_transport=lambda rows: calls.append(("transport", rows)),
                             wait_native_inputs=lambda: calls.append(("wait",)),
                             native_run=lambda rows: calls.append(("native", rows)),
                             mark_native_submitted=lambda: calls.append(("submitted",)),
                             native_views=lambda rows: {"out": output[:rows]})
     comm = SimpleNamespace(world=8, all_gather=lambda source, target: target.fill_(source.item()))
+    comm.rank, comm.device, comm.closed, comm.comm = 0, owner.queries.device, False, SimpleNamespace(value=123)
+    owner.comm = owner.native_comm = comm
+    owner.native_collective = "tp8-allgather-v1"
+    owner.graph_tensors = lambda: {"queries": owner.queries, "selection": owner.selection}
     return owner, comm, status, calls, graphs
 
 
@@ -189,3 +195,99 @@ def test_unsettled_private_pool_is_a_failed_memory_proof_not_zero_spare(prepared
     with pytest.raises(ValueError, match="settled"):
         catalogue.prepare(quiescent=lambda: True)
     assert catalogue.private_spare_bytes is None and catalogue.failure is not None
+
+
+@pytest.mark.parametrize("mutation", ["tensor", "storage", "shape", "communicator", "policy", "codec"])
+def test_final_adoption_refuses_rebound_graph_resources_and_retains_old_storage(prepared_owner, mutation):
+    import torch
+
+    owner, comm, status, calls, graphs = prepared_owner
+    catalogue = owner_graphs.OwnerAttentionGraphs(owner, rows=6, budget_bytes=256, comm=comm)
+    catalogue.prepare(quiescent=lambda: True)
+    old_storage = catalogue.tensor_leases["queries"][1]
+    old_pointer, old_bytes = old_storage.data_ptr(), old_storage.nbytes()
+    if mutation == "tensor":
+        owner.queries = torch.zeros_like(owner.queries)
+    elif mutation == "storage":
+        owner.queries.set_(torch.zeros_like(owner.queries).untyped_storage())
+    elif mutation == "shape":
+        owner.queries.transpose_(0, 1)
+    elif mutation == "communicator":
+        comm.comm.value = 456
+    elif mutation == "policy":
+        owner.native_collective = "head4-allgather-v1"
+    else:
+        owner.native_pair = SimpleNamespace(key=SimpleNamespace(bits=4, codec=10), value=owner.native_pair.value)
+    with pytest.raises(RuntimeError, match="contract changed"):
+        catalogue.validate_adoption()
+    assert old_storage.data_ptr() == old_pointer and old_storage.nbytes() == old_bytes
+    assert status.notifications == [True] and catalogue.failure is not None
+    assert all(graph.resets == 0 for graph in graphs)
+
+
+def test_partial_graph_constructor_releases_lease_only_after_retirement(prepared_owner, monkeypatch):
+    owner, comm, status, calls, graphs = prepared_owner
+    partial_owner = object.__new__(owner_graphs.OwnerAttentionGraphs)
+
+    def fail_stream(**kwargs):
+        raise MemoryError("stream allocation")
+
+    monkeypatch.setattr(owner_graphs.torch.cuda, "Stream", fail_stream)
+    with pytest.raises(MemoryError, match="stream allocation"):
+        partial_owner.__init__(owner, rows=6, budget_bytes=256, comm=comm)
+    assert partial_owner.tensor_leases and partial_owner.comm_leases
+    partial_owner.close()
+    assert partial_owner.closed and not partial_owner.tensor_leases and not partial_owner.comm_leases
+
+
+def test_construction_hooks_cover_capture_and_replay_and_retire_before_clearing_maps(prepared_owner):
+    owner, comm, status, calls, graphs = prepared_owner
+    bindings, events = [], []
+
+    def bind_protocol(target, attribute, label, *, refusal):
+        assert refusal == () and label == "owner/capture"
+        original = getattr(target, attribute)
+        def capture(graph, run):
+            assert graph in target.pending and not status.active  # Graph owner exists before GO.
+            events.append(("protocol", label))
+            return original(graph, run)
+        bindings.append((target, attribute, original))
+        setattr(target, attribute, capture)
+
+    def bind_mapping(target, key, label):
+        original = target[key]
+        def replay():
+            events.append(("submit", label))
+            return original()
+        bindings.append((target, key, original))
+        target[key] = replay
+
+    def retire(target):
+        for entry in tuple(reversed(bindings)):
+            if entry[0] is target:
+                if isinstance(target, dict):
+                    assert entry[1] in target
+                    target[entry[1]] = entry[2]
+                else:
+                    setattr(target, entry[1], entry[2])
+                bindings.remove(entry)
+        events.append(("retire", id(target)))
+
+    comm._profile_construction = SimpleNamespace(bind_protocol=bind_protocol,
+        bind_mapping_submit=bind_mapping, retire_bindings=retire)
+    catalogue = owner_graphs.OwnerAttentionGraphs(owner, rows=6, budget_bytes=256, comm=comm)
+    catalogue.prepare(quiescent=lambda: True)
+    assert events == [("protocol", "owner/capture")] * 4
+    catalogue.run(3, graph=True)
+    assert events[-1] == ("submit", "owner/replay")
+    replay_map = catalogue.replays
+    for graph in graphs:
+        original = graph.reset
+        def reset(original=original):
+            assert not bindings  # Early retirement handles constructor rollback before context exit.
+            events.append(("reset",))
+            original()
+        graph.reset = reset
+    catalogue.close()
+    assert not replay_map and not bindings and all(graph.resets == 1 for graph in graphs)
+    assert events[5:7] == [("retire", id(catalogue)), ("retire", id(replay_map))]

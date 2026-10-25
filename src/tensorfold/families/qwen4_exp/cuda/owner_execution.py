@@ -7,11 +7,13 @@ requires the content-verified profile evidence contract.
 
 from types import MappingProxyType
 
-from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY
+from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY as KERNEL_FAMILY
 
 REFERENCE_KERNEL = "torch-reference"
 UNCAPTURED = "uncaptured"
 GRAPH_FAMILY = "owner-attention-v1"
+FULL_COLLECTIVE = "tp8-allgather-v1"
+HEAD_COLLECTIVE = "head4-allgather-v1"
 FAMILY_FIELDS = frozenset({"kernel_family", "graph_family"})
 REFERENCE = MappingProxyType({"kernel_family": REFERENCE_KERNEL, "graph_family": UNCAPTURED})
 

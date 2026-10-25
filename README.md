@@ -11,6 +11,10 @@ Measured execution profiles use a separate
 Its optional native preparation section builds bounded partial attention graphs
 before admission; explicit qualification trials remain unqualified until the
 source-built V100 stack and actual device/model gates pass.
+The optional attention preparation policy can use fixed four rank KV-head
+groups; full TP8 weights and canonical indexer selection remain unchanged.
+Selected source foundation CCCL/CUTLASS headers are verified and included in
+native build identities. These additions have no new V100 performance claim.
 The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
 format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
 Wire/source checks and reference-stack compilation do not qualify either
