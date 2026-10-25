@@ -15,7 +15,7 @@ def weights():
                           kv_heads=2, head_dim=64, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
                           ple_layers=[], eos=(0,))
     layers = [SimpleNamespace(index=i, linear=i % 2 == 0) for i in range(4)]
-    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace(), meta={"world": 1})
+    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace(), meta={"world": 1}, positions=None)
 
 
 def filled(state_mod, torch, kv_dtype: str, rows: int = 256):

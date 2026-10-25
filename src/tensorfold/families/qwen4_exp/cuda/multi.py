@@ -96,6 +96,9 @@ class MultiDecoder:
         self.controller = None
         self.execution_manifest_installer = None
         self.poison_control = None
+        self.input_preparation_context = w.meta.get("input_preparation_context")
+        if self.input_preparation_context is not None:
+            self.input_preparation_context.bind_decoder(self)
         self._execution_plan = None
         self._round_migration_s = 0.0
         if w.meta.get("execution_provider") == "sm70":

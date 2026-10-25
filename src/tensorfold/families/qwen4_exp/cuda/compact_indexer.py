@@ -10,7 +10,7 @@ members; completed raw keys are never a context-growing history.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import torch
 
@@ -42,62 +42,206 @@ def resolve_indexer_coordinates(state, cache_start, rows):
     return coordinate_rows(state, positions)
 
 
+def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_rows):
+    """Issue known text continuation rows, without reading device coordinates.
+
+    The admitted producer context and host continuation delta are authoritative.
+    Legacy image-position archives require their actual issued media rows.
+    """
+    import numpy as np
+    from .position_coordinates import issue_coordinates
+
+    if (position is None or state.coordinate_profile_identity is None or state.image_positions is not None
+            or type(cache_start) is not int or type(rows) is not int or type(max_rows) is not int
+            or not 0 < rows <= max_rows or cache_start < 0 or cache_start > state.capacity
+            or rows > state.capacity - cache_start or type(state.rope_delta) is not int):
+        raise ValueError("text coordinate issuance requires its bounded admitted host row/context recipe")
+    values = np.arange(cache_start, cache_start + rows, dtype=np.int64) + state.rope_delta
+    host = np.repeat(values[:, None], 3, axis=1)
+    return issue_coordinates(host, position=position, profile_identity=state.coordinate_profile_identity,
+        generation=state.slot_generation, media_identity=state.media_identity,
+        row_start=cache_start, max_rows=max_rows, device=state.pos_dev.device)
+
+
+@dataclass(frozen=True)
+class CoordinateWindow:
+    first: int
+    last: int
+    source: object
+    source_position: object
+    source_owner: object = None
+
+
 @dataclass(frozen=True)
 class IndexerFrame:
     frame_id: int
     token_rows: int
     segments: tuple
     mtp: bool
+    position: object
+    staging: object
+    storage: torch.Tensor
+    issued: tuple = ()
+    signature: tuple | None = None
+    active: bool = False
+
+
+def _position_span(state, first, last, position, *, mtp, explicit):
+    if position is None:
+        if explicit:
+            raise ValueError("explicit coordinates require an admitted positional profile")
+        return
+    if (state.position_profile_identity, state.position_epoch) != (position.identity, position.epoch):
+        raise ValueError("indexer State and execution buffers use different positional profiles")
+    start = state.mtp_len if mtp else state.pos
+    count = last - first
+    if not explicit:
+        if state.image_positions is not None or state.media_profile_identity is not None:
+            raise ValueError("media/explicit positional rows require their issued coordinate frame")
+        low, high = start + state.rope_delta, start + state.rope_delta + count - 1
+        position.domain.validate_span(start, count, coordinate_min=(low,) * 3, coordinate_max=(high,) * 3)
+
+
+def _revoke_frame(buffers, prefix):
+    old = getattr(buffers, prefix + "_indexer_frame")
+    if old is not None:
+        object.__setattr__(old, "active", False)
+    setattr(buffers, prefix + "_indexer_coordinates", None)
+    setattr(buffers, prefix + "_indexer_frame", None)
+    frame_id = getattr(buffers, prefix + "_indexer_frame_id") + 1
+    setattr(buffers, prefix + "_indexer_frame_id", frame_id)
+    return frame_id
 
 
 def _stage_frame(buffers, segments, coordinates, *, mtp):
+    from .position_coordinates import CoordinateTransfer, IssuedCoordinates, _signature, copy_coordinate_batch
+
     prefix = "mtp" if mtp else "target"
     if coordinates is None:
-        setattr(buffers, prefix + "_indexer_coordinates", None)
-        setattr(buffers, prefix + "_indexer_frame", None)
+        _revoke_frame(buffers, prefix)
         return
     count = segments[-1][2] if segments else 0
     storage = getattr(buffers, prefix + "_indexer_coordinate_storage")
-    if (storage is None or not isinstance(coordinates, torch.Tensor) or coordinates.dtype != torch.int64
-            or coordinates.device != storage.device or coordinates.shape != (count, 3) or count > buffers.rows):
-        raise ValueError("indexer coordinates require owned int64[n,3] storage on the consumer device")
+    position = getattr(buffers, prefix + "_indexer_position")
+    if (storage is None or storage.dtype != torch.int64 or storage.shape != (buffers.rows, 3)
+            or type(coordinates) is not tuple or not 0 < len(coordinates) <= count <= buffers.rows
+            or position is None):
+        raise ValueError("indexer coordinates require issued windows and admitted owned int64 row storage")
     rows, cursor = [], 0
     for state, first, last in segments:
-        if first != cursor or not first < last <= count:
+        if type(first) is not int or type(last) is not int or first != cursor or not first < last <= count:
             raise ValueError("coordinate segments must cover the staged rows")
+        _position_span(state, first, last, position, mtp=mtp, explicit=True)
         start = state.mtp_len if mtp else state.pos
         rows.append((state, state.slot_generation, state.history_generation, start, first, last))
         cursor = last
-    frame_id = getattr(buffers, prefix + "_indexer_frame_id") + 1
-    buffers.compact_indexer_stage.begin(mtp=mtp)
-    if coordinates.data_ptr() != storage.data_ptr() or coordinates.stride() != storage.stride():
-        storage[:count].copy_(coordinates)
-    buffers.compact_indexer_stage.mark(mtp=mtp)
-    setattr(buffers, prefix + "_indexer_frame_id", frame_id)
-    setattr(buffers, prefix + "_indexer_coordinates", storage[:count])
-    setattr(buffers, prefix + "_indexer_frame", IndexerFrame(frame_id, count, tuple(rows), mtp))
+    stage = buffers.compact_indexer_stage
+    candidate = IndexerFrame(getattr(buffers, prefix + "_indexer_frame_id") + 1,
+                             count, tuple(rows), mtp, position, stage, storage)
+    transfers, owners, metadata, cursor, segment = [], [], [], 0, 0
+    for window in coordinates:
+        if (type(window) is not CoordinateWindow or type(window.first) is not int or type(window.last) is not int
+                or window.first != cursor or not cursor < window.last <= count
+                or type(window.source) is not IssuedCoordinates or window.source.tensor.device != storage.device):
+            raise ValueError("issued coordinate windows must cover every execution row in order")
+        while cursor >= rows[segment][5]:
+            segment += 1
+        state, _slot, _owner, start, first, last = rows[segment]
+        if window.last > last or state.coordinate_profile_identity is None:
+            raise ValueError("issued coordinate windows require one current admitted State context")
+        if window.source_owner is not None:
+            owner = window.source_owner
+            if type(owner) is not IndexerFrame or not owner.active:
+                raise ValueError("coordinate source frame was revoked or retired")
+            if not any(owner is previous for previous in owners):
+                owners.append(owner)
+        row_start = start + cursor - first
+        transfers.append(CoordinateTransfer(window.source, window.source_position, position,
+            row_start, window.last - cursor, storage[cursor:window.last],
+            state.coordinate_profile_identity, state.slot_generation, state.media_identity,
+            source_owner=window.source_owner))
+        metadata.append((state, cursor, window.last, row_start))
+        cursor = window.last
+    if cursor != count:
+        raise ValueError("issued coordinate windows do not cover the complete frame")
+    transfers, metadata = tuple(transfers), tuple(metadata)
+    _revoke_frame(buffers, prefix)  # Old authorization is gone before any fallible staging/copy.
+    try:
+        stage.begin(mtp=mtp)
+        with ExitStack() as readers:
+            for owner in owners:
+                readers.enter_context(owner.staging.reading(mtp=owner.mtp))
+            readers.enter_context(stage.reading(mtp=mtp, borrowers=tuple(window.source.tensor for window in coordinates)))
+            issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
+            object.__setattr__(candidate, "issued", tuple((*record, value) for record, value in zip(metadata, issued)))
+            object.__setattr__(candidate, "signature", _signature(storage))
+            values = storage[:count]
+    except BaseException as error:
+        failed = stage._errors[int(mtp)] is not None or any(
+            owner.staging._errors[int(owner.mtp)] is not None for owner in owners)
+        if failed:
+            for state, *_ in rows:
+                state._history_error = state._kv_error = error
+            for owner in owners:
+                for state, *_ in owner.segments:
+                    state._history_error = state._kv_error = error
+            # Reuse the existing phase failure marker. Its owners already retain
+            # actual borrowed tensors; a typed ValueError must not look retryable.
+            try:
+                error._tensorfold_retained_owners = (stage, *(owner.staging for owner in owners))
+            except BaseException as marker:
+                from tensorfold.cuda.cohort import notify_failure
+
+                try:
+                    notify_failure()
+                except BaseException as notification:
+                    raise_failures(error, (marker, notification))
+                raise_failures(error, (marker,))
+            from tensorfold.cuda.cohort import notify_failure
+
+            try:
+                notify_failure()
+            except BaseException as notification:
+                raise_failures(error, (notification,))
+        raise
+    object.__setattr__(candidate, "active", True)
+    setattr(buffers, prefix + "_indexer_coordinates", values)
+    setattr(buffers, prefix + "_indexer_frame", candidate)
 
 
 def _validate_frame(buffers, segments, *, mtp):
+    from .position_coordinates import _signature
+
     prefix = "mtp" if mtp else "target"
     frame = getattr(buffers, prefix + "_indexer_frame")
     values = getattr(buffers, prefix + "_indexer_coordinates")
     storage = getattr(buffers, prefix + "_indexer_coordinate_storage")
+    position = getattr(buffers, prefix + "_indexer_position")
     if frame is None and values is None:
+        if position is not None:
+            raise ValueError("admitted positional rows require their issued coordinate frame")
+        for state, first, last in segments:
+            _position_span(state, first, last, position, mtp=mtp, explicit=False)
         return None
-    if (not isinstance(frame, IndexerFrame) or frame.mtp is not mtp
+    if (type(frame) is not IndexerFrame or not frame.active or frame.mtp is not mtp or frame.position is not position
             or frame.frame_id != getattr(buffers, prefix + "_indexer_frame_id")
             or values is None or values.shape != (frame.token_rows, 3) or values.dtype != torch.int64
-            or storage is None or values.device != storage.device or len(frame.segments) != len(segments)
-            or type(frame.token_rows) is not int or not 0 <= frame.token_rows <= buffers.rows
+            or storage is not frame.storage or values.device != storage.device or len(frame.segments) != len(segments)
+            or type(frame.token_rows) is not int or not 0 < frame.token_rows <= buffers.rows
             or frame.token_rows != (segments[-1][2] if segments else 0)
-            or values.data_ptr() != storage.data_ptr() or values.stride() != storage.stride()):
-        raise ValueError("indexer coordinate frame is stale or malformed")
+            or values.data_ptr() != storage.data_ptr() or values.stride() != storage.stride()
+            or frame.signature != _signature(storage)):
+        raise ValueError("indexer coordinate frame is stale, mutated or malformed")
     for recorded, (state, first, last) in zip(frame.segments, segments):
         start = state.mtp_len if mtp else state.pos
         if (recorded[0] is not state or recorded[1:] !=
                 (state.slot_generation, state.history_generation, start, first, last)):
             raise ValueError("indexer coordinates no longer belong to their cache row/generation")
+        _position_span(state, first, last, position, mtp=mtp, explicit=True)
+    for state, first, last, start, issued in frame.issued:
+        issued.proof.validate(issued.tensor, position, profile_identity=state.coordinate_profile_identity,
+            generation=state.slot_generation, media_identity=state.media_identity,
+            row_start=start, row_count=last - first, owner=frame)
     return values
 
 
@@ -106,15 +250,38 @@ def stage_mtp_indexer_frame(buffers, segments, coordinates):
 
 
 def validate_mtp_indexer_frame(buffers, segments):
-    return _validate_frame(buffers, segments, mtp=True)
+    return _validate_or_fail(buffers, segments, mtp=True)
 
 
 def stage_target_indexer_frame(buffers, segments, coordinates):
     _stage_frame(buffers, segments, coordinates, mtp=False)
 
 
+def stage_text_indexer_frame(buffers, segments, *, mtp=False):
+    """Stage known text rows; a ready media span needs its actual issued rows."""
+    position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+    if position is None or any(state.media_input_span is not None for state, _, _ in segments):
+        _stage_frame(buffers, segments, None, mtp=mtp)
+        return
+    windows = tuple(CoordinateWindow(first, last,
+        issue_text_indexer_coordinates(state, position, state.mtp_len if mtp else state.pos,
+                                       last - first, max_rows=buffers.rows), position)
+        for state, first, last in segments)
+    _stage_frame(buffers, segments, windows, mtp=mtp)
+
+
 def validate_target_indexer_frame(buffers, segments):
-    return _validate_frame(buffers, segments, mtp=False)
+    return _validate_or_fail(buffers, segments, mtp=False)
+
+
+def _validate_or_fail(buffers, segments, *, mtp):
+    try:
+        return _validate_frame(buffers, segments, mtp=mtp)
+    except BaseException as error:
+        context = buffers.input_preparation_context
+        if context is not None:
+            context.fail(error)
+        raise
 
 
 class Staging:
@@ -123,12 +290,14 @@ class Staging:
         self.rows = rows
         channels = 0 if mtp_only else (caches + 7) // 8
         self.target = torch.empty((channels, rows, 128), dtype=torch.float16, device=device)
-        self.coordinates = torch.empty((0 if mtp_only else rows, 3), dtype=torch.int64, device=device)
+        with torch.inference_mode(False):
+            self.coordinates = torch.empty((0 if mtp_only else rows, 3), dtype=torch.int64, device=device)
+            self.mtp_coordinates = torch.empty((rows if mtp else 0, 3), dtype=torch.int64, device=device)
         self.mtp = torch.empty((rows if mtp else 0, 128), dtype=torch.float16, device=device)
-        self.mtp_coordinates = torch.empty((rows if mtp else 0, 3), dtype=torch.int64, device=device)
         self.target_epoch = self.mtp_epoch = 0
         self._events, self._streams = [None, None], [None, None]
         self._errors = [None, None]
+        self._borrowers = [(), ()]
         for role, values in enumerate((self.target, self.mtp)):
             if values.is_cuda and values.numel():
                 self._events[role] = torch.cuda.Event()
@@ -142,10 +311,14 @@ class Staging:
             raise self._errors[role]
         event = self._events[role]
         if event is not None:
-            values = self.mtp if mtp else self.target
-            stream = torch.cuda.current_stream(values.device)
-            if stream.cuda_stream != self._streams[role]:
-                stream.wait_event(event)
+            try:
+                values = self.mtp if mtp else self.target
+                stream = torch.cuda.current_stream(values.device)
+                if stream.cuda_stream != self._streams[role]:
+                    stream.wait_event(event)
+            except BaseException as error:
+                self._errors[role] = error
+                raise
 
     def mark(self, *, mtp):
         role = int(mtp)
@@ -165,11 +338,17 @@ class Staging:
                 raise
 
     @contextmanager
-    def reading(self, *, mtp):
+    def reading(self, *, mtp, borrowers=()):
         """Every explicit-coordinate consumer participates, not only raw owners."""
         self.wait(mtp=mtp)
+        if borrowers:
+            self._borrowers[int(mtp)] = borrowers
         primary = prior = secondary = None
         try:
+            if borrowers and borrowers[0].is_cuda:
+                stream = torch.cuda.current_stream(borrowers[0].device)
+                for tensor in borrowers:
+                    tensor.record_stream(stream)
             yield
         except BaseException as error:
             primary = error
@@ -180,6 +359,8 @@ class Staging:
                 self.mark(mtp=mtp)
             except BaseException as error:
                 secondary = error
+            else:
+                self._borrowers[int(mtp)] = ()
         elif primary is None:
             secondary = self._errors[int(mtp)]
         if primary is not None:
@@ -231,14 +412,15 @@ class Cache:
     def __init__(self, capacity, dim, device, generations, status, *, layer, proposal_rows=0, mtp=False):
         self.capacity, self.dim, self.layer = capacity, dim, layer
         self.generations, self.status = generations, status
-        self.raw = torch.zeros((RATIO, dim), dtype=torch.float16, device=device)
-        self.coordinates = torch.zeros((RATIO, 3), dtype=torch.int64, device=device)
-        self.protected = torch.zeros_like(self.raw)
-        self.protected_coordinates = torch.zeros_like(self.coordinates)
-        self.proposal_raw = torch.zeros((proposal_rows, dim), dtype=torch.float16, device=device)
-        self.proposal_coordinates = torch.zeros((proposal_rows, 3), dtype=torch.int64, device=device)
-        self.base_raw = torch.zeros((RATIO if mtp else 0, dim), dtype=torch.float16, device=device)
-        self.base_coordinates = torch.zeros((RATIO if mtp else 0, 3), dtype=torch.int64, device=device)
+        with torch.inference_mode(False):
+            self.raw = torch.zeros((RATIO, dim), dtype=torch.float16, device=device)
+            self.coordinates = torch.zeros((RATIO, 3), dtype=torch.int64, device=device)
+            self.protected = torch.zeros_like(self.raw)
+            self.protected_coordinates = torch.zeros_like(self.coordinates)
+            self.proposal_raw = torch.zeros((proposal_rows, dim), dtype=torch.float16, device=device)
+            self.proposal_coordinates = torch.zeros((proposal_rows, 3), dtype=torch.int64, device=device)
+            self.base_raw = torch.zeros((RATIO if mtp else 0, dim), dtype=torch.float16, device=device)
+            self.base_coordinates = torch.zeros((RATIO if mtp else 0, 3), dtype=torch.int64, device=device)
         self.n = self.origin = 0
         self.base = None
         self.base_expected = None
@@ -511,15 +693,16 @@ class Cache:
             reads += (self.span.raw, self.span.coordinates)
         with self.reading(reads, span=self.span):
             other = copy.copy(self)
-            for name, value in vars(self).items():
-                if isinstance(value, torch.Tensor) and name not in ("generations", "status"):
-                    setattr(other, name, value.clone())
-            other.generations, other.status = generations, status
-            if self.span is not None:
-                span = self.span
-                span.check()
-                other.span = Span(span.start, span.raw.clone(), span.coordinates.clone(), None,
-                                  span.epoch, span.mtp, span.expected, span.resolved)
+            with torch.inference_mode(False):
+                for name, value in vars(self).items():
+                    if isinstance(value, torch.Tensor) and name not in ("generations", "status"):
+                        setattr(other, name, value.clone())
+                other.generations, other.status = generations, status
+                if self.span is not None:
+                    span = self.span
+                    span.check()
+                    other.span = Span(span.start, span.raw.clone(), span.coordinates.clone(), None,
+                                      span.epoch, span.mtp, span.expected, span.resolved)
             other.done = torch.cuda.Event() if self.raw.is_cuda else None
             other.pending = other.done is not None
             if other.done is not None:

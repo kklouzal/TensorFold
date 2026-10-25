@@ -398,24 +398,37 @@ def test_explicit_coordinate_consumer_on_non_indexer_owner_retires_shared_role(m
 
 @pytest.mark.parametrize("mtp", [False, True])
 def test_coordinate_frame_binds_own_rows_generations_and_coordinate_storage(mtp):
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import CoordinateWindow
+    from tensorfold.families.qwen4_exp.cuda.position_coordinates import issue_coordinates
+    from test_qwen4_exp_position_coordinates import policy
+
     prefix = "mtp" if mtp else "target"
+    position = policy(prefix, limit=512)
     staging = Staging(4, 13, "cpu", mtp=True)
     storage = staging.mtp_coordinates if mtp else staging.coordinates
-    buffers = NS(rows=4, compact_indexer_stage=staging, **{prefix + "_indexer_coordinate_storage": storage,
+    buffers = NS(rows=4, compact_indexer_stage=staging, input_preparation_context=None,
+                 **{prefix + "_indexer_coordinate_storage": storage,
                             prefix + "_indexer_coordinates": None, prefix + "_indexer_frame": None,
+                            prefix + "_indexer_position": position,
                             prefix + "_indexer_frame_id": 0})
-    state = NS(pos=19, mtp_len=18, slot_generation=2, history_generation=3)
+    state = NS(pos=19, mtp_len=18, slot_generation=2, history_generation=3,
+               position_profile_identity=position.identity, position_epoch=position.epoch,
+               coordinate_profile_identity="1" * 64, media_identity=None)
     segs, coords = [(state, 0, 2)], torch.tensor([[100, 20, 30], [200, 40, 60]], dtype=torch.int64)
     stage_fn, validate = ((stage_mtp_indexer_frame, validate_mtp_indexer_frame) if mtp else
                           (stage_target_indexer_frame, validate_target_indexer_frame))
-    stage_fn(buffers, segs, coords)
-    coords.zero_()
+    issued = issue_coordinates(coords, position=position, profile_identity=state.coordinate_profile_identity,
+        generation=state.slot_generation, media_identity=None, row_start=state.mtp_len if mtp else state.pos,
+        max_rows=4, device="cpu")
+    stage_fn(buffers, segs, (CoordinateWindow(0, 2, issued, position),))
+    issued.tensor.zero_()
     assert validate(buffers, segs).tolist() == [[100, 20, 30], [200, 40, 60]]
     state.slot_generation += 1
     with pytest.raises(ValueError, match="generation"):
         validate(buffers, segs)
     stage_fn(buffers, segs, None)
-    assert validate(buffers, segs) is None
+    with pytest.raises(ValueError, match="issued coordinate frame"):
+        validate(buffers, segs)
 
 
 def test_unique_prefix_relocates_captured_tail_after_shared_staging_was_reused():

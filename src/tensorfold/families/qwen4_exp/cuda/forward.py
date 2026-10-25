@@ -611,6 +611,13 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
 
 
 def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
+    context = b.input_preparation_context
+    if context is None:
+        return _stage(w, b, windows, late=late)
+    return context.prepare("target-stage", lambda: _stage(w, b, windows, late=late))
+
+
+def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
     """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment.
 
     ``late`` (a concurrent round's window): the rows' n-gram ids are found now, but their table reads (an SSD read with
@@ -626,6 +633,9 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
     R = segs[-1][2]
     if R > b.rows:
         raise ValueError(f"window of {R} rows, buffers hold {b.rows}")
+    from .compact_indexer import stage_text_indexer_frame
+
+    stage_text_indexer_frame(b, segs)
     b.staged.synchronize()               # the previous step's copies out of the pinned buffers are done
     b.ids_host[:R].numpy()[:] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
@@ -686,6 +696,9 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     of the frame's rows are used."""
 
     R = segs[-1][2]
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(b, segs)
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -850,6 +863,10 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
                   ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(db, dsegs)
+    validate_target_indexer_frame(pb, psegs)
     dflash2 = getattr(w, "dflash2", None)
     d_capture = p_capture = None
     try:

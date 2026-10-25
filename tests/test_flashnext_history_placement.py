@@ -274,6 +274,7 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
 
         buffers.compact_indexer_stage = Staging(3, state.layers, "cpu", mtp=False)
         buffers.target_indexer_coordinates = buffers.target_indexer_frame = None
+        buffers.target_indexer_position = None
         buffers.target_indexer_frame_id = 0
         buffers.target_indexer_coordinate_storage = buffers.compact_indexer_stage.coordinates
         buffers.history_owner = OwnerBuffers(w, 3, scratch)

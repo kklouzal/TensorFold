@@ -26,6 +26,10 @@ The unique GPU-history source path keeps completed pooled indexer keys and a
 bounded four-row raw tail with coordinates, protected append/proposal state and
 cut snapshots. [Compact indexer contracts](docs/compact-indexer.md) describe
 rollback, prefix reuse and the pending device qualification.
+Its new positional profiles initially require unique history and use issued,
+generation-bound coordinate frames before computation. Replicated execution
+keeps its existing native/YaRN policy; new explicit profiles are refused there.
+These source contracts do not qualify extended context or media execution.
 The optional attention preparation policy can use fixed four rank KV-head
 groups; full TP8 weights and canonical indexer selection remain unchanged.
 Selected source foundation CCCL/CUTLASS headers are verified and included in

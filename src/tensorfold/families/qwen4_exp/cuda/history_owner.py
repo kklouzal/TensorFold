@@ -246,10 +246,14 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         raise RuntimeError("unique history requires its compact raw/pool transaction owner")
     explicit = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
     coordinates = explicit[start:stop] if explicit is not None else coordinate_rows(state, positions)
-    options = dict(rope=coordinates, length=rows, sections=c.mrope_section, scale=c.rope_attention_factor)
+    position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+    frequencies = weights.inv_freq if position is None else position.inv_freq
+    sections = c.mrope_section if position is None else position.sections
+    amplitude = c.rope_attention_factor if position is None else position.amplitude
+    options = dict(rope=coordinates, length=rows, sections=sections, scale=amplitude)
     rotary_positions = torch.arange(rows, device=p.device, dtype=torch.int64)
-    query = ops.rotary(normalize(query, a.q_scale), weights.inv_freq, rotary_positions, **options)
-    key = ops.rotary(normalize(key, a.k_scale), weights.inv_freq, rotary_positions, **options)
+    query = ops.rotary(normalize(query, a.q_scale), frequencies, rotary_positions, **options)
+    key = ops.rotary(normalize(key, a.k_scale), frequencies, rotary_positions, **options)
     query = ops._guard(query, state.kv_status, 1, layer.index)
     key = ops._guard(key, state.kv_status, 2, layer.index)
     if cache.key_format.codec:
@@ -258,7 +262,7 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     else:
         buffers.q[start:stop].copy_(ops.h32(query).half() if cache.key_format.quantized else query)
     buffers.iq[start:stop].copy_(ops._guard(
-        ops.rotary(normalize(iq, a.iq_scale), weights.inv_freq, rotary_positions, **options), state.kv_status, 16, layer.index))
+        ops.rotary(normalize(iq, a.iq_scale), frequencies, rotary_positions, **options), state.kv_status, 16, layer.index))
     key_codes, key_scales = _encode(key, cache.key_format, state.kv_status, layer.index, error=2)
     value_codes, value_scales = _encode(value, cache.value_format, state.kv_status, layer.index, error=4)
     cache.append(pos, key_codes, value_codes, key_scales, value_scales)
@@ -267,8 +271,8 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         entry = state.compact_indexer.append(ai, pos, ik.half(), coordinates,
             buffers.compact_indexer_stage, start, stop, mtp=mtp,
             expected=(state.slot_generation, state.history_generation))
-        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, weights.inv_freq,
-                   c.eps, c.mrope_section, c.rope_attention_factor)
+        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequencies,
+                   c.eps, sections, amplitude)
         if mtp:
             expected = (state.slot_generation, state.history_generation)
             entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)

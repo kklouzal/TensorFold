@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import traceback
 import weakref
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -41,13 +42,20 @@ class Buffers:
         from .history_placement import for_weights
 
         placement = for_weights(w)
+        if w.positions is not None and placement is None:
+            raise ValueError("issued positional execution requires the admitted unique-history layout")
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        self.input_preparation_context = w.meta.get("input_preparation_context")
+        if w.positions is not None and self.input_preparation_context is None:
+            raise ValueError("bound execution buffers require the model's shared input preparation context")
         self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
         self.owner_kernel_family = "torch-reference"
         self.owner_graph_family = "uncaptured"
         self.owner_graphs = None
         self.compact_indexer_stage = None
+        self.target_indexer_position = None if w.positions is None else w.positions.target
+        self.mtp_indexer_position = None if w.positions is None else w.positions.mtp
         self.mtp_indexer_coordinate_storage = None
         self.mtp_indexer_coordinates = self.mtp_indexer_frame = None
         self.mtp_indexer_frame_id = 0
@@ -234,9 +242,27 @@ class State:
         dev = w.device
         bf = execution_dtype(w)
         self.execution_dtype = bf
+        binding = w.positions
+        coordinate_identity = w.meta.get("coordinate_profile_identity") if binding is not None else None
+        if binding is not None and (type(coordinate_identity) is not str or len(coordinate_identity) != 64
+                or any(char not in "0123456789abcdef" for char in coordinate_identity)):
+            raise ValueError("bound State construction requires the admitted numerical/model coordinate profile identity")
+        self.coordinate_profile_identity = coordinate_identity
+        self.input_preparation_context = w.meta.get("input_preparation_context")
+        self.position_profile_identity = None if binding is None else binding.profile.identity
+        self.position_epoch = None if binding is None else binding.profile.epoch
+        self.media_profile_identity = self.media_identity = None
+        self.media_input_span = None
+        if binding is not None:
+            allowance = capacity if limit is None else limit
+            if (type(allowance) is not int or allowance <= 0 or allowance > binding.target.domain.max_rows
+                    or w.mtp is not None and (binding.mtp is None or allowance > binding.mtp.domain.max_rows)):
+                raise ValueError("State allowance exceeds its admitted target/MTP positional row domain")
         from .history_placement import for_weights
 
         self.history_placement = for_weights(w)
+        if binding is not None and self.history_placement is None:
+            raise ValueError("issued positional execution requires the admitted unique-history layout")
         if type(slot) is not int or slot < 0:
             raise ValueError("history session slot must be a nonnegative integer")
         self.history_slot, self.history_rank = slot, int(w.meta.get("rank", 0))
@@ -276,6 +302,9 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        if binding is not None:
+            self.kv_identity += (("position-profile-v1", self.position_profile_identity, self.position_epoch),)
+            self.kv_identity += (("coordinate-profile-v1", self.coordinate_profile_identity),)
         dflash2 = getattr(w, "dflash2", None)
         if dflash2 is not None:
             if dflash2.identity is None:
@@ -374,8 +403,9 @@ class State:
                     if getattr(self, "indexer_history_owner", None) is None else
                     [self.indexer_history_owner.layer(i) for i in range(len(att))])
         nb = -(-capacity // c.index_ratio)
-        self.pooled = [torch.zeros((indexer_rows(i, nb), c.index_dim), dtype=bf, device=dev)
-                       for i in range(len(att))]
+        with torch.inference_mode(False) if self.compact_indexer is not None else nullcontext():
+            self.pooled = [torch.zeros((indexer_rows(i, nb), c.index_dim), dtype=bf, device=dev)
+                           for i in range(len(att))]
         wide = c.streams * c.hidden
         self.ple_tail = torch.zeros(((c.ple_kernel - 1) * c.ngram_size, wide), dtype=bf, device=dev)
         self.ple_history = c.ngram(0).initial_history() if c.ple_layers else None
@@ -390,8 +420,9 @@ class State:
             self.mtp_ikc = (self.compact_indexer.layer(len(att)) if self.compact_indexer is not None else
                            torch.zeros((indexer_rows(len(att), capacity), c.index_dim), dtype=bf, device=dev)
                             if getattr(self, "indexer_history_owner", None) is None else self.indexer_history_owner.layer(len(att)))
-            self.mtp_pooled = torch.zeros((indexer_rows(len(att), -(-capacity // c.index_ratio)), c.index_dim), dtype=bf,
-                                          device=dev)
+            with torch.inference_mode(False) if self.compact_indexer is not None else nullcontext():
+                self.mtp_pooled = torch.zeros((indexer_rows(len(att), -(-capacity // c.index_ratio)), c.index_dim), dtype=bf,
+                                              device=dev)
 
         self.dspark_runtime = getattr(w, "dspark", None)
         self.dspark = None
@@ -964,6 +995,10 @@ class State:
         other.dflash2 = None
         for name, value in vars(self).items():
             if self.compact_indexer is not None and name in ("ikc", "mtp_ikc"):
+                continue
+            if self.compact_indexer is not None and name in ("pooled", "mtp_pooled"):
+                with torch.inference_mode(False):
+                    setattr(other, name, [v.clone() for v in value] if isinstance(value, list) else value.clone())
                 continue
             if isinstance(value, torch.Tensor):
                 setattr(other, name, value.clone())

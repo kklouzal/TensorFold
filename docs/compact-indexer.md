@@ -25,6 +25,32 @@ The compact core consumes the resolved immutable frequency/amplitude policy;
 it neither infers MTP coordinates from a shifted embedding nor retunes context
 extension from live load.
 
+New positional profiles initially support the unique-history layout. Legacy
+replicated execution keeps its existing unbound native/YaRN policy; an explicit
+new profile is refused there. A bound State requires the Engine's full numerical,
+model and profile coordinate identity before allocation. This persistent identity
+is separate from an active media-span identity and survives ordinary text
+requests. Snapshots and prefix reuse bind it together with the positional epoch.
+
+Explicit coordinate staging accepts ordered `CoordinateWindow` records from the
+shared issuer, including separate deferred-boundary and current-span pieces.
+Every piece belongs to one State's own cache rows. The candidate frame revokes
+old authorization before copying and receives all segment proofs after the
+batch's final mutation counter is known. Storage remains version-tracked under
+inference mode; raw native writes increment that counter before submission.
+All bound frames are checked before target or MTP persistent computation, not
+only when the first attention layer runs. Known text coordinates are issued
+from bounded host row arithmetic and the admitted continuation delta; media
+coordinates require their actual producer records without GPU scalar readback.
+One `InputPreparationContext` belongs to the bound Weights and is shared by
+warmup, target and MTP callers. It uses the existing same-host rank store and
+phase/retirement protocol, with one checked ordinal across all roles. Preparation
+must enclose local leases, windows and staging before any forward collective;
+same-thread nested staging belongs to the outer phase. Device preparation
+defaults to fatal cohort containment on failure. Only explicitly pure preflight
+may agree a validation refusal. This source policy adds control work whose
+V100 end-to-end cost remains unmeasured.
+
 Each recoverable cut owns its pooled-valid frontier, grouping origin and
 pending raw values/coordinates. Accepted-prefix commit promotes only those rows;
 rollback invalidates later pools and restores its protected tail. Prefix forks

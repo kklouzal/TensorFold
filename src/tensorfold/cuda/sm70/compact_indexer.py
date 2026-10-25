@@ -24,11 +24,16 @@ def extension():
 def publish(source, destination, at, generations, expected, status, layer):
     """Caller owns contiguous buffers and validated row extent through retirement."""
     import torch
+    from .tensor_mutation import require_mutation_budget
 
+    require_mutation_budget(destination, 1)
     if source.is_cuda:
         stream = torch.cuda.current_stream(source.device)
         for tensor in (source, destination, generations, status):
             tensor.record_stream(stream)
+        # Raw extension writes bypass dispatcher mutation tracking. Invalidate
+        # every issued view before submission, including a guarded no-op.
+        torch.autograd.graph.increment_version(destination)
         return extension().publish(source, destination, at, generations, *expected, status, layer)
     tensors = (source, destination, generations, status)
     if (not all(value.device == source.device and value.is_contiguous() for value in tensors)
@@ -59,8 +64,9 @@ def prepare(device):
     if device.type != "cuda":
         return
     extension()
-    source = torch.zeros((1, 1), dtype=torch.float16, device=device)
-    destination = torch.empty_like(source)
+    with torch.inference_mode(False):
+        source = torch.zeros((1, 1), dtype=torch.float16, device=device)
+        destination = torch.empty_like(source)
     generations = torch.zeros(2, dtype=torch.int64, device=device)
     status = torch.tensor([0, -2], dtype=torch.int32, device=device)
     publish(source, destination, 0, generations, (0, 0), status, -1)
