@@ -239,6 +239,7 @@ class Weights:
 
     dspark: Any = None       # explicit separate draft owner; never an MTPW
     dflash2: Any = None      # bounded-window DFlash2 owner; target storage is borrowed
+    positions: Any = None    # explicit immutable positional binding; None preserves the existing platform policy
 
     @property
     def device(self) -> torch.device:
