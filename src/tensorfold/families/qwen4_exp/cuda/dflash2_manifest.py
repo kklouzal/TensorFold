@@ -123,13 +123,36 @@ class PairingBinding:
 
 
 def preflight_pairing(manifest, *, files, target_config, draft_plan, context, kv_identity, target_numerics,
-                      authorize, max_file_bytes, max_total_bytes, reuse=None):
+                      authorize, max_file_bytes, max_total_bytes, reuse=None, capture=None):
     """Verify exact files and pairing before device allocation.
 
     ``files`` is the actual loader-derived target/draft/prepared-metadata closure,
     with the existing logical names. Paths are authorized by the owning engine.
     The caller preserves immutability through load and subsequent reuse.
     """
+    prepared = prepare_pairing_inputs(manifest, files=files, target_config=target_config, draft_plan=draft_plan,
+                                      context=context, kv_identity=kv_identity, target_numerics=target_numerics)
+    capture = capture_model_identity if capture is None else capture
+    authority = capture(files, runtime_identity={"schema": SCHEMA, "version": VERSION},
+        authorize=authorize, max_file_bytes=max_file_bytes, max_total_bytes=max_total_bytes,
+        reuse=reuse, reuse_is_immutable=reuse is not None)
+    return bind_pairing(prepared, authority)
+
+
+@dataclass(frozen=True)
+class PreparedPairing:
+    """Immutable local preflight result crossing the all-rank content frontier."""
+    manifest_json: str
+    files: tuple
+    target_config_json: str
+    draft_plan: object
+    context: int
+    kv_identity: str
+    numerics_json: str
+
+
+def prepare_pairing_inputs(manifest, *, files, target_config, draft_plan, context, kv_identity, target_numerics):
+    """Pure semantic admission; every rank agrees before content collectives."""
     if manifest.get("schema") != SCHEMA or type(manifest.get("version")) is not int or manifest["version"] != VERSION:
         raise ValueError("DFlash2 pairing extends the existing execution-profile manifest version1")
     section, expected = manifest.get("draft_pairing"), manifest.get("artifacts")
@@ -173,9 +196,27 @@ def preflight_pairing(manifest, *, files, target_config, draft_plan, context, kv
         context=context, kv_identity=kv_identity, target_numerics=target_numerics, tp=draft_plan.tp[1])
     if canonical_runtime_json(declared, max_bytes=16 << 20) != canonical_runtime_json(preliminary, max_bytes=16 << 20):
         raise ValueError("DFlash2 declared feature/token-ID/numerical contract differs from the selected profile")
-    authority = capture_model_identity(files, runtime_identity={"schema": SCHEMA, "version": VERSION},
-        authorize=authorize, max_file_bytes=max_file_bytes, max_total_bytes=max_total_bytes,
-        reuse=reuse, reuse_is_immutable=reuse is not None)
+    return PreparedPairing(canonical_runtime_json(manifest, max_bytes=16 << 20), tuple(sorted(files.items())),
+                           canonical_runtime_json(target_config, max_bytes=16 << 20), draft_plan, context,
+                           kv_identity, canonical_runtime_json(target_numerics, max_bytes=16 << 20))
+
+
+def bind_pairing(prepared, authority):
+    """Complete content/tokenizer checks after the owned content phase."""
+    if type(prepared) is not PreparedPairing or type(authority) is not ModelIdentity:
+        raise ValueError("DFlash2 binding needs prepared inputs and current-process content authority")
+    authority._check_issued()
+    manifest = json.loads(prepared.manifest_json)
+    files, target_config, draft_plan = dict(prepared.files), json.loads(prepared.target_config_json), prepared.draft_plan
+    section, expected = manifest["draft_pairing"], manifest["artifacts"]
+    source_hash = expected[section["draft_weights"]]["sha256"]
+    tokenizer_name = section["tokenizer_file"]
+    roles = ("target_artifacts", "metadata_artifacts", "draft_config", "draft_weights", "target_config_file", "tokenizer_file")
+    declared = {key: value for key, value in section.items() if key not in roles}
+    if (authority.runtime_json != canonical_runtime_json({"schema": SCHEMA, "version": VERSION})
+            or {item.logical_name: item.path for item in authority.files} !=
+                {name: str(path.resolve(strict=True)) for name, path in files.items()}):
+        raise ValueError("DFlash2 content authority differs from its actual runtime/input closure")
     observed = {item.logical_name: {"size": item.size, "sha256": item.sha256} for item in authority.files}
     if observed != expected:
         raise ValueError("DFlash2 actual content differs from the named pinned closure")
@@ -196,7 +237,8 @@ def preflight_pairing(manifest, *, files, target_config, draft_plan, context, kv
     tokenizer.no_truncation()
     token_contract = tokenizer_contract(tokenizer, vocab_size=draft_plan.config.vocab, mask_id=draft_plan.config.mask)
     contract = pairing_contract(draft_plan.config, target_config=target_config, tokenizer=token_contract,
-                               context=context, kv_identity=kv_identity, target_numerics=target_numerics, tp=draft_plan.tp[1])
+                               context=prepared.context, kv_identity=prepared.kv_identity,
+                               target_numerics=json.loads(prepared.numerics_json), tp=draft_plan.tp[1])
     encoded = canonical_runtime_json(contract, max_bytes=16 << 20)
     if canonical_runtime_json(declared, max_bytes=16 << 20) != encoded:
         raise ValueError("DFlash2 declared feature/token-ID/numerical contract differs from actual selected inputs")

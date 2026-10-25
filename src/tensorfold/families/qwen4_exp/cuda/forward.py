@@ -507,14 +507,15 @@ def _exl3_moe(m, w: Weights, b: Buffers, R: int) -> tuple:
     return 2, buf.y[:R], buf.wts[:R]
 
 
-def _writeback(h: torch.Tensor, b: Buffers, R: int, c, pending) -> None:
+def _writeback(h: torch.Tensor, b: Buffers, R: int, c, pending, *, pss=None) -> None:
     """Apply a pending branch to the streams (in place), no read-out."""
 
     mode, a, wts, inj = pending
+    pss = b.pss[:R] if pss is None else pss
     if mode == 2:
-        glue.hc_writeback(h[:R], h[:R], b.pss[:R], c.streams, 2, inject=inj[:R], y=a, wts=wts)
+        glue.hc_writeback(h[:R], h[:R], pss, c.streams, 2, inject=inj[:R], y=a, wts=wts)
     else:
-        glue.hc_writeback(h[:R], h[:R], b.pss[:R], c.streams, mode, branch=a, inject=inj[:R])
+        glue.hc_writeback(h[:R], h[:R], pss, c.streams, mode, branch=a, inject=inj[:R])
 
 
 def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int, pending, *, mtp: bool = False,
@@ -722,7 +723,7 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
                 runtime.finish_graph_capture(capture, segs, b)
             else:
                 runtime.finish(capture, segs)
-        if dflash2 is not None:
+        if dflash_capture is not None:
             dflash2.finish(dflash_capture, segs)
         return result
     except BaseException as primary:
@@ -878,6 +879,7 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
             dp, pp = (mode, y[Rp:], wts[Rp:], db.inj_m), (mode, y[:Rp], wts[:Rp], pb.inj_m)
             if d_capture is not None:
                 d_capture.completed_layer(layer.index, w, dp)
+            if p_capture is not None:
                 p_capture.completed_layer(layer.index, w, pp)
         result = finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
         if archive:

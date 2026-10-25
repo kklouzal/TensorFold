@@ -45,15 +45,20 @@ class Capture:
             raise ValueError("DFlash2 target feature tap order differs from the declared manifest")
         from .forward import _writeback
 
-        rows = self.segs[-1][2]
-        completed = self.owner.completed[:rows]
-        completed.copy_(self.buffers.h[:rows])
-        # The same pending-MoE writeback and rank-ordered gathered partials as
-        # the target consumes at its next block. Its actual residual stays intact.
-        if pending is not None:
-            _writeback(completed, self.owner, rows, weights.cfg, pending)
-        mean = completed.reshape(rows, config.hc_streams, config.hidden).float().mean(1).half()
-        self.owner.features[:rows, len(self.seen)].copy_(mean)
+        for _target, lo, hi in self.segs:
+            rows = hi - lo
+            completed = self.owner.completed[lo:hi]
+            completed.copy_(self.buffers.h[lo:hi])
+            # Capturing a mixed frame must not perform draft feature work for
+            # serial-only rows. The HC operator requires contiguous gathered
+            # partials; only this enabled span is materialized, in rank order.
+            if pending is not None:
+                mode, values, weights0, inject = pending
+                partial = values[:, lo:hi].contiguous() if mode in (3, 4) else values[lo:hi]
+                part = (mode, partial, None if weights0 is None else weights0[lo:hi], inject[lo:hi])
+                _writeback(completed, self.owner, rows, weights.cfg, part, pss=self.owner.pss[lo:hi])
+            mean = completed.reshape(rows, config.hc_streams, config.hidden).float().mean(1).half()
+            self.owner.features[lo:hi, len(self.seen)].copy_(mean)
         self.seen.append(layer)
 
     def finish(self):

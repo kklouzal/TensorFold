@@ -55,6 +55,32 @@ def test_parser_exposes_configurable_method_and_rejects_unknown():
     assert (parsed.draft_method,parsed.drafter,parsed.mtp_drafts)==('dspark','draft',7)
     with pytest.raises(SystemExit):
         parser().parse_args(['serve','target','--draft-method','unknown'])
+    assert parser().parse_args(['serve','target','--draft-method','dflash2']).draft_method == 'dflash2'
+
+
+@pytest.mark.parametrize('method', ['auto', 'dflash2'])
+def test_dflash2_selection_preserves_one_draft_owner_and_requires_manifest(tmp_path, monkeypatch, method):
+    import tensorfold.cuda.exl3.format as exl3
+    import tensorfold.families.qwen4_exp as family
+    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.families.qwen4_exp.cuda.engine as engine
+
+    monkeypatch.setattr(exl3, 'is_exl3', lambda _: False)
+    monkeypatch.setattr(gguf, 'resolve_gguf', lambda _: Path('target.gguf'))
+    calls = []
+    monkeypatch.setattr(engine, 'FlashNextEngine', lambda directory, **kw: calls.append(kw) or NS(options=kw))
+    draft = tmp_path / 'draft'
+    draft.mkdir()
+    (draft / 'config.json').write_text(json.dumps({'architectures': ['DFlash2DraftModel']}))
+    with pytest.raises(ValueError, match='pairing'):
+        family.cuda_engine('target', drafter=str(draft), tp=8, mtp_drafts=3,
+                           kv_dtype='fp16', draft_method=method)
+    assert not calls
+    result = family.cuda_engine('target', drafter=str(draft), tp=8, mtp_drafts=3,
+                               kv_dtype='fp16', draft_method=method, execution_profile_manifest=tmp_path / 'manifest.json')
+    assert result.options['dflash2_model_dir'] == draft
+    assert result.options['adaptive_sessions'] is True
+    assert not {'mtp_model_dir', 'dspark_model_dir'} & result.options.keys()
 
 
 @pytest.mark.parametrize("method,refuses", [("mtp",False),("dspark",True)])

@@ -187,16 +187,41 @@ class DFlash2Plan:
         frame = 16 * draft_rows * (c.hidden + local["intermediate"] + local["heads"] * c.head_dim)
         head = draft_rows * (c.vocab // self.tp[1] + int(c.vocab % self.tp[1] != 0)) * 16
         selector = draft_rows * c.top_k * (12 * c.selector_rank + 4 * c.top_k)
+        capture_workspace = rows * c.hidden * (4 * (self.tp[1] + c.hc_streams + 1) + 2)
         return {"resident_bytes": self.resident_bytes, "state_bytes_each": state,
                 "state_bytes": slots * state, **snapshot_budget(state, slots=slots, keep=keep, points=points),
                 **selector_host_budget(c, draft_rows // c.block),
                 "feature_frame_bytes": feature, "conditioning_stage_bytes": staged,
+                "feature_capture_workspace_bytes": capture_workspace,
                 "snapshot_reconstruction_parts_bytes": state,
                 "conditioning_workspace_bytes": conditioning,
-                "execution_workspace_bytes": feature + staged + max(conditioning, attention + frame + head + selector),
+                "execution_workspace_bytes": feature + staged + max(conditioning, capture_workspace,
+                                                                     attention + frame + head + selector),
                 "loading_host_staging_bytes": 5 * LOAD_CHUNK, "target_shared_weight_bytes": 0,
                 "draft_cache_policy": "physical-fp16-swa-ring-accepted-prefix-v1", "draft_window": c.window,
                 "draft_block_rows": c.block, "actual_q": "conditional-selector-sparse16"}
+
+    def serving_resources(self, *, slots, context, prefill_rows, execution_rows, keep, points, target_vocab):
+        """One authoritative serving envelope, including full target p extraction.
+
+        ``prefill_rows`` is the actual prompt-buffer extent, including shared
+        expert rows when converged. Source target logits already belong to the
+        target buffers; effective_workspace explicitly excludes those logits.
+        Host q packets remain live while target probabilities are constructed.
+        """
+        from tensorfold.cuda.sampling import effective_workspace
+
+        count(target_vocab, "target vocabulary")
+        if target_vocab % self.tp[1]:
+            raise ValueError("the initial DFlash2 target vocabulary must divide across TP8")
+        resource = self.resources(slots=slots, context=context, prefill_rows=prefill_rows,
+                                  execution_rows=execution_rows, keep=keep, points=points)
+        probability = effective_workspace(execution_rows, target_vocab // self.tp[1], world=self.tp[1], top_k=0)
+        return {**resource, "target_probability_device_bytes": probability["device_bytes"],
+                "target_probability_host_bytes": probability["host_bytes"],
+                "device_serving_bytes": resource["state_bytes"] + resource["snapshot_bytes"]
+                    + resource["execution_workspace_bytes"] + probability["device_bytes"],
+                "host_serving_bytes": resource["host_workspace_bytes"] + probability["host_bytes"]}
 
 
 @dataclass

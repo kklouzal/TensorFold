@@ -816,9 +816,9 @@ class State:
                   "allocated_history_bytes": self.owned_cache_bytes()}
         if getattr(self, "dflash2_runtime", None) is not None:
             result["dflash2"] = self.dflash2_runtime.record(self)
-            result["draft_valid_length"] = self.dflash2.end
-            result["draft_tentative_length"] = self.dflash2.end + (
-                0 if self.dflash2.pending is None else len(self.dflash2.pending.values))
+            result["draft_valid_length"] = self.dflash2.end if self.dflash2.enabled else None
+            result["draft_tentative_length"] = (self.dflash2.end + (
+                0 if self.dflash2.pending is None else len(self.dflash2.pending.values))) if self.dflash2.enabled else None
         if placement is not None:
             result.update(attention_degree=placement.degree,
                           mtp_attention_degree=4 if hasattr(self, "mtp_kc") else None,

@@ -44,11 +44,15 @@ def test_none_does_not_claim_a_draft_cache_and_dspark_geometry_is_not_mtp():
         none.target_rows(1)
 
 
-@pytest.mark.parametrize("architecture", ["DFlashDraftModel", "DFlash2DraftModel"])
-def test_flash_next_dflash_checkpoint_cannot_fall_through_to_stock_mtp(tmp_path, architecture):
-    (tmp_path / "config.json").write_text(json.dumps({"architectures": [architecture]}))
-    with pytest.raises(ValueError, match="exact compatible target/draft"):
+def test_unknown_dflash_checkpoint_cannot_fall_through_to_stock_mtp(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["DFlashDraftModel"]}))
+    with pytest.raises(ValueError, match="pairing profile"):
         checkpoint_method(tmp_path)
+
+
+def test_selected_dflash2_architecture_has_its_own_pairing_preflight(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["DFlash2DraftModel"]}))
+    assert checkpoint_method(tmp_path) == "dflash2"
 
 
 def test_dspark_keeps_its_own_architecture_even_with_dflash_named_config(tmp_path):

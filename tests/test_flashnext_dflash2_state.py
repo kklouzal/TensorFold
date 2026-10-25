@@ -58,6 +58,191 @@ def assert_window_equal(a, b):
         assert torch.equal(positions, other_positions) and torch.equal(left, right)
 
 
+def test_partial_real_multi_constructor_keeps_windows_until_fenced_retirement(family, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import multi
+
+    weights, runtime = family
+    original, acquired = multi.State, []
+    failure = RuntimeError("second actual slot constructor interrupted after allocation")
+
+    def acquire(*args, **kwargs):
+        state = original(*args, **kwargs)
+        acquired.append(state)
+        if len(acquired) == 2:
+            raise failure
+        return state
+
+    monkeypatch.setattr(multi, "State", acquire)
+    # The regular CPU fixture runs the actual Buffer constructors. HC native
+    # plan preparation has a separate supported-target gate.
+    monkeypatch.setattr("tensorfold.families.qwen4_exp.cuda.hc_plans.enroll", lambda *a, **kw: None)
+    with pytest.raises(RuntimeError) as caught:
+        multi.MultiDecoder(weights, slots=2, capacity=32, depth=3, prefill_rows=8, kv_dtype="fp16")
+    assert caught.value is failure and len(acquired) == 2
+    assert all(not state.dflash2.closed and state.dflash2.kv is not None for state in acquired)
+    with pytest.raises(ValueError, match="fence"):
+        runtime.retire_after_fence(fenced=False)
+    runtime.retire_after_fence(fenced=True)  # CPU has no asynchronous device readers.
+    assert all(state.dflash2.closed and state.dflash2.kv is None for state in acquired)
+    assert all(ref() is None or ref().readers == 0 for ref in runtime._frames)
+
+
+def test_fenced_retirement_refuses_unknown_reader_and_retains_poisoned_ring(family):
+    weights, runtime = family
+    state = State(weights, 32, 8, "fp16", limit=64)
+    buffers = Buffers(weights, 8, 32, prefill=True)
+    buffers.dflash2_features.readers = 1
+    with pytest.raises(RuntimeError, match="unowned feature reader"):
+        runtime.retire_after_fence(fenced=True)
+    assert state.dflash2.poisoned and not state.dflash2.closed and state.dflash2.kv is not None
+    buffers.dflash2_features.readers = 0  # independent test borrower retires.
+    runtime.retire_after_fence(fenced=True)
+
+
+def test_serving_resource_plan_matches_actual_owned_ring_and_feature_extents(family):
+    weights, runtime = family
+    states = [State(weights, 32, 4, "fp16", limit=64, slot=index) for index in range(2)]
+    main, prompt = Buffers(weights, 4, 32), Buffers(weights, 8, 32, prefill=True)
+    resource = runtime.plan.serving_resources(slots=2, context=64, execution_rows=4,
+        prefill_rows=8, keep=1, points=4, target_vocab=weights.cfg.vocab)
+    assert resource["state_bytes"] == sum(state.dflash2.nbytes for state in states)
+    assert resource["feature_frame_bytes"] == main.dflash2_features.nbytes + prompt.dflash2_features.nbytes
+    assert resource["snapshot_versions"] == 9
+    assert resource["target_shared_weight_bytes"] == 0
+    assert resource["target_probability_device_bytes"] > 0 and resource["host_serving_bytes"] > 0
+    for state in states:
+        runtime.close_state(state)
+
+
+def test_real_prefill_coordinator_batches_conditioning_before_snapshots(family, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    weights, runtime = family
+    states = [State(weights, 32, 4, "fp16", limit=64, slot=index) for index in range(2)]
+    buffers = Buffers(weights, 8, 32, prefill=True)
+    buffers.ids[:2].copy_(torch.tensor([4, 7], dtype=torch.int32))
+    buffers.ple_v.fill_(.125)
+    for state, token in zip(states, [4, 7]):
+        state.ple_last = (state.ple_history.copy(), np.array([token], dtype=np.int64))
+    segments = [(state, index, index + 1) for index, state in enumerate(states)]
+    forward.compute(weights, segments, buffers)
+    decoder = object.__new__(MultiDecoder)
+    decoder.w, decoder.pbuf, decoder.controller = weights, buffers, None
+    decoder._points = lambda *_args: []
+    pieces = [(SimpleNamespace(st=state, sid=index, prompt=[token]), 0, 1)
+              for index, (state, token) in enumerate(zip(states, [4, 7]))]
+    decoder.fills = {index: [None, False, 0, [], None] for index in range(2)}
+    calls, original = [], runtime.provider.materialize
+
+    def materialize(features, positions):
+        calls.append((len(features), positions.tolist()))
+        return original(features, positions)
+
+    monkeypatch.setattr(runtime.provider, "materialize", materialize)
+    decoder._absorb(pieces, segments)
+    assert calls == [(2, [0, 0])]
+    assert all(state.pos == state.dflash2.end == 1 for state in states)
+    assert buffers.dflash2_features.readers == 0
+    for state in states:
+        runtime.close_state(state)
+
+
+def test_quiet_serial_target_skips_all_draft_capture_and_marks_snapshot_inactive(family, monkeypatch):
+    weights, runtime = family
+    state = State(weights, 32, 4, "fp16", limit=64)
+    runtime.set_enabled(state, False)
+    buffers = Buffers(weights, 8, 32, prefill=True)
+    before = buffers.dflash2_features
+    before.features.fill_(.375)
+    monkeypatch.setattr(before, "begin", lambda *_a: pytest.fail("serial request captured draft features"))
+    monkeypatch.setattr(runtime.provider, "materialize", lambda *_a: pytest.fail("serial request conditioned draft KV"))
+    prefill(weights, state, buffers, [4, 7])
+    assert state.pos == 2 and state.dflash2.end == 0 and not state.dflash2.enabled
+    assert torch.all(before.features == .375) and before.readers == 0
+    snapshot = state.snapshot()
+    assert snapshot["dflash2"]["schema"] == "dflash2-inactive-v1"
+    assert "kv" not in snapshot["dflash2"] and runtime.record(state)["draft_valid_length"] is None
+    clone = state.clone()
+    assert not clone.dflash2.enabled and clone.pos == 2
+    fresh = State(weights, 32, 4, "fp16", limit=64)
+    with pytest.raises(ValueError, match="inactive"):
+        fresh.restore(snapshot)
+    assert fresh.pos == 0
+    with pytest.raises(ValueError, match="frontier"):
+        runtime.set_enabled(state, True)
+    for owner in (state, clone, fresh):
+        runtime.close_state(owner)
+
+
+def test_mixed_capture_touches_only_enabled_rows_and_target_results_stay_equal(family):
+    weights, runtime = family
+    states = [State(weights, 32, 4, "fp16", limit=64, slot=index) for index in range(2)]
+    runtime.set_enabled(states[0], False)
+    buffers = Buffers(weights, 8, 32, prefill=True)
+    buffers.dflash2_features.features.fill_(.375)
+    buffers.dflash2_features.completed.fill_(.25)
+    buffers.ids[:2].copy_(torch.tensor([4, 7], dtype=torch.int32))
+    buffers.ple_v.fill_(.125)
+    segments = [(state, index, index + 1) for index, state in enumerate(states)]
+    for state, token in zip(states, [4, 7]):
+        state.ple_last = (state.ple_history.copy(), np.array([token], dtype=np.int64))
+    logits = forward.compute(weights, segments, buffers).clone()
+    assert torch.all(buffers.dflash2_features.features[0] == .375)
+    assert torch.all(buffers.dflash2_features.completed[0] == .25)
+    assert not torch.all(buffers.dflash2_features.features[1] == .375)
+    assert states[0].dflash2.pending is None and states[1].dflash2.pending is not None
+    for state, begin, end in segments:
+        forward.commit(weights, state, buffers, end - begin, end - begin, at=begin)
+    assert states[0].pos == states[1].pos == states[1].dflash2.end == 1
+    assert states[0].dflash2.end == 0 and buffers.dflash2_features.readers == 0
+    # An independent all-serial target reference has no feature work; selected
+    # target logits/recurrence/PLE remain exactly equal for these same rows.
+    refs = [State(weights, 32, 4, "fp16", limit=64, slot=index + 2) for index in range(2)]
+    ref_buffer = Buffers(weights, 8, 32, prefill=True)
+    ref_buffer.ids[:2].copy_(torch.tensor([4, 7], dtype=torch.int32))
+    ref_buffer.ple_v.fill_(.125)
+    for state, token in zip(refs, [4, 7]):
+        runtime.set_enabled(state, False)
+        state.ple_last = (state.ple_history.copy(), np.array([token], dtype=np.int64))
+    ref_segments = [(state, index, index + 1) for index, state in enumerate(refs)]
+    assert torch.equal(logits, forward.compute(weights, ref_segments, ref_buffer))
+    for (state, begin, end), original in zip(ref_segments, states):
+        forward.commit(weights, state, ref_buffer, end - begin, end - begin, at=begin)
+        assert torch.equal(state.rec[state.cur[0]], original.rec[original.cur[0]])
+        assert torch.equal(state.conv, original.conv) and torch.equal(state.ple_tail, original.ple_tail)
+    for state in (*states, *refs):
+        runtime.close_state(state)
+
+
+def test_reconstruction_materialization_failure_retains_actual_pending_lease_until_fence(family, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    weights, runtime = family
+    state = State(weights, 32, 4, "fp16", limit=64)
+    prefill(weights, state, Buffers(weights, 8, 32, prefill=True), [4, 7])
+    buffers = Buffers(weights, 4, 32)
+    buffers.ids[0] = 12  # already-published canonical pending anchor, never sampled here
+    buffers.ple_v.fill_(.125)
+    state.ple_last = (state.ple_history.copy(), np.array([12], dtype=np.int64))
+    forward.compute(weights, [(state, 0, 1)], buffers)
+    forward.commit(weights, state, buffers, 1, 1, commit_dflash=False)
+    decoder = object.__new__(MultiDecoder)
+    decoder.w, decoder.controller = weights, None
+    primary = RuntimeError("teacher-forced feature materialization interrupted")
+
+    def failed(*_args):
+        raise primary
+
+    monkeypatch.setattr(runtime.provider, "materialize", failed)
+    with pytest.raises(RuntimeError) as caught:
+        decoder._commit_dflash([(state, 1)])
+    assert caught.value is primary
+    assert state.pos == 3 and state.dflash2.end == 2 and state.dflash2.poisoned
+    assert state.dflash2.pending is not None and buffers.dflash2_features.readers == 1
+    runtime.retire_after_fence(fenced=True)  # CPU has no asynchronous readers; owner retained above.
+    assert state.dflash2.closed and state.dflash2.kv is None and buffers.dflash2_features.readers == 0
+
+
 def test_real_target_commit_interior_cut_restore_clone_and_fork_preserve_bounded_conditioning(family):
     w, runtime = family
     source = State(w, 32, 8, "fp16", limit=64)

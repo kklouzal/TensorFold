@@ -1,7 +1,10 @@
 """Pairing/content boundaries in the existing startup-manifest schema."""
 import copy
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 import hashlib
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +77,64 @@ def test_preload_closure_contract_and_issued_authority_reuse_never_grant_eligibi
     view = binding.contract
     view["features"]["completed_layers"] = [0]
     assert binding.contract["features"]["completed_layers"] != [0]
+
+
+@pytest.mark.parametrize("bad_rank", [None, 3])
+def test_cpu_pairing_phase_refusal_cannot_strand_other_ranks_in_content_exchange(packet, monkeypatch, bad_rank):
+    from tensorfold.families.qwen4_exp.cuda import execution_identity as identity
+
+    manifest, params = packet
+    values, condition = {}, threading.Condition()
+
+    class Store:
+        def set(self, key, value):
+            with condition:
+                values[key] = value.encode() if isinstance(value, str) else value
+                condition.notify_all()
+
+        def wait(self, keys, timeout):
+            with condition:
+                if not condition.wait_for(lambda: all(key in values for key in keys), timeout=5):
+                    raise RuntimeError("test phase wait did not retire")
+
+        def get(self, key):
+            self.wait([key], None)
+            with condition:
+                return values[key]
+
+        def delete_key(self, key):
+            with condition:
+                return values.pop(key, None) is not None
+
+    store = Store()
+    monkeypatch.setattr(identity, "artifact_files", lambda engine: (params["files"], None))
+    engines = [SimpleNamespace(rank=rank, tp=8, multi=None, _startup_store=store,
+                              kv_pair=SimpleNamespace(identity=params["kv_identity"]),
+                              rope=SimpleNamespace(metadata=lambda: params["target_numerics"]["rope"]))
+               for rank in range(8)]
+
+    def prepare(engine):
+        return identity.prepare_dflash_pairing(engine, manifest, target_config=params["target_config"],
+            plan=replace(params["draft_plan"], tp=(engine.rank, 8)),
+            context=params["context"] + int(engine.rank == bad_rank))
+
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        tasks = [workers.submit(prepare, engine) for engine in engines]
+        if bad_rank is not None:
+            for task in tasks:
+                with pytest.raises(ValueError, match="preflight refused"):
+                    task.result(timeout=10)
+            assert all(not hasattr(engine, "_dflash_pairing") for engine in engines)
+        else:
+            plans = [task.result(timeout=10) for task in tasks]
+            assert len({engine._dflash_pairing.identity for engine in engines}) == 1
+            assert all(plan.source_sha256 == manifest["artifacts"]["draft/model.safetensors"]["sha256"] for plan in plans)
+            assert sum(engine._dflash_pairing.authority.bytes_read for engine in engines) == params["max_total_bytes"]
+            assert all(engine._dflash_pairing.authority.bytes_read == 0 for engine in engines[1:])
+            repeated = [workers.submit(prepare, engine) for engine in engines]
+            assert all(task.result(timeout=10).source_sha256 == plans[0].source_sha256 for task in repeated)
+            assert all(engine._dflash_pairing.authority.bytes_read == 0 for engine in engines)
+    assert not values  # Every outcome and retirement acknowledgement was consumed.
 
 
 @pytest.mark.parametrize("mutation", ["omitted-input", "bad-digest", "mask-piece", "mapping", "prelayer-features",

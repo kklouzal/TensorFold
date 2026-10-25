@@ -92,9 +92,9 @@ class MethodGeometry:
 def checkpoint_method(directory: str | Path) -> str:
     """Identify a supplied architecture before target weights or CUDA allocation.
 
-    A related-model DFlash artifact is not a stock MTP head. Flash Next has no
-    qualified DFlash pairing or SM70 draft-mask implementation yet; preserving
-    that distinction prevents accidental fallback into an incompatible loader.
+    DFlash architecture selection does not establish pairing eligibility. Its
+    complete content/feature/token-ID manifest is validated separately before
+    device allocation; it must never fall back to a stock MTP loader.
     """
 
     from tensorfold.cuda.tensor_file import read_metadata_json
@@ -103,6 +103,11 @@ def checkpoint_method(directory: str | Path) -> str:
     if not path.is_file():
         return "mtp"  # the stock loader owns its existing missing-file error
     config = read_metadata_json(path)
+    from .dflash2_manifest import select_method
+
+    dflash = select_method(config)
+    if dflash is not None:
+        return dflash
     architectures = config.get("architectures")
     if architectures is None:
         architectures = []  # optional in existing stock-MTP configuration files
@@ -110,7 +115,7 @@ def checkpoint_method(directory: str | Path) -> str:
         raise ValueError("drafter architectures must be a list of names")
     if architectures == ["DSparkDraftModel"]:
         return "dspark"  # DSpark's own schema also names its options dflash_config.
-    if any("dflash" in name.lower() for name in architectures) or "dflash_config" in config:
+    if "dflash_config" in config:
         raise ValueError("Flash Next DFlash needs an exact compatible target/draft manifest and an SM70 "
                          "draft-attention provider; a DFlash checkpoint cannot be loaded as stock MTP or DSpark")
     return "mtp"

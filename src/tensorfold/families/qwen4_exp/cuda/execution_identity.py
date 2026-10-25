@@ -19,6 +19,7 @@ import selectors
 import subprocess
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 
 from tensorfold.cuda.tensor_file import _metadata_object, _regular_stream, checkpoint_path
 from tensorfold.engine.model_identity import canonical_runtime_json, capture_model_identity
@@ -104,8 +105,15 @@ def artifact_files(engine):
             result["metadata/" + name] = checkpoint_path(metadata_root, name)
     if not {"metadata/config.json", "metadata/tokenizer.json", "metadata/tokenizer_config.json"} <= result.keys():
         raise ValueError("execution profiles require the actual target config and tokenizer assets")
+    if engine.method_geometry.method == "dflash2":
+        from tensorfold.token_metadata import tokenizer_override
+
+        override = tokenizer_override()
+        if override is not None:
+            result["metadata/tokenizer_override.json"] = override.path.resolve(strict=True)
     draft = (engine.mtp_model_dir if engine.method_geometry.method == "mtp" else
-             engine.dspark_model_dir if engine.method_geometry.method == "dspark" else None)
+             engine.dspark_model_dir if engine.method_geometry.method == "dspark" else
+             engine.dflash2_model_dir if engine.method_geometry.method == "dflash2" else None)
     if draft is not None:
         root = Path(draft).resolve()
         draft_entry = resolve_gguf(root) if engine.method_geometry.method == "mtp" else None
@@ -130,9 +138,85 @@ def begin_execution_manifest(engine, path):
     return manifest
 
 
+def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
+    """Bind actual draft/target/token IDs on the CPU before CUDA allocation.
+
+    The startup-owned CPU store is handed to NCCL after this operation retires;
+    no second listener or surviving key registry is introduced. All phase
+    outcomes retire using the existing manifest cohort protocol.
+    """
+    from tensorfold.engine.model_identity import capture_shared_model_identity
+    from .dflash2_manifest import bind_pairing, prepare_pairing_inputs
+
+    cohort = SimpleNamespace(rank=engine.rank, tp=engine.tp, multi=None,
+                             comm=SimpleNamespace(store=engine._startup_store))
+    channel = _CHANNEL + "/draft-pairing"
+    stages = ("preflight", "pairing", "inventory", "agreement", "content", "verification", "issuance")
+    local = {}
+
+    def exchange(stage, operation):
+        return _phase(cohort, channel, stage, operation)
+
+    def preflight():
+        files, _checkpoint = artifact_files(engine)
+        expected = manifest["artifacts"]
+        prepared = prepare_pairing_inputs(manifest, files=files, target_config=target_config, draft_plan=plan,
+            context=context, kv_identity=engine.kv_pair.identity,
+            target_numerics={"execution_dtype": "float16", "recurrent_state_dtype": "float32",
+                             "rope": engine.rope.metadata()})
+        from tensorfold.token_metadata import tokenizer_override
+
+        override = tokenizer_override()
+        tokenizer_name = "metadata/tokenizer.json" if override is None else "metadata/tokenizer_override.json"
+        if manifest["draft_pairing"]["tokenizer_file"] != tokenizer_name:
+            raise ValueError("DFlash2 pairing must name the actual selected tokenizer content")
+        if override is not None and expected[tokenizer_name]["sha256"] != override.sha256:
+            raise ValueError("DFlash2 selected tokenizer file changed after its immutable startup snapshot")
+        local.update(prepared=prepared, files=files, expected=expected)
+        return digest({"manifest": manifest, "numerics": json.loads(prepared.numerics_json),
+                       "context": context, "kv": engine.kv_pair.identity})
+
+    try:
+        try:
+            ready = exchange("preflight", preflight)
+            if any(value != ready[0] for value in ready[1:]):
+                raise _ManifestRefusal("DFlash2 ranks prepared different pairing manifests or numerical contracts")
+            expected = local["expected"]
+            prior = getattr(engine, "_dflash_pairing", None)
+            authority = capture_shared_model_identity(local["files"], runtime_identity={"schema": SCHEMA, "version": VERSION},
+                authorize=lambda name, path: path.resolve(strict=True),
+                max_file_bytes=max(item["size"] for item in expected.values()),
+                max_total_bytes=sum(item["size"] for item in expected.values()),
+                rank=engine.rank, world=engine.tp, exchange=exchange,
+                reuse=None if prior is None else prior.authority, reuse_is_immutable=prior is not None)
+
+            def pairing():
+                local["binding"] = bind_pairing(local["prepared"], authority)
+                return {**local["binding"].receipt(), "local_payload_bytes_read": authority.bytes_read,
+                        "local_hashes_reused": authority.hashes_reused}
+
+            receipts = exchange("pairing", pairing)
+        except _ManifestRefusal as error:
+            rollback(cohort, error, lambda: _retire_store(cohort, channel, stages=stages))
+        _retire_store(cohort, channel, stages=stages)
+        binding = local["binding"]
+        engine._dflash_pairing = binding
+        engine._draft_pairing_manifest_sha = digest(manifest["draft_pairing"])
+        engine._dflash_pairing_receipt = {**binding.receipt(), "shared_immutable_same_host": True,
+            "leader_payload_bytes_read": receipts[0]["local_payload_bytes_read"],
+            "local_payload_bytes_read": binding.authority.bytes_read,
+            "local_hashes_reused": binding.authority.hashes_reused}
+        return binding.plan
+    except BaseException as error:
+        if not isinstance(error, _ManifestRefusal) or getattr(cohort, "_execution_manifest_uncertain", False):
+            engine._abort_comm = True
+            _fatal(cohort, error)
+        raise
+
+
 def _manifest_schema(manifest):
     if (manifest.get("schema") != SCHEMA or type(manifest.get("version")) is not int or manifest["version"] != VERSION
-            or set(manifest).difference({"schema", "version", "artifacts", "evidence", "profiles", "preparation"})):
+            or set(manifest).difference({"schema", "version", "artifacts", "evidence", "profiles", "preparation", "draft_pairing"})):
         raise ValueError("unsupported execution profile manifest")
     if "preparation" in manifest:
         from .owner_preparation import parse_preparation
@@ -248,6 +332,9 @@ def _runtime(engine, *, previous_topology=None):
                 "eos": list(engine.w.cfg.eos), "method": engine.method_geometry.receipt(),
                 "mtp_import": engine.w.meta.get("mtp_import"),
                 "proposal_confidence": engine.confidence}
+    pairing = getattr(engine, "_dflash_pairing", None)
+    if pairing is not None:
+        numerics["dflash2_pairing"] = pairing.identity
     runtime = {"python": platform.python_version(), "kernel": platform.release(),
                "torch": str(torch.__version__), "torch_git": torch.version.git_version,
                "cuda": torch.version.cuda, "dependencies": [list(d) for d in distributions],
@@ -716,6 +803,11 @@ def _prepare_manifest(engine, manifest_path, *, rebind, manifest_root):
             Path(manifest_path).expanduser().resolve(strict=True))
     manifest = _json(path)
     _manifest_schema(manifest)
+    pairing = getattr(engine, "_dflash_pairing", None)
+    if pairing is not None:
+        pairing.verify_unchanged()
+        if digest(manifest.get("draft_pairing", {})) != engine._draft_pairing_manifest_sha:
+            raise ValueError("DFlash2 pairing is fixed at startup; profile rebind cannot replace its numerical contract")
     from .owner_preparation import parse_preparation
 
     actual_preparation = getattr(engine, "_owner_preparation", None)
@@ -806,6 +898,9 @@ def _profile_identity(engine, context, ranks, contents):
                                           "execution_dtype": engine.w.cfg.execution_dtype}),
         "context_tokens": engine.context_window, "resident_sessions": engine.streams,
         "history_layout": retention["history_layout"], "method": engine.method_geometry.method}
+    pairing = getattr(engine, "_dflash_pairing", None)
+    if pairing is not None:
+        identity["draft"] = digest({"files": group("draft/"), "pairing": pairing.identity})
     return identity
 
 
@@ -845,9 +940,10 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
             return None
         union, expected = context["union"], context["expected"]
         capture_files = {name: Path(value["path"]) for name, value in union.items()}
-        if rebind:
-            prior = engine._execution_input_authorities
-            if not prior or prior[0] is not engine._execution_input_authority:
+        pairing = getattr(engine, "_dflash_pairing", None)
+        if rebind or pairing is not None:
+            prior = engine._execution_input_authorities if rebind else (pairing.authority,)
+            if rebind and (not prior or prior[0] is not engine._execution_input_authority):
                 raise ValueError("current-process execution input authority was replaced")
             authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, prior)
             authority = authorities[0]

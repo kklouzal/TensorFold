@@ -566,7 +566,7 @@ caching remains available. See the [image recipe](flash-next-vision.md) for towe
 sidecar conversion and verification.
 
 
-### Select MTP or DSpark on Flash Next CUDA
+### Select MTP, DSpark or the DFlash2 candidate on Flash Next CUDA
 
 `--draft-method auto` (the default) selects from the checkpoint passed through
 `--drafter`. Use `--draft-method mtp --drafter /path/to/mtp` or
@@ -579,6 +579,39 @@ controls its stopping threshold, and `--no-drafts` selects serial execution.
 DSpark uses the existing position-keyed target verifier and shared scheduler.
 Its proposal graphs use the explicit admitted optimized profile; current host
 evidence and numerical qualification limits are recorded in the [V100 note](../v100-flashnext-validation.md).
+
+`--draft-method dflash2 --drafter /path/to/dflash2 --tp 8` selects the implemented
+four-row DFlash2 candidate through this same engine and scheduler. It requires
+the resident GGUF SM70 text profile, GPU history, and
+`--execution-profile-manifest /path/to/manifest.json` with a complete
+`draft_pairing` section. That section binds exact target/draft/prepared-tokenizer
+content, completed HC feature taps/transforms, actual token IDs, FP16 draft
+weights/window, selector probabilities, and target numerical policy. Geometry
+or a repository name alone cannot authorize this pairing. Content verification
+finishes before CUDA allocation; one leader reads the shared immutable payload
+and every rank validates its own opened files. The default `auto` also detects
+this architecture and requires the same manifest.
+
+For DFlash2, `--mtp-drafts` is a maximum from zero through three. Positive
+proposal counts retain the four-row draft computation; counts are chosen from
+the current frozen operation's reply/context/row budgets before drawing.
+An enabled request with runtime proposal length zero maintains the bounded
+conditioning window. Request `draft:false` selects the serial reference and
+skips draft capture/conditioning; its inactive draft snapshot cannot initialize
+a later enabled request. Background reconstruction forces already-published
+canonical token IDs through target state and enabled draft conditioning without
+sampling or publishing them again. Only the fresh suffix uses the current
+proposal policy. Sampling uses standard rejection with
+the actual conditional selector probabilities. `--mtp-confidence` does not
+truncate DFlash selector paths. Target graphs are disabled for this initial
+feature-capture implementation. Other DFlash architectures, TP geometries,
+vision, RAM history and startup proposal depths above three refuse explicitly.
+This is an **unqualified candidate**: CPU/source controls do not qualify actual
+TP8 HC parity, the new SM70 stack, selected-target quality, acceptance, resource
+peaks or V100 performance. The current design selects SC117 IQ3_S and separately
+requires image/video-to-text plus multimodal method gates; this text-only
+implementation has not completed those required extensions. Earlier Huihui
+controls remain scoped references. These model/device gates remain unrun.
 
 For the qualified eight-V100 geometry, `TENSORFOLD_SM70_PROFILE=optimized` selects
 the canonical SM70 operators before admission/loading; Compose uses

@@ -59,7 +59,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None) -> None:
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -67,12 +67,14 @@ class FlashNextEngine:
         self._receiving = False
         self._shutdown_sent = False
         self.comm = self.vision = self.w = self.scheduler = self.multi = self.e = self.serial = None
+        self._startup_store = None
+        self._dflash_pairing = None
         self.expert_session = expert_session
         self._indexer_history_session = None
         self._owner_preparation = None
         self._startup_reads: list = []
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -87,6 +89,7 @@ class FlashNextEngine:
                  kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off",
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None,
                  mtp_model_dir: Path | None = None, dspark_model_dir: Path | None = None,
+                 dflash2_model_dir: Path | None = None,
                  indexer_history: str = "gpu", adaptive_sessions: bool = False,
                  session_ceiling: int | None = None, execution_rows: int | None = None,
                  execution_profile_manifest: Path | None = None) -> None:
@@ -134,6 +137,15 @@ class FlashNextEngine:
         self.mtp_model_dir = Path(mtp_model_dir) if mtp_model_dir is not None else None
         self.dspark_model_dir = Path(dspark_model_dir) if dspark_model_dir is not None else None
         self._dspark_plan = None
+        self.dflash2_model_dir = Path(dflash2_model_dir) if dflash2_model_dir is not None else None
+        self._dflash2_plan = None
+        if dflash2_model_dir is not None and (mtp_model_dir is not None or dspark_model_dir is not None
+                or not gguf or tp != 8 or not adaptive_sessions or indexer_history != "gpu"
+                or vision or execution_profile_manifest is None or int(depth) > 3):
+            raise ValueError("DFlash2 requires one exact pairing manifest, TP8 text-only adaptive GGUF GPU "
+                             "histories, no other draft owner, and at most three proposals")
+        if dflash2_model_dir is not None and draft_vocab not in (None, "default"):
+            raise ValueError("DFlash2 uses the manifest-bound full target vocabulary; MTP draft_vocab does not apply")
         supported_tp = (1, 2, 4, 8) if gguf else (1, 2)
         if type(tp) is not int or tp not in supported_tp or type(rank) is not int or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Flash Next supports tensor-parallel sizes {supported_tp} "
@@ -225,7 +237,15 @@ class FlashNextEngine:
                 if graphs:
                     print("[tensorfold] CUDA graphs off: DSpark target feature capture runs eagerly", flush=True)
                 graphs = False
-        stock_mtp = int(depth) > 0 and dspark_plan is None
+        dflash_plan = None
+        if self.dflash2_model_dir is not None:
+            from .dflash2_weights import DFlash2Plan
+
+            dflash_plan = DFlash2Plan.read(self.dflash2_model_dir, tp=(rank, tp), block=4)
+            if graphs:
+                print("[tensorfold] CUDA graphs off: DFlash2 target feature capture runs eagerly", flush=True)
+            graphs = False
+        stock_mtp = int(depth) > 0 and dspark_plan is None and dflash_plan is None
         ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if stock_mtp else None
         if ids is not None and ids.size < tp:
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
@@ -235,7 +255,8 @@ class FlashNextEngine:
             ids.flags.writeable = False
         from .speculation import MethodGeometry
 
-        self.method_geometry = MethodGeometry("dspark" if dspark_plan is not None else "mtp" if stock_mtp else "none",
+        self.method_geometry = MethodGeometry("dflash2" if dflash_plan is not None else
+                                              "dspark" if dspark_plan is not None else "mtp" if stock_mtp else "none",
                                               int(depth))
         each, mtp = self.method_geometry.target_tail_rows, stock_mtp
         owner_specification = None
@@ -257,6 +278,23 @@ class FlashNextEngine:
                         or int(text["num_attention_heads"]) // tp != 3 or dim != 256 or not self.kv_pair.symmetric):
                     raise ValueError("native owner preparation requires the homogeneous TP8 H3/D256 GPU-history profile")
                 _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
+        if dflash_plan is not None:
+            from torch.distributed import TCPStore
+            from .execution_identity import prepare_dflash_pairing
+
+            # CPU metadata/content authority must precede native preparation,
+            # target loading and every CUDA allocation. NCCL borrows this same
+            # listener only after the matched content phases have retired.
+            self.tp, self.rank = tp, rank
+            self._startup_store = getattr(self, "_preload_store", None)
+            if self._startup_store is None and getattr(self, "_profile_build", None) is not None:
+                self._startup_store = self.comm.store  # managed replacement borrows the current cohort
+            if self._startup_store is None:
+                self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=3600))
+            selected_context = self.rope.context_limit if max_len is None else max_len
+            dflash_plan = prepare_dflash_pairing(self, manifest, target_config=read_config(model_dir),
+                                                plan=dflash_plan, context=selected_context)
+            self._dflash2_plan = dflash_plan
         torch.cuda.set_device(0)
         if execution_profile_manifest is not None and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("execution profile manifests require the actual SM70 V100 provider")
@@ -279,7 +317,9 @@ class FlashNextEngine:
         if tp > 1:
             from tensorfold.cuda.comm import open_comm
 
-            self.comm = open_comm(rank, tp, master, port)
+            self.comm = open_comm(rank, tp, master, port,
+                                  **({"store": self._startup_store} if self._startup_store is not None else {}))
+            self._startup_store = None  # native communicator now owns its store reference
             self.comm.barrier()
         gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
                   (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
@@ -629,6 +669,20 @@ class FlashNextEngine:
                     return Geometry(bytes_at, base.reserve, base.minimum_slots)
             numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + dspark_plan.resident_bytes
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + dspark_plan.loading_host_bytes
+        if dflash_plan is not None:
+            numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + dflash_plan.resident_bytes
+            # Target and draft load sequentially; this host conversion charge
+            # belongs to the same process loading envelope, once per rank.
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + tp * dflash_plan.resources(
+                slots=1, context=selected_context, prefill_rows=rows0, execution_rows=row_envelope(1),
+                keep=KEEP, points=POINTS)["loading_host_staging_bytes"]
+
+        def dflash_resources(count, total):
+            return dflash_plan.serving_resources(slots=count, context=min(total, selected_context),
+                # The initial TP8 path cannot converge expert launches across
+                # decode/prefill; its actual prompt buffer has exactly rows0.
+                prefill_rows=rows0, execution_rows=row_envelope(count),
+                keep=KEEP, points=POINTS, target_vocab=int(text["vocab_size"]))
         history_host_limit = history_host_per_rank = 0
         if history_plan is not None:
             # Every CPU archive owns its complete declared window up front.
@@ -657,6 +711,12 @@ class FlashNextEngine:
                             count * total, main_rows=row_envelope(count), prompt_rows=rows0, slots=count)
                         target_copy = base.breakdown_at(total)["replacement_overlap"]
                         costs["draft_replacement_overlap"] = max(0, total * dspark_plan.cache_row_bytes - target_copy)
+                    if dflash_plan is not None:
+                        resource = dflash_resources(count, total)
+                        costs.update(dflash_window_state=resource["state_bytes"],
+                                     dflash_recovery_snapshots=resource["snapshot_bytes"],
+                                     dflash_execution_workspace=resource["execution_workspace_bytes"],
+                                     dflash_target_probability=resource["target_probability_device_bytes"])
                     return costs
 
                 def breakdown(total):
@@ -672,6 +732,8 @@ class FlashNextEngine:
                 total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
                 if dspark_plan is not None and graphs and proposal_graphs_enabled:
                     total += tp * graph_host_bytes(count, min(int(depth), dspark_plan.config.block), tp, int(max_len))
+                if dflash_plan is not None:
+                    total += tp * dflash_resources(count, selected_context)["host_serving_bytes"]
                 return total
 
             if dspark_plan is not None and dspark_graph_host:
@@ -703,9 +765,14 @@ class FlashNextEngine:
         self.capacity_plan["execution_envelope"] = {
             "target_rows": execution_rows if concurrent else max(8, each),
             "max_proposals": self.depth, "prefill_tokens": rows0,
-            "method": "dspark" if dspark_plan is not None else "mtp" if mtp else "none",
+            "method": self.method_geometry.method,
             "evidence": "source-bounded-unqualified" if adaptive_sessions else "existing-profile"}
         self.capacity_plan["speculation"] = self.method_geometry.receipt()
+        if dflash_plan is not None:
+            self.capacity_plan["dflash2"] = {"resources": dflash_resources(streams, selected_context),
+                "pairing": self._dflash_pairing_receipt, "qualification": "unqualified-candidate",
+                "target_shared_weight_bytes": 0, "target_graphs": False,
+                "verification": "standard-rejection-actual-conditional-selector-q"}
         if history_plan is not None:
             self.capacity_plan["indexer_history"] = {
                 "mode": "ram", "policy": "lossless-fp16-ram-archive-v1",
@@ -721,7 +788,7 @@ class FlashNextEngine:
                 "requested": resident_windows, "reserved": min(streams, resident_windows),
                 "stream_slots": streams, "context_window": self.capacity_plan["context_window"],
                 "cache_slots_each": self.capacity_plan["cache_slots"],
-                "auxiliary": "dspark" if dspark_plan is not None else "mtp" if mtp else None,
+                "auxiliary": self.method_geometry.method if self.method_geometry.method != "none" else None,
                 "workspace_bytes": 2 * 2**30, "policy": "resident-full-windows-v2"}
         if dspark_plan is not None:
             self.capacity_plan["dspark"] = {
@@ -866,7 +933,19 @@ class FlashNextEngine:
             if runtime.nbytes > dspark_plan.resident_bytes:
                 raise MemoryError("loaded DSpark weights exceed their admitted resident plan")
             self.capacity_plan["dspark"]["loaded_bytes"] = runtime.nbytes
-        if self.depth > 0 and w.mtp is None and getattr(w, "dspark", None) is None:
+        if dflash_plan is not None:
+            from .dflash2_runtime import DFlash2Runtime
+
+            if w.cfg.execution_dtype != "float16" or w.cfg.rope_theta != self.rope.theta:
+                raise ValueError("loaded target numerics differ from the pre-load DFlash2 pairing")
+            runtime = DFlash2Runtime()
+            runtime.load(w, dflash_plan, context=selected_context, pairing=self._dflash_pairing,
+                         profile_identity=self._dflash_pairing.identity)
+            if runtime.nbytes != dflash_plan.resident_bytes:
+                raise MemoryError("loaded DFlash2 weights differ from their exact admitted payload")
+            self.capacity_plan["dflash2"]["loaded_weight_bytes"] = runtime.nbytes
+        if (self.depth > 0 and w.mtp is None and getattr(w, "dspark", None) is None
+                and getattr(w, "dflash2", None) is None):
             raise ValueError("this checkpoint has no MTP head, which Flash Next's CUDA engine drafts with: use one "
                              "that has it, or --no-drafts for the serial reference (one token a round)")
         from tensorfold.cuda.markers import resume_points
@@ -904,6 +983,15 @@ class FlashNextEngine:
                                       **({"memory_live": owner_preparation.live_bytes} if owner_preparation is not None else {}),
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
             self.multi.logical_context = self.context_window
+            if dflash_plan is not None:
+                planned = self.capacity_plan["dflash2"]["resources"]
+                windows = sum(state.dflash2.nbytes for state in self.multi.states)
+                frames = sum(buffers.dflash2_features.nbytes for buffers in (self.multi.buf, self.multi.pbuf))
+                if windows != planned["state_bytes"] or frames != planned["feature_frame_bytes"]:
+                    raise MemoryError("materialized DFlash2 windows/features differ from the admitted extents")
+                self.capacity_plan["dflash2"]["materialized"] = {
+                    "weight_bytes": runtime.nbytes, "window_bytes": windows, "feature_frame_bytes": frames,
+                    "evidence": "actual-local-owned-tensor-extents; device-peak-and-model-qualification-pending"}
             if owner_preparation is not None:
                 owner_preparation.adopt(w, self.multi)
             if resident_windows is not None:
@@ -1338,6 +1426,7 @@ class FlashNextEngine:
                   getattr(self, "_graph_request", None), native_policy,
                   getattr(self, "_gguf_prefill_receipt", None),
                   getattr(getattr(self, "_dspark_plan", None), "identity", None),
+                  getattr(getattr(self, "_dflash_pairing", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
         if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
@@ -1701,6 +1790,7 @@ class FlashNextEngine:
         if comm is not None:
             comm.close(abort=getattr(self, '_abort_comm', False))
             self.comm = None
+        self._startup_store = None  # native CPU Store owns its listener via RAII
         session = getattr(self, "expert_session", None)
         if session is not None:
             session.close(abort=getattr(self, "_abort_comm", False))
@@ -1723,6 +1813,13 @@ class FlashNextEngine:
         dspark = getattr(weights, "dspark", None)
         if dspark is not None:
             dspark.close()
+        dflash = getattr(weights, "dflash2", None)
+        if dflash is not None:
+            # Requests/native readers are retired and the device fence above
+            # completed. Discard unresolved failed-frame feature leases before
+            # releasing each live window, then the draft weight owner.
+            dflash.retire_after_fence(fenced=True)
+            dflash.close()
         seen = set()
         for decoder in (getattr(self, 'multi', None), getattr(self, 'e', None), getattr(self, 'serial', None)):
             for name in ('buf', 'mbuf'):

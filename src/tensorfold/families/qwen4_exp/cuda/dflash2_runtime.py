@@ -33,15 +33,16 @@ class DraftWindow:
                               dtype=torch.float16, device=device)
         self.end = self.available = 0
         self.generation, self.pending, self.poisoned, self.closed = generation, None, False, False
+        self.enabled = True
 
     @property
     def nbytes(self):
         return self.kv.numel() * self.kv.element_size()
 
-    def check(self):
+    def check(self, *, require_resolved=True):
         if self.closed or self.poisoned:
             raise ValueError("DFlash2 draft state is poisoned and must be exclusively retired")
-        if self.pending is not None:
+        if require_resolved and self.pending is not None:
             raise ValueError("DFlash2 target features await an accepted-prefix decision")
 
     def append(self, values, start):
@@ -210,7 +211,10 @@ class DFlash2Runtime:
     def begin(self, segs, buffers):
         if self.closed:
             raise ValueError("DFlash2 runtime is closed")
-        for target, _, _ in segs:
+        active = [(target, lo, hi) for target, lo, hi in segs if target.dflash2.enabled]
+        if not active:
+            return None
+        for target, _, _ in active:
             state = target.dflash2
             state.check()
             if state.end != target.pos or state.generation != getattr(target, "slot_generation", 0):
@@ -218,9 +222,12 @@ class DFlash2Runtime:
         frame = getattr(buffers, "dflash2_features", None)
         if frame is None:
             raise ValueError("DFlash2 bounded capture buffers were not prepared before execution")
-        return frame.begin(segs, buffers)
+        return frame.begin(active, buffers)
 
     def finish(self, capture, segs):
+        if capture is None:
+            return
+        segs = [(target, lo, hi) for target, lo, hi in segs if target.dflash2.enabled]
         features = capture.finish()
         if capture.owner.readers or any(target.dflash2.pending is not None for target, _, _ in segs):
             raise ValueError("DFlash2 target frame was already published")
@@ -250,7 +257,8 @@ class DFlash2Runtime:
         return state, pending
 
     def validate_commit(self, target, rows):
-        self._pending(target, rows)
+        if target.dflash2.enabled:
+            self._pending(target, rows)
 
     def _checked_materialize(self, features, positions, states):
         try:
@@ -297,6 +305,8 @@ class DFlash2Runtime:
             self.discard(target)
 
     def commit(self, target, accepted_rows):
+        if not target.dflash2.enabled:
+            return
         return self.commit_many([(target, accepted_rows)])
 
     def discard(self, target):
@@ -310,6 +320,19 @@ class DFlash2Runtime:
     def reset(self, target):
         self.discard(target)
         target.dflash2.reset(getattr(target, "slot_generation", 0))
+        target.dflash2.enabled = True
+
+    def set_enabled(self, target, enabled):
+        """Bind one admitted request's method participation after reset/restore.
+
+        Enabling cannot reconstruct a skipped history. The caller must have
+        reset to zero or restored a valid active-method snapshot first.
+        """
+        state = target.dflash2
+        state.check()
+        if type(enabled) is not bool or enabled and state.end != target.pos:
+            raise ValueError("DFlash2 activation requires valid conditioning at the actual target frontier")
+        state.enabled = enabled
 
     def snapshot(self, target, position=None):
         state = target.dflash2
@@ -318,6 +341,9 @@ class DFlash2Runtime:
         position = target.pos if position is None else position
         if type(position) is not int or not 0 <= position <= self.context:
             raise ValueError("DFlash2 snapshot position exceeds its context commitment")
+        if not state.enabled:
+            return {"schema": "dflash2-inactive-v1", "config": self.config.identity,
+                    "profile": state.profile_identity, "generation": state.generation, "target_end": position}
         if position <= state.end:
             return state.snapshot(position)
         rows = position - state.end
@@ -342,6 +368,17 @@ class DFlash2Runtime:
         state = getattr(target, "dflash2", None)
         if state is None:
             raise ValueError("DFlash2 snapshot has no allocated destination window")
+        if isinstance(snapshot, dict) and snapshot.get("schema") == "dflash2-inactive-v1":
+            if (state.enabled or state.closed or state.poisoned or set(snapshot) != {
+                    "schema", "config", "profile", "generation", "target_end"}
+                    or snapshot["config"] != self.config.identity or snapshot["profile"] != state.profile_identity
+                    or type(snapshot["generation"]) is not int or not 0 <= snapshot["generation"] < (1 << 63)
+                    or type(snapshot["target_end"]) is not int or not 0 <= snapshot["target_end"] <= self.context
+                    or position is not None and snapshot["target_end"] != position):
+                raise ValueError("inactive DFlash2 snapshot cannot supply enabled method conditioning")
+            return
+        if not state.enabled:
+            raise ValueError("inactive DFlash2 state requires an explicit valid conditioning reconstruction")
         state.validate_snapshot(snapshot, position)
 
     def validate_copy(self, destination, source, position):
@@ -352,10 +389,15 @@ class DFlash2Runtime:
             raise ValueError("DFlash2 prefix copy requires the same live numerical/runtime profile")
         destination.dflash2.check()
         source.dflash2.check()
+        if not source.dflash2.enabled or not destination.dflash2.enabled:
+            raise ValueError("DFlash2 prefix borrowing requires valid enabled method state")
 
     def restore(self, target, snapshot):
         self.validate_snapshot(target, snapshot, target.pos)
         self.discard(target)
+        if not target.dflash2.enabled:
+            target.dflash2.reset(getattr(target, "slot_generation", 0))
+            return
         target.dflash2.restore(snapshot)
         target.dflash2.generation = getattr(target, "slot_generation", 0)
 
@@ -364,6 +406,7 @@ class DFlash2Runtime:
             raise ValueError("DFlash2 clone destination cannot alias its source window")
         if getattr(destination, "dflash2", None) is None:
             self.init_state(destination)
+        destination.dflash2.enabled = source.dflash2.enabled
         self.restore(destination, self.snapshot(source))
 
     def propose_many(self, targets, anchors, proposal_counts, samplings, first_positions):
@@ -378,6 +421,8 @@ class DFlash2Runtime:
         for index, (target, requested) in enumerate(zip(targets, proposal_counts)):
             state = target.dflash2
             state.check()
+            if not state.enabled:
+                raise ValueError("an inactive DFlash2 request cannot construct proposals")
             if state.end != target.pos or state.generation != getattr(target, "slot_generation", 0):
                 raise ValueError("DFlash2 warm proposal conditioning is stale")
             if first_positions[index] != state.end + 1:
@@ -398,9 +443,10 @@ class DFlash2Runtime:
 
     def record(self, target):
         state = target.dflash2
-        return {"method": "dflash2", "draft_identity": self.identity,
+        return {"method": "dflash2", "enabled": state.enabled, "draft_identity": self.identity,
                 "snapshot_scope": "current-runtime-numerical-profile-rank" if self._profile_identity is not None else "current-runtime-only",
-                "draft_valid_length": state.end, "retained_window_rows": state.available,
+                "draft_valid_length": state.end if state.enabled else None,
+                "retained_window_rows": state.available if state.enabled else 0,
                 "physical_window_rows": state.capacity, "owned_window_bytes": state.nbytes,
                 "poisoned": state.poisoned,
                 "slot_generation": state.generation,
@@ -412,6 +458,42 @@ class DFlash2Runtime:
             target.dflash2.closed = True
             target.dflash2.kv = None
         target.dflash2 = None
+
+    def retire_after_fence(self, *, fenced):
+        """Retire constructor/failed-frame owners after coordinated quiescence.
+
+        The engine/structural construction owner retains every traceback and
+        partial Buffer/State until its device fence AND this retirement finish.
+        A successful fence cannot excuse an unknown feature reader: validate
+        that every lease is owned by a catalogued pending window before any
+        mutation. Failure retains the catalogue and poisoned owners for fatal
+        containment; callers may not clear constructor frames on that path.
+        """
+        if fenced is not True:
+            raise ValueError("DFlash2 retirement requires the owning coordinated device fence")
+        states = [state for ref in self._states if (state := ref()) is not None]
+        frames = [frame for ref in self._frames if (frame := ref()) is not None]
+        for frame in frames:
+            readers = sum(state.pending is not None and state.pending.frame is frame for state in states)
+            if frame.readers != readers:
+                for state in states:
+                    state.poisoned = True
+                raise RuntimeError("DFlash2 retirement retains an unowned feature reader")
+        for state in states:
+            if state.pending is not None and all(state.pending.frame is not frame for frame in frames):
+                state.poisoned = True
+                raise RuntimeError("DFlash2 retirement lost its feature frame owner")
+        try:
+            for state in states:
+                if state.pending is not None:
+                    state.pending.frame.readers -= 1
+                    state.pending = None
+                state.closed = True
+                state.kv = None
+        except BaseException:
+            for state in states:
+                state.poisoned = True
+            raise
 
     def close(self):
         states = [state for ref in self._states if (state := ref()) is not None]

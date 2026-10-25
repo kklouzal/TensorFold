@@ -64,6 +64,10 @@ def verify_batch(weights, logits, segments, packets, samplings, rooms, ends, *, 
                 or owned.window_profile != state.dflash2.profile_identity
                 or state.dflash2.generation != state.slot_generation):
             raise ValueError("DFlash2 proposal belongs to a retired sequence or runtime window")
+        # Target forward has legitimately published pending accepted-prefix
+        # features. They must remain unresolved until sampling/stops decide the
+        # prefix; closed/poisoned windows still invalidate this live capability.
+        state.dflash2.check(require_resolved=False)
         packet = owned.chain
         if (type(begin) is not int or type(end) is not int or begin != previous
                 or end <= begin or end > logits.shape[0] or not isinstance(packet, ChainPacket)
