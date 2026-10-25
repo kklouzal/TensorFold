@@ -22,6 +22,10 @@ The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
 the pinned TorchVision/Transformers processors and PyAV/FFmpeg decoder stack.
 CPU software controls remain distinct from pending media service, SC117/mmproj,
 V100 resource/quality/performance and compiler qualification.
+A [bounded mmproj vision component](docs/sm70-vision.md) maps the selected GGUF
+weights into the pinned Qwen4Exp FP16 encoder and requires the combined software
+authority. Pinned-HF CPU import/output controls pass; the complete media frontend,
+TP8 serving integration and actual V100 execution remain pending.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 A manifest-selected [software NVFP4 SM70 candidate](docs/sm70-nvfp4.md) now

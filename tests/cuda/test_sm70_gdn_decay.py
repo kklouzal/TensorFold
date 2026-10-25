@@ -1,9 +1,10 @@
 """The two declared native decay representations agree where exp(A_log)=1 exactly."""
 
 import pytest
-import torch
 
-from tensorfold.families.qwen4_exp.cuda import gdn
+torch = pytest.importorskip("torch")
+
+from tensorfold.families.qwen4_exp.cuda import gdn  # noqa: E402 - optional backend guard precedes CUDA imports
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
                                 reason="direct stored decay requires actual SM70 execution")

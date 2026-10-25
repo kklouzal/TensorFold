@@ -11,13 +11,11 @@ One coordinator thread owns span/lease mutations; device streams carry readers.
 
 import torch
 
-
-def _digest(value):
-    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+from .position_coordinates import CoordinateProof, IssuedCoordinates, _digest, _signature
 
 
 class ReadyInputSpan:
-    def __init__(self, *, start, token_ids, values, positions, rope_delta, profile_identity,
+    def __init__(self, *, start, token_ids, values, positions, position, rope_delta, profile_identity,
                  generation, media_identity, max_rows, hidden_size, vocab_size, roles):
         if (type(start) is not int or start < 0 or type(max_rows) is not int or max_rows <= 0
                 or type(hidden_size) is not int or hidden_size <= 0
@@ -35,6 +33,13 @@ class ReadyInputSpan:
         roles = tuple(roles)
         if roles not in (("target",), ("target", "mtp")):
             raise ValueError("merged inputs declare target and optional MTP consumers")
+        if type(positions) is not IssuedCoordinates or type(positions.proof) is not CoordinateProof:
+            raise ValueError("merged inputs require coordinates issued from actual host rows")
+        positions.proof.validate(positions.tensor, position, profile_identity=profile_identity,
+                                 generation=generation, media_identity=media_identity,
+                                 row_start=start, row_count=len(token_ids))
+        issued = positions
+        positions = issued.tensor
         if (values.dtype != torch.float16 or values.shape != (len(token_ids), hidden_size)
                 or not values.is_contiguous() or positions.dtype != torch.int32
                 or positions.shape != (len(token_ids), 3) or not positions.is_contiguous()):
@@ -43,6 +48,7 @@ class ReadyInputSpan:
             raise ValueError("merged input coordinates must share the value device")
         self.start, self.token_ids = start, tuple(token_ids)
         self.values, self.positions, self.rope_delta = values, positions, rope_delta
+        self.coordinates, self.position, self.position_proof = issued, position, issued.proof
         self.profile_identity, self.generation, self.media_identity = profile_identity, generation, media_identity
         self._leases = dict.fromkeys(roles)
         self.closed = self.poisoned = False
@@ -56,9 +62,9 @@ class ReadyInputSpan:
                 self._ready.record(torch.cuda.current_stream(values.device))
 
     def _current_signature(self):
-        return tuple((t.data_ptr(), t.untyped_storage().data_ptr(), t.untyped_storage().nbytes(),
-                      tuple(t.shape), tuple(t.stride()), t.storage_offset(), t.dtype, t.device)
-                     for t in (self.values, self.positions))
+        # Projected embeddings may be inference tensors. Their producer owns
+        # immutability through the lease; coordinates additionally bind versions.
+        return _signature(self.values, track_mutation=False)
 
     def _check(self):
         if self.closed or self.poisoned:
@@ -66,6 +72,13 @@ class ReadyInputSpan:
         if self._current_signature() != self._signature:
             self.poisoned = True
             raise ValueError("merged input storage changed before consumer retirement")
+        try:
+            self.position_proof.validate(self.positions, self.position, profile_identity=self.profile_identity,
+                                         generation=self.generation, media_identity=self.media_identity,
+                                         row_start=self.start, row_count=len(self.token_ids))
+        except BaseException:
+            self.poisoned = True
+            raise
 
     @property
     def end(self):
@@ -114,6 +127,7 @@ class ReadyInputSpan:
             self.poisoned = True
             raise
         self.values = self.positions = self._ready = self._storage = None
+        self.coordinates = self.position = self.position_proof = None
         self._leases.clear()
         self.closed = True
 
