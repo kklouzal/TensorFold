@@ -442,6 +442,10 @@ class MultiDecoder:
         best = prefixes._best(self.kept, prompt) if reuse else None
         if best is not None:
             source, snap = best[1:3]
+            if source.compact_indexer is not None:
+                from .history_owner import check_prefix_retirement
+
+                check_prefix_retirement(source, source, self.poison_control)
             try:
                 source.kv_validate_snapshot(snap)
             except KVNumericError:
@@ -1084,7 +1088,7 @@ class MultiDecoder:
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for s, mtp_len, _, snap in points:
-            if snap is not None and getattr(s.st, "indexer_history_owner", None) is not None:
+            if snap is not None and (s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None):
                 snap.update(s.st.indexer_snapshot_metadata(snap["pos"], mtp_len))
         dflash = getattr(self.w, "dflash2", None)
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
@@ -1094,7 +1098,7 @@ class MultiDecoder:
             self._commit_dflash([(state, end - begin) for state, begin, end in segs], prefill=True)
         for s, mtp_len, tail, snap in points:            # a point that ends its piece: the state as committed
             state = snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}
-            if snap is None and getattr(s.st, "indexer_history_owner", None) is not None:
+            if snap is None and (s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None):
                 state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
             self.fills[s.sid][3].append((state, tail))
         return lasts
@@ -1200,7 +1204,7 @@ class MultiDecoder:
                 mtp_len = s.st.mtp_len - 1 if mtp else s.st.mtp_len        # as a point ending a piece keeps it
                 try:
                     state = {**s.st.snapshot(), "mtp_len": mtp_len}
-                    if getattr(s.st, "indexer_history_owner", None) is not None:
+                    if s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None:
                         state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
                     self._remember(list(s.prompt[:at]), s.st, state, tail)
                 except Exception as exc:                 # noqa: BLE001  its reply is the error; its slot holds nothing
@@ -1654,6 +1658,8 @@ class MultiDecoder:
                     nxt.append((s, row, d))
             if not nxt:
                 return
+            for stream, _, _ in nxt:
+                stream.st.begin_mtp_proposals()
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.mbuf, windows)
             logits = self._mtp(segs)

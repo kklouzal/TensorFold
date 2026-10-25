@@ -47,6 +47,26 @@ class Buffers:
         self.owner_kernel_family = "torch-reference"
         self.owner_graph_family = "uncaptured"
         self.owner_graphs = None
+        self.compact_indexer_stage = None
+        self.mtp_indexer_coordinate_storage = None
+        self.mtp_indexer_coordinates = self.mtp_indexer_frame = None
+        self.mtp_indexer_frame_id = 0
+        self.target_indexer_coordinate_storage = None
+        self.target_indexer_coordinates = self.target_indexer_frame = None
+        self.target_indexer_frame_id = 0
+        if placement is not None:
+            from .compact_indexer import Staging
+
+            if c.index_dim != 128 or c.index_ratio != 4:
+                raise ValueError("compact unique indexer requires the qualified I128/four-row grouping")
+            role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
+            enabled = w.mtp is not None and (prefill or role == "mtp")
+            self.compact_indexer_stage = Staging(rows, placement.target_layers + int(w.mtp is not None), dev,
+                                                  mtp=enabled, mtp_only=role == "mtp")
+            if enabled:
+                self.mtp_indexer_coordinate_storage = self.compact_indexer_stage.mtp_coordinates
+            if role != "mtp":
+                self.target_indexer_coordinate_storage = self.compact_indexer_stage.coordinates
         self.hc_plans = None
         head_rows = ENDS if prefill else rows
         bf, f32 = execution_dtype(w), torch.float32
@@ -225,6 +245,8 @@ class State:
         self.history_generations = (torch.zeros((2,), dtype=torch.int64, device=dev)
                                     if self.history_placement is not None else None)
         self.history_native_readers = weakref.WeakSet()
+        self.compact_indexer = None
+        self.compact_proposal_rows = max_rows
         self._history_error = None
         self.indexer_history_mode = w.meta.get("indexer_history", "gpu")
         if self.indexer_history_mode not in ("gpu", "ram"):
@@ -263,6 +285,7 @@ class State:
             plan = self.history_placement
             self.kv_identity += (("unique-history-v1", plan.world, plan.global_kv_heads,
                                   plan.target_layers, plan.page_tokens),)
+            self.kv_identity += (("compact-indexer-v1", 4, c.index_dim),)
         if self.indexer_history_mode == "ram":
             self.kv_identity += (("indexer-history", "lossless-fp16-ram-archive-v1"),)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
@@ -320,7 +343,7 @@ class State:
         else:
             self.indexer_raw_device_bytes = None
         self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + (
-            c.index_dim * 2 if getattr(self, "indexer_history_owner", None) is None else 0)
+            c.index_dim * 2 if self.history_placement is None and getattr(self, "indexer_history_owner", None) is None else 0)
         if self.history_placement is not None:
             from .history_owner import OwnedKVCache, allocate_target_caches
 
@@ -336,7 +359,17 @@ class State:
                 return rows
             return (rows if self.history_rank == self.history_placement.indexer_owner(
                 slot, layer, include_mtp=w.mtp is not None) else 0)
-        self.ikc = ([torch.zeros((indexer_rows(i, capacity), c.index_dim), dtype=bf, device=dev)
+        if self.history_placement is not None:
+            from .compact_indexer import CompactIndexer
+
+            if c.index_ratio != 4:
+                raise ValueError("compact indexer requires complete four-row groups")
+            self.compact_indexer = CompactIndexer(self.history_placement, slot, self.history_rank, capacity,
+                self.layers, c.index_dim, dev, self.history_generations, self.kv_status, proposal_rows=max_rows,
+                layer_ids=tuple(layer.index for layer in att) + ((-1,) if w.mtp is not None else ()))
+            self.history_native_readers.add(self.compact_indexer)
+        self.ikc = ([self.compact_indexer.layer(i) for i in range(len(att))] if self.compact_indexer is not None else
+                    [torch.zeros((indexer_rows(i, capacity), c.index_dim), dtype=bf, device=dev)
                      for i in range(len(att))]
                     if getattr(self, "indexer_history_owner", None) is None else
                     [self.indexer_history_owner.layer(i) for i in range(len(att))])
@@ -354,7 +387,8 @@ class State:
         if w.mtp is not None:
             self.mtp_kc = (allocate(len(att)) if self.history_placement is not None else
                            kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair))
-            self.mtp_ikc = (torch.zeros((indexer_rows(len(att), capacity), c.index_dim), dtype=bf, device=dev)
+            self.mtp_ikc = (self.compact_indexer.layer(len(att)) if self.compact_indexer is not None else
+                           torch.zeros((indexer_rows(len(att), capacity), c.index_dim), dtype=bf, device=dev)
                             if getattr(self, "indexer_history_owner", None) is None else self.indexer_history_owner.layer(len(att)))
             self.mtp_pooled = torch.zeros((indexer_rows(len(att), -(-capacity // c.index_ratio)), c.index_dim), dtype=bf,
                                           device=dev)
@@ -383,6 +417,8 @@ class State:
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
+        if self.compact_indexer is not None:
+            self.compact_indexer.check()
         if getattr(self, "dflash2", None) is not None and self.dflash2.poisoned:
             raise ValueError("DFlash2 conditioning is poisoned; this sequence requires explicit reset")
         if self.kv_status is None:
@@ -402,6 +438,8 @@ class State:
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
+        if self.compact_indexer is not None:
+            self.compact_indexer.check()
         if getattr(self, "dflash2", None) is not None and self.dflash2.poisoned:
             raise ValueError("DFlash2 conditioning is poisoned; this sequence requires explicit reset")
         if getattr(self, "indexer_history_owner", None) is not None:
@@ -429,15 +467,19 @@ class State:
             self._kv_latch(bits, layer)
 
     def _kv_latch(self, bits: int, layer: int) -> None:
-        self._kv_pending = False
         if bits:
+            # Formatting or exception construction can exhaust. The durable
+            # status must remain unchecked until its failure object is latched.
+            self._kv_pending = True
             names = [name for bit, name in ((1, "Q"), (2, "K"), (4, "V"), (8, "RMS"), (16, "index"), (32, "descriptor"))
                      if bits & bit]
             self._kv_error = KVNumericError(
                 f"K={self.kv_key_dtype}, V={self.kv_value_dtype} numeric validation failed: {','.join(names)} (bits={bits}), "
                 f"layer={'MTP' if layer == -1 else layer}, pos={self.pos}, mtp_len={self.mtp_len}; "
                 "this sequence requires reset")
+            self._kv_pending = False
             raise self._kv_error
+        self._kv_pending = False
         if getattr(self, "indexer_history_owner", None) is not None:
             try:
                 # The consumed status readback follows this State's submitted
@@ -474,6 +516,8 @@ class State:
 
     def set_pos(self, pos: int) -> None:
         self.kv_check()
+        if self.compact_indexer is not None:
+            self._compact_commit(pos, self.mtp_len)
         if getattr(self, "indexer_history_owner", None) is not None:
             self._indexer_commit(pos, self.mtp_len)
         self.pos = pos
@@ -493,6 +537,8 @@ class State:
             except BaseException as cleanup:
                 raise_failures(primary, [cleanup])
         self.target_tentative_length = self.pos
+        if self.compact_indexer is not None:
+            self.compact_indexer.discard_target()
         if primary is not None:
             raise primary
 
@@ -503,6 +549,21 @@ class State:
         except BaseException as error:
             self._kv_error = error
             raise
+
+    def _compact_commit(self, pos, mtp_len):
+        try:
+            if self.compact_indexer.commit(pos, mtp_len, (self.slot_generation, self.history_generation)):
+                self._kv_pending = True
+        except BaseException as error:
+            self._kv_error = error
+            raise
+
+    def begin_mtp_proposals(self):
+        if self.compact_indexer is not None:
+            # The caller's ordinary readback validated the refresh; this
+            # stream-ordered carry publication joins the next status packet.
+            self.kv_begin()
+            self.compact_indexer.begin_mtp_proposals((self.slot_generation, self.history_generation))
 
     def _publish_indexer_positions(self, pos: int, mtp_len: int) -> None:
         """Publish a restored/reset pair without mixing old and new extents."""
@@ -522,6 +583,8 @@ class State:
         Ordinary ``kv_snapshot_metadata`` remains the numeric-status authority.
         Raw bytes need only be available, not published at the main cursor yet.
         """
+        if self.compact_indexer is not None:
+            return {"compact_indexer": self.compact_indexer.snapshot(pos, mtp_len)}
         if getattr(self, "indexer_history_owner", None) is None:
             return {}
         if any(type(value) is not int or not 0 <= value <= self.capacity for value in (pos, mtp_len)):
@@ -544,7 +607,8 @@ class State:
             total = placement.rank_bytes(self.history_slot, self.capacity if rows is None else int(rows),
                                          self.history_rank, self.kv_pair.row_bytes(1, self.kc[0].head_dim),
                                          self.kv_pair.dummy_bytes, index_dim=self.index_dim,
-                                         ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"))
+                                         ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"),
+                                         proposal_rows=self.compact_proposal_rows)
         if getattr(self, "dspark_runtime", None) is not None:
             total += (self.capacity if rows is None else int(rows)) * self.dspark_runtime.plan.cache_row_bytes
         if getattr(self, "dflash2", None) is not None:
@@ -556,11 +620,12 @@ class State:
 
         total = sum(cache.nbytes for cache in self.kc)
         total += sum(array.nbytes for array in self.pooled)
-        total += (sum(array.nbytes for array in self.ikc) if getattr(self, "indexer_history_owner", None) is None else
+        total += (self.compact_indexer.nbytes if self.compact_indexer is not None else
+                  sum(array.nbytes for array in self.ikc) if getattr(self, "indexer_history_owner", None) is None else
                   self.indexer_history_owner.device_nbytes)
         if hasattr(self, "mtp_kc"):
             total += self.mtp_kc.nbytes + self.mtp_pooled.nbytes
-            if getattr(self, "indexer_history_owner", None) is None:
+            if self.compact_indexer is None and getattr(self, "indexer_history_owner", None) is None:
                 total += self.mtp_ikc.nbytes
         if getattr(self, "dspark", None) is not None:
             total += self.dspark.nbytes
@@ -577,7 +642,8 @@ class State:
             return max(placement.layer_rank_bytes(
                 self.history_slot, layer, rows, self.history_rank,
                 self.kv_pair.row_bytes(1, self.kc[0].head_dim), self.kv_pair.dummy_bytes,
-                index_dim=self.index_dim, ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"))
+                index_dim=self.index_dim, ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"),
+                proposal_rows=self.compact_proposal_rows)
                 for layer in range(self.layers))
         raw = getattr(self, "indexer_raw_device_bytes", None) or 0
         return rows * self.row_bytes + self.kv_pair.dummy_bytes + -(-rows // self.ratio) * self.index_dim * 2 + raw
@@ -634,6 +700,8 @@ class State:
         allocations and extending the old index/pool buffers' lifetimes.
         """
 
+        if self.compact_indexer is not None:
+            raise ValueError("compact fixed-window history requires a complete profile reconstruction for resize")
         blocks, kept_blocks = -(-rows // self.ratio), -(-max(pos, mtp_len) // self.ratio)
         def owner_rows(layer, count):
             placement = getattr(self, "history_placement", None)
@@ -777,6 +845,10 @@ class State:
                 self.kv_status[1].fill_(-2)
                 self._kv_pending = False
                 self._kv_error = None
+            if self.compact_indexer is not None:
+                self.compact_indexer.reset((self.slot_generation, self.history_generation))
+                self.pos = self.mtp_len = 0
+                self._kv_pending = True
             self.conv.zero_()
             self.rec.zero_()
             self.cur = [0] * len(self.cur)
@@ -819,6 +891,8 @@ class State:
             result["draft_valid_length"] = self.dflash2.end if self.dflash2.enabled else None
             result["draft_tentative_length"] = (self.dflash2.end + (
                 0 if self.dflash2.pending is None else len(self.dflash2.pending.values))) if self.dflash2.enabled else None
+        if self.compact_indexer is not None:
+            result["indexer"] = self.compact_indexer.record()
         if placement is not None:
             result.update(attention_degree=placement.degree,
                           mtp_attention_degree=4 if hasattr(self, "mtp_kc") else None,
@@ -889,6 +963,8 @@ class State:
         # Auxiliary state is an owned window, never a shallow-copy alias.
         other.dflash2 = None
         for name, value in vars(self).items():
+            if self.compact_indexer is not None and name in ("ikc", "mtp_ikc"):
+                continue
             if isinstance(value, torch.Tensor):
                 setattr(other, name, value.clone())
             elif isinstance(value, list) and value and isinstance(value[0], torch.Tensor):
@@ -902,6 +978,12 @@ class State:
         # An independent oracle clone owns new cache allocations and actual
         # page maps, but cannot borrow a live transition's mutable progress.
         other._history_migration = None
+        if self.compact_indexer is not None:
+            other.compact_indexer = self.compact_indexer.clone(other.history_generations, other.kv_status)
+            other.ikc = [other.compact_indexer.layer(i) for i in range(len(self.kc))]
+            if hasattr(self, "mtp_kc"):
+                other.mtp_ikc = other.compact_indexer.layer(len(self.kc))
+            other.history_native_readers.add(other.compact_indexer)
         if getattr(self, "indexer_history_owner", None) is not None:
             other.indexer_history_owner = self.indexer_history_owner.clone()
             other.ikc = [other.indexer_history_owner.layer(i) for i in range(len(self.kc))]
@@ -919,14 +1001,21 @@ class State:
 
     def set_mtp_len(self, n: int) -> None:
         self.kv_check()
+        if self.compact_indexer is not None:
+            self._compact_commit(self.pos, n)
         if getattr(self, "indexer_history_owner", None) is not None:
             self._indexer_commit(self.pos, n)
         self.mtp_len = n
         self.mtp_pos.fill_(n)
 
-    def copy_prefix(self, source: "State", pos: int, mtp_len: int) -> None:
+    def copy_prefix(self, source: "State", pos: int, mtp_len: int, *, indexer_snapshot=None,
+                    poison_control=None):
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
 
+        if self.compact_indexer is not None or source.compact_indexer is not None:
+            from .history_owner import check_prefix_retirement
+
+            check_prefix_retirement(self, source, poison_control)
         source.kv_check()
         self.kv_check()
         if getattr(self, "dspark_runtime", None) is not None:
@@ -950,10 +1039,11 @@ class State:
         if getattr(self, "history_placement", None) is not None:
             from .history_owner import copy_prefix
 
-            copy_prefix(self, source, pos, mtp_len)
+            relocated = copy_prefix(self, source, pos, mtp_len, indexer_snapshot=indexer_snapshot,
+                                    poison_control=poison_control)
             if getattr(self, "dspark_runtime", None) is not None:
                 self.dspark_runtime.copy_prefix(self, source, pos)
-            return
+            return relocated
         lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "indexer_history_owner", None) is not None:
             # The owner validates both full archives before its first write.
@@ -1000,7 +1090,12 @@ class State:
         lengths = [snap["pos"]] * len(self.kc) + ([snap["mtp_len"]] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.validate_snapshot(self, snap)
+        if self.compact_indexer is not None:
+            self.compact_indexer.validate_snapshot(snap.get("compact_indexer"), snap["pos"], snap["mtp_len"])
         try:
+            if self.compact_indexer is not None:
+                self.compact_indexer.restore(snap["compact_indexer"], snap["pos"], snap["mtp_len"],
+                                              (self.slot_generation, self.history_generation))
             if getattr(self, "indexer_history_owner", None) is not None:
                 self.indexer_history_owner.restore(snap.get("indexer_history"), lengths)
             self.rec[0].copy_(snap["rec"])
@@ -1009,14 +1104,20 @@ class State:
             self.ple_tail.copy_(snap["ple_tail"])
             self.ple_history = None if snap["ple_history"] is None else snap["ple_history"].copy()
             self.ple_last = None
-            if getattr(self, "indexer_history_owner", None) is not None:
+            if self.compact_indexer is not None:
+                self.pos, self.mtp_len = snap["pos"], snap["mtp_len"]
+                self.target_tentative_length = self.pos
+                self.pos_dev.fill_(self.pos)
+                self.mtp_pos.fill_(self.mtp_len)
+                self._kv_pending = True
+            elif getattr(self, "indexer_history_owner", None) is not None:
                 self._publish_indexer_positions(snap["pos"], snap["mtp_len"])
             else:
                 self.set_pos(snap["pos"])
             self.set_rope_delta(0)                       # kept prompts are text only
             self.image_positions, self.image_rows, self.image_features = None, (), None
             self.mtp_drafted = 0
-            if getattr(self, "indexer_history_owner", None) is None:
+            if self.compact_indexer is None and getattr(self, "indexer_history_owner", None) is None:
                 self.set_mtp_len(snap["mtp_len"])
             if getattr(self, "dspark_runtime", None) is not None:
                 self.dspark_runtime.restore(self, snap)

@@ -15,6 +15,10 @@ Measured execution profiles use a separate
 Its optional native preparation section builds bounded partial attention graphs
 before admission; explicit qualification trials remain unqualified until the
 source-built V100 stack and actual device/model gates pass.
+The unique GPU-history source path keeps completed pooled indexer keys and a
+bounded four-row raw tail with coordinates, protected append/proposal state and
+cut snapshots. [Compact indexer contracts](docs/compact-indexer.md) describe
+rollback, prefix reuse and the pending device qualification.
 The optional attention preparation policy can use fixed four rank KV-head
 groups; full TP8 weights and canonical indexer selection remain unchanged.
 Selected source foundation CCCL/CUTLASS headers are verified and included in

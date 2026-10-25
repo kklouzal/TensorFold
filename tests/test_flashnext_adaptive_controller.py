@@ -785,6 +785,7 @@ def test_request_lifecycle_keeps_enabled_zero_proposal_mtp_warm_only_until_retir
 
     class State:
         history_slot = slot_generation = 0
+        compact_indexer = None
         from tensorfold.families.qwen4_exp.kv_formats import get_pair
         kv_pair = get_pair("fp16")
         image_positions = None

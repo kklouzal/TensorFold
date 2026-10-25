@@ -322,6 +322,7 @@ def draft(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], position
             break
         if j + 1 < count:
             prev = e.mbuf.streams[len(next_tokens) - 1:len(next_tokens)] if j == 0 else e.mbuf.streams[:1]
+            st.begin_mtp_proposals()
             logits = e.mtp_forward([d], prev)
             st.set_mtp_len(st.mtp_len + 1)
             st.mtp_drafted += 1

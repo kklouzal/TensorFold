@@ -22,6 +22,7 @@ def slot(dtype, capacity, pos):
     st._resize_error = st._resize_frames_pending = st._history_error = None
     st.slot_generation, st.history_generations = 0, None
     st.history_native_readers = weakref.WeakSet()
+    st.compact_indexer = None
     st.kc = [KVCache(capacity, 2, 64, "cpu", dtype) for _ in range(2)]
     st.ikc = [torch.empty((capacity, 16), dtype=torch.bfloat16) for _ in st.kc]
     st.pooled = [torch.empty(((capacity + 3) // 4, 16), dtype=torch.bfloat16) for _ in st.kc]

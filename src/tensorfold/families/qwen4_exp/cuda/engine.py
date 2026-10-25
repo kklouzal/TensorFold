@@ -374,6 +374,10 @@ class FlashNextEngine:
             self._owner_preparation = owner_preparation
             owner_preparation.prepare(self, text, self.kv_pair, page_tokens=history_placement.page_tokens,
                                       device=torch.device("cuda", torch.cuda.current_device()))
+        if history_placement is not None:
+            from tensorfold.cuda.sm70.compact_indexer import prepare as prepare_compact_indexer
+
+            prepare_compact_indexer(torch.device("cuda", torch.cuda.current_device()))
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         a4_scalar_host = 0
         if modelopt:

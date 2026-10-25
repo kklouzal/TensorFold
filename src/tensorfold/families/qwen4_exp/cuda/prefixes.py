@@ -86,9 +86,12 @@ def slot_for(owner, prompt: list[int], reuse: bool):
         try:
             if owner._grow(spare, len(prompt) + owner.depth + 2, protect=best[1]):
                 spare.begin_sequence_generation()
-                spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"])
+                restored = spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"],
+                    **({"indexer_snapshot": best[2]["compact_indexer"], "poison_control": owner.poison_control}
+                       if spare.compact_indexer is not None else {}))
                 _use(owner, best[1])
-                return spare, {"state": best[2], "tail": best[3]}, len(best[0])
+                state = best[2] if restored is None else {**best[2], "compact_indexer": restored}
+                return spare, {"state": state, "tail": best[3]}, len(best[0])
         except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
             try:
                 owner._quarantine(spare)
