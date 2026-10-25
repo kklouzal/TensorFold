@@ -786,8 +786,8 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
     return out
 
 
-def gdn_chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, eps, rows, scratch,
-              state_out, out, xs):
+def gdn_chain(p, conv_state, conv_w, state_in, decay_parameter, dt_bias, norm_w, eps, rows, scratch,
+              state_out, out, xs, *, negative_decay=False):
     nv, dv, dk = state_in.shape
     nk = scratch.k.shape[1]
     conv = 2 * nk * dk + nv * dv
@@ -811,8 +811,8 @@ def gdn_chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, eps, rows
         query = query * torch.rsqrt(query.square().sum(-1, keepdim=True) + 1e-6) / math.sqrt(dk)
         key = key * torch.rsqrt(key.square().sum(-1, keepdim=True) + 1e-6)
         beta = torch.sigmoid(p[row, conv + nv * dv:conv + nv * dv + nv].float()).half().float()
-        decay = torch.exp(-torch.exp(a_log.float()) * F.softplus(
-            p[row, conv + nv * dv + nv:].float() + dt_bias.float()))
+        rate = decay_parameter.float() if negative_decay else -torch.exp(decay_parameter.float())
+        decay = torch.exp(rate * F.softplus(p[row, conv + nv * dv + nv:].float() + dt_bias.float()))
         scratch.k[row].copy_(key)
         scratch.v[row].copy_(value)
         scratch.g[row].copy_(decay)

@@ -17,6 +17,15 @@ quality/performance and the revised full-context/media resource envelope remain
 unqualified. Run `tests/test_gguf_mixed_formats.py` for the host wire controls and
 `tests/cuda/test_sm70_gguf_mixed_formats.py` on an actual V100.
 
+The recurrent importer keeps GGML's stored negative exponential in FP32 rather
+than reconstructing a logarithm. Its projection, convolution, decay/bias and
+output-column plans restore the coupled value-head order before TP partitioning.
+`tests/test_flashnext_gdn_decay.py` checks import bits, all supported TP planning
+geometries and the analytic zero-key recurrence/replay control. Run
+`tests/cuda/test_sm70_gdn_decay.py` on V100 for captured native direct-decay
+controls. These source controls do not transfer historical model-quality results
+to the revised arithmetic; full reference parity remains required.
+
 This AMD64 development profile builds the installed TensorFold wheel with the
 SM70 FP16 provider. Original GGUF encodings remain separate from affine/EXL3/
 NVFP4 readers. The same family engine, scheduler, HTTP server, prefix states,

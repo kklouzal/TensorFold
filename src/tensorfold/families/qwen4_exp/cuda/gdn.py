@@ -39,18 +39,24 @@ class GDNScratch:
 
 
 def chain(p: torch.Tensor, conv_state: torch.Tensor, conv_w: torch.Tensor, state_in: torch.Tensor,
-          a_log: torch.Tensor, dt_bias: torch.Tensor, norm_w: torch.Tensor, eps: float, rows: int,
-          scratch: GDNScratch, state_out: torch.Tensor, out: torch.Tensor, xs: torch.Tensor) -> None:
+          a_log: torch.Tensor | None, dt_bias: torch.Tensor, norm_w: torch.Tensor, eps: float, rows: int,
+          scratch: GDNScratch, state_out: torch.Tensor, out: torch.Tensor, xs: torch.Tensor,
+          *, a_neg: torch.Tensor | None = None) -> None:
     """``out`` [rows, NV*DV] bf16 and ``xs`` (its 32-group sums) may be row views of a larger buffer."""
 
+    if (a_log is None) == (a_neg is None):
+        raise ValueError("GDN requires exactly one declared decay representation")
+    if a_neg is not None and p.dtype != torch.float16:
+        raise ValueError("stored negative GDN decay requires the FP16 provider")
     if p.dtype == torch.float16:
         if p.is_cuda:
             from tensorfold.cuda.sm70.gdn_native import chain as gdn_chain
         else:
             from tensorfold.cuda.sm70.family_ops import gdn_chain
 
-        return gdn_chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, eps, rows,
-                         scratch, state_out, out, xs)
+        return gdn_chain(p, conv_state, conv_w, state_in, a_log if a_neg is None else a_neg,
+                         dt_bias, norm_w, eps, rows, scratch, state_out, out, xs,
+                         negative_decay=a_neg is not None)
 
     _ext().chain(p, conv_state, conv_w, state_in, a_log, dt_bias, norm_w, float(eps), int(rows), out, xs,
                  state_out, scratch.k, scratch.v, scratch.g, scratch.b)
