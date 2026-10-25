@@ -9,7 +9,8 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from tensorfold.families.qwen4_exp.cuda.position_coordinates import (  # noqa: E402 - optional backend guard
-    CoordinateProof, IssuedCoordinates, copy_coordinates, issue_coordinates, restore_coordinates,
+    CoordinateProof, CoordinateTransfer, IssuedCoordinates, copy_coordinate_batch, copy_coordinates,
+    issue_coordinates, restore_coordinates,
 )
 from tensorfold.families.qwen4_exp.position_profile import PositionOperands, PositionRole  # noqa: E402
 from tensorfold.families.qwen4_exp.rope import RopeParameters  # noqa: E402
@@ -156,3 +157,111 @@ def test_protected_snapshot_restore_copies_into_current_admitted_generation():
     with pytest.raises(ValueError, match="profile identities"):
         restore_coordinates(source, source_position=policy(), position=policy(epoch=1),
             profile_identity="a" * 64, media_identity="b" * 64, generation=8, row_start=7, row_count=4)
+
+
+def test_same_destination_reuse_invalidates_old_live_frame_bounds():
+    class Frame:
+        pass
+    first, second = Frame(), Frame()
+    destination = torch.empty(4, 3, dtype=torch.int64)
+    old = copy_coordinates(issue(), source_position=policy(), position=policy(), row_start=7, row_count=4,
+                           destination=destination, owner=first)
+    newer_source = issue(np.full((4, 3), 31, dtype=np.int64), generation=4, media_identity="e" * 64)
+    current = copy_coordinates(newer_source, source_position=policy(), position=policy(), row_start=7, row_count=4,
+                               destination=destination, owner=second)
+    validate(current, owner=second, generation=4, media_identity="e" * 64)
+    assert old.proof.maximum == (9, 9, 9) and old.tensor.max() == 31
+    with pytest.raises(ValueError, match="storage changed"):
+        validate(old, owner=first)
+
+
+def test_in_place_mutation_cannot_keep_an_old_coordinate_proof():
+    issued = issue()
+    issued.tensor.add_(100)
+    with pytest.raises(ValueError, match="storage changed"):
+        validate(issued)
+
+
+def test_issuance_and_controlled_copies_track_versions_inside_inference_mode():
+    class Frame:
+        pass
+    owner = Frame()
+    with torch.inference_mode():
+        source = issue()
+        copied = copy_coordinates(source, source_position=policy(), position=policy(), row_start=7, row_count=4)
+        assert not torch.is_inference(source.tensor) and not torch.is_inference(copied.tensor)
+        validate(source)
+        validate(copied)
+        untracked = torch.zeros(4, 3, dtype=torch.int64)
+        with pytest.raises(ValueError, match="track Tensor mutations"):
+            copy_coordinates(source, source_position=policy(), position=policy(), row_start=7, row_count=4,
+                             destination=untracked, owner=owner)
+    assert torch.count_nonzero(untracked) == 0
+
+
+def transfer(source, destination, **changes):
+    options = dict(source=source, source_position=policy(), position=policy(), row_start=7, row_count=4,
+                   destination=destination, profile_identity="a" * 64, generation=3, media_identity="b" * 64,
+                   dtype=destination.dtype)
+    options.update(changes)
+    return CoordinateTransfer(**options)
+
+
+def test_packed_batch_mints_every_segment_after_final_shared_version():
+    class Frame:
+        pass
+    owner = Frame()
+    packed = torch.empty(8, 3, dtype=torch.int64)
+    first, second = issue(), issue(np.full((4, 3), 31, dtype=np.int64), generation=4, media_identity="e" * 64)
+    issued = copy_coordinate_batch((transfer(first, packed[:4]),
+                                   transfer(second, packed[4:], generation=4, media_identity="e" * 64)),
+                                  owner=owner, max_rows=8)
+    validate(issued[0], owner=owner)
+    validate(issued[1], owner=owner, generation=4, media_identity="e" * 64)
+    assert issued[0].tensor._version == issued[1].tensor._version == packed._version == 2
+    validate(first)
+    validate(second, generation=4, media_identity="e" * 64)
+
+
+def test_packed_batch_validates_late_segments_and_overlaps_before_first_write():
+    class Frame:
+        pass
+    owner = Frame()
+    packed = torch.zeros(8, 3, dtype=torch.int64)
+    source = issue()
+    for second in (transfer(source, packed[4:], row_start=8), transfer(source, packed[3:7])):
+        with pytest.raises(ValueError, match="outside|overlap"):
+            copy_coordinate_batch((transfer(source, packed[:4]), second), owner=owner, max_rows=8)
+        assert torch.count_nonzero(packed) == 0 and packed._version == 0
+
+
+def test_packed_batch_refuses_writing_into_another_segments_immutable_source():
+    class Frame:
+        pass
+    first, second = issue(), issue(np.full((4, 3), 31, dtype=np.int64))
+    saved = second.tensor.clone()
+    with pytest.raises(ValueError, match="immutable source"):
+        copy_coordinate_batch((transfer(first, second.tensor), transfer(second, torch.empty_like(second.tensor))),
+                              owner=Frame(), max_rows=8)
+    torch.testing.assert_close(second.tensor, saved, rtol=0, atol=0)
+    validate(first)
+    validate(second)
+
+
+def test_packed_batch_reserves_mutation_versions_before_writing(monkeypatch):
+    import tensorfold.families.qwen4_exp.cuda.position_coordinates as implementation
+
+    class Frame:
+        pass
+    packed = torch.zeros(8, 3, dtype=torch.int64)
+    signature = implementation._signature
+
+    def exhausted(tensor, **options):
+        result = signature(tensor, **options)
+        return (*result[:-1], 2**32 - 2) if tensor.untyped_storage().data_ptr() == packed.data_ptr() else result
+
+    monkeypatch.setattr(implementation, "_signature", exhausted)
+    with pytest.raises(ValueError, match="version exhausted"):
+        copy_coordinate_batch((transfer(issue(), packed[:4]), transfer(issue(), packed[4:])),
+                              owner=Frame(), max_rows=8)
+    assert torch.count_nonzero(packed) == 0 and packed._version == 0
