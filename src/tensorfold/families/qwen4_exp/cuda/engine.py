@@ -849,9 +849,12 @@ class FlashNextEngine:
                 graph_bytes = 0
             floor_extra = getattr(self.multi, "graph_floor_extra_bytes", 0)
             if graph_request is None:
-                from .service_memory import reserve_graph_plan
+                from .service_memory import reserve_graph_plan, refine_materialized_graph_plan
 
                 graph_bytes = self.multi.graph_budget
+                refinement = self.multi.graph_record.get("observed_graph_admission")
+                if refinement is not None:
+                    refine_materialized_graph_plan(self.capacity_plan, refinement)
                 reserve_graph_plan(self.capacity_plan, graph_bytes + floor_extra)
             elif floor_extra:
                 from .service_memory import reserve_graph_plan
@@ -1144,10 +1147,13 @@ class FlashNextEngine:
         if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
             policy.append(["sm70-kv-working-policy", self._sm70_kv_policy])
         if getattr(self, "indexer_history", "gpu") == "ram":
+            from .service_memory import RAM_GRAPH_ADMISSION_VERSION
+
             history_plan = self._indexer_history_plan
             policy.append(["indexer-history", "lossless-fp16-ram-archive-v1",
                            [getattr(history_plan, field) for field in
-                            ("layers", "index_dim", "ratio", "prefill_rows", "decode_rows", "page_size")]])
+                            ("layers", "index_dim", "ratio", "prefill_rows", "decode_rows", "page_size")],
+                           RAM_GRAPH_ADMISSION_VERSION])
         policy_digest = int.from_bytes(hashlib.sha256(json.dumps(policy).encode()).digest()[:8], "big") & (2**63 - 1)
         confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
         mine = torch.tensor([self.depth, confidence_bits, self.max_len,

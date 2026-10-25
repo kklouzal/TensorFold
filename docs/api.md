@@ -473,8 +473,11 @@ copies into small registered local host stages. Attention KV and the complete
 pooled indexer cache remain in VRAM. This option is independent of KV precision
 and drafter selection. The host and container must support the restricted NUMA
 operations described in the [V100 guide](../deploy/v100/README.md#numa-local-indexer-archive);
-unsupported placement fails explicitly. Archive-mode full-model qualification
-and measured capacity/performance remain pending.
+unsupported placement fails explicitly. Installed TP8 stock-MTP checks passed
+four full INT8 windows and eight 260,060-token Q4 windows, with same-format
+output comparisons and concurrent/stream/cancellation recovery. Full-context
+payloads and the RAM/DSpark combination remain unqualified; capacity is not a
+throughput guarantee.
 
 On a unified-memory GPU (the DGX Spark's GB10), the CUDA server's allocations come out of the host's RAM but are not
 charged to a container's memory limit (`docker run --memory`, cgroup `memory.max`): the limit neither caps the

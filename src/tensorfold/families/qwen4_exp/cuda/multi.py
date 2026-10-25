@@ -10,7 +10,7 @@ import torch
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda import pdl
-from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes
+from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes, gather_ints
 from tensorfold.cuda.kernels import gdn
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.markers import MIN_GAP
@@ -36,7 +36,7 @@ from .decode import (
 from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
-from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service
+from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
 from .state import ENDS, Buffers, KVNumericError, State
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -511,12 +511,49 @@ class MultiDecoder:
                                 minimum_workspace_bytes=self.memory_gate.reserve,
                                 copy_overlap_bytes=promise["copy_overlap_bytes"])
         live = multi_graphs.live_bytes
-        initial_live = live()
         automatic = self.graph_request is None
-        if automatic:
+        observed = (automatic and getattr(self, "full_resident", False)
+                    and getattr(self.w, "meta", {}).get("execution_provider") == "sm70"
+                    and getattr(self.w, "meta", {}).get("indexer_history") == "ram")
+        refinement = None
+        if observed:
+            initial_live, error = 0, None
+            packet = [0, 0, 0, future["future_bytes"]]
+            try:
+                initial_live = live()
+                room = materialized_graph_room(self.free, self.capacity, initial_live, promise, future)
+                packet = [1, room, initial_live, future["future_bytes"]]
+            except Exception as failure:
+                error = failure
+            world = int(self.w.meta.get("world", 1))
+            observations = (gather_ints(torch, self.w.comm.all_gather, packet, world=world)
+                            if self.w.comm is not None else [packet])
+            if (len(observations) != world or any(len(row) != 4 or any(type(value) is not int for value in row)
+                                                  for row in observations)):
+                if error is not None:
+                    raise error
+                raise RuntimeError("invalid all-rank materialized graph observation packet")
+            if any(row[0] != 1 for row in observations):
+                if error is not None:
+                    raise error
+                raise RuntimeError("a peer could not prove observed full-window graph room")
+            if any(row[1] < 0 or row[3] < 2 * GIB or row[2] < row[3] or row[1] != row[2] - row[3]
+                   for row in observations):
+                raise RuntimeError("inconsistent all-rank materialized graph room proof")
+            self.graph_budget = min(row[1] for row in observations)
+            refinement = {"policy": "ram-full-resident-observed-v1", "agreed_graph_bytes": self.graph_budget,
+                "observations": [{"rank": rank, "graph_room_bytes": row[1], "live_after_floor_bytes": row[2],
+                                  "future_service_bytes": row[3]} for rank, row in enumerate(observations)],
+                "full_slots": slots, "capacity": self.capacity, "future_service": dict(future),
+                "header_room_bytes": self.graph_header_room, "private_spare_credit_bytes": 0}
+        else:
+            initial_live = live()
+        if automatic and not observed:
             self.graph_budget = automatic_graph_bytes(initial_live, future["future_bytes"], self.graph_header_room)
         resolution = {"automatic": automatic, "initial_live_bytes": initial_live,
                       "header_room_bytes": self.graph_header_room, "future_service": future}
+        if refinement is not None:
+            resolution["observed_graph_admission"] = refinement
         if getattr(self, "full_resident", False):
             resolution["materialized_full_windows"] = {
                 "slots": slots, "capacities": [st.capacity for st in self.free],

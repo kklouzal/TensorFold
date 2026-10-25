@@ -1,11 +1,13 @@
 # TensorFold fork
 
-The optional `--indexer-history ram` path is being qualified for Flash Next
-GGUF on SM70. It keeps raw FP16 indexer history in NUMA-local system memory,
-with bounded GPU ring/staging buffers; pooled indexer keys and attention KV
-stay on the GPU. The default `gpu` mode retains full GPU history. Actual
-archive-mode model correctness, concurrency and throughput checks are pending;
-this does not change the qualified service settings below. See the
+The optional `--indexer-history ram` path keeps raw FP16 indexer history in
+NUMA-local system memory, with bounded GPU ring/staging buffers; pooled indexer
+keys and attention KV stay on the GPU. TP8 live checks passed four full INT8
+windows and eight Q4 windows of 260,060 tokens, including exact same-format
+replies, concurrency, streaming, cancellation and recovery. This establishes
+capacity and those output checks, not a throughput gain or full-context payload
+qualification. The current host selects **INT8, GPU history, three full
+262,144-token windows** at the user's request. See the
 [archive deployment procedure](deploy/v100/README.md#numa-local-indexer-archive).
 
 **RotorQuant Q4 on V100 (2026-10-25):** native SM70 now supports the existing
@@ -24,8 +26,7 @@ Q4 is a lossy choice, not quality-equivalent to INT8. On the fixed broader
 389-step suite, signed128 Q4 measured perplexity ratio **1.00652** and top-1
 agreement **97.43%**; norm-preserving Q4 measured **1.00804** and **97.69%**.
 Both completed all 714 teacher steps but failed the old INT8 comparison gates.
-The INT8 service configuration remains the default pending the user's quality/
-latency choice. [Q4 evidence and limitations](docs/v100-flashnext-validation.md#rotorquant-q4-on-v100).
+The host currently selects INT8. [Q4 evidence and limitations](docs/v100-flashnext-validation.md#rotorquant-q4-on-v100).
 
 **Flash Next on eight V100s (2026-10-24):** the native mixed-GGUF SM70 provider
 uses the existing CUDA engine, scheduler and HTTP API, with FP16 execution and

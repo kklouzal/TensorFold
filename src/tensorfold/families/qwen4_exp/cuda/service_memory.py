@@ -7,6 +7,8 @@ allowances share the same accounting in both policies; this module allocates no
 device storage and imports no accelerator runtime.
 """
 
+RAM_GRAPH_ADMISSION_VERSION = "observed-graph-admission-v1"
+
 
 def context_reservation(states, full_windows=None, *, preserve_overlap=False):
     """Remaining cache growth, including auxiliary caches through State.cache_bytes.
@@ -60,6 +62,55 @@ def automatic_graph_bytes(live_bytes, future_bytes, header_room=None):
 
     room = max(0, live_bytes - future_bytes)
     return room if header_room is None else min(room, max(0, header_room))
+
+
+def materialized_graph_room(states, capacity, live_bytes, promise, future):
+    """Observed spare after every RAM slot already owns its full GPU window.
+
+    ``live_bytes`` is the existing physical-only reader after its device floor
+    and absolute cap. No allocator/private-pool reclaim credit is introduced.
+    """
+    if (type(live_bytes) is not int or live_bytes < 0 or not states
+            or promise["growth_bytes"] != 0 or promise["full_windows_reserved"] != len(states)
+            or any(st.capacity != capacity or st.limit != capacity
+                   or getattr(st, "indexer_history_owner", None) is None
+                   or st.indexer_history_owner.limit != capacity for st in states)):
+        raise ValueError("observed graph credit requires every full RAM window materialized with zero future growth")
+    fields = ("growth_bytes", "copy_overlap_bytes", "snapshot_bytes", "workspace_bytes", "future_bytes")
+    if (any(type(future.get(key)) is not int or future[key] < 0 for key in fields)
+            or future["workspace_bytes"] < 2 * 2**30 or future["growth_bytes"] != 0
+            or future["future_bytes"] != sum(future[key] for key in fields[:-1])):
+        raise ValueError("observed graph credit requires the unchanged complete service promises")
+    if live_bytes < future["future_bytes"]:
+        raise MemoryError("materialized RAM windows no longer leave room for required service promises")
+    return live_bytes - future["future_bytes"]
+
+
+def refine_materialized_graph_plan(receipt, proof):
+    """Retain header estimates and publish a separately proven serving envelope."""
+    from copy import deepcopy
+
+    room, budget = proof["agreed_graph_bytes"], receipt["budget_bytes"]
+    if (receipt.get("observed_graph_admission") is not None or type(room) is not int
+            or not 0 <= room <= budget or proof.get("policy") != "ram-full-resident-observed-v1"):
+        raise RuntimeError("invalid or repeated observed full-window graph admission")
+    original = {key: deepcopy(receipt[key]) for key in (
+        "native_window", "requested_context", "context_window", "cache_slots", "budget_bytes",
+        "weight_bytes_estimate", "loading_bytes_estimate", "cache_workspace_bytes_estimate",
+        "startup_peak_bytes_estimate", "serving_peak_bytes_estimate", "total_bytes_estimate",
+        "full_mapped_working_set_bytes_estimate") if key in receipt}
+    serving = budget - room
+    if serving < receipt["weight_bytes_estimate"]:
+        raise RuntimeError("observed serving envelope cannot cover admitted resident weights")
+    receipt["observed_graph_admission"] = {"original_header": original, **deepcopy(proof),
+        "observed_serving_base_bytes": serving,
+        "basis": "physical spare after unchanged device floor and full service promises"}
+    receipt.update(serving_admission_basis="ram-full-resident-observed-v1",
+        cache_workspace_bytes_estimate=serving - receipt["weight_bytes_estimate"],
+        serving_peak_bytes_estimate=serving,
+        total_bytes_estimate=max(receipt["startup_peak_bytes_estimate"], serving),
+        full_mapped_working_set_bytes_estimate=max(receipt["startup_peak_bytes_estimate"], serving)
+                                                + receipt["mapped_table_bytes"])
 
 
 def reserve_graph_plan(receipt, graph_bytes):

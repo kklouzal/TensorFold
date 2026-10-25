@@ -344,8 +344,12 @@ three simultaneous full262KDSpark workloads or of better output quality.
 GPU ring and staging buffers plus a lossless FP16 archive in local system RAM.
 `--indexer-history gpu` is the default. Attention KV and all pooled indexer
 keys remain on the GPU. The archive is independent of the selected KV format
-and drafter. Its full-model correctness, capacity and performance qualification
-is pending; the preceding service measurements use GPU history.
+and drafter. TP8 stock-MTP live checks passed four full INT8 windows and eight
+260,060-token Q4 windows, including frozen same-format output comparisons,
+concurrency, SSE, cancellation and recovery. These are allocation and bounded
+workload checks; full-context payloads and RAM/DSpark remain unqualified.
+The host currently runs INT8 with GPU history and three full native windows;
+the preceding throughput measurements use their named configurations.
 
 Each rank resolves its actual GPU UUID/PCI device to a NUMA node, binds owned
 anonymous allocations before first write, verifies every backing page, and
@@ -388,3 +392,10 @@ optional override is unnecessary for GPU-history mode. Startup reports host
 archive/pinned staging reservations separately from GPU cache storage. Preserve
 the existing device floor and workspace while selecting equal context windows;
 saved raw-history bytes alone do not establish how many full windows fit.
+
+With automatic graphs and every RAM window already materialized, startup may
+refine graph room from the minimum physical spare across ranks after the same
+device floor and future workspace/copy/snapshot promises. The original header
+receipt is retained beside `observed_graph_admission`. Explicit graph ceilings
+and GPU-history behavior retain their existing admission policy. This does not
+make all graph shapes fit or guarantee unchanged throughput.

@@ -77,8 +77,10 @@ lossless asynchronous NUMA-local RAM archive on this GGUF/SM70 provider.
 `--indexer-history gpu` retains the default full GPU history. Pooled indexer
 keys and attention KV remain on the GPU; KV precision and drafting flags retain
 their own contracts. Use the [NUMA deployment procedure](../../deploy/v100/README.md#numa-local-indexer-archive).
-The archive path is under qualification; no new concurrent-window or throughput
-result is established yet.
+The archive path passed TP8 stock-MTP live checks with four full INT8 windows
+and eight 260,060-token Q4 windows. These are physically allocated capacities
+and same-format response checks, not full-context payload or throughput
+equivalence claims. The RAM/DSpark combination remains unqualified.
 
 The modern CUDA provider serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
 files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
