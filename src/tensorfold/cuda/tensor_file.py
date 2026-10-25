@@ -166,17 +166,20 @@ def _constant(value):
     raise ValueError("non-JSON numeric constant in safetensors header")
 
 
-def read_metadata_json(path: str | Path) -> dict:
+def read_metadata_json(path: str | Path, *, max_bytes: int = MAX_HEADER_BYTES) -> dict:
     """Read a bounded UTF-8 configuration/index object without duplicate keys.
 
-    Checkpoint metadata shares the 100-MB file limit with tensor headers.
+    Checkpoint metadata shares the 100-MB file limit with tensor headers;
+    an owner may require a stricter per-record byte bound.
     Nonfinite numbers and unpaired surrogate strings cannot describe the
     runtime's configuration or authorized file names.
     """
+    if type(max_bytes) is not int or not 0 < max_bytes <= MAX_HEADER_BYTES:
+        raise ValueError("checkpoint metadata byte bound must be positive and within the format limit")
     with _regular_stream(path) as stream:
         size = os.fstat(stream.fileno()).st_size
-        if not 0 < size <= MAX_HEADER_BYTES:
-            raise ValueError(f"{path}: checkpoint metadata size must lie in [1, {MAX_HEADER_BYTES}]")
+        if not 0 < size <= max_bytes:
+            raise ValueError(f"{path}: checkpoint metadata size must lie in [1, {max_bytes}]")
         raw = stream.read(size + 1)
     if len(raw) != size:
         raise ValueError(f"{path}: checkpoint metadata changed during its read")
@@ -315,9 +318,23 @@ def read_header_stream(stream, sizes: dict[str, int], *, label) -> tuple[int, di
     raw = stream.read(count)
     if len(raw) != count or not raw.startswith(b"{"):
         raise ValueError(f"{path}: truncated or invalid safetensors JSON header")
+    return parse_header_bytes(raw, size, sizes, label=path)
+
+
+def parse_header_bytes(raw: bytes, size: int, sizes: dict[str, int], *, label) -> tuple[int, dict]:
+    """Validate a bounded header against an independently observed full-file size.
+
+    A range-only preparation reader can share the exact local-file schema and
+    extent contract without materializing the source's unrelated tensor bytes.
+    This validates metadata; it neither verifies nor reads the payload.
+    """
+    if type(raw) is not bytes:
+        raise ValueError(f"{label}: bounded safetensors header must be bytes")
+    path, count = label, len(raw)
+    if (type(size) is not int or size < 8
+            or not 0 < count <= min(MAX_HEADER_BYTES, size - 8) or not raw.startswith(b"{")):
+        raise ValueError(f"{path}: invalid bounded safetensors header")
     header = _metadata_object(raw, path)
-    if not isinstance(header, dict):
-        raise ValueError(f"{path}: safetensors header must be an object")
     spans = []
     for name, entry in header.items():
         if name == "__metadata__":
@@ -325,9 +342,6 @@ def read_header_stream(stream, sizes: dict[str, int], *, label) -> tuple[int, di
                 not isinstance(entry, dict) or any(not isinstance(v, str) for v in entry.values())
             ):
                 raise ValueError(f"{path}: safetensors metadata must map strings to strings")
-            if entry is not None:
-                for value in entry.values():
-                    value.encode("utf-8")
             continue
         if not isinstance(entry, dict) or not isinstance(entry.get("dtype"), str):
             raise ValueError(f"{name}: invalid safetensors tensor metadata")

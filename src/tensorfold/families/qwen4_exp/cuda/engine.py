@@ -768,6 +768,8 @@ class FlashNextEngine:
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
         self.w, self.scheduler = w, None
+        if "mtp_import" in w.meta:
+            self.capacity_plan["mtp_import"] = dict(w.meta["mtp_import"])
         if history_placement is not None:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if self._indexer_history_session is not None:

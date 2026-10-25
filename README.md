@@ -6,6 +6,10 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
+The revised design's shared-GGUF MTP importer preserves the selected target
+embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
+four with a 2,048-token complete-group budget. Import controls do not qualify
+MTP execution, acceptance, quality, or performance on the new V100 stack.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 

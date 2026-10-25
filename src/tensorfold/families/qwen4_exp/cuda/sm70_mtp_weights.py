@@ -1,4 +1,4 @@
-"""The matching stock BF16 MTP checkpoint in the shared FP16 Flash Next runtime.
+"""Matching stock floating or shared-GGUF MTP in the FP16 Flash Next runtime.
 
 MTP shares target embeddings/head, uses the existing MTPW forward protocol and
 retains tensor-parallel expert/intermediate slices. No checkpoint is rewritten.
@@ -134,6 +134,12 @@ def _validate(target, directory):
 
 def byte_plan(target, directory, *, tp=(0, 1)):
     """Exact retained FP16/F32 arrays; shared target embedding/head are excluded."""
+    from ..gguf import resolve_gguf
+
+    if resolve_gguf(directory) is not None:
+        from .gguf_mtp_weights import byte_plan as gguf_plan
+
+        return gguf_plan(target, directory, tp=tp)
     _validate(target, directory)
     c = target.cfg if hasattr(target, "cfg") else target
     _, world = tp
@@ -153,6 +159,12 @@ def byte_plan(target, directory, *, tp=(0, 1)):
 
 def attach(w, directory, *, tp=(0, 1)):
     """Attach the matching declared stock MTP using existing family weight types."""
+    from ..gguf import resolve_gguf
+
+    if resolve_gguf(directory) is not None:
+        from .gguf_mtp_weights import attach as attach_gguf
+
+        return attach_gguf(w, directory, tp=tp)
     from safetensors import safe_open
 
     rank, world = tp

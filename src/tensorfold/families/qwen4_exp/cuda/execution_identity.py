@@ -108,9 +108,14 @@ def artifact_files(engine):
              engine.dspark_model_dir if engine.method_geometry.method == "dspark" else None)
     if draft is not None:
         root = Path(draft).resolve()
-        # Both selected SM70 draft providers explicitly consume these two files.
-        for name in ("config.json", "model.safetensors"):
-            result["draft/" + name] = checkpoint_path(root, name)
+        draft_entry = resolve_gguf(root) if engine.method_geometry.method == "mtp" else None
+        if draft_entry is not None:
+            companion = GGUFCheckpoint.open(draft_entry)
+            for file in companion.paths:
+                result["draft/" + file.name] = checkpoint_path(file.parent, file.name)
+        else:
+            for name in ("config.json", "model.safetensors"):
+                result["draft/" + name] = checkpoint_path(root, name)
     return result, checkpoint
 
 
@@ -234,6 +239,7 @@ def _runtime(engine, *, previous_topology=None):
                 # dispatch retains its separately qualified startup cache.
                 "runtime_policy": policy, "rope": engine.rope.metadata(),
                 "eos": list(engine.w.cfg.eos), "method": engine.method_geometry.receipt(),
+                "mtp_import": engine.w.meta.get("mtp_import"),
                 "proposal_confidence": engine.confidence}
     runtime = {"python": platform.python_version(), "kernel": platform.release(),
                "torch": str(torch.__version__), "torch_git": torch.version.git_version,

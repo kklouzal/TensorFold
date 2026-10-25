@@ -33,10 +33,12 @@ class MethodGeometry:
 
     def __post_init__(self) -> None:
         _count(self.maximum_proposals, "maximum proposals")
-        if self.method not in ("none", "mtp", "dspark"):
-            raise ValueError("Flash Next execution supports none, stock MTP or DSpark")
+        if self.method not in ("none", "mtp", "dspark", "dflash2"):
+            raise ValueError("Flash Next execution supports none, stock MTP, DSpark or DFlash2")
         if self.method == "none" and self.maximum_proposals:
             raise ValueError("the none method cannot allocate proposals")
+        if self.method == "dflash2" and self.maximum_proposals > 3:
+            raise ValueError("the initial four-row DFlash2 block permits at most three proposals")
 
     @property
     def target_tail_rows(self) -> int:
@@ -73,13 +75,18 @@ class MethodGeometry:
         return min(limits)
 
     def receipt(self) -> dict:
-        return {"method": self.method, "maximum_proposals": self.maximum_proposals,
+        receipt = {"method": self.method, "maximum_proposals": self.maximum_proposals,
                 "maximum_target_rows": self.target_rows(self.maximum_proposals),
                 "target_tail_rows": self.target_tail_rows, "draft_tail_rows": self.draft_tail_rows,
                 "stock_mtp_cache_layers": self.stock_mtp_cache_layers,
                 "zero_proposal_maintains_conditioning": self.method != "none",
                 "sampling": "position-keyed target sample matching",
                 "commit": "accepted conditional prefix including pending anchor"}
+        if self.method == "dflash2":
+            receipt.update(draft_compute_block_rows=4,
+                           sampling="standard rejection with actual conditional selector q",
+                           draft_cache="bounded-fp16-swa-separate-from-target-kv")
+        return receipt
 
 
 def checkpoint_method(directory: str | Path) -> str:
