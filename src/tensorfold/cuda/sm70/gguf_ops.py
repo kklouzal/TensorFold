@@ -33,10 +33,12 @@ def extension():
     for path in sources:
         key.update(path.read_bytes())
     contracts = here.parent / "kernels/tensor_contracts.cuh"
-    key.update(contracts.read_bytes())
+    tables = here / "gguf_decode_tables.cuh"
+    for header in (contracts, tables):
+        key.update(header.read_bytes())
     from .source_cache import stage_sources
 
-    staged = stage_sources(sources, headers=[contracts])
+    staged = stage_sources(sources, headers=[contracts, tables])
     return build.load("tf_gguf_" + key.hexdigest()[:20], staged, need=(7, 0),
                       extra_cflags=host_flags, extra_cuda_cflags=flags)
 

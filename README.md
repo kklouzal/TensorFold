@@ -16,6 +16,13 @@ format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
 Wire/source checks and reference-stack compilation do not qualify either
 candidate's V100 quality, long-context execution or performance.
 
+The revised initial target is the pinned SC117 `IQ3_S` split checkpoint in the
+specification. Its mixed tensor inventory includes Q2_0, Q6_K, IQ2_S, IQ3_XXS,
+IQ3_S and IQ4_XS; the host and SM70 decoders preserve those original blocks.
+Independent pinned GGML wire checks cover the host decoders. New SM70 device,
+full-model, media and capacity qualification remains pending; historical model
+results below do not qualify this target.
+
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile
 requires the corresponding `TF_MAX_PENDING_REQUESTS` and

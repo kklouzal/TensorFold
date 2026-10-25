@@ -13,8 +13,29 @@
 #include <limits>
 #include <vector>
 #include "../kernels/tensor_contracts.cuh"
+#include "gguf_decode_tables.cuh"
 
 namespace {
+struct BlockLayout { int values, bytes; };
+BlockLayout block_layout(int64_t kind, const char* domain) {
+    switch (kind) {
+        case 0: return {1, 4};
+        case 1: case 30: return {1, 2};
+        case 7: return {32, 24};
+        case 8: return {32, 34};
+        case 12: return {256, 144};
+        case 13: return {256, 176};
+        case 14: return {256, 210};
+        case 18: return {256, 98};
+        case 20: return {32, 18};
+        case 21: return {256, 110};
+        case 22: return {256, 82};
+        case 23: return {256, 136};
+        case 42: return {64, 18};
+        default: TORCH_CHECK(false, "unsupported ", domain, " encoding ", kind);
+    }
+}
+
 __device__ __forceinline__ uint16_t u16(const uint8_t* p) {
     return uint16_t(p[0]) | (uint16_t(p[1]) << 8);
 }
@@ -29,8 +50,50 @@ __device__ __forceinline__ float value(const uint8_t* p, int type, int i) {
     if (type == 1) return half_value(p);
     if (type == 30) return __uint_as_float(uint32_t(u16(p)) << 16);
     if (type == 8) return half_value(p) * float(int8_t(p[2 + i]));
+    if (type == 42) return float(int((p[2 + i / 4] >> (2 * (i % 4))) & 3) - 1) * half_value(p);
+    if (type == 14) {
+        const int half = i / 128, quarter = (i % 128) / 32, lane = i % 32;
+        const int lo = (p[half * 64 + (quarter % 2) * 32 + lane] >> (4 * (quarter / 2))) & 15;
+        const int hi = (p[128 + half * 32 + lane] >> (2 * quarter)) & 3;
+        const int scale = int(int8_t(p[192 + half * 8 + quarter * 2 + lane / 16]));
+        return (half_value(p + 208) * float(scale)) * float((lo | (hi << 4)) - 32);
+    }
+    if (type == 23) {
+        const int group = i / 32, element = i % 32;
+        const int scale = int(((p[4 + group / 2] >> (4 * (group % 2))) & 15)
+                             | (((u16(p + 2) >> (2 * group)) & 3) << 4)) - 32;
+        const int code = (p[8 + group * 16 + element % 16] >> (4 * (element / 16))) & 15;
+        return (half_value(p) * float(scale)) * float(tf_kvalues_iq4nl[code]);
+    }
+    if (type == 22) {
+        const int group = i / 32, sub = (i % 32) / 8, element = i % 8;
+        const int code = p[2 + group * 4 + sub] | ((uint32_t(p[66 + group]) << (8 - 2 * sub)) & 0x300);
+        const uint64_t grid = tf_iq2s_grid[code];
+        const int magnitude = int((grid >> (8 * element)) & 255);
+        const int scale = (p[74 + group] >> (4 * (sub / 2))) & 15;
+        const float d = (half_value(p) * (0.5f + float(scale))) * 0.25f;
+        return (d * float(magnitude)) * ((p[34 + group * 4 + sub] & (1 << element)) ? -1.0f : 1.0f);
+    }
+    if (type == 18) {
+        const int group = i / 32, sub = (i % 32) / 8, element = i % 8;
+        const uint32_t auxiliary = u32(p + 66 + group * 4);
+        const uint8_t signs = tf_ksigns_iq2xs[(auxiliary >> (7 * sub)) & 127];
+        const uint32_t grid = tf_iq3xxs_grid[p[2 + group * 8 + sub * 2 + element / 4]];
+        const float d = (half_value(p) * (0.5f + float(auxiliary >> 28))) * 0.5f;
+        return (d * float((grid >> (8 * (element % 4))) & 255)) * ((signs & (1 << element)) ? -1.0f : 1.0f);
+    }
+    if (type == 21) {
+        const int group = i / 32, sub = (i % 32) / 8, element = i % 8;
+        const int code = p[2 + group * 8 + sub * 2 + element / 4]
+            | ((uint32_t(p[66 + group]) << (8 - 2 * sub - element / 4)) & 256);
+        const uint32_t grid = tf_iq3s_grid[code];
+        const int scale = (p[106 + group / 2] >> (4 * (group % 2))) & 15;
+        const float d = half_value(p) * float(1 + 2 * scale);
+        return (d * float((grid >> (8 * (element % 4))) & 255))
+            * ((p[74 + group * 4 + sub] & (1 << element)) ? -1.0f : 1.0f);
+    }
     if (type == 20) {
-        constexpr int grid[16] = {-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113};
+        constexpr int grid[16] = {TF_GGUF_IQ4NL_VALUES};
         const int q = (p[2 + i % 16] >> (4 * (i / 16))) & 15;
         return half_value(p) * float(grid[q]);
     }
@@ -76,21 +139,11 @@ at::Tensor gguf_decode(const at::Tensor& raw, int64_t type, int64_t offset, int6
                 "GGUF bytes must be contiguous CUDA uint8 [rows, packed_row_bytes]");
     const auto* properties = at::cuda::getDeviceProperties(raw.get_device());
     TORCH_CHECK(properties->major == 7 && properties->minor == 0, "GGUF SM70 operators require Volta");
-    int block = 0, bytes = 0;
-    switch (type) {
-        case 0: block = 1; bytes = 4; break;
-        case 1: case 30: block = 1; bytes = 2; break;
-        case 7: block = 32; bytes = 24; break;
-        case 8: block = 32; bytes = 34; break;
-        case 12: block = 256; bytes = 144; break;
-        case 13: block = 256; bytes = 176; break;
-        case 20: block = 32; bytes = 18; break;
-        default: TORCH_CHECK(false, "unsupported GGML encoding ", type);
-    }
+    const auto [block, bytes] = block_layout(type, "GGML");
     TORCH_CHECK(raw.size(1) > 0 && raw.size(1) % bytes == 0, "GGUF row must contain complete source blocks");
     TORCH_CHECK(offset >= 0 && columns > 0 && offset <= std::numeric_limits<int>::max()
                 && columns <= std::numeric_limits<int>::max() - offset
-                && offset + columns <= (raw.size(1) / bytes) * block,
+                && (offset + columns - 1) / block < raw.size(1) / bytes,
                 "GGUF visible columns exceed the original packed row");
     TORCH_CHECK(ids.device() == raw.device() && ids.scalar_type() == at::kLong && ids.dim() == 1
                 && ids.is_contiguous(), "GGUF row IDs must be contiguous CUDA int64 on the bytes' device");
@@ -99,7 +152,7 @@ at::Tensor gguf_decode(const at::Tensor& raw, int64_t type, int64_t offset, int6
     c10::cuda::CUDAGuard guard(raw.device());
     auto out = at::empty({rows, columns}, raw.options().dtype(f32 ? at::kFloat : at::kHalf));
     if (rows) {
-        const int blocks = int(std::min<int64_t>((rows * columns + 255) / 256, 65535));
+        const int blocks = int(std::min<int64_t>(1 + (rows * columns - 1) / 256, 65535));
         auto stream = at::cuda::getCurrentCUDAStream();
         if (f32) decode_kernel<true><<<blocks, 256, 0, stream>>>(raw.data_ptr<uint8_t>(), ids.data_ptr<int64_t>(), gather,
             rows, raw.size(0), raw.size(1), type, block, bytes, offset, columns, out.data_ptr());
@@ -137,7 +190,7 @@ __global__ void expert_gate_up(const __half* x, const Index* picks, PackedView g
                                 const __half* shared_gate, const __half* shared_up,
                                 int dims, int width, int slots, int experts, void* intermediate) {
     const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
-    const int output = blockIdx.x * EXPERT_WARPS + warp;
+    const unsigned output = blockIdx.x * EXPERT_WARPS + warp;
     const int pair = blockIdx.y;
     const auto expert = picks[pair];
     const int split = Splits == 1 ? 0 : blockIdx.z;
@@ -147,7 +200,7 @@ __global__ void expert_gate_up(const __half* x, const Index* picks, PackedView g
     if (valid) {
         const int64_t source = int64_t(expert) * width + output;
         const __half* input = x + int64_t(pair / slots) * dims;
-        for (int k = lane + split * 32; k < dims; k += 32 * Splits) {
+        for (unsigned k = lane + split * 32; k < unsigned(dims); k += 32 * Splits) {
             const float xv = __half2float(input[k]);
             const float gv = expert == experts ? __half2float(shared_gate[int64_t(output) * dims + k])
                                                : coefficient<GateKind>(gate, source, k);
@@ -221,7 +274,8 @@ __global__ void expert_gate_up_blocks(const __half* x, const Index* picks, Packe
     const __half* shared_gate, const __half* shared_up,
     int dims, int width, int slots, int experts, __half* activation) {
     const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
-    const int output = blockIdx.x * EXPERT_WARPS + warp, pair = blockIdx.y;
+    const unsigned output = blockIdx.x * EXPERT_WARPS + warp;
+    const int pair = blockIdx.y;
     if (output >= width) return;
     const auto expert = picks[pair];
     const bool valid = expert >= 0 && expert <= experts;
@@ -230,7 +284,7 @@ __global__ void expert_gate_up_blocks(const __half* x, const Index* picks, Packe
         const __half* input = x + int64_t(pair / slots) * dims;
         if (expert == experts) {
             // Shared FP16 rows retain the qualified provider's exact loop.
-            for (int k = lane; k < dims; k += 32) {
+            for (unsigned k = lane; k < unsigned(dims); k += 32) {
                 const float xv = __half2float(input[k]);
                 g = fmaf(xv, __half2float(shared_gate[int64_t(output) * dims + k]), g);
                 u = fmaf(xv, __half2float(shared_up[int64_t(output) * dims + k]), u);
@@ -278,7 +332,7 @@ __device__ __forceinline__ float projection_sum(const __half* input, PackedView 
     const __half* shared, int64_t source, int output, int dims, int lane, bool is_shared) {
     float sum = 0.0f;
     if (is_shared) {
-        for (int k = lane; k < dims; k += 32)
+        for (unsigned k = lane; k < unsigned(dims); k += 32)
             sum = fmaf(__half2float(input[k]), __half2float(shared[int64_t(output) * dims + k]), sum);
     } else {
         for (int block = 0; block < dims / 256; ++block) {
@@ -303,7 +357,8 @@ __global__ void expert_gate_up_blocks2w(const __half* x, const Index* picks, Pac
     int dims, int width, int slots, int experts, __half* activation) {
     __shared__ float projections[EXPERT_WARPS];
     const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
-    const int output = blockIdx.x * (EXPERT_WARPS / 2) + warp / 2, pair = blockIdx.y;
+    const unsigned output = blockIdx.x * (EXPERT_WARPS / 2) + warp / 2;
+    const int pair = blockIdx.y;
     const auto expert = picks[pair];
     const bool live = output < width, valid = live && expert >= 0 && expert <= experts;
     float sum = __int_as_float(0x7fffffff);
@@ -351,7 +406,7 @@ __global__ void expert_down(const __half* activation, const Index* picks, Packed
     // Four independent eight-lane reductions share a warp for the narrow
     // TP8 K=80 down projection. Wider shards keep the same row-local order.
     const int part = lane % 8;
-    const int output = blockIdx.x * (EXPERT_WARPS * 4) + warp * 4 + lane / 8;
+    const unsigned output = blockIdx.x * (EXPERT_WARPS * 4) + warp * 4 + lane / 8;
     const int pair = blockIdx.y;
     const auto expert = picks[pair];
     const unsigned mask = __ballot_sync(0xffffffff, output < dims);
@@ -361,7 +416,7 @@ __global__ void expert_down(const __half* activation, const Index* picks, Packed
     if (valid) {
         const int64_t source = int64_t(expert) * dims + output;
         const __half* input = activation + int64_t(pair) * width;
-        for (int k = part; k < width; k += 8) {
+        for (unsigned k = part; k < unsigned(width); k += 8) {
             const float w = expert == experts ? __half2float(shared_down[int64_t(output) * width + k])
                                                : coefficient<DownKind>(down, source, k);
             sum = fmaf(__half2float(input[k]), w, sum);
@@ -386,20 +441,10 @@ void operand(const at::Tensor& x, at::ScalarType dtype, at::Device device, const
 PackedView packed_view(const at::Tensor& raw, int64_t kind, int64_t offset, int columns, at::Device device) {
     operand(raw, at::kByte, device, "packed expert bank");
     TORCH_CHECK(raw.dim() == 2 && raw.size(0) > 0, "packed expert bank must be a nonempty matrix");
-    int block = 0, bytes = 0;
-    switch (kind) {
-        case 0: block = 1; bytes = 4; break;
-        case 1: case 30: block = 1; bytes = 2; break;
-        case 7: block = 32; bytes = 24; break;
-        case 8: block = 32; bytes = 34; break;
-        case 12: block = 256; bytes = 144; break;
-        case 13: block = 256; bytes = 176; break;
-        case 20: block = 32; bytes = 18; break;
-        default: TORCH_CHECK(false, "unsupported GGML expert encoding ", kind);
-    }
-    TORCH_CHECK(raw.size(1) > 0 && raw.size(1) % bytes == 0 && offset >= 0
+    const auto [block, bytes] = block_layout(kind, "GGML expert");
+    TORCH_CHECK(raw.size(1) > 0 && raw.size(1) % bytes == 0 && offset >= 0 && columns > 0
                 && offset <= std::numeric_limits<int>::max() - columns
-                && offset + columns <= (raw.size(1) / bytes) * block,
+                && (offset + columns - 1) / block < raw.size(1) / bytes,
                 "packed expert columns must fit complete source blocks");
     return {raw.data_ptr<uint8_t>(), raw.size(1), int(kind), block, bytes, int(offset)};
 }
@@ -423,15 +468,15 @@ void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, 
     if constexpr (Splits == 4)
         intermediate = at::empty({pairs, width, Splits, 2}, x.options().dtype(at::kFloat));
     auto stream = at::cuda::getCurrentCUDAStream();
-    const dim3 gu_grid((width + EXPERT_WARPS - 1) / EXPERT_WARPS, pairs, Splits);
-    const dim3 down_grid((dims + EXPERT_WARPS * 4 - 1) / (EXPERT_WARPS * 4), pairs);
+    const dim3 gu_grid(1 + (width - 1) / EXPERT_WARPS, pairs, Splits);
+    const dim3 down_grid(1 + (dims - 1) / (EXPERT_WARPS * 4), pairs);
     bool launched = false;
     if constexpr (Splits == 1) {
         const bool kquants = (gate.kind == 12 || gate.kind == 13) && (up.kind == 12 || up.kind == 13);
         const bool aligned = (reinterpret_cast<uintptr_t>(gate.data) & 15) == 0
             && (reinterpret_cast<uintptr_t>(up.data) & 15) == 0 && gate.stride % 16 == 0 && up.stride % 16 == 0;
         if (blockwise && kquants && aligned && gate.offset == 0 && up.offset == 0 && dims % 256 == 0) {
-            const dim3 projection_grid((width + EXPERT_WARPS / 2 - 1) / (EXPERT_WARPS / 2), pairs);
+            const dim3 projection_grid(1 + (width - 1) / (EXPERT_WARPS / 2), pairs);
             if (split_projections && gate.kind == 12 && up.kind == 12)
                 expert_gate_up_blocks2w<Index, 12, 12><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
@@ -794,7 +839,7 @@ void dense_wmma32_kernel(const __half* x, const __half* weight, float* partials,
     auto* b = a + WMMA_M * WMMA_K;
     auto* c = reinterpret_cast<float*>(memory); // Reuse staging after every MMA has completed.
     const int warp = threadIdx.x / 32, nbase = blockIdx.x * WMMA_N, part = blockIdx.y;
-    const int begin = part * part_columns, end = min(columns, begin + part_columns);
+    const int begin = part * part_columns, end = begin + min(part_columns, columns - begin);
     const bool live_warp = nbase + warp * 16 < outputs;
     const bool vector_x = x_column_stride == 1 && x_row_stride % 8 == 0
                            && (reinterpret_cast<uintptr_t>(x) & 15) == 0;
@@ -802,31 +847,35 @@ void dense_wmma32_kernel(const __half* x, const __half* weight, float* partials,
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> low, high;
     wmma::fill_fragment(low, 0.0f);
     wmma::fill_fragment(high, 0.0f);
-    for (int chunk = begin; chunk < end; chunk += WMMA_K) {
+    for (unsigned chunk = begin; chunk < unsigned(end); chunk += WMMA_K) {
         if (vector_x) {
             for (int at = threadIdx.x; at < WMMA_M * WMMA_K / 8; at += WMMA_THREADS) {
-                const int r = at / (WMMA_K / 8), k = chunk + at % (WMMA_K / 8) * 8;
+                const int r = at / (WMMA_K / 8);
+                const unsigned k = chunk + at % (WMMA_K / 8) * 8;
                 reinterpret_cast<uint4*>(a)[at] = r < rows && k < end
                     ? *reinterpret_cast<const uint4*>(x + int64_t(r) * x_row_stride + k)
                     : make_uint4(0, 0, 0, 0);
             }
         } else {
             for (int at = threadIdx.x; at < WMMA_M * WMMA_K; at += WMMA_THREADS) {
-                const int r = at / WMMA_K, k = chunk + at % WMMA_K;
+                const int r = at / WMMA_K;
+                const unsigned k = chunk + at % WMMA_K;
                 a[at] = r < rows && k < end ? x[int64_t(r) * x_row_stride + int64_t(k) * x_column_stride]
                                           : __float2half_rn(0.0f);
             }
         }
         if (vector_w) {
             for (int at = threadIdx.x; at < WMMA_N * WMMA_K / 8; at += WMMA_THREADS) {
-                const int n = nbase + at / (WMMA_K / 8), k = chunk + at % (WMMA_K / 8) * 8;
+                const int n = nbase + at / (WMMA_K / 8);
+                const unsigned k = chunk + at % (WMMA_K / 8) * 8;
                 reinterpret_cast<uint4*>(b)[at] = n < outputs && k < end
                     ? *reinterpret_cast<const uint4*>(weight + int64_t(n) * columns + k)
                     : make_uint4(0, 0, 0, 0);
             }
         } else {
             for (int at = threadIdx.x; at < WMMA_N * WMMA_K; at += WMMA_THREADS) {
-                const int n = nbase + at / WMMA_K, k = chunk + at % WMMA_K;
+                const int n = nbase + at / WMMA_K;
+                const unsigned k = chunk + at % WMMA_K;
                 b[at] = n < outputs && k < end ? weight[int64_t(n) * columns + k] : __float2half_rn(0.0f);
             }
         }
@@ -903,7 +952,7 @@ void gguf_dense_wmma(const at::Tensor& x, const at::Tensor& weight, at::Tensor o
     // capture bucket never change the FP32 accumulation or reduction order.
     const int desired = std::min(128, std::max(1, (prop->multiProcessorCount * 8 + ntiles - 1) / ntiles));
     const int part_columns = int((int64_t(columns) + desired * 16 - 1) / (desired * 16)) * 16;
-    const int parts = (columns + part_columns - 1) / part_columns;
+    const int parts = 1 + (columns - 1) / part_columns;
     at::Tensor partials;
     float* scratch = nullptr;
     if (parts > 1) {
@@ -941,7 +990,7 @@ __global__ void expert_down80_exact(const __half* activation, const Index* picks
                                   const __half* shared, int dims, int experts, void* out) {
     const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
     const int part = lane % 4;
-    const int output = blockIdx.x * EXPERT_WARPS * 8 + warp * 8 + lane / 4;
+    const unsigned output = blockIdx.x * EXPERT_WARPS * 8 + warp * 8 + lane / 4;
     const int pair = blockIdx.y;
     const auto expert = picks[pair];
     const unsigned mask = __ballot_sync(0xffffffff, output < dims);
@@ -1016,7 +1065,7 @@ __global__ void expert_down160_exact(const __half* activation, const Index* pick
 
 void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
                 const at::Tensor& shared, at::Tensor& result, int dims, int experts) {
-    dim3 grid((dims + EXPERT_WARPS * 8 - 1) / (EXPERT_WARPS * 8), picks.numel());
+    dim3 grid(1 + (dims - 1) / (EXPERT_WARPS * 8), picks.numel());
     auto stream = at::cuda::getCurrentCUDAStream(activation.get_device());
     auto a = reinterpret_cast<const __half*>(activation.data_ptr());
     auto s = reinterpret_cast<const __half*>(shared.data_ptr());
