@@ -243,6 +243,146 @@ def test_reconstruction_materialization_failure_retains_actual_pending_lease_unt
     assert state.dflash2.closed and state.dflash2.kv is None and buffers.dflash2_features.readers == 0
 
 
+def pending_requests(weights):
+    states = [State(weights, 32, 4, "fp16", limit=64, slot=index) for index in range(2)]
+    buffers = Buffers(weights, 8, 32, prefill=True)
+    buffers.ids[:2].copy_(torch.tensor([4, 7], dtype=torch.int32))
+    buffers.ple_v.fill_(.125)
+    for state, token in zip(states, [4, 7]):
+        state.ple_last = (state.ple_history.copy(), np.array([token], dtype=np.int64))
+    forward.compute(weights, [(state, index, index + 1) for index, state in enumerate(states)], buffers)
+    return states, buffers
+
+
+def test_request_fenced_retirement_preserves_unaffected_pending_claim_and_progress(family):
+    weights, runtime = family
+    (affected, live), buffers = pending_requests(weights)
+    claim = live.dflash2.pending
+    storage = live.dflash2.kv
+    runtime.retire_request_after_fence((affected,), fenced=True)
+    assert affected.dflash2.pending is None and not affected.dflash2.closed
+    assert live.dflash2.pending is claim and live.dflash2.kv is storage and not live.dflash2.poisoned
+    assert buffers.dflash2_features.readers == 1
+    # The unaffected request still completes through the real target+DF commit.
+    forward.commit(weights, live, buffers, 1, 1, at=1)
+    assert live.pos == live.dflash2.end == 1 and buffers.dflash2_features.readers == 0
+    runtime.close_state(affected)
+    runtime.close_state(live)
+
+
+def test_expected_request_cleanup_reset_then_fenced_hook_keeps_other_request_live(family):
+    weights, runtime = family
+    (affected, live), buffers = pending_requests(weights)
+    claim, generation = live.dflash2.pending, affected.slot_generation
+    primary = ValueError("recoverable request input refusal")
+    try:
+        raise primary
+    except ValueError as error:
+        affected.reset(weights)  # actual successful per-request cleanup
+        runtime.retire_request_after_fence((affected,), fenced=True)  # CPU reference has no asynchronous readers
+        assert error is primary and error.__traceback__ is not None
+    assert affected.slot_generation == generation + 1 and affected.dflash2.generation == generation + 1
+    assert live.dflash2.pending is claim and buffers.dflash2_features.readers == 1
+    assert not affected.dflash2.poisoned and not live.dflash2.poisoned
+    runtime.close_state(affected)
+    runtime.close_state(live)
+
+
+@pytest.mark.parametrize("failure", ["unknown-reader", "missing-frame", "stale-claim", "failed-reset", "wrong-generation"])
+def test_request_retirement_failure_retains_claims_and_unaffected_owners(family, failure):
+    weights, runtime = family
+    (affected, live), buffers = pending_requests(weights)
+    a, b = affected.dflash2.pending, live.dflash2.pending
+    frame = buffers.dflash2_features
+    frames = runtime._frames[:]
+    if failure == "unknown-reader":
+        frame.readers += 1
+    elif failure == "missing-frame":
+        runtime._frames = []
+    elif failure == "stale-claim":
+        a.slot_generation += 1
+    elif failure == "failed-reset":
+        affected._history_error = RuntimeError("slot reset failed")
+    else:
+        affected.slot_generation += 1
+    readers = frame.readers
+    with pytest.raises((RuntimeError, ValueError)):
+        runtime.retire_request_after_fence((affected,), fenced=True)
+    assert affected.dflash2.pending is a and live.dflash2.pending is b and frame.readers == readers
+    assert affected.dflash2.kv is not None and live.dflash2.kv is not None and not live.dflash2.poisoned
+    # Restore only this CPU fault fixture's metadata for terminal cleanup.
+    runtime._frames = frames
+    frame.readers = 2
+    a.slot_generation = affected.dflash2.generation
+    affected.slot_generation = affected.dflash2.generation
+    affected._history_error = None
+    runtime.retire_after_fence(fenced=True)
+
+
+def test_empty_request_tuple_and_missing_fence_have_no_claim_side_effects(family):
+    weights, runtime = family
+    (affected, live), buffers = pending_requests(weights)
+    a, b = affected.dflash2.pending, live.dflash2.pending
+    runtime.retire_request_after_fence((), fenced=True)
+    with pytest.raises(ValueError, match="fence"):
+        runtime.retire_request_after_fence((affected,), fenced=False)
+    assert affected.dflash2.pending is a and live.dflash2.pending is b
+    assert buffers.dflash2_features.readers == 2
+    runtime.close_state(affected)
+    runtime.close_state(live)
+
+
+def test_whole_fenced_retirement_still_releases_known_partial_append_failure(family, monkeypatch):
+    weights, runtime = family
+    (first, second), buffers = pending_requests(weights)
+    for state, index in ((first, 0), (second, 1)):
+        forward.commit(weights, state, buffers, 1, 1, at=index, commit_dflash=False)
+    primary = RuntimeError("second ring append failed after first ring advanced")
+
+    def failed_append(*_args):
+        raise primary
+
+    monkeypatch.setattr(second.dflash2, "append", failed_append)
+    with pytest.raises(RuntimeError) as caught:
+        runtime.commit_many([(first, 1), (second, 1)])
+    assert caught.value is primary
+    assert first.dflash2.end == 1 and second.dflash2.end == 0
+    assert buffers.dflash2_features.readers == 2
+    with pytest.raises(ValueError, match="invalid"):
+        runtime.retire_request_after_fence((first,), fenced=True)
+    assert buffers.dflash2_features.readers == 2  # A failed request reset is not a recoverable retirement.
+    # Terminal model retirement retains its original known-owner capability:
+    # a completed device fence permits closing poisoned partial data, while
+    # unknown/missing readers remain independently covered and rejected.
+    runtime.retire_after_fence(fenced=True)
+    assert buffers.dflash2_features.readers == 0
+    assert first.dflash2.closed and second.dflash2.closed
+
+
+def test_request_hook_cannot_discard_required_features_after_target_only_commit(family):
+    weights, runtime = family
+    (affected, live), buffers = pending_requests(weights)
+    forward.commit(weights, affected, buffers, 1, 1, commit_dflash=False)
+    a, b = affected.dflash2.pending, live.dflash2.pending
+    assert affected.pos == 1 and affected.dflash2.end == 0 and not affected.dflash2.poisoned
+    with pytest.raises(ValueError, match="frontier"):
+        runtime.retire_request_after_fence((affected,), fenced=True)
+    assert affected.dflash2.pending is a and live.dflash2.pending is b
+    assert buffers.dflash2_features.readers == 2 and not live.dflash2.poisoned
+    runtime.retire_after_fence(fenced=True)
+
+
+def test_serial_inactive_frontier_is_honest_and_safe_after_request_cleanup(family):
+    weights, runtime = family
+    state = State(weights, 32, 4, "fp16", limit=64)
+    runtime.set_enabled(state, False)
+    prefill(weights, state, Buffers(weights, 8, 32, prefill=True), [4, 7])
+    assert state.pos == 2 and state.dflash2.end == 0 and state.dflash2.pending is None
+    runtime.retire_request_after_fence((state,), fenced=True)
+    assert not state.dflash2.enabled and not state.dflash2.poisoned and state.dflash2.end == 0
+    runtime.close_state(state)
+
+
 def test_real_target_commit_interior_cut_restore_clone_and_fork_preserve_bounded_conditioning(family):
     w, runtime = family
     source = State(w, 32, 8, "fp16", limit=64)

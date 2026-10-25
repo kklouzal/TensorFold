@@ -138,7 +138,7 @@ def test_actual_flashnext_constructor_warms_before_starting_its_published_actor(
                  and any(handler.name == "primary" for handler in node.handlers))
     assert ast.unparse(scope.body[0].value.func) == "self._initialize"
     final = constructor.body[-1]
-    assert isinstance(final, ast.If) and ast.unparse(final.test) == "self.scheduler is not None"
+    assert isinstance(final, ast.If) and ast.unparse(final.test) == "self.scheduler is not None and (not managed)"
     assert ast.unparse(final.body[0]) == "self.scheduler.start()"
 
 
@@ -171,7 +171,7 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
 
     # Keep the production publication/warmup/start branches and rollback,
     # replacing numerical stages with a bounded, independently owned decoder.
-    wrapper = ast.parse("def startup(self, streams):\n    pass\n").body[0]
+    wrapper = ast.parse("def startup(self, streams, managed=False):\n    pass\n").body[0]
     wrapper.body = [ast.Try(body=project(initialized.body), handlers=scope.handlers, orelse=[], finalbody=[])]
     unit = ast.Module(body=[wrapper], type_ignores=[])
     ast.fix_missing_locations(unit)

@@ -1,0 +1,108 @@
+{
+  "schema": "tensorfold.v100-media-inputs",
+  "version": 1,
+  "specification_sha256": "14fda30044e8f74b15fa7dec6dbcab3ddb71a4463a922d87e8b4ddf6b3e5c526",
+  "status": "source/software build candidate; no media/device/model qualification",
+  "processor": {
+    "source_commit": "50e35cc0ca18ec19b80653690de553e6decf74f5",
+    "image_class": "Qwen2VLImageProcessor",
+    "image_backend": "torchvision",
+    "video_class": "Qwen3VLVideoProcessor",
+    "decoder_backend": "pyav",
+    "pixel_compute": "CPU FP32",
+    "cap_pixels_per_frame": false
+  },
+  "artifacts": [
+    {
+      "name": "torchvision",
+      "url": "https://codeload.github.com/pytorch/vision/tar.gz/1f1a920d685d46dfbe187934b785b7ecb7a182f2",
+      "artifact": "torchvision.tar.gz",
+      "bytes": 14447310,
+      "sha256": "5d46895e0a59baa604db29e24b93104c965acbb07f34da4890b767b3053952e0",
+      "kind": "source-archive",
+      "version": "0.29.1",
+      "commit": "1f1a920d685d46dfbe187934b785b7ecb7a182f2",
+      "extraction_max_bytes": 536870912
+    },
+    {
+      "name": "transformers",
+      "url": "https://codeload.github.com/huggingface/transformers/tar.gz/50e35cc0ca18ec19b80653690de553e6decf74f5",
+      "artifact": "transformers.tar.gz",
+      "bytes": 21481974,
+      "sha256": "d9fcd57ffc97878681ff903fbc0dd01c8d44d66494a6092f33a95c805f14d7ad",
+      "kind": "source-archive",
+      "version": "5.21.0.dev0",
+      "commit": "50e35cc0ca18ec19b80653690de553e6decf74f5",
+      "extraction_max_bytes": 1610612736
+    },
+    {
+      "name": "pyav",
+      "url": "https://codeload.github.com/PyAV-Org/PyAV/tar.gz/a4ad0133b13eb84067dc6e8105eb1fc8f8b93c4f",
+      "artifact": "pyav.tar.gz",
+      "bytes": 290760,
+      "sha256": "e077ad398b1529e1e8bc2baf3f0d84a3dd0a353b6567ffde1624e6ae2d214a99",
+      "kind": "source-archive",
+      "version": "19.0.2",
+      "commit": "a4ad0133b13eb84067dc6e8105eb1fc8f8b93c4f",
+      "extraction_max_bytes": 134217728
+    },
+    {
+      "name": "ffmpeg",
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "artifact": "ffmpeg.tar.xz",
+      "bytes": 12040788,
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "kind": "source-archive",
+      "version": "9.0.2",
+      "commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8",
+      "extraction_max_bytes": 536870912
+    },
+    {
+      "name": "dav1d",
+      "url": "https://download.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz",
+      "artifact": "dav1d.tar.xz",
+      "bytes": 1038852,
+      "sha256": "686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5",
+      "kind": "source-archive",
+      "version": "1.5.4",
+      "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+      "extraction_max_bytes": 67108864
+    },
+    {
+      "name": "av1-decoder-fixture",
+      "url": "https://fate-suite.ffmpeg.org/av1/decode_model.ivf",
+      "artifact": "av1-decode-model.ivf",
+      "bytes": 22360,
+      "sha256": "956947f45c96ea1f944fc2aac646d9088a307e436b2afc0477b9ae627babc7cd",
+      "kind": "decoder-fixture",
+      "oracle": {
+        "source": "independent host FFmpeg8.0.1-3ubuntu2 libaom3.13.1 decoder; no libaom dependency shipped",
+        "ffmpeg_sha256": "bdf6aabffdba7411edff8d36c389d695257fcdf823d196020176e117612862f6",
+        "libaom_sha256": "92d8b38ea0b9d0c545ce1653e371bc21f11e804dac3727f095785cccab05b9eb",
+        "format": "yuv420p",
+        "frames": 24,
+        "width": 240,
+        "height": 100,
+        "fps": 24,
+        "bytes": 864000,
+        "sha256": "27fffcfe81c650283c83d03ca28f3956162eae1de093a13affb4e99f1f037e97"
+      }
+    },
+    {
+      "name": "image-processor-config",
+      "kind": "processor-config",
+      "artifact": "preprocessor_config.json",
+      "url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/preprocessor_config.json",
+      "bytes": 390,
+      "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+    },
+    {
+      "name": "video-processor-config",
+      "kind": "processor-config",
+      "artifact": "video_preprocessor_config.json",
+      "url": "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/video_preprocessor_config.json",
+      "bytes": 385,
+      "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+    }
+  ]
+}

@@ -42,6 +42,38 @@ class _Request:
     inherit_jobs: bool = True
 
 
+@dataclass(frozen=True)
+class _PreparedKey:
+    scope: Any  # weak native-lock reference; the registry must not retain its holder
+
+
+class PreparedAdmission:
+    """One finite logical request reserved across prepare-to-run/close/GC."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        self._scope = threading.Lock()
+        self._scope.acquire()
+        self._close_lock = threading.Lock()
+        self.token = _PreparedKey(weakref.ref(self._scope))
+        # The registry owns token, never this holder: a lost return can collect
+        # the holder and retire its reservation instead of pinning capacity.
+        self._finalizer = weakref.finalize(self, limit.release, self.token)
+        try:
+            limit.borrow(self.token, inherit=False)
+        except BaseException as primary:
+            rollback(self, primary, self.close)
+
+    def close(self):
+        with self._close_lock:
+            if self._scope.locked():
+                self._scope.release()
+        # An interrupted release remains journaled and is reclaimable from
+        # native unlocked/dead scope evidence; explicit close can retry too.
+        self.limit.release(self.token)
+        self._finalizer.detach()
+
+
 class RequestLimit:
     """Count logical requests, including work retained after caller cancellation.
 
@@ -73,6 +105,10 @@ class RequestLimit:
 
     def _prune(self) -> None:
         for worker, owner in tuple(self._workers.items()):
+            if isinstance(worker, _PreparedKey):
+                scope = worker.scope()
+                if scope is None or not scope.locked():
+                    owner.workers.discard(worker)
             if worker not in owner.workers:
                 self._workers.pop(worker, None)
         for owner in tuple(self._owners):
@@ -104,15 +140,28 @@ class RequestLimit:
             self._owners.discard(owner)
 
     @contextmanager
-    def request(self, *, inherit_jobs: bool = True) -> Iterator[None]:
+    def request(self, prepared: PreparedAdmission | None = None, *, inherit_jobs: bool = True) -> Iterator[None]:
         identity = threading.get_ident()
-        owner = _Request(inherit_jobs=inherit_jobs)
+        if prepared is None:
+            owner = _Request(inherit_jobs=inherit_jobs)
+        else:
+            with self._lock:
+                owner = self._prepared_owner(prepared)
+                if owner.inherit_jobs != inherit_jobs:
+                    raise ValueError("prepared admission has a different engine-job inheritance policy")
         primary = None
         prior = None
         try:
             with owner.scope:
                 with self._lock:
-                    self._check()
+                    if prepared is None:
+                        self._check()
+                    else:
+                        if self._prepared_owner(prepared) is not owner:
+                            raise RuntimeError("prepared admission changed before adoption")
+                        # Native caller scope holds the same owner before its
+                        # prepared token retires: neither a gap nor double count.
+                        prepared.close()
                     self._owners.add(owner)
                     self._callers.setdefault(identity, []).append(owner)
                 yield
@@ -163,8 +212,22 @@ class RequestLimit:
             with self.request(inherit_jobs=False):
                 yield
 
+    def prepare(self) -> PreparedAdmission:
+        """Reserve an independent request before standalone preparation work."""
+        return PreparedAdmission(self)
+
+    def _prepared_owner(self, prepared):
+        if not isinstance(prepared, PreparedAdmission) or prepared.limit is not self:
+            raise CapacityError("prepared request belongs to a different admission owner")
+        owner = self._workers.get(prepared.token)
+        if owner is None or not prepared._finalizer.alive or not prepared._scope.locked():
+            raise CapacityError("prepared request admission was already consumed or closed")
+        if owner.workers != {prepared.token}:
+            raise RuntimeError("prepared admission unexpectedly owns another engine job")
+        return owner
+
     def wrap(self, call: Callable, *, inherit_scope: bool = False) -> Callable:
-        """Configured App callers own fresh scopes; engine jobs inherit only App scopes."""
+        """App callers own fresh/adopted scopes; direct engine jobs retain delivery ownership."""
         function, owner = call.__func__, weakref.ref(call.__self__)
         signature = inspect.signature(call)
 
@@ -181,7 +244,7 @@ class RequestLimit:
         limited.__signature__ = signature
         return limited
 
-    def borrow(self, worker: Any) -> None:
+    def borrow(self, worker: Any, *, inherit: bool = True) -> None:
         """Journal a queued engine job before publication; caller cancellation does not release it."""
         owner = None
         try:
@@ -190,7 +253,7 @@ class RequestLimit:
                     raise RuntimeError("request admission is closed")
                 if worker in self._workers:
                     raise ValueError("an engine job may borrow request admission only once")
-                stack = self._callers.get(threading.get_ident())
+                stack = self._callers.get(threading.get_ident()) if inherit else None
                 if stack and not stack[-1].scope.locked():
                     self._prune()
                     stack = self._callers.get(threading.get_ident())
