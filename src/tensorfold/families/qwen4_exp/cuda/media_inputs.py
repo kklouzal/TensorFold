@@ -62,7 +62,9 @@ class ReadyInputSpan:
                 self._ready.record(torch.cuda.current_stream(values.device))
 
     def _current_signature(self):
-        return _signature(self.values)
+        # Projected embeddings may be inference tensors. Their producer owns
+        # immutability through the lease; coordinates additionally bind versions.
+        return _signature(self.values, track_mutation=False)
 
     def _check(self):
         if self.closed or self.poisoned:

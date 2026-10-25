@@ -17,6 +17,7 @@ import torch
 from ..position_profile import MAX_POSITION, PositionOperands, PositionRole
 
 _ISSUER = object()  # Immutable process-local provenance, not serialized authority.
+_MAX_MUTATION_VERSION = (1 << 32) - 1  # Pinned Torch c10::VariableVersion uses uint32_t.
 
 
 def _digest(value):
@@ -36,10 +37,17 @@ def _context(profile_identity, generation, media_identity):
         raise ValueError("coordinate request/profile/media generation is invalid")
 
 
-def _signature(tensor):
+def _signature(tensor, *, track_mutation=True):
     storage = tensor.untyped_storage()
-    return (tensor.data_ptr(), storage.data_ptr(), storage.nbytes(), tuple(tensor.shape), tuple(tensor.stride()),
+    base = (tensor.data_ptr(), storage.data_ptr(), storage.nbytes(), tuple(tensor.shape), tuple(tensor.stride()),
             tensor.storage_offset(), tensor.dtype, tensor.device)
+    if not track_mutation:
+        return base
+    try:
+        version = tensor._version
+    except RuntimeError as error:
+        raise ValueError("issued coordinate storage must track Tensor mutations") from error
+    return (*base, version)
 
 
 def _proof(proof):
@@ -128,13 +136,44 @@ def issue_coordinates(host_positions, *, position, profile_identity, generation,
     device = torch.device(device)
     if device.type not in ("cpu", "cuda"):
         raise ValueError("coordinate transfer requires a CPU reference or CUDA target")
-    tensor = torch.tensor(owned.astype(np.int32), dtype=torch.int32, device=device)
+    # Normal tensors retain mutation versions even when the surrounding model
+    # runs under inference_mode. Coordinate proofs require that counter.
+    with torch.inference_mode(False):
+        tensor = torch.tensor(owned.astype(np.int32), dtype=torch.int32, device=device)
     return _issued(tensor, position, profile_identity=profile_identity, generation=generation,
                    media_identity=media_identity, row_start=row_start, minimum=minimum, maximum=maximum)
 
 
-def _copy_coordinates(source, *, source_position, position, row_start, row_count, dtype,
-                      destination, source_owner, owner, generation=None):
+@dataclass(frozen=True)
+class CoordinateTransfer:
+    source: IssuedCoordinates
+    source_position: PositionOperands
+    position: PositionOperands
+    row_start: int
+    row_count: int
+    destination: torch.Tensor
+    profile_identity: str
+    generation: int
+    media_identity: str | None
+    dtype: object = torch.int64
+    source_owner: object = None
+
+
+@dataclass(frozen=True)
+class _Copy:
+    source: IssuedCoordinates
+    selected: torch.Tensor
+    position: PositionOperands
+    row_start: int
+    row_count: int
+    dtype: object
+    destination: torch.Tensor | None
+    owner: object
+    generation: int
+
+
+def _prepare_copy(source, *, source_position, position, row_start, row_count, dtype,
+                  destination, source_owner, owner, generation=None, expected_context=None):
     """Copy actual issued rows and mint proof for the final copied tensor.
 
     Supplied destination views require the caller's new frame owner, retained
@@ -148,8 +187,10 @@ def _copy_coordinates(source, *, source_position, position, row_start, row_count
         raise ValueError("coordinate copies require actual issued source rows")
     proof = source.proof
     _proof(proof)
-    proof.validate(source.tensor, source_position, profile_identity=proof.profile_identity,
-                   generation=proof.generation, media_identity=proof.media_identity,
+    profile, source_generation, media = ((proof.profile_identity, proof.generation, proof.media_identity)
+                                         if expected_context is None else expected_context)
+    proof.validate(source.tensor, source_position, profile_identity=profile,
+                   generation=source_generation, media_identity=media,
                    row_start=proof.row_start, row_count=proof.row_count, owner=source_owner)
     if (type(row_start) is not int or type(row_count) is not int or row_count < 0
             or row_start < proof.row_start or row_count > proof.row_start + proof.row_count - row_start):
@@ -166,24 +207,91 @@ def _copy_coordinates(source, *, source_position, position, row_start, row_count
         weakref.ref(owner)  # Validate lifetime support before any copy/allocation.
     lo = row_start - proof.row_start
     selected = source.tensor[lo:lo + row_count]
-    if destination is None:
-        result = selected.to(dtype=dtype, copy=True)
-    else:
+    if destination is not None:
         if (destination.shape != (row_count, 3) or destination.dtype != dtype
                 or destination.device != source.tensor.device or not destination.is_contiguous()):
             raise ValueError("coordinate destination must match the final row/device/integer layout")
+        if _signature(destination)[-1] >= _MAX_MUTATION_VERSION:
+            raise ValueError("coordinate mutation version exhausted; retire and replace its storage")
         if row_count:
-            left, right = source.tensor.data_ptr(), destination.data_ptr()
-            if (left < right + destination.numel() * destination.element_size()
-                    and right < left + source.tensor.numel() * source.tensor.element_size()):
+            source_storage, destination_storage = source.tensor.untyped_storage(), destination.untyped_storage()
+            left, right = source_storage.data_ptr(), destination_storage.data_ptr()
+            if (left < right + destination_storage.nbytes()
+                    and right < left + source_storage.nbytes()):
                 raise ValueError("coordinate copy destination must not overlap immutable source rows")
-        destination.copy_(selected)
-        result = destination
-    return _issued(result, position, profile_identity=proof.profile_identity,
-                   generation=proof.generation if generation is None else generation,
-                   media_identity=proof.media_identity, row_start=row_start,
-                   minimum=proof.minimum if row_count else None, maximum=proof.maximum if row_count else None,
-                   owner=owner)
+    return _Copy(source, selected, position, row_start, row_count, dtype, destination, owner,
+                 proof.generation if generation is None else generation)
+
+
+def _perform_copy(plan):
+    with torch.inference_mode(False):
+        if plan.destination is None:
+            return plan.selected.to(dtype=plan.dtype, copy=True)
+        plan.destination.copy_(plan.selected)
+        return plan.destination
+
+
+def _publish_copy(plan, result):
+    proof = plan.source.proof
+    return _issued(result, plan.position, profile_identity=proof.profile_identity, generation=plan.generation,
+                   media_identity=proof.media_identity, row_start=plan.row_start,
+                   minimum=proof.minimum if plan.row_count else None, maximum=proof.maximum if plan.row_count else None,
+                   owner=plan.owner)
+
+
+def _copy_coordinates(source, **options):
+    plan = _prepare_copy(source, **options)
+    return _publish_copy(plan, _perform_copy(plan))
+
+
+def copy_coordinate_batch(transfers, *, owner, max_rows):
+    """Validate all segments, copy all, then bind final shared-storage versions.
+
+    The caller revokes old frame authorization before entering and publishes its
+    candidate frame only after this returns. Partial failure returns no proofs;
+    the caller retains all issued readers/writers through its coordinated fence.
+    """
+    if (type(transfers) is not tuple or type(max_rows) is not int or max_rows <= 0
+            or len(transfers) > max_rows or owner is None):
+        raise ValueError("packed coordinate copies require a bounded tuple and current frame owner")
+    weakref.ref(owner)
+    plans = []
+    for transfer in transfers:
+        if type(transfer) is not CoordinateTransfer or transfer.destination is None:
+            raise ValueError("packed coordinates require complete typed segment transfers")
+        plans.append(_prepare_copy(transfer.source, source_position=transfer.source_position,
+            position=transfer.position, row_start=transfer.row_start, row_count=transfer.row_count,
+            dtype=transfer.dtype, destination=transfer.destination, source_owner=transfer.source_owner, owner=owner,
+            expected_context=(transfer.profile_identity, transfer.generation, transfer.media_identity)))
+    if sum(plan.row_count for plan in plans) > max_rows:
+        raise ValueError("packed coordinate rows exceed their admitted frame")
+    # Distinct destinations may share one version counter. Allow enough counter
+    # space for every write before starting; never permit uint32 version ABA.
+    if any(_signature(plan.destination)[-1] > _MAX_MUTATION_VERSION - len(plans) for plan in plans):
+        raise ValueError("coordinate mutation version exhausted; retire and replace its storage")
+
+    def interval(tensor):
+        start = tensor.data_ptr()
+        return (str(tensor.device), start, start + tensor.numel() * tensor.element_size())
+
+    destinations = sorted(interval(plan.destination) for plan in plans if plan.row_count)
+    for left, right in zip(destinations, destinations[1:]):
+        if left[0] == right[0] and left[2] > right[1]:
+            raise ValueError("packed coordinate destination segments overlap")
+    # Reject writes into ANY immutable source, including another segment's.
+    # Even disjoint source/destination views cannot share mutation counters:
+    # coordinate sources remain valid immutable bindings after this operation.
+    sources = sorted({(str(plan.source.tensor.device), plan.source.tensor.untyped_storage().data_ptr(),
+                       plan.source.tensor.untyped_storage().data_ptr() + plan.source.tensor.untyped_storage().nbytes())
+                      for plan in plans if plan.source.tensor.numel()})
+    at = 0
+    for device, start, end in destinations:
+        while at < len(sources) and (sources[at][0] < device or sources[at][0] == device and sources[at][2] <= start):
+            at += 1
+        if at < len(sources) and sources[at][0] == device and sources[at][1] < end:
+            raise ValueError("packed coordinate destinations overlap immutable source rows")
+    results = [_perform_copy(plan) for plan in plans]
+    return tuple(_publish_copy(plan, result) for plan, result in zip(plans, results))
 
 
 def copy_coordinates(source, *, source_position, position, row_start, row_count, dtype=torch.int64,
