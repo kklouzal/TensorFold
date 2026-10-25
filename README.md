@@ -8,6 +8,10 @@ separate source checks from the pending eight-V100 model, quality and performanc
 gates. Historical results below keep their original source and layout.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
+Adaptive V100 serving requires explicit positive `--max-pending-requests` and
+`--max-http-connections` limits before model loading. The V100 Compose profile
+requires the corresponding `TF_MAX_PENDING_REQUESTS` and
+`TF_MAX_HTTP_CONNECTIONS` environment settings; it supplies no numeric defaults.
 
 The optional `--indexer-history ram` path keeps raw FP16 indexer history in
 NUMA-local system memory, with bounded GPU ring/staging buffers; pooled indexer

@@ -65,10 +65,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--port", type=int, default=8080)
     endpoint.add_argument("--max-http-connections", type=int, default=None,
                           help="optional positive cap on simultaneous HTTP connections; excess connections wait in the "
-                               "listen backlog until an owner retires (default: no worker cap)")
+                               "listen backlog until an owner retires (required for adaptive V100 serving; "
+                               "otherwise default: no worker cap)")
     endpoint.add_argument("--max-pending-requests", type=int, default=None,
                           help="optional positive cap on unfinished generation requests, including waiting, "
-                               "running and canceled engine work; excess requests receive HTTP 503 (default: uncapped)")
+                               "running and canceled engine work; excess requests receive HTTP 503 "
+                               "(required for adaptive V100 serving; otherwise default: uncapped)")
     endpoint.add_argument("--max-engine-calls", type=int, default=None,
                           help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")

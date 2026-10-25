@@ -136,7 +136,8 @@ class TensorParallelDecoder:
                 "sampling": None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
                                                            sampling.top_p, sampling.min_p],
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
-                "token_limit": stream.token_limit is not None}
+                "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
+                "committed_output_tokens": stream.committed_output_tokens}
 
     def _unpack(self, body):
         from tensorfold.engine.exact_sampling import Sampling
@@ -150,7 +151,8 @@ class TensorParallelDecoder:
                       None if body["sampling"] is None else Sampling(*body["sampling"]),
                       draft=bool(body["draft"]), stop_eos=bool(body["stop_eos"]),
                       background=bool(body["background"]), constraint=constraint,
-                      owed=list(body["owed"]), carry=body["carry"])
+                      owed=list(body["owed"]), carry=body["carry"], profile_epoch=body["profile_epoch"],
+                      committed_output_tokens=body["committed_output_tokens"])
         stream._tp_token_limit = bool(body.get("token_limit", False))
         return stream
 

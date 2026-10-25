@@ -440,6 +440,22 @@ null where nothing names them. A capacity refusal (a full request queue under `-
 is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on
 both servers, streamed or not, as long as no reply has started. An unknown route is HTTP 404.
 
+Adaptive Flash Next GGUF/V100 endpoints require explicit finite
+`--max-pending-requests` and `--max-http-connections` settings before model loading.
+The generation cap includes queued, running and canceled-but-not-retired engine
+work; the HTTP cap bounds retained connection handlers, including slow writers.
+The V100 Compose profile requires `TF_MAX_PENDING_REQUESTS` and
+`TF_MAX_HTTP_CONNECTIONS`; neither has a numeric default.
+
+Each CUDA engine sequence owns at most its validated reply allowance in queued
+token IDs, one coalesced prompt-progress value, and a separate completion/error
+cell. The GPU coordinator never waits for output capacity or socket writes.
+Token chunks retain publication order. A slow client can retain its bounded CPU
+reply while unrelated sequences continue; cancellation does not undo committed
+tokens. `output_ownership` reports engine-sequence publication and caller dequeue
+counts, independently of network delivery. `committed_output_tokens` excludes
+background replay and advances when model output commits, before callbacks.
+
 The rendered prompt and reserved reply must fit the effective context. In 0.3.5, an explicit `max_tokens`
 or `max_completion_tokens` that would put prompt plus reply beyond the window is rejected with counts
 and fitting guidance before generation. MLX returns HTTP 400 for non-streamed requests or an

@@ -211,7 +211,7 @@ def test_wake_markers_coalesce_and_are_not_counted_as_queued_requests():
     for _ in range(100):
         waiting.wake()
     assert waiting.qsize() == 0
-    assert len(waiting.queue) == 1
+    assert waiting._qsize() == 1
     waiting.put(request)
     assert waiting.qsize() == 1 and waiting.foreground()
     assert waiting.get_nowait() is request

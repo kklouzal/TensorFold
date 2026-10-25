@@ -36,6 +36,10 @@ services:
       - "8000"
       - --name
       - "${TF_MODEL_NAME:-flash-next}"
+      - --max-pending-requests
+      - "${TF_MAX_PENDING_REQUESTS:?Set TF_MAX_PENDING_REQUESTS to a positive finite unfinished-request limit}"
+      - --max-http-connections
+      - "${TF_MAX_HTTP_CONNECTIONS:?Set TF_MAX_HTTP_CONNECTIONS to a positive finite HTTP connection limit}"
       - --context
       - "${TF_CONTEXT:-8192}"
       - --parallel

@@ -70,6 +70,8 @@ class Stream:
     admitted: float = 0.0                                 # when a lane took it
     on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
     token_limit: Callable[[Sequence[int], Sequence[int]], tuple[int, bool]] | None = None
+    profile_epoch: int | None = None                  # immutable serving-profile lease; None disables profile switching
+    committed_output_tokens: int = 0                 # unique accepted output; replay and delivery do not advance it
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
@@ -84,6 +86,7 @@ class Stream:
             self.owed, fresh = self.owed[k:], fresh[k:]
         self.out.extend(new)
         self.context.extend(new)
+        self.committed_output_tokens += len(fresh)
         self.accepted += max(0, len(new) - 1)             # a round's kept drafts come before its own token
         if self.owed and (len(self.out) >= self.count or self.out[-1] in eos):
             self.error = RuntimeError("a background request ended before replaying the reply it sent")
@@ -103,6 +106,7 @@ class Stream:
         own = {"prefill_s": round(self.prefill_s, 4), "decode_s": round(max(self.finished - self.started, 0.0), 4),
                "rounds": self.rounds, "drafts": self.draft, "cached": self.cached, "min_rows": self.min_rows,
                "drafted": self.drafted, "accepted": self.accepted, "queue_s": round(self.queue_s, 4)}
+        own["committed_output_tokens"] = self.committed_output_tokens
         if self.carry is None:
             return own
         both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s", "queue_s")}
@@ -118,7 +122,8 @@ class Stream:
                       token_limit=self.token_limit,
                       background=self.background, probabilities=self.probabilities, penalties=self.penalties,
                       constraint=self.constraint.fresh() if self.constraint is not None else None,
-                      carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)
+                      carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel,
+                      profile_epoch=self.profile_epoch, committed_output_tokens=self.committed_output_tokens)
 
 
 def next_fill(filling: list[Stream]) -> Stream:

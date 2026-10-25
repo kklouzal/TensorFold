@@ -11,8 +11,10 @@ from typing import Any, Callable
 
 from tensorfold.cleanup import finish, raise_failures, rollback
 from tensorfold.server.request_limits import RequestLimit, optional_limit
+from tensorfold.server.errors import CapacityError
 
 from .memory_gate import NoRoom
+from .output_mailbox import OutputMailbox
 from .streams import Stream
 
 TICK_S = 15.0           # a request waiting this long for tokens (queued or prefilling) ticks ``emit([])``: a keepalive
@@ -26,6 +28,8 @@ class Waiting(queue.PriorityQueue):
         self._order = itertools.count()
         self._wake_marker = object()
         self._wake_pending = False
+        self._wake_entry = self._stop_entry = None
+        self._stop_published = self._stop_queued = False
 
     def put(self, item, block: bool = True, timeout: float | None = None) -> None:
         super().put((1 if item[0].background else 0, next(self._order), item), block, timeout)
@@ -33,32 +37,59 @@ class Waiting(queue.PriorityQueue):
     def get(self, block: bool = True, timeout: float | None = None):
         return super().get(block, timeout)[2]
 
+    def _qsize(self):
+        # Controls have fixed owner cells rather than heap/task entries. A
+        # notification interruption cannot grow the request heap on retry.
+        size = super()._qsize()
+        return size + int(self._wake_pending) + int(self._stop_queued)
+
     def _get(self):
-        item = super()._get()  # PriorityQueue owns mutex through removal and marker retirement
-        if self.is_wake(item[2]):
+        if self._wake_pending and (not self.queue or self._wake_entry < self.queue[0]):
+            item = self._wake_entry
             self._wake_pending = False
-        return item
+            return item
+        if self.queue:
+            return super()._get()
+        if self._stop_queued:
+            self._stop_published = True
+            self._stop_queued = False
+            return self._stop_entry
+        raise RuntimeError("waiting queue has no owned request or control")
 
     def qsize(self) -> int:
         with self.mutex:
-            return self._qsize() - int(self._wake_pending)
+            return super()._qsize()
 
     def is_wake(self, value) -> bool:
         return value is self._wake_marker
 
     def wake(self) -> None:
         """One coalesced owner-control marker; ordinary queued work keeps priority."""
+        self._control(1, self._wake_marker, wake=True)
+
+    def _control(self, priority, marker, *, wake):
         with self.not_full:
-            if not self._wake_pending:
-                self._put((1, next(self._order), self._wake_marker))
-                self.unfinished_tasks += 1
-                self._wake_pending = True
+            if self._wake_pending if wake else self._stop_published or self._stop_queued:
+                if not wake:
+                    self._stop_published = True
+                # A prior publication can precede a failed notification. A
+                # retry must wake the idle owner even when no new cell is needed.
                 self.not_empty.notify()
+                return
+            entry = (priority, next(self._order), marker)
+            if wake:
+                self._wake_entry = entry
+                self._wake_pending = True
+            else:
+                self._stop_entry = entry
+                self._stop_queued = True
+                self._stop_published = True
+            self.not_empty.notify()
 
     def stop(self) -> None:
         """Wake an idle worker to stop: None comes after every waiting request."""
 
-        super().put((2, next(self._order), None))
+        self._control(2, None, wake=False)
 
     def foreground(self) -> bool:
         """Whether a foreground request waits."""
@@ -84,11 +115,11 @@ class Scheduler:
         self.max_streams = max_streams
         self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
         self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
-        self._request_boxes: set[queue.Queue] = set()
+        self._request_boxes: set[OutputMailbox] = set()
         self._submitted = False
         self.waiting = Waiting()
         self.held: tuple | None = None               # a request waiting for memory, admitted before any other
-        self.boxes: dict[int, queue.Queue] = {}
+        self.boxes: dict[int, OutputMailbox] = {}
         self._state_lock = threading.Lock()
         self._closing = True                     # admission opens only after explicit startup commits
         self._stop_published = False
@@ -106,6 +137,8 @@ class Scheduler:
         self._started_ok = False
         self._start_error: BaseException | None = None
         self._arrival_applied = False
+        self._serving_profile_epoch: int | None = None
+        self._serving_profile_available = True
         self._arrival_hook = self.waiting.foreground
         try:
             self._arrival_original = decoder.arrived
@@ -115,6 +148,8 @@ class Scheduler:
             self._has_arrival = True
         self.yields = 0                              # background streams that gave up their lane
         self.thread = threading.Thread(target=self._worker, daemon=True)
+        if self._request_limit is not None:
+            self.submit = self._request_limit.wrap(self.submit, inherit_scope=True)
 
     def configure_requests(self, limit: RequestLimit) -> None:
         """Share the App's logical owner before the endpoint publishes any work."""
@@ -123,8 +158,10 @@ class Scheduler:
                 raise RuntimeError("request admission must be configured before the first submission")
             if self._request_limit is not None:
                 raise RuntimeError("CUDA request admission was already configured")
+            wrapped = limit.wrap(self.submit, inherit_scope=True)
             self.max_pending_requests = limit.maximum
             self._request_limit = limit
+            self.submit = wrapped
 
     def request_runtime(self, publish: Callable[[], Any]) -> Any:
         """Publish a bounded host control and wake idle retained work without polling."""
@@ -165,7 +202,7 @@ class Scheduler:
         """Configured logical ownership count; uncapped mode has no such registry."""
         return self._request_limit.used if self._request_limit is not None else None
 
-    def _terminal(self, box: queue.Queue, kind: str, value: Any) -> None:
+    def _terminal(self, box: OutputMailbox, kind: str, value: Any) -> None:
         if self._request_limit is not None:
             with self._state_lock:
                 self._request_limit.release(box)
@@ -253,18 +290,24 @@ class Scheduler:
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
                constraint: Any = None, background: bool = False, probabilities: Any = None,
                progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None,
-               token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None) -> dict:
+               token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None,
+               profile_epoch: int | None = None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
         connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
-        ``progress(total, cached, processed, ms since admission)``, also on the calling thread, hears the prompt's
-        rows when a lane takes it and after each prefill pass a decoder reports (``Stream.on_fill``); True stops it."""
+        ``progress(total, cached, processed, ms since admission)``, also on the calling thread, receives the latest
+        reported prompt progress (``Stream.on_fill``). Intermediate updates may coalesce while the caller handles
+        output; True stops it."""
 
-        box: queue.Queue = queue.Queue()
+        if type(count) is not int:
+            raise ValueError("a CUDA sequence requires an integer reply token allowance")
+        if profile_epoch is not None and (type(profile_epoch) is not int or profile_epoch < 0):
+            raise ValueError("a serving profile lease requires a nonnegative integer epoch")
+        box = OutputMailbox(max(1, count))
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
                         constraint=constraint, background=background, probabilities=probabilities, cancel=cancel,
-                        penalties=penalties, token_limit=token_limit)
+                        penalties=penalties, token_limit=token_limit, profile_epoch=profile_epoch)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
         if progress is not None:
             stream.on_fill = lambda rows: box.put(("filled", rows))
@@ -275,6 +318,7 @@ class Scheduler:
             with self._state_lock:
                 if self._closing:
                     raise RuntimeError("CUDA scheduler is closing; new requests are rejected")
+                self._check_profile(stream.profile_epoch)
                 if self._request_limit is not None:
                     try:
                         self._request_limit.borrow(box)
@@ -310,6 +354,8 @@ class Scheduler:
                 elif kind == "error":
                     raise value
                 else:
+                    if isinstance(value, dict):
+                        value = {**value, "output_ownership": box.record()}
                     return value
         except BaseException:
             cancel.set()                            # interrupted callers also stop at the next owned round
@@ -338,6 +384,10 @@ class Scheduler:
                 self._reply(stream, "done", stream.stats())     # its client left while it waited: nothing to fill
                 continue
             try:
+                # Profile replacement and admission share this serialized GPU
+                # worker. Do not reacquire the producer publication lock: a
+                # published request can be admitted before its producer returns.
+                self._check_profile(stream.profile_epoch)
                 self.decoder.admit(stream)
                 stream.admitted = time.perf_counter()             # one clock read an admission, not a round
                 stream.queue_s += stream.admitted - stream.queued
@@ -363,6 +413,21 @@ class Scheduler:
             if stream.done:
                 done.append(stream)
         return done
+
+    def _check_profile(self, epoch):
+        """Acceptance lock or serialized GPU worker; draining does not invalidate a lease.
+
+        The profile owner publishes availability=False only after all old
+        leases/queued work retire and the model becomes unavailable. Repeated
+        A-to-B-to-A uses distinct epochs even when artifact identities match.
+        """
+        current = self._serving_profile_epoch
+        if current is None:
+            if epoch is not None:
+                raise CapacityError("serving profile leases are not enabled for this scheduler")
+            return
+        if not self._serving_profile_available or epoch != current:
+            raise CapacityError("the requested serving profile lease is unavailable or obsolete; retry preparation")
 
     def _yield(self) -> None:
         """Lanes full, a foreground request waiting: the newest background stream (no images) re-queues."""

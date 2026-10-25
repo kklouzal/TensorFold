@@ -14,6 +14,12 @@ sampling and cleanup contracts are used. Full-model validation is recorded in
 [the qualification note](../../docs/v100-flashnext-validation.md); do not infer
 quality or throughput from the component matrix alone.
 
+Choose finite CPU request and HTTP connection limits explicitly. Adaptive GPU
+session capacity does not determine a safe endpoint backlog. The CLI refuses a
+missing `--max-pending-requests` or `--max-http-connections` before loading the
+model; other providers keep their existing optional limits. A full generation
+request limit returns HTTP503 with the existing retry header.
+
 ## Selected foundation
 
 The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
@@ -83,6 +89,8 @@ the first shard (a metadata-only first shard is supported); all sibling shards
 must be present. The model mount remains read-only.
 
 ```bash
+: "${TF_MAX_PENDING_REQUESTS:?Set a positive finite unfinished-request limit}"
+: "${TF_MAX_HTTP_CONNECTIONS:?Set a positive finite HTTP connection limit}"
 docker run -d --name tensorfold-flash-next --gpus all --ipc host \
   --ulimit memlock=-1:-1 --ulimit stack=67108864 --ulimit core=0 \
   -p 127.0.0.1:8000:8000 \
@@ -92,6 +100,8 @@ docker run -d --name tensorfold-flash-next --gpus all --ipc host \
   tensorfold-v100:verified /src/tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- \
   /models/Flash-Next-00001-of-00004.gguf --backend cuda \
   --host 0.0.0.0 --port 8000 --name flash-next \
+  --max-pending-requests "$TF_MAX_PENDING_REQUESTS" \
+  --max-http-connections "$TF_MAX_HTTP_CONNECTIONS" \
   --context 4096 --parallel 1 --no-drafts --kv-dtype fp16 --no-update-check
 ```
 
@@ -137,7 +147,10 @@ MODEL_ROOT=/path/to/models GGUF_FILE=/models/Flash-Next-00001-of-00004.gguf \
 `TF_MODEL_NAME`, `MTP_DIRECTORY`, `TF_CACHE_VOLUME` and `TENSORFOLD_V100_IMAGE`
 configure that profile. `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` default to `auto`;
 numeric overrides constrain automatic capacity rather than forcing unsafe
-allocation. GGUF GPU-history slots reserve their full prompt-plus-reply windows.
+allocation.
+`TF_MAX_PENDING_REQUESTS` and `TF_MAX_HTTP_CONNECTIONS` are required positive
+integers chosen for the installation, with no inferred numeric default.
+GGUF GPU-history slots reserve their full prompt-plus-reply windows.
 The optional legacy RAM-indexer path requires explicit numeric settings and
 retains its separately documented accounting; it does not inherit unique GPU
 history capacity. Other providers' shared-growth contracts remain separate.

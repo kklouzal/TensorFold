@@ -72,6 +72,12 @@ class Server(ThreadingHTTPServer):
     def __init__(self, *args: Any, max_connections: int | None = None, **kwargs: Any) -> None:
         if max_connections is not None and (type(max_connections) is not int or max_connections <= 0):
             raise ValueError("max_connections must be a positive integer or None")
+        handler = args[1] if len(args) > 1 else kwargs.get("RequestHandlerClass")
+        if getattr(handler, "requires_finite_limits", False):
+            from tensorfold.server.request_limits import require_finite_endpoint_limits
+
+            require_finite_endpoint_limits(max_pending_requests=handler.pending_request_limit,
+                                           max_http_connections=max_connections)
         self.max_connections = max_connections
         self._capacity_changed = threading.Event() if max_connections is not None else None
         self._capacity_poll = 0.5

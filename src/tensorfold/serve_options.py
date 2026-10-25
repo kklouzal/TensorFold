@@ -261,14 +261,35 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError(f"--name-priority names {', '.join(bad)}, not --name or an --alias "
                              f"({', '.join(sorted(ids))})")
     confidence = getattr(args, "mtp_confidence", None)
-    if confidence is None:
+    if confidence is not None:
+        engine = getattr(family.package, "cuda_engine", None) if backend == "cuda" else None
+        if engine is None or "mtp_confidence" not in inspect.signature(engine).parameters:
+            raise ValueError(f"--mtp-confidence sets where a CUDA engine's MTP chains stop; {family.title} on "
+                             f"{'CUDA' if backend == 'cuda' else 'MLX'} has no such rule")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
+    _adaptive_service_limits(args, family, backend, config_dir)
+
+
+def _adaptive_service_limits(args, family, backend, config_dir):
+    """Require explicit finite endpoint policy before the SM70 model is loaded.
+
+    Counts remain administrator choices. Allocated GPU sessions do not imply a
+    particular CPU request/socket backlog, so no numeric default is derived.
+    Other providers and the explicitly selected legacy RAM path keep their
+    existing optional-cap contract.
+    """
+    if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+            or getattr(args, "indexer_history", "gpu") != "gpu"):
         return
-    engine = getattr(family.package, "cuda_engine", None) if backend == "cuda" else None
-    if engine is None or "mtp_confidence" not in inspect.signature(engine).parameters:
-        raise ValueError(f"--mtp-confidence sets where a CUDA engine's MTP chains stop; {family.title} on "
-                         f"{'CUDA' if backend == 'cuda' else 'MLX'} has no such rule")
-    if not 0.0 <= confidence <= 1.0:
-        raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.server.request_limits import require_finite_endpoint_limits
+
+    source = config_dir if config_dir is not None else getattr(args, "model", None)
+    if source is None or resolve_gguf(source) is None:
+        return
+    require_finite_endpoint_limits(max_pending_requests=getattr(args, "max_pending_requests", None),
+                                   max_http_connections=getattr(args, "max_http_connections", None))
 
 
 def _cuda_topology(args: argparse.Namespace, family: Any) -> None:

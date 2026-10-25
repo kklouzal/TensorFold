@@ -21,12 +21,25 @@ def optional_limit(value: int | None, name: str) -> int | None:
     return value
 
 
+def require_finite_endpoint_limits(*, max_pending_requests, max_http_connections):
+    """Validate explicit adaptive endpoint policy without inventing a count."""
+    missing = []
+    for value, flag in ((max_pending_requests, "--max-pending-requests"),
+                        (max_http_connections, "--max-http-connections")):
+        if optional_limit(value, flag) is None:
+            missing.append(flag)
+    if missing:
+        raise ValueError("adaptive V100 serving requires explicit positive " + " and ".join(missing)
+                         + "; choose finite request/socket limits before loading or publishing the endpoint")
+
+
 @dataclass(eq=False)
 class _Request:
     # A native lock's scoped release also survives interruption of Python
     # retirement bookkeeping. Admission can reclaim the journal afterward.
     scope: Any = field(default_factory=threading.Lock)
     workers: set[Any] = field(default_factory=set)
+    inherit_jobs: bool = True
 
 
 class RequestLimit:
@@ -91,9 +104,9 @@ class RequestLimit:
             self._owners.discard(owner)
 
     @contextmanager
-    def request(self) -> Iterator[None]:
+    def request(self, *, inherit_jobs: bool = True) -> Iterator[None]:
         identity = threading.get_ident()
-        owner = _Request()
+        owner = _Request(inherit_jobs=inherit_jobs)
         primary = None
         prior = None
         try:
@@ -132,8 +145,26 @@ class RequestLimit:
                     BaseException.__context__.__set__(primary, prior[1])
                     BaseException.__suppress_context__.__set__(primary, prior[2])
 
-    def wrap(self, call: Callable) -> Callable:
-        """Selected only for configured Apps; uncapped calls keep their original method."""
+    @contextmanager
+    def inherited_request(self):
+        """Reuse the App caller, or own a direct scheduler caller through delivery.
+
+        A worker borrow alone cannot bound replies retained by a blocked caller
+        after GPU work finishes. One direct submission therefore owns a caller
+        scope too; sequential jobs inside one App request keep that same owner.
+        """
+        with self._lock:
+            self._prune()
+            stack = self._callers.get(threading.get_ident())
+            inherited = bool(stack and stack[-1].scope.locked() and stack[-1].inherit_jobs)
+        if inherited:
+            yield
+        else:
+            with self.request(inherit_jobs=False):
+                yield
+
+    def wrap(self, call: Callable, *, inherit_scope: bool = False) -> Callable:
+        """Configured App callers own fresh scopes; engine jobs inherit only App scopes."""
         function, owner = call.__func__, weakref.ref(call.__self__)
         signature = inspect.signature(call)
 
@@ -142,7 +173,7 @@ class RequestLimit:
             instance = owner()
             if instance is None:
                 raise RuntimeError("request App has retired")
-            with self.request():
+            with self.inherited_request() if inherit_scope else self.request():
                 # This local strong owner spans every active call. The stored
                 # function/metadata hold no bound App, so idle App retirement
                 # does not depend on cyclic garbage collection.
