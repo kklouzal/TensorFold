@@ -556,7 +556,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           session_geometry: Callable[[dict, int], Geometry] | None = None,
           session_ceiling: int | None = None,
           session_host_workspace: Callable[[int], int] | None = None,
-          preallocated_device_bytes: int = 0) -> dict:
+          preallocated_device_bytes: int = 0,
+          execution_capability: tuple[int, int] | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
     ``weight_estimator`` optionally returns the backend's retained GPU weights,
@@ -576,7 +577,13 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
 
     from tensorfold.cuda import build
 
-    build.refuse_old_gpu(floor(model_dir))          # an old GPU is refused here, before any weight loads
+    # A backend with a validated explicit source/runtime representation owns
+    # its execution floor; the source encoding alone does not select compute.
+    if execution_capability is not None and (not isinstance(execution_capability, tuple)
+            or len(execution_capability) != 2 or any(type(n) is not int or n < 0 for n in execution_capability)
+            or execution_capability[0] == 0):
+        raise ValueError("execution capability must be a positive-major (major, minor) integer pair")
+    build.refuse_old_gpu(floor(model_dir) if execution_capability is None else execution_capability)
     error = None
     plan = None
     session_fitting, session_factory, session_context = 0, None, 0
