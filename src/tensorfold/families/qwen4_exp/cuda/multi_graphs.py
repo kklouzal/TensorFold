@@ -79,6 +79,8 @@ def service_live_bytes(pool):
 def capturable(w) -> str | None:
     """Why this model's rounds cannot be captured (None: they can): experts that read their plan on the host."""
 
+    if w.meta.get("history_layout") == "unique":
+        return "unique history owner execution has no qualified padded capture contract"
     if w.comm is not None and w.meta.get("execution_provider") != "sm70":
         return "tensor-parallel ranks"
     if w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):

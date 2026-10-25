@@ -265,6 +265,12 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     scale = c.head_dim ** -0.5
     rope_scale = c.rope_attention_factor
     sections = getattr(c, "mrope_section", (11, 11, 10))
+    if getattr(b, "history_owner", None) is not None:
+        from .history_owner import attention_layer
+
+        o = attention_layer(layer, w, segs, b, R, mtp=mtp)
+        glue.attn_gate(o, b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
+        return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     step = None if b.prefill or b.h.dtype == torch.float16 else getattr(b, "attn_step", None)
     if step is not None:
         o = attn_multi.layer(layer, w, b, step, scale)

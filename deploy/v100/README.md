@@ -1,5 +1,12 @@
 # Flash Next on eight V100 GPUs
 
+The [adaptive implementation](../../docs/v100-adaptive-validation.md) changes
+GGUF GPU-history admission to computed full-context capacity. Its unique-history
+and compact-Planar4 paths require new native/model/quality/performance
+qualification; historical live receipts below describe their original layouts.
+The [governing specification](../../docs/v100-adaptive-inference-design.md)
+defines the complete stage and acceptance gates.
+
 This AMD64 development profile builds the installed TensorFold wheel with the
 SM70 FP16 provider. Original GGUF encodings remain separate from affine/EXL3/
 NVFP4 readers. The same family engine, scheduler, HTTP server, prefix states,
@@ -118,7 +125,7 @@ They have separate measured quantization-quality tradeoffs; see below. Other for
 on SM70.
 
 The maintained [Compose profile](compose.yaml) selects the matching stock MTP
-head, two slots and an 8,192-token window by default. Set `MODEL_ROOT` to the
+head, automatic full-window session capacity and an 8,192-token window by default. Set `MODEL_ROOT` to the
 host model directory and `GGUF_FILE` to its container first-shard path, then:
 
 ```bash
@@ -128,10 +135,12 @@ MODEL_ROOT=/path/to/models GGUF_FILE=/models/Flash-Next-00001-of-00004.gguf \
 
 `TF_CONTEXT`, `TF_PARALLEL`, `TF_KV_DTYPE`, `TF_PORT`, `TF_BIND_ADDRESS`,
 `TF_MODEL_NAME`, `MTP_DIRECTORY`, `TF_CACHE_VOLUME` and `TENSORFOLD_V100_IMAGE`
-configure that profile. The default Compose full-window count matches `TF_PARALLEL`; ordinary CLI
-serving without `--kv-full-windows` shares cache growth. Advertising
-a long per-request context alone does not reserve that complete window for every
-simultaneous request. Use the cache budget and live workload to choose limits.
+configure that profile. `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` default to `auto`;
+numeric overrides constrain automatic capacity rather than forcing unsafe
+allocation. GGUF GPU-history slots reserve their full prompt-plus-reply windows.
+The optional legacy RAM-indexer path requires explicit numeric settings and
+retains its separately documented accounting; it does not inherit unique GPU
+history capacity. Other providers' shared-growth contracts remain separate.
 
 ## Implementation and evidence
 
@@ -185,13 +194,16 @@ and outstanding numerical qualification are recorded in the
 [validation note](../../docs/v100-flashnext-validation.md).
 
 
-## Qualified operator profile
+## Historical replicated-layout operator profile
 
 Set `TENSORFOLD_SM70_PROFILE=optimized` before starting the ordinary CUDA
 launcher, or `TF_SM70_PROFILE=optimized` for Compose. The general default remains
 `reference`. The optimized profile checks the pinned Torch/cuBLAS/workspace and
 Volta identity plus TP8 Flash Next geometry before admission and payload loading.
 Its operator/runtime policy participates in the existing worker agreement.
+These qualification results belong to the original replicated history layout.
+The adaptive unique-history path currently declines graph capture and retains
+its own source/native/model qualification gates.
 It selects canonical `packed_exact` experts (R≤32), original shared Dense math,
 prepared linears, native family operations and the admitted graph paths for
 DSpark and MTP. Native attention is qualified only for local H3/KV1/D256 and
@@ -205,17 +217,18 @@ Live method/depth performance and final service selection are still in progress.
 
 ## Equal full context windows
 
-For resident GGUF on TP1/2/4/8, use `--parallel N --kv-full-windows N` with N≥2.
-Every lane allocates the same complete admitted window, including MTP or DSpark
+For adaptive resident GGUF with GPU history on TP1/2/4/8, use
+`--parallel auto --kv-full-windows auto`, or supply an integer ceiling.
+Every selected lane allocates the same complete admitted window, including MTP or DSpark
 auxiliary KV. Normal prefix retirement keeps these allocations. The existing
 4GiB device floor remains, with explicit 2GiB serving workspace and protected
 cache replacement; graph publication cannot spend those reservations.
 
-Compose passes `TF_KV_FULL_WINDOWS`, defaulting to `TF_PARALLEL` (default2).
-Set both counts to the measured configuration; counts do not need to be even.
-The ordinary CLI default remains shared opportunistic cache growth when the
-flag is absent. The one-GPU automatic expert-pool mode retains its existing
-full-window behavior.
+Compose defaults both `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` to `auto`.
+Counts need not be even or powers of two. The legacy RAM-indexer path uses
+explicit numeric counts with N≥2 and its separate admission policy. Modern
+providers and the one-GPU automatic expert-pool mode retain their existing
+growth/full-window contracts.
 
 Native attention scratch is capped at its qualified8192-token dispatch range,
 while KV remains allocated at the full context limit. Longer queries retain
@@ -382,6 +395,7 @@ seccomp=/absolute/new/numa-profile/seccomp.json` to Docker and
 
 ```bash
 export TF_INDEXER_HISTORY=ram
+export TF_PARALLEL=4 TF_KV_FULL_WINDOWS=4
 export TF_NUMA_SECCOMP=/absolute/new/numa-profile/seccomp.json
 docker compose -f deploy/v100/compose.yaml \
   -f deploy/v100/compose.numa.yaml up -d

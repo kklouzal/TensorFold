@@ -340,14 +340,15 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
 
         print(use_tokenizer(args.tokenizer_file, model_dir).line(), flush=True)
     started = time.perf_counter()
-    drafter = "" if args.no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
+    no_drafts = bool(args.no_drafts or getattr(args, "draft_method", "auto") == "none")
+    drafter = "" if no_drafts else _drafter(family, args.drafter, "cuda", model_dir=model_dir)
     options: dict[str, Any] = {
         "drafter": drafter,
         "tp": int(args.tp),
         "rank": int(args.rank),
         "master": args.master,
         "master_port": int(args.master_port),
-        "no_drafts": bool(args.no_drafts),
+        "no_drafts": no_drafts,
     }
     options.update(_model_overrides(args))
     if getattr(args, "draft_method", "auto") != "auto":
@@ -360,6 +361,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
+    if getattr(args, "execution_profile_manifest", None) is not None:
+        options["execution_profile_manifest"] = args.execution_profile_manifest
     if getattr(args, "indexer_history", "gpu") != "gpu":
         options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
@@ -385,7 +388,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     options["context"] = context if context is not None else args.context
     options["context_explicit"] = args.context is not None
     streams = 1 if str(args.parallel).strip().lower() == "auto" else _parallel(args.parallel)
-    if streams > 1:
+    if str(args.parallel).strip().lower() == "auto" and getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False):
+        options["parallel_auto"] = True
+    if streams > 1 or (getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False)
+                       and str(args.parallel).strip().lower() != "auto"):
         options["parallel"] = streams
     if getattr(args, "checkpoint_slots", None) is not None and getattr(family.package, "CUDA_CHECKPOINT_SLOTS", False):
         options["checkpoint_slots"] = int(args.checkpoint_slots)
@@ -460,7 +466,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                    else "bf16 activations")
         print(
             f"[tensorfold] serving {served} at http://{args.host}:{args.port}/v1 on CUDA{where} "
-            f"(sampling: {shown}; drafts: {'off' if args.no_drafts else 'on'}; prompts: {prompts}; "
+            f"(sampling: {shown}; drafts: {'off' if no_drafts else 'on'}; prompts: {prompts}; "
             f"context: {'unlimited' if effective_context is None else effective_context}; "
             f"loaded in {time.perf_counter() - started:.1f}s)",
             flush=True,

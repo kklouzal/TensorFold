@@ -120,6 +120,44 @@ def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, mon
     assert "context: 8185" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("adaptive,parallel,expected", [(True, "auto", {"parallel_auto": True}),
+                                                       (True, "1", {"parallel": 1}),
+                                                       (True, "47", {"parallel": 47}),
+                                                       (False, "auto", {})])
+def test_cuda_none_skips_drafter_resolution_and_keeps_capacity_intent(tmp_path, monkeypatch, request,
+                                                                    adaptive, parallel, expected):
+    import tensorfold.cuda.server as server
+
+    made = []
+    engine = cuda_cli_engine(max_len=8192)
+    family = _family(cuda_engine=lambda *a, **kw: made.append(kw) or engine,
+                     CUDA_ADAPTIVE_SESSIONS=adaptive)
+    family.model_type = "test"
+    monkeypatch.setattr(cli, "_drafter", lambda *a, **kw: pytest.fail("none resolved an optional checkpoint"))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--draft-method", "none",
+                                          "--parallel", parallel])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert made[0]["no_drafts"] is True and made[0]["drafter"] == ""
+    assert {key: made[0][key] for key in ("parallel", "parallel_auto") if key in made[0]} == expected
+
+
+def test_cuda_dispatch_preserves_execution_manifest_path_for_preflight(tmp_path, monkeypatch, request):
+    import tensorfold.cuda.server as server
+
+    made = []
+    family = _family(cuda_engine=lambda *a, **kw: made.append(kw) or cuda_cli_engine(max_len=8192))
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    manifest = tmp_path / "qualified-profile.json"
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
+                                          "--execution-profile-manifest", str(manifest)])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert made[0]["execution_profile_manifest"] == manifest
+
+
 def test_the_prompt_precision_flag_parses_and_help_states_the_default():
     from tensorfold.cuda import prompt_precision
 

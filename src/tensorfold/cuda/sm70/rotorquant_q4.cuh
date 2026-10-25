@@ -17,6 +17,27 @@ __device__ __forceinline__ int index(float value) {
     return code;  // Exact thresholds, including +/-zero, choose the lower bin.
 }
 
+template<int CODEC>
+__device__ __forceinline__ float selected_centroid(int code) {
+    if constexpr (CODEC == 9) return __uint_as_float(compact_centroid_bits[code]);
+    return centroid(code);
+}
+
+template<int CODEC>
+__device__ __forceinline__ float metadata_scale(float word) {
+    if constexpr (CODEC == 9) return __half2float(__ushort_as_half(__float_as_uint(word) & 0xffffu));
+    return word;
+}
+
+template<int CODEC>
+__device__ __forceinline__ bool valid_metadata(float word) {
+    const float scale = metadata_scale<CODEC>(word);
+    if constexpr (CODEC == 9) {
+        if (__float_as_uint(word) >> 16) return false;
+    }
+    return isfinite(scale) && scale >= 0.0f;
+}
+
 template<int LOW, bool INVERSE>
 __device__ __forceinline__ float quaternion(float value, int col, float* shared) {
     shared[col] = value;
@@ -62,16 +83,16 @@ __device__ __forceinline__ float wide(float value, int col, float* shared) {
 
 template<int CODEC, bool INVERSE>
 __device__ __forceinline__ float rotate_component(float value, int col, float* shared) {
-    static_assert(CODEC >= 1 && CODEC <= 5);
+    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9);
     // All CTA threads participate, col==threadIdx.x, blockDim.x is a multiple
     // of128 and shared has blockDim.x floats. There are no per-value barriers.
-    if constexpr (CODEC == 1) {
+    if constexpr (CODEC == 1 || CODEC == 9) {
         shared[col] = value;
         __syncthreads();
-        const int pair = col / 2 % 4, base = col / 2 * 2;
+        const int pair = col / 2 % (CODEC == 9 ? 64 : 4), base = col / 2 * 2;
         const float a = shared[base], b = shared[base + 1];
-        const float c = __uint_as_float(planar_cos_bits[pair]);
-        const float s = __uint_as_float(planar_sin_bits[pair]);
+        const float c = __uint_as_float(CODEC == 9 ? compact_cos_bits[pair] : planar_cos_bits[pair]);
+        const float s = __uint_as_float(CODEC == 9 ? compact_sin_bits[pair] : planar_sin_bits[pair]);
         if constexpr (INVERSE) {
             value = col % 2 == 0 ? __fadd_rn(__fmul_rn(c, a), __fmul_rn(s, b))
                                  : __fadd_rn(__fmul_rn(-s, a), __fmul_rn(c, b));
@@ -138,6 +159,29 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
     // does not prove that its selected centroid is representable as Half.
     const bool bad_source = __syncthreads_or(!isfinite(value));
     if (bad_source) value = 0.0f;
+    if constexpr (CODEC == 9) {
+        const float energy = reduce_group<false>(__fmul_rn(value, value), col, shared);
+        const float norm = __fsqrt_rn(energy);
+        const float unit = norm > 1e-10f ? __fmul_rn(value, __fdiv_rn(1.0f, norm)) : 0.0f;
+        const float rotated = rotate_component<9, false>(unit, col, shared);
+        int code = 0;
+        float distance = fabsf(__fsub_rn(rotated, selected_centroid<9>(0)));
+        #pragma unroll
+        for (int i = 1; i < 16; ++i) {
+            const float candidate = fabsf(__fsub_rn(rotated, selected_centroid<9>(i)));
+            if (candidate < distance) { distance = candidate; code = i; }
+        }
+        const float selected = selected_centroid<9>(code);
+        const float reconstruction = __fsqrt_rn(reduce_group<false>(__fmul_rn(selected, selected), col, shared));
+        const float corrected = reconstruction > 1e-10f ? __fdiv_rn(norm, reconstruction) : norm;
+        const __half half_scale = __float2half_rn(corrected);
+        const float scale = __half2float(half_scale);
+        const bool bad = __syncthreads_or(!isfinite(norm) || !isfinite(scale)
+            || (norm > 1e-10f && scale == 0.0f)
+            || !isfinite(__half2float(__float2half_rn(__fmul_rn(selected, scale)))));
+        const int errors = (bad_source ? source_error : 0) | (bad ? 8 : 0);
+        return {errors ? 7 : code, errors ? 0.0f : __uint_as_float(__half_as_ushort(half_scale)), errors};
+    }
     const float maximum = reduce_group<true>(fabsf(value), col, shared);
     const float scaled = __fdiv_rn(value, maximum > 0.0f ? maximum : 1.0f);
     const float energy = reduce_group<false>(__fmul_rn(scaled, scaled), col, shared);

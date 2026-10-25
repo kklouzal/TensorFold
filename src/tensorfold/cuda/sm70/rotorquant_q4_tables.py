@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 
 from tensorfold.families.qwen4_exp.cuda import rotorquant_ref as ref
+from tensorfold.cuda.sm70 import rotorquant_compact as compact
 
 
 def _bits(values):
@@ -27,6 +28,10 @@ static __device__ __constant__ uint32_t planar_sin_bits[4] = {{{_bits(ref.PLANAR
 constexpr uint64_t sign_pair_mask = 0x{ref.SIGN_PAIR_NEGATIVE_MASK:016x}ull;
 constexpr uint32_t wide_cos_bits = {_bits((ref.WIDE_GIVENS_COS,))};
 constexpr uint32_t wide_sin_bits = {_bits((ref.WIDE_GIVENS_SIN,))};
+// {compact.descriptor().codec_id}
+static __device__ __constant__ uint32_t compact_centroid_bits[16] = {{{_bits(compact.CENTROIDS)}}};
+static __device__ __constant__ uint32_t compact_cos_bits[64] = {{{_bits(compact.COS)}}};
+static __device__ __constant__ uint32_t compact_sin_bits[64] = {{{_bits(compact.SIN)}}};
 }}  // namespace tf_rq4
 '''
 

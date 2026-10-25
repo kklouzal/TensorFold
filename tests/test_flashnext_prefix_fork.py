@@ -28,6 +28,8 @@ def slot():
 def decoder(*, busy=False, room=True):
     dec = object.__new__(MultiDecoder)
     dec.used, dec.clock = {}, 0
+    dec.retain_sessions, dec.retained = False, {}
+    dec.retention_retirements, dec.last_retirement = 0, None
     dec.w = SimpleNamespace(comm=None, meta={"execution_provider": "cuda"})
     dec.graphs = None
     source, spare = slot(), slot()

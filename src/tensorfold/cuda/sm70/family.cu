@@ -383,7 +383,7 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 // specialization preserves its stored Half boundaries without adding branches
 // or codec registers to the existing launch. The codec owns its staged basis,
 // normalization, codebook and packed stores in the shared Q4 header.
-template<bool NORM5_POSSIBLE, bool INDEX_STAGED = false>
+template<bool NORM5_POSSIBLE, bool INDEX_STAGED = false, bool COMPACT_POSSIBLE = false>
 __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_long, const float* qw,
                                const float* kw, const float* iw, const float* freq, __half* queries,
                                void* kc, void* vc, __half* iq, __half* ikc, void* ks, void* vs,
@@ -446,6 +446,21 @@ __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_l
             value = half_round(value * cosine + (col < rotary_half ? -cross : cross) * sine);
         }
         value = guarded(value, status, flag, layer, row, live);
+    }
+    if constexpr (COMPACT_POSSIBLE) {
+        if ((kind == 1 && kcodec == 9) || (kind == 2 && vcodec == 9)) {
+            const auto item = tf_rq4::encode_component<9>(value, col, shared, flag);
+            if (item.errors && status) { atomicOr(status, item.errors); atomicCAS(status + 1, -2, layer); }
+            const int64_t base = (cache_row * kvheads + head) * dim;
+            tf_rq4::store_encoded(item, col, shared,
+                static_cast<uint8_t*>(kind == 1 ? kc : vc), static_cast<float*>(kind == 1 ? ks : vs),
+                base, dim, true);
+            return;
+        }
+        if (kind == 0 && kcodec == 9) {
+            value = half_round(tf_rq4::rotate_component<9, false>(value, col, shared));
+            value = guarded(value, status, flag, layer, row, live);
+        }
     }
     if ((kind == 1 && (kcodec == 4 || (NORM5_POSSIBLE && kcodec == 5)))
             || (kind == 2 && (vcodec == 4 || (NORM5_POSSIBLE && vcodec == 5)))) {
@@ -769,8 +784,8 @@ void prep_format_cuda(const T& p, const T& position, const T& qw, const T& kw, c
     if (p.size(0)) {
         // CODEC4 keeps a separate compiled path without CODEC5's norm work or
         // register lifetimes; mixed CODEC4/5 follows the extended specialization.
-        auto launch = [&](auto norm5) {
-            prep_q4_kernel<decltype(norm5)::value, INDEX_STAGED><<<p.size(0) * (qheads + 2 * kvheads + index_heads + 1),
+        auto launch = [&](auto norm5, auto compact) {
+            prep_q4_kernel<decltype(norm5)::value, INDEX_STAGED, decltype(compact)::value><<<p.size(0) * (qheads + 2 * kvheads + index_heads + 1),
                                                     THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
                 ptr<__half>(p), position.data_ptr(), position.scalar_type() == at::kLong,
                 ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(frequency), ptr<__half>(q),
@@ -780,7 +795,12 @@ void prep_format_cuda(const T& p, const T& position, const T& qw, const T& kw, c
                 index_dim, kbits, vbits, layer, frequency.numel(), kc.size(0), p.size(0), eps, rope_scale,
                 independent_rows, kcodec, vcodec, stage_origin ? ptr<int64_t>(*stage_origin) : nullptr, ikc.size(0));
         };
-        if (kcodec == 5 || vcodec == 5) launch(std::true_type{}); else launch(std::false_type{});
+        auto dispatch = [&](auto compact) {
+            if (kcodec == 5 || vcodec == 5) launch(std::true_type{}, compact);
+            else launch(std::false_type{}, compact);
+        };
+        if (kcodec == 9 || vcodec == 9) dispatch(std::true_type{});
+        else dispatch(std::false_type{});
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

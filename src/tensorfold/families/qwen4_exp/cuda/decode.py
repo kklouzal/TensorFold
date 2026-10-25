@@ -463,25 +463,40 @@ class DecodeResult:
 
 @torch.no_grad()
 def serial_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *, stop_eos: bool = False,
-                  on_tokens=None, constraint=None, probabilities=None) -> DecodeResult:
+                  on_tokens=None, constraint=None, probabilities=None, token_limit=None) -> DecodeResult:
     """One token a step through the same kernels and sampler; ``pending`` is the first sampled token. ``on_tokens(new)`` hears each step's token; it returns True to stop early."""
 
     w, st, b = e.w, e.st, e.buf
+    from tensorfold.cuda.streams import prefix_limit
+
     out = [pending]
     torch.cuda.synchronize()
     start = time.perf_counter()
+    warm_mtp = getattr(w, "mtp", None) is not None and getattr(e, "mbuf", None) is not None
+    if warm_mtp and len(out) < count and not (stop_eos and pending in w.cfg.eos):
+        absorb(e, e.last_streams, [pending])
     while len(out) < count and not (stop_eos and out[-1] in w.cfg.eos):
         logits = e.forward([out[-1]])
         if constraint is not None:
             constraint.mask(logits[:1], None, w.meta.get("vocab_offset", 0))
         tok = e.sample(logits[:1], [st.pos + 1], sampling, gathered=constraint is None)[0]
+        keep, stop = prefix_limit(token_limit, [tok], out)
+        if not keep:
+            st.discard_target_tentative()
+            break
         if probabilities is not None:
             capture(logits[:1], [tok], [st.pos + 1], probabilities)
         commit(w, st, b, 1, 1)
+        if warm_mtp:
+            # A zero-proposal batch retains immediately usable MTP capability.
+            # Only committed target features enter the conditioning cache.
+            absorb(e, b.streams[:1], [tok])
         out.append(tok)
         if constraint is not None:
             constraint.advance([tok])
         if on_tokens is not None and on_tokens([tok]):
+            break
+        if stop:
             break
     torch.cuda.synchronize()
     return DecodeResult(out, time.perf_counter() - start, len(out) - 1, committed=out[:-1], widths=[1] * (len(out) - 1))
@@ -490,8 +505,11 @@ def serial_decode(e: Engine, pending: int, count: int, sampling: Sampling | None
 @torch.no_grad()
 def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *, depth: int = DEPTH,
                confidence: float = CONFIDENCE, stop_eos: bool = False, on_tokens=None, constraint=None,
-               probabilities=None) -> DecodeResult:
+               probabilities=None, token_limit=None) -> DecodeResult:
     """Verify pending and drafted tokens from the prefill state, commit rows before the first mismatched draft, and call ``on_tokens(new)`` with kept tokens after pending, stopping on True."""
+
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+    from tensorfold.cuda.streams import prefix_limit
 
     w, st, b = e.w, e.st, e.buf
     out = [pending]
@@ -499,10 +517,25 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
     keeps: list[int] = []
     widths: list[int] = []
     pos0 = st.pos
+    logical_context = getattr(e, "logical_context", None)
+    if logical_context is not None and count > logical_context - pos0:
+        raise ValueError("reply tokens exceed the retained session's logical context commitment")
     unabsorbed = None                                  # the last round's kept rows, not yet in the MTP cache
     torch.cuda.synchronize()
     start = time.perf_counter()
-    drafts = draft(e, e.last_streams, [pending], st.pos + 1, min(depth, count - len(out)), sampling, confidence)
+    method = MethodGeometry("mtp" if w.mtp is not None else "dspark", depth)
+
+    def proposal_limit():
+        remaining = max(0, count - len(out))
+        context = remaining if logical_context is None else max(0, logical_context - st.pos - 1)
+        return method.cap_proposals(depth, reply_tokens=remaining, context_tokens=context,
+                                    target_rows=getattr(e, "rows", depth + 1))
+
+    proposals = proposal_limit()
+    drafts = (draft(e, e.last_streams, [pending], st.pos + 1, proposals, sampling, confidence)
+              if len(out) < count and not (stop_eos and pending in w.cfg.eos) else [])
+    if len(drafts) > proposals:
+        raise RuntimeError("drafter returned more proposals than the remaining reply/context permits")
     while len(out) < count and not (stop_eos and out[-1] in w.cfg.eos):
         tokens = [out[-1]] + drafts
         window = constraint.window(tokens, list(range(-1, len(tokens) - 1))) if constraint is not None else None
@@ -518,6 +551,10 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
             if sampled[i] != d or (stop_eos and sampled[i] in w.cfg.eos):
                 break
             keep += 1
+        keep, stop = prefix_limit(token_limit, sampled[:keep], out)
+        if not keep:
+            st.discard_target_tentative()
+            break
         if probabilities is not None:
             n = min(keep, count - len(out))
             capture(logits[:n], sampled[:n], list(range(st.pos + 1, st.pos + 1 + n)), probabilities)
@@ -534,12 +571,16 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
         out.extend(sampled[:keep])
         if on_tokens is not None and new and on_tokens(new):
             break
+        if stop:
+            break
         if len(out) >= count or (stop_eos and out[-1] in w.cfg.eos):
             break
-        n = min(depth, count - len(out))
+        n = proposal_limit()
         drafts = []
-        if n > 0:
+        if n > 0 or w.mtp is not None:
             drafts = draft(e, b.streams[:keep], sampled[:keep], st.pos + 1, n, sampling, confidence)
+            if len(drafts) > n:
+                raise RuntimeError("drafter returned more proposals than the remaining reply/context permits")
             unabsorbed = None
     torch.cuda.synchronize()
     seconds = time.perf_counter() - start

@@ -13,6 +13,7 @@ from tensorfold.families.qwen4_exp.cuda.sm70_kv import (
     ROTOR_POLICY,
     ROTOR_Q4,
     ROTOR_Q4_NORM,
+    COMPACT_Q4,
     check_kernel_fields,
     check_pair,
 )
@@ -76,7 +77,7 @@ def test_native_flags_cannot_widen_registered_codec_support(fields):
 
 
 @pytest.mark.parametrize("head_dim", [0, True, 64, 192, 384])
-@pytest.mark.parametrize("format_name", [ROTOR_Q4, ROTOR_Q4_NORM])
+@pytest.mark.parametrize("format_name", [ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4])
 def test_q4_geometry_fails_before_allocation(head_dim, format_name):
     with pytest.raises(ValueError, match="head dim|head_dim"):
         check_pair(get_pair(format_name), head_dim=head_dim)
@@ -111,7 +112,8 @@ def test_half_state_uses_real_packed_and_scale_bytes_through_clone_resize_copy(k
     pair = get_pair("bf16", key, value)
     w = model(8, mtp=mtp)
     source = State(w, 37, 4, kv_pair=pair, limit=128)
-    expected_row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 136, ROTOR_Q4_NORM: 136}[side] for side in (key, value))
+    expected_row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 136, ROTOR_Q4_NORM: 136,
+                        COMPACT_Q4: 128 + 2 * (2 + 2)}[side] for side in (key, value))
     layers = 2 + int(mtp)
     expected = layers * (37 * (expected_row + 256) + 10 * 256 + pair.dummy_bytes)
     assert source.cache_bytes() == source.owned_cache_bytes() == expected
@@ -206,7 +208,8 @@ def test_full_window_forecast_counts_q4_packing_fp32_scales_and_replace_overlap(
     )
     base = indexed_stream_geometry(text, **kwargs, kv_pair=((8, 32, 2),) * 2)
     candidate = indexed_stream_geometry(text, **kwargs, kv_pair=specs)
-    row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 128 + 2 * 4, ROTOR_Q4_NORM: 128 + 2 * 4}[name] for name in (key, value))
+    row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 128 + 2 * 4, ROTOR_Q4_NORM: 128 + 2 * 4,
+               COMPACT_Q4: 128 + 2 * (2 + 2)}[name] for name in (key, value))
     # Every full slot owns all target/MTP caches. A replacement retains one
     # additional layer; indexer/pool, graph/status and workspace bytes cancel.
     copies = slots * (2 + int(mtp)) + 1

@@ -32,6 +32,7 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `GET /health` | Server health and available status information |
 | `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV memory, prefix cache, drafts and latency (both servers) |
 | `GET /stats`, `GET /v1/stats` | One JSON snapshot: server identity, model, limits, load, KV memory, prefix cache and totals (both servers) |
+| `GET /v1/runtime`, `POST /v1/runtime` | Adaptive GGUF CUDA execution settings, retained sessions, placement and verified profile controls; other engines have no such controls |
 | `POST /v1/chat/completions` | Text chat, optional image input, tools and reasoning; streamed or non-streamed |
 | `POST /v1/completions` | Raw text without a chat template, or token IDs |
 | `POST /v1/messages` | Anthropic Messages: text, supported images, function tools and thinking; JSON or SSE |
@@ -561,7 +562,7 @@ Times are seconds, sizes bytes.
 | `model.model_type`, `model.context_length` | The checkpoint's `model_type`; the served context (the `max_model_len` of `/v1/models`) |
 | `model.default_max_tokens`, `model.thinking_default`, `model.vision` | The reply limit a request without one gets, whether replies think by default, whether images are accepted |
 | `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
-| `limits.lanes` | Requests decoded together at most (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch) |
+| `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
 | `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
 | `limits.prefix_cache_entries` | Prompt points the prefix cache keeps at most |
 | `load.requests_in_flight` | Requests accepted and not finished (CUDA: queued ones included) |
@@ -571,6 +572,7 @@ Times are seconds, sizes bytes.
 | `load.http_connections_in_use` | Accepted HTTP connections |
 | `load.stream_tokens` | Tokens each live stream's cache holds |
 | `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable; resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes |
+| `runtime` (adaptive engines only) | Host snapshot of configured/pending/effective execution settings, retained/active/queued sessions, actual owner-map generations, bounded migration and profile-manifest status; see the runtime control contract below |
 | `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
@@ -588,6 +590,45 @@ On CUDA, `kv`, `prefix_cache`, `lanes.memory_wait`, `memory_waits` and `memory_s
 concurrent engine (`--parallel N`); other engines leave them null. The Mac fills `load` from its scheduler and leaves
 `kv` and `prefix_cache` null. Requests are counted when they finish, those whose client left (abort) or that failed
 included.
+
+## Adaptive runtime control
+
+`GET /v1/runtime` reports schema `tensorfold.runtime` version 1 on adaptive GGUF
+CUDA engines. The same API-key gate protects reads and writes; `--metrics-open`
+does not open this route. Other engines return 404 for this GET. Its counts and
+placement readings are advisory host snapshots, with no GPU synchronization.
+
+`POST /v1/runtime` accepts a nonempty JSON object, bounded to 1 MiB. One or more
+integer settings may be combined: `row_budget`, `prefill_tokens`,
+`proposal_limit`, and `session_ceiling`. Values must fit the published
+`allocated_maximum`; booleans, null, unknown fields and invalid combinations
+are refused. A lower session ceiling blocks new admissions and preserves
+existing running and idle state. A zero proposal limit keeps enabled MTP
+conditioning current. Settings become effective at a globally coordinated batch
+boundary, including between bounded prefill chunks.
+
+The following requests are each standalone, separate from execution settings:
+
+- `{"attention_degree": 1}`, `2` or `4` requests a supported unique-history
+  placement. Packed pages move in bounded bundles; committed partial maps
+  remain executable. The receipt reports pending/effective placement, epochs
+  and resource blocking. Repeating a blocked target explicitly retries it.
+- `{"profile_table": TABLE}` registers only profiles backed by already verified
+  content/evidence. Workload regions must have matching qualification proofs;
+  uncovered work uses the admitted static envelope.
+- `{"profile_manifest": "new/manifest.json"}` queues worker-owned verification
+  and atomic profile replacement. The relative path stays within the evidence
+  directory selected by startup `--execution-profile-manifest`. HTTP threads
+  perform no CUDA operations or TP collectives. Bad evidence preserves a valid
+  prior registry; changed runtime/placement identity invalidates stale proofs.
+
+Profile manifests are opt-in and hash actual checkpoint/tokenizer/source inputs;
+geometry or filenames alone cannot authorize a profile. See the
+[manifest schema and trust boundary](execution-profile-manifest.md) and
+[V100 implementation/qualification limits](v100-adaptive-validation.md).
+Context, precision, target weights and speculative method are fixed profile
+properties here; this endpoint does not expose unsupported structural changes
+or restart a worker/container/CUDA context.
 
 ## Metrics
 

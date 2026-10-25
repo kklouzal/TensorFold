@@ -85,9 +85,12 @@ def _rotor_rotate(value, out, *, codec=4, inverse=False, status=None, error=1, l
 
         return rotate(value, out, codec=codec, inverse=inverse, status=status, error=error,
                       layer=layer, valid_rows=valid_rows)
-    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import rotate_ref
-
-    result = rotate_ref(value, _rotor_variant(codec), inverse=inverse)
+    if codec == 9:
+        from .rotorquant_compact import rotate_ref
+        result = rotate_ref(value, inverse=inverse)
+    else:
+        from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import rotate_ref
+        result = rotate_ref(value, _rotor_variant(codec), inverse=inverse)
     stored = result.to(out.dtype)
     stored = _guard(stored, status, error, layer, valid_rows)
     out.copy_(stored)
@@ -101,8 +104,6 @@ def _rotor_encode(value, codes, scales, position, *, codec=4, status=None, error
 
         return encode(value, codes, scales, codec=codec, position=position, status=status, error=error,
                       layer=layer, valid_rows=valid_rows)
-    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import quantize_ref, dequant_ref
-
     live = value.shape[0] if valid_rows is None else int(valid_rows.reshape(-1)[0])
     base = int(position.reshape(-1)[0])
     if not 0 <= live <= value.shape[0] or live and not 0 <= base <= codes.shape[0] - live:
@@ -115,10 +116,27 @@ def _rotor_encode(value, codes, scales, position, *, codec=4, status=None, error
     if not live:
         return codes, scales
     guarded = _guard(value[:live], status, error, layer)
-    variant = _rotor_variant(codec)
-    payload, metadata = quantize_ref(guarded, 4, variant)
-    # Storage validity alone does not prove the FP16 working operand finite.
-    working = dequant_ref(payload, metadata, 4, variant).half()
+    if codec == 9:
+        from .rotorquant_compact import quantize_ref as compact_encode, dequant_ref as compact_decode
+        try:
+            payload, metadata = compact_encode(guarded)
+            working = compact_decode(payload, metadata).half()
+        except ValueError:
+            if status is None:
+                raise
+            status[0].bitwise_or_(8)
+            if status[1] == -2:
+                status[1] = layer
+            # A poisoned frame must never be published by State.check_kv().
+            codes[base:base + live].zero_()
+            scales[base:base + live].zero_()
+            return codes, scales
+    else:
+        from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import quantize_ref, dequant_ref
+        variant = _rotor_variant(codec)
+        payload, metadata = quantize_ref(guarded, 4, variant)
+        # Storage validity alone does not prove the FP16 working operand finite.
+        working = dequant_ref(payload, metadata, 4, variant).half()
     bad = ~torch.isfinite(working)
     if bool(bad.any()):
         if status is None:
@@ -174,9 +192,12 @@ def _rotor_decode(codes, scales, width, codec):
         from .rotorquant_q4_native import decode
 
         return decode(codes, scales, out, codec=codec)
-    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import dequant_ref
-
-    out.copy_(dequant_ref(codes, scales, 4, _rotor_variant(codec)))
+    if codec == 9:
+        from .rotorquant_compact import dequant_ref
+        out.copy_(dequant_ref(codes, scales))
+    else:
+        from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import dequant_ref
+        out.copy_(dequant_ref(codes, scales, 4, _rotor_variant(codec)))
     return out
 
 
@@ -525,19 +546,65 @@ def qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, *, rope=
     if native is not None:
         return native.pool(ikc, pooled, pos0, ik_scale, inv_freq, delta, ratio, rows, eps, rope_scale)
     count = ikc.shape[0] // ratio
-    if not count:
+    if not count or not rows:
         return
-    blocks = torch.arange(count, device=ikc.device)
-    raw = ikc[:count * ratio].reshape(count, ratio, dims).float()
+    # Only groups completed by this append can change. Include the preceding
+    # incomplete group (at most ratio-1 raw rows), never convert the retained
+    # full history to an FP32 working copy on each decode step.
+    slots = min(count, (rows + ratio - 1) // ratio)
+    start = pos0.reshape(-1)[0].to(torch.int64)
+    live = rows if valid_rows is None else valid_rows.reshape(-1)[0]
+    first = torch.div(start, ratio, rounding_mode="floor")
+    blocks = first + torch.arange(slots, dtype=torch.int64, device=ikc.device)
+    end = start + live
+    invalid = (start < 0) | (live < 0) | (live > rows) | (end > ikc.shape[0])
+    if status is not None:
+        status[0].bitwise_or_(invalid.int() * 16)
+        status[1].copy_(torch.where(invalid & (status[1] == -2), layer, status[1]))
+    elif ikc.is_cuda:
+        torch._assert_async(~invalid, "pool append must fit its declared live frame and history")
+    elif bool(invalid):
+        raise ValueError("pool append must fit its declared live frame and history")
+    valid = ~invalid & (blocks < count) & ((blocks + 1) * ratio <= end)
+    positions = blocks[:, None] * ratio + torch.arange(ratio, dtype=torch.int64, device=ikc.device)
+    # Padded/incomplete group lanes borrow an already-present row from the
+    # current append/carry range, then are zeroed before any FP32 arithmetic.
+    # They cannot read a future raw row or normalize poisoned invisible data.
+    positions = torch.minimum(positions, (end - 1).clamp(0, ikc.shape[0] - 1)).clamp(0, ikc.shape[0] - 1)
+    raw = ikc.index_select(0, positions.reshape(-1)).reshape(slots, ratio, dims)
+    raw = torch.where(valid[:, None, None], raw, 0).float()
     total = raw[:, 0]
     for index in range(1, ratio):
         total = total + raw[:, index]
     value = (total / ratio).half()
-    value = rotary(rms(value, ik_scale, eps), inv_freq, blocks * ratio, rope=rope, delta=delta,
+    # Pinned ATen CUDA Reduce.cuh chooses its FP32 row-reduction tree from the
+    # full number of outputs. The existing torch_reduce.cuh authority shows
+    # that >=16 outputs selects the stable tree (D128 is count-independent).
+    # A bounded zero pad preserves that mode without allocating logical-count
+    # rows; CPU's existing per-row operator does not need the CUDA mode pad.
+    normalization_rows = max(slots, min(count, 16)) if value.is_cuda else slots
+    if normalization_rows != slots:
+        padded = torch.zeros((normalization_rows, dims), dtype=value.dtype, device=value.device)
+        padded[:slots].copy_(value)
+        value = rms(padded, ik_scale, eps)[:slots]
+    else:
+        value = rms(value, ik_scale, eps)
+    value = rotary(value, inv_freq, blocks * ratio, rope=rope, delta=delta,
                    length=length, sections=sections, scale=rope_scale)
-    start = pos0.reshape(-1)[0]
-    valid = (blocks >= torch.div(start, ratio, rounding_mode="floor")) & ((blocks + 1) * ratio <= start + rows)
-    pooled[:count].copy_(torch.where(valid[:, None], value, pooled[:count]))
+    completed = (torch.div(end, ratio, rounding_mode="floor") - first).clamp(0, slots)
+    completed = torch.where(invalid, 0, completed)
+    if ikc.is_cuda:
+        # This existing generic bitwise row-copy primitive accepts a dynamic
+        # live prefix and position. An index_copy_ over clamped padded IDs could
+        # race a valid update at the final complete group instead.
+        from .rotorquant_q4_native import copy_rows
+
+        copy_rows(value, pooled, first.reshape(1), status=status,
+                  valid_rows=completed.to(torch.int32).reshape(1), layer=layer)
+    else:
+        begin, kept = int(first), int(completed)
+        if kept:
+            pooled[begin:begin + kept].copy_(value[:kept])
 
 
 def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None):
@@ -572,6 +639,86 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None):
     scratch.ids[:rows, top * ratio:top * ratio + ratio].copy_(tail.int())
 
 
+def _compact_attention(q, kc, vc, pos0, scratch, rows, scale, out, *, keys, ks, vs, kb, vb, kf, vf):
+    """Canonical packed attention with bounded 1024-row dequantization tiles.
+
+    Two passes retain the existing global FP16 probability rounding: the first
+    computes each query's FP32 normalization, the second consumes rounded
+    probabilities and FP16 value tiles. This is an unqualified execution path;
+    it makes no equivalence claim about a different floating reduction tree.
+    Persistent histories remain packed and no temporary scales with context.
+    """
+    heads, kh, dim = q.shape[1], kc.shape[1], q.shape[2]
+    if heads % kh or keys <= 0:
+        raise ValueError("compact attention needs nonempty history and integral query/KV head groups")
+    if not rows:
+        return out
+    group = heads // kh
+    count = rows * group
+    queries = q[:rows].reshape(rows, kh, group, dim).permute(1, 0, 2, 3).reshape(kh, count, dim)
+    ends = pos0.reshape(-1)[0] + torch.arange(rows, device=q.device) + 1
+    maximum = torch.full((kh, count), -torch.inf, dtype=torch.float32, device=q.device)
+    denominator = torch.zeros_like(maximum)
+    numerator = torch.zeros((kh, count, dim), dtype=torch.float32, device=q.device)
+    sorted_ids = None
+    if scratch.qsa:
+        ids = scratch.ids[:rows].long()
+        active = torch.arange(ids.shape[1], device=q.device)[None] < scratch.nk[:rows, None]
+        sorted_ids = torch.sort(torch.where(active & (ids >= 0) & (ids < keys), ids, keys), -1).values
+
+    def visibility(first, last):
+        positions = torch.arange(first, last, device=q.device)
+        visible = positions[None] < ends[:, None]
+        if sorted_ids is not None:
+            indices = torch.searchsorted(sorted_ids, positions.expand(rows, -1).contiguous())
+            found = sorted_ids.gather(1, indices.clamp_max(sorted_ids.shape[1] - 1)) == positions[None]
+            visible = visible & torch.where(scratch.sparse[:rows, None].bool(), found, True)
+        return visible.repeat_interleave(group, dim=0)
+
+    def tile(data, metadata, first, last, bits, codec, visible):
+        live = visible.any(0)[:, None, None]
+        payload = torch.where(live, data[first:last], 0)
+        scales = torch.where(live, metadata[first:last], 0) if bits else None
+        if codec:
+            return _rotor_decode(payload, scales, dim, codec)
+        return dequantize_int8(payload, scales) if bits else payload
+
+    for pass_index in range(2):
+        for first in range(0, keys, 1024):
+            last = min(keys, first + 1024)
+            visible = visibility(first, last)
+            key = tile(kc, ks, first, last, kb, kf, visible)
+            value = tile(vc, vs, first, last, vb, vf, visible) if pass_index else None
+            for head in range(kh):
+                scores = _matmul32(queries[head], key[:, head].T) * scale
+                scores.masked_fill_(~visible, -torch.inf)
+                if pass_index == 0:
+                    current = scores.max(-1).values
+                    updated = torch.maximum(maximum[head], current)
+                    finite = torch.isfinite(updated)
+                    base = torch.where(finite, updated, 0.)
+                    old_weight = torch.where(torch.isfinite(maximum[head]),
+                                             (maximum[head] - base).exp(), 0.)
+                    denominator[head] = denominator[head] * old_weight + (scores - base[:, None]).exp().sum(-1)
+                    maximum[head] = updated
+                else:
+                    base = torch.where(torch.isfinite(maximum[head]), maximum[head], 0.)
+                    divisor = torch.where(denominator[head] > 0, denominator[head], 1.)
+                    probabilities = ((scores - base[:, None]).exp() / divisor[:, None]).half()
+                    # Uncommitted bucket rows may contain arbitrary old bytes.
+                    safe_value = torch.where(visible.any(0)[:, None], value[:, head], 0.)
+                    numerator[head] += _matmul32(probabilities, safe_value)
+    result = numerator.reshape(kh, rows, group, dim).permute(1, 0, 2, 3).reshape(rows, heads, dim)
+    if vf:
+        rotated = torch.empty_like(result)
+        _rotor_rotate(result, rotated, codec=vf, inverse=True)
+        result = rotated
+    elif vb:
+        result = h32(result)
+    out[:rows].copy_(result.half())
+    return out
+
+
 def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, ks=None, vs=None,
               bits=0, codec=0, k_bits=None, k_codec=None, v_bits=None, v_codec=None,
               rotor_lookup=False, prompt=False, _native_allowed=True):
@@ -582,7 +729,11 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
         raise ValueError("SM70 attention requires matching FP16/int8/Rotor Q4 K/V payloads")
     keys = kc.shape[0] if context is None else min(context, kc.shape[0])
     out = scratch.out if out is None else out
-    if (_native_allowed and _NATIVE_FAMILY and _NATIVE_ATTENTION and q.is_cuda and q.dtype == torch.float16):
+    # The fixed-position optimized attention receipt predates compact Planar4.
+    # Its native implementation is available to qualification tests; ordinary
+    # dispatch keeps the bounded canonical path until same-codec evidence exists.
+    if (_native_allowed and kf != 9 and vf != 9 and _NATIVE_FAMILY and _NATIVE_ATTENTION
+            and q.is_cuda and q.dtype == torch.float16):
         from .attention_qualification import runtime_identity, supports
 
         if supports(rows=rows, heads=q.shape[1], kv_heads=kc.shape[1], head_dim=q.shape[2],
@@ -594,6 +745,9 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
                 return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb,
                                        kcodec=kf, vcodec=vf)
             return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb)
+    if kf == 9 or vf == 9:
+        return _compact_attention(q, kc, vc, pos0, scratch, rows, scale, out,
+                                  keys=keys, ks=ks, vs=vs, kb=kb, vb=vb, kf=kf, vf=vf)
     heads, kh = q.shape[1], kc.shape[1]
     if heads % kh:
         raise ValueError("query heads must be divisible by local KV heads")

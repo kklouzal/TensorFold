@@ -784,6 +784,15 @@ class App:
                 finally:
                     queued[0] += time.perf_counter() - waited
             extra = dict(options)
+            if stops.strings and "token_limit" in inspect.signature(self.engine.generate).parameters:
+                # A verified block can contain a stop before its final token.
+                # Resolve that boundary before any recurrent/KV commit. This
+                # pure worker callback owns neither output IO nor caller state;
+                # continuations include their already generated target prefix.
+                from tensorfold.cuda.reply_text import stop_prefix_limit
+
+                baseline = tuple(ids[max(len(prompt), len(ids) - stops.tail):])
+                extra["token_limit"] = lambda new, prefix: stop_prefix_limit(stops, baseline, prefix, new)
             if prepared.grammar is not None:    # response_format: a fresh grammar state, after </think> when thinking
                 spec, compiled = prepared.grammar
                 # a run after the thinking budget's close (it ends at </think> under a grammar) starts in the grammar

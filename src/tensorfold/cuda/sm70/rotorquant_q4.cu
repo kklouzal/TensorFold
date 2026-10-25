@@ -94,11 +94,13 @@ __global__ void decode_kernel(const uint8_t* codes, const float* scales, Output*
         write(target, logical, 0.0f);
         return;
     }
-    const float scale = scales[blockIdx.x];
+    const float word = scales[blockIdx.x];
+    const float scale = tf_rq4::metadata_scale<CODEC>(word);
     const uint8_t packed = codes[logical / 2];
     const int code = (packed >> (4 * (col % 2))) & 15;
-    const float value = __fmul_rn(tf_rq4::centroid(code), isfinite(scale) && scale >= 0.0f ? scale : 0.0f);
-    const bool bad_scale = __syncthreads_or(!isfinite(scale) || scale < 0.0f || !isfinite(value));
+    const float value = __fmul_rn(tf_rq4::selected_centroid<CODEC>(code),
+                                 tf_rq4::valid_metadata<CODEC>(word) ? scale : 0.0f);
+    const bool bad_scale = __syncthreads_or(!tf_rq4::valid_metadata<CODEC>(word) || !isfinite(value));
     float output = bad_scale ? 0.0f : value;
     if constexpr (INVERSE) output = tf_rq4::rotate_component<CODEC, true>(output, col, shared);
     const bool bad_output = __syncthreads_or(!representable<Output>(output));
@@ -153,6 +155,7 @@ template<class Callable> void dispatch_codec(int codec, Callable callable) {
         case 3: callable(std::integral_constant<int, 3>{}); break;
         case 4: callable(std::integral_constant<int, 4>{}); break;
         case 5: callable(std::integral_constant<int, 5>{}); break;
+        case 9: callable(std::integral_constant<int, 9>{}); break;
     }
 }
 

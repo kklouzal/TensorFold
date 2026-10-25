@@ -793,14 +793,24 @@ def field_paths(value, prefix=""):
 
 
 def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
-    cuda = field_paths(stats.snapshot(concurrent_app(tmp_path)))     # kv and prefix_cache filled (usage's keys)
+    concurrent = concurrent_app(tmp_path)
+    cuda = field_paths(stats.snapshot(concurrent))     # kv and prefix_cache filled (usage's keys)
+    from tensorfold.families.qwen4_exp.cuda.adaptive_controller import AdaptiveController
+
+    decoder = concurrent.engine.scheduler.decoder
+    decoder.controller = AdaptiveController(slots=4, row_budget=16, proposal_limit=3, prefill_tokens=512)
+    for stream in [*decoder.streams.values(), *decoder.filling]:
+        stream.st = object()
+    adaptive = field_paths(stats.snapshot(concurrent))
     app = MacApp()
     app.scheduler = SimpleNamespace(active=1, waiting=0, filling=[], cancelled=0, preemptions=0)
     with mac_server(app) as port:
         mac = field_paths(get_json(port, "/stats")[2])
     documented = documented_fields()
-    assert documented <= set(cuda) | set(mac), documented - set(cuda) - set(mac)
-    for path in (*cuda, *mac):          # a field, a field inside a documented one, or a section of documented fields
+    observed = set(cuda) | set(mac) | set(adaptive)
+    assert documented <= observed, documented - observed
+    assert "runtime" not in cuda and "runtime" in adaptive
+    for path in (*cuda, *mac, *adaptive):  # include capability-specific sections without weakening legacy schema
         assert any(path == name or path.startswith(name + ".") or name.startswith(path + ".")
                    for name in documented), f"/stats field {path} is not in docs/api.md"
 

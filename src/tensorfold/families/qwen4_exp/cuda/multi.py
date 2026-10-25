@@ -23,7 +23,7 @@ from tensorfold.cuda.sampling import (
     validate_policy,
     validate_rows,
 )
-from tensorfold.cuda.streams import Stream, accept
+from tensorfold.cuda.streams import Stream, accept, prefix_limit
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
@@ -37,6 +37,7 @@ from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, co
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
+from .speculation import MethodGeometry
 from .state import ENDS, Buffers, KVNumericError, State
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -47,11 +48,13 @@ COPY_MATCH = 8                   # copy drafts: the context's last this many tok
 FILL_GUARD = 8                   # a prompt passed over this many passes takes the next one (no starvation), as on Macs
 
 
-def _slot(w, st: State, buf: Buffers, mbuf: Buffers, pbuf: Buffers, capacity: int, prefill_rows: int) -> Engine:
+def _slot(w, st: State, buf: Buffers, mbuf: Buffers, pbuf: Buffers, capacity: int, prefill_rows: int, *,
+          logical_context: int | None = None) -> Engine:
     """A one-sequence engine over a slot's state and the shared buffers (eager: no CUDA graphs)."""
 
     e = object.__new__(Engine)
     e.w, e.capacity, e.rows, e.prefill_rows = w, capacity, buf.rows, prefill_rows
+    e.logical_context = logical_context
     e.buf, e.mbuf, e.pbuf, e.st, e.graphs = buf, mbuf, pbuf, st, None
     e.kv_pair = st.kv_pair
     e._sample_plan = getattr(buf, "sample_plan", None)
@@ -69,7 +72,7 @@ class MultiDecoder:
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
-                 full_windows: int | None = None) -> None:
+                 full_windows: int | None = None, execution_rows: int | None = None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
@@ -85,13 +88,28 @@ class MultiDecoder:
         self.vision = vision
         self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1"
         self.eos = tuple(w.cfg.eos) if stop_eos else ()
-        rows = slots * (depth + 1)
+        rows = slots * (depth + 1) if execution_rows is None else execution_rows
+        if type(rows) is not int or not depth + 1 <= rows <= slots * (depth + 1):
+            raise ValueError("execution_rows must hold one complete verification window within the resident envelope")
+        self.controller = None
+        self.execution_manifest_installer = None
+        self.poison_control = None
+        self._execution_plan = None
+        self._round_migration_s = 0.0
+        if w.meta.get("execution_provider") == "sm70":
+            from .adaptive_controller import AdaptiveController
+
+            self.controller = AdaptiveController(slots=slots, row_budget=rows, proposal_limit=depth,
+                                                 prefill_tokens=prefill_rows)
         # a round's window and a prompt pass share each layer's expert launch: the pass's buffers hold both
         self.converged, self.prefill_rows = converges(w), prefill_rows
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
         self.share, self.round_s, self.row_s = share, None, None
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity) if w.mtp is not None else None
+        self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
+                                          "dspark" if getattr(w, "dspark", None) is not None else "none",
+                                          depth)
         self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
         self._sample_plan = self._draft_plan = None
         if w.comm is not None:
@@ -140,9 +158,21 @@ class MultiDecoder:
         # A full-window promise owns every selected cache before startup returns.
         # Legacy and explicitly shared modes keep the original growing floors.
         self.full_resident = full_windows is not None and full_windows >= slots
+        self.retain_sessions = self.controller is not None and self.full_resident
+        self.retained = {}
+        self.retention_clock = self.retention_retirements = 0
+        self.last_retirement = None
         initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
         self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
-                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype) for _ in range(slots)]
+                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot)
+                     for slot in range(slots)]
+        self.states = tuple(self.free)
+        self._migration_cursor = 0
+        if (self.controller is not None and self.free[0].history_placement is not None
+                and self.free[0].history_placement.target_layers % 4 == 0
+                and self.free[0].kc[0].arena is not None
+                and all(cache.arena is self.free[0].kc[0].arena for cache in self.free[0].kc)):
+            self.controller.enable_migration(self.free[0].history_placement.degree)
         self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window
@@ -291,6 +321,7 @@ class MultiDecoder:
     def _quarantine(self, st: State) -> None:
         """Retain a failed exclusive slot; neither admission nor kept prefixes may borrow it."""
 
+        self._retire_retained(st, reason="failed_slot_quarantine")
         if all(owned is not st for owned in self.failed_slots):
             self.failed_slots.append(st)
         self._drop_kept(st)
@@ -327,7 +358,8 @@ class MultiDecoder:
         st = prefixes.evict(self, keep, protect)
         if st is None:
             return False
-        self._shrink(st)
+        if not (self.retain_sessions and id(st) in self.retained):
+            self._shrink(st)
         if all(f is not st for f in self.free):
             self.free.append(st)
         return True
@@ -399,6 +431,7 @@ class MultiDecoder:
             try:
                 source.kv_validate_snapshot(snap)
             except KVNumericError:
+                self._retire_retained(source, reason="numeric_state_failure")
                 self._drop_kept(source)
                 if id(source) not in self._busy():
                     self._shrink(source)
@@ -406,6 +439,19 @@ class MultiDecoder:
                         self.free.append(source)
                 raise
         return prefixes.slot_for(self, prompt, reuse)
+
+    def _retire_retained(self, state, *, reason):
+        """New admission explicitly retires one idle endpoint before overwriting it."""
+        previous = self.retained.get(id(state))
+        if previous is None:
+            return
+        self.retained = {key: entry for key, entry in self.retained.items() if key != id(state)}
+        self.retention_retirements += 1
+        self.last_retirement = {"slot": state.history_slot, "slot_generation": state.slot_generation,
+                                "request_sid": previous["request_sid"], "reason": reason}
+
+    def retained_states(self):
+        return tuple(entry["state"] for entry in self.retained.values())
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
@@ -653,9 +699,10 @@ class MultiDecoder:
             except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
                 raise_failures(primary, [cleanup])
             raise
-        e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows)
+        e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows,
+                  logical_context=getattr(self, "logical_context", None))
         e._draft_map = self._draft_map
-        mtp = s.draft and self.depth > 0 and self.mbuf is not None
+        mtp = (s.draft or self.retain_sessions) and self.depth > 0 and self.mbuf is not None
         try:
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
             image = s.vision is not None
@@ -687,6 +734,8 @@ class MultiDecoder:
         ended: list[Stream] = []
         while self.filling:
             ended += self._pass()
+            if self.controller is not None:
+                break  # Every bounded adaptive pass returns to the globally frozen control boundary.
             if any(not x.done and not x.waiting for x in self.streams.values()) or self.arrived() or \
                     any(s.cancel is not None and s.cancel.is_set() for s in self.filling):
                 break
@@ -695,8 +744,146 @@ class MultiDecoder:
     def _pass_rows(self) -> int:
         """A round's prompt rows: its decode (a round alone) takes ``share`` of the pass's time, by the last rounds."""
 
+        return self.pass_rows_for(None if self.controller is None else self.controller.effective)
+
+    def pass_rows_for(self, settings):
+        """The prefill quota of a frozen operation, including a newly selected profile."""
+
         live = any(not s.done for s in self.streams.values())
-        return pass_limit(self.prefill_rows, live, self.share, self.round_s, self.row_s, PASS_MIN)
+        limit = pass_limit(self.prefill_rows, live, self.share, self.round_s, self.row_s, PASS_MIN)
+        if settings is not None:
+            limit = min(limit, settings["prefill_tokens"])
+        return limit
+
+    def freeze_execution(self):
+        if self.controller is None:
+            return None
+        active = [s for s in (*self.streams.values(), *self.filling) if not s.done]
+        sessions = sorted({s.sid for s in active})
+        retained = {id(s.st): s.st for s in active if s.st is not None}
+        retained.update({id(point[1]): point[1] for point in self.kept})
+        retained.update({key: entry["state"] for key, entry in self.retained.items()})
+        lengths = [s.st.pos for s in active if s.st is not None]
+        workload = {"active_requests": len(sessions),
+                    "decode_requests": sum(not s.done and not s.waiting for s in self.streams.values()),
+                    "prefill_requests": sum(not s.done for s in self.filling),
+                    "max_history_tokens": max(lengths, default=0), "history_tokens": sum(lengths),
+                    "retained_sessions": len(retained),
+                    "pending_prompt_tokens": sum(len(s.prompt) - self.fills[s.sid][2]
+                                                 for s in self.filling if not s.done),
+                    "pending_arrivals": bool(self.arrived()), "indexer_work": None, "expert_group_max": None}
+        return self.controller.freeze(sessions, workload=workload)
+
+    def accept_execution(self, plan):
+        if self.controller is None:
+            if plan is not None:
+                raise ValueError("this decoder has no adaptive execution controller")
+            return
+        self.controller.accept(plan)
+        self._execution_plan = plan
+
+    def _proposal_limit(self):
+        return self.depth if self.controller is None else self.controller.effective["proposal_limit"]
+
+    def _proposal_count(self, stream, remaining):
+        logical = getattr(self, "logical_context", self.capacity - self.depth - 1)
+        return self.speculation.cap_proposals(
+            self._proposal_limit(), reply_tokens=max(0, remaining),
+            context_tokens=max(0, logical - stream.st.pos - 1), target_rows=self.buf.rows)
+
+    @staticmethod
+    def _output_marks(streams):
+        return [(stream, len(stream.out), len(stream.owed)) for stream in streams]
+
+    @staticmethod
+    def _useful_outputs(marks):
+        # Stream.take consumes owed background replay before invoking emit.
+        # A failed grammar advance or replay mismatch contributes no output.
+        return sum(max(0, len(stream.out) - before - owed) for stream, before, owed in marks)
+
+    def _prefix_limits(self, streams, news):
+        active = any(s.token_limit is not None or getattr(s, "_tp_token_limit", False) for s in streams)
+        if not active:
+            return [(len(new), False) for new in news]
+        decisions, error = None, None
+        if self.w.comm is None or self.w.comm.rank == 0:
+            try:
+                decisions = [prefix_limit(s.token_limit, new, s.out) for s, new in zip(streams, news)]
+            except BaseException as caught:
+                error = caught
+        if self.w.comm is not None:
+            decisions = self.prefix_decisions(decisions, error)
+        elif error is not None:
+            raise error
+        if len(decisions) != len(streams):
+            raise ValueError("stop-boundary decision count differs from the planned microbatch")
+        if self.w.comm is None or self.w.comm.rank == 0:
+            return decisions
+        # Revalidate received metadata before it can govern target/draft state.
+        return [prefix_limit(lambda _new, _out, decision=decision: tuple(decision), new, s.out)
+                for s, new, decision in zip(streams, news, decisions)]
+
+    def history_record(self):
+        records = [state.history_record() for state in self.states]
+        retained = self.retained
+        for state, record in zip(self.states, records):
+            record["retained_idle"] = id(state) in retained
+        return {"slots": records, "retained_endpoints": len(retained),
+                "retirement_count": self.retention_retirements, "last_retirement": self.last_retirement,
+                "migration": None if self.controller is None else
+                self.controller.record()["migration"]}
+
+    def install_execution_manifest(self, relative_name):
+        if self.execution_manifest_installer is None:
+            raise ValueError("execution-profile manifest verification was not enabled at startup")
+        return self.execution_manifest_installer(relative_name)
+
+    def maintenance_pending(self):
+        migration = None if self.controller is None else self.controller.migration
+        return migration is not None and migration["pending"] and migration["blocked"] is None
+
+    def _migrate_boundary(self, migration):
+        if self.controller is None or migration is None or not migration["pending"]:
+            return
+        started = time.perf_counter()
+        try:
+            self._migration_bundle(migration)
+        except BaseException as error:
+            self._memory_error = error
+            poison = getattr(self, "poison_control", None)
+            if poison is not None:
+                poison(error)
+            raise
+        finally:
+            self._round_migration_s = getattr(self, "_round_migration_s", 0.0) + time.perf_counter() - started
+
+    def _migration_bundle(self, migration):
+        if self.controller is None or migration is None or not migration["pending"]:
+            return
+        target, generation = migration["requested_degree"], migration["request_epoch"]
+        for offset in range(len(self.states)):
+            index = (self._migration_cursor + offset) % len(self.states)
+            state = self.states[index]
+            pending = getattr(state, "_history_migration", None)
+            if state.history_placement.degree == target and pending is None:
+                continue
+            for stream in self.streams.values():
+                if stream.st is state:
+                    self._flush(stream)
+            if state.mtp_drafted:
+                state.set_mtp_len(state.mtp_len - state.mtp_drafted)
+                state.mtp_drafted = 0
+            if getattr(state, "_migration_request", None) != generation:
+                state.begin_history_migration(target)
+                state._migration_request = generation
+            moved = state.migrate_history_bundle()
+            self._migration_cursor = (index + 1) % len(self.states)
+            pending = getattr(state, "_history_migration", None)
+            blocked = ((pending.get("blocked_reason") or "next balanced bundle exceeds admitted migration overlap")
+                       if not moved and pending else None)
+            self.controller.migration_status(request_epoch=generation, pending=True, blocked=blocked)
+            return
+        self.controller.migration_status(request_epoch=generation, pending=False)
 
     def _timed(self, seconds: float, rows: int) -> None:
         """A round's wall time: a round alone updates its estimate, a round with a pass the seconds a row adds."""
@@ -747,16 +934,36 @@ class MultiDecoder:
         self._note_passed(pieces)
         self.pbuf.rotor_lookup = bool(pieces) and self._rotor_lookup(pieces[0][0], len(pieces))
         t0 = time.perf_counter()
+        marks = self._output_marks([s for s, _, _ in pieces]) if self.controller is not None else None
+        active_count = sum(not s.done for s in (*self.streams.values(), *self.filling))
+        completed = False
+        primary = None
         try:
-            self._read_ahead(pieces)
-            segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
-            ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
-            logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
-            heads = logits[:len(ends)].clone() if ends else None
-            lasts = self._absorb(pieces, segs, cuts)
-        except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
-            return self._failed(pieces, exc)
-        return self._joined(pieces, heads, lasts, (time.perf_counter() - t0) / len(pieces))
+            try:
+                self._read_ahead(pieces)
+                segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
+                ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
+                logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                heads = logits[:len(ends)].clone() if ends else None
+                lasts = self._absorb(pieces, segs, cuts)
+                completed = True
+            except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
+                return self._failed(pieces, exc)
+            return self._joined(pieces, heads, lasts, (time.perf_counter() - t0) / len(pieces))
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            if self.controller is not None:
+                try:
+                    self.controller.observe(
+                        active=active_count, scheduled=0, target_rows=0,
+                        prefill_tokens=sum(n for _, _, n in pieces) if completed else 0,
+                        committed_tokens=self._useful_outputs(marks),
+                        max_history_tokens=max((s.st.pos for s, _, _ in pieces), default=0),
+                        elapsed_s=time.perf_counter() - t0)
+                except BaseException as observation:
+                    raise_failures(primary, [observation])
 
     def _read_ahead(self, pieces) -> None:
         """Overlap the next piece's n-gram reads with this pass."""
@@ -874,6 +1081,12 @@ class MultiDecoder:
                 if s.constraint is not None:                 # a reply's grammar: the first token too
                     logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
                 first = e.sample(logits, [len(s.prompt)], s.sampling)[0]
+                limit, terminal = self._prefix_limits([s], [[first]])[0]
+                if not limit:
+                    s.done = True
+                    s.started = s.finished = time.perf_counter()
+                    joined.append(s)
+                    continue
                 if s.probabilities is not None:
                     capture(logits, [first], [len(s.prompt)], s.probabilities)
                 if s.constraint is not None:
@@ -887,12 +1100,15 @@ class MultiDecoder:
             s.started = time.perf_counter()
             self.streams[s.sid] = s
             s.take([first], self._ends(s))                   # the first token goes out before the next draft
+            if terminal:
+                s.done, s.finished = True, time.perf_counter()
             e.buf.rotor_lookup = self._rotor_lookup(s)
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
-            has_draft = mtp or (s.draft and self.depth > 0 and getattr(self.w, "dspark", None) is not None)
-            if has_draft and not s.done and s.count > 1:
-                s.drafts = draft(e, last, [first], st.pos + 1, min(self.depth, s.count - 1), s.sampling,
+            has_draft = s.draft and (mtp or self.depth > 0 and getattr(self.w, "dspark", None) is not None)
+            if (has_draft and not s.done and s.count > 1) or self.retain_sessions and mtp:
+                count = self._proposal_count(s, s.count - 1) if has_draft and not s.done else 0
+                s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
                                  self.confidence)
             if s.done:
                 joined.append(s)
@@ -930,11 +1146,40 @@ class MultiDecoder:
 
     @torch.no_grad()
     def round(self) -> list[Stream]:
+        """One complete coordinator iteration, including bounded maintenance."""
+        if self.controller is None:
+            return self._round()
+        started = time.perf_counter()
+        before = self.controller.round_started()
+        self._round_migration_s = 0.0
+        outcome = "ok"
+        primary, result = None, None
+        try:
+            result = self._round()
+        except BaseException as error:
+            outcome = type(error).__name__
+            primary = error
+        errors = []
+        try:
+            self.controller.observe_round(before=before, elapsed_s=time.perf_counter() - started,
+                                          migration_s=self._round_migration_s, outcome=outcome)
+        except BaseException as error:
+            errors.append(error)
+        raise_failures(primary, errors)
+        return result
+
+    def _round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
         error = getattr(self, "_memory_error", None)
         if error is not None:
             raise error
+        plan = self._execution_plan
+        self._execution_plan = None
+        if self.controller is not None and plan is None:
+            plan = self.freeze_execution()
+            self.controller.accept(plan)
+        self._migrate_boundary(None if plan is None else plan["migration"])
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
@@ -943,6 +1188,9 @@ class MultiDecoder:
             live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if not live:
             return ended
+        if self.controller is not None:
+            for s in live:
+                del s.drafts[plan["proposal_limit"]:]
         grammars, failed = {}, []
         for s in live:                                   # a grammar cuts the drafts no accepted path can hold
             if s.constraint is not None:
@@ -958,6 +1206,18 @@ class MultiDecoder:
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
+        if self.controller is not None:
+            selected = self.controller.select([(s.sid, 1 + len(s.drafts)) for s in live], plan)
+            active_count = len(plan["order"])
+            by_id = {s.sid: s for s in live}
+            # Older BF16 backends defer recurrent commits in shared scratch.
+            # Retire every unselected borrower before another round reuses it.
+            for s in live:
+                if s.sid not in selected:
+                    self._flush(s)
+            live = [by_id[sid] for sid in selected]
+            if not live:
+                return failed + ended
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter()
@@ -966,6 +1226,7 @@ class MultiDecoder:
         segs = stage(self.w, self.buf, windows, late=True)
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
+        marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
         cuts = []
         if pieces:
             self._note_passed(pieces)
@@ -1027,44 +1288,70 @@ class MultiDecoder:
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
+        proposed = [[tokens[r] for r in path[1:]] + [end]
+                    for (_, tokens), (path, end) in zip(windows, paths)]
+        boundaries = self._prefix_limits(live, proposed)
+        paths = [(path[:count], new[count - 1] if count else end)
+                 for (path, end), new, (count, _stop) in zip(paths, proposed, boundaries)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
-            if s.probabilities is not None:
+            if s.probabilities is not None and path:
                 capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
                         s.probabilities, rows=[a0 + r for r in path])
         if not half:
             for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
                 self.held[s.sid] = rows                  # the next round's trees fold these rows in first
         kept = []
-        for s, (_, tokens), (st, a0, a1), rows, (path, end) in zip(live, windows, segs, sampled, paths):
-            commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False)
+        for s, (_, tokens), (st, a0, a1), rows, (path, end), (count, terminal), new in zip(
+                live, windows, segs, sampled, paths, boundaries, proposed):
+            if path:
+                commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False)
+            else:
+                st.discard_target_tentative()
             s.committed.extend(tokens[:len(path)])
             s.counted(len(tokens))
-            new = [tokens[r] for r in path[1:]] + [end]
+            new = new[:count]
             if s.constraint is not None:
                 try:
                     s.constraint.advance(new)
                 except GrammarError as exc:
                     s.error = exc
-            last = s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
+            last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if s.draft and not last],
+        maintaining = {s.sid for s, _, keep, _, last in kept
+                       if self.retain_sessions and self.mbuf is not None and s.error is None and (last or not s.draft)}
+        for s, _, keep, _, _last in kept:
+            if s.sid in maintaining and not keep and s.st.mtp_drafted:
+                s.st.set_mtp_len(s.st.mtp_len - s.st.mtp_drafted)
+                s.st.mtp_drafted = 0
+        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept
+                         if keep and (s.draft and not last or s.sid in maintaining)],
                         {s.sid: fresh for s, _, _, fresh, last in kept
-                         if getattr(s, "copies", None) is not None and not last})
-        for s, _, _, new, _ in kept:
+                         if getattr(s, "copies", None) is not None and not last}, maintenance_only=maintaining)
+        for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
             if s.error is not None:
                 s.done = True
                 continue
-            s.take(new, self._ends(s))
+            if new:
+                s.take(new, self._ends(s))
+            if terminal:
+                s.done, s.finished = True, time.perf_counter()
         spent = time.perf_counter() - t0
         self._timed(spent, sum(n for _, _, n in pieces))
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
+        if self.controller is not None:
+            self.controller.observe(active=active_count, scheduled=len(live), target_rows=segs[-1][2],
+                                    prefill_tokens=sum(n for _, _, n in pieces),
+                                    committed_tokens=self._useful_outputs(marks),
+                                    max_history_tokens=max(s.st.pos for s in live),
+                                    elapsed_s=time.perf_counter() - t0)
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
-            self.held.pop(s.sid, None)
+            if not self.retain_sessions or s.error is not None:
+                self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list, new: dict | None = None) -> None:
+    def _draft_all(self, streams: list, new: dict | None = None, *, maintenance_only=()) -> None:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
         status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
@@ -1073,7 +1360,7 @@ class MultiDecoder:
         if provider is not None:
             for s, _at, keep in streams:
                 s.drafts = []
-                count = min(self.depth, s.count - len(s.out) - len(keep))
+                count = self._proposal_count(s, s.count - len(s.out) - len(keep))
                 if count <= 0:
                     continue
                 if new and s.sid in new and getattr(s, "copies", None) is not None:
@@ -1085,19 +1372,24 @@ class MultiDecoder:
                         del s.context[before:]
                     if s.drafts:
                         continue
-                e = _slot(self.w, s.st, self.buf, None, self.pbuf, self.capacity, self.prefill_rows)
+                e = _slot(self.w, s.st, self.buf, None, self.pbuf, self.capacity, self.prefill_rows,
+                          logical_context=getattr(self, "logical_context", None))
                 s.drafts = provider.draft(e, int(keep[-1]), count, s.sampling, self.confidence)
             return
 
         bound = getattr(getattr(self, "graphs", None), "bound", None)
         handoff = getattr(bound, "greedy", None)
-        if handoff is not None and handoff.try_draft(streams, new):
+        room = {s.sid: 0 if s.sid in maintenance_only else
+                self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
+        if (handoff is not None and self._proposal_limit() == self.depth
+                and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
             return
 
         for s, _, _ in streams:
             s.drafts = []
-        room = {s.sid: min(self.depth, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
-        todo = [(s, a0, keep) for s, a0, keep in streams if room[s.sid] > 0 and self.mbuf is not None]
+        # A zero-proposal step still maintains the selected MTP capability.
+        # Otherwise resuming proposals would read stale conditioning history.
+        todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
         if not todo:
             return
         for s, _, _ in todo:
@@ -1107,14 +1399,25 @@ class MultiDecoder:
                 st.mtp_drafted = 0
         windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
         segs = mtp_stage(self.mbuf, windows)
-        logits = self._mtp(segs)
+        proposing = any(room[s.sid] > 0 for s, _, _ in todo)
+        logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
                 st.set_mtp_len(st.mtp_len + len(keep))
 
         words = KVWords(segs, self.kv_host, absorbed)    # its status words join the first draft's readback
-        active = [(s, a1 - 1) for s, (_, _, a1) in zip([t[0] for t in todo], segs)]
+        active = [(s, a1 - 1) for (s, _, _), (_, _, a1) in zip(todo, segs)]
+        taking = [index for index, (s, _) in enumerate(active) if room[s.sid] > 0]
+        if not taking:
+            words.settle()
+            return
+        if len(taking) != len(active):
+            logits = logits[taking]
+            active = [active[index] for index in taking]
+        if not active:
+            words.settle()
+            return
         if new:
             try:                                         # a failure here still reports a failed absorb first
                 for s, _ in active:
@@ -1132,7 +1435,7 @@ class MultiDecoder:
             if not active:                               # every stream copies: no draft readback checks the absorb
                 words.settle()
                 return
-        for j in range(self.depth):
+        for j in range(self._proposal_limit()):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active], words)
             nxt = []
             for (s, row), (d, p) in zip(active, picks):
@@ -1156,7 +1459,7 @@ class MultiDecoder:
             words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
 
-    def _mtp(self, segs: list) -> torch.Tensor:
+    def _mtp(self, segs: list, *, logits: bool = True) -> torch.Tensor | None:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
 
         self.mbuf.rotor_lookup = False
@@ -1166,9 +1469,9 @@ class MultiDecoder:
         self.mbuf.attn_step = (None if self.mbuf.h.dtype == torch.float16 else attn_multi.Step(
             self.w, segs, mtp=True, tables=self.mtp_tables, rotor_lookup=self.mbuf.rotor_lookup))
         try:                                             # the caller checks the step's status
-            out = self.graphs.mtp_step(segs) if self.graphs is not None else None
+            out = self.graphs.mtp_step(segs) if logits and self.graphs is not None else None
             if out is None:
-                out = mtp_compute(self.w, segs, self.mbuf, check=False)
+                out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits)
             if self.w.comm is not None:
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
@@ -1283,6 +1586,15 @@ class MultiDecoder:
 
         for s in done:
             self.streams.pop(s.sid, None)
+            if self.retain_sessions and s.error is None:
+                self._flush(s)
+                self.retention_clock += 1
+                self.retained = {**self.retained, id(s.st): {"state": s.st, "last_use": self.retention_clock,
+                                                          "request_sid": s.sid,
+                                                          "emitted_length": s.st.pos + int(bool(s.out))}}
+                if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
+                    self.free.append(s.st)
+                continue
             if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
                 self._shrink(s.st)
                 self.free.append(s.st)

@@ -68,6 +68,24 @@ class StopStrings:
         return StopPolicy.visible(self, text, partial=partial)
 
 
+def stop_prefix_limit(stops: StopStrings, baseline, prefix: list[int], new: list[int]) -> tuple[int, bool]:
+    """Pure precommit cut, including a stop at the exact end of a verified block.
+
+    ``baseline`` is generated text carried into a gated continuation; ``prefix``
+    is this generation run's output. Keep only the tail used by StopStrings,
+    rather than copying an arbitrarily long generated history on each token.
+    The tokenizer and stop strings are shared immutable request inputs.
+    """
+    tail = [*baseline[-stops.tail:], *prefix[-stops.tail:]][-stops.tail:]
+    for count, token in enumerate(new, 1):
+        tail.append(token)
+        if stops.hit(tail):
+            return count, True
+        if len(tail) > stops.tail:
+            del tail[:-stops.tail]
+    return len(new), False
+
+
 def hide_tool_calls(text: str, *, finished: bool) -> str:
     out: list[str] = []
     pos = 0

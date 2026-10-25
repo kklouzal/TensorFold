@@ -20,6 +20,7 @@ COPY . /src
 RUN python -m pip wheel --no-build-isolation --no-deps /src --wheel-dir /wheels \
     && python -m pip install --no-deps /wheels/tensorfold-*.whl
 COPY tests /verification/tests
+COPY tools /verification/tools
 COPY tools/v100_probe.py /verification/v100_probe.py
 RUN printf '[pytest]\npythonpath = tests\n' > /verification/pytest.ini
 WORKDIR /verification

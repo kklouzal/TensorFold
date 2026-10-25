@@ -92,12 +92,21 @@ def _retire(process, deadline):
         time.sleep(.01)
 
 
-def supervise(commands, environments, *, grace=10.0):
+def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fds=(), stop_on_departure=False):
     """Exclusively own direct-child waits and Linux rank sessions through group retirement."""
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace < 0:
         raise ValueError("expert rank retirement grace must be a finite nonnegative duration")
+    if failure_probe is not None and not callable(failure_probe):
+        raise ValueError("rank failure probe must be callable")
+    if type(stop_on_departure) is not bool:
+        raise ValueError("rank departure policy must be a boolean")
+    if (not isinstance(pass_fds, tuple) or any(type(fd) is not int or fd < 0 for fd in pass_fds)
+            or len(pass_fds) != len(set(pass_fds))):
+        raise ValueError("rank inherited descriptors must be distinct nonnegative integers")
+    for fd in pass_fds:
+        os.fstat(fd)  # invalid capabilities fail before any process is acquired
     if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "pidfd_open")) or not hasattr(signal, "pidfd_send_signal"):
         raise RuntimeError("expert launcher requires Linux waitid/WNOWAIT and pidfd session ownership")
     # Allocate ownership and diagnostic slots before any child exists. Publishing
@@ -119,14 +128,21 @@ def supervise(commands, environments, *, grace=10.0):
 
     try:
         for index, (command, environment) in enumerate(zip(commands, environments)):
-            children[index] = subprocess.Popen(command, env=environment, start_new_session=True)
+            inherited = {"pass_fds": pass_fds} if pass_fds else {}
+            children[index] = subprocess.Popen(command, env=environment, start_new_session=True, **inherited)
         departure = None
         while True:
+            if failure_probe is not None and failure_probe():
+                result = 1
+                break
             statuses = [_exited(child) for child in children]
             if any(code not in (None, 0) for code in statuses):
                 result = abs(next(code for code in statuses if code not in (None, 0)))
                 break
             if all(code == 0 for code in statuses):
+                result = 0
+                break
+            if stop_on_departure and any(code is not None for code in statuses):
                 result = 0
                 break
             if any(code is not None for code in statuses):

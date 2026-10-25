@@ -32,6 +32,12 @@ __device__ __forceinline__ bool visible(int key, int row, int end, bool qsa,
 }
 __device__ __forceinline__ __half decoded(const void* data, const void* scales, int bits, int codec, int64_t at) {
     if (!bits) return static_cast<const __half*>(data)[at];
+    if (codec == 9) {
+        const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
+        const int index = (byte >> (4 * (at & 1))) & 15;
+        const float word = static_cast<const float*>(scales)[at / 128];
+        return __float2half_rn(__fmul_rn(tf_rq4::selected_centroid<9>(index), tf_rq4::metadata_scale<9>(word)));
+    }
     if (codec == 4 || codec == 5) {
         const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
         const int index = (byte >> (4 * (at & 1))) & 15;
@@ -337,6 +343,8 @@ __global__ void reduce_kernel(const float* partials, __half* out, const void* po
         value = tf_rq4::inverse_component(value, col, rotor);
     } else if (codec == 5) {
         value = tf_rq4::rotate_component<5, true>(value, col, rotor);
+    } else if (codec == 9) {
+        value = tf_rq4::rotate_component<9, true>(value, col, rotor);
     } else if (bits) {
 #pragma unroll
         for (int offset = 1; offset <= 16; offset *= 2) {

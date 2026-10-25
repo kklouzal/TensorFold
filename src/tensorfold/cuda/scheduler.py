@@ -24,12 +24,36 @@ class Waiting(queue.PriorityQueue):
     def __init__(self) -> None:
         super().__init__()
         self._order = itertools.count()
+        self._wake_marker = object()
+        self._wake_pending = False
 
     def put(self, item, block: bool = True, timeout: float | None = None) -> None:
         super().put((1 if item[0].background else 0, next(self._order), item), block, timeout)
 
     def get(self, block: bool = True, timeout: float | None = None):
         return super().get(block, timeout)[2]
+
+    def _get(self):
+        item = super()._get()  # PriorityQueue owns mutex through removal and marker retirement
+        if self.is_wake(item[2]):
+            self._wake_pending = False
+        return item
+
+    def qsize(self) -> int:
+        with self.mutex:
+            return self._qsize() - int(self._wake_pending)
+
+    def is_wake(self, value) -> bool:
+        return value is self._wake_marker
+
+    def wake(self) -> None:
+        """One coalesced owner-control marker; ordinary queued work keeps priority."""
+        with self.not_full:
+            if not self._wake_pending:
+                self._put((1, next(self._order), self._wake_marker))
+                self.unfinished_tasks += 1
+                self._wake_pending = True
+                self.not_empty.notify()
 
     def stop(self) -> None:
         """Wake an idle worker to stop: None comes after every waiting request."""
@@ -70,6 +94,10 @@ class Scheduler:
         self._stop_published = False
         self._stopping = False                    # worker consumed the marker; accepted work still drains
         self._failure: BaseException | None = None
+        self._pending_manifest = None
+        self._manifest_sequence = 0
+        self._manifest_status = {"configured": None, "pending": False, "effective": None,
+                                 "request_epoch": 0, "error": None}
         self._cleanup_failure: BaseException | None = None
         self._worker_done = threading.Event()
         self._worker_entered = threading.Event()
@@ -97,6 +125,40 @@ class Scheduler:
                 raise RuntimeError("CUDA request admission was already configured")
             self.max_pending_requests = limit.maximum
             self._request_limit = limit
+
+    def request_runtime(self, publish: Callable[[], Any]) -> Any:
+        """Publish a bounded host control and wake idle retained work without polling."""
+        with self._state_lock:
+            if self._closing:
+                raise RuntimeError("CUDA scheduler is closing; runtime updates are rejected")
+            result = publish()
+            self.waiting.wake()
+            return result
+
+    def request_execution_manifest(self, relative_name: str) -> dict:
+        """Queue verified profile replacement; file reads belong to the TP worker."""
+        from pathlib import PurePosixPath
+
+        if (not isinstance(relative_name, str) or not 1 <= len(relative_name) <= 1024
+                or "\\" in relative_name or "\x00" in relative_name
+                or PurePosixPath(relative_name).is_absolute()
+                or any(part in ("", ".", "..") for part in relative_name.split("/"))):
+            raise ValueError("profile_manifest must be a relative file within the startup evidence directory")
+        with self._state_lock:
+            if self._closing:
+                raise RuntimeError("CUDA scheduler is closing; runtime updates are rejected")
+            if getattr(self.decoder, "execution_manifest_installer", None) is None:
+                raise ValueError("execution profile verification was not enabled at startup")
+            self._manifest_sequence += 1
+            self._pending_manifest = (self._manifest_sequence, relative_name)
+            self._manifest_status = {**self._manifest_status, "configured": relative_name, "pending": True,
+                                     "request_epoch": self._manifest_sequence, "error": None}
+            self.waiting.wake()
+            return dict(self._manifest_status)
+
+    def execution_manifest_record(self) -> dict:
+        with self._state_lock:
+            return dict(self._manifest_status)
 
     @property
     def pending_requests(self) -> int | None:
@@ -190,7 +252,8 @@ class Scheduler:
     def submit(self, prompt: list[int], count: int, sampling: Any, draft: bool,
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
                constraint: Any = None, background: bool = False, probabilities: Any = None,
-               progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None) -> dict:
+               progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None,
+               token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
         connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
@@ -201,7 +264,7 @@ class Scheduler:
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
                         constraint=constraint, background=background, probabilities=probabilities, cancel=cancel,
-                        penalties=penalties)
+                        penalties=penalties, token_limit=token_limit)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
         if progress is not None:
             stream.on_fill = lambda rows: box.put(("filled", rows))
@@ -254,20 +317,22 @@ class Scheduler:
 
     def _admit(self, first=None) -> list[Stream]:
         done = []
-        while self.decoder.live() < self.max_streams:
+        while self.decoder.live() < self._stream_limit():
             if first is not None:
-                (stream, box), first = first, None
+                item, first = first, None
             elif self.held is not None:
-                (stream, box), self.held = self.held, None
+                item, self.held = self.held, None
             else:
                 try:
                     item = self.waiting.get_nowait()
                 except queue.Empty:
                     break
-                if item is None:
-                    self._stopping = True
-                    break
-                stream, box = item
+            if item is None:
+                self._stopping = True
+                break
+            if self.waiting.is_wake(item):
+                continue
+            stream, box = item
             self.boxes[id(stream)] = box
             if stream.cancel is not None and stream.cancel.is_set():
                 self._reply(stream, "done", stream.stats())     # its client left while it waited: nothing to fill
@@ -302,7 +367,7 @@ class Scheduler:
     def _yield(self) -> None:
         """Lanes full, a foreground request waiting: the newest background stream (no images) re-queues."""
 
-        if self.decoder.live() < self.max_streams or not self.waiting.foreground():
+        if self.decoder.live() < self._stream_limit() or not self.waiting.foreground():
             return
         live = list(getattr(self.decoder, "streams", {}).values())
         stream = next((s for s in reversed(live) if s.background and not s.done
@@ -389,7 +454,7 @@ class Scheduler:
                     item = self.waiting.get_nowait()
                 except queue.Empty:
                     break
-                if item is not None:
+                if item is not None and not self.waiting.is_wake(item):
                     _, box = item
                     boxes.append(box)
             self._clear_failure_frames()
@@ -454,15 +519,50 @@ class Scheduler:
             self._worker_entered.set()
             self._loop()
 
+    def _stream_limit(self) -> int:
+        """A lower ceiling blocks new admissions without evicting retained state."""
+        controller = getattr(self.decoder, "controller", None)
+        return self.max_streams if controller is None else min(self.max_streams, controller.admission_limit())
+
+    def _execution_boundary(self) -> None:
+        controller = getattr(self.decoder, "controller", None)
+        if controller is not None:
+            controller.boundary()
+        if self._pending_manifest is not None:
+            with self._state_lock:
+                request, self._pending_manifest = self._pending_manifest, None
+            if request is None:
+                return
+            generation, name = request
+            error = None
+            try:
+                self.decoder.install_execution_manifest(name)
+            except ValueError as failed:
+                # Expected invalid evidence leaves the previous registry and
+                # every retained state intact. Protocol/device failures escape.
+                error = str(failed)[:1024]
+            with self._state_lock:
+                status = dict(self._manifest_status)
+                if error is None:
+                    status["effective"] = name
+                if self._manifest_status["request_epoch"] == generation:
+                    status.update(pending=False, error=error)
+                self._manifest_status = status
+
     def _run(self) -> None:
         while True:
+            self._execution_boundary()
             self._yield()
             idle = not self.decoder.live() and self.held is None
             if idle and self._stopping:
                 return
-            first = self.waiting.get() if idle else None                              # idle: wait for a request
-            if idle and first is None:
+            maintenance = getattr(self.decoder, "maintenance_pending", None)
+            ready = maintenance is not None and maintenance()
+            first = self.waiting.get() if idle and not ready else None
+            if idle and not ready and first is None:
                 return                                                                # close()
+            if idle:
+                self._execution_boundary()  # a control may arrive while the worker waits on the queue
             done = self._admit(first)
             try:
                 done += self._cancelled()

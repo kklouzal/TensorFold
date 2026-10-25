@@ -33,6 +33,17 @@ def _vram_experts(value: str) -> float | str:
     return budget
 
 
+def _full_windows(value: str) -> int | str:
+    """Keep automatic full-context capacity distinct from a numeric ceiling."""
+
+    if value == "auto":
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--kv-full-windows: use auto or a positive whole number") from None
+
+
 def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> argparse.ArgumentParser:
     """The ``tensorfold`` parser, each subcommand bound to ``handlers[name]``."""
 
@@ -146,8 +157,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
-    speed.add_argument("--draft-method", choices=("auto", "mtp", "dspark"), default="auto",
-                       help="proposal method; auto detects the drafter architecture. Explicit MTP/DSpark "
+    speed.add_argument("--draft-method", choices=("auto", "none", "mtp", "dspark"), default="auto",
+                       help="proposal method; none selects serial execution without loading a draft model; "
+                            "auto detects the drafter architecture. Explicit MTP/DSpark "
                             "selection is supported by Flash Next CUDA (DSpark currently GGUF); --drafter selects the checkpoint")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
@@ -160,7 +172,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
-                            "an explicit value selects included MTP instead of default DFlash; 0: no MTP drafts")
+                            "an explicit value selects included MTP instead of default DFlash; 0 with auto: "
+                            "disable startup drafting. Explicit --draft-method mtp requires positive maximum depth; "
+                            "runtime proposal_limit 0 retains an already enabled MTP method")
     speed.add_argument("--mtp-confidence", type=float, default=None,
                        help="on CUDA, stop an MTP chain before a later draft under this probability "
                             "(Flash Next default 0.70; Nemotron default 0.20)")
@@ -183,8 +197,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--parallel", default="auto",
                        help="requests decoded together, their windows sharing each round's forward: a number, or "
                             "auto (Mac: up to 8, each started only while the projected memory fits the budget; "
-                            "CUDA auto: one at a time; explicit shared rounds depend on the family; "
-                            "Flash Next sharing requires one GPU)")
+                            "Flash Next GGUF GPU-history CUDA auto: computed equal full-context capacity; a number is its "
+                            "session ceiling. Other CUDA auto: one at a time; explicit shared rounds depend "
+                            "on the family)")
     speed.add_argument("--decode-share", type=float, default=None, help="Mac: while prompts prefill, running replies "
                        "keep moving for this share of each chunk's time, and a new prompt starts at the next chunk "
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
@@ -206,8 +221,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="Flash Next: read supported n-gram (PLE) table rows from SSD at lookup; CUDA supports "
                             "affine, BF16, FP8 and NVFP4 tables; EXL3 retains its native mapped table. "
                             "Memory and latency depend on checkpoint format and storage")
-    speed.add_argument("--kv-full-windows", type=int, default=None, metavar="N",
-                       help="Flash Next CUDA resident GGUF or RAM experts auto: reserve N full KV windows across concurrent slots")
+    speed.add_argument("--kv-full-windows", type=_full_windows, default=None, metavar="N|auto",
+                       help="Flash Next GGUF GPU histories: auto computes equal full-context capacity; N caps it. "
+                            "Other Flash Next resident GGUF/RAM-expert modes reserve N full KV windows across slots")
+    speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
+                       help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
+                            "checkpoint, codec, runtime, kernel and hardware identities match this deployment")
     speed.add_argument("--indexer-history", choices=("gpu", "ram"), default="gpu",
                        help="Flash Next GGUF/SM70: full GPU raw indexer history (default), or a bounded GPU "
                             "working ring with asynchronous NUMA-local RAM archive; pooled history stays on GPU")

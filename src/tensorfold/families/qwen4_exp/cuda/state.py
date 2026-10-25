@@ -142,6 +142,13 @@ class Buffers:
         self.mtp_in = torch.empty((rows, wide), dtype=bf, device=dev)          # the MTP's input streams
         draft = getattr(w, "dspark", None)
         self.dspark_taps = draft.new_taps(rows, dev) if draft is not None else None
+        from .history_placement import for_weights
+
+        self.history_owner = None
+        if for_weights(w) is not None:
+            from .history_owner import OwnerBuffers
+
+            self.history_owner = OwnerBuffers(w, min(rows, ATT_ROWS), self.attn)
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:
@@ -176,11 +183,20 @@ class State:
 
     def __init__(self, w: Weights, capacity: int, max_rows: int, kv_dtype: str = "bf16", *,
                  limit: int | None = None, kv_pair=None, kv_key_dtype: str | None = None,
-                 kv_value_dtype: str | None = None) -> None:
+                 kv_value_dtype: str | None = None, slot: int = 0) -> None:
         c = w.cfg
         dev = w.device
         bf = execution_dtype(w)
         self.execution_dtype = bf
+        from .history_placement import for_weights
+
+        self.history_placement = for_weights(w)
+        if type(slot) is not int or slot < 0:
+            raise ValueError("history session slot must be a nonnegative integer")
+        self.history_slot, self.history_rank = slot, int(w.meta.get("rank", 0))
+        self.history_comm = getattr(w, "comm", None) if self.history_placement is not None else None
+        self.history_generation = self.slot_generation = 0
+        self._history_error = None
         self.indexer_history_mode = w.meta.get("indexer_history", "gpu")
         if self.indexer_history_mode not in ("gpu", "ram"):
             raise ValueError("indexer history must be gpu or ram")
@@ -202,11 +218,17 @@ class State:
 
             working_policy = check_pair(self.kv_pair)
         else:
+            if self.kv_pair.key.codec == 9 or self.kv_pair.value.codec == 9:
+                raise ValueError("RotorQuant planar4 SM70 codec requires the explicit FP16 execution provider")
             working_policy = "stored-basis-native64-v1"
         self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        if self.history_placement is not None:
+            plan = self.history_placement
+            self.kv_identity += (("unique-history-v1", plan.world, plan.global_kv_heads,
+                                  plan.target_layers, plan.page_tokens),)
         if self.indexer_history_mode == "ram":
             self.kv_identity += (("indexer-history", "lossless-fp16-ram-archive-v1"),)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
@@ -217,7 +239,8 @@ class State:
         self.kv_status = (torch.tensor([0, -2], dtype=torch.int32, device=dev)
                           if (not self.kv_pair.symmetric or self.kv_key_codec or self.kv_value_codec
                               or (bf == torch.float16 and self.kv_pair.key.quantized)
-                              or self.indexer_history_mode == "ram") else None)
+                              or self.indexer_history_mode == "ram"
+                              or self.history_placement is not None) else None)
         world = int(w.meta.get("world", 1))
         self._kv_peer_status = (torch.empty((world, 2), dtype=torch.int32, device=dev)
                                 if self.kv_status is not None and world > 1 else None)
@@ -230,6 +253,7 @@ class State:
         self.capacity = capacity
         self.version = 0                 # counts reallocations: a graph's pointer table refreshes on a change
         self.pos = 0
+        self.target_tentative_length = 0
         self.pos_dev = torch.zeros((1,), dtype=torch.int32, device=dev)
         # text after an image prompt rotates at its cache position plus this offset (0: no images, the plain path)
         self.image_positions, self.image_rows, self.image_features = None, (), None
@@ -263,12 +287,28 @@ class State:
             self.indexer_raw_device_bytes = None
         self.row_bytes = self.kv_pair.row_bytes(c.kv_heads, c.head_dim) + (
             c.index_dim * 2 if getattr(self, "indexer_history_owner", None) is None else 0)
-        self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair) for _ in att]
-        self.ikc = ([torch.zeros((capacity, c.index_dim), dtype=bf, device=dev) for _ in att]
+        if self.history_placement is not None:
+            from .history_owner import OwnedKVCache, allocate_target_caches
+
+            def allocate(layer):
+                return OwnedKVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair,
+                                    placement=self.history_placement, slot=slot, layer=layer, rank=self.history_rank)
+            self.kc = allocate_target_caches(capacity, c.head_dim, dev, pair=self.kv_pair,
+                                             placement=self.history_placement, slot=slot, rank=self.history_rank)
+        else:
+            self.kc = [kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair) for _ in att]
+        def indexer_rows(layer, rows):
+            if self.history_placement is None:
+                return rows
+            return (rows if self.history_rank == self.history_placement.indexer_owner(
+                slot, layer, include_mtp=w.mtp is not None) else 0)
+        self.ikc = ([torch.zeros((indexer_rows(i, capacity), c.index_dim), dtype=bf, device=dev)
+                     for i in range(len(att))]
                     if getattr(self, "indexer_history_owner", None) is None else
                     [self.indexer_history_owner.layer(i) for i in range(len(att))])
         nb = -(-capacity // c.index_ratio)
-        self.pooled = [torch.zeros((nb, c.index_dim), dtype=bf, device=dev) for _ in att]
+        self.pooled = [torch.zeros((indexer_rows(i, nb), c.index_dim), dtype=bf, device=dev)
+                       for i in range(len(att))]
         wide = c.streams * c.hidden
         self.ple_tail = torch.zeros(((c.ple_kernel - 1) * c.ngram_size, wide), dtype=bf, device=dev)
         self.ple_history = c.ngram(0).initial_history() if c.ple_layers else None
@@ -278,10 +318,11 @@ class State:
         self.mtp_drafted = 0
         self.mtp_pos = torch.zeros((1,), dtype=torch.int32, device=dev)
         if w.mtp is not None:
-            self.mtp_kc = kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair)
-            self.mtp_ikc = (torch.zeros((capacity, c.index_dim), dtype=bf, device=dev)
+            self.mtp_kc = (allocate(len(att)) if self.history_placement is not None else
+                           kvcache.KVCache(capacity, c.kv_heads, c.head_dim, dev, pair=self.kv_pair))
+            self.mtp_ikc = (torch.zeros((indexer_rows(len(att), capacity), c.index_dim), dtype=bf, device=dev)
                             if getattr(self, "indexer_history_owner", None) is None else self.indexer_history_owner.layer(len(att)))
-            self.mtp_pooled = torch.zeros((-(-capacity // c.index_ratio), c.index_dim), dtype=bf,
+            self.mtp_pooled = torch.zeros((indexer_rows(len(att), -(-capacity // c.index_ratio)), c.index_dim), dtype=bf,
                                           device=dev)
 
         self.dspark_runtime = getattr(w, "dspark", None)
@@ -300,7 +341,8 @@ class State:
     def kv_begin(self) -> None:
         """Mark GPU writes unchecked; never clear a previous numeric failure."""
 
-        error = self._kv_error if self._kv_error is not None else self._resize_error
+        error = (getattr(self, "_history_error", None) or
+                 (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
         if self.kv_status is None:
@@ -311,11 +353,13 @@ class State:
         """Validate pending writes before publication, outside CUDA graph capture.
 
         A successful check consumes one two-word readback; subsequent checks
-        without new GPU writes do not synchronize. A failed state stays poisoned
-        until ``reset``. CUDA/runtime failures propagate unchanged.
+        without new GPU writes do not synchronize. Numeric failures require
+        ``reset``; an ambiguous migration requires exclusive retirement and
+        cannot be cleared by reset. CUDA/runtime failures propagate unchanged.
         """
 
-        error = self._kv_error if self._kv_error is not None else self._resize_error
+        error = (getattr(self, "_history_error", None) or
+                 (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
         if getattr(self, "indexer_history_owner", None) is not None:
@@ -333,7 +377,8 @@ class State:
         """``kv_check`` from status words a caller read back after this frame's last status write (its own wait):
         the same latch, without a readback of its own."""
 
-        error = self._kv_error if self._kv_error is not None else self._resize_error
+        error = (getattr(self, "_history_error", None) or
+                 (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
         if self.kv_status is None:
@@ -385,7 +430,13 @@ class State:
         if getattr(self, "indexer_history_owner", None) is not None:
             self._indexer_commit(pos, self.mtp_len)
         self.pos = pos
+        self.target_tentative_length = pos
         self.pos_dev.fill_(pos)
+
+    def discard_target_tentative(self) -> None:
+        """Resolve rejected/uncommitted rows without advancing any target state."""
+        self.kv_check()
+        self.target_tentative_length = self.pos
 
     def _indexer_commit(self, pos: int, mtp_len: int) -> None:
         lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
@@ -400,6 +451,7 @@ class State:
         self._indexer_commit(pos, mtp_len)
         try:
             self.pos, self.mtp_len = pos, mtp_len
+            self.target_tentative_length = pos
             self.pos_dev.fill_(pos)
             self.mtp_pos.fill_(mtp_len)
         except BaseException as error:
@@ -427,7 +479,14 @@ class State:
             # at different sizes. The old capacity is no longer an accounting
             # authority, even though no such geometry may be used for inference.
             return self.owned_cache_bytes()
-        total = self.layers * self.layer_bytes(rows)
+        placement = getattr(self, "history_placement", None)
+        if placement is None:
+            total = self.layers * self.layer_bytes(rows)
+        else:
+            total = placement.rank_bytes(self.history_slot, self.capacity if rows is None else int(rows),
+                                         self.history_rank, self.kv_pair.row_bytes(1, self.kc[0].head_dim),
+                                         self.kv_pair.dummy_bytes, index_dim=self.index_dim,
+                                         ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"))
         if getattr(self, "dspark_runtime", None) is not None:
             total += (self.capacity if rows is None else int(rows)) * self.dspark_runtime.plan.cache_row_bytes
         return total
@@ -451,11 +510,20 @@ class State:
         """One attention layer's share of ``cache_bytes``: what a resize holds twice at once."""
 
         rows = self.capacity if rows is None else int(rows)
+        placement = getattr(self, "history_placement", None)
+        if placement is not None:
+            return max(placement.layer_rank_bytes(
+                self.history_slot, layer, rows, self.history_rank,
+                self.kv_pair.row_bytes(1, self.kc[0].head_dim), self.kv_pair.dummy_bytes,
+                index_dim=self.index_dim, ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"))
+                for layer in range(self.layers))
         raw = getattr(self, "indexer_raw_device_bytes", None) or 0
         return rows * self.row_bytes + self.kv_pair.dummy_bytes + -(-rows // self.ratio) * self.index_dim * 2 + raw
 
     def layer_resize_bytes(self, rows: int) -> int:
         """Replacement GPU storage; the RAM owner's fixed ring/stages survive resize."""
+        if getattr(self, "history_placement", None) is not None:
+            return 0  # Full-window arena is immutable; migration has its separate bounded overlap.
         return self.layer_bytes(rows) - (getattr(self, "indexer_raw_device_bytes", None) or 0)
 
     def host_cache_bytes(self) -> int:
@@ -477,6 +545,10 @@ class State:
 
         self.kv_check()
         rows = int(rows)
+        if getattr(self, "history_placement", None) is not None and rows != self.capacity:
+            raise ValueError("unique histories retain fixed full-window arenas; context resize needs a separately admitted transition")
+        if getattr(self, "history_placement", None) is not None:
+            return 0
         before = self.cache_bytes()
         keep = max(self.pos, self.mtp_len)
         if rows < keep:
@@ -501,16 +573,20 @@ class State:
         """
 
         blocks, kept_blocks = -(-rows // self.ratio), -(-max(pos, mtp_len) // self.ratio)
+        def owner_rows(layer, count):
+            placement = getattr(self, "history_placement", None)
+            return count if placement is None or self.history_rank == placement.indexer_owner(
+                self.history_slot, layer, include_mtp=hasattr(self, "mtp_kc")) else 0
         for i in range(len(self.kc)):
             self.kc[i] = self.kc[i].resized(rows, pos)
             if getattr(self, "indexer_history_owner", None) is None:
-                self.ikc[i] = _rows(self.ikc[i], rows, pos)
-            self.pooled[i] = _rows(self.pooled[i], blocks, kept_blocks)
+                self.ikc[i] = _rows(self.ikc[i], owner_rows(i, rows), pos)
+            self.pooled[i] = _rows(self.pooled[i], owner_rows(i, blocks), kept_blocks)
         if hasattr(self, "mtp_kc"):
             self.mtp_kc = self.mtp_kc.resized(rows, mtp_len)
             if getattr(self, "indexer_history_owner", None) is None:
-                self.mtp_ikc = _rows(self.mtp_ikc, rows, mtp_len)
-            self.mtp_pooled = _rows(self.mtp_pooled, blocks, -(-mtp_len // self.ratio))
+                self.mtp_ikc = _rows(self.mtp_ikc, owner_rows(len(self.kc), rows), mtp_len)
+            self.mtp_pooled = _rows(self.mtp_pooled, owner_rows(len(self.kc), blocks), -(-mtp_len // self.ratio))
 
     def _poison_resize(self, error: BaseException) -> None:
         self._resize_error = error
@@ -579,6 +655,9 @@ class State:
 
         if self._resize_error is not None:
             raise self._kv_error if self._kv_error is not None else self._resize_error
+        if getattr(self, "_history_error", None) is not None:
+            raise self._history_error
+        self.slot_generation = getattr(self, "slot_generation", 0) + 1
         if getattr(self, "indexer_history_owner", None) is not None:
             self.indexer_history_owner.reset()
         if self.kv_status is not None:
@@ -604,6 +683,67 @@ class State:
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.reset(self)
 
+    def history_record(self) -> dict:
+        """Published CPU scalars only; safe for observability without a GPU fence."""
+        placement = getattr(self, "history_placement", None)
+        result = {"layout": "replicated" if placement is None else "unique",
+                  "slot": getattr(self, "history_slot", 0),
+                  "slot_generation": getattr(self, "slot_generation", 0),
+                  "ownership_generation": getattr(self, "history_generation", 0),
+                  "target_cached_length": self.pos,
+                  "target_tentative_length": getattr(self, "target_tentative_length", self.pos),
+                  "draft_valid_length": self.mtp_len - self.mtp_drafted,
+                  "draft_tentative_length": self.mtp_len,
+                  "incomplete_pool_rows": self.pos % self.ratio,
+                  "context_rows": self.capacity,
+                  "history_poisoned": getattr(self, "_history_error", None) is not None,
+                  "allocated_history_bytes": self.owned_cache_bytes()}
+        if placement is not None:
+            result.update(attention_degree=placement.degree,
+                          mtp_attention_degree=4 if hasattr(self, "mtp_kc") else None,
+                          page_tokens=placement.page_tokens, rank=self.history_rank,
+                          qualification="source-only; SM70 distributed qualification pending")
+            pending = getattr(self, "_history_migration", None)
+            result.update(pending_attention_degree=None if pending is None else pending["target"].degree,
+                          migration_blocked_reason=None if pending is None else pending.get("blocked_reason"),
+                          migration_bytes=getattr(self, "history_migration_bytes", 0),
+                          holder_ranks=sorted({owner for cache in self.kc for owner in cache.owners}))
+        return result
+
+    def history_page(self, layer: int, head: int, page: int) -> dict:
+        """Canonical logical identity; relocation never participates in codec identity."""
+        placement = self.history_placement
+        if placement is None:
+            raise ValueError("replicated history has no unique-owner page table")
+        placement._indices(self.history_slot, layer, head, page)
+        if layer == placement.target_layers and not hasattr(self, "mtp_kc"):
+            raise ValueError("this profile has no MTP history page")
+        start = page * placement.page_tokens
+        if start >= self.capacity:
+            raise ValueError("logical page is beyond this session's context commitment")
+        committed = self.pos if layer < placement.target_layers else self.mtp_len - self.mtp_drafted
+        tentative = (getattr(self, "target_tentative_length", self.pos)
+                     if layer < placement.target_layers else self.mtp_len)
+        return {"slot": self.history_slot, "slot_generation": self.slot_generation,
+                "layer": layer, "global_head": head, "logical_start": start,
+                "logical_rows": placement.page_rows(self.capacity, page),
+                "committed_rows": min(placement.page_tokens, max(0, committed - start)),
+                "tentative_rows": min(placement.page_tokens, max(0, tentative - start)),
+                "codec_identity": self.kv_identity,
+                "owner_rank": ((self.kc[layer] if layer < placement.target_layers else self.mtp_kc).owners[page] % 4
+                               + head * 4),
+                "ownership_generation": self.history_generation}
+
+    def begin_history_migration(self, degree: int, *, overlap_bytes: int | None = None) -> None:
+        from .history_owner import begin_migration
+
+        begin_migration(self, degree, overlap_bytes=overlap_bytes)
+
+    def migrate_history_bundle(self) -> bool:
+        from .history_owner import migrate_next_bundle
+
+        return migrate_next_bundle(self)
+
     def set_rope_delta(self, delta: int) -> None:
         self.rope_delta = int(delta)
         self.rope_delta_dev.fill_(int(delta))
@@ -625,6 +765,9 @@ class State:
             elif isinstance(value, list) and value and isinstance(value[0], kvcache.KVCache):
                 setattr(other, name, [v.clone() for v in value])
         other.cur = list(self.cur)
+        # An independent oracle clone owns new cache allocations and actual
+        # page maps, but cannot borrow a live transition's mutable progress.
+        other._history_migration = None
         if getattr(self, "indexer_history_owner", None) is not None:
             other.indexer_history_owner = self.indexer_history_owner.clone()
             other.ikc = [other.indexer_history_owner.layer(i) for i in range(len(self.kc))]
@@ -666,6 +809,13 @@ class State:
         for dst, src in pairs:
             if dst.pair != src.pair or (dst.kv_heads, dst.head_dim) != (src.kv_heads, src.head_dim):
                 raise ValueError("a prefix copy needs matching cache formats, dimensions and rotation tables")
+        if getattr(self, "history_placement", None) is not None:
+            from .history_owner import copy_prefix
+
+            copy_prefix(self, source, pos, mtp_len)
+            if getattr(self, "dspark_runtime", None) is not None:
+                self.dspark_runtime.copy_prefix(self, source, pos)
+            return
         lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "indexer_history_owner", None) is not None:
             # The owner validates both full archives before its first write.

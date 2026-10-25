@@ -373,6 +373,10 @@ class BoundStateGraphs:
         if source.rotor_lookup or any(state.image_positions is not None for state, _, _ in segs):
             return None
         width = self._width(kind, segs)
+        if len(segs) * width > source.rows:
+            # Graph padding consumes real storage and work. A compact eager
+            # microbatch can fit while its full-width captured lanes do not.
+            return None
         positions = mtp_positions if mtp_positions is not None else [
             state.pos if kind == "verify" else state.mtp_len for state, _, _ in segs]
         if len(positions) != len(segs) or any(type(value) is not int or value < 0 for value in positions):
@@ -480,7 +484,7 @@ class BoundStateGraphs:
         if runtime is not None:
             runtime.prepare_proposal_graphs(self)
         width = self.dec.depth + 1
-        for n in range(1, len(states) + 1):
+        for n in range(1, min(len(states), self.dec.buf.rows // width) + 1):
             active = list(reversed(states))[:n]
             segs = stage(self.dec.w, self.dec.buf, [(state, [0] * width) for state in active], late=True)
             self.forward("verify", segs)

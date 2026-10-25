@@ -14,6 +14,7 @@ import json
 
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.cuda.streams import Stream
+from tensorfold.cleanup import raise_failures
 
 
 class SharedMemoryGate(MemoryGate):
@@ -73,8 +74,12 @@ class TensorParallelDecoder:
         self._rows = decoder.prefill_rows
         self._points = decoder.points
         self.failure = None
+        self.prefix_operation = None
+        self.prefix_sequence = 0
         decoder.arrived = lambda: self._arrival
         decoder._pass_rows = lambda: self._rows
+        decoder.prefix_decisions = self._prefix_decisions
+        decoder.poison_control = self._poison_control
 
     def __getattr__(self, name):
         return getattr(self.decoder, name)
@@ -84,6 +89,19 @@ class TensorParallelDecoder:
 
     def _ack_key(self, sequence, peer):
         return f"tensorfold/flashnext/round/{sequence}/ack/{peer}"
+
+    def _poison_control(self, error):
+        first = self.failure is None
+        if self.failure is None:
+            self.failure = error
+        self.engine._abort_comm = True
+        if first:
+            from tensorfold.cuda.cohort import notify_failure
+
+            try:
+                notify_failure()
+            except BaseException as notification:
+                raise_failures(error, [notification])
 
     def _remember(self, wire, stream):
         self.requests[wire] = stream
@@ -117,7 +135,8 @@ class TensorParallelDecoder:
                 "stop_eos": stream.stop_eos, "background": stream.background,
                 "sampling": None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
                                                            sampling.top_p, sampling.min_p],
-                "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry}
+                "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
+                "token_limit": stream.token_limit is not None}
 
     def _unpack(self, body):
         from tensorfold.engine.exact_sampling import Sampling
@@ -127,21 +146,78 @@ class TensorParallelDecoder:
             from tensorfold.engine import grammar
 
             constraint = grammar.compiler(self.engine, self.engine.model_dir, self.engine.eos).follow(body["grammar"])
-        return Stream(list(body["prompt"]), int(body["count"]),
+        stream = Stream(list(body["prompt"]), int(body["count"]),
                       None if body["sampling"] is None else Sampling(*body["sampling"]),
                       draft=bool(body["draft"]), stop_eos=bool(body["stop_eos"]),
                       background=bool(body["background"]), constraint=constraint,
                       owed=list(body["owed"]), carry=body["carry"])
+        stream._tp_token_limit = bool(body.get("token_limit", False))
+        return stream
 
-    def _controls(self):
+    def _prefix_decisions(self, decisions, error=None):
+        """One leader-owned stop decision, before any peer publishes state.
+
+        CPU metadata uses the existing ordered store; no hot GPU allocation or
+        extra device-wide fence is introduced. Operation acknowledgments bound
+        the lifetime of the peer-owned keys.
+        """
+        if self.prefix_operation is None:
+            raise RuntimeError("stop decisions require an ordered TP scheduler operation")
+        step = self.prefix_sequence
+        self.prefix_sequence += 1
+        def key(peer):
+            return f"tensorfold/flashnext/prefix/{self.prefix_operation}/{step}/rank/{peer}"
+        if self.comm.rank == 0:
+            payload = json.dumps({"decisions": decisions, "failed": error is not None}, separators=(",", ":"))
+            keys = [key(peer) for peer in range(1, self.comm.world)]
+            try:
+                many = getattr(self.comm.store, "multi_set", None)
+                if callable(many):
+                    many(keys, [payload] * len(keys))
+                else:
+                    for item in keys:
+                        self.comm.store.set(item, payload)
+            except BaseException as failure:
+                # A partial publication leaves peers at different control
+                # positions. Abort this cohort; normal ACK aggregation cannot
+                # finish while an unpublished peer waits for its decision.
+                self._poison_control(failure)
+                raise
+            failed = error is not None
+        else:
+            own = key(self.comm.rank)
+            self.comm.store.wait([own], timedelta(hours=1))
+            payload = json.loads(self.comm.store.get(own))
+            self.comm.store.delete_key(own)
+            decisions, failed = payload["decisions"], payload["failed"]
+        if failed:
+            raise RuntimeError("tensor-parallel stop-boundary policy failed") from error
+        return decisions
+
+    def _controls(self, execution=None):
         forgotten = [wire for wire, stream in self.requests.items()
                      if stream.st is None and stream.cancel.snapshot()]
-        return {"forget": forgotten,
-                "cancel": [[wire, stream.cancel.snapshot()] for wire, stream in self.requests.items()
-                           if wire not in forgotten],
-                "arrived": bool(self.arrived()), "pass_rows": self._pass_rows()}
+        result = {"forget": forgotten,
+                  "cancel": [[wire, stream.cancel.snapshot()] for wire, stream in self.requests.items()
+                             if wire not in forgotten],
+                  "arrived": bool(self.arrived())}
+        controller = getattr(self.decoder, "controller", None)
+        quota = None
+        if controller is not None:
+            settings = None if execution is None else {name: execution[name] for name in controller.maximum}
+            boundary = controller.freeze_boundary(settings)
+            result["execution_boundary"] = boundary
+            quota = getattr(self.decoder, "pass_rows_for", None)
+        result["pass_rows"] = self._pass_rows() if quota is None else quota(boundary["settings"])
+        return result
 
     def _apply_controls(self, body):
+        controller = getattr(self.decoder, "controller", None)
+        boundary = body.get("execution_boundary")
+        if controller is not None:
+            controller.apply_boundary(boundary)
+        elif boundary is not None:
+            raise ValueError("this tensor-parallel decoder has no execution controller")
         for wire in body["forget"]:
             self._forget(wire)
         for wire, cancelled in body["cancel"]:
@@ -154,12 +230,19 @@ class TensorParallelDecoder:
                   stream.drafts, stream.owed, bool(stream.done), bool(stream.waiting),
                   None if stream.st is None else [stream.st.pos, getattr(stream.st, "mtp_len", None),
                                                   getattr(stream.st, "mtp_drafted", None),
-                                                  getattr(stream.st, "cur", None)],
+                                                  getattr(stream.st, "cur", None),
+                                                  getattr(stream.st, "slot_generation", None),
+                                                  getattr(stream.st, "history_generation", None)],
                   None if stream.error is None else type(stream.error).__name__)
                  for wire, stream in self.requests.items()]
-        return hashlib.sha256(json.dumps(state, separators=(",", ":")).encode()).hexdigest()
+        controller = getattr(self.decoder, "controller", None)
+        execution = None if controller is None else [controller.epoch, controller.effective,
+                                                     controller.last_served]
+        return hashlib.sha256(json.dumps([state, execution], separators=(",", ":")).encode()).hexdigest()
 
     def _dispatch(self, body, source=None):
+        self.prefix_operation = body["sequence"]
+        self.prefix_sequence = 0
         self._apply_controls(body["control"])
         kind = body["kind"]
         if kind == "admit":
@@ -178,7 +261,11 @@ class TensorParallelDecoder:
             finally:
                 self.decoder.points = original
         if kind == "round":
+            if "execution" in body:
+                self.decoder.accept_execution(body["execution"])
             return self.decoder.round()
+        if kind == "profile_manifest":
+            return self.decoder.install_execution_manifest(body["name"])
         if kind in ("cancel", "finish"):
             streams = [self.requests[wire] for wire in body["wires"]]
             result = getattr(self.decoder, kind)(streams)
@@ -215,9 +302,10 @@ class TensorParallelDecoder:
             raise RuntimeError("tensor-parallel scheduler is poisoned; retire the rank cohort") from self.failure
         if self.comm.rank != 0:
             raise RuntimeError("only rank zero submits tensor-parallel scheduler operations")
-        body["control"] = self._controls()
+        body["control"] = self._controls(body.get("execution"))
         sequence = self.sequence
         self.sequence += 1
+        body["sequence"] = sequence
         text = json.dumps(body, separators=(",", ":"))
         try:
             messages = [self._key(sequence, peer) for peer in range(1, self.comm.world)]
@@ -228,6 +316,8 @@ class TensorParallelDecoder:
                 for key in messages:
                     self.comm.store.set(key, text)
             result, error, status = self._execute(body, source)
+            if self.failure is not None:
+                raise RuntimeError("tensor-parallel control publication failed; retire all rank owners") from self.failure
             keys = [self._ack_key(sequence, peer) for peer in range(1, self.comm.world)]
             self.comm.store.wait(keys, timedelta(hours=1))
             get_many = getattr(self.comm.store, "multi_get", None)
@@ -238,15 +328,15 @@ class TensorParallelDecoder:
                 remote = json.loads(payload)
                 self.comm.store.delete_key(key)
                 if remote != status:
-                    self.failure = RuntimeError(f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}")
+                    self._poison_control(RuntimeError(
+                        f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}"))
         except BaseException as failure:
             # A set/get may have succeeded before interruption. Never publish
             # a later operation after uncertain peer execution or retirement.
-            self.failure = failure
-            self.engine._abort_comm = True
+            self._poison_control(failure)
             raise
         if error is not None and not isinstance(error, (NoRoom, ValueError)):
-            self.failure = error
+            self._poison_control(error)
         if self.failure is not None:
             self.engine._abort_comm = True
             raise RuntimeError("tensor-parallel scheduler operation failed; retire all rank owners") from self.failure
@@ -263,7 +353,14 @@ class TensorParallelDecoder:
         return self._invoke(body, source=stream)
 
     def round(self):
-        return self._invoke({"kind": "round"})
+        body = {"kind": "round"}
+        freeze = getattr(self.decoder, "freeze_execution", None)
+        if freeze is not None:
+            body["execution"] = freeze()
+        return self._invoke(body)
+
+    def install_execution_manifest(self, relative_name):
+        return self._invoke({"kind": "profile_manifest", "name": relative_name})
 
     def cancel(self, streams):
         return self._invoke({"kind": "cancel", "wires": [self.wires[id(stream)] for stream in streams]})
@@ -310,9 +407,12 @@ class TensorParallelDecoder:
         return body
 
     def apply(self, body):
-        _result, error, status = self._execute(body)
-        self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank), json.dumps(status))
+        try:
+            _result, error, status = self._execute(body)
+            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank), json.dumps(status))
+        except BaseException as failure:
+            self._poison_control(failure)
+            raise
         if error is not None and not isinstance(error, (NoRoom, ValueError)):
-            self.failure = error
-            self.engine._abort_comm = True
+            self._poison_control(error)
             raise RuntimeError("tensor-parallel scheduler peer failed; retire all rank owners") from error

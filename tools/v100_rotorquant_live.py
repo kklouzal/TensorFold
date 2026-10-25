@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import threading
@@ -26,9 +27,11 @@ import urllib.request
 if __package__:
     from . import openai_protocol as protocol
     from .benchmark_output import write_json
+    from .worker_lifetime import raise_failures
 else:
     import openai_protocol as protocol
     from benchmark_output import write_json
+    from worker_lifetime import raise_failures
 
 
 CASES = (
@@ -157,19 +160,70 @@ def capacity_proof(stats, *, parallel, kv_dtype, context=None):
             "graphs": plan.get("multi_graphs"), "allocation_source": "public startup receipt; no new full-context payload test"}
 
 
+class ReadCancelled(RuntimeError):
+    pass
+
+
+class ReadControl:
+    """Caller-owned cooperative body deadline/cancellation, not an acquisition deadline.
+
+    Cancellation is observed before/after each read, including SSE comments.
+    An in-flight read can last one acquisition-time socket timeout. DNS/status/
+    header acquisition has that socket inactivity limit, not a whole-wall bound.
+    The response-owning caller must retire before this control is discarded.
+    Opt-in cancellation requires the direct TensorFold response framing (fixed
+    length or connection-close). Chunked header/trailer parsing can perform
+    multiple reads inside HTTPResponse.read1 and is rejected under this policy.
+    """
+
+    def __init__(self, deadline, cancelled=None):
+        if not math.isfinite(deadline):
+            raise ValueError("finite HTTP read deadline required")
+        self.deadline = deadline
+        self.cancelled = cancelled if cancelled is not None else threading.Event()
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise ReadCancelled("HTTP response cancellation requested")
+        if time.monotonic() >= self.deadline:
+            raise TimeoutError("cooperative HTTP response deadline expired")
+
+    def acquisition_timeout(self, configured):
+        self.check()
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("HTTP response deadline expired before acquisition")
+        return min(configured, remaining)
+
+
 class RecordedResponse:
-    def __init__(self, response, stream, limit):
+    def __init__(self, response, stream, limit, read_control=None):
         self.response, self.stream, self.limit, self.consumed = response, stream, limit, 0
         self.status = response.status
+        self.read_control = read_control
+        if read_control is not None and response.headers.get("Transfer-Encoding", ""):
+            raise ValueError("cooperative read control requires fixed-length or connection-close response framing")
 
     def getheader(self, *args):
         return self.response.getheader(*args)
 
     def read1(self, amount):
-        raw = self.response.read1(min(amount, self.limit - self.consumed + 1))
+        if self.read_control is not None:
+            self.read_control.check()
+        try:
+            raw = self.response.read1(min(amount, self.limit - self.consumed + 1))
+        except BaseException as error:
+            if self.read_control is not None:
+                try:
+                    self.read_control.check()
+                except (ReadCancelled, TimeoutError) as cancellation:
+                    raise cancellation from error
+            raise
         self.stream.write(raw)
         self.consumed += len(raw)
         require(self.consumed <= self.limit, "HTTP response exceeded bounded size")
+        if self.read_control is not None:
+            self.read_control.check()
         return raw
 
 
@@ -180,7 +234,7 @@ class Client:
         self.url, self.output, self.timeout = url.rstrip("/"), Path(output), timeout
         self.limits = limits or protocol.Limits()
 
-    def call(self, label, body=None, *, path=None, cancel=False):
+    def call(self, label, body=None, *, path=None, cancel=False, object_response=False, observer=None, read_control=None):
         require(re.fullmatch(r"[a-zA-Z0-9_-]+", label) is not None, "safe unique exchange label required")
         directory = self.output / label
         directory.mkdir()
@@ -189,15 +243,24 @@ class Client:
         request = urllib.request.Request(self.url + path, data=None if body is None else json.dumps(body).encode(),
                                          headers={"Content-Type": "application/json"})
         metadata = {"complete": False, "cancelled_by_client": False}
+        primary = None
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response, (directory / "response.raw").open("wb") as raw:
+            timeout = self.timeout if read_control is None else read_control.acquisition_timeout(self.timeout)
+            if read_control is not None:
+                metadata["read_control"] = {"deadline_monotonic_s": read_control.deadline,
+                    "socket_inactivity_timeout_s": timeout,
+                    "body_completion_bound_after_acquisition_monotonic_s": read_control.deadline + timeout,
+                    "contract": "cooperative body deadline/cancel; one in-flight read may last socket timeout; "
+                                "DNS/status/header acquisition has no whole-wall guarantee"}
+            with urllib.request.urlopen(request, timeout=timeout) as response, (directory / "response.raw").open("wb") as raw:
+                metadata["acquired_monotonic_s"] = time.monotonic()
                 metadata.update(status=response.status, headers=list(response.headers.items()))
-                recorded = RecordedResponse(response, raw, self.limits.response_bytes)
+                recorded = RecordedResponse(response, raw, self.limits.response_bytes, read_control)
                 if body is not None and body.get("stream"):
                     protocol.response_type(recorded, "text/event-stream")
-                    result = self.read_stream(recorded, body, cancel=cancel)
+                    result = self.read_stream(recorded, body, cancel=cancel, observer=observer)
                     metadata.update(complete=not cancel, cancelled_by_client=cancel, done=not cancel)
-                elif body is not None:
+                elif body is not None and not object_response:
                     result = protocol.json_response(recorded, body["max_tokens"], limits=self.limits)
                     metadata["complete"] = True
                 else:
@@ -210,20 +273,31 @@ class Client:
                 write_json(directory / "result.json", result)
                 return result
         except BaseException as error:
+            primary = error
+            metadata["error"] = {"type": type(error).__name__, "message": str(error)}
             if isinstance(error, urllib.error.HTTPError):
                 metadata.update(status=error.code, headers=list(error.headers.items()))
-                with error, (directory / "response.raw").open("wb") as raw:
-                    raw.write(error.read(self.limits.response_bytes + 1))
-            metadata["error"] = {"type": type(error).__name__, "message": str(error)}
+                try:
+                    with error, (directory / "response.raw").open("wb") as raw:
+                        recorded = RecordedResponse(error, raw, self.limits.response_bytes, read_control)
+                        while recorded.read1(protocol.READ_BYTES):
+                            pass
+                except BaseException as recording:
+                    raise error from recording
             raise
         finally:
-            write_json(directory / "exchange.json", metadata)
+            try:
+                write_json(directory / "exchange.json", metadata)
+            except BaseException as publication:
+                raise_failures(primary, [publication])
 
-    def read_stream(self, response, body, *, cancel):
+    def read_stream(self, response, body, *, cancel, observer=None):
         content, reasoning, usage, runtime, finish, events = [], [], None, None, None, []
         for event in protocol.sse_objects(response, limits=self.limits):
             events.append(event)
             current_usage, current_runtime, pieces = protocol.chunk_fields(event)
+            if observer is not None:
+                observer(event, pieces)
             usage = current_usage if current_usage is not None else usage
             runtime = current_runtime if current_runtime is not None else runtime
             for choice in event.get("choices", []):

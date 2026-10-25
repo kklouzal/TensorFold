@@ -7,7 +7,8 @@ from typing import Any
 
 from .kv_formats import DTYPES
 
-CUDA_DRAFT_METHODS = ("auto", "mtp", "dspark")
+CUDA_DRAFT_METHODS = ("auto", "none", "mtp", "dspark")
+CUDA_ADAPTIVE_SESSIONS = True  # GGUF provider resolves auto; modern CUDA retains its existing one-stream default.
 CUDA_KV_DTYPES = DTYPES          # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
 
 MODEL_TYPES = ("qwen4_exp", "qwen3_8_flash_next")   # the second: the name newer exports (Mia-AiLab's NVFP4) carry
@@ -219,19 +220,29 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("indexer_history must be gpu or ram")
     if history == "ram" and not gguf:
         raise ValueError("indexer_history ram requires the GGUF SM70 provider")
+    execution_manifest = options.get("execution_profile_manifest")
+    if execution_manifest is not None and not (gguf and history == "gpu" and vram_experts is None):
+        raise ValueError("execution_profile_manifest requires resident Flash Next GGUF GPU histories on SM70")
     method = options.get("draft_method", "auto")
     if method not in CUDA_DRAFT_METHODS:
-        raise ValueError("Flash Next draft_method must be auto, mtp or dspark")
+        raise ValueError("Flash Next draft_method must be auto, none, mtp or dspark")
     if method == "dspark" and not gguf:
         raise ValueError("DSpark currently requires the Flash Next GGUF SM70 provider")
+    if method == "none":
+        no_drafts, drafter = True, ""
     if drafter and not gguf:
         raise ValueError(f"{TITLE} drafts with its own MTP head on CUDA: a separate draft model does not apply")
     from .cuda import CONFIDENCE, DEPTH
     from .cuda.engine import FlashNextEngine
     from .kv_formats import get_pair
 
-    get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # validate before weights or Torch are loaded
+    pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # before weights or Torch are loaded
+    if not gguf and any(side.compact is not None for side in (pair.key, pair.value)):
+        raise ValueError("compact Planar4 KV requires the GGUF SM70 execution provider")
     depth = 0 if no_drafts else DEPTH if mtp_drafts is None else int(mtp_drafts)
+    if method == "mtp" and depth == 0:
+        raise ValueError("explicit MTP requires a positive maximum depth; use runtime proposal_limit 0 to retain "
+                         "warm MTP capability, or select --draft-method none to disable it")
     if method == "dspark" and depth > 0 and not drafter:
         raise ValueError("DSpark requires its checkpoint directory through --drafter")
     if depth and not drafter and not has_mtp(Path(model_dir)):
@@ -249,22 +260,39 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     # session. The guarded handoff below also covers constructor allocation and
     # argument-unpacking failures before a consumer can own its rollback.
     directory = Path(model_dir)
+    parallel = options.get("parallel")
+    parallel_auto = options.get("parallel_auto", parallel is None or parallel == "auto")
+    if type(parallel_auto) is not bool:
+        raise ValueError("parallel_auto must be boolean")
+    automatic = parallel_auto
+    if gguf and not automatic and (type(parallel) is not int or parallel < 1):
+        raise ValueError("the GGUF session ceiling must be a positive integer or auto")
+    streams = 1 if automatic else int(parallel)
     engine_options = {"depth": depth, "confidence": confidence, "max_len": context,
                       "context_explicit": options.get("context_explicit"), "tp": int(tp), "rank": int(rank),
-                      "master": master, "port": int(master_port), "streams": max(1, int(options.get("parallel") or 1)),
+                      "master": master, "port": int(master_port), "streams": max(1, streams),
                       "ple_on_ssd": ple_on_ssd, "kv_dtype": kv_dtype,
                       "kv_key_dtype": kv_key_dtype, "kv_value_dtype": kv_value_dtype,
                       "share": 0.0 if decode_share is None else float(decode_share),
                       "vision": bool(options.get("vision", False)),
                       "vision_urls": bool(options.get("vision_urls", False)), "yarn_factor": yarn_factor,
                       "vram_experts": vram_experts}
+    if gguf and history == "gpu":
+        # Preserve auto intent through the CLI's ordinary CUDA one-stream
+        # default. Integer settings constrain the solved full-context capacity.
+        engine_options.update(adaptive_sessions=True,
+                              session_ceiling=None if automatic else int(parallel))
+        if options.get("execution_rows") is not None:
+            engine_options["execution_rows"] = options["execution_rows"]
+        if execution_manifest is not None:
+            engine_options["execution_profile_manifest"] = Path(execution_manifest)
     if vram_experts_pin != "off":
         engine_options["vram_experts_pin"] = vram_experts_pin
     if history != "gpu":
         engine_options["indexer_history"] = history
     if gguf and drafter:
-        from .cuda.dspark_admission import is_dspark
-        kind = "dspark" if is_dspark(drafter) else "mtp"
+        from .cuda.speculation import checkpoint_method
+        kind = checkpoint_method(drafter)
         if method != "auto" and method != kind:
             raise ValueError(f"--draft-method {method} does not match the selected {kind} drafter checkpoint")
         key = "dspark_model_dir" if kind == "dspark" else "mtp_model_dir"
@@ -273,8 +301,12 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("DSpark requires its checkpoint directory through --drafter")
     if "draft_vocab" in options:
         engine_options["draft_vocab"] = options["draft_vocab"]
-    if options.get("kv_full_windows") is not None:
-        engine_options["kv_full_windows"] = options["kv_full_windows"]
+    full_windows = options.get("kv_full_windows")
+    if full_windows == "auto":
+        if not (gguf and history == "gpu" and vram_experts is None):
+            raise ValueError("kv_full_windows auto requires resident GGUF GPU histories and automatic capacity")
+    elif full_windows is not None:
+        engine_options["kv_full_windows"] = full_windows
     for name in ("eos_token_ids", "chat_template_file", "chat_template_name"):
         if options.get(name) is not None:
             engine_options[name] = options[name]

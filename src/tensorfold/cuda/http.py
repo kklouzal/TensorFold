@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
-from tensorfold.server import anthropic, metrics, request_body, responses, stats, token_routes
+from tensorfold.server import anthropic, metrics, request_body, responses, runtime, stats, token_routes
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
 from tensorfold.server.errors import (RequestError, error_body, invalid_request, retry_headers, server_error, status_of,
@@ -97,6 +97,11 @@ def make_handler(app: App):
                 return metrics.send(self, app)
             if route in stats.ROUTES:
                 return stats.send(self, app)
+            if route == runtime.ROUTE:
+                reading = runtime.snapshot(app)
+                if reading is None:
+                    return self._json(404, {"error": unknown_route("GET", self.path)})
+                return self._json(200, reading)
             model_id = model_route(route)
             if model_id is not None:
                 self._json(*models_reply(app, model_id, getattr(app, "max_model_len", None)))
@@ -123,6 +128,15 @@ def make_handler(app: App):
 
         def do_POST(self):
             path = self.path.split("?", 1)[0].rstrip("/")
+            if path == runtime.ROUTE:
+                try:
+                    body = json.loads(read_body(self, limit=runtime.MAX_BODY_BYTES) or b"{}")
+                    reply = runtime.request(app, body)
+                except RequestError as error:
+                    return self._refuse(error)
+                except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+                    return self._json(400, {"error": invalid_request("the request body is not JSON")})
+                return self._json(200, reply)
             if path.endswith("/decisions"):
                 return self._post_decisions()
             if anthropic.route(self.path):

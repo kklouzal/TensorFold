@@ -39,9 +39,9 @@ services:
       - --context
       - "${TF_CONTEXT:-8192}"
       - --parallel
-      - "${TF_PARALLEL:-2}"
+      - "${TF_PARALLEL:-auto}"
       - --kv-full-windows
-      - "${TF_KV_FULL_WINDOWS:-${TF_PARALLEL:-2}}"
+      - "${TF_KV_FULL_WINDOWS:-auto}"
       - --kv-dtype
       - "${TF_KV_DTYPE:-fp16}"
       - --indexer-history

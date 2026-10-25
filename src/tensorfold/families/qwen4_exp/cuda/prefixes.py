@@ -73,18 +73,57 @@ def _spare(kept) -> list:
     return spare
 
 
+def _take_free(owner, protect=None):
+    """Acquire one idle slot for a new admission, retaining all other endpoints.
+
+    The optional prefix ladder and retained-session ownership are independent:
+    dropping a ladder point never retires its complete idle context. Adaptive
+    admission first uses an untouched slot, then replaces the least recently
+    used idle endpoint across both free slots and slots with kept points.
+    """
+
+    if not getattr(owner, "retain_sessions", False):
+        return owner.free.pop() if owner.free else None
+    busy = owner._busy()
+    retained = owner.retained
+    candidates = {id(st): st for st in owner.free}
+    candidates.update({key: entry["state"] for key, entry in retained.items()})
+    candidates = {key: st for key, st in candidates.items() if key not in busy and st is not protect}
+    if not candidates:
+        return None
+
+    def priority(item):
+        key, st = item
+        entry = retained.get(key)
+        return (entry is not None, 0 if entry is None else entry["last_use"], st.history_slot)
+
+    _, selected = min(candidates.items(), key=priority)
+    # Retire metadata before any copy, restore or cold prefill can overwrite
+    # the selected context. Other endpoints keep both state and commitment.
+    owner._retire_retained(selected, reason="new_admission")
+    owner._drop_kept(selected)
+    owner.free = [st for st in owner.free if st is not selected]
+    return selected
+
+
 def slot_for(owner, prompt: list[int], reuse: bool):
     """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards."""
 
     busy = owner._busy()
     best = _best(owner.kept, prompt) if reuse else None
-    if best is not None and owner.free and (id(best[1]) in busy or _longer(owner.kept, best)):
-        spare = owner.free.pop()
+    adaptive = getattr(owner, "retain_sessions", False)
+    if best is not None and (owner.free or adaptive) and (id(best[1]) in busy or _longer(owner.kept, best)):
+        spare = _take_free(owner, protect=best[1])
+    else:
+        spare = None
+    if spare is not None:
         try:
             if owner._grow(spare, len(prompt) + owner.depth + 2, protect=best[1]):
                 spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"])
                 _use(owner, best[1])
                 return spare, {"state": best[2], "tail": best[3]}, len(best[0])
+            if adaptive:
+                raise RuntimeError("a fully resident destination cannot satisfy its reserved context")
         except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
             try:
                 owner._quarantine(spare)
@@ -107,10 +146,17 @@ def slot_for(owner, prompt: list[int], reuse: bool):
         n = len(best[0])
         owner.kept = [k for k in owner.kept if k[1] is not best[1]
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
+        if adaptive:
+            owner._retire_retained(best[1], reason="new_admission")
         _use(owner, best[1])
         return best[1], {"state": best[2], "tail": best[3]}, n
+    if adaptive:
+        idle = _take_free(owner)
+        if idle is None:
+            raise RuntimeError("no idle retained session slot is available for a new admission")
+        return idle, None, 0
     if owner.free:
-        return owner.free.pop(), None, 0
+        return _take_free(owner), None, 0
     idle = evict(owner, None)
     if idle is None:
         raise RuntimeError("no free stream slot")

@@ -12,6 +12,15 @@ if not ROOT.exists():
     ROOT = Path(find_spec('tensorfold.families.qwen4_exp.cuda').origin).parent
 
 
+def proposal_limits(owner):
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+
+    contract = MethodGeometry("dspark", owner.depth)
+    owner._proposal_count = lambda _stream, remaining: contract.cap_proposals(
+        owner.depth, reply_tokens=max(0, remaining), context_tokens=4096, target_rows=32)
+    return owner
+
+
 def method(file, name, cls=None, **namespace):
     namespace.setdefault("DEPTH", 3)
     namespace.setdefault("CONFIDENCE", 0.0)
@@ -51,10 +60,11 @@ class Dispatch(unittest.TestCase):
     def test_multi_without_stock_buffers_proposes_after_committed_prefix(self):
         calls = []
         runtime = NS(draft=lambda *a: calls.append(a) or [41])
-        obj = NS(w=NS(dspark=runtime), depth=3, confidence=.2, buf=None, pbuf=None, capacity=4096, prefill_rows=2048)
+        obj = proposal_limits(NS(w=NS(dspark=runtime), depth=3, confidence=.2, buf=None, pbuf=None,
+                                 capacity=4096, prefill_rows=2048))
         state, policy = object(), object()
         s = NS(sid=1, count=20, out=[1, 2, 3], st=state, sampling=policy, drafts=[999])
-        fn = method('multi.py', '_draft_all', cls='MultiDecoder', _slot=lambda w, st, *a: NS(w=w, st=st))
+        fn = method('multi.py', '_draft_all', cls='MultiDecoder', _slot=lambda w, st, *a, **kw: NS(w=w, st=st))
         fn(obj, [(s, 0, [8, 9])])
         self.assertEqual(s.drafts, [41])
         self.assertIs(calls[0][0].st, state)
@@ -62,7 +72,7 @@ class Dispatch(unittest.TestCase):
 
     def test_multi_remaining_room_clears_old_proposals(self):
         runtime = NS(draft=lambda *a: self.fail('no output room'))
-        obj = NS(w=NS(dspark=runtime), depth=7)
+        obj = proposal_limits(NS(w=NS(dspark=runtime), depth=7))
         s = NS(count=3, out=[1, 2], drafts=[999])
         fn = method('multi.py', '_draft_all', cls='MultiDecoder')
         fn(obj, [(s, 0, [7])])
@@ -71,7 +81,7 @@ class Dispatch(unittest.TestCase):
     def test_copy_context_is_temporary_and_aux_provider_can_be_skipped(self):
         calls = []
         runtime = NS(draft=lambda *a: self.fail('valid copy ignored'))
-        obj = NS(w=NS(dspark=runtime), depth=3)
+        obj = proposal_limits(NS(w=NS(dspark=runtime), depth=3))
         s = NS(sid=7, count=20, out=[1], context=[11], drafts=[], copies=NS(propose=lambda *a: calls.append(a) or [31, 32, 33]))
         fn = method('multi.py', '_draft_all', cls='MultiDecoder', COPY_MATCH=8)
         fn(obj, [(s, 0, [17])], {7: [19]})
@@ -82,7 +92,7 @@ class Dispatch(unittest.TestCase):
     def test_failed_copy_restores_context_and_keeps_no_proposals(self):
         def broken(*_):
             raise RuntimeError('copy failed')
-        obj = NS(w=NS(dspark=object()), depth=3)
+        obj = proposal_limits(NS(w=NS(dspark=object()), depth=3))
         s = NS(sid=7, count=20, out=[1], context=[11], drafts=[999], copies=NS(propose=broken))
         fn = method('multi.py', '_draft_all', cls='MultiDecoder', COPY_MATCH=8)
         with self.assertRaisesRegex(RuntimeError, 'copy failed'):
@@ -104,10 +114,10 @@ class CoupledVerifier(unittest.TestCase):
             st.pos += keep
         def result(*a):
             return a
-        fn = method('decode.py', 'mtp_decode', draft=lambda *a: [21, 999, 41], commit=committed,
+        fn = method('decode.py', 'mtp_decode', draft=lambda *a: [21, 999, 41][:a[4]], commit=committed,
                     absorb=lambda *a: self.fail('DSpark final stock absorb'), DecodeResult=result,
                     torch=NS(cuda=NS(synchronize=lambda: None)), time=NS(perf_counter=lambda: 1.0))
-        value = fn(e, 10, 3, None, depth=3)
+        value = fn(e, 10, 5, None, depth=3, on_tokens=lambda _new: True)
         self.assertEqual(value[0], [10, 21, 31])
         self.assertEqual(value[2:5], (1, 3, 1))
         self.assertEqual(calls, [('inputs', [10, 21, 999, 41]), ('commit', 4, 2)])
@@ -142,7 +152,8 @@ class AdmissionGeometry(unittest.TestCase):
             calls = []
             plan = NS(config=NS(context=262144, block=7), resident_bytes=1000, loading_host_bytes=91,
                       capacity_bytes=lambda total, **kw: calls.append((total, kw)) or 7*total + 31)
-            namespace = dict(dspark_plan=plan, streams=slots, each=4, rows0=2048, graphs=graphs, depth=3, tp=8,
+            namespace = dict(dspark_plan=plan, streams=slots, concurrent=slots > 1, adaptive_sessions=False,
+                             each=4, rows0=2048, graphs=graphs, depth=3, tp=8,
                              resident_windows=None,
                              geometry=lambda text: Geometry(lambda total: 13*total + 97, 17, 21),
                              numeric_capacity={'resident_extra': 29}, host_capacity={'host_extra_staging': 43},

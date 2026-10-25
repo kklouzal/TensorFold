@@ -75,8 +75,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     serve."""
 
     method = getattr(args, "draft_method", "auto")
-    if method not in ("auto", "mtp", "dspark"):
-        raise ValueError("--draft-method must be auto, mtp or dspark")
+    if method not in ("auto", "none", "mtp", "dspark"):
+        raise ValueError("--draft-method must be auto, none, mtp or dspark")
     if method != "auto" and (backend != "cuda" or method not in getattr(family.package, "CUDA_DRAFT_METHODS", ())):
         raise ValueError("--draft-method requires a CUDA model with the selected proposal method")
     draft_rows = getattr(args, "draft_rows", None)
@@ -107,18 +107,32 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if source is None or resolve_gguf(source) is None:
             raise ValueError("--indexer-history ram requires a local Flash Next GGUF checkpoint")
+    manifest = getattr(args, "execution_profile_manifest", None)
+    if manifest is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or history != "gpu" or getattr(args, "vram_experts", None) is not None
+                or source is None or resolve_gguf(source) is None):
+            raise ValueError("--execution-profile-manifest requires resident Flash Next GGUF GPU histories on SM70")
     windows = getattr(args, "kv_full_windows", None)
     if windows is not None:
-        if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":
+        if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
             raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
         from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
-        if type(windows) is not int or windows < 1:
-            check_kv_full_windows(windows, streams=1, vram_experts=None)
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
         resident_gguf = config_dir is not None and resolve_gguf(config_dir) is not None
-        check_kv_full_windows(windows, streams=_cuda_streams(getattr(args, "parallel", "auto")),
-                              vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1),
-                              resident_gguf=resident_gguf)
+        adaptive_gguf = resident_gguf and history == "gpu" and getattr(args, "vram_experts", None) is None
+        if windows == "auto":
+            if not adaptive_gguf:
+                raise ValueError("--kv-full-windows auto requires resident GGUF GPU histories and automatic capacity")
+        elif type(windows) is not int or windows < 1:
+            check_kv_full_windows(windows, streams=1, vram_experts=None)
+        elif not adaptive_gguf:
+            check_kv_full_windows(windows, streams=_cuda_streams(getattr(args, "parallel", "auto")),
+                                  vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1),
+                                  resident_gguf=resident_gguf)
     if backend == "cuda":
         _cuda_topology(args, family)
     if backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe" and not getattr(args, "no_drafts", False):

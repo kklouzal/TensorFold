@@ -44,11 +44,17 @@ def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:
     (``gdn_multi.RoundTables``; ``attn_multi.StepTables`` for the verify and, with ``mtp``, the MTP steps), and its
     pinned codec status words (``MultiDecoder.kv_host``), in bytes."""
 
+    device, host = multi_static_domains(t, streams, each, mtp)
+    return device + host
+
+
+def multi_static_domains(t: dict, streams: int, each: int, mtp: bool) -> tuple[int, int]:
+    """Actual device slabs and pinned host mirrors; neither is an extra copy of the other domain."""
     linear, attention = layer_counts(t)
     rows = streams * each
     tables = ((8 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
               + (1 + mtp) * (2 * rows + 2 * streams) * 4 + (attention * 6 + 4 + mtp * 10) * streams * 8)
-    return 2 * tables + 8 * streams
+    return tables, tables + 8 * streams
 
 
 def indexed_prefill_rows() -> int | None:
@@ -114,10 +120,15 @@ def exl3_indexed_scratch(t: dict, window: int, rows: int) -> int:
     return moe + exl3_workspace(largest, rows * hc, max(d, heads * hd)) + ple
 
 
-def with_fixed(geometry: Geometry, extra: int) -> Geometry:
+def with_fixed(geometry: Geometry, extra: int, *, label: str = "additional_workspace") -> Geometry:
     """``geometry`` plus ``extra`` bytes that do not grow with the cache."""
 
-    return Geometry(lambda slots: geometry.bytes_at(slots) + extra, geometry.reserve, geometry.minimum_slots)
+    def breakdown(slots):
+        values = dict(geometry.breakdown_at(slots))
+        values[label] = values.get(label, 0) + extra
+        return values
+    return Geometry(lambda slots: geometry.bytes_at(slots) + extra, geometry.reserve, geometry.minimum_slots,
+                    breakdown if geometry.breakdown_at is not None else None)
 
 
 def indexed_weights(world: int, mtp: bool, mapped_tables: bool = True):
@@ -527,7 +538,9 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
                             world: int = 1, points: int = 1, graph_bytes: int = 0,
                             full_windows: int | None = None, workspace_bytes: int = 0,
-                            indexer_raw_device_bytes: int | None = None) -> Geometry:
+                            indexer_raw_device_bytes: int | None = None,
+                            execution_rows: int | None = None, history_placement=None, rank: int = 0,
+                            device_metadata_only: bool = False) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
     budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
@@ -541,17 +554,22 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     if indexer_raw_device_bytes is not None and (
             type(indexer_raw_device_bytes) is not int or indexer_raw_device_bytes < 0):
         raise ValueError("bounded raw indexer device bytes must be nonnegative integer bytes")
+    if execution_rows is not None and (type(execution_rows) is not int or execution_rows < each):
+        raise ValueError("execution row envelope must fit one complete verification window")
+    if history_placement is not None and (indexer_raw_device_bytes is not None or world != history_placement.world):
+        raise ValueError("unique history geometry requires the matching GPU-history rank inventory")
     windows = 1 if full_windows is None else min(streams, full_windows)
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
     hc = int(t.get("hc_count", 1))
     index_dim, ratio = int(t.get("indexer_head_dim", 128)), int(t.get("indexer_compress_ratio", 4))
-    budget, rows = int(t.get("indexer_budget", 2048)), streams * each
+    budget, rows = int(t.get("indexer_budget", 2048)), streams * each if execution_rows is None else execution_rows
     rec = linear * nv * dk * dv * 4
     conv = linear * (int(t["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2
     tail = (int(t.get("ple_conv_kernel_size", 4)) - 1) * int(t.get("ngram_size", 3)) * hc * d * 2
-    fixed = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
-    fixed += (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)  # retained plus a pass's points
+    state_bytes = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
+    recovery_bytes = (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)
+    fixed = state_bytes + recovery_bytes  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1
     moe = int(t.get("moe_intermediate_size", t.get("intermediate_size", d))) // world
     extent = d * hc + int(t["vocab_size"]) // world + slots * (moe + d) + width + h * hd
@@ -561,31 +579,45 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
         # Each State owns two local words and, with TP, an independent peer
         # packet. The cohort's send/receive/host arrays are charged separately.
         fixed += 8 * streams * (1 + (world if world > 1 else 0))
-    fixed += multi_static_bytes(t, streams, each, mtp) + graph_bytes     # static round tables, captured rounds
+    static_bytes = (multi_static_domains(t, streams, each, mtp)[0] if device_metadata_only else
+                    multi_static_bytes(t, streams, each, mtp))
+    fixed += static_bytes + graph_bytes     # slot metadata still covers every resident slot
     count = attention + int(mtp)
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:
         raw = rows * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
         return count * (rows * hk * row + dummies + raw + (rows + ratio - 1) // ratio * index_dim * 2)
 
-    def bytes_at(capacity: int) -> int:
+    def breakdown_at(capacity: int) -> dict[str, int]:
         blocks = (capacity + ratio - 1) // ratio
-        cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
+        if history_placement is None:
+            cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
+        else:
+            cache = sum(history_placement.rank_bytes(slot, capacity if slot < windows else min(first, capacity),
+                        rank, row, dummies, index_dim=index_dim, ratio=ratio, include_mtp=mtp)
+                        for slot in range(streams))
+        replacement = 0
         if full_windows is not None:
             # Resizes replace one target attention layer at a time. All full
             # slot windows coexist with the replacement and serving workspace.
-            replacement = (caches(capacity) // count if count else 0)
+            # Unique full-window arenas never resize; restore and page moves
+            # reuse that storage under independently charged bounded staging.
+            replacement = (caches(capacity) // count if count else 0) if history_placement is None else 0
             if count and indexer_raw_device_bytes is not None:
                 # The bounded owner keeps its ring/staging through a KV resize;
                 # only the main KV and pooled history acquire replacements.
                 replacement -= indexer_raw_device_bytes
-            cache += replacement + workspace_bytes
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
         scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
         scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
         scratch += (2 + mtp) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
-        return fixed + cache + scratch
-    return Geometry(bytes_at, each)
+        return {"session_state": state_bytes, "retained_recovery": recovery_bytes,
+                "execution_arenas": fixed - state_bytes - recovery_bytes - static_bytes - graph_bytes,
+                "slot_metadata": static_bytes, "history": cache, "replacement_overlap": replacement,
+                "serving_workspace": workspace_bytes if full_windows is not None else 0,
+                "graphs": graph_bytes, "attention_scratch": scratch}
+
+    return Geometry(lambda capacity: sum(breakdown_at(capacity).values()), each, breakdown_at=breakdown_at)
 
 
 def _pattern(t: dict) -> str:

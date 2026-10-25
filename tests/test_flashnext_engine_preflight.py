@@ -131,3 +131,55 @@ def test_sm70_prompt_replay_scratch_admission_matches_allocated_tensor_payload(w
     scratch = GDNScratch(rows, 'cpu', 16 // world, 48 // world, dtype=torch.float16)
     allocated = sum(tensor.numel() * tensor.element_size() for tensor in vars(scratch).values())
     assert _sm70_prefill_gdn_bytes(metadata, world, rows) == allocated
+
+
+@pytest.mark.parametrize('options', [
+    {'kv_dtype': 'rotorquant-planar4-sm70-v1'},
+    {'kv_key_dtype': 'rotorquant-planar4-sm70-v1', 'kv_value_dtype': 'int8'},
+    {'kv_key_dtype': 'int8', 'kv_value_dtype': 'rotorquant-planar4-sm70-v1'},
+])
+def test_compact_codec_rejects_modern_provider_before_target_metadata_or_weights(monkeypatch, tmp_path, options):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold.families.qwen4_exp.cuda import engine, weights
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('compact codec reached modern target metadata, CUDA setup, or weights')
+
+    monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: None)
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', forbidden)
+    monkeypatch.setattr(qwen4_exp, 'rope_parameters', forbidden)
+    monkeypatch.setattr(torch.cuda, 'set_device', forbidden)
+    monkeypatch.setattr(weights, 'load', forbidden)
+    with pytest.raises(ValueError, match='compact Planar4.*GGUF SM70'):
+        engine.FlashNextEngine(tmp_path, **options)
+
+
+def test_compact_gguf_refuses_blackwell_before_provider_setup_or_weight_loading(monkeypatch, tmp_path):
+    from tensorfold.cuda import chat_template, capacity
+    from tensorfold.cuda.sm70 import execution_policy
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold.families.qwen4_exp.cuda import engine, weights
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+    from tests.test_cuda_capacity import small_config
+
+    text = small_config()
+    text['head_dim'] = 256
+    text['shared_expert_intermediate_size'] = 1024
+    (tmp_path / 'config.json').write_text(json.dumps(text))
+    monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: tmp_path / 'target.gguf')
+    monkeypatch.setattr(chat_template, 'prepare_chat_template', lambda *a, **kw: None)
+    monkeypatch.setattr(qwen4_exp, 'rope_parameters', lambda *a: RopeParameters.from_config(text))
+    monkeypatch.setattr(capacity, 'config', lambda *a: text)
+    monkeypatch.setattr(weights, 'draft_token_ids', lambda *a: None)
+    monkeypatch.setattr(torch.cuda, 'set_device', lambda *a: None)
+    monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda *a: (12, 0))
+    def forbidden(*args, **kwargs):
+        pytest.fail('compact GGUF reached provider setup, admission, or target weights on Blackwell')
+    monkeypatch.setattr(execution_policy, 'configure', forbidden)
+    monkeypatch.setattr(weights, 'load', forbidden)
+    monkeypatch.setattr(capacity, 'admit', forbidden)
+    with pytest.raises(ValueError, match='actual SM70'):
+        engine.FlashNextEngine(tmp_path, kv_dtype='rotorquant-planar4-sm70-v1', depth=0)

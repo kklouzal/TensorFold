@@ -11,6 +11,7 @@ from tensorfold.cuda.memory_gate import NoRoom
 from tensorfold.cuda.scheduler import Scheduler
 from tensorfold.cuda.streams import Stream
 from tensorfold.families.qwen4_exp.cuda.tp_scheduler import TensorParallelDecoder
+from tensorfold.families.qwen4_exp.cuda.adaptive_controller import AdaptiveController
 
 
 class Store:
@@ -142,6 +143,268 @@ def test_round_choices_and_request_identity_are_owned_by_rank_zero(cohort):
     assert root.decoder.observed[-1] == ("round", True, 3)
     root.finish(ended)
     assert all(peer.requests == {} and peer.live() == 0 for peer in cohort)
+
+
+def test_leader_execution_epoch_and_fair_order_override_private_peer_controls(cohort):
+    for peer in cohort:
+        decoder = peer.decoder
+        decoder.controller = AdaptiveController(slots=2, row_budget=8, proposal_limit=1, prefill_tokens=16)
+        decoder.freeze_execution = lambda dec=decoder: dec.controller.freeze(sorted(dec.streams))
+
+        def accept(plan, dec=decoder):
+            dec.controller.accept(plan)
+            dec.execution = plan
+
+        decoder.accept_execution = accept
+
+        def round_(dec=decoder):
+            selected = dec.controller.select([(sid, 1) for sid in dec.streams], dec.execution)
+            dec.observed.append((dec.controller.epoch, selected))
+            for sid in selected:
+                stream = dec.streams[sid]
+                stream.st.pos += 1
+                stream.take([5])
+            return [stream for stream in dec.streams.values() if stream.done]
+
+        decoder.round = round_
+    root = cohort[0]
+    root.decoder.controller.request(proposal_limit=0, row_budget=1)
+    streams = [Stream([token], 2) for token in (1, 2)]
+    for stream in streams:
+        root.admit(stream)
+    for _ in range(4):
+        root.round()
+    assert [stream.out for stream in streams] == [[5, 5], [5, 5]]
+    assert all(peer.decoder.observed == root.decoder.observed for peer in cohort)
+    assert root.decoder.observed[-4:] == [(1, [0]), (2, [1]), (3, [0]), (4, [1])]
+    root.finish(streams)
+
+
+def test_worker_boundary_settings_reach_every_rank_before_admit_finish_and_manifest(cohort):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    proposal_reads = [0] * 8
+    for peer in cohort:
+        decoder = peer.decoder
+        decoder.controller = AdaptiveController(slots=8, row_budget=32, proposal_limit=3, prefill_tokens=16)
+        decoder.share, decoder.round_s, decoder.row_s = 0.0, None, None
+        decoder.pass_rows_for = lambda settings, dec=decoder: MultiDecoder.pass_rows_for(dec, settings)
+        original_admit, original_finish = decoder.admit, decoder.finish
+
+        def observe(kind, dec=decoder):
+            settings = dec.controller.effective
+            dec.observed.append((kind, settings["row_budget"], MultiDecoder._proposal_limit(dec),
+                                 dec._pass_rows(), settings["session_ceiling"]))
+
+        def admit(stream, dec=decoder, original=original_admit, note=observe):
+            note("prefill+mtp")
+            proposal_reads[dec.rank] += MultiDecoder._proposal_limit(dec)
+            original(stream)
+
+        def finish(streams, original=original_finish, note=observe):
+            note("finish")
+            return original(streams)
+
+        def manifest(name, note=observe):
+            note("manifest")
+            return {"name": name}
+
+        decoder.admit, decoder.finish, decoder.install_execution_manifest = admit, finish, manifest
+    root = cohort[0]
+    root.decoder.controller.request(row_budget=16, proposal_limit=0, prefill_tokens=8, session_ceiling=1)
+    root.decoder.controller.boundary()  # The real CUDA worker applies this before _admit.
+    first = Stream([1], 2)
+    root.admit(first)
+    root.finish([first])  # No round/plan accept happened to synchronize peers.
+    assert root.install_execution_manifest("profiles-next.json") == {"name": "profiles-next.json"}
+    assert proposal_reads == [0] * 8
+    assert all(peer.decoder.controller.epoch == 0 and peer.failure is None for peer in cohort)
+    assert all(peer.decoder.observed == root.decoder.observed for peer in cohort)
+    assert ("prefill+mtp", 16, 0, 8, 1) in root.decoder.observed
+    assert ("finish", 16, 0, 8, 1) in root.decoder.observed
+    assert ("manifest", 16, 0, 8, 1) in root.decoder.observed
+    root.decoder.controller.request(row_budget=8, proposal_limit=1, prefill_tokens=4, session_ceiling=2)
+    root.decoder.controller.boundary()
+    second = Stream([2], 2)
+    root.admit(second)
+    root.finish([second])
+    assert proposal_reads == [1] * 8
+    assert all(peer.decoder.observed == root.decoder.observed for peer in cohort)
+
+
+def test_new_round_profile_prefill_quota_does_not_reuse_the_previous_effective_quota(cohort):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    for peer in cohort:
+        decoder = peer.decoder
+        decoder.controller = AdaptiveController(slots=2, row_budget=8, proposal_limit=1, prefill_tokens=16)
+        decoder.share, decoder.round_s, decoder.row_s = 0.0, None, None
+        decoder.pass_rows_for = lambda settings, dec=decoder: MultiDecoder.pass_rows_for(dec, settings)
+
+        def freeze(dec=decoder):
+            plan = dec.controller.freeze(sorted(dec.streams))
+            # Stand in for a newly selected bounded profile; table evidence and
+            # selection are verified independently in controller/identity tests.
+            return {**plan, "prefill_tokens": 4, "proposal_limit": 0, "row_budget": 1}
+
+        decoder.freeze_execution = freeze
+        decoder.accept_execution = lambda plan, dec=decoder: dec.controller.accept(plan)
+    root = cohort[0]
+    stream = Stream([1], 1)
+    root.admit(stream)
+    assert root.round() == [stream]
+    assert all(peer.decoder.observed[-1] == ("round", False, 4) for peer in cohort)
+    assert all(peer.decoder.controller.epoch == 1 for peer in cohort)
+    root.finish([stream])
+
+
+def test_partial_prefix_decision_publication_aborts_without_waiting_for_normal_acks():
+    class BrokenPrefixStore(BatchStore):
+        def multi_set(self, keys, values):
+            if keys and "/prefix/" in keys[0]:
+                self.set(keys[0], values[0])
+                raise OSError("publication completion is uncertain")
+            super().multi_set(keys, values)
+
+        def wait(self, keys, duration):
+            pytest.fail("a poisoned publication entered normal operation ACK aggregation")
+
+    store = BrokenPrefixStore()
+    engine = SimpleNamespace(_abort_comm=False)
+    root = TensorParallelDecoder(Decoder(0, 2, store), engine)
+    root.decoder.round = lambda: root.decoder.prefix_decisions([(1, False)])
+    with pytest.raises(RuntimeError, match="control publication failed"):
+        root.round()
+    assert engine._abort_comm and isinstance(root.failure, OSError)
+
+
+def test_uncertain_migration_failure_never_enters_normal_ack_join():
+    class NoJoinStore(BatchStore):
+        def wait(self, keys, duration):
+            pytest.fail("a failed migration entered normal ACK aggregation")
+
+    engine = SimpleNamespace(_abort_comm=False)
+    root = TensorParallelDecoder(Decoder(0, 2, NoJoinStore()), engine)
+
+    def failed_round():
+        error = RuntimeError("migration ownership is uncertain")
+        root.decoder.poison_control(error)
+        raise error
+
+    root.decoder.round = failed_round
+    with pytest.raises(RuntimeError, match="control publication failed"):
+        root.round()
+    assert engine._abort_comm
+
+
+def test_fatal_control_notifies_supervisor_once_and_keeps_the_first_error(monkeypatch):
+    from tensorfold.cuda import cohort as containment
+
+    sent = []
+    monkeypatch.setattr(containment, "notify_failure", lambda: sent.append(True))
+    root = TensorParallelDecoder(Decoder(0, 2, Store()), SimpleNamespace(_abort_comm=False))
+    primary = RuntimeError("first fatal error")
+    root._poison_control(primary)
+    root._poison_control(OSError("secondary failure"))
+    assert sent == [True] and root.failure is primary
+
+
+def test_failure_notification_does_not_replace_the_original_control_failure(monkeypatch):
+    from tensorfold.cuda import cohort as containment
+
+    primary, secondary = RuntimeError("native control failed"), OSError("supervisor notification failed")
+
+    def notify():
+        raise secondary
+
+    monkeypatch.setattr(containment, "notify_failure", notify)
+    root = TensorParallelDecoder(Decoder(0, 2, Store()), SimpleNamespace(_abort_comm=False))
+    with pytest.raises(RuntimeError) as caught:
+        root._poison_control(primary)
+    assert caught.value is primary and caught.value.__cause__ is secondary
+
+
+def test_only_the_leader_calls_stop_policies_and_all_peers_keep_the_same_prefix(cohort):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    calls = []
+    for peer in cohort:
+        decoder = peer.decoder
+
+        def round_(dec=decoder):
+            streams = list(dec.streams.values())
+            news = [[11, 12, 13] for _ in streams]
+            decisions = MultiDecoder._prefix_limits(dec, streams, news)
+            for stream, tokens, (count, stop) in zip(streams, news, decisions):
+                stream.st.pos += count
+                stream.take(tokens[:count])
+                stream.done = stream.done or stop
+            return [stream for stream in streams if stream.done]
+
+        decoder.round = round_
+    root = cohort[0]
+
+    def stop(tokens, prefix):
+        calls.append((list(tokens), list(prefix)))
+        return 1, True
+
+    first, second = Stream([1], 100, token_limit=stop), Stream([2], 100)
+    root.admit(first)
+    root.admit(second)
+    assert root.round() == [first]
+    assert calls == [([11, 12, 13], [])]
+    assert first.out == [11] and second.out == [11, 12, 13]
+    assert all(peer.decoder.streams[0].out == [11] and peer.decoder.streams[0].st.pos == 2
+               for peer in cohort)
+    root.finish([first, second])
+
+
+def test_control_arriving_during_long_prefill_applies_before_the_next_global_chunk(cohort):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    for peer in cohort:
+        decoder = peer.decoder
+        decoder.controller = AdaptiveController(slots=2, row_budget=8, proposal_limit=1, prefill_tokens=16)
+        decoder.kept, decoder.retained, decoder.fills = [], {}, {}
+        decoder.freeze_execution = lambda dec=decoder: MultiDecoder.freeze_execution(dec)
+
+        def accept(plan, dec=decoder):
+            dec.controller.accept(plan)
+            dec.execution = plan
+
+        decoder.accept_execution = accept
+        admit = decoder.admit
+
+        def filling_admit(stream, dec=decoder, original=admit):
+            original(stream)
+            dec.streams.pop(stream.sid)
+            dec.filling.append(stream)
+            dec.fills[stream.sid] = [None, False, 0, [], None]
+
+        decoder.admit = filling_admit
+        peer._pass_rows = lambda dec=decoder: dec.controller.effective["prefill_tokens"]
+
+        def prompt_pass(dec=decoder):
+            dec.observed.append(("prefill", dec.controller.epoch, dec._pass_rows()))
+            for stream in dec.filling:
+                dec.fills[stream.sid][2] += dec._pass_rows()
+                stream.st.pos = dec.fills[stream.sid][2]
+            if dec.rank == 0 and dec.controller.epoch == 1:
+                dec.controller.request(prefill_tokens=4)
+            return []
+
+        decoder._pass = prompt_pass
+        decoder.round = lambda dec=decoder: MultiDecoder._fill(dec)
+        decoder.finish = lambda done, dec=decoder: setattr(dec, "filling", [stream for stream in dec.filling
+                                                                         if all(stream is not s for s in done)])
+    root = cohort[0]
+    stream = Stream([1] * 1000, 10)
+    root.admit(stream)
+    assert root.round() == []
+    assert root.decoder.controller.record()["pending"]["prefill_tokens"] == 4
+    assert root.round() == []
+    assert all(peer.decoder.observed[-2:] == [("prefill", 1, 16), ("prefill", 2, 4)] for peer in cohort)
+    root.finish([stream])
 
 
 def test_client_cancellation_is_frozen_and_shared_before_the_next_round(cohort):

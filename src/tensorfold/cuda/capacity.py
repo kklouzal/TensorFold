@@ -42,9 +42,51 @@ class Geometry:
     bytes_at: Callable[[int], int]
     reserve: int
     minimum_slots: int = 0
+    breakdown_at: Callable[[int], dict[str, int]] | None = None
 
     def needed(self, window: int) -> int:
         return int(self.bytes_at(max(self.minimum_slots, window + self.reserve)))
+
+
+def fit_sessions(window: int, budget: int, weights: Weights,
+                 geometry: Callable[[int], Geometry], *, ceiling: int | None = None,
+                 additional_fits: Callable[[int], bool] | None = None) -> int:
+    """Largest full-window session count for a monotone, exact rank geometry.
+
+    Appending a slot must preserve preceding owners and cannot release their
+    storage. Every session owns at least one byte; the usable byte budget is
+    therefore a physical search bound, not an execution-bucket/session cap.
+    Loading overlaps serving only as described by the existing Weights plan.
+    """
+    if type(window) is not int or window <= 0 or type(budget) is not int or budget < 0:
+        raise ValueError("session planning needs a positive context and nonnegative integer byte budget")
+    if ceiling is not None and (type(ceiling) is not int or ceiling < 1):
+        raise ValueError("session ceiling must be a positive integer or automatic")
+    if any(type(n) is not int or n < 0 for n in (weights.resident, weights.staging, weights.mapped)):
+        raise ValueError("session weight estimates must be nonnegative integer bytes")
+    if weights.resident + weights.staging > budget:
+        return 0
+    bound = min(budget - weights.resident, ceiling) if ceiling is not None else budget - weights.resident
+
+    def fits(count):
+        cost = geometry(count).needed(window)
+        if type(cost) is not int or cost < count:
+            raise ValueError("session geometry must retain at least one byte per session")
+        return weights.resident + cost <= budget and (additional_fits is None or additional_fits(count))
+
+    low, high = 0, min(1, bound)
+    while high and fits(high):
+        low = high
+        if high == bound:
+            return high
+        high = min(bound, high * 2)
+    while low < high:
+        count = (low + high + 1) // 2
+        if fits(count):
+            low = count
+        else:
+            high = count - 1
+    return low
 
 
 @dataclass(frozen=True)
@@ -65,7 +107,7 @@ class Plan:
         return [self.native, -1 if self.requested is None else self.requested, int(self.explicit)]
 
     def receipt(self, window: int) -> dict:
-        return {"native_window": self.native, "requested_context": self.requested,
+        receipt = {"native_window": self.native, "requested_context": self.requested,
                 "explicit_context": self.explicit, "context_window": window,
                 "cache_slots": max(self.geometry.minimum_slots, window + self.geometry.reserve),
                 "budget_bytes": self.budget, "weight_bytes_estimate": self.weights.resident,
@@ -77,6 +119,10 @@ class Plan:
                 "full_mapped_working_set_bytes_estimate": self.weights.resident +
                 max(self.weights.staging, self.geometry.needed(window)) + self.weights.mapped,
                 "mapped_pages_reclaimable": True, "mapped_tables_resident": self.keeps_tables}
+        if self.geometry.breakdown_at is not None:
+            receipt["resource_ledger_bytes"] = self.geometry.breakdown_at(
+                max(self.geometry.minimum_slots, window + self.geometry.reserve))
+        return receipt
 
 
 def config(model_dir: str | Path) -> dict:
@@ -506,7 +552,10 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           context_limit: int | None = None, original_context: int | None = None,
           host_resident: int = 0, host_extra_staging: int = 0, resident_extra: int = 0,
           device_workspace_bytes: int = 0, host_workspace_bytes: int = 0,
-          memory_reserve: int | None = None) -> dict:
+          memory_reserve: int | None = None,
+          session_geometry: Callable[[dict, int], Geometry] | None = None,
+          session_ceiling: int | None = None,
+          session_host_workspace: Callable[[int], int] | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
     ``weight_estimator`` optionally returns the backend's retained GPU weights,
@@ -527,6 +576,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     build.refuse_old_gpu(floor(model_dir))          # an old GPU is refused here, before any weight loads
     error = None
     plan = None
+    session_fitting, session_factory, session_context = 0, None, 0
     try:
         text = config(model_dir)
         geometry = geometry(text) if callable(geometry) else geometry
@@ -556,6 +606,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                               weights.mapped + more.mapped)
         weights = Weights(weights.resident, weights.staging + startup_copies * weights.resident, weights.mapped)
         if draft_dir is not None:
+            if session_geometry is not None and draft_geometry is not None:
+                raise ValueError("automatic session geometry must include the draft history for every session")
             draft = draft_weights(draft_dir) if draft_weights is not None else estimate_weights(
                 draft_dir, draft_transform or (lambda name, info: (math.prod(info["shape"]) * max(4, itemsize(info, name)),
                                                                    0)))
@@ -569,17 +621,24 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 geometry = Geometry(lambda slots: main.bytes_at(slots) + draft_geometry.bytes_at(slots),
                                     main.reserve, main.minimum_slots)
         serving_workspace = device_workspace_bytes + (host_workspace_bytes if unified(torch) else 0)
+        if session_geometry is not None:
+            def session_factory(count):
+                base = session_geometry(text, count)
+                from .geometry import with_fixed
+
+                return with_fixed(base, serving_workspace, label="device_library_workspace")
         if serving_workspace:
             base_geometry = geometry
             geometry = Geometry(lambda slots: base_geometry.bytes_at(slots) + serving_workspace,
                                 base_geometry.reserve, base_geometry.minimum_slots)
         host_needed = host_resident + host_extra_staging + max(host_staging, host_workspace_bytes)
+        allowance = host_cgroup_bytes() if host_resident or host_extra_staging or host_workspace_bytes or session_geometry is not None else None
         if host_resident or host_extra_staging or host_workspace_bytes:
-            allowance = host_cgroup_bytes()
             if allowance is not None and host_needed > allowance:
                 label = "host weights/staging/workspace" if host_workspace_bytes else "host expert weights/staging"
                 raise ValueError(f"{label} need {host_needed / GIB:.2f} GiB, "
                                  f"but the container/cgroup has only {allowance / GIB:.2f} GiB remaining")
+        host_free = None
         if not unified(torch):
             host_free = host_stream_bytes()
             if host_free is not None and host_needed > host_free:
@@ -595,20 +654,82 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
             if original_context is None or isinstance(original_context, bool) or not isinstance(original_context, int) \
                     or original_context <= 0 or original_context > context_limit:
                 raise ValueError("original context must be positive and no greater than the effective RoPE limit")
-        plan = make_plan(native if context_limit is None else context_limit, requested,
+        effective_native = native if context_limit is None else context_limit
+        budget = available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve)
+        if session_factory is not None:
+            session_context = requested or effective_native
+            if (type(session_context) is not int or session_context <= 0
+                    or effective_native > 0 and session_context > effective_native):
+                raise ValueError("automatic sessions require a positive context within the checkpoint position limit")
+            def host_fits(count):
+                extra = 0 if session_host_workspace is None else session_host_workspace(count)
+                if type(extra) is not int or extra < 0:
+                    raise ValueError("session host workspace must be nonnegative integer bytes")
+                needed = host_resident + host_extra_staging + max(host_staging, host_workspace_bytes + extra)
+                return (host_free is None or needed <= host_free) and (
+                    allowance is None or needed <= allowance)
+
+            session_fitting = fit_sessions(session_context, budget, weights, session_factory,
+                                           ceiling=session_ceiling, additional_fits=host_fits)
+            geometry = session_factory(max(1, session_fitting))
+        plan = make_plan(effective_native, requested,
                          requested is not None if explicit is None else explicit,
-                         available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve),
-                         weights, geometry, room=page_room(torch))
+                         budget,
+                         weights, geometry, room=None if session_factory is not None else page_room(torch))
     except (OSError, ValueError, KeyError, TypeError, struct.error) as exc:
         error = f"{type(exc).__name__}: {exc}"     # name the cause: its text alone has hidden a dtype's KeyError
     status = [1 if error else 0, *(plan.settings + [plan.fitting, plan.largest] if plan else [0, -1, 0, 0, 0])]
+    if session_geometry is not None:
+        ceiling_status = (-1 if session_ceiling is None else session_ceiling
+                          if type(session_ceiling) is int and session_ceiling > 0 else -2)
+        status += [session_fitting, ceiling_status]
     both = gather(status) if world > 1 else [status]
     if any(row[0] for row in both):
         raise ValueError("CUDA startup memory geometry could not be established on every rank: " +
                          (error or "another rank could not read its checkpoint; check both folders/configs"))
+    if session_geometry is not None:
+        if any(len(row) != 8 or row[7] != status[7] for row in both):
+            raise ValueError("CUDA ranks selected different automatic session ceilings")
+        sessions = min(row[6] for row in both)
+        if sessions < 1:
+            raise ValueError(f"CUDA memory budget cannot retain one complete {session_context}-token session "
+                             "with the selected method and execution resources; context and quality are unchanged")
+        geometry = session_factory(sessions)
+        plan = make_plan(plan.native, requested, plan.explicit, plan.budget, weights, geometry)
+        if plan.fitting < session_context:
+            raise RuntimeError("session geometry no longer preserves the admitted full-context commitment")
+        # Peers' fitting windows were computed at different local session counts;
+        # only the agreed complete window governs this shared session profile.
+        both = [row[:4] + [session_context, session_context] + row[6:] for row in both]
     window = choose(plan, [row[1:] for row in both],
                     window_kind="native" if context_limit is None else "RoPE")
     receipt = {**plan.receipt(window), "largest_window": min(row[5] for row in both)}
+    if session_geometry is not None:
+        ledger = {} if geometry.breakdown_at is None else geometry.breakdown_at(
+            max(geometry.minimum_slots, session_context + geometry.reserve))
+        ledger_names = sorted(ledger)
+        local = [rank, plan.budget, weights.resident, weights.staging,
+                 geometry.needed(session_context), session_factory(sessions + 1).needed(session_context),
+                 int(host_fits(sessions + 1)), *(ledger[name] for name in ledger_names)]
+        ranks = gather(local) if world > 1 else [local]
+        if any(len(row) != len(local) or row[0] != peer for peer, row in enumerate(ranks)):
+            raise RuntimeError("rank resource ledgers do not match the admitted session profile")
+        resource = ("administrator-ceiling" if sessions == session_ceiling else
+                    "host-memory" if any(not row[6] for row in ranks) else "rank-device-memory")
+        receipt["session_capacity"] = {
+            "policy": "fixed-context-worst-rank-v1", "evidence": "header-plan-unqualified",
+            "context_tokens": session_context, "configured_ceiling": session_ceiling,
+            "resident_capacity": sessions, "full_context_commitments": sessions,
+            "binding_ranks": [i for i, row in enumerate(both) if row[6] == sessions]
+                             if session_ceiling is None or sessions < session_ceiling else [],
+            "limiting_resource": resource,
+            "ranks": [{"rank": row[0], "budget_bytes": row[1], "resident_weight_bytes": row[2],
+                       "loading_overlap_bytes": row[3], "session_execution_bytes": row[4],
+                       "next_session_execution_bytes": row[5],
+                       "resource_ledger_bytes": dict(zip(ledger_names, row[7:]))} for row in ranks],
+        }
+        if session_host_workspace is not None:
+            host_workspace_bytes += session_host_workspace(sessions)
     if device_workspace_bytes or host_workspace_bytes:
         receipt.update(device_workspace_bytes_estimate=device_workspace_bytes,
                        host_workspace_bytes_estimate=host_workspace_bytes)

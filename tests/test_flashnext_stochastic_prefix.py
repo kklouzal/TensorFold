@@ -188,9 +188,9 @@ def test_actual_serial_generate_keeps_drafts_and_shares_the_qualified_resume_cou
         resume_calls.append(prompt)
         return hit
 
-    def share(prompt, count, sampling, draft, cached, constraint, stop_eos):
-        shared.append((draft, cached))
-        return prompt, count, sampling, draft, cached, constraint, stop_eos, None
+    def share(prompt, count, sampling, draft, cached, constraint, stop_eos, token_limit):
+        shared.append((draft, cached, token_limit))
+        return prompt, count, sampling, draft, cached, constraint, stop_eos, None, token_limit
 
     def decode(*args, **kwargs):
         decoded.append((args, kwargs))
@@ -199,7 +199,7 @@ def test_actual_serial_generate_keeps_drafts_and_shares_the_qualified_resume_cou
     engine._resume, engine._share, engine._decode = resume, share, decode
     result = engine.generate([11] * 128, 128, Sampling(17, 0), lambda _: None, draft=True)
     assert bool(resume_calls) is borrow
-    assert shared == [(True, 127 if borrow else 0)]
+    assert shared == [(True, 127 if borrow else 0, False)]
     assert decoded[0][0][4] is (hit if borrow else None)
     assert result == {"cached": 127 if borrow else 0}
     assert retired == [None] and engine.served == 1

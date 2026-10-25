@@ -76,12 +76,28 @@ checked bit for bit against ExLlamaV3's dequantization.
 
 Flash Next's optional int8 and int4 KV caches (`families/qwen4_exp/cuda/kvcache.py`) follow the cache quantization scheme of [ExLlamaV3](https://github.com/turboderp-org/exllamav3) `-cq 8` and `-cq 4` (MIT License, Copyright (c) 2025 Turboderp, text below): groups of 32, one fp16 absmax scale per group, the group rotated by a 32-point Hadamard, midpoint-grid codes, `compand_a == 0`. 8-bit stores each code as a signed int8 (`q - 128`). 4-bit stores two unsigned codes per byte, low nibble first (the same bits as ExLlamaV3's little-endian packing, a uint8 tensor rather than their uint32 words). Their dequantizer folds another `1/sqrt(32)` into the scale and applies the unnormalized butterfly on the way out; this cache applies the normalized H32 to the query and to the merged output instead, and leaves the stored codes rotated. Scales match their quantizer bit for bit. Reconstructed values agree within fp16/bf16 rounding (under 0.01 on random groups), not bit for bit. The quantizer and the attention dequant are written for TensorFold and checked against an independent reference of that arithmetic.
 
-Flash Next's RotorQuant-family integration was informed by a source review of
+Flash Next's original FP32-metadata RotorQuant-family formats, including the
+Signed128 and Signed64 variants, were informed by a source review of
 [scrya-com/rotorquant](https://github.com/scrya-com/rotorquant/tree/fcd76768650659cad2f40a45a330612a7af8f928)
 at revision `fcd76768650659cad2f40a45a330612a7af8f928`. TensorFold implements its own orthogonal block rotations,
 Gaussian Lloyd-Max codebooks, packed cache format and attention kernels. No
 RotorQuant source is copied, bundled or imported, and its cache format is not
-an interoperability contract for TensorFold's format.
+an interoperability contract for those original TensorFold formats.
+
+The distinct `rotorquant-planar4-sm70-v1` format in
+`src/tensorfold/cuda/sm70/rotorquant_compact.py` pins the CUDA Planar4 codebook,
+rotation tables, corrected L2 norm, FP16 metadata and packed-nibble convention
+from [llama-cpp-turboquant](https://github.com/johndpope/llama-cpp-turboquant/tree/08e025c06ab521e4fa9e5c08b80af57614543e53)
+revision `08e025c06ab521e4fa9e5c08b80af57614543e53`, specifically
+`ggml/src/ggml-cuda/planar-iso-constants.cuh`, `cpy-planar-iso.cu`, and the block
+schema in `ggml/src/ggml-common.h`. The exact table bits are included in the
+Python authority and generated native header; TensorFold adapts the packing,
+decoding and attention code for its own GPU storage. That repository uses the
+MIT License, Copyright (c) 2023-2026 The ggml authors; the full notice is retained
+in [LICENSES/GGML-MIT.txt](LICENSES/GGML-MIT.txt). The maintained wire fixtures
+record independently generated reference data and source provenance. This
+compact format's interoperability contract and qualification are separate from
+the original FP32-metadata formats above.
 
 ## Vendored code and weights
 

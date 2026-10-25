@@ -7,6 +7,25 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 
+def prefix_limit(callback: Callable | None, new: Sequence[int], prefix: Sequence[int]) -> tuple[int, bool]:
+    """Validate a pure precommit decision before cache/recurrent publication.
+
+    ``prefix`` includes the already emitted pending anchor. The callback owns
+    logical stop decisions, not delivery or IO. A stop at the exact block end
+    still returns ``stop=True`` so asynchronous serving cannot run another row.
+    """
+
+    if callback is None:
+        return len(new), False
+    result = callback(new, prefix)
+    if (not isinstance(result, tuple) or len(result) != 2 or type(result[0]) is not int
+            or not 0 <= result[0] <= len(new) or type(result[1]) is not bool):
+        raise ValueError("token_limit must return a bounded (integer prefix length, boolean stop) pair")
+    if result[0] < len(new) and not result[1]:
+        raise ValueError("a shortened token prefix must stop before uncommitted output")
+    return result
+
+
 @dataclass
 class Stream:
     """One request. ``emit`` receives each round's new tokens and returns True to stop the stream."""
@@ -50,6 +69,7 @@ class Stream:
     queue_s: float = 0.0                                  # seconds it waited there for a lane, held for memory included
     admitted: float = 0.0                                 # when a lane took it
     on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
+    token_limit: Callable[[Sequence[int], Sequence[int]], tuple[int, bool]] | None = None
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
@@ -95,6 +115,7 @@ class Stream:
         grammar starts again with it."""
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
+                      token_limit=self.token_limit,
                       background=self.background, probabilities=self.probabilities, penalties=self.penalties,
                       constraint=self.constraint.fresh() if self.constraint is not None else None,
                       carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)

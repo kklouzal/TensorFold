@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from tensorfold import __version__
-from tensorfold.server import metrics
+from tensorfold.server import metrics, runtime
 
 SCHEMA_VERSION = 1
 INSTANCE_ID = uuid.uuid4().hex
@@ -64,7 +64,7 @@ def snapshot(app: Any, *, server: Any = None,
     limits = dict(fixed["limits"])
     limits["http_connections"] = transport["limit"] if transport is not None else None
     memory = usage or {}
-    return {
+    result = {
         "object": "tensorfold.stats", "schema_version": SCHEMA_VERSION,
         "time": {"unix_s": round(time.time(), 3), "uptime_s": round(time.monotonic() - STARTED_MONOTONIC, 3)},
         "server": fixed["server"], "model": fixed["model"], "limits": limits,
@@ -75,7 +75,7 @@ def snapshot(app: Any, *, server: Any = None,
                  "held_for_memory": (getattr(sched, "held", None) is not None) if decoder is not None else None,
                  "http_connections_in_use": transport["in_use"] if transport is not None else None,
                  "stream_tokens": metrics.stream_tokens(app)},
-        "capacity_plan": deepcopy(fixed["capacity_plan"]),
+        "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)),
         "kv": memory.get("kv"),
         "prefix_cache": memory.get("prefix_cache"),
         "totals": {"requests": reading.requests,
@@ -90,6 +90,10 @@ def snapshot(app: Any, *, server: Any = None,
                    "preemptions": metrics.preemptions(app),
                    "memory_waits": memory.get("memory_waits"), "memory_stops": memory.get("memory_stops")},
     }
+    adaptive = runtime.snapshot(app)
+    if adaptive is not None:
+        result["runtime"] = adaptive
+    return result
 
 
 def send(handler: Any, app: Any, extra: dict[str, Any] | None = None) -> None:
