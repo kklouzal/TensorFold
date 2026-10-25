@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import traceback
+import weakref
 
 import numpy as np
 import torch
@@ -34,12 +35,18 @@ class Buffers:
     """Scratch for windows of up to ``rows`` rows, sliced [:R] for smaller ones; ``prefill`` for prompt chunks."""
 
     def __init__(self, w: Weights, rows: int, capacity: int, *, prefill: bool = False,
-                 moe_prefill: bool | None = None) -> None:
+                 moe_prefill: bool | None = None, owner_role: str | None = None) -> None:
         c = w.cfg
         dev = w.device
+        from .history_placement import for_weights
+
+        placement = for_weights(w)
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
         self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
+        self.owner_kernel_family = "torch-reference"
+        self.owner_graph_family = "uncaptured"
+        self.owner_graphs = None
         self.hc_plans = None
         head_rows = ENDS if prefill else rows
         bf, f32 = execution_dtype(w), torch.float32
@@ -78,7 +85,8 @@ class Buffers:
         self.q = torch.empty((rows, c.heads, c.head_dim), dtype=bf, device=dev)
         self.iq = torch.empty((rows, c.index_heads, c.index_dim), dtype=bf, device=dev)
         self.attn = attn_mod.AttnScratch(min(rows, ATT_ROWS) if prefill else rows, c.heads, c.head_dim, capacity,
-                                         dev, budget=c.index_budget, ratio=c.index_ratio, dtype=bf)
+                                         dev, budget=c.index_budget, ratio=c.index_ratio, dtype=bf,
+                                         selection_only=placement is not None)
         self.gated = row_tensor("gated", (rows, c.heads * c.head_dim), dtype=bf)
         self.xs_gated = torch.empty((rows, c.heads * c.head_dim // 32), dtype=f32, device=dev)
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
@@ -142,13 +150,27 @@ class Buffers:
         self.mtp_in = torch.empty((rows, wide), dtype=bf, device=dev)          # the MTP's input streams
         draft = getattr(w, "dspark", None)
         self.dspark_taps = draft.new_taps(rows, dev) if draft is not None else None
-        from .history_placement import for_weights
-
         self.history_owner = None
-        if for_weights(w) is not None:
+        if placement is not None:
             from .history_owner import OwnerBuffers
 
-            self.history_owner = OwnerBuffers(w, min(rows, ATT_ROWS), self.attn)
+            role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
+            prepared = w.meta.get("owner_workspaces")
+            if prepared is None:
+                self.history_owner = OwnerBuffers(w, min(rows, ATT_ROWS), self.attn, prefill=prefill)
+            else:
+                if not isinstance(prepared, dict) or set(prepared).difference({"decode", "mtp", "prefill"}) or role not in prepared:
+                    raise ValueError("prepared owner workspaces require the exact declared execution role")
+                workspace = prepared[role]
+                if (not isinstance(workspace, OwnerBuffers) or not workspace._base_ready
+                        or workspace.rows < min(rows, ATT_ROWS)
+                        or workspace.heads != c.heads or workspace.head_dim != c.head_dim
+                        or workspace.prefill != prefill
+                        or workspace.selection.shape[1] != self.attn.idw + 2
+                        or workspace.rank != w.meta["rank"] or workspace.comm is not w.comm
+                        or workspace.queries.device != torch.device(dev)):
+                    raise ValueError("prepared owner workspace differs from the actual model/rank execution envelope")
+                self.history_owner = workspace
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:
@@ -196,7 +218,9 @@ class State:
         self.history_slot, self.history_rank = slot, int(w.meta.get("rank", 0))
         self.history_comm = getattr(w, "comm", None) if self.history_placement is not None else None
         self.history_generation = self.slot_generation = 0
-        self.history_generations = None
+        self.history_generations = (torch.zeros((2,), dtype=torch.int64, device=dev)
+                                    if self.history_placement is not None else None)
+        self.history_native_readers = weakref.WeakSet()
         self._history_error = None
         self.indexer_history_mode = w.meta.get("indexer_history", "gpu")
         if self.indexer_history_mode not in ("gpu", "ram"):
@@ -219,8 +243,8 @@ class State:
 
             working_policy = check_pair(self.kv_pair)
         else:
-            if self.kv_pair.key.codec == 9 or self.kv_pair.value.codec == 9:
-                raise ValueError("RotorQuant planar4 SM70 codec requires the explicit FP16 execution provider")
+            if any(side.compact is not None for side in (self.kv_pair.key, self.kv_pair.value)):
+                raise ValueError("RotorQuant planar4/iso4 SM70 codec requires the explicit FP16 execution provider")
             working_policy = "stored-basis-native64-v1"
         self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
@@ -390,7 +414,7 @@ class State:
     def _kv_latch(self, bits: int, layer: int) -> None:
         self._kv_pending = False
         if bits:
-            names = [name for bit, name in ((1, "Q"), (2, "K"), (4, "V"), (8, "RMS"), (16, "index"))
+            names = [name for bit, name in ((1, "Q"), (2, "K"), (4, "V"), (8, "RMS"), (16, "index"), (32, "descriptor"))
                      if bits & bit]
             self._kv_error = KVNumericError(
                 f"K={self.kv_key_dtype}, V={self.kv_value_dtype} numeric validation failed: {','.join(names)} (bits={bits}), "
@@ -652,34 +676,53 @@ class State:
             raise
 
     def begin_sequence_generation(self) -> int:
-        """Start a new logical request before writing even a qualified cached prefix.
+        """Retire prior GPU readers before the first write of a new admission.
 
-        The serialized producer owns the idle destination and has retired its
-        previous readers. Ordinary same-request restore/rollback does not call
-        this method. Native unique histories publish the same generation word.
+        The coordinator first resolves its deferred CPU replay/callback work.
+        Native reader events cover the final consumer, even across streams.
+        Ordinary same-request rollback does not advance this admission epoch.
         """
         if self._resize_error is not None:
             raise self._kv_error if self._kv_error is not None else self._resize_error
         if self._history_error is not None:
             raise self._history_error
-        if type(self.slot_generation) is not int or not 0 <= self.slot_generation < (1 << 63) - 1:
-            raise RuntimeError("history slot generation is invalid or exhausted")
-        generation = self.slot_generation + 1
-        if self.history_generations is not None:
-            self.history_generations[0].fill_(generation)
-        self.slot_generation = generation
-        return generation
+        generation = self.slot_generation
+        if type(generation) is not int or not 0 <= generation < 2**63 - 1:
+            raise RuntimeError("history slot generation is invalid or exhausted; retire the slot without reuse")
+        try:
+            for reader in tuple(self.history_native_readers):
+                reader.wait_native_reuse()
+            generations = self.history_generations
+            if generations is not None and generations.is_cuda:
+                torch.cuda.current_stream(generations.device).synchronize()
+            if generations is not None:
+                generations[0].fill_(generation + 1)
+            self.slot_generation = generation + 1
+        except BaseException as error:
+            # Poison existing fields before allocating diagnostic context. A
+            # failed wrapper allocation cannot make ambiguous device writes
+            # look healthy or permit this slot to be reused.
+            self._history_error = self._kv_error = error
+            try:
+                failure = RuntimeError("history generation publication failed; this slot requires exclusive retirement")
+                failure.__cause__ = error
+            except BaseException as diagnostic:
+                raise_failures(error, [diagnostic])
+            self._history_error = self._kv_error = failure
+            raise
+        return self.slot_generation
 
     def reset(self, w: Weights, *, new_sequence: bool = True) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
+        if self._resize_error is not None:
+            raise self._kv_error if self._kv_error is not None else self._resize_error
+        if getattr(self, "_history_error", None) is not None:
+            raise self._history_error
+        if type(new_sequence) is not bool:
+            raise ValueError("reset admission generation policy must be explicit boolean")
         if new_sequence:
             self.begin_sequence_generation()
-        else:
-            if self._resize_error is not None:
-                raise self._kv_error if self._kv_error is not None else self._resize_error
-            if self._history_error is not None:
-                raise self._history_error
         if getattr(self, "indexer_history_owner", None) is not None:
             self.indexer_history_owner.reset()
         if self.kv_status is not None:
@@ -730,6 +773,13 @@ class State:
                           migration_blocked_reason=None if pending is None else pending.get("blocked_reason"),
                           migration_bytes=getattr(self, "history_migration_bytes", 0),
                           holder_ranks=sorted({owner for cache in self.kc for owner in cache.owners}))
+            arena = self.kc[0].arena
+            if arena is not None:
+                result["target_page_arena"] = {"rank": arena.rank, "page_tokens": arena.page_class.tokens,
+                                               "page_bytes": arena.page_class.nbytes,
+                                               "page_capacity": arena.page_capacity,
+                                               "reserved_pages": arena.reserved_pages,
+                                               "available_pages": arena.free_pages}
         return result
 
     def history_page(self, layer: int, head: int, page: int) -> dict:
@@ -749,6 +799,7 @@ class State:
         return {"slot": self.history_slot, "slot_generation": self.slot_generation,
                 "layer": layer, "global_head": head, "logical_start": start,
                 "logical_rows": placement.page_rows(self.capacity, page),
+                "physical_rows": placement.physical_page_rows(self.capacity, page),
                 "committed_rows": min(placement.page_tokens, max(0, committed - start)),
                 "tentative_rows": min(placement.page_tokens, max(0, tentative - start)),
                 "codec_identity": self.kv_identity,
@@ -787,6 +838,7 @@ class State:
             elif isinstance(value, list) and value and isinstance(value[0], kvcache.KVCache):
                 setattr(other, name, [v.clone() for v in value])
         other.cur = list(self.cur)
+        other.history_native_readers = weakref.WeakSet()
         # An independent oracle clone owns new cache allocations and actual
         # page maps, but cannot borrow a live transition's mutable progress.
         other._history_migration = None

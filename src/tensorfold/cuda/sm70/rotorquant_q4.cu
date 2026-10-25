@@ -156,6 +156,7 @@ template<class Callable> void dispatch_codec(int codec, Callable callable) {
         case 4: callable(std::integral_constant<int, 4>{}); break;
         case 5: callable(std::integral_constant<int, 5>{}); break;
         case 9: callable(std::integral_constant<int, 9>{}); break;
+        case 10: callable(std::integral_constant<int, 10>{}); break;
     }
 }
 

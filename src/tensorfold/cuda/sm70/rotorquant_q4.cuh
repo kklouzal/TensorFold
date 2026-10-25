@@ -19,20 +19,20 @@ __device__ __forceinline__ int index(float value) {
 
 template<int CODEC>
 __device__ __forceinline__ float selected_centroid(int code) {
-    if constexpr (CODEC == 9) return __uint_as_float(compact_centroid_bits[code]);
+    if constexpr (CODEC == 9 || CODEC == 10) return __uint_as_float(compact_centroid_bits[code]);
     return centroid(code);
 }
 
 template<int CODEC>
 __device__ __forceinline__ float metadata_scale(float word) {
-    if constexpr (CODEC == 9) return __half2float(__ushort_as_half(__float_as_uint(word) & 0xffffu));
+    if constexpr (CODEC == 9 || CODEC == 10) return __half2float(__ushort_as_half(__float_as_uint(word) & 0xffffu));
     return word;
 }
 
 template<int CODEC>
 __device__ __forceinline__ bool valid_metadata(float word) {
     const float scale = metadata_scale<CODEC>(word);
-    if constexpr (CODEC == 9) {
+    if constexpr (CODEC == 9 || CODEC == 10) {
         if (__float_as_uint(word) >> 16) return false;
     }
     return isfinite(scale) && scale >= 0.0f;
@@ -83,7 +83,7 @@ __device__ __forceinline__ float wide(float value, int col, float* shared) {
 
 template<int CODEC, bool INVERSE>
 __device__ __forceinline__ float rotate_component(float value, int col, float* shared) {
-    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9);
+    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10);
     // All CTA threads participate, col==threadIdx.x, blockDim.x is a multiple
     // of128 and shared has blockDim.x floats. There are no per-value barriers.
     if constexpr (CODEC == 1 || CODEC == 9) {
@@ -102,6 +102,29 @@ __device__ __forceinline__ float rotate_component(float value, int col, float* s
         }
         __syncthreads();
         return value;
+    }
+    if constexpr (CODEC == 10) {
+        shared[col] = value;
+        __syncthreads();
+        const int group = (col / 4) % 32, base = col / 4 * 4;
+        const float a = shared[base], b = shared[base + 1];
+        const float c = shared[base + 2], d = shared[base + 3];
+        const float w = __uint_as_float(compact_qw_bits[group]);
+        float x = __uint_as_float(compact_qx_bits[group]);
+        float y = __uint_as_float(compact_qy_bits[group]);
+        float z = __uint_as_float(compact_qz_bits[group]);
+        if constexpr (INVERSE) { x = -x; y = -y; z = -z; }
+        float result;
+        if (col % 4 == 0)
+            result = __fsub_rn(__fsub_rn(__fsub_rn(__fmul_rn(w, a), __fmul_rn(x, b)), __fmul_rn(y, c)), __fmul_rn(z, d));
+        else if (col % 4 == 1)
+            result = __fsub_rn(__fadd_rn(__fadd_rn(__fmul_rn(w, b), __fmul_rn(x, a)), __fmul_rn(y, d)), __fmul_rn(z, c));
+        else if (col % 4 == 2)
+            result = __fadd_rn(__fadd_rn(__fsub_rn(__fmul_rn(w, c), __fmul_rn(x, d)), __fmul_rn(y, a)), __fmul_rn(z, b));
+        else
+            result = __fadd_rn(__fsub_rn(__fadd_rn(__fmul_rn(w, d), __fmul_rn(x, c)), __fmul_rn(y, b)), __fmul_rn(z, a));
+        __syncthreads();
+        return result;
     }
     if constexpr ((CODEC == 4 || CODEC == 5) && !INVERSE)
         if ((sign_pair_mask >> ((col / 2) % 64)) & 1) value = -value;
@@ -159,19 +182,19 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
     // does not prove that its selected centroid is representable as Half.
     const bool bad_source = __syncthreads_or(!isfinite(value));
     if (bad_source) value = 0.0f;
-    if constexpr (CODEC == 9) {
+    if constexpr (CODEC == 9 || CODEC == 10) {
         const float energy = reduce_group<false>(__fmul_rn(value, value), col, shared);
         const float norm = __fsqrt_rn(energy);
         const float unit = norm > 1e-10f ? __fmul_rn(value, __fdiv_rn(1.0f, norm)) : 0.0f;
-        const float rotated = rotate_component<9, false>(unit, col, shared);
+        const float rotated = rotate_component<CODEC, false>(unit, col, shared);
         int code = 0;
-        float distance = fabsf(__fsub_rn(rotated, selected_centroid<9>(0)));
+        float distance = fabsf(__fsub_rn(rotated, selected_centroid<CODEC>(0)));
         #pragma unroll
         for (int i = 1; i < 16; ++i) {
-            const float candidate = fabsf(__fsub_rn(rotated, selected_centroid<9>(i)));
+            const float candidate = fabsf(__fsub_rn(rotated, selected_centroid<CODEC>(i)));
             if (candidate < distance) { distance = candidate; code = i; }
         }
-        const float selected = selected_centroid<9>(code);
+        const float selected = selected_centroid<CODEC>(code);
         const float reconstruction = __fsqrt_rn(reduce_group<false>(__fmul_rn(selected, selected), col, shared));
         const float corrected = reconstruction > 1e-10f ? __fdiv_rn(norm, reconstruction) : norm;
         const __half half_scale = __float2half_rn(corrected);

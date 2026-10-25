@@ -85,9 +85,9 @@ def _rotor_rotate(value, out, *, codec=4, inverse=False, status=None, error=1, l
 
         return rotate(value, out, codec=codec, inverse=inverse, status=status, error=error,
                       layer=layer, valid_rows=valid_rows)
-    if codec == 9:
+    if codec in (9, 10):
         from .rotorquant_compact import rotate_ref
-        result = rotate_ref(value, inverse=inverse)
+        result = rotate_ref(value, codec=codec, inverse=inverse)
     else:
         from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import rotate_ref
         result = rotate_ref(value, _rotor_variant(codec), inverse=inverse)
@@ -116,11 +116,11 @@ def _rotor_encode(value, codes, scales, position, *, codec=4, status=None, error
     if not live:
         return codes, scales
     guarded = _guard(value[:live], status, error, layer)
-    if codec == 9:
+    if codec in (9, 10):
         from .rotorquant_compact import quantize_ref as compact_encode, dequant_ref as compact_decode
         try:
-            payload, metadata = compact_encode(guarded)
-            working = compact_decode(payload, metadata).half()
+            payload, metadata = compact_encode(guarded, codec=codec)
+            working = compact_decode(payload, metadata, codec=codec).half()
         except ValueError:
             if status is None:
                 raise
@@ -192,9 +192,9 @@ def _rotor_decode(codes, scales, width, codec):
         from .rotorquant_q4_native import decode
 
         return decode(codes, scales, out, codec=codec)
-    if codec == 9:
+    if codec in (9, 10):
         from .rotorquant_compact import dequant_ref
-        out.copy_(dequant_ref(codes, scales))
+        out.copy_(dequant_ref(codes, scales, codec=codec))
     else:
         from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import dequant_ref
         out.copy_(dequant_ref(codes, scales, 4, _rotor_variant(codec)))
@@ -732,7 +732,7 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
     # The fixed-position optimized attention receipt predates compact Planar4.
     # Its native implementation is available to qualification tests; ordinary
     # dispatch keeps the bounded canonical path until same-codec evidence exists.
-    if (_native_allowed and kf != 9 and vf != 9 and _NATIVE_FAMILY and _NATIVE_ATTENTION
+    if (_native_allowed and kf not in (9, 10) and vf not in (9, 10) and _NATIVE_FAMILY and _NATIVE_ATTENTION
             and q.is_cuda and q.dtype == torch.float16):
         from .attention_qualification import runtime_identity, supports
 
@@ -745,7 +745,7 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
                 return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb,
                                        kcodec=kf, vcodec=vf)
             return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb)
-    if kf == 9 or vf == 9:
+    if kf in (9, 10) or vf in (9, 10):
         return _compact_attention(q, kc, vc, pos0, scratch, rows, scale, out,
                                   keys=keys, ks=ks, vs=vs, kb=kb, vb=vb, kf=kf, vf=vf)
     heads, kh = q.shape[1], kc.shape[1]

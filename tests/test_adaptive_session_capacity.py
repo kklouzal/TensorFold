@@ -124,7 +124,8 @@ def test_unique_history_byte_sum_matches_single_owned_payload_and_metadata(mtp, 
                  history_placement=placement, rank=rank) for rank in range(8)]
     ledgers = [g.breakdown_at(rows) for g in geometries]
     caches = 12 + int(mtp)
-    payload = sessions * caches * rows * 2 * 544
+    physical_rows = (rows + 127) // 128 * 128
+    payload = sessions * caches * physical_rows * 2 * 544
     indexer = sessions * caches * (rows + (rows + 3) // 4) * 128 * 2
     metadata = sessions * caches * 8 * ((rows + 127) // 128) * 8
     assert sum(ledger["history"] for ledger in ledgers) == payload + indexer + metadata

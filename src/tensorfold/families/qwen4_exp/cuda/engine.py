@@ -69,6 +69,7 @@ class FlashNextEngine:
         self.comm = self.vision = self.w = self.scheduler = self.multi = self.e = self.serial = None
         self.expert_session = expert_session
         self._indexer_history_session = None
+        self._owner_preparation = None
         self._startup_reads: list = []
         try:
             self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest)
@@ -107,7 +108,7 @@ class FlashNextEngine:
         gguf = resolve_gguf(model_dir) is not None
         compact_kv = any(side.compact is not None for side in (self.kv_pair.key, self.kv_pair.value))
         if compact_kv and not gguf:
-            raise ValueError("compact Planar4 KV requires the GGUF SM70 execution provider")
+            raise ValueError("compact Planar4/Iso4 KV requires the GGUF SM70 execution provider")
         if type(adaptive_sessions) is not bool or adaptive_sessions and not gguf:
             raise ValueError("automatic resident sessions require the GGUF SM70 provider")
         if session_ceiling is not None and (type(session_ceiling) is not int or session_ceiling < 1):
@@ -232,11 +233,35 @@ class FlashNextEngine:
             # Share this exact selection across admission, the settings digest
             # and loading; a file changed after startup cannot change the head.
             ids.flags.writeable = False
+        from .speculation import MethodGeometry
+
+        self.method_geometry = MethodGeometry("dspark" if dspark_plan is not None else "mtp" if stock_mtp else "none",
+                                              int(depth))
+        each, mtp = self.method_geometry.target_tail_rows, stock_mtp
+        owner_specification = None
+        owner_preparation = None
+        preparation_manifest_sha = None
+        if execution_profile_manifest is not None:
+            from .execution_identity import begin_execution_manifest
+            from .owner_preparation import parse_preparation
+
+            self.model_dir = Path(model_dir)
+            manifest = begin_execution_manifest(self, execution_profile_manifest)
+            owner_specification = parse_preparation(manifest.get("preparation"))
+            preparation_manifest_sha = self._execution_preload["manifest"]
+            if owner_specification is not None:
+                from tensorfold.cuda.sm70.paged_attention import _format
+
+                dim = text.get("head_dim") or int(text["hidden_size"]) // int(text["num_attention_heads"])
+                if (history_placement is None or tp != 8 or indexer_history != "gpu" or vision
+                        or int(text["num_attention_heads"]) // tp != 3 or dim != 256 or not self.kv_pair.symmetric):
+                    raise ValueError("native owner preparation requires the homogeneous TP8 H3/D256 GPU-history profile")
+                _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
         torch.cuda.set_device(0)
         if execution_profile_manifest is not None and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("execution profile manifests require the actual SM70 V100 provider")
         if compact_kv and torch.cuda.get_device_capability() != (7, 0):
-            raise ValueError("compact Planar4 KV requires an actual SM70 compute-capability 7.0 device")
+            raise ValueError("compact Planar4/Iso4 KV requires an actual SM70 compute-capability 7.0 device")
         if indexer_history == "ram" and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("RAM indexer history is supported by the GGUF SM70 CUDA provider only")
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
@@ -266,11 +291,6 @@ class FlashNextEngine:
                             -1 if execution_rows is None else execution_rows])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history or session execution policies")
-        from .speculation import MethodGeometry
-
-        self.method_geometry = MethodGeometry("dspark" if dspark_plan is not None else "mtp" if stock_mtp else "none",
-                                              self.depth)
-        each, mtp = self.method_geometry.target_tail_rows, stock_mtp
         if execution_rows is not None and (type(execution_rows) is not int or execution_rows < each):
             raise ValueError("execution rows must fit one complete speculative verification window")
 
@@ -300,6 +320,20 @@ class FlashNextEngine:
             history_maximum_owners = streams if concurrent else 2
             history_geometry["indexer_raw_device_bytes"] = history_plan.device_bytes_per_layer
         self._indexer_history_plan = history_plan
+        if owner_specification is not None:
+            from .owner_preparation import OwnerPreparation
+            from .state import ATT_ROWS
+
+            bound = execution_rows if execution_rows is not None else 32
+            if session_ceiling is not None:
+                bound = min(bound, session_ceiling * each)
+            roles = {"decode": min(bound, ATT_ROWS),
+                     **({"mtp": min(bound, ATT_ROWS)} if mtp else {}), "prefill": min(rows0, ATT_ROWS)}
+            owner_preparation = OwnerPreparation(owner_specification, role_rows=roles,
+                                                  manifest_sha256=preparation_manifest_sha)
+            self._owner_preparation = owner_preparation
+            owner_preparation.prepare(self, text, self.kv_pair, page_tokens=history_placement.page_tokens,
+                                      device=torch.device("cuda", torch.cuda.current_device()))
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         a4_scalar_host = 0
         if modelopt:
@@ -366,7 +400,8 @@ class FlashNextEngine:
 
                 main_rows = row_envelope(count) if concurrent else max(8, each)
                 padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp)
-                native_attention = family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
+                native_attention = (family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
+                                    and history_placement is None)
                 if not native_attention and not padded_bytes and history_placement is None:
                     return base
                 scratch_rows = (1 + int(mtp)) * main_rows + min(rows0, 256)
@@ -386,8 +421,10 @@ class FlashNextEngine:
                                   [main_rows] * (1 + int(mtp)) + [rows0]]
                         # Coordinator serializes owner computation across these
                         # arenas; slabs persist together, temporary work does not.
-                        total += sum(a["persistent_bytes"] for a in arenas) + max(
-                            a["temporary_bytes"] for a in arenas)
+                        # Adopted owners are already excluded from physical
+                        # free. Only future temporary work remains unallocated.
+                        total += (sum(a["persistent_bytes"] for a in arenas) if owner_preparation is None else 0)
+                        total += max(a["temporary_bytes"] for a in arenas)
                     return total
 
                 def breakdown(capacity):
@@ -648,7 +685,11 @@ class FlashNextEngine:
                                    gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
                                    **automatic_capacity,
                                    **numeric_capacity,
-                                   **rope_capacity, **host_capacity, **adaptive_capacity)
+                                   **rope_capacity, **host_capacity, **adaptive_capacity,
+                                   **({"preallocated_device_bytes": owner_preparation.committed_bytes() or 0}
+                                      if owner_preparation is not None else {}))
+        if owner_preparation is not None:
+            self.capacity_plan["owner_preparation"] = owner_preparation.record()
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
             resident_windows = streams
@@ -751,11 +792,6 @@ class FlashNextEngine:
                 torch.device("cuda", torch.cuda.current_device()), maximum_owners=history_maximum_owners)
             self.capacity_plan["indexer_history"].update(placement)
         reads = self._startup_reads                              # the n-gram tables' pages, read while the weights load
-        if execution_profile_manifest is not None:
-            from .execution_identity import begin_execution_manifest
-
-            self.model_dir = Path(model_dir)
-            begin_execution_manifest(self, execution_profile_manifest)
         w = load(model_dir, mtp=stock_mtp, tp=(rank, tp) if tp > 1 else None,
                  draft_vocab=draft_vocab if stock_mtp else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
@@ -770,6 +806,8 @@ class FlashNextEngine:
         self.w, self.scheduler = w, None
         if history_placement is not None:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
+        if owner_preparation is not None:
+            w.meta["owner_workspaces"] = owner_preparation.workspaces
         if self._indexer_history_session is not None:
             w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
         if expert_session is not None:
@@ -861,8 +899,11 @@ class FlashNextEngine:
                                                             - self.capacity_plan["serving_peak_bytes_estimate"]),
                                       vision_workspace_bytes=workspace,
                                       **({"execution_rows": execution_rows} if execution_rows is not None else {}),
+                                      **({"memory_live": owner_preparation.live_bytes} if owner_preparation is not None else {}),
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
             self.multi.logical_context = self.context_window
+            if owner_preparation is not None:
+                owner_preparation.adopt(w, self.multi)
             if resident_windows is not None:
                 capacities = [st.capacity for st in self.multi.free]
                 owned_cache_bytes = sum(st.owned_cache_bytes() for st in self.multi.free)
@@ -1640,6 +1681,20 @@ class FlashNextEngine:
                 if graphs is not None and id(graphs) not in seen_graphs:
                     graphs.close()
                     seen_graphs.add(id(graphs))
+        preparation = getattr(self, "_owner_preparation", None)
+        if preparation is not None:
+            # Captured communicator borrowers and raw State leases retire
+            # before either the communicator or failed-slot storage changes.
+            preparation.close()
+            decoder = getattr(self, "multi", None)
+            for name in ("buf", "mbuf", "pbuf"):
+                buffers = getattr(decoder, name, None)
+                if buffers is not None:
+                    buffers.owner_graphs = None
+                    buffers.history_owner = None
+            weights = getattr(self, "w", None)
+            if weights is not None:
+                weights.meta.pop("owner_workspaces", None)
         comm = getattr(self, 'comm', None)
         if comm is not None:
             comm.close(abort=getattr(self, '_abort_comm', False))

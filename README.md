@@ -8,6 +8,14 @@ separate source checks from the pending eight-V100 model, quality and performanc
 gates. Historical results below keep their original source and layout.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
+Its optional native preparation section builds bounded partial attention graphs
+before admission; explicit qualification trials remain unqualified until the
+source-built V100 stack and actual device/model gates pass.
+The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
+format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
+Wire/source checks and reference-stack compilation do not qualify either
+candidate's V100 quality, long-context execution or performance.
+
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile
 requires the corresponding `TF_MAX_PENDING_REQUESTS` and
@@ -761,7 +769,11 @@ creating a persistent GPU session. Runtime receipts report active requests,
 allocated slots and derived prefix-cache slots separately, with intentional
 retained sessions at zero. Temporarily selecting zero proposals keeps the
 enabled drafter warm within the active request; `draft: false` keeps that call
-serial. A new request starts a new slot generation even when it reuses a prefix.
+serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
+work receipts separate logical prompt/cache/replay counts, submitted target and
+MTP rows, and verifier acceptance histograms from useful committed output.
+Indexer fields describe causal logical work; expert group size and device stage
+timing remain unknown until measured without additional critical waits.
 
 Closing a client socket cancels its live request. Ordinary one-GPU CUDA stops at the next round, and a Flash Next prompt still prefilling under `--parallel N` stops before its next prompt pass; some tensor-parallel Flash Next, Nemotron and GLM requests finish on both ranks. Queued cancellation must not start new engine work, and admission is held until retained work actually retires. Deleting a stored Response deletes storage; it is not a live-generation cancellation API. Idle health should show zero logical requests, but its own connection counts toward a configured HTTP cap.
 

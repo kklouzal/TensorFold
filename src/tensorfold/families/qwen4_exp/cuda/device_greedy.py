@@ -201,6 +201,9 @@ class GreedyHandoff:
                                                 device_tokens=self.input_token if step else None)
                 if logits is None:
                     raise RuntimeError("an admitted device MTP key disappeared during its operation")
+                if self.dec.controller is not None:
+                    self.dec.controller.work_observations.mtp(
+                        segs, role="refresh" if step == 0 else "proposal", position=position)
                 self.gather(step, logits, state)
                 if step + 1 < count:
                     row = len(keep) - 1 if step == 0 else 0
@@ -213,6 +216,8 @@ class GreedyHandoff:
             self.error = error
             if state._kv_error is None:
                 state._kv_error = KVNumericError("unvalidated device MTP writes require this sequence to be reset")
+            if self.dec.controller is not None:
+                self.dec.controller.work_observations.incomplete(error)
             raise
         finally:
             self.busy = False

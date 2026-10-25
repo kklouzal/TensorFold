@@ -11,10 +11,16 @@ from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacemen
 @pytest.mark.parametrize("rows", [1, 127, 128, 129, 262148])
 def test_every_logical_head_row_has_one_owner_and_target_quartets_balance(degree, rows):
     placement = HistoryPlacement(8, 2, 12, degree=degree)
+    physical_rows = (rows + 127) // 128 * 128
     per_rank = [sum(placement.local_rows(3, layer, rows, rank) for layer in range(12)) for rank in range(8)]
-    assert per_rank == [3 * rows] * 8
+    assert per_rank == [3 * physical_rows] * 8
     for layer in range(13):
-        assert sum(placement.local_rows(3, layer, rows, rank) for rank in range(8)) == 2 * rows
+        assert sum(placement.local_rows(3, layer, rows, rank) for rank in range(8)) == 2 * physical_rows
+    # Updated specification§10: partial logical tails still reserve complete
+    # typed physical pages; validity and footprint are independent contracts.
+    tail = (rows - 1) // 128
+    assert placement.page_rows(rows, tail) == (rows - 1) % 128 + 1
+    assert placement.physical_page_rows(rows, tail) == 128
     # Indexer ownership has exactly one canonical copy and whole 13-layer
     # inventories divide evenly across the stated first-candidate counts.
     for sessions in (16, 24):
@@ -137,7 +143,7 @@ def test_workspace_persistent_plan_matches_constructed_wire_slabs():
     small = owner_workspace_bytes(text, 32)
     large = owner_workspace_bytes(text, 256)
     assert small["persistent_bytes"] == (
-        8 * 32 * 4 * 256 * 2 + 9 * 32 * (2052 + 2) * 4 + 9 * 32 * 16 * 258 * 4 + 4)
+        8 * 32 * 4 * 256 * 2 + 9 * 32 * (2052 + 2) * 4 + 9 * 32 * 16 * 256 * 4 + 4)
     assert large["persistent_bytes"] > small["persistent_bytes"]
     assert large["temporary_bytes"] > small["temporary_bytes"]
 
@@ -243,6 +249,7 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
         buffers = NS(pa=projection[start:].contiguous(), q=torch.empty((3, 1, 256), dtype=torch.float16),
                      iq=torch.empty((3, 2, 128), dtype=torch.float16),
                      attn_o=torch.empty((3, 1, 256), dtype=torch.float16), attn=scratch, prefill=False)
+        buffers.owner_kernel_family, buffers.owner_graph_family, buffers.owner_graphs = "torch-reference", "uncaptured", None
         buffers.history_owner = OwnerBuffers(w, 3, scratch)
         layer = NS(index=1, attn=NS(q_scale=torch.ones(256), k_scale=torch.ones(256),
                                   iq_scale=torch.ones(128), ik_scale=torch.ones(128)))

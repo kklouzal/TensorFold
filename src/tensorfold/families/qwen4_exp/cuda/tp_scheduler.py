@@ -15,6 +15,7 @@ import json
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.cuda.streams import Stream
 from tensorfold.cleanup import raise_failures
+from .owner_execution import FAMILY_FIELDS
 
 
 class SharedMemoryGate(MemoryGate):
@@ -207,7 +208,11 @@ class TensorParallelDecoder:
         quota = None
         if controller is not None:
             settings = None if execution is None else {name: execution[name] for name in controller.maximum}
-            boundary = controller.freeze_boundary(settings)
+            if execution is None:
+                boundary = controller.freeze_boundary(settings)
+            else:
+                boundary = controller.freeze_boundary(settings, family={name: execution[name] for name in FAMILY_FIELDS},
+                                                      profile_id=execution["profile_id"])
             result["execution_boundary"] = boundary
             quota = getattr(self.decoder, "pass_rows_for", None)
         result["pass_rows"] = self._pass_rows() if quota is None else quota(boundary["settings"])
@@ -218,6 +223,9 @@ class TensorParallelDecoder:
         boundary = body.get("execution_boundary")
         if controller is not None:
             controller.apply_boundary(boundary)
+            apply_family = getattr(self.decoder, "apply_execution_family", None)
+            if apply_family is not None:
+                apply_family()
         elif boundary is not None:
             raise ValueError("this tensor-parallel decoder has no execution controller")
         for wire in body["forget"]:
@@ -239,8 +247,8 @@ class TensorParallelDecoder:
                  for wire, stream in self.requests.items()]
         controller = getattr(self.decoder, "controller", None)
         execution = None if controller is None else [controller.epoch, controller.effective,
-                                                     controller.last_served]
-        return hashlib.sha256(json.dumps([state, execution], separators=(",", ":")).encode()).hexdigest()
+                                                     controller.last_served, controller.effective_family]
+        return hashlib.sha256(json.dumps([state, execution], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _dispatch(self, body, source=None):
         self.prefix_operation = body["sequence"]

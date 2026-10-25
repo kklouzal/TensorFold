@@ -3,6 +3,7 @@
 import ast
 import os
 import traceback
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -100,6 +101,7 @@ def state(owner):
     st.row_bytes, st.index_dim, st.ratio = KV.row_bytes + 256, 128, 4
     st._resize_error = st._kv_error = st._history_error = None
     st.slot_generation, st.history_generations = 0, None
+    st.history_native_readers = weakref.WeakSet()
     st.kc = [KV(owner, st.capacity) for _ in range(st.layers)]
     st.ikc = [Array(owner, st.capacity, st.index_dim) for _ in range(st.layers)]
     st.pooled = [Array(owner, st.capacity // st.ratio, st.index_dim) for _ in range(st.layers)]

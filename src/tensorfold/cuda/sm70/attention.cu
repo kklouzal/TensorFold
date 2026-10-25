@@ -8,6 +8,7 @@
 #include <optional>
 #include "pv_dispatch.cuh"
 #include "rotorquant_q4.cuh"
+#include "packed_kv_decode.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -29,23 +30,6 @@ __device__ __forceinline__ bool visible(int key, int row, int end, bool qsa,
         if (ids[int64_t(row) * id_stride + mid] < key) low = mid + 1; else high = mid;
     }
     return low < counts[row] && ids[int64_t(row) * id_stride + low] == key;
-}
-__device__ __forceinline__ __half decoded(const void* data, const void* scales, int bits, int codec, int64_t at) {
-    if (!bits) return static_cast<const __half*>(data)[at];
-    if (codec == 9) {
-        const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
-        const int index = (byte >> (4 * (at & 1))) & 15;
-        const float word = static_cast<const float*>(scales)[at / 128];
-        return __float2half_rn(__fmul_rn(tf_rq4::selected_centroid<9>(index), tf_rq4::metadata_scale<9>(word)));
-    }
-    if (codec == 4 || codec == 5) {
-        const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
-        const int index = (byte >> (4 * (at & 1))) & 15;
-        return __float2half_rn(__fmul_rn(tf_rq4::centroid(index), static_cast<const float*>(scales)[at / 128]));
-    }
-    float value = ((float(static_cast<const int8_t*>(data)[at]) + 0.5f) *
-                   __half2float(static_cast<const __half*>(scales)[at / 32])) * (1.f / 128.f);
-    return __float2half_rn(value);
 }
 __device__ __forceinline__ float warp_sum(float value) {
     for (int offset = 16; offset; offset >>= 1) value += __shfl_xor_sync(0xffffffffu, value, offset);
@@ -132,7 +116,7 @@ __global__ void scores_kernel(const __half* q, const void* keys, const void* sca
     for (int at = threadIdx.x; at < SCORE_TILE * DIM; at += blockDim.x) {
         int key = first_key + at / DIM, col = at % DIM;
         key_tile[at] = key < min(context, position0 + max_row + 1)
-            ? decoded(keys, scales, bits, codec, (int64_t(key) * kvheads + kvhead) * DIM + col) : __float2half_rn(0.f);
+            ? tf_sm70::decoded_half(keys, scales, bits, codec, (int64_t(key) * kvheads + kvhead) * DIM + col) : __float2half_rn(0.f);
         serial_keys[col * (SCORE_TILE + 1) + at / DIM] = key_tile[at];
     }
     __syncthreads();
@@ -277,7 +261,7 @@ __global__ void values_kernel(const __half* probabilities, int probability_strid
                 for (int key = part * chunk; key < min(end, (part + 1) * chunk); ++key) {
                     bool keep = visible(key, row, end, qsa, sparse, counts, ids, id_stride);
                     float p = __half2float(probabilities[int64_t(query) * probability_stride + key]);
-                    float v = keep ? __half2float(decoded(values, scales, bits, codec,
+                    float v = keep ? __half2float(tf_sm70::decoded_half(values, scales, bits, codec,
                                 (int64_t(key) * kvheads + kvhead) * DIM + col)) : 0.f;
                     accum[part] = __fadd_rn(accum[part], __fmul_rn(p, v));
                 }
@@ -311,7 +295,7 @@ __global__ void values_kernel(const __half* probabilities, int probability_strid
             for (int at = threadIdx.x; at < 16 * VALUE_DIMS; at += blockDim.x) {
                 const int key = first_key + at / VALUE_DIMS, col = at % VALUE_DIMS;
                 const bool keep = key < high && visible(key, row, end, qsa, sparse, counts, ids, id_stride);
-                value_tile[at] = keep ? decoded(values, scales, bits, codec,
+                value_tile[at] = keep ? tf_sm70::decoded_half(values, scales, bits, codec,
                     (int64_t(key) * kvheads + kvhead) * DIM + first_col + col) : __float2half_rn(0.f);
             }
             __syncthreads();
@@ -345,6 +329,8 @@ __global__ void reduce_kernel(const float* partials, __half* out, const void* po
         value = tf_rq4::rotate_component<5, true>(value, col, rotor);
     } else if (codec == 9) {
         value = tf_rq4::rotate_component<9, true>(value, col, rotor);
+    } else if (codec == 10) {
+        value = tf_rq4::rotate_component<10, true>(value, col, rotor);
     } else if (bits) {
 #pragma unroll
         for (int offset = 1; offset <= 16; offset *= 2) {

@@ -555,7 +555,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           memory_reserve: int | None = None,
           session_geometry: Callable[[dict, int], Geometry] | None = None,
           session_ceiling: int | None = None,
-          session_host_workspace: Callable[[int], int] | None = None) -> dict:
+          session_host_workspace: Callable[[int], int] | None = None,
+          preallocated_device_bytes: int = 0) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
     ``weight_estimator`` optionally returns the backend's retained GPU weights,
@@ -569,6 +570,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     both serving workspaces share the cache/weight budget. The separate host
     availability/cgroup check keeps its conservative legacy host-extra charge
     in both phases; that argument's unified loading-only charge is unchanged.
+    ``preallocated_device_bytes`` are proven nonreusable owners already absent
+    from physical free; subtract them only from an explicit absolute cap.
     """
 
     from tensorfold.cuda import build
@@ -578,6 +581,11 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     plan = None
     session_fitting, session_factory, session_context = 0, None, 0
     try:
+        if type(preallocated_device_bytes) is not int or preallocated_device_bytes < 0:
+            raise ValueError("preallocated device commitments must be nonnegative integer bytes")
+        preallocation_limit = cuda_limit_bytes() if preallocated_device_bytes else None
+        if preallocation_limit is not None and preallocated_device_bytes > preallocation_limit:
+            raise ValueError("preallocated device commitments exceed the absolute CUDA budget")
         text = config(model_dir)
         geometry = geometry(text) if callable(geometry) else geometry
         if weight_estimator is None:
@@ -656,6 +664,10 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 raise ValueError("original context must be positive and no greater than the effective RoPE limit")
         effective_native = native if context_limit is None else context_limit
         budget = available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve)
+        if preallocation_limit is not None:
+            # Physical free already excludes these owners. Only the absolute
+            # cap needs their remaining obligation removed, exactly once.
+            budget = min(budget, preallocation_limit - preallocated_device_bytes)
         if session_factory is not None:
             session_context = requested or effective_native
             if (type(session_context) is not int or session_context <= 0
@@ -704,6 +716,15 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     window = choose(plan, [row[1:] for row in both],
                     window_kind="native" if context_limit is None else "RoPE")
     receipt = {**plan.receipt(window), "largest_window": min(row[5] for row in both)}
+    if preallocated_device_bytes:
+        receipt["device_preallocation"] = {
+            "already_committed_bytes": preallocated_device_bytes,
+            "absolute_limit_bytes": preallocation_limit,
+            "remaining_absolute_limit_bytes": None if preallocation_limit is None else
+                                                preallocation_limit - preallocated_device_bytes,
+            "included_in_physical_free_baseline": True,
+            "total_project_peak_bytes_estimate": receipt["total_bytes_estimate"] + preallocated_device_bytes,
+        }
     if session_geometry is not None:
         ledger = {} if geometry.breakdown_at is None else geometry.breakdown_at(
             max(geometry.minimum_slots, session_context + geometry.reserve))

@@ -1,6 +1,7 @@
 """Admission identity changes precede cached writes; rollback keeps its identity."""
 
 from types import SimpleNamespace as NS
+import weakref
 
 import pytest
 
@@ -14,14 +15,19 @@ def generation_state(value=0):
     state = object.__new__(State)
     state._resize_error = state._kv_error = state._history_error = None
     state.slot_generation, state.history_generations = value, None
+    state.history_native_readers = weakref.WeakSet()
     return state
+
+
+class GenerationWords(list):
+    is_cuda = False
 
 
 @pytest.mark.parametrize("value", [-1, True, None, 1.5, (1 << 63) - 1])
 def test_invalid_or_exhausted_generation_is_rejected_before_publication(value):
     state = generation_state(value)
     writes = []
-    state.history_generations = [NS(fill_=lambda number: writes.append(number))]
+    state.history_generations = GenerationWords([NS(fill_=lambda number: writes.append(number))])
     with pytest.raises(RuntimeError, match="invalid or exhausted"):
         state.begin_sequence_generation()
     assert writes == [] and state.slot_generation is value
@@ -30,7 +36,7 @@ def test_invalid_or_exhausted_generation_is_rejected_before_publication(value):
 def test_publication_uses_the_next_signed64_generation_before_host_commit():
     state = generation_state((1 << 63) - 2)
     writes = []
-    state.history_generations = [NS(fill_=lambda number: writes.append((number, state.slot_generation)))]
+    state.history_generations = GenerationWords([NS(fill_=lambda number: writes.append((number, state.slot_generation)))])
     assert state.begin_sequence_generation() == (1 << 63) - 1
     assert writes == [((1 << 63) - 1, (1 << 63) - 2)]
     with pytest.raises(RuntimeError, match="exhausted"):

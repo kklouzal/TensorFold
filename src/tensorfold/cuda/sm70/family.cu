@@ -448,8 +448,10 @@ __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_l
         value = guarded(value, status, flag, layer, row, live);
     }
     if constexpr (COMPACT_POSSIBLE) {
-        if ((kind == 1 && kcodec == 9) || (kind == 2 && vcodec == 9)) {
-            const auto item = tf_rq4::encode_component<9>(value, col, shared, flag);
+        if ((kind == 1 && (kcodec == 9 || kcodec == 10)) || (kind == 2 && (vcodec == 9 || vcodec == 10))) {
+            const int selected = kind == 1 ? kcodec : vcodec;
+            const auto item = selected == 10 ? tf_rq4::encode_component<10>(value, col, shared, flag)
+                                              : tf_rq4::encode_component<9>(value, col, shared, flag);
             if (item.errors && status) { atomicOr(status, item.errors); atomicCAS(status + 1, -2, layer); }
             const int64_t base = (cache_row * kvheads + head) * dim;
             tf_rq4::store_encoded(item, col, shared,
@@ -457,8 +459,9 @@ __global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_l
                 base, dim, true);
             return;
         }
-        if (kind == 0 && kcodec == 9) {
-            value = half_round(tf_rq4::rotate_component<9, false>(value, col, shared));
+        if (kind == 0 && (kcodec == 9 || kcodec == 10)) {
+            value = half_round(kcodec == 10 ? tf_rq4::rotate_component<10, false>(value, col, shared)
+                                           : tf_rq4::rotate_component<9, false>(value, col, shared));
             value = guarded(value, status, flag, layer, row, live);
         }
     }
@@ -799,7 +802,7 @@ void prep_format_cuda(const T& p, const T& position, const T& qw, const T& kw, c
             if (kcodec == 5 || vcodec == 5) launch(std::true_type{}, compact);
             else launch(std::false_type{}, compact);
         };
-        if (kcodec == 9 || vcodec == 9) dispatch(std::true_type{});
+        if (kcodec == 9 || vcodec == 9 || kcodec == 10 || vcodec == 10) dispatch(std::true_type{});
         else dispatch(std::false_type{});
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();

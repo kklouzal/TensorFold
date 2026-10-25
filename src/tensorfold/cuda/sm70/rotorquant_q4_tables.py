@@ -1,4 +1,4 @@
-"""Deterministic native Q4 table materialization from the owned format authority."""
+"""Generate native Q4 tables from rotorquant_ref and rotorquant_compact authorities."""
 from __future__ import annotations
 
 import argparse
@@ -32,6 +32,11 @@ constexpr uint32_t wide_sin_bits = {_bits((ref.WIDE_GIVENS_SIN,))};
 static __device__ __constant__ uint32_t compact_centroid_bits[16] = {{{_bits(compact.CENTROIDS)}}};
 static __device__ __constant__ uint32_t compact_cos_bits[64] = {{{_bits(compact.COS)}}};
 static __device__ __constant__ uint32_t compact_sin_bits[64] = {{{_bits(compact.SIN)}}};
+// {compact.descriptor(compact.ISO_CODEC).codec_id}
+static __device__ __constant__ uint32_t compact_qw_bits[32] = {{{_bits(compact.QW)}}};
+static __device__ __constant__ uint32_t compact_qx_bits[32] = {{{_bits(compact.QX)}}};
+static __device__ __constant__ uint32_t compact_qy_bits[32] = {{{_bits(compact.QY)}}};
+static __device__ __constant__ uint32_t compact_qz_bits[32] = {{{_bits(compact.QZ)}}};
 }}  // namespace tf_rq4
 '''
 
