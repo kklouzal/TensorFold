@@ -320,6 +320,11 @@ def runtime_identity():
     if handles[3].ncclGetVersion(ctypes.byref(nccl)) != 0:
         raise ValueError("NCCL metadata query failed")
     distribution = importlib.metadata.distribution("torch")
+    # Framework metadata may load an already-installed cuDNN component. Observe
+    # those mappings after the query, so the first and subsequent identities
+    # describe the same fully materialized metadata operation.
+    framework_nccl = list(torch.cuda.nccl.version())
+    framework_cudnn = torch.backends.cudnn.version()
     mapped, driver = set(), set()
     for line in Path("/proc/self/maps").read_text().splitlines():
         parts = line.split(maxsplit=5)
@@ -340,8 +345,8 @@ def runtime_identity():
             "torch_config_sha256": hashlib.sha256(torch.__config__.show().encode()).hexdigest(),
             "cublas": properties, "cublas_lt": handles[1].cublasLtGetVersion(),
             "cudnn": handles[2].cudnnGetVersion(), "nccl": nccl.value,
-            "framework_nccl": list(torch.cuda.nccl.version()),
-            "framework_cudnn": torch.backends.cudnn.version(),
+            "framework_nccl": framework_nccl,
+            "framework_cudnn": framework_cudnn,
             "nccl_backend_available": torch.distributed.is_nccl_available(),
             "mapped_libraries": sorted(mapped), "host_driver_libraries": sorted(driver)}
 
@@ -361,7 +366,7 @@ def validate_runtime(identity):
         matches = [path for path in paths if Path(path).name.startswith(stem)]
         if not matches or any(not path.startswith(prefix) for path in matches):
             raise ValueError("mapped provider escaped its source-build native ownership: " + stem)
-    if any("/site-packages/nvidia/" in path or "/torchvision" in path for path in paths):
+    if any("/site-packages/nvidia/" in path or "/torchvision.libs/" in path for path in paths):
         raise ValueError("binary-wheel accelerator providers cannot supply the source foundation")
 
 
@@ -507,6 +512,50 @@ def audit_process(manifest, pins):
     numerical/device/compiler qualification belongs to the execution profile.
     """
     return audit_install(manifest, pins, process_mode=True)
+
+
+def revise_audit_policy(pins, prior_audit):
+    """Rebind an owned audit-policy change while preserving original build provenance.
+
+    Every original installed byte is checked, with the prior producer retained
+    at its historical path. Native/framework artifacts and the build receipt do
+    not change. This is an image-construction operation, not caller attestation
+    or a serving-time dependency replacement.
+    """
+    previous_path = prior_audit / "v100-source-foundation.json"
+    previous = read_json(previous_path)[0]
+    producer, original_producer = Path(__file__).resolve(strict=True), prior_audit / "source_foundation.py"
+    original_identity = file_identity(original_producer)
+    build = read_json(previous["build_receipt"]["path"])[0]
+    if original_identity != expected_identity(build["producer_inputs"]["deploy/v100/source_foundation.py"]):
+        raise ValueError("audit revision must retain the exact original framework-build producer")
+    rebased, moved = [], 0
+    for row in previous["artifacts"]:
+        if row["path"] == str(producer):
+            if original_identity != expected_identity(row):
+                raise ValueError("prior installed producer differs from its original build")
+            row = {**row, "path": str(original_producer.resolve(strict=True))}
+            moved += 1
+        rebased.append(row)
+    if moved != 1:
+        raise ValueError("audit revision requires exactly one original installed producer")
+    # Keep the original snapshot unchanged on disk; only its producer location
+    # changes in this local verification view, with identical original bytes.
+    audit_process({**previous, "artifacts": rebased}, pins)
+    current_runtime = runtime_identity()
+    previous_paths = {row["path"] for row in previous["artifacts"]}
+    if not set(current_runtime["mapped_libraries"]) <= previous_paths:
+        raise ValueError("audit revision cannot add code outside the original sealed foundation")
+    for path in (producer, previous_path, prior_audit / "audit-process.json"):
+        rebased.append({"path": str(path.resolve(strict=True)), **file_identity(path)})
+    result = {**previous, "runtime": current_runtime, "artifacts": sorted(rebased, key=lambda row: row["path"]),
+              "audit_policy_revision": {
+                  "original_build_producer": original_identity,
+                  "previous_install_manifest": file_identity(previous_path),
+                  "current_audit_producer": file_identity(producer),
+                  "scope": "ordinary CPU consumer extensions allowed; bundled accelerator providers remain refused"}}
+    audit_install(result, pins)
+    return result
 
 
 def capture_build(pins, state, project):
@@ -884,6 +933,10 @@ def main():
     install.add_argument("--receipt-root", type=Path, required=True)
     install.add_argument("--wheel", type=Path)
     install.add_argument("--output", type=Path, required=True)
+    revision = commands.add_parser("revise-audit-policy")
+    revision.add_argument("--pins", type=Path, required=True)
+    revision.add_argument("--prior-audit", type=Path, required=True)
+    revision.add_argument("--output", type=Path, required=True)
     audit = commands.add_parser("audit")
     audit.add_argument("--pins", type=Path, default=Path("/opt/tensorfold-pins/source-pins.json"))
     audit.add_argument("--manifest", type=Path, default=Path("/opt/tensorfold-pins/v100-source-foundation.json"))
@@ -927,6 +980,9 @@ def main():
         captured = capture_install(read_json(args.pins)[0], args.build_receipt, args.receipt_root.resolve(strict=True),
                                    wheel_path=args.wheel)
         args.output.write_bytes(canonical(captured) + b"\n")
+        return
+    if args.command == "revise-audit-policy":
+        args.output.write_bytes(canonical(revise_audit_policy(read_json(args.pins)[0], args.prior_audit)) + b"\n")
         return
     if args.command in ("audit", "audit-process"):
         manifest, raw = read_json(args.manifest)
