@@ -9,9 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import math
+import os
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import checkpoint_path, read_header, read_metadata_json
+from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path, read_header
 
 from .dflash2_config import DFlash2Config, count
 
@@ -20,8 +21,28 @@ LOAD_CHUNK = 8 << 20
 
 
 def source_stat(path):
-    value = Path(path).stat()
+    return _stat_identity(Path(path).stat())
+
+
+def _stat_identity(value):
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def _config_capture(path):
+    """Parse/hash the same bounded opened JSON version, preserving strict parser rules."""
+    with _regular_stream(path) as stream:
+        before = _stat_identity(os.fstat(stream.fileno()))
+        size = before[2]
+        if not 0 < size <= MAX_HEADER_BYTES:
+            raise ValueError("DFlash2 config metadata exceeds the existing JSON byte bound")
+        raw = stream.read(size + 1)
+        if len(raw) != size:
+            raise ValueError("DFlash2 config changed during its bounded read")
+        value = _metadata_object(raw, path)
+        digest = hashlib.sha256(raw).hexdigest()
+        if _stat_identity(os.fstat(stream.fileno())) != before or source_stat(path) != before:
+            raise ValueError("DFlash2 config changed during parse/hash capture")
+    return value, digest, before
 
 
 def snapshot_budget(bytes_each, *, slots, keep, points):
@@ -145,11 +166,14 @@ class DFlash2Plan:
     config_sha256: str
     source_sha256: str | None = None
     source_stat: tuple | None = None
+    config_stat: tuple | None = None
+    config_path: Path | None = None
 
     @classmethod
     def read(cls, directory, *, target=None, tp=(0, 8), filename="model.safetensors", block=4, expected_sha256=None):
         cfg_path = checkpoint_path(directory, "config.json")
-        config = DFlash2Config.from_dict(read_metadata_json(cfg_path), block=block)
+        raw_config, config_sha256, config_version = _config_capture(cfg_path)
+        config = DFlash2Config.from_dict(raw_config, block=block)
         if target is not None:
             config.check_target(target)
         path = checkpoint_path(directory, filename)
@@ -158,7 +182,10 @@ class DFlash2Plan:
         if source_stat(path) != before:
             raise ValueError("DFlash2 tensor file changed during header planning")
         plans = plan_weights(config, header, tp=tp)
-        return cls(config, path, header, plans, tp, hashlib.sha256(cfg_path.read_bytes()).hexdigest(), expected_sha256, before)
+        if source_stat(cfg_path) != config_version:
+            raise ValueError("DFlash2 config changed across tensor header admission")
+        return cls(config, path, header, plans, tp, config_sha256, expected_sha256, before,
+                   config_version, cfg_path)
 
     @property
     def resident_bytes(self):
@@ -245,6 +272,8 @@ def load_shard(plan, *, device="cuda", chunk_bytes=LOAD_CHUNK, destination=None,
     from safetensors import safe_open
 
     count(chunk_bytes, "source load chunk bytes")
+    if plan.config_path is not None and source_stat(plan.config_path) != plan.config_stat:
+        raise ValueError("DFlash2 config changed after header admission")
     if plan.source_stat is not None and source_stat(plan.path) != plan.source_stat:
         raise ValueError("DFlash2 tensor file changed after header admission")
     if torch.device(device).type == "cuda" and plan.source_sha256 is None:
@@ -261,11 +290,19 @@ def load_shard(plan, *, device="cuda", chunk_bytes=LOAD_CHUNK, destination=None,
             raise ValueError("DFlash2 tensor file is absent from its issued input closure")
         source_hash = matches[0].sha256
     else:
-        digest = hashlib.sha256()
-        with plan.path.open("rb") as file:
-            for raw in iter(lambda: file.read(LOAD_CHUNK), b""):
-                digest.update(raw)
-        source_hash = digest.hexdigest()
+        from tensorfold.engine.model_identity import capture_model_identity
+
+        # The existing capture owner hashes only the opened extent, probes one
+        # EOF byte, and validates descriptor/path versions before publication.
+        # An append cannot extend preparation until a producer eventually stops.
+        expected = plan.source_stat if plan.source_stat is not None else source_stat(plan.path)
+        captured = capture_model_identity({"draft/weights": plan.path},
+            runtime_identity={"loader": "dflash2-source-f16-v1"},
+            authorize=lambda _name, path: path.resolve(strict=True),
+            max_file_bytes=expected[2], max_total_bytes=expected[2])
+        if captured.files[0].stat_identity != expected:
+            raise ValueError("DFlash2 tensor file changed across source identity capture")
+        source_hash = captured.files[0].sha256
     if plan.source_sha256 is not None and source_hash != plan.source_sha256:
         raise ValueError("DFlash2 tensor-file content differs from the pinned manifest")
     result = {} if destination is None else destination
@@ -292,6 +329,8 @@ def load_shard(plan, *, device="cuda", chunk_bytes=LOAD_CHUNK, destination=None,
                 target[at - begin:at - begin + raw.shape[0]].copy_(raw.to(torch.float16), non_blocking=False)
     if plan.source_stat is not None and source_stat(plan.path) != plan.source_stat:
         raise ValueError("DFlash2 tensor file changed during source loading")
+    if plan.config_path is not None and source_stat(plan.config_path) != plan.config_stat:
+        raise ValueError("DFlash2 config changed during source loading")
     if source_authority is not None:
         source_authority.verify_unchanged()
     return DFlash2Weights(plan.config, result, plan.tp, identity.hexdigest(), shard_identity.hexdigest())

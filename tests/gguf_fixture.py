@@ -71,11 +71,17 @@ def write(path, tensors, metadata):
         return struct.pack("<Q", len(data)) + data
 
     def value(item):
+        if isinstance(item, bool):
+            return struct.pack("<I?", 7, item)
         if isinstance(item, str):
             return struct.pack("<I", 8) + string(item)
         if isinstance(item, float):
             return struct.pack("<If", 6, item)
         if isinstance(item, (tuple, list)):
+            if item and all(type(v) is bool for v in item):
+                return struct.pack("<IIQ", 9, 7, len(item)) + struct.pack("<" + "?" * len(item), *item)
+            if item and all(type(v) is float for v in item):
+                return struct.pack("<IIQ", 9, 6, len(item)) + struct.pack("<" + "f" * len(item), *item)
             return struct.pack("<IIQ", 9, 5, len(item)) + b"".join(struct.pack("<i", i) for i in item)
         return struct.pack("<Iq", 11, item)
 
