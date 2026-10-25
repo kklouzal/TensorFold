@@ -101,6 +101,9 @@ class MultiDecoder:
 
             self.controller = AdaptiveController(slots=slots, row_budget=rows, proposal_limit=depth,
                                                  prefill_tokens=prefill_rows)
+            self.controller.work_observations.configure_indexer(
+                ratio=w.cfg.index_ratio, budget=w.cfg.index_budget, heads=w.cfg.index_heads,
+                target_caches=sum(not layer.linear for layer in w.layers))
         # a round's window and a prompt pass share each layer's expert launch: the pass's buffers hold both
         self.converged, self.prefill_rows = converges(w), prefill_rows
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
@@ -484,6 +487,8 @@ class MultiDecoder:
             self.free.append(s.st)
         if self.graph_record["reason"] is None and self.graphs is None:
             self.capture_graphs()
+        if self.controller is not None:
+            self.controller.reset_observations()
 
     @torch.no_grad()
     def _prepare_graph_floor(self):
@@ -697,6 +702,22 @@ class MultiDecoder:
         e.stops = sorted({p for p in self.points(s.prompt) if begin + MIN_GAP <= p < entry_end(s.prompt)}) \
             if s.draft and st.image_positions is None and self.points is not None else []
         s.sid, s.st = self.next_id, st
+        if self.controller is not None:
+            observation = self.controller.work_observations
+            try:
+                if mtp and resume is not None and resume.get("tail") is not None:
+                    observation.admission(s, prefix_mtp_position=resume["state"]["mtp_len"],
+                                          zero_proposals=self._proposal_limit() == 0)
+                else:
+                    observation.admission(s)
+            except BaseException as primary:
+                observation.failed_observation = True
+                try:
+                    self._quarantine(st)
+                    self._retire_failed_slot(st)
+                except BaseException as cleanup:
+                    raise_failures(primary, [cleanup])
+                raise
         self.next_id += 1
         if self.copy and s.draft:
             from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
@@ -923,7 +944,15 @@ class MultiDecoder:
                 self._read_ahead(pieces)
                 segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
                 ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
-                logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                try:
+                    logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                except BaseException as primary:
+                    if self.controller is not None:
+                        self.controller.work_observations.incomplete(primary)
+                    raise
+                if self.controller is not None:
+                    self.controller.work_observations.target(
+                        segs, prefill=True, replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
                 heads = logits[:len(ends)].clone() if ends else None
                 lasts = self._absorb(pieces, segs, cuts)
                 completed = True
@@ -936,6 +965,7 @@ class MultiDecoder:
         finally:
             if self.controller is not None:
                 try:
+                    self.controller.work_observations.publish()
                     self.controller.observe(
                         active=active_count, scheduled=0, target_rows=0,
                         prefill_tokens=sum(n for _, _, n in pieces) if completed else 0,
@@ -1009,7 +1039,15 @@ class MultiDecoder:
                   for (s, a, n), (_, a0, _) in zip(pieces, segs) if self.fills[s.sid][1] and a + 1 < len(s.prompt)]
         if absorb:                   # the MTP head absorbs each prompt's rows (its cache in position order)
             absorb = [(st, nxt, streams[:len(nxt)]) for st, nxt, streams in absorb]
-            mtp_compute(self.w, mtp_stage(self.pbuf, absorb), self.pbuf, logits=False)
+            segments = mtp_stage(self.pbuf, absorb)
+            try:
+                mtp_compute(self.w, segments, self.pbuf, logits=False)
+            except BaseException as primary:
+                if self.controller is not None:
+                    self.controller.work_observations.incomplete(primary)
+                raise
+            if self.controller is not None:
+                self.controller.work_observations.mtp(segments, role="prefill")
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for s, mtp_len, _, snap in points:
@@ -1088,8 +1126,20 @@ class MultiDecoder:
             has_draft = s.draft and (mtp or self.depth > 0 and getattr(self.w, "dspark", None) is not None)
             if has_draft and not s.done and s.count > 1:
                 count = self._proposal_count(s, s.count - 1) if has_draft and not s.done else 0
-                s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
-                                 self.confidence)
+                mtp_position = st.mtp_len
+                try:
+                    s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
+                                     self.confidence)
+                except BaseException as primary:
+                    if self.controller is not None and mtp:
+                        self.controller.work_observations.incomplete(primary)
+                    raise
+                if self.controller is not None and mtp:
+                    observation = self.controller.work_observations
+                    observation.mtp([(st, 0, 1)], role="refresh", position=mtp_position,
+                                    zero_proposal_rows=int(count == 0))
+                    if st.mtp_drafted:
+                        observation.mtp([(st, 0, st.mtp_drafted)], role="proposal", position=mtp_position + 1)
             if s.done:
                 joined.append(s)
         return joined
@@ -1141,6 +1191,7 @@ class MultiDecoder:
             primary = error
         errors = []
         try:
+            self.controller.work_observations.publish()
             self.controller.observe_round(before=before, elapsed_s=time.perf_counter() - started,
                                           migration_s=self._round_migration_s, outcome=outcome)
         except BaseException as error:
@@ -1232,6 +1283,16 @@ class MultiDecoder:
                 logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
                 if logits is None:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
+            if self.controller is not None:
+                self.controller.work_observations.target(segs)
+                if pieces:
+                    self.controller.work_observations.target(
+                        psegs, prefill=True,
+                        replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
         if self.w.comm is not None:
@@ -1268,6 +1329,9 @@ class MultiDecoder:
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
+        if self.controller is not None:
+            for (_, tokens), (path, _end) in zip(windows, paths):
+                self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
         proposed = [[tokens[r] for r in path[1:]] + [end]
                     for (_, tokens), (path, end) in zip(windows, paths)]
         boundaries = self._prefix_limits(live, proposed)
@@ -1372,6 +1436,10 @@ class MultiDecoder:
         segs = mtp_stage(self.mbuf, windows)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
         logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
+        if self.controller is not None:
+            self.controller.work_observations.mtp(
+                segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
+                                                            if room[stream.sid] == 0))
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
@@ -1421,6 +1489,8 @@ class MultiDecoder:
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.mbuf, windows)
             logits = self._mtp(segs)
+            if self.controller is not None:
+                self.controller.work_observations.mtp(segs, role="proposal")
 
             def chained(nxt=nxt):                        # the step's entries, once its status words are valid
                 for s, _, _ in nxt:
@@ -1446,6 +1516,10 @@ class MultiDecoder:
             if self.w.comm is not None:
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
         finally:
             self.mbuf.attn_step = None
 

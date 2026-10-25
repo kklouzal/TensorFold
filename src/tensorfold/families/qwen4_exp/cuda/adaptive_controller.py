@@ -95,6 +95,9 @@ class AdaptiveController:
         self.round_observation = {}
         self.observation = {}
         self.total_committed_tokens = self.total_prefill_tokens = self.total_target_rows = 0
+        from .execution_observations import ExecutionObservations
+
+        self.work_observations = ExecutionObservations(proposal_limit)
         self.identity = None
         self.binding_invalidated_reason = None
         self.evidence = {}
@@ -105,6 +108,14 @@ class AdaptiveController:
         self.applied_migration = None
         self._profile_reservation = None
         self._deferred_migration = None
+
+    def reset_observations(self):
+        """After synthetic startup work retires, begin the serving measurement plane."""
+        with self._lock:
+            self.steps = self.rounds = 0
+            self.observation, self.round_observation = {}, {}
+            self.total_committed_tokens = self.total_prefill_tokens = self.total_target_rows = 0
+            self.work_observations.reset()
 
     def _validate(self, values):
         for name, value in values.items():
@@ -530,6 +541,7 @@ class AdaptiveController:
                 "device_step_elapsed_s": None,
                 "last_round": dict(self.round_observation),
                 "timing_contract": "last_round includes migration, prefill, decode and host control; last_step is a phase",
+                "work_observations": self.work_observations.record(),
                 "total_target_rows": self.total_target_rows,
                 "total_prefill_tokens": self.total_prefill_tokens,
                 "total_committed_tokens": self.total_committed_tokens}

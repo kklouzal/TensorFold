@@ -757,7 +757,11 @@ creating a persistent GPU session. Runtime receipts report active requests,
 allocated slots and derived prefix-cache slots separately, with intentional
 retained sessions at zero. Temporarily selecting zero proposals keeps the
 enabled drafter warm within the active request; `draft: false` keeps that call
-serial. A new request starts a new slot generation even when it reuses a prefix.
+serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
+work receipts separate logical prompt/cache/replay counts, submitted target and
+MTP rows, and verifier acceptance histograms from useful committed output.
+Indexer fields describe causal logical work; expert group size and device stage
+timing remain unknown until measured without additional critical waits.
 
 Closing a client socket cancels its live request. Ordinary one-GPU CUDA stops at the next round, and a Flash Next prompt still prefilling under `--parallel N` stops before its next prompt pass; some tensor-parallel Flash Next, Nemotron and GLM requests finish on both ranks. Queued cancellation must not start new engine work, and admission is held until retained work actually retires. Deleting a stored Response deletes storage; it is not a live-generation cancellation API. Idle health should show zero logical requests, but its own connection counts toward a configured HTTP cap.
 

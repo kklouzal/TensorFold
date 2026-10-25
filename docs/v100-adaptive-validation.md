@@ -118,6 +118,36 @@ thread. Device-completion time is unmeasured and reported as null; asynchronous
 maintenance must be included by a complete workload measurement before using a
 timing sample as performance evidence.
 
+The execution receipt includes `work_observations`, published by the serialized
+worker at operation boundaries. It separates fresh logical prompt admissions,
+request/replay prefix hits, submitted target prefill/decode and replay rows, and
+MTP prefill/target-conditioned refresh/provisional proposal rows, including the
+existing cached-prefix boundary refresh at its saved position. Warm runtime
+zero-proposal refresh has its own count. Synthetic startup warmup is cleared
+before serving. None of these row counts is generated output or device time.
+
+Indexer counts are derived from actual submitted query ranges: visible complete
+pooled groups, visible sparse group/query-head score pairs, and selected key rows
+including incomplete tails. They count the canonical logical work once across
+TP ranks, with no factor for replicated scratch or masked physical launches.
+They are not measured memory traffic or a claim that every implementation
+executes only visible arithmetic. Partial failed forward submissions are marked
+unknown; complete totals are not fabricated. The prospective profile-table
+`indexer_work` axis remains unknown until its separate covering contract is
+established. `expert_group_max` remains null; batch size is not a substitute for
+actual routed expert occupancy.
+
+Acceptance histograms are fixed to the allocated proposal maximum, including
+maxima above32. They count the existing verifier's accepted prefix after its
+reply/EOS rules and before the text-stop prefix callback. Offered widths and
+accepted totals by offered width are separate. The existing useful-output count
+continues to exclude owed replay and failed grammar publication. No per-stage
+durations are guessed. A failed admission observation retires or quarantines its borrowed slot and rolls
+back the attempted counters. A separate failure latch invalidates completeness
+even when publishing another snapshot cannot allocate. Counter exhaustion is
+visible and invalidates completeness instead of silently wrapping; these host snapshots are diagnostic readings, not
+new capacity or performance proofs.
+
 Unique-history placement requests use standalone `{"attention_degree": 2}`
 updates. Migration copies packed bytes through balanced bundles and publishes
 each committed owner-map generation. An expected staging-capacity refusal
