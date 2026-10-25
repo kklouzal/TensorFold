@@ -215,8 +215,11 @@ class Engine:
             raise ValueError("mixed KV engine has no single dtype; use kv_pair")
         return self.kv_pair.key_dtype
 
-    def reset(self) -> None:
-        self.st.reset(self.w)
+    def reset(self, *, new_sequence: bool = True) -> None:
+        if new_sequence:
+            self.st.reset(self.w)
+        else:
+            self.st.reset(self.w, new_sequence=False)
 
     def twin(self) -> "Engine":
         """Share weights and scratch with an independent serial state, without MTP or graphs; requests run sequentially so scratch reuse leaves this engine's state and prefix cache intact."""
@@ -331,15 +334,21 @@ def _absorbs(e: Engine, mtp: bool) -> bool:
 
 
 @torch.no_grad()
-def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume: dict | None = None) -> int:
+def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume: dict | None = None,
+                  new_sequence: bool = True) -> int:
     """Empty the state, or restore a kept prompt end and absorb its tail; returns the first prompt row to commit."""
 
     if not prompt:
         raise ValueError("prefill requires at least one token")
     if resume is None:
-        e.reset()
+        if new_sequence:
+            e.reset()
+        else:
+            e.reset(new_sequence=False)
         return 0
     st = e.st
+    if new_sequence:
+        st.begin_sequence_generation()
     st.restore(resume["state"])
     if not 0 < st.pos < len(prompt):
         raise ValueError("a resumed prompt must extend the cached tokens")

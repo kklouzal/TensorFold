@@ -158,10 +158,6 @@ class MultiDecoder:
         # A full-window promise owns every selected cache before startup returns.
         # Legacy and explicitly shared modes keep the original growing floors.
         self.full_resident = full_windows is not None and full_windows >= slots
-        self.retain_sessions = self.controller is not None and self.full_resident
-        self.retained = {}
-        self.retention_clock = self.retention_retirements = 0
-        self.last_retirement = None
         initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
         self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
                            kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot)
@@ -321,7 +317,6 @@ class MultiDecoder:
     def _quarantine(self, st: State) -> None:
         """Retain a failed exclusive slot; neither admission nor kept prefixes may borrow it."""
 
-        self._retire_retained(st, reason="failed_slot_quarantine")
         if all(owned is not st for owned in self.failed_slots):
             self.failed_slots.append(st)
         self._drop_kept(st)
@@ -358,8 +353,7 @@ class MultiDecoder:
         st = prefixes.evict(self, keep, protect)
         if st is None:
             return False
-        if not (self.retain_sessions and id(st) in self.retained):
-            self._shrink(st)
+        self._shrink(st)
         if all(f is not st for f in self.free):
             self.free.append(st)
         return True
@@ -431,7 +425,6 @@ class MultiDecoder:
             try:
                 source.kv_validate_snapshot(snap)
             except KVNumericError:
-                self._retire_retained(source, reason="numeric_state_failure")
                 self._drop_kept(source)
                 if id(source) not in self._busy():
                     self._shrink(source)
@@ -439,19 +432,6 @@ class MultiDecoder:
                         self.free.append(source)
                 raise
         return prefixes.slot_for(self, prompt, reuse)
-
-    def _retire_retained(self, state, *, reason):
-        """New admission explicitly retires one idle endpoint before overwriting it."""
-        previous = self.retained.get(id(state))
-        if previous is None:
-            return
-        self.retained = {key: entry for key, entry in self.retained.items() if key != id(state)}
-        self.retention_retirements += 1
-        self.last_retirement = {"slot": state.history_slot, "slot_generation": state.slot_generation,
-                                "request_sid": previous["request_sid"], "reason": reason}
-
-    def retained_states(self):
-        return tuple(entry["state"] for entry in self.retained.values())
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
@@ -702,9 +682,9 @@ class MultiDecoder:
         e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows,
                   logical_context=getattr(self, "logical_context", None))
         e._draft_map = self._draft_map
-        mtp = (s.draft or self.retain_sessions) and self.depth > 0 and self.mbuf is not None
+        mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
-            begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
+            begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume, new_sequence=False)
             image = s.vision is not None
             image_rows.begin(e, s, self.vision)
             if image:
@@ -760,15 +740,12 @@ class MultiDecoder:
             return None
         active = [s for s in (*self.streams.values(), *self.filling) if not s.done]
         sessions = sorted({s.sid for s in active})
-        retained = {id(s.st): s.st for s in active if s.st is not None}
-        retained.update({id(point[1]): point[1] for point in self.kept})
-        retained.update({key: entry["state"] for key, entry in self.retained.items()})
         lengths = [s.st.pos for s in active if s.st is not None]
         workload = {"active_requests": len(sessions),
                     "decode_requests": sum(not s.done and not s.waiting for s in self.streams.values()),
                     "prefill_requests": sum(not s.done for s in self.filling),
                     "max_history_tokens": max(lengths, default=0), "history_tokens": sum(lengths),
-                    "retained_sessions": len(retained),
+                    "retained_sessions": 0,
                     "pending_prompt_tokens": sum(len(s.prompt) - self.fills[s.sid][2]
                                                  for s in self.filling if not s.done),
                     "pending_arrivals": bool(self.arrived()), "indexer_work": None, "expert_group_max": None}
@@ -825,11 +802,14 @@ class MultiDecoder:
 
     def history_record(self):
         records = [state.history_record() for state in self.states]
-        retained = self.retained
+        active = self._busy()
+        cached = {id(point[1]) for point in self.kept}
         for state, record in zip(self.states, records):
-            record["retained_idle"] = id(state) in retained
-        return {"slots": records, "retained_endpoints": len(retained),
-                "retirement_count": self.retention_retirements, "last_retirement": self.last_retirement,
+            record["request_active"] = id(state) in active
+            record["derived_prefix_cache"] = id(state) in cached
+        return {"slots": records, "active_request_slots": len(active),
+                "intentional_retained_sessions": 0, "derived_prefix_slots": len(cached),
+                "derived_prefix_entries": len(self.kept),
                 "migration": None if self.controller is None else
                 self.controller.record()["migration"]}
 
@@ -1106,7 +1086,7 @@ class MultiDecoder:
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
             has_draft = s.draft and (mtp or self.depth > 0 and getattr(self.w, "dspark", None) is not None)
-            if (has_draft and not s.done and s.count > 1) or self.retain_sessions and mtp:
+            if has_draft and not s.done and s.count > 1:
                 count = self._proposal_count(s, s.count - 1) if has_draft and not s.done else 0
                 s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
                                  self.confidence)
@@ -1317,16 +1297,9 @@ class MultiDecoder:
                     s.error = exc
             last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        maintaining = {s.sid for s, _, keep, _, last in kept
-                       if self.retain_sessions and self.mbuf is not None and s.error is None and (last or not s.draft)}
-        for s, _, keep, _, _last in kept:
-            if s.sid in maintaining and not keep and s.st.mtp_drafted:
-                s.st.set_mtp_len(s.st.mtp_len - s.st.mtp_drafted)
-                s.st.mtp_drafted = 0
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept
-                         if keep and (s.draft and not last or s.sid in maintaining)],
+        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
                         {s.sid: fresh for s, _, _, fresh, last in kept
-                         if getattr(s, "copies", None) is not None and not last}, maintenance_only=maintaining)
+                         if getattr(s, "copies", None) is not None and not last})
         for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
             if s.error is not None:
                 s.done = True
@@ -1347,11 +1320,10 @@ class MultiDecoder:
                                     elapsed_s=time.perf_counter() - t0)
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
-            if not self.retain_sessions or s.error is not None:
-                self.held.pop(s.sid, None)
+            self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list, new: dict | None = None, *, maintenance_only=()) -> None:
+    def _draft_all(self, streams: list, new: dict | None = None) -> None:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
         status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
@@ -1379,8 +1351,7 @@ class MultiDecoder:
 
         bound = getattr(getattr(self, "graphs", None), "bound", None)
         handoff = getattr(bound, "greedy", None)
-        room = {s.sid: 0 if s.sid in maintenance_only else
-                self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
+        room = {s.sid: self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
         if (handoff is not None and self._proposal_limit() == self.depth
                 and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
             return
@@ -1582,19 +1553,10 @@ class MultiDecoder:
         return out
 
     def finish(self, done: list[Stream]) -> None:
-        """Drop finished streams; a slot whose prompt state is kept stays with it, the rest are free again."""
+        """Retire each request; only bounded derived prompt prefixes can keep its slot's bytes."""
 
         for s in done:
             self.streams.pop(s.sid, None)
-            if self.retain_sessions and s.error is None:
-                self._flush(s)
-                self.retention_clock += 1
-                self.retained = {**self.retained, id(s.st): {"state": s.st, "last_use": self.retention_clock,
-                                                          "request_sid": s.sid,
-                                                          "emitted_length": s.st.pos + int(bool(s.out))}}
-                if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
-                    self.free.append(s.st)
-                continue
             if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
                 self._shrink(s.st)
                 self.free.append(s.st)

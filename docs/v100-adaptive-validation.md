@@ -35,7 +35,7 @@ overrides remain ceilings.
 limiting resource/rank, and rank costs. `capacity_plan.execution_envelope`
 separates verification rows, prompt work, and proposal depth from resident
 capacity. Splitting verification into fair complete-request microbatches does
-not reduce the number of retained sessions. Planning and materialized
+not reduce the number of allocated full-context slots. Planning and materialized
 allocation fields must be read with their evidence labels.
 
 Target weights stay TP8. Unique GPU histories apply only to the supported
@@ -97,9 +97,9 @@ Values must fit that engine's reported `allocated_maximum`. The example values
 are illustrative, not a V100 performance recommendation. The response reports
 configured, pending, and effective values. The coordinator applies changes
 between batches and shares a single ordered execution plan with TP peers.
-Lowering the admission ceiling preserves running and retained sessions; raising
-it cannot exceed the capacity already allocated. Existing histories are not
-workspace when only one request is active.
+Lowering the admission ceiling preserves running requests; raising it cannot
+exceed the capacity already allocated. Active requests keep their full-context
+reservation until completion/cancellation and retirement of their readers.
 
 Structural changes to context, codec, model, or method are not writable through
 this endpoint. They require the specification's state-preserving in-process
@@ -107,8 +107,9 @@ transition; a new setting must not silently evict sessions or be presented as a
 live control before that transition exists. The endpoint never replaces
 workers or restarts the CUDA context.
 
-The runtime receipt is an advisory host snapshot, including unique retained
-slots, active/queued work, the current execution epoch, useful committed tokens,
+The runtime receipt is an advisory host snapshot, including active requests,
+allocated slots, bounded derived prefix-cache slots/entries, the current
+execution epoch, useful committed tokens,
 and the capacity receipt. `/stats` includes this section for adaptive engines.
 Reading it does not synchronize GPUs or turn startup planning into a current
 physical-free-memory measurement.
@@ -129,13 +130,22 @@ Managed TP launches signal their supervisor on a fatal cohort operation so a
 peer blocked in a collective cannot strand process retirement. Unmanaged
 launches retain their external containment responsibility.
 
-Idle endpoint retention is independent of optional prompt-prefix reuse.
-Adaptive full-window slots preserve committed recurrent/history/draft state
-after request completion; the last emitted anchor can still await target
-consumption. New admissions explicitly retire an idle LRU endpoint when reusing
-its slot. Other idle contexts survive that admission and all supported runtime
-updates. This does not enable unqualified Q4 prefix borrowing or duplicate full
-state snapshots.
+The CUDA generation and Responses APIs create request-scoped sequences. They
+have no GPU retained-session close/expiry contract; storing or deleting a
+Response affects message/response JSON rather than GPU ownership. Completion
+or cancellation retires the request claim after its readers, transfers and
+callbacks finish. Full-window allocations can remain reusable, and the legacy
+bounded prompt-prefix cache can retain evictable derived bytes. Neither is an
+intentional retained session: `sessions.retained` reports zero, while `active`,
+`allocated_slots`, `derived_prefix_slots` and `derived_prefix_entries` report
+those separate quantities. New admissions increment the destination slot's
+logical generation before prefix copy/restore, including qualified prefix hits;
+rollback within the same request preserves its generation.
+
+A zero proposal setting keeps enabled MTP conditioning current only while its
+request is active. A per-request `draft: false` switch disables speculative
+work for that call. Request completion does not maintain an idle endpoint in
+anticipation of an unspecified future resumption.
 
 Execution profile registration uses either startup-bound proof references or a
 standalone `{"profile_manifest": "new/manifest.json"}` request. Verification is

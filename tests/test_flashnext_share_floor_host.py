@@ -11,7 +11,7 @@ def _decoder():
     root = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen4_exp/cuda"
     plan = ast.parse((root / "prompt_plan.py").read_text())
     source = ast.parse((root / "multi.py").read_text())
-    methods = {"_pass_rows", "_pieces", "_points", "_keep_at", "_timed", "_pass"}
+    methods = {"_pass_rows", "pass_rows_for", "_pieces", "_points", "_keep_at", "_timed", "_pass"}
     nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
     nodes.extend(node for node in plan.body if isinstance(node, ast.FunctionDef) and node.name == "pass_limit"
                  or isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "CUTS" for t in node.targets))
@@ -23,6 +23,7 @@ def _decoder():
     namespace = {"PREFILL_ROWS": 2048, "ENDS": 16, "entry_end": lambda prompt: max(1, len(prompt) - 1)}
     exec(compile(ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[])), str(root / "multi.py"), "exec"), namespace)
     dec = namespace["Decoder"]()
+    dec.controller, dec.filling = None, []
     dec.w = SimpleNamespace(meta={"execution_provider": "cuda"})
     dec.streams = {0: SimpleNamespace(done=False)}
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 2048, 0.25, None, None

@@ -81,7 +81,7 @@ def rows_array(array, rows, keep):
 
 
 State = source_class("src/tensorfold/families/qwen4_exp/cuda/state.py", "State",
-                     {"cache_bytes", "owned_cache_bytes", "layer_bytes", "resize", "_resize_caches", "_poison_resize"},
+                     {"cache_bytes", "owned_cache_bytes", "layer_bytes", "resize", "_resize_caches", "_poison_resize", "begin_sequence_generation"},
                      {"_rows": rows_array, "KVResizeError": RuntimeError, "traceback": traceback,
                       "raise_failures": raise_failures})
 
@@ -98,6 +98,8 @@ def state(owner):
     st.kv_check = lambda: None
     st.kv_validate_snapshot = lambda snapshot: None
     st.row_bytes, st.index_dim, st.ratio = KV.row_bytes + 256, 128, 4
+    st._resize_error = st._kv_error = st._history_error = None
+    st.slot_generation, st.history_generations = 0, None
     st.kc = [KV(owner, st.capacity) for _ in range(st.layers)]
     st.ikc = [Array(owner, st.capacity, st.index_dim) for _ in range(st.layers)]
     st.pooled = [Array(owner, st.capacity // st.ratio, st.index_dim) for _ in range(st.layers)]
@@ -132,17 +134,19 @@ class AbsoluteGrowthTests(unittest.TestCase):
               "raise_failures": raise_failures,
               "cuda_limit_bytes": capacity.cuda_limit_bytes, "LIMIT_ENV": capacity.LIMIT_ENV,
               "time": SimpleNamespace(perf_counter=lambda: 1.0), "MIN_GAP": 32,
-              "_slot": lambda *args: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
+              "_slot": lambda *args, **kw: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
               "image_rows": SimpleNamespace(begin=lambda *args: None)}
         cls = source_class("src/tensorfold/families/qwen4_exp/cuda/multi.py", "MultiDecoder",
                            {"_cache_overlap", "_grow", "_flush", "_busy", "_evict_kept", "_drop_kept", "_make_room", "_slot_for",
-                            "_remember", "_quarantine", "_retire_failed_slot", "admit", "live", "finish"}, ns)
+                            "_remember", "_quarantine", "_retire_failed_slot",
+                            "admit", "live", "finish"}, ns)
         self.dec = cls()
         self.dec.capacity, self.dec.depth = 81920, 0
         self.dec.free, self.dec.kept, self.dec.streams, self.dec.filling = [first, second], [], {}, []
         self.dec.kv_pair = first.kv_pair
         self.dec.fills, self.dec.held = {}, {}
         self.dec.graphs, self.dec.failed_slots = None, []
+        self.dec.controller = None
         self.dec.next_id, self.dec.keep = 0, 8
         self.dec.used, self.dec.clock = {}, 0
         self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None, meta={"execution_provider": "cuda"}), None, None, None

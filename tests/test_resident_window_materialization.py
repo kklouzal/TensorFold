@@ -99,7 +99,7 @@ def test_production_constructor_owns_every_promised_cache_and_counts_it_once(slo
         "torch": NS(cuda=NS(is_available=lambda: False)),
     }
     exec(compile(ast.fix_missing_locations(module), str(file), "exec"), ns)
-    dec = NS()
+    dec = NS(controller=None)
     ns["prepare"](dec, NS(), slots, 262148, 3, "int8", None, None, None, 0, full)
     materialized = selection in ("equal", "larger")
     rows = 262148 if materialized else 256

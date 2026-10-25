@@ -196,6 +196,7 @@ class State:
         self.history_slot, self.history_rank = slot, int(w.meta.get("rank", 0))
         self.history_comm = getattr(w, "comm", None) if self.history_placement is not None else None
         self.history_generation = self.slot_generation = 0
+        self.history_generations = None
         self._history_error = None
         self.indexer_history_mode = w.meta.get("indexer_history", "gpu")
         if self.indexer_history_mode not in ("gpu", "ram"):
@@ -650,14 +651,35 @@ class State:
             self._poison_resize(error)
             raise
 
-    def reset(self, w: Weights) -> None:
-        """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
+    def begin_sequence_generation(self) -> int:
+        """Start a new logical request before writing even a qualified cached prefix.
 
+        The serialized producer owns the idle destination and has retired its
+        previous readers. Ordinary same-request restore/rollback does not call
+        this method. Native unique histories publish the same generation word.
+        """
         if self._resize_error is not None:
             raise self._kv_error if self._kv_error is not None else self._resize_error
-        if getattr(self, "_history_error", None) is not None:
+        if self._history_error is not None:
             raise self._history_error
-        self.slot_generation = getattr(self, "slot_generation", 0) + 1
+        if type(self.slot_generation) is not int or not 0 <= self.slot_generation < (1 << 63) - 1:
+            raise RuntimeError("history slot generation is invalid or exhausted")
+        generation = self.slot_generation + 1
+        if self.history_generations is not None:
+            self.history_generations[0].fill_(generation)
+        self.slot_generation = generation
+        return generation
+
+    def reset(self, w: Weights, *, new_sequence: bool = True) -> None:
+        """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
+
+        if new_sequence:
+            self.begin_sequence_generation()
+        else:
+            if self._resize_error is not None:
+                raise self._kv_error if self._kv_error is not None else self._resize_error
+            if self._history_error is not None:
+                raise self._history_error
         if getattr(self, "indexer_history_owner", None) is not None:
             self.indexer_history_owner.reset()
         if self.kv_status is not None:

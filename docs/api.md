@@ -32,7 +32,7 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `GET /health` | Server health and available status information |
 | `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV memory, prefix cache, drafts and latency (both servers) |
 | `GET /stats`, `GET /v1/stats` | One JSON snapshot: server identity, model, limits, load, KV memory, prefix cache and totals (both servers) |
-| `GET /v1/runtime`, `POST /v1/runtime` | Adaptive GGUF CUDA execution settings, retained sessions, placement and verified profile controls; other engines have no such controls |
+| `GET /v1/runtime`, `POST /v1/runtime` | Adaptive GGUF CUDA execution settings, request/prefix-cache counts, placement and verified profile controls; other engines have no such controls |
 | `POST /v1/chat/completions` | Text chat, optional image input, tools and reasoning; streamed or non-streamed |
 | `POST /v1/completions` | Raw text without a chat template, or token IDs |
 | `POST /v1/messages` | Anthropic Messages: text, supported images, function tools and thinking; JSON or SSE |
