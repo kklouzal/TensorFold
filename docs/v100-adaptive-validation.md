@@ -104,11 +104,13 @@ Lowering the admission ceiling preserves running requests; raising it cannot
 exceed the capacity already allocated. Active requests keep their full-context
 reservation until completion/cancellation and retirement of their readers.
 
-Structural changes to context, codec, model, or method are not writable through
-this endpoint. They require the specification's state-preserving in-process
-transition; a new setting must not silently evict sessions or be presented as a
-live control before that transition exists. The endpoint never replaces
-workers or restarts the CUDA context.
+Opt-in [serving profiles](serving-profiles.md) add the structural transition for
+context, codec, model and method through a prepared local manifest. The same
+worker and communicator drain model-bound prepared/queued requests, retire old
+resources before replacement allocation, and publish after all-rank readiness.
+Host fake-loader protocol/lifetime tests cover A-to-B-to-A and unavailable-state
+load refusal/retry. Actual model/CUDA-context loading, resident-byte recovery,
+quality and integrated V100 performance remain unrun qualification gates.
 
 The runtime receipt is an advisory host snapshot, including active requests,
 allocated slots, bounded derived prefix-cache slots/entries, the current

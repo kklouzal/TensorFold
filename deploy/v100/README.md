@@ -1,5 +1,12 @@
 # Flash Next on eight V100 GPUs
 
+Optional [prepared serving profiles](../../docs/serving-profiles.md) use
+`--serving-profile-root` and the existing runtime endpoint for in-process
+model/context/KV/method changes. All-rank readiness and request leases guard
+replacement; expected load refusal after retirement remains unavailable until
+an explicit retry. This source behavior still requires actual V100 A-to-B-to-A,
+quality, capacity and performance qualification on the selected runtime stack.
+
 The [adaptive implementation](../../docs/v100-adaptive-validation.md) changes
 GGUF GPU-history admission to computed full-context capacity. Its unique-history
 and compact-Planar4 paths require new native/model/quality/performance
@@ -47,6 +54,12 @@ compile receipts and remaining V100 gates are separate from the historical
 wheel-based configuration below. A successful old cu126 import or model test
 does not qualify the new framework/library combination. No serving-time
 dependency fallback is provided.
+
+The additive [CPU media source image](media-foundation.md) builds the exact
+TorchVision/Transformers/PyAV/FFmpeg processor and decoder closure while preserving
+the selected source Torch/native providers. Its software inventory and installed
+controls do not qualify SC117 vision, service media policies, capacity or V100
+execution.
 
 Build the selected development image with the external source artifact context:
 

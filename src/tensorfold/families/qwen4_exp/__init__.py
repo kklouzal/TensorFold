@@ -215,13 +215,18 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
               "docs/recipes/qwen3.8-flash-next.md#exl3-checkpoints-experimental for how they compare", flush=True)
     from .gguf import resolve_gguf
     gguf = resolve_gguf(model_dir) is not None
+    family_manifest = options.get("family_manifest")
+    sm70 = gguf or family_manifest is not None
+    if gguf and family_manifest is not None:
+        raise ValueError("family_manifest selects the explicit SM70 NVFP4 recipe; a GGUF source has its own representation")
     history = options.get("indexer_history", "gpu")
     if history not in ("gpu", "ram"):
         raise ValueError("indexer_history must be gpu or ram")
-    if history == "ram" and not gguf:
+    if history == "ram" and not sm70:
         raise ValueError("indexer_history ram requires the GGUF SM70 provider")
+    serving_root = options.get("serving_profile_root")
     execution_manifest = options.get("execution_profile_manifest")
-    if execution_manifest is not None and not (gguf and history == "gpu" and vram_experts is None):
+    if (execution_manifest is not None or serving_root is not None) and not (gguf and history == "gpu" and vram_experts is None):
         raise ValueError("execution_profile_manifest requires resident Flash Next GGUF GPU histories on SM70")
     method = options.get("draft_method", "auto")
     if method not in CUDA_DRAFT_METHODS:
@@ -231,14 +236,14 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError(f"{label} currently requires the Flash Next GGUF SM70 provider")
     if method == "none":
         no_drafts, drafter = True, ""
-    if drafter and not gguf:
+    if drafter and not sm70:
         raise ValueError(f"{TITLE} drafts with its own MTP head on CUDA: a separate draft model does not apply")
     from .cuda import CONFIDENCE, DEPTH
     from .cuda.engine import FlashNextEngine
     from .kv_formats import get_pair
 
     pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # before weights or Torch are loaded
-    if not gguf and any(side.compact is not None for side in (pair.key, pair.value)):
+    if not sm70 and any(side.compact is not None for side in (pair.key, pair.value)):
         raise ValueError("compact Planar4/Iso4 KV requires the GGUF SM70 execution provider")
     depth = 0 if no_drafts else DEPTH if mtp_drafts is None else int(mtp_drafts)
     if method == "mtp" and depth == 0:
@@ -266,7 +271,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if type(parallel_auto) is not bool:
         raise ValueError("parallel_auto must be boolean")
     automatic = parallel_auto
-    if gguf and not automatic and (type(parallel) is not int or parallel < 1):
+    if sm70 and not automatic and (type(parallel) is not int or parallel < 1):
         raise ValueError("the GGUF session ceiling must be a positive integer or auto")
     streams = 1 if automatic else int(parallel)
     engine_options = {"depth": depth, "confidence": confidence, "max_len": context,
@@ -278,20 +283,26 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                       "vision": bool(options.get("vision", False)),
                       "vision_urls": bool(options.get("vision_urls", False)), "yarn_factor": yarn_factor,
                       "vram_experts": vram_experts}
-    if gguf and history == "gpu":
+    if family_manifest is not None:
+        engine_options["family_manifest"] = Path(family_manifest)
+        if options.get("_prepared_family_plan") is not None:
+            engine_options["_prepared_family_plan"] = options["_prepared_family_plan"]
+    if sm70 and history == "gpu":
         # Preserve auto intent through the CLI's ordinary CUDA one-stream
         # default. Integer settings constrain the solved full-context capacity.
         engine_options.update(adaptive_sessions=True,
                               session_ceiling=None if automatic else int(parallel))
         if options.get("execution_rows") is not None:
             engine_options["execution_rows"] = options["execution_rows"]
+        if serving_root is not None:
+            engine_options["serving_profile_root"] = Path(serving_root)
         if execution_manifest is not None:
             engine_options["execution_profile_manifest"] = Path(execution_manifest)
     if vram_experts_pin != "off":
         engine_options["vram_experts_pin"] = vram_experts_pin
     if history != "gpu":
         engine_options["indexer_history"] = history
-    if gguf and drafter:
+    if sm70 and drafter:
         from .cuda.speculation import checkpoint_method
         kind = checkpoint_method(drafter)
         if method != "auto" and method != kind:

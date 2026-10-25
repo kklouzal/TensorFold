@@ -25,6 +25,8 @@ import gc
 import time
 from functools import partial
 
+from .profile_construction import replay as profile_replay
+
 import torch
 
 from tensorfold.cleanup import raise_failures
@@ -179,7 +181,7 @@ class RoundGraphs:
             history_runtime.begin(segs, prefill=b.prefill, mtp=mtp)
         _kv_begin(segs)                                  # the frame's codec status: checked by the caller
         for graph, insert in zip(pieces.graphs, pieces.inserts + [None]):
-            graph.replay()
+            profile_replay(graph, self.dec.w.comm)
             if insert is None:
                 continue
             kind, layer = insert

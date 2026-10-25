@@ -87,6 +87,22 @@ def _json(path, *, with_content=False):
     return (body, raw) if with_content else body
 
 
+def draft_artifact_files(directory, method):
+    """The actual selected SM70 draft loader's source inputs, independent of GPU state."""
+    from ..gguf import GGUFCheckpoint, resolve_gguf
+
+    if method not in ("mtp", "dspark", "dflash2"):
+        raise ValueError("unsupported speculative source inventory")
+    root = Path(directory).resolve(strict=True)
+    entry = resolve_gguf(root) if method == "mtp" else None
+    if entry is not None:
+        companion = GGUFCheckpoint.open(entry)
+        return {file.name: checkpoint_path(file.parent, file.name) for file in companion.paths}
+    # These providers read the single file directly; a neighbouring shard index
+    # does not select a different payload or replace the real consumed file.
+    return {name: checkpoint_path(root, name) for name in ("config.json", "model.safetensors")}
+
+
 def artifact_files(engine):
     """Derive the actual loader's complete selected input closure."""
     from ..gguf import GGUFCheckpoint, resolve_gguf
@@ -115,15 +131,7 @@ def artifact_files(engine):
              engine.dspark_model_dir if engine.method_geometry.method == "dspark" else
              engine.dflash2_model_dir if engine.method_geometry.method == "dflash2" else None)
     if draft is not None:
-        root = Path(draft).resolve()
-        draft_entry = resolve_gguf(root) if engine.method_geometry.method == "mtp" else None
-        if draft_entry is not None:
-            companion = GGUFCheckpoint.open(draft_entry)
-            for file in companion.paths:
-                result["draft/" + file.name] = checkpoint_path(file.parent, file.name)
-        else:
-            for name in ("config.json", "model.safetensors"):
-                result["draft/" + name] = checkpoint_path(root, name)
+        result.update({"draft/" + name: path for name, path in draft_artifact_files(draft, engine.method_geometry.method).items()})
     return result, checkpoint
 
 

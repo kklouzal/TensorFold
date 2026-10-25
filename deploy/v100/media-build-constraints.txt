@@ -1,0 +1,27 @@
+# Generated from media-build-amd64.json; no dependency resolution during source builds.
+certifi==2026.10.23
+charset-normalizer==3.5.2
+cmake==3.31.6
+cython==3.3.0
+filelock==4.2.4
+fsspec==2026.9.0
+idna==3.20
+jinja2==3.1.6
+markupsafe==3.0.4
+meson==1.12.1
+mpmath==1.3.0
+networkx==3.7
+ninja==1.13.0
+numpy==2.2.6
+packaging==25.0
+pathspec==1.1.1
+pip==25.3
+pyyaml==6.0.3
+requests==2.34.2
+scikit-build-core==1.0.0
+setuptools==80.9.0
+six==1.17.0
+sympy==1.14.0
+typing-extensions==4.16.0
+urllib3==2.8.0
+wheel==0.48.0

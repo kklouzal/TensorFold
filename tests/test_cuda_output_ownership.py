@@ -122,13 +122,14 @@ class ImmediateDecoder:
 def test_slow_caller_cannot_block_coordinator_or_escape_finite_owner_count(maximum, healthy_allowed):
     decoder = ImmediateDecoder()
     scheduler = Scheduler(decoder, max_streams=2, max_pending_requests=maximum).start()
-    entered, release, retired = threading.Event(), threading.Event(), threading.Event()
+    entered, release, terminal_done = threading.Event(), threading.Event(), threading.Event()
     mailboxes, result, failures = [], [], []
     terminal = scheduler._terminal
-    def finish(box, kind, value):
+    def finish(box, kind, value, *, retired=False):
+        assert retired is False  # This ordinary scheduler has no profile error retirement.
         mailboxes.append(box)
-        terminal(box, kind, value)
-        retired.set()
+        terminal(box, kind, value, retired=retired)
+        terminal_done.set()
     scheduler._terminal = finish
     def slow(tokens):
         entered.set()
@@ -142,7 +143,7 @@ def test_slow_caller_cannot_block_coordinator_or_escape_finite_owner_count(maxim
     thread = threading.Thread(target=caller)
     try:
         thread.start()
-        assert entered.wait(5) and retired.wait(5)
+        assert entered.wait(5) and terminal_done.wait(5)
         assert thread.is_alive() and scheduler.pending_requests == 1
         assert decoder.admitted[0].committed_output_tokens == 8
         state = mailboxes[0].record()

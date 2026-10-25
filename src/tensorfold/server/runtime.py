@@ -1,8 +1,7 @@
 """Published adaptive execution controls; request threads never touch CUDA state.
 
-Only controls bounded by the allocated execution envelope are writable. The
-single scheduling coordinator applies them between batches. Structural changes
-have no write interface until their state-preserving transition is implemented.
+The scheduling coordinator applies bounded execution controls between batches.
+Prepared structural selections use the separate opt-in serving-profile owner.
 Readings are advisory snapshots, never new admission or capacity proofs.
 """
 
@@ -27,10 +26,42 @@ def _owner(app: Any):
 
 
 def snapshot(app: Any) -> dict[str, Any] | None:
-    """Read host-owned state without allocating, inspecting or synchronizing GPUs."""
+    """Keep model projection readers scoped; draining reads only host profile status."""
+    engine = getattr(app, "engine", None)
+    profiles = getattr(engine, "serving_profiles", None)
+    if profiles is None:
+        return _snapshot_current(app)
+    from tensorfold.cuda.profile_binding import ProfileUnavailable
+
+    reading = False
+    try:
+        with profiles.gate.scope():
+            reading = True
+            try:
+                return _snapshot_current(app)
+            except BaseException as error:
+                # An unexpected projection traceback may retain decoder/state
+                # objects. It cannot be presented as a retired reader while a
+                # different full model is loaded; retain it under containment.
+                profiles._poison(error)
+    except ProfileUnavailable:
+        if reading:
+            raise
+        return {"object": "tensorfold.runtime", "schema_version": 1,
+                "serving_profile": profiles.record(), "context_tokens": None, "capacity_plan": None,
+                "execution": None, "sessions": None, "placement": None,
+                "reading_contract": "advisory_host_snapshot_no_gpu_synchronization"}
+
+
+def _snapshot_current(app: Any) -> dict[str, Any] | None:
+    """Project only host metadata; caller owns the profile read until return."""
     engine, scheduler, decoder, controller = _owner(app)
-    if controller is None:
-        return None
+    profiles = getattr(engine, "serving_profiles", None)
+    serving = None if profiles is None else profiles.record()
+    if controller is None or serving is not None and not serving["available"]:
+        return (None if serving is None else {"object": "tensorfold.runtime", "schema_version": 1,
+                "serving_profile": serving, "context_tokens": None, "capacity_plan": None,
+                "execution": None, "sessions": None, "placement": None})
     execution = controller.record()
     streams = list(getattr(decoder, "streams", {}).values())
     filling = list(getattr(decoder, "filling", ()))
@@ -42,6 +73,7 @@ def snapshot(app: Any) -> dict[str, Any] | None:
     manifest = getattr(scheduler, "execution_manifest_record", None)
     return {
         "object": "tensorfold.runtime", "schema_version": 1,
+        "serving_profile": serving,
         "context_tokens": getattr(engine, "context_window", None),
         "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)),
         "execution": execution,
@@ -62,16 +94,16 @@ def request(app: Any, body: Any) -> dict[str, Any]:
     """Validate the HTTP boundary, then publish a coalesced controller request."""
     if not isinstance(body, dict) or not body:
         raise RequestError("runtime settings must be a nonempty JSON object")
-    standalone = set(body) & {"profile_table", "profile_manifest", "attention_degree"}
+    standalone = set(body) & {"profile_table", "profile_manifest", "attention_degree", "serving_profile"}
     if standalone and len(body) != 1:
         raise RequestError("profile registration or attention placement must be requested separately")
     unknown = set(body) - SETTINGS - standalone
     if unknown:
         raise RequestError("unsupported runtime setting: " + ", ".join(sorted(unknown)))
     for name, value in body.items():
-        if name == "profile_manifest":
+        if name in ("profile_manifest", "serving_profile"):
             if not isinstance(value, str):
-                raise RequestError("profile_manifest must be a relative file name")
+                raise RequestError(f"{name} must be a relative file name")
             continue
         if name == "profile_table":
             if not isinstance(value, dict):
@@ -79,7 +111,24 @@ def request(app: Any, body: Any) -> dict[str, Any]:
             continue
         if type(value) is not int:
             raise RequestError(f"{name} must be an integer")
-    _engine, scheduler, _decoder, controller = _owner(app)
+    if "serving_profile" in body:
+        # Structural controls must never capture the old decoder in a caller
+        # or preserved notification-error traceback across model retirement.
+        engine = getattr(app, "engine", None)
+        owner = getattr(engine, "serving_profiles", None)
+        if owner is None:
+            raise RequestError("serving profile selection was not enabled at startup")
+        try:
+            result = owner.request(body["serving_profile"])
+        except RequestError:
+            raise
+        except (ValueError, OSError) as error:
+            if getattr(owner, "failure", None) is not None:
+                raise  # Fatal ownership is not a malformed selector, even if wrapper allocation failed.
+            raise RequestError(str(error)) from error
+        return {"object": "tensorfold.runtime.update", "schema_version": 1, "serving_profile": result}
+    _engine, scheduler, decoder, controller = _owner(app)
+    del decoder  # The adaptive controller is host-only; keep no GPU model in HTTP error frames.
     if controller is None:
         raise RequestError("this engine has no adaptive runtime controls")
     if "profile_manifest" in body:

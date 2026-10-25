@@ -92,6 +92,48 @@ def _native_mtp(raw):
                           source.native_context, mrope_section=source.mrope_section)
 
 
+def _mtp_source_defaults(raw, source_reference):
+    """The stock companion's undeclared positions use target SOURCE-native defaults.
+
+    This is the existing native MTP family contract, made explicit. It never
+    receives a target CLI override, and retains every actual companion value.
+    The receipt still hashes the actual unmodified companion configuration.
+    """
+    native = source_reference
+    text = dict(raw if raw.get("text_config") is None else raw["text_config"])
+    dim = text.get("head_dim")
+    if dim is None:
+        hidden = _integer(text.get("hidden_size"), "MTP source hidden size")
+        heads = _integer(text.get("num_attention_heads"), "MTP source attention heads")
+        if hidden % heads:
+            raise ValueError("MTP source head geometry is not integral")
+        dim = hidden // heads
+    dim = _integer(dim, "MTP source head dimension")
+    params = text.get("rope_parameters", text.get("rope_scaling"))
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("MTP source rope_parameters must be an object")
+    defaults = {"rope_type": "default", "rope_theta": text.get("rope_theta", native.theta),
+                "partial_rotary_factor": text.get("partial_rotary_factor", native.rotary_dim / dim),
+                "mrope_section": list(native.mrope_section), "mrope_interleaved": True}
+    params = {} if params is None else dict(params)
+    if "type" in params and "rope_type" not in params:
+        defaults.pop("rope_type")
+    defaults.update(params)
+    text.pop("rope_scaling", None)
+    text["rope_parameters"] = defaults
+    text.setdefault("max_position_embeddings", native.native_context)
+    return {"text_config": text}
+
+
+def mtp_source_parameters(raw, source_reference: RopeParameters):
+    """Resolve actual companion declarations with explicit source-native defaults.
+
+    Only theta, rotary width/layout and original reference are borrowed; a
+    target runtime YaRN factor or amplitude never supplies a missing MTP policy.
+    """
+    return RopeParameters.from_config(_mtp_source_defaults(raw, source_reference))
+
+
 def _resolve_rope(raw, declaration, *, yarn_factor=None, native_mtp=False):
     baseline = _native_mtp(raw) if native_mtp else RopeParameters.from_config(raw, yarn_factor)
     if declaration is None:
@@ -101,7 +143,7 @@ def _resolve_rope(raw, declaration, *, yarn_factor=None, native_mtp=False):
     kind = declaration.get("rope_type", declaration.get("type", "default"))
     if kind == "default" and set(declaration) & _YARN_ONLY_KEYS:
         raise ValueError("native/default positional declaration contains unused YaRN parameters")
-    text = dict(raw.get("text_config", raw))
+    text = dict(raw if raw.get("text_config") is None else raw["text_config"])
     original = text.get("rope_parameters", text.get("rope_scaling")) or {}
     # The external declaration is the single complete requested policy; source
     # geometry/reference is checked below, rather than scaling twice.
@@ -254,7 +296,7 @@ class ResolvedPositionProfile:
         if method == "dflash2" and (self.dflash2 is None or self.target.max_rows > self.dflash2.max_rows):
             raise ValueError("DFlash requires its actual separate positional source and supported absolute range")
         roles = (self.target, self.mtp) if method == "mtp" else (self.target,)
-        if any(lookahead_rows >= min(role.max_rows, *role.coordinate_limits) for role in roles):
+        if any(lookahead_rows >= role.max_rows for role in roles):
             raise ValueError("lookahead block cannot fit the declared positional domain")
         if method == "dflash2" and lookahead_rows >= min(self.dflash2.max_rows, self.dflash2.coordinate_limit):
             raise ValueError("DFlash lookahead block cannot fit its absolute positional domain")
@@ -299,7 +341,7 @@ def _role(name, raw, digest, requested, declaration, *, yarn_factor=None, native
     limits = tuple(_integer(value, "coordinate limit") for value in limits)
     if any(value > policy.context_limit for value in limits):
         raise ValueError("position coordinates exceed the declared transform implementation limit")
-    return PositionRole(name, policy, min(requested, policy.context_limit, *limits), limits, digest, origin)
+    return PositionRole(name, policy, min(requested, policy.context_limit), limits, digest, origin)
 
 
 def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, manifest_path=None,
@@ -310,7 +352,7 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
     dispatch. The enclosing serving profile hashes all required inputs, including
     GGUF shards, together with its actual model/operator/codec identities.
     """
-    requested = _integer(requested_context, "requested context")
+    requested = None if requested_context is None else _integer(requested_context, "requested context")
     raw, files, source_digest = _source(model_dir)
     inputs = set(files)
     if companion_configs is not None and not isinstance(companion_configs, Mapping):
@@ -327,8 +369,12 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
                              "target", "mtp", "dflash2"}
                 or type(manifest["schema_version"]) is not int or manifest["schema_version"] != SCHEMA_VERSION
                 or manifest["family"] != "qwen4_exp" or manifest["qualification"] != "unqualified-candidate"
-                or type(manifest["requested_context"]) is not int or manifest["requested_context"] != requested):
+                or type(manifest["requested_context"]) is not int
+                or requested is not None and manifest["requested_context"] != requested):
             raise ValueError("unknown/incomplete positional schema, requested rows or qualification claim")
+        requested = _integer(manifest["requested_context"], "manifest requested context")
+    if requested is None:
+        requested = _integer(RopeParameters.from_config(raw, yarn_factor).context_limit, "source context")
     epoch = 0 if manifest is None else _integer(manifest["epoch"], "epoch", maximum=MAX_EPOCH, minimum=0)
     target = _role("target", raw, source_digest, requested, None if manifest is None else manifest["target"],
                    yarn_factor=yarn_factor)
@@ -338,7 +384,8 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
     if "mtp" in companions:
         mtp_raw, mtp_files, mtp_digest = _source(companions["mtp"])
         inputs.update(mtp_files)
-        mtp_origin = "actual-companion-source"
+        mtp_raw = _mtp_source_defaults(mtp_raw, _native_mtp(raw))
+        mtp_origin = "actual-companion-with-explicit-source-native-defaults"
     mtp_declaration = None if manifest is None else manifest["mtp"]
     if mtp_declaration is not None and "mtp" not in companions:
         raise ValueError("explicit MTP policy must bind its actual selected companion configuration")
@@ -387,6 +434,7 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
                "target_attention": target.receipt(), "target_indexer": target.receipt(),
                "mtp_attention": mtp.receipt(), "mtp_indexer": mtp.receipt(),
                "dflash2": None if dflash is None else dflash.receipt(),
+               "numerical_preparation": "required-exact-cpu-vectors-before-model-or-device-retention",
                "reference_revisions": {"transformers": HF_REVISION, "indexer": INDEXER_REVISION,
                                        "dflash": DFLASH_REVISION}, "local_algorithm_sha256": algorithms,
                "source_files": [str(path) for path in sorted(inputs)]}
@@ -418,6 +466,57 @@ def position_vector_bytes(profile, *, mtp_active):
 
 
 @dataclass(frozen=True)
+class PreparedPositionVectors:
+    """Owned small CPU vectors, read-only through load/bind; not public proof.
+
+    Version checks reject stale operands at the private loader/bind handoff.
+    Preparation runs the actual existing numerical builder rather than issuing
+    an admission certificate from pure metadata or an approximate range model.
+    """
+    profile: ResolvedPositionProfile
+    target_cpu: object
+    mtp_cpu: object | None
+    _target_version: int
+    _mtp_version: int | None
+
+    def verify(self, profile, *, mtp_active):
+        if (profile.identity != self.profile.identity or (self.mtp_cpu is not None) != mtp_active
+                or self.target_cpu._version != self._target_version
+                or self.mtp_cpu is not None and self.mtp_cpu._version != self._mtp_version):
+            raise ValueError("missing/stale positional CPU preparation; prepare before model/device retention")
+
+    def receipt(self):
+        return {"position_identity": self.profile.identity, "builder": "RopeParameters.inverse_frequencies",
+                "device": "cpu", "finite_positive_vectors": True,
+                **position_vector_bytes(self.profile, mtp_active=self.mtp_cpu is not None)}
+
+
+def prepare_position_vectors(profile, *, mtp_active):
+    """Required exact CPU check before any model/device allocation or publication.
+
+    Import stays torch-free. The existing YaRN builder validates its complete
+    FP32 construction, including combined factor/frequency overflow; native
+    frequencies additionally need their actual stored-vector check here.
+    """
+    import torch
+
+    position_vector_bytes(profile, mtp_active=mtp_active)
+    def build(role):
+        vector = role.rope.inverse_frequencies(torch)
+        if role.rope.rope_type == "default" and (not bool(torch.isfinite(vector).all()) or not bool((vector > 0).all())):
+            raise ValueError("native position policy produces nonfinite or zero float32 inverse frequencies")
+        return vector
+    # Normal CPU tensors retain version counters even when the caller prepares
+    # an engine inside inference_mode or a different default-device context.
+    with torch.inference_mode(False), torch.device("cpu"):
+        target = build(profile.target)
+        mtp = None
+        if mtp_active:
+            mtp = target if _frequency_key(profile.target.rope) == _frequency_key(profile.mtp.rope) else build(profile.mtp)
+    return PreparedPositionVectors(profile, target, mtp, target._version, None if mtp is None else mtp._version)
+
+
+@dataclass(frozen=True)
 class PositionOperands:
     inv_freq: object
     amplitude: float
@@ -434,11 +533,14 @@ class BoundPositionProfile:
     mtp: PositionOperands | None
 
 
-def bind_position_profile(weights, profile, *, mtp_active):
+def bind_position_profile(weights, profile, *, mtp_active, prepared=None):
     """Publish once after load, before states/graphs can borrow the vectors."""
     import torch
 
     position_vector_bytes(profile, mtp_active=mtp_active)
+    if not isinstance(prepared, PreparedPositionVectors):
+        raise ValueError("positional binding requires exact CPU preparation before model/device retention")
+    prepared.verify(profile, mtp_active=mtp_active)
     if weights.positions is not None:
         prior = weights.positions
         if prior.profile.identity != profile.identity or (prior.mtp is not None) != mtp_active:
@@ -455,8 +557,7 @@ def bind_position_profile(weights, profile, *, mtp_active):
     mtp = None
     if mtp_active:
         policy = profile.mtp.rope
-        inv = (weights.inv_freq if _frequency_key(policy) == _frequency_key(profile.target.rope)
-               else policy.inverse_frequencies(torch).to(weights.device))
+        inv = weights.inv_freq if prepared.mtp_cpu is prepared.target_cpu else prepared.mtp_cpu.to(weights.device)
         mtp = PositionOperands(inv, policy.attention_factor, policy.mrope_section,
                                profile.mtp, profile.identity, profile.epoch)
     binding = BoundPositionProfile(profile, target, mtp)
