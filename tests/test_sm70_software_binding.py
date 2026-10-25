@@ -150,19 +150,14 @@ def test_input_mutation_during_audit_cannot_be_issued(protected):
         binding.issue_source_binding(required=True)
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="selected source runtime is native Linux")
-def test_authority_cannot_cross_an_actual_process_fork(protected):
+def test_authority_refuses_a_foreign_pid_before_reading_protected_inputs(protected, monkeypatch):
     install_fixture(protected)
     authority = binding.issue_source_binding(required=True)
-    child = os.fork()
-    if child == 0:
-        try:
-            binding.verify_source_binding(authority)
-        except binding.SoftwareBindingError:
-            os._exit(0)
-        os._exit(1)
-    _, status = os.waitpid(child, 0)
-    assert os.waitstatus_to_exitcode(status) == 0
+    pid = os.getpid()
+    monkeypatch.setattr(binding.os, "getpid", lambda: pid + 1)
+    monkeypatch.setattr(binding, "_protected_location", lambda: pytest.fail("foreign PID reached protected IO"))
+    with pytest.raises(binding.SoftwareBindingError, match="another process"):
+        binding.verify_source_binding(authority)
 
 
 def test_failed_metadata_close_preserves_primary_and_cleanup_roots(protected, monkeypatch):

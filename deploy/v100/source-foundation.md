@@ -138,6 +138,13 @@ their generated offline counterparts select the same local wheel bytes.
 `source_foundation.py render-dockerfiles` owns both selected Dockerfiles.
 The old wheel recipe remains `Dockerfile.cu126-reference` for historical controls.
 
+The [additive media procedure](media-foundation.md) retains the original build
+receipt and audited provider bytes while applying a separately identified audit
+policy for source-built CPU consumer extensions. It preserves the previous
+producer/installation evidence and verifies it before publishing the new audit
+manifest. This does not claim that the existing framework was rebuilt under the
+new audit producer or transfer any compiler/device/model qualification.
+
 Acquire the exact `build-debs` and `python-wheels` inputs before building. Source
 fork preparation also needs `lint-wheels` and its managed-Python/UV cache; first
 acquisition may use the pinned public URLs, while the recorded lint rerun used

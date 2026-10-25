@@ -55,6 +55,12 @@ wheel-based configuration below. A successful old cu126 import or model test
 does not qualify the new framework/library combination. No serving-time
 dependency fallback is provided.
 
+The additive [CPU media source image](media-foundation.md) builds the exact
+TorchVision/Transformers/PyAV/FFmpeg processor and decoder closure while preserving
+the selected source Torch/native providers. Its software inventory and installed
+controls do not qualify SC117 vision, service media policies, capacity or V100
+execution.
+
 Build the selected development image with the external source artifact context:
 
 ```bash

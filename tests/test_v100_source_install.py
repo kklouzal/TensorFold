@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import builtins
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,6 +47,63 @@ def test_actual_mapped_provider_ownership_is_required(changed):
         identity["mapped_libraries"].pop(1)
     with pytest.raises(ValueError, match="mapped provider escaped"):
         SOURCE.validate_runtime(identity)
+
+
+def test_source_cpu_consumer_extensions_remain_separate_from_bundled_accelerator_providers():
+    identity = runtime()
+    identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision/_C.abi3.so")
+    SOURCE.validate_runtime(identity)
+    identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision.libs/libcudart.fake.so")
+    with pytest.raises(ValueError, match="binary-wheel accelerator"):
+        SOURCE.validate_runtime(identity)
+
+
+@pytest.mark.parametrize("change", [None, "old-producer", "sealed-library"])
+def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_path, monkeypatch, change):
+    prior = tmp_path / "audit-history"
+    prior.mkdir()
+    original = prior / "source_foundation.py"
+    original.write_bytes(b"original build producer bytes")
+    current = tmp_path / "source_foundation.py"
+    current.write_bytes(b"new reviewed audit policy bytes")
+    library = tmp_path / "libnative.so"
+    library.write_bytes(b"unchanged compiled framework artifact")
+    build = tmp_path / "source-build.json"
+    build.write_bytes(SOURCE.canonical({"producer_inputs": {
+        "deploy/v100/source_foundation.py": SOURCE.file_identity(original)}}))
+    old_build_bytes = build.read_bytes()
+    (prior / "audit-process.json").write_text('{"historical":"actual prior audit retained"}')
+    pins = {"immutable": "source"}
+    identity = {"torch_path": str(library), "mapped_libraries": [str(library)]}
+    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 1,
+                "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
+                "evidence_class": "source-built-software-identity", "release_qualified": False,
+                "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": identity,
+                "build_receipt": {"path": str(build)}, "pending_gates": ["compiler-6111901"],
+                "artifacts": [{"path": str(current), **SOURCE.file_identity(original)},
+                              {"path": str(library), **SOURCE.file_identity(library)},
+                              {"path": str(build), **SOURCE.file_identity(build)}]}
+    previous = prior / "v100-source-foundation.json"
+    previous.write_text(json.dumps(manifest))
+    old_manifest_bytes = previous.read_bytes()
+    monkeypatch.setattr(SOURCE, "__file__", str(current))
+    monkeypatch.setattr(SOURCE, "runtime_identity", lambda: identity)
+    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
+    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda: {"path": str(library), "version": 23203})
+    if change == "old-producer":
+        original.write_bytes(b"substituted history")
+    elif change == "sealed-library":
+        library.write_bytes(b"substituted native provider")
+    if change:
+        with pytest.raises(ValueError, match="original framework-build producer|artifact changed"):
+            SOURCE.revise_audit_policy(pins, prior)
+    else:
+        result = SOURCE.revise_audit_policy(pins, prior)
+        revision = result["audit_policy_revision"]
+        assert revision["original_build_producer"] == SOURCE.file_identity(original)
+        assert revision["current_audit_producer"] == SOURCE.file_identity(current)
+        assert result["release_qualified"] is False and result["pending_gates"] == ["compiler-6111901"]
+        assert build.read_bytes() == old_build_bytes and previous.read_bytes() == old_manifest_bytes
 
 
 def test_streamed_artifact_identity_rejects_nonregular_payload(tmp_path):
